@@ -519,6 +519,22 @@ async def test_teams_patch_agent_refreshes_soul_only_on_agentcore_identity_edits
         refresh.assert_awaited_once_with("org_xyz", "agent-1")
 
 
+def test_soul_fields_covers_every_field_build_soul_md_renders():
+    """M6 task-15 item 4. ``_SOUL_FIELDS`` must track ``build_soul_md``, not ``PatchAgentBody``:
+    a field the renderer uses but this set omits produces no error anywhere — the Paperclip row
+    and the UI show the new value while the agent keeps introducing itself with the old one. It
+    omitted ``role``, which the renderer puts on two lines. ``id`` is the key, never patched."""
+    from core.services.hermes_profiles import build_soul_md
+    from routers.teams.agents import _SOUL_FIELDS
+
+    base = {"id": "a1", "name": "Ada", "role": "ceo", "title": "Chief", "capabilities": "things"}
+    rendered = build_soul_md(base)
+    for field in _SOUL_FIELDS:
+        assert build_soul_md({**base, field: "changed-value"}) != rendered, f"{field} is not in SOUL.md"
+    # And nothing the renderer ignores has crept in.
+    assert not _SOUL_FIELDS & {"reportsTo", "budgetMonthlyCents", "icon"}
+
+
 @pytest.mark.asyncio
 async def test_teams_patch_agent_survives_a_failed_soul_refresh(monkeypatch):
     """The Paperclip row (what the UI reads) already landed, so a SOUL hiccup is logged,

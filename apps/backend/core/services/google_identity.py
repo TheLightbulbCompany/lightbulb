@@ -125,7 +125,32 @@ async def seed_agent_google_identity(
     IDENTITY.md belongs to the friday/atlas pre-stage; the seeder only ever
     edits an existing file, never creates one — so an agent with no base file
     simply isn't seeded.
+
+    **AgentCore workspaces get no block at all**, deliberately (task-14 row 4 /
+    task-15 item 5). The block's whole content is a ``gog -a <email>``
+    instruction, and the ``gog`` rail does not exist on Hermes in either half:
+    the binary is not in ``apps/infra/hermes/Dockerfile`` (only
+    git/curl/jq/ripgrep/unzip), and its keyring is an EFS-resident JWE blob the
+    materializer seeds at ``/home/node/.openclaw/.local/share/gogcli`` — a path
+    a microVM has no mount for. Porting the write into the profile's
+    ``AGENTS.md`` would therefore be WORSE than the current no-op: the agent
+    would be instructed, on every Google request, to run a command that does not
+    exist. So the honest behaviour is to write nothing and say so — the assign
+    door refuses up front (``routers/google_accounts.py``) rather than storing a
+    binding it cannot deliver, and this early return covers the disconnect
+    re-seed path, whose caller swallows exceptions by design.
     """
+    from core.services import runtime_transport
+
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        logger.info(
+            "seed_agent_google_identity: skipping owner=%s agent=%s — no gog rail on AgentCore",
+            owner_id,
+            agent_id,
+        )
+        put_metric("google_identity.seed.skipped_agentcore")
+        return
+
     ws = workspace or get_workspace()
     rel_path = f"workspace-{agent_id}/IDENTITY.md"
 

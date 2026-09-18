@@ -651,8 +651,17 @@ class CatalogService:
         ``runtime_transport.host_for``: an AgentCore buyer's install runs
         entirely through ``_install_agentcore_deploy`` below (Paperclip
         mint-if-needed, profile write+upload, tarball placement) instead of
-        the EFS/gateway-pairing steps that follow. ``None`` (every existing
-        caller, today) means ECS, and everything below runs unchanged.
+        the EFS/gateway-pairing steps that follow. It is an OPTIMISATION for
+        callers that already hold the row, not the decision itself: ``None``
+        asks the runtime seam (``runtime_transport.is_agentcore_owner``) like
+        every other door. It used to default straight to ECS, which made the
+        branch correct only by caller discipline — a caller that forgot the
+        argument would silently extract a marketplace agent onto an EFS tree
+        no migrated agent reads, and report a successful deploy (task-14 row
+        19). The seam's own contract carries over: a DynamoDB read failure
+        answers ECS with a warning rather than propagating, which is both the
+        pre-migration default and what keeps a transient throttle from failing
+        an ECS buyer's deploy.
 
         Steps:
           1. Extract ``tar_bytes`` into EFS at ``workspace-{new_agent_id}/``.
@@ -693,8 +702,11 @@ class CatalogService:
         # new_agent_id-fallback below, since an AgentCore "direct" caller
         # (new_agent_id=None) mints through Paperclip itself rather than
         # generating an orphan local string (see _install_agentcore_deploy).
-        # ECS/unknown buyers (container absent, every existing caller today)
-        # fall through to the unchanged path below.
+        # ECS buyers fall through to the unchanged path below.
+        if container is None and await runtime_transport.is_agentcore_owner(owner_id):
+            from core.repositories import container_repo
+
+            container = await container_repo.get_by_owner_id(owner_id) or {}
         if runtime_transport.host_for(container or {}) == "agentcore":
             return await _install_agentcore_deploy(
                 owner_id=owner_id,

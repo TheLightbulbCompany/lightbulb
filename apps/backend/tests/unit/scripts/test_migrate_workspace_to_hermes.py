@@ -103,6 +103,18 @@ def efs_ready(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def adapter_repoint_stub(monkeypatch):
+    """Task-15 item 1 added a Paperclip adapter re-point to BOTH legs (the tail and rollback),
+    and it talks to Paperclip over HTTP. Stub it everywhere by default so no pre-existing test
+    grows a network dependency; the tests that actually exercise it re-patch it (or patch one
+    level down, at ``repoint_agent_adapter``) themselves."""
+    real = mod._repoint_paperclip_adapters
+    monkeypatch.setattr(mod, "_repoint_paperclip_adapters", AsyncMock())
+    monkeypatch.setattr(mod, "load_agent_roster", AsyncMock(return_value=ROSTER))
+    return real
+
+
 @pytest.fixture
 def settings_ok(monkeypatch):
     """Ruling M6-R20(b): the two settings ``provision_hermes_runtime`` hard-requires."""
@@ -294,6 +306,99 @@ async def test_session_stop_failure_does_not_abort_the_tail(tmp_path, preconditi
     assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_OK
     ecs.stop_user_service.assert_awaited_once_with(OWNER, reason="hermes_migration", force=True)
     stamp.assert_awaited_once_with(OWNER)
+
+
+# ---------------------------------------------------------------------------
+# M6 task-15 item 1 — the Paperclip adapter re-point (task-14 row 1)
+# ---------------------------------------------------------------------------
+
+
+def _tail_only(monkeypatch, tmp_path, *, repoint, order=None):
+    """Everything in the tail except the step under test, stubbed. ``order`` (optional) is the
+    ONE sink the lifecycle stubs record into, so an ordering assertion can't be satisfied by
+    coincidence."""
+    _fake_workspace(tmp_path)
+    note = (lambda name: lambda *a, **kw: order.append(name)) if order is not None else (lambda name: None)
+    monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path))
+    monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-1"))
+    monkeypatch.setattr(mod, "prepare_hermes_workspace", AsyncMock())
+    monkeypatch.setattr(mod, "provision_hermes_runtime", AsyncMock(return_value="arn:hermes-1"))
+    monkeypatch.setattr(mod, "_apply_efs_overrides", AsyncMock(side_effect=note("overrides")))
+    monkeypatch.setattr(mod, "_stop_runtime_session", MagicMock(side_effect=note("session_stop")))
+    monkeypatch.setattr(mod, "_repoint_paperclip_adapters", repoint)
+    ecs = SimpleNamespace(stop_user_service=AsyncMock(side_effect=note("stop")))
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: ecs)
+    stamp = AsyncMock(side_effect=note("stamp"))
+    monkeypatch.setattr(mod, "_stamp_migrated", stamp)
+    return ecs, stamp
+
+
+async def test_migrate_repoints_every_roster_adapter_before_stopping_ecs(tmp_path, precondition_ok, monkeypatch):
+    """Without this step a migrated workspace's agents keep an ``openclaw_gateway`` adapter
+    dialling a dead operator socket: every routine, issue run and Teams Run/Retry dies while room
+    chat keeps working.
+
+    Position is the contract: AFTER the profile overrides + the cold-session stop (so the first
+    Paperclip run the re-point makes possible cold-restores the right profile) and BEFORE the ECS
+    stop (so a failure leaves the old gateway serving the old adapters)."""
+    order: list[str] = []
+    repoint = AsyncMock(side_effect=lambda *a, **kw: order.append("repoint"))
+    _ecs, stamp = _tail_only(monkeypatch, tmp_path, repoint=repoint, order=order)
+
+    assert await mod.migrate(OWNER, dry_run=False) == mod.EXIT_OK
+
+    repoint.assert_awaited_once_with(OWNER, ROSTER, runtime_host="agentcore")
+    assert order == ["overrides", "session_stop", "repoint", "stop", "stamp"]
+    stamp.assert_awaited_once()
+
+
+async def test_a_failed_repoint_aborts_the_tail_and_never_stamps(tmp_path, precondition_ok, monkeypatch):
+    """ "Fail loudly rather than flip the row": a workspace whose agents could not be re-pointed
+    must not end up stamped ``hermes_migrated_at`` (which would make every later run skip it) nor
+    have its ECS service stopped."""
+    ecs, stamp = _tail_only(monkeypatch, tmp_path, repoint=AsyncMock(side_effect=RuntimeError("paperclip 500")))
+
+    # Non-zero (the exact code is classify_provision_error's business, not this test's) and,
+    # critically, nothing after the re-point ran.
+    assert await mod.migrate(OWNER, dry_run=False) != mod.EXIT_OK
+
+    ecs.stop_user_service.assert_not_awaited()
+    stamp.assert_not_awaited()
+
+
+async def test_repoint_passes_the_whole_roster_and_counts_only_real_patches(monkeypatch, adapter_repoint_stub):
+    """``_repoint_paperclip_adapters`` is a thin loop over the shared per-agent helper — the one
+    thing it owns is that EVERY roster agent is offered, with the explicit runtime_host (never a
+    row read that could be mid-flip)."""
+    seen = []
+
+    async def _fake_repoint(owner_id, agent, *, runtime_host, gateway_token=None):
+        seen.append((owner_id, agent["id"], runtime_host, gateway_token))
+        return agent["id"] == CEO_ID  # the other one was already on the target adapter
+
+    monkeypatch.setattr("core.services.paperclip_agent_lifecycle.repoint_agent_adapter", _fake_repoint)
+
+    await adapter_repoint_stub(OWNER, ROSTER, runtime_host="agentcore")
+
+    assert seen == [(OWNER, CEO_ID, "agentcore", None), (OWNER, ENG_ID, "agentcore", None)]
+
+
+async def test_repoint_on_the_ecs_leg_carries_the_container_gateway_token(monkeypatch, adapter_repoint_stub):
+    """Rolling BACK synthesizes a fresh ``openclaw_gateway`` adapter whose ``authToken`` is the
+    service JWT, which the live gateway rejects — the per-agent bind needs the container's own
+    gateway token, so the ECS leg (and only it) reads the row for one."""
+    seen = []
+
+    async def _fake_repoint(owner_id, agent, *, runtime_host, gateway_token=None):
+        seen.append(gateway_token)
+        return True
+
+    monkeypatch.setattr("core.services.paperclip_agent_lifecycle.repoint_agent_adapter", _fake_repoint)
+    monkeypatch.setattr(mod.container_repo, "get_by_owner_id", AsyncMock(return_value={"gateway_token": "gw-tok"}))
+
+    await adapter_repoint_stub(OWNER, ROSTER, runtime_host="ecs")
+
+    assert seen == ["gw-tok", "gw-tok"]
 
 
 async def test_reference_org_is_refused_outright(monkeypatch):
@@ -652,6 +757,10 @@ async def test_rollback_order_and_row_flip(monkeypatch):
     # start_user_service's own _hosted_on_agentcore guard (unforced here) can never bite --
     # the row it reads is already off AgentCore by the time that call happens.
     assert calls == ["teardown", "flip_row", "start_ecs"]
+    # Task-15 item 1: the adapters migrate() moved onto `http` point at a bridge this rollback
+    # just tore down, so they go back to openclaw_gateway — last, once the row reads "ecs" and
+    # the service is coming up.
+    mod._repoint_paperclip_adapters.assert_awaited_once_with(OWNER, ROSTER, runtime_host="ecs")
     leased.assert_awaited_once()
     _, kwargs_or_fields = leased.await_args.args[0], leased.await_args.args[2]
     assert kwargs_or_fields["runtime_host"] == "ecs"

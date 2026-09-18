@@ -1,9 +1,12 @@
+import json
+
 from bridge import sync
 from tests import factories as f
 
 
 def _reset(monkeypatch):
     monkeypatch.setattr(sync, "_ROOT_AUTH_REVISION", None)
+    monkeypatch.setattr(sync, "_ROOT_AUTH_ETAG", None, raising=False)
     monkeypatch.setattr(sync, "_ROOT_AUTH_HASH", None)
 
 
@@ -84,6 +87,86 @@ def test_a_stale_local_copy_never_overwrites_a_newer_staged_grant(monkeypatch, h
     assert uploads == []  # the stale local rotation must not clobber the staged r2 grant
 
 
+class _PreconditionFailed(RuntimeError):
+    response = {"Error": {"Code": "PreconditionFailed"}}
+
+
+class _Body:
+    def __init__(self, value: bytes):
+        self.value = value
+
+    def read(self):
+        return self.value
+
+
+class _InterleavingAuthS3:
+    """Actual conditional-PUT semantics plus an unstage after the writer's version check."""
+
+    def __init__(self):
+        self.auth = json.dumps({"providers": {"openai-codex": {"tokens": {"refresh_token": "old"}}}}).encode()
+        self.auth_etag = '"v1"'
+        self.revision = b"r1"
+        self.raced = False
+
+    def get_object(self, *, Bucket, Key):
+        if Key.endswith("auth.revision"):
+            return {"Body": _Body(self.revision), "ETag": '"revision-v1"'}
+        return {"Body": _Body(self.auth), "ETag": self.auth_etag}
+
+    def head_object(self, *, Bucket, Key):
+        return {"ETag": self.auth_etag}
+
+    def download_file(self, bucket, key, dest):
+        with open(dest, "wb") as target:
+            target.write(self.auth)
+
+    def upload_file(self, path, bucket, key):
+        self._unstage_between_check_and_write()
+        with open(path, "rb") as source:
+            self.auth = source.read()  # old implementation resurrects the stale grant
+        self.auth_etag = '"v3"'
+
+    def put_object(self, *, Bucket, Key, Body, **conditions):
+        if Key.endswith("auth.revision"):
+            self.revision = Body if isinstance(Body, bytes) else Body.encode()
+            return {"ETag": '"revision-v2"'}
+        self._unstage_between_check_and_write()
+        if conditions.get("IfMatch") != self.auth_etag:
+            raise _PreconditionFailed("auth.json changed")
+        self.auth = Body if isinstance(Body, bytes) else Body.encode()
+        self.auth_etag = '"v3"'
+        return {"ETag": self.auth_etag}
+
+    def _unstage_between_check_and_write(self):
+        if self.raced:
+            return
+        self.auth = json.dumps({"providers": {}}).encode()
+        self.auth_etag = '"v2"'
+        self.revision = b"r2"
+        self.raced = True
+
+
+def test_warm_save_cannot_resurrect_a_grant_unstaged_after_its_version_check(monkeypatch, home):
+    """The verified race: a warm turn passes its old revision check, disconnect lands, then the
+    turn saves its rotated local copy. The auth object's own ETag must fence that stale writer."""
+    _reset(monkeypatch)
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    monkeypatch.setattr(sync, "S3_PREFIX", "org_a/hermes")
+    s3 = _InterleavingAuthS3()
+    monkeypatch.setattr(sync, "_s3", lambda: s3)
+
+    sync.restore_root_auth()
+    (home / "auth.json").write_text(
+        json.dumps({"providers": {"openai-codex": {"tokens": {"refresh_token": "rotated-locally"}}}})
+    )
+    try:
+        sync.save_root_auth()
+    except _PreconditionFailed as exc:
+        assert exc.response["Error"]["Code"] == "PreconditionFailed"
+
+    assert "openai-codex" not in json.loads(s3.auth)["providers"]
+
+
 def test_an_unchanged_local_file_uploads_nothing(monkeypatch, home):
     """C3/minor 4: this turn never touched auth.json at all -- no upload, and (per minor 4) no
     warning-level log for the ordinary case of an owner with no ChatGPT OAuth connected."""
@@ -121,6 +204,7 @@ def test_a_rotated_local_grant_uploads_and_bumps_the_revision_when_nothing_else_
     _reset(monkeypatch)
     monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
     monkeypatch.setattr(sync, "_root_auth_revision", lambda: "r1")
+    monkeypatch.setattr(sync, "_root_auth_etag", lambda: '"v1"')
     monkeypatch.setattr(sync, "_download_object", lambda key, dest: None)
     (home / "auth.json").write_text('{"v": 1}')
     sync.restore_root_auth()
@@ -133,12 +217,17 @@ def test_a_rotated_local_grant_uploads_and_bumps_the_revision_when_nothing_else_
         def put_object(self, *, Bucket, Key, Body):
             new_revisions.append(Body.decode() if isinstance(Body, bytes) else Body)
 
-    monkeypatch.setattr(sync, "_upload_object", lambda src, key: uploads.append(key))
+    monkeypatch.setattr(
+        sync,
+        "_upload_object",
+        lambda src, key, *, if_match: uploads.append((key, if_match)) or '"v2"',
+    )
     monkeypatch.setattr(sync, "_s3", lambda: FakeS3())
 
     sync.save_root_auth()
 
-    assert uploads == ["auth.json"]
+    assert uploads == [("auth.json", '"v1"')]
+    assert sync._ROOT_AUTH_ETAG == '"v2"'
     assert len(new_revisions) == 1 and new_revisions[0] != "r1"
     assert sync._ROOT_AUTH_REVISION == new_revisions[0]  # recorded, so the next save compares to it
 
@@ -170,15 +259,17 @@ def test_download_object_and_upload_object_use_the_s3_prefix(home, monkeypatch):
         def download_file(self, bucket, key, dest):
             calls.append(("get", bucket, key))
 
-        def upload_file(self, path, bucket, key):
-            calls.append(("put", bucket, key))
+        def put_object(self, *, Bucket, Key, Body, IfMatch):
+            calls.append(("put", Bucket, Key, IfMatch, Body))
+            return {"ETag": '"new"'}
 
     monkeypatch.setattr(sync, "_s3", lambda: FakeS3())
+    (home / "auth.json").write_text("{}")
     sync._download_object("auth.json", sync.HOME / "auth.json")
-    sync._upload_object(sync.HOME / "auth.json", "auth.json")
+    assert sync._upload_object(sync.HOME / "auth.json", "auth.json", if_match='"old"') == '"new"'
     assert calls == [
         ("get", "bucket-under-test", "org_a/hermes/auth.json"),
-        ("put", "bucket-under-test", "org_a/hermes/auth.json"),
+        ("put", "bucket-under-test", "org_a/hermes/auth.json", '"old"', b"{}"),
     ]
 
 

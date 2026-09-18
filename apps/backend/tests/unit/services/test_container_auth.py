@@ -22,6 +22,20 @@ def _ecs_manager(container, ip):
     return m
 
 
+@pytest.fixture(autouse=True)
+def _ecs_owner_by_default(monkeypatch):
+    """Both helpers in this module now branch on the runtime host, and the real predicate reads
+    DynamoDB. Default every test to the ECS leg; the AgentCore tests patch it back themselves."""
+    monkeypatch.setattr(
+        container_auth.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False), raising=False
+    )
+    monkeypatch.setattr(
+        container_auth.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"runtime_host": "ecs"}),
+    )
+
+
 @pytest.mark.asyncio
 async def test_cold_container_skips_logout():
     with (
@@ -85,6 +99,87 @@ async def test_missing_token_or_operator_seed_skips_logout():
         ):
             assert await revoke_provider_auth_in_container("org_1") is False
             logout.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agentcore_revoke_unstages_the_root_grant_instead_of_an_rpc():
+    """M6 task-14 row 3: ``models.authLogout`` does not exist on the bridge, so this whole helper
+    quietly returned False on an AgentCore workspace — the grant survived in the ROOT auth.json
+    and the agents kept using the account the owner had just disconnected. Deleting it there IS
+    the revoke, so the gateway path must not be touched at all."""
+    with (
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"runtime_host": "agentcore"}),
+        ),
+        patch("core.services.container_auth.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=True)),
+        patch("core.services.hermes_profiles.unstage_codex_auth", return_value=True) as unstage,
+        patch("core.services.container_auth.get_ecs_manager") as ecs,
+        patch("core.services.container_auth._logout_provider_via_gateway", new=AsyncMock()) as logout,
+    ):
+        assert await revoke_provider_auth_in_container("org_1") is True
+    unstage.assert_called_once_with("org_1")
+    ecs.assert_not_called()
+    logout.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agentcore_revoke_uses_the_actual_container_row_consistently():
+    """A failed runtime-host lookup must not default an AgentCore owner to the ECS best-effort
+    path. Revocation makes the security-sensitive routing decision from the actual row."""
+    read = AsyncMock(return_value={"runtime_host": "agentcore"})
+    with (
+        patch("core.repositories.container_repo.get_by_owner_id", read),
+        patch(
+            "core.services.container_auth.runtime_transport.is_agentcore_owner",
+            new=AsyncMock(side_effect=AssertionError("the swallowing predicate is not authoritative")),
+        ),
+        patch("core.services.hermes_profiles.unstage_codex_auth", return_value=True),
+    ):
+        assert await revoke_provider_auth_in_container("org_1") is True
+    read.assert_awaited_once_with("org_1", consistent=True)
+
+
+@pytest.mark.asyncio
+async def test_agentcore_revoke_is_idempotent_when_there_was_no_grant():
+    with (
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"runtime_host": "agentcore"}),
+        ),
+        patch("core.services.container_auth.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=True)),
+        patch("core.services.hermes_profiles.unstage_codex_auth", return_value=False),
+    ):
+        assert await revoke_provider_auth_in_container("org_1") is True
+
+
+@pytest.mark.asyncio
+async def test_agentcore_revoke_propagates_authoritative_store_failure():
+    """A failed S3 delete must leave the caller's retry ownership intact, not degrade to the ECS
+    best-effort contract and let disconnect report success."""
+    with (
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"runtime_host": "agentcore"}),
+        ),
+        patch("core.services.container_auth.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=True)),
+        patch("core.services.hermes_profiles.unstage_codex_auth", side_effect=RuntimeError("s3 down")),
+    ):
+        with pytest.raises(RuntimeError, match="s3 down"):
+            await revoke_provider_auth_in_container("org_1")
+
+
+@pytest.mark.asyncio
+async def test_revoke_propagates_container_row_read_failure():
+    with (
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(side_effect=RuntimeError("ddb down")),
+        ),
+        patch("core.services.container_auth.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)),
+    ):
+        with pytest.raises(RuntimeError, match="ddb down"):
+            await revoke_provider_auth_in_container("org_1")
 
 
 async def test_push_credential_stages_and_clears_when_tokens_present():

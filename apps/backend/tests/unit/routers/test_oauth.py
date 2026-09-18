@@ -37,6 +37,13 @@ def workspace_oauth_dependencies():
         yield
 
 
+@pytest.fixture(autouse=True)
+def provider_revoke_mock():
+    """Keep unrelated router tests off the real container-row/runtime cleanup path."""
+    with patch("routers.oauth.revoke_provider_auth_in_container", new=AsyncMock(return_value=True)) as m:
+        yield m
+
+
 @pytest.fixture
 def oauth_table(monkeypatch):
     """A real (moto) oauth-tokens table so the binding logic runs end-to-end
@@ -183,6 +190,24 @@ async def test_disconnect_revokes(async_client):
     # already imported into its SQLite store (models.authLogout), not just the
     # EFS seed file.
     mock_logout.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_keeps_oauth_row_and_provider_choice_when_agentcore_revoke_fails(async_client):
+    """The DDB row is retry ownership for an authoritative AgentCore revoke. A backing-store
+    failure must surface before either that row or provider choice is cleared."""
+    with (
+        patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
+        patch(
+            "routers.oauth.revoke_provider_auth_in_container",
+            new=AsyncMock(side_effect=RuntimeError("s3 down")),
+        ),
+        patch("core.repositories.billing_repo.clear_provider_choice", new=AsyncMock()) as mock_clear,
+    ):
+        resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
+    assert resp.status_code == 502
+    mock_revoke.assert_not_awaited()
+    mock_clear.assert_not_awaited()
 
 
 @pytest.mark.asyncio

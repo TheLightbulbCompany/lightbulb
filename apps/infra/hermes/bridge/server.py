@@ -398,7 +398,14 @@ def _provider_credential(agent_id: str, provider: str) -> tuple[bool, str]:
         # pull it here too -- restore_root_auth is a cheap revision check after the first call.
         with contextlib.suppress(Exception):
             sync.restore_root_auth()
-        return (sync.HOME / "auth.json").is_file(), "chatgpt-oauth"
+        try:
+            blob = json.loads((sync.HOME / "auth.json").read_text(encoding="utf-8"))
+            state = (blob.get("providers") or {}).get("openai-codex") or {}
+            tokens = state.get("tokens") or {}
+            present = isinstance(tokens, dict) and any(tokens.get(k) for k in ("access_token", "refresh_token"))
+        except (OSError, ValueError, AttributeError):
+            present = False
+        return present, "chatgpt-oauth"
     return False, "unknown"
 
 

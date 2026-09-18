@@ -17,7 +17,9 @@ own less friendly ``RuntimeError`` be the first sign of a misconfigured one.
 
 Ordering invariant (Ruling M6-R1): the ECS service is stopped ONLY after the AgentCore runtime is
 confirmed READY (``provision_hermes_runtime``'s own internal poll) — never before, and never
-concurrently — so two runtimes never serve one owner's EFS-adjacent state at once.
+concurrently — so two runtimes never serve one owner's EFS-adjacent state at once. The Paperclip
+adapter re-point (``_repoint_paperclip_adapters``, M6 task-15 item 1) sits inside that window:
+after the profile overrides it needs, before the ECS stop it invalidates.
 
 EFS -> Hermes profile mapping (spec §4.8), applied per roster agent:
 
@@ -416,6 +418,49 @@ async def _apply_efs_overrides(owner_id: str, plan: list[tuple[dict, str | None,
         await upload_profile(owner_id, agent_id, profile)
 
 
+async def _repoint_paperclip_adapters(owner_id: str, roster: list[dict], *, runtime_host: str) -> None:
+    """M6 task-15 item 1 — point every EXISTING roster agent's Paperclip adapter at
+    ``runtime_host``'s transport, via the same resolver a fresh agent create uses
+    (``paperclip_agent_lifecycle.repoint_agent_adapter``).
+
+    Nothing else does this. The adapter is chosen at agent-CREATE time, so without this step a
+    migrated workspace's agents keep an ``openclaw_gateway`` adapter dialling an operator
+    WebSocket at a dead address: every scheduled routine, issue run and Teams Run/Retry fails
+    silently inside ``gateway_relay``'s ``except``, while room chat (the WORK bus, not the
+    adapter) carries on — so the workspace looks perfectly healthy with every autonomous
+    behaviour the subscription pays for dead.
+
+    Placed in the tail after the profile overrides AND the cold-session stop (the profile a
+    re-pointed run will land in must exist and be cold-restorable first) and BEFORE the ECS stop
+    — a failure here has to leave the old gateway running and still serving the old adapters. It
+    RAISES, so the tail aborts before ``_stamp_migrated`` and a re-run resumes; never a stamped
+    row whose agents were never re-pointed.
+
+    Idempotent per agent (``repoint_agent_adapter`` skips one already on the target type), and
+    the roster is re-read by the caller on every attempt, so a partially re-pointed workspace
+    converges on a retry.
+    """
+    from core.services.paperclip_agent_lifecycle import repoint_agent_adapter
+
+    # Only needed on the ECS leg (rollback), where the synthesized gateway adapter has to be
+    # bound to the container's live token; the http adapter carries the hook token instead.
+    gateway_token = None
+    if runtime_host == "ecs":
+        gateway_token = ((await container_repo.get_by_owner_id(owner_id, consistent=True)) or {}).get("gateway_token")
+    repointed = 0
+    for agent in roster:
+        repointed += await repoint_agent_adapter(
+            owner_id, agent, runtime_host=runtime_host, gateway_token=gateway_token
+        )
+    logger.info(
+        "migrate: re-pointed %s/%s Paperclip adapters for owner=%s to runtime_host=%s",
+        repointed,
+        len(roster),
+        owner_id,
+        runtime_host,
+    )
+
+
 async def _reconcile_chatgpt_oauth(owner_id: str) -> None:
     """Ruling M6-R12 — see the module docstring. Deletes the stale DDB grant; never stages one."""
     from core.services.oauth_service import resolve_token_owner, revoke_user_oauth
@@ -533,6 +578,11 @@ async def migrate(owner_id: str, *, dry_run: bool, _company=None) -> int:
                     logger.warning(
                         "migrate: StopRuntimeSession failed for owner=%s arn=%s", owner_id, runtime_arn, exc_info=True
                     )
+        # M6 task-15 item 1: only NOW can Paperclip reach the bridge at all, and the window in
+        # which it could warm-run against a not-yet-cold-restored profile is the smallest it can
+        # be -- before this line every Paperclip run still dials the (still-running) ECS gateway.
+        # Before the ECS stop below, though: a failure here has to leave that gateway serving.
+        await _repoint_paperclip_adapters(owner_id, roster, runtime_host="agentcore")
         # Order matters (Ruling M6-R1): the ECS service is stopped only now that the AgentCore
         # runtime is confirmed READY, so two runtimes never serve one owner at once. force=True
         # (Ruling M6-R15) bypasses the AgentCore no-op guard -- by now the row already reads
@@ -602,7 +652,8 @@ async def rollback(owner_id: str, *, dry_run: bool = False) -> int:
     stop THEN delete per Ruling M4-R16, revoke the Hermes-minted bearer generation, delete the
     boot secret), restore the CONTAINERS row's gate-token pointer to the surviving ECS
     generation (``_restore_ecs_gate_token`` -- minor, predeploy review housekeeping), flip the
-    row back onto ECS (fenced, same lease mechanic as ``migrate``), and restart the ECS service.
+    row back onto ECS (fenced, same lease mechanic as ``migrate``), restart the ECS service, and
+    re-point every roster agent's Paperclip adapter back to ``openclaw_gateway`` (M6 task-15 item 1).
     S3 profiles are left in place — cheap, and the next ``migrate()`` attempt overwrites them
     anyway (F5, predeploy review: this is the SAME extracted teardown an account wipe on an
     agentcore row now uses with ``delete_profiles=True``, which DOES delete them -- there is
@@ -633,6 +684,12 @@ async def rollback(owner_id: str, *, dry_run: bool = False) -> int:
         release_lease=True,
     )
     await get_ecs_manager().start_user_service(owner_id, force=True)
+    # M6 task-15 item 1, the other direction: migrate() re-pointed every agent onto the `http`
+    # adapter, which posts at a bridge this rollback has just torn down. Last (the row already
+    # reads "ecs" and the service is coming back up, so the gateway bind below has something to
+    # pair against) and NOT best-effort: leaving the roster on `http` is the same silent-death
+    # shape rollback exists to undo. Re-running --rollback re-points only what is still wrong.
+    await _repoint_paperclip_adapters(owner_id, await load_agent_roster(owner_id), runtime_host="ecs")
     logger.info("rollback: owner=%s restored to ecs", owner_id)
     return EXIT_OK
 

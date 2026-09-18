@@ -65,11 +65,20 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-#: The ``PatchAgentBody`` fields (camelCase, as ``model_dump(by_alias=True)`` emits them) that
+#: The fields (camelCase, as ``model_dump(by_alias=True)`` emits them) that
 #: ``hermes_profiles.build_soul_md`` renders — i.e. the ones whose change has to reach an
-#: AgentCore agent's ``SOUL.md``. ``role``/``icon`` are in SOUL too but this door cannot patch
-#: them; ``reportsTo``/``budgetMonthlyCents`` are Paperclip-only and never appear in SOUL.
-_SOUL_FIELDS = frozenset({"name", "title", "capabilities"})
+#: AgentCore agent's ``SOUL.md``. ``reportsTo``/``budgetMonthlyCents``/``icon`` are never
+#: rendered into SOUL and stay out.
+#:
+#: ``role`` IS rendered (two lines: "You are {name}, the {role} agent…" plus the CEO line) and is
+#: listed here even though ``PatchAgentBody`` does not expose it today — the intersection below
+#: simply never matches, at no cost. It is listed because the failure mode of forgetting it is
+#: invisible (M6 task-15 item 4): the moment this door learns to patch ``role``, an omission here
+#: would leave every migrated agent introducing itself by its old role forever while the UI, which
+#: reads the Paperclip row, shows the new one. This set must track ``build_soul_md``, not the body
+#: schema. ``refresh_agent_soul`` still declines to overwrite an owner-edited SOUL.md
+#: (``SOUL_GENERATED_MARKER``, M6-R48), so adding a field cannot clobber owner content.
+_SOUL_FIELDS = frozenset({"name", "title", "capabilities", "role"})
 
 
 # Adapter fields are synthesized server-side and must never reach the

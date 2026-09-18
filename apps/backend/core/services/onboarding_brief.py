@@ -570,7 +570,7 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
             project_id=project_id,
             owner_id=owner_id,
         )
-        stage_first_run_files(
+        await stage_first_run_files(
             workspace=get_workspace(),
             owner_id=owner_id,
             friday_agent_id=assigned_agent_id,
@@ -693,14 +693,14 @@ async def _settle_lost_claim(repo, owner_id: str, owner_row, generation: str) ->
     return DrainOutcome.NOT_READY
 
 
-def stage_first_run_files(
+async def stage_first_run_files(
     *,
     workspace: Workspace,
     owner_id: str,
     friday_agent_id: str,
     brief_md: str,
 ) -> None:
-    """Write BRIEF.md, unconditionally.
+    """Write BRIEF.md, unconditionally, wherever this owner's agents actually read.
 
     Used to be write-if-missing because its existence WAS the one-shot
     marker for the flow. The generation-fenced ``funnel_state`` claim on the
@@ -709,6 +709,21 @@ def stage_first_run_files(
     that failed partway is stale state to overwrite, not a reason to stop.
     Stopping there would strand the goal and project the caller seeded
     moments earlier.
+
+    On AgentCore the EFS write still SUCCEEDS (``Workspace.write_file`` mkdirs its parents) into
+    a tree no Hermes agent ever reads, so the founder's own description of the company they want
+    run never reached the CEO's first turn while the funnel reported complete (task-14 row 5).
+    The profile prefix is that workspace's home — the bridge pulls it down beside ``SOUL.md``/
+    ``AGENTS.md`` — so the same file lands in the same place relative to the agent.
+    ``write_profile_file`` raises rather than no-op when ``OWNER_STATE_BUCKET`` is unset, which
+    is what keeps this the LAST fallible step the caller's rollback depends on.
     """
+    from core.services import runtime_transport
+
+    if await runtime_transport.is_agentcore_owner(owner_id):
+        from core.services.hermes_profiles import write_profile_file
+
+        await write_profile_file(owner_id, friday_agent_id, "BRIEF.md", brief_md)
+        return
     base = f"workspace-{friday_agent_id}"
     workspace.write_file(owner_id, f"{base}/BRIEF.md", brief_md)

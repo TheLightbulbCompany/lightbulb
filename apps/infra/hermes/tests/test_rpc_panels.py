@@ -326,6 +326,9 @@ def test_auth_status_reports_chatgpt_oauth_from_the_root_auth_json(home, monkeyp
         {"provider": "openai-codex", "status": "missing", "via": "chatgpt-oauth"}]
     (home / "auth.json").write_text("{}")
     assert call("models.authStatus")[1]["payload"]["providers"] == [
+        {"provider": "openai-codex", "status": "missing", "via": "chatgpt-oauth"}]
+    (home / "auth.json").write_text('{"providers":{"openai-codex":{"tokens":{"refresh_token":"rt"}}}}')
+    assert call("models.authStatus")[1]["payload"]["providers"] == [
         {"provider": "openai-codex", "status": "ok", "via": "chatgpt-oauth"}]
 
 

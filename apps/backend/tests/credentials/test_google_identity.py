@@ -52,6 +52,14 @@ def _make_workspace(initial: str | None):
     return ws
 
 
+@pytest.fixture(autouse=True)
+def _ecs_owner_by_default(monkeypatch):
+    """The seeder now refuses on an AgentCore workspace, and the real predicate reads DynamoDB."""
+    monkeypatch.setattr(
+        "core.services.runtime_transport.is_agentcore_owner", AsyncMock(return_value=False), raising=False
+    )
+
+
 @pytest.fixture
 def patch_resolver(monkeypatch):
     """Patch get_assignment to return a controllable email.
@@ -248,3 +256,22 @@ async def test_unassign_then_disconnect_leaves_no_stale_block(real_repo):
     assert BEGIN_MARKER not in final
     assert "alice@gmail.com" not in final
     assert final.startswith(base.rstrip("\n"))
+
+
+@pytest.mark.asyncio
+async def test_agentcore_workspace_is_never_seeded(monkeypatch, patch_resolver):
+    """M6 task-14 row 4 / task-15 item 5. The block's entire content is a ``gog -a <email>``
+    instruction, and the ``gog`` rail does not exist on Hermes in either half — the binary is not
+    in the image, and its keyring is an EFS-resident blob a microVM has no mount for. So the EFS
+    write went to a file nothing reads, and porting it into the profile would be WORSE: the agent
+    would be told to run a command that isn't there. It must write nothing, and not read either."""
+    monkeypatch.setattr(
+        "core.services.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True), raising=False
+    )
+    patch_resolver("alice@gmail.com")
+    ws = _make_workspace("# IDENTITY.md\n")
+
+    await seed_agent_google_identity("org_1", "agent_x", workspace=ws)
+
+    ws.write_file.assert_not_called()
+    ws.read_file.assert_not_called()

@@ -115,6 +115,29 @@ class TestAssignAccount:
         mock_seed.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch("routers.google_accounts.runtime_transport.is_agentcore_owner", new_callable=AsyncMock)
+    @patch("routers.google_accounts.seed_agent_google_identity", new_callable=AsyncMock)
+    @patch("routers.google_accounts.google_accounts_repo")
+    async def test_assign_refuses_on_an_agentcore_workspace(self, mock_repo, mock_seed, mock_agentcore, async_client):
+        """M6 task-14 row 4: the binding is only ever delivered as a ``gog -a <email>``
+        instruction, and neither the ``gog`` binary nor its EFS keyring exists on a Hermes
+        microVM. Storing the row and answering 200 is the silent-success shape this pass
+        removes — refuse, same as the Shopify container login (task 10-D)."""
+        mock_agentcore.return_value = True
+        mock_repo.list_accounts = AsyncMock(return_value=[{"email": "alice@example.com"}])
+        mock_repo.set_assignment = AsyncMock()
+
+        response = await async_client.post(
+            "/api/v1/google/accounts/alice@example.com/assign",
+            json={"agent_id": "agent_1"},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == "unsupported_on_agentcore"
+        mock_repo.set_assignment.assert_not_called()
+        mock_seed.assert_not_called()
+
+    @pytest.mark.asyncio
     @patch("routers.google_accounts.seed_agent_google_identity", new_callable=AsyncMock)
     @patch("routers.google_accounts.google_accounts_repo")
     async def test_assign_non_admin_member_forbidden(self, mock_repo, mock_seed, async_client_org_member):

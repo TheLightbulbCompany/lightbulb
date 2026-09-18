@@ -75,7 +75,11 @@ async def test_aws_config_resolves_the_helper_through_the_profile_home(s3, roste
     await hermes_cli.project("org_1", "aws", "aws_cli", {"region": "us-east-1", "cli_token": "tok_x"})
 
     config = s3["org_1/hermes/ceo/home/.aws/config"].decode()
-    assert "[profile lightbulb-connector]" in config
+    # [default], not the NAMED profile ECS uses: nothing in the microVM shares a $HOME with this
+    # file (the bridge process's own is "/"), so there is no in-process SDK for a default section
+    # to capture -- and a default is what lets the shell work with no AWS_PROFILE to deliver.
+    assert config.startswith("[default]\n")
+    assert "lightbulb-connector" not in config
     assert "credential_process = sh -c 'exec /usr/bin/env node \"$HOME/.aws/lightbulb-creds.mjs\"'" in config
     assert "/home/node/.openclaw" not in config
     assert json.loads(s3["org_1/hermes/ceo/home/.aws/token"].decode())["token"] == "tok_x"

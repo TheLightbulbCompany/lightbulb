@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
- * The runtime capability signal (M6 task 10, row 0) — `GET /container/status`'s
- * `runtime_host`, republished by the one hook that reads that endpoint so leaf
- * surfaces can branch without opening a second poll.
+ * The runtime signal — `GET /container/status`'s `runtime_host`, republished by
+ * the one hook that reads that endpoint so leaf surfaces can tell "a runtime
+ * exists for this workspace" without opening a second poll.
  *
  * The scoping tests are the load-bearing ones (review fix round 1, C1): a workspace
  * switch is client-side, so this module survives it, and an unscoped value would be
@@ -17,7 +17,6 @@ import {
   __resetRuntimeHost,
   publishRuntimeHost,
   setRuntimeHostScope,
-  useHiddenOnAgentCore,
   useRuntimeHost,
 } from "./containerStatus";
 import { useOnboardingStatus } from "./useOnboardingStatus";
@@ -46,7 +45,7 @@ afterEach(() => {
 describe("useRuntimeHost", () => {
   it("is undefined until a status body names a host", () => {
     const { result } = renderHook(() => useRuntimeHost());
-    // NOT "ecs": callers must be able to tell "not known yet" from a real answer, so that a
+    // Callers must be able to tell "not known yet" from a real answer, so that a
     // surface which would wake a microVM can decline to act on a guess.
     expect(result.current).toBeUndefined();
   });
@@ -56,8 +55,6 @@ describe("useRuntimeHost", () => {
     act(() => setRuntimeHostScope("org-a"));
     act(() => publishRuntimeHost("org-a", "agentcore"));
     expect(result.current).toBe("agentcore");
-    act(() => publishRuntimeHost("org-a", "ecs"));
-    expect(result.current).toBe("ecs");
   });
 
   it("reports unknown, not the old answer, the moment the scope changes", () => {
@@ -71,8 +68,8 @@ describe("useRuntimeHost", () => {
     rerender();
     expect(result.current).toBeUndefined();
 
-    act(() => publishRuntimeHost("org-b", "ecs"));
-    expect(result.current).toBe("ecs");
+    act(() => publishRuntimeHost("org-b", "agentcore"));
+    expect(result.current).toBe("agentcore");
   });
 
   it("ignores a body that resolves for the workspace we just left", () => {
@@ -102,15 +99,14 @@ describe("useRuntimeHost", () => {
   });
 
   it("goes unknown across a workspace switch and stays unknown until the new body lands", async () => {
-    // The C1 scenario end to end: org A is AgentCore, org B is ECS, and the switch is
-    // client-side, so this module never reloads. Serving org A's "agentcore" to org B would
-    // hide a working Tools tab; the reverse would fire a ~55s microVM cold start.
+    // The C1 scenario end to end: the switch is client-side, so this module never
+    // reloads. Serving org A's answer to org B — whose runtime may not exist yet —
+    // would fire a ~55s microVM cold start on a guess.
     const fetchMock = vi
       .fn()
-      .mockImplementationOnce(
+      .mockImplementation(
         status200({ container_status: "running", lifecycle: "ready", runtime_host: "agentcore" }),
-      )
-      .mockImplementation(status200({ container_status: "running", lifecycle: "ready", runtime_host: "ecs" }));
+      );
     global.fetch = fetchMock as unknown as typeof fetch;
 
     const { result, rerender } = renderHook(
@@ -127,13 +123,13 @@ describe("useRuntimeHost", () => {
     rerender({ scope: "org-b" });
     expect(result.current).toBeUndefined();
 
-    await waitFor(() => expect(result.current).toBe("ecs"));
+    await waitFor(() => expect(result.current).toBe("agentcore"));
   });
 
   it("a status body without the field leaves the last known host alone", async () => {
     // Within ONE workspace an older backend (or a 402/404 poll) must not blank a host we
-    // already know — blanking silently re-enables every ECS-only surface on a migrated
-    // workspace. Going unknown is a SWITCH's job, not a poll's.
+    // already know — blanking would silently hold every runtime RPC on a workspace that
+    // has one. Going unknown is a SWITCH's job, not a poll's.
     global.fetch = vi.fn().mockImplementation(
       status200({ container_status: "running", lifecycle: "ready" }),
     ) as unknown as typeof fetch;
@@ -166,37 +162,5 @@ describe("useRuntimeHost", () => {
 
     rerender({ enabled: false });
     expect(result.current).toBeUndefined();
-  });
-});
-
-describe("useHiddenOnAgentCore", () => {
-  it("is 'loading' before the host is known", () => {
-    const { result } = renderHook(() => useHiddenOnAgentCore());
-    expect(result.current).toBe("loading");
-  });
-
-  it("is 'hidden' once the workspace is confirmed AgentCore", () => {
-    const { result } = renderHook(() => useHiddenOnAgentCore());
-    act(() => setRuntimeHostScope("org-a"));
-    act(() => publishRuntimeHost("org-a", "agentcore"));
-    expect(result.current).toBe("hidden");
-  });
-
-  it("is 'shown' on ECS", () => {
-    const { result } = renderHook(() => useHiddenOnAgentCore());
-    act(() => setRuntimeHostScope("org-a"));
-    act(() => publishRuntimeHost("org-a", "ecs"));
-    expect(result.current).toBe("shown");
-  });
-
-  it("goes back to 'loading', never a stale 'shown', across a workspace switch", () => {
-    const { result, rerender } = renderHook(() => useHiddenOnAgentCore());
-    act(() => setRuntimeHostScope("org-a"));
-    act(() => publishRuntimeHost("org-a", "ecs"));
-    expect(result.current).toBe("shown");
-
-    act(() => setRuntimeHostScope("org-b"));
-    rerender();
-    expect(result.current).toBe("loading");
   });
 });

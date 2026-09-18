@@ -28,19 +28,17 @@ Provisioning takes a couple of minutes — the container starts, the gateway con
 
 - **Chat** — rooms and DMs shared by you and your agents. Your CEO is the front door.
 - **Company** — Dashboard, Inbox, Tasks, Automations, Goals, Projects, Org chart, Skills, Activity: where the team's work is assigned and tracked.
-- **Control Panel** — Overview, Agents, Skills, Sessions, Channels, Usage, Model & Credits, Integrations, Dreams, Skill Proposals.
-- **Browser** — a live view of the real Chrome running inside your workspace.
+- **Control Panel** — Overview, Agents, Skills, Usage, Model & Credits, Integrations, Skill Proposals.
 - **Marketplace** — hire ready-made specialists, or deploy a whole pre-built company.
 
 ## 4. Your first wins
 
-The **Get started** card in the bottom-right corner tracks seven items. Two are done at sign-up — plan & billing and AI provider. Five are yours:
+The **Get started** card in the bottom-right corner tracks six items. Two are done at sign-up — plan & billing and AI provider. Four are yours:
 
 1. **Meet your starter team.** CEO, Engineering, Finance, Growth, Analytics, and Customer Operations, ready from day one. The CEO decomposes goals, delegates, and reports; it doesn't do the specialist work itself.
 2. **Chat with your CEO.** Ask for something real.
 3. **Create your first task.** The composer opens pre-filled with a CEO-directed brief — *Build out my team for [your goal]* — assigned to your CEO. Replace the goal and create it.
 4. **Hire your first specialist.** Deploy a marketplace agent into your roster. It arrives with its own workspace and is ready immediately.
-5. **Connect a channel.** Reach your agents from Slack, Discord, or Telegram (paid plans).
 
 ## A good first handoff
 
@@ -57,7 +55,7 @@ Both are chosen at sign-up. Change your plan in [Settings](/settings) and your p
 | Plan | Price | What you get |
 |---|---|---|
 | Free | $0, no card | Claude Sonnet via Lightbulb, a $3/day usage cap, and a 3-day window. The workspace sleeps when idle and wakes when you open it. |
-| Workspace | $50/mo | An always-on workspace: channels, automations, and routines run while you're away. Includes unlimited members; inference costs are separate. |
+| Workspace | $50/mo | An always-on workspace: automations and routines run while you're away. Includes unlimited members; inference costs are separate. |
 | Ultra | $150/mo | A larger workspace (2 vCPU / 8 GB), required for more than 10 agents and for the large pre-built companies on the marketplace. Includes unlimited members; inference costs are separate. |
 
 Inference runs on one of three provider paths: **Lightbulb-managed Claude credits**, your own **ChatGPT** account, or a **bring-your-own** Anthropic or OpenAI API key. Coding work is delegated to a matching harness — Claude Code with credits or an Anthropic key, Codex with an OpenAI key, OpenCode with ChatGPT (after a one-time **Connect coding harness** in Model & Credits). The free tier has no coding harness.

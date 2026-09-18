@@ -40,7 +40,6 @@ import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { buildMissionControlLayout } from "./buildDefaultLayout";
 import { readLayout, writeLayout } from "./layoutStorage";
-import { useBrowserToolAutoOpen } from "./useBrowserToolAutoOpen";
 import { clearClosedPanelFromUrl } from "./urlChannel";
 import { MESSAGES_PANEL_ID, resolvePanelAlias } from "./panelRegistry";
 import { deriveReconcilerAction, isCommandTargetOpen } from "./workspaceShellReconciler";
@@ -134,7 +133,6 @@ export function WorkspaceShell(): React.ReactElement {
 
 function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactElement {
   const { activePanelId } = useWorkspaceState();
-  useBrowserToolAutoOpen();
   const { agents, defaultId, isSettled: agentsSettled } = useAgents();
   const defaultIdRef = useRef<string | undefined>(defaultId);
   const agentsSettledRef = useRef(agentsSettled);

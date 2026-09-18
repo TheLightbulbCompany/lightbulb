@@ -71,10 +71,9 @@ describe("a hard load of /settings resolves the runtime host", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it.each([
-    ["ecs", "org_ecs"],
-    ["agentcore", "org_agentcore"],
-  ])("publishes %s with nothing from /chat mounted", async (host, orgId) => {
+  it("publishes the host with nothing from /chat mounted", async () => {
+    const host = "agentcore";
+    const orgId = "org_agentcore";
     auth.orgId = orgId;
     auth.uiOrgId = orgId;
     auth.getToken.mockResolvedValue(token(orgId));
@@ -103,7 +102,7 @@ describe("a hard load of /settings resolves the runtime host", () => {
     auth.orgId = "org_nowake";
     auth.uiOrgId = "org_nowake";
     auth.getToken.mockResolvedValue(token("org_nowake"));
-    const fetchMock = vi.fn().mockResolvedValue(statusBody("ecs"));
+    const fetchMock = vi.fn().mockResolvedValue(statusBody("agentcore"));
     global.fetch = fetchMock;
 
     render(
@@ -114,7 +113,7 @@ describe("a hard load of /settings resolves the runtime host", () => {
       </SWRConfig>,
     );
 
-    await waitFor(() => expect(screen.getByTestId("host")).toHaveTextContent("ecs"));
+    await waitFor(() => expect(screen.getByTestId("host")).toHaveTextContent("agentcore"));
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
     expect(urls.length).toBeGreaterThan(0);
     expect(urls.every((url) => url.includes("wake=0"))).toBe(true);

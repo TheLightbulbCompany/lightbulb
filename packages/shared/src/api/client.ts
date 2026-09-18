@@ -52,16 +52,6 @@ export interface ApiCallOptions {
   signal?: AbortSignal;
 }
 
-export interface UploadedFile {
-  filename: string;
-  path: string;
-  size: number;
-}
-
-export interface UploadResponse {
-  uploaded: UploadedFile[];
-}
-
 export interface ApiMethods {
   syncUser: () => Promise<unknown>;
   get: (endpoint: string, opts?: ApiCallOptions) => Promise<unknown>;
@@ -70,7 +60,6 @@ export interface ApiMethods {
   patch: (endpoint: string, body: unknown, opts?: ApiCallOptions) => Promise<unknown>;
   del: (endpoint: string, opts?: ApiCallOptions) => Promise<unknown>;
   patchConfig: (patch: Record<string, unknown>) => Promise<{ status: string; owner_id: string }>;
-  uploadFiles: (files: File[], agentId: string) => Promise<UploadResponse>;
   /**
    * POST a `multipart/form-data` body. The caller builds the `FormData` (so it
    * can pick the exact field names a given endpoint expects); the client
@@ -307,16 +296,6 @@ export function createApiClient(config: ApiClientConfig): ApiMethods {
         method: "PATCH",
         body: JSON.stringify({ patch }),
       }) as Promise<{ status: string; owner_id: string }>;
-    },
-    uploadFiles(files: File[], agentId: string): Promise<UploadResponse> {
-      const formData = new FormData();
-      for (const file of files) {
-        formData.append("files", file);
-      }
-      return authenticatedFetch(
-        `/container/files?agent_id=${encodeURIComponent(agentId)}`,
-        { method: "POST", body: formData },
-      ) as Promise<UploadResponse>;
     },
     upload(endpoint: string, formData: FormData, opts?: ApiCallOptions): Promise<unknown> {
       return authenticatedFetch(endpoint, { method: "POST", body: formData }, opts);

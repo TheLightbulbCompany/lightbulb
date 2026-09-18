@@ -9,9 +9,7 @@ import {
   WifiOff,
   Clock,
   Server,
-  MessageSquare,
   Users,
-  Timer,
   MapPin,
   CreditCard,
   Activity,
@@ -55,17 +53,11 @@ interface HealthPayload {
   ts?: number;
   durationMs?: number;
   channels?: Record<string, unknown>;
-  heartbeatSeconds?: number;
   defaultAgentId?: string;
-  // OpenClaw sends an array here; the Hermes bridge sends a plain count (and `uptimeS`
-  // instead of a boot `ts`). Both are accepted — see `healthCount`. `sessions` stays
-  // OpenClaw-only: the bridge sends no count, because the panel it fed is hidden on
-  // AgentCore (ruling M6-R54).
+  // The Hermes bridge sends a plain count (and `uptimeS` instead of a boot `ts`);
+  // an array is still accepted — see `healthCount`.
   agents?: HealthAgent[] | number;
-  sessions?: { count?: number; recent?: unknown[] };
   uptimeS?: number;
-  tickInterval?: number;
-  lastChannelsRefresh?: number;
   [key: string]: unknown;
 }
 
@@ -162,7 +154,6 @@ interface OverviewPanelProps {
 export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
   const api = useApi();
   const runtimeHost = useRuntimeHost();
-  const onAgentCore = runtimeHost === "agentcore";
   const [configOpen, setConfigOpen] = useState(false);
 
   const {
@@ -262,7 +253,6 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
   // ECS answers `{ok}`; the Hermes bridge answers `{ready}` and carries no `ok` at all — accept
   // either so a healthy AgentCore workspace doesn't render "Offline" (see the HealthPayload note).
   const isOnline = health.ok === true || health.ready === true;
-  const sessionCount = healthCount(health.sessions);
   const agentCount = healthCount(health.agents);
   // Normalize the skills.status response shape — same trick SkillsTab uses.
   const skillsList: SkillEntry[] = Array.isArray(skillsRaw)
@@ -328,11 +318,6 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
               }
             />
             <InfoRow
-              icon={<Server size={16} />}
-              label="Service"
-              value={container?.service_name ?? "\u2014"}
-            />
-            <InfoRow
               icon={<CreditCard size={16} />}
               label="Subscription"
               value={planLabel(subscriptionStatus, { expired: isTrialExpired }) ?? "—"}
@@ -371,29 +356,6 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
                   : formatUptime(health.ts)
               }
             />
-            {/* Hermes has neither a heartbeat tick nor container-side channel
-                accounts (channels enter through the backend), so both rows are
-                dropped on AgentCore rather than left reading "\u2014" forever. */}
-            {!onAgentCore && (
-              <>
-                <InfoRow
-                  icon={<Timer size={16} />}
-                  label="Tick Interval"
-                  value={
-                    health.heartbeatSeconds
-                      ? `${health.heartbeatSeconds}s`
-                      : health.tickInterval
-                        ? `${health.tickInterval}s`
-                        : "\u2014"
-                  }
-                />
-                <InfoRow
-                  icon={<RefreshCw size={16} />}
-                  label="Last Channels"
-                  value={formatTimeAgo(health.lastChannelsRefresh)}
-                />
-              </>
-            )}
           </div>
         </div>
       </div>
@@ -408,16 +370,6 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
           value={agentCount !== undefined ? String(agentCount) : "\u2014"}
           onClick={onPanelChange ? () => onPanelChange("agents") : undefined}
         />
-        {/* The Sessions panel is hidden on AgentCore (ruling M6-R54), so this card would be a
-            count Hermes does not report, deep-linking to a panel that is not there. */}
-        {!onAgentCore && (
-          <SummaryCard
-            icon={MessageSquare}
-            label="Sessions"
-            value={sessionCount !== undefined ? String(sessionCount) : "\u2014"}
-            onClick={onPanelChange ? () => onPanelChange("sessions") : undefined}
-          />
-        )}
         <SummaryCard
           icon={Wrench}
           label="Skills"
@@ -449,7 +401,6 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
                healthState === "STARTING" ? "Starting..." :
                healthState === "RECOVERING" ? "Recovering..." :
                healthState === "GATEWAY_BUSY" ? "Agent Thinking" :
-               healthState === "GATEWAY_DOWN_DEAD" ? "Gateway Down" :
                "Container Down"}
             </span>
           </div>

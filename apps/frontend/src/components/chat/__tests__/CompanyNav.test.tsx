@@ -158,18 +158,14 @@ describe("CompanyNav", () => {
     expect(labels).toHaveLength(9);
   });
 
-  it("stops offering Brain, whose key stays registered", () => {
-    // Owner ruling 2026-09-08: Brain is not useful in its current state, and a
-    // graph-based Brain is its own spec. Not absorbed and not aliased — just
-    // not offered, so ?panel=teams-brain still opens it.
+  it("stops offering Brain, whose key is gone entirely", () => {
+    // Owner ruling 2026-09-08 took it off the rail; the memory wiki it read is
+    // gone outright — there is no memory wiki on this runtime.
     render(<CompanyNav />);
     expect(screen.queryByText("Brain")).toBeNull();
     const all = COMPANY_SECTIONS.flatMap((sec) => sec.items.map((i) => i.panel));
     expect(all).not.toContain("teams-brain");
-    expect(resolvePanelAlias("teams-brain")).toBe("teams-brain");
-    expect(describePanel("teams-brain", {})).toMatchObject({ panelId: "teams-brain" });
-    // And Dreams, which used to be its second tab, resolves on its own again.
-    expect(describePanel("dreams", {})).toMatchObject({ panelId: "control:dreams" });
+    expect(describePanel("teams-brain", {})).toBeNull();
   });
 
   it("stops offering Org chart, which still resolves onto the Agents panel", () => {

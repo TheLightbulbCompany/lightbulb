@@ -16,7 +16,7 @@ The highest-leverage use of Lightbulb isn't one-off prompting. It's a loop: some
 ## Support inbox routing
 
 - **Trigger:** an Intercom webhook, or a scheduled sweep of the inbox.
-- **Agent:** a support agent with the company wiki as its knowledge base.
+- **Agent:** a support agent with your product docs as its knowledge base.
 - **Tools:** Intercom; Notion or Linear for escalations.
 - **Gate:** routine questions are answered; refunds and account changes come to you.
 
@@ -36,13 +36,13 @@ The highest-leverage use of Lightbulb isn't one-off prompting. It's a loop: some
 ## Content and social operations
 
 - **Trigger:** a content-calendar routine.
-- **Tools:** Notion for the calendar; the Browser panel for platforms without a clean API (Instagram, Meta Ads); X with your own app.
+- **Tools:** Notion for the calendar; X with your own app.
 - **Gate:** nothing is published until you approve the post.
 
 ## Competitor and market research
 
 - **Trigger:** an ad hoc ask, or a monthly routine.
-- **Tools:** web search and the browser.
+- **Tools:** web search.
 - **Output:** a comparison filed as a task, with a recommendation.
 
 ## Customer onboarding from product events

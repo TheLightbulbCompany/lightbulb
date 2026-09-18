@@ -236,11 +236,11 @@ describe("workspaceController", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => undefined);
     openChatPanel("a-1");
-    openPanel("browser");
+    openPanel("file-viewer");
     syncMessagesPanelAgent("a-2");
     const panel = api.getPanel(MESSAGES_PANEL_ID)!;
     expect(panel.params).toEqual({ agentId: "a-2", agentSelection: "resolved" });
-    expect(_snapshotForTests().activePanelId).toBe("browser");
+    expect(_snapshotForTests().activePanelId).toBe("file-viewer");
     const snapshot = _snapshotForTests();
     vi.mocked(panel.api.updateParameters).mockClear();
     syncMessagesPanelAgent("a-2");

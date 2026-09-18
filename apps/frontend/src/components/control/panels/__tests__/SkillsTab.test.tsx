@@ -6,9 +6,8 @@ import { SkillsTab } from "../SkillsTab";
 const mockData = vi.fn();
 const mockMutate = vi.fn();
 const mockMutation = vi.fn();
-// The panel holds its RPC until the runtime is DEFINITE, so every test here has to
-// say which one it is on; AgentCore's own behaviour lives in SkillsTab.agentcore.
-vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => "ecs" }));
+// The panel holds its RPC until a status body has named this workspace's runtime.
+vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => "agentcore" }));
 vi.mock("@/hooks/useRuntimeRpc", () => ({
   useRuntimeRpc: () => ({ data: mockData(), error: undefined, isLoading: false, mutate: mockMutate }),
   useRuntimeRpcMutation: () => mockMutation,
@@ -126,8 +125,8 @@ describe("SkillsTab", () => {
     // The catch path still console.error's the raw failure — silence it so the
     // test output stays pristine while we assert the user-facing message.
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    mockData.mockReturnValue({ skills: [installedSkill()] });
-    // Gateway RPC rejections arrive as an Error whose message is a JSON error object.
+    mockData.mockReturnValue({ skills: [installedSkill()], disabledNames: [] });
+    // Runtime RPC rejections arrive as an Error whose message is a JSON error object.
     mockMutation.mockRejectedValueOnce(
       new Error(JSON.stringify({ message: "missing scope: operator.admin" })),
     );

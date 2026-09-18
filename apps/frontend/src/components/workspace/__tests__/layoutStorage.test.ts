@@ -40,7 +40,7 @@ describe("layoutStorage", () => {
   });
 
   it("drops every superseded blob on read, leaving the current one intact", () => {
-    const layout = minimalLayout({ browser: { id: "browser", contentComponent: "browser", params: {} } });
+    const layout = minimalLayout({ "file-viewer": { id: "file-viewer", contentComponent: "file-viewer", params: {} } });
     writeLayout("u1", layout);
     window.localStorage.setItem("isol8.workspace.layout.v1:u1", "{}");
     window.localStorage.setItem("isol8.workspace.layout.v2:u1", "{}");
@@ -147,6 +147,52 @@ describe("layoutStorage", () => {
     expect(readLayout("u-session")).toEqual(clean);
   });
 
+  // `browser` shipped in the DEFAULT mission-control layout, so nearly every
+  // returning desktop user has one in their saved blob. Its surface is gone, and
+  // so are Brain and the dreams/sessions/channels control panels — leaving them
+  // to the generic path restores a dead "Browser" tab, an "Unknown panel: brain",
+  // or three tabs silently rendering Overview. They are DROPPED, like session:.
+  it("drops every panel whose surface was deleted with the OpenClaw runtime", () => {
+    const retired = ["browser", "teams-brain", "control:dreams", "control:sessions", "control:channels"];
+    const dirty: SerializedDockview = {
+      grid: {
+        root: {
+          type: "branch",
+          data: [
+            { type: "leaf", data: { id: "group-retired", views: retired, activeView: "browser" } },
+            { type: "leaf", data: { id: "group-messages", views: [MESSAGES_PANEL_ID], activeView: MESSAGES_PANEL_ID } },
+          ],
+        },
+        height: 600,
+        width: 800,
+        orientation: "HORIZONTAL" as SerializedDockview["grid"]["orientation"],
+      },
+      panels: {
+        browser: { id: "browser", contentComponent: "browser", title: "Browser", params: {} },
+        "teams-brain": { id: "teams-brain", contentComponent: "teams", title: "Brain", params: { teamsKey: "brain" } },
+        "control:dreams": { id: "control:dreams", contentComponent: "control", title: "Dreams", params: { controlKey: "dreams" } },
+        "control:sessions": { id: "control:sessions", contentComponent: "control", title: "Sessions", params: { controlKey: "sessions" } },
+        "control:channels": { id: "control:channels", contentComponent: "control", title: "Channels", params: { controlKey: "channels" } },
+        [MESSAGES_PANEL_ID]: { id: MESSAGES_PANEL_ID, contentComponent: "chat", params: {} },
+      },
+    };
+
+    const clean = sanitizeLayout(dirty);
+    for (const id of retired) expect(clean.panels[id]).toBeUndefined();
+    expect(clean.panels[MESSAGES_PANEL_ID]).toBeDefined();
+    // Nothing is remapped to the missing-panel placeholder on the way out.
+    expect(
+      Object.values(clean.panels).some((p) => p.contentComponent === "missing"),
+    ).toBe(false);
+    // The leaf that held only retired panels is pruned, not kept empty.
+    const root = clean.grid.root as unknown as { type: string; data: { id?: string } };
+    expect(root.type).toBe("leaf");
+    expect((root.data as { id: string }).id).toBe("group-messages");
+
+    writeLayout("u-retired", dirty);
+    expect(readLayout("u-retired")).toEqual(clean);
+  });
+
   it("sanitizer strips persist-only params (initialTab) so a nav intent can't restore forever", () => {
     const dirty = minimalLayout({
       "agent-inspector": {
@@ -215,27 +261,6 @@ describe("layoutStorage", () => {
     const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
     expect(leafData.views).toEqual(["teams-dashboard"]);
     expect(leafData.activeView).toBe("teams-dashboard");
-  });
-
-  it("leaves a persisted control:dreams entry alone — it is a live panel again", () => {
-    // dreams spent a while retired by alias into teams-brain, and layouts
-    // saved then were migrated across. The alias is gone: the panel is its own
-    // control surface once more, so the sanitizer must keep it as it found it.
-    const dirty = leafLayout(["control:dreams"], "control:dreams", {
-      "control:dreams": {
-        id: "control:dreams",
-        contentComponent: "control",
-        params: { controlKey: "dreams" },
-      },
-    });
-    const clean = sanitizeLayout(dirty);
-    expect(clean.panels["control:dreams"]).toEqual({
-      id: "control:dreams",
-      contentComponent: "control",
-      params: { controlKey: "dreams" },
-    });
-    const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
-    expect(leafData.views).toEqual(["control:dreams"]);
   });
 
   it("sanitizer migrates a persisted teams-spend panel to teams-money", () => {
@@ -369,7 +394,7 @@ describe("layoutStorage", () => {
           size: 800,
           data: [
             { type: "leaf", size: 400, data: { id: "g1", views: ["chat:friday"], activeView: "chat:friday" } },
-            { type: "leaf", size: 400, data: { id: "g2", views: ["chat:atlas", "browser"], activeView: "chat:atlas" } },
+            { type: "leaf", size: 400, data: { id: "g2", views: ["chat:atlas", "file-viewer"], activeView: "chat:atlas" } },
           ],
         },
         height: 600,
@@ -379,7 +404,7 @@ describe("layoutStorage", () => {
       panels: {
         "chat:friday": { id: "chat:friday", contentComponent: "chat", params: { agentId: "friday" } },
         "chat:atlas": { id: "chat:atlas", contentComponent: "chat", title: "Atlas", params: { agentId: "atlas" } },
-        browser: { id: "browser", contentComponent: "browser", params: {} },
+        "file-viewer": { id: "file-viewer", contentComponent: "file-viewer", params: {} },
       },
       activeGroup: "g2",
     } as unknown as SerializedDockview;
@@ -387,14 +412,14 @@ describe("layoutStorage", () => {
 
   it("migrates the active legacy chat into Messages and keeps auxiliary panels", () => {
     const clean = sanitizeLayout(chatLayout(), ["friday", "atlas"]);
-    expect(Object.keys(clean.panels).sort()).toEqual([MESSAGES_PANEL_ID, "browser"].sort());
+    expect(Object.keys(clean.panels).sort()).toEqual([MESSAGES_PANEL_ID, "file-viewer"].sort());
     expect(clean.panels[MESSAGES_PANEL_ID]).toMatchObject({
       id: MESSAGES_PANEL_ID, params: { agentId: "atlas" }, title: "Messages",
     });
-    expect(clean.panels.browser).toEqual(chatLayout().panels.browser);
+    expect(clean.panels["file-viewer"]).toEqual(chatLayout().panels["file-viewer"]);
     expect(clean.grid.root.type).toBe("leaf");
     expect(clean.grid.root.data).toMatchObject({
-      id: "g2", views: [MESSAGES_PANEL_ID, "browser"], activeView: MESSAGES_PANEL_ID,
+      id: "g2", views: [MESSAGES_PANEL_ID, "file-viewer"], activeView: MESSAGES_PANEL_ID,
     });
     expect(clean.activeGroup).toBe("g2");
     expect(sanitizeLayout(clean, ["friday", "atlas"])).toEqual(clean);
@@ -403,7 +428,7 @@ describe("layoutStorage", () => {
   it("falls back to the sentinel when the winning agent is absent from a settled roster", () => {
     const clean = sanitizeLayout(chatLayout(), ["friday"]);
     expect(clean.panels[MESSAGES_PANEL_ID].params).toEqual({ agentId: DEFAULT_AGENT_SENTINEL });
-    expect(clean.panels.browser).toBeDefined();
+    expect(clean.panels["file-viewer"]).toBeDefined();
   });
 
   it("preserves the winner while the roster is unknown or empty", () => {
@@ -414,14 +439,14 @@ describe("layoutStorage", () => {
   });
 
   it("prefers existing Messages when an auxiliary panel is active", () => {
-    const dirty = leafLayout(["chat:friday", MESSAGES_PANEL_ID, "browser"], "browser", {
+    const dirty = leafLayout(["chat:friday", MESSAGES_PANEL_ID, "file-viewer"], "file-viewer", {
       "chat:friday": chatLayout().panels["chat:friday"],
-      browser: chatLayout().panels.browser,
+      "file-viewer": chatLayout().panels["file-viewer"],
       [MESSAGES_PANEL_ID]: { id: MESSAGES_PANEL_ID, contentComponent: "chat", params: { agentId: "saved-agent" } },
     });
     const clean = sanitizeLayout(dirty);
     expect(clean.panels[MESSAGES_PANEL_ID].params).toEqual({ agentId: "saved-agent" });
-    expect(clean.grid.root.data).toMatchObject({ views: [MESSAGES_PANEL_ID, "browser"], activeView: "browser" });
+    expect(clean.grid.root.data).toMatchObject({ views: [MESSAGES_PANEL_ID, "file-viewer"], activeView: "file-viewer" });
   });
 
   it("prefers the active legacy chat even when Messages already exists", () => {
@@ -435,9 +460,9 @@ describe("layoutStorage", () => {
   });
 
   it("uses the first legacy chat ID when no selected chat or parameter is recoverable", () => {
-    const dirty = leafLayout(["chat:friday", "browser"], "browser", {
+    const dirty = leafLayout(["chat:friday", "file-viewer"], "file-viewer", {
       "chat:friday": { id: "chat:friday", contentComponent: "chat" },
-      browser: chatLayout().panels.browser,
+      "file-viewer": chatLayout().panels["file-viewer"],
     });
     expect(sanitizeLayout(dirty).panels[MESSAGES_PANEL_ID].params).toEqual({ agentId: "friday" });
   });

@@ -17,7 +17,7 @@ Agents do the work. You keep the decisions that are hard to undo.
 
 ## Isolation
 
-Your company runs in its own container — one per workspace, never shared. Files, memory, and the browser profile live on a persistent volume that belongs to that workspace alone, and no other customer's agents can reach it.
+Your company runs in its own container — one per workspace, never shared. Files and memory live on a persistent volume that belongs to that workspace alone, and no other customer's agents can reach it.
 
 ## Keys and credentials
 

@@ -1,6 +1,5 @@
 "use client";
 
-import { useHiddenOnAgentCore } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { useConnections, type Connection } from "@/hooks/useConnections";
 import { ConnectButton } from "@/components/settings/ConnectButton";
@@ -58,13 +57,8 @@ const KIND_LABELS: Record<string, string> = {
  * freshly-connected provider flips to green without a reload.
  */
 export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListProps) {
-  const { connections, isLoading, error, mutate, connectPaste, startContainerLogin, startOAuth, disconnect } =
+  const { connections, isLoading, error, mutate, connectPaste, startOAuth, disconnect } =
     useConnections();
-  // M6 task 10-D, row 26: `container_login` (Shopify) runs the CLI's OAuth grant
-  // inside the owner's container and finishes it in the Browser panel — neither
-  // exists on AgentCore. "loading" (host not known yet for this workspace) keeps
-  // today's behaviour, same as every other AgentCore hide in this migration.
-  const runtimeGate = useHiddenOnAgentCore();
   // The second facet. Its providers are NOT the OAuth registry's: this rail
   // provisions neon/supabase/resend, which have no Connections row at all, so
   // they get a card of their own rather than disappearing.
@@ -127,16 +121,14 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
         // they can click to change it, so the row must not read as one step away
         // — and must not promise capabilities we cannot deliver to them yet.
         const unavailable = connection.status === "unavailable";
-        // Fix round 1 (review C1): a row connected before migrating to AgentCore
-        // must keep its Disconnect action — only a NEW connection attempt is
-        // unavailable here. `ConnectButton` checks `status === "connected"`
-        // before it ever looks at `acquisition`, so rendering it unchanged for a
-        // connected row shows Disconnect only, never the container_login
-        // store-input UI.
+        // `container_login` (Shopify) ran the CLI's OAuth grant inside the
+        // OpenClaw container and finished it in the Browser panel — neither
+        // exists any more. A row connected before the runtime move keeps its
+        // Disconnect action (`ConnectButton` checks `status === "connected"`
+        // before it ever looks at `acquisition`); only a NEW connection attempt
+        // is unavailable.
         const unavailableOnRuntime =
-          connection.acquisition === "container_login" &&
-          runtimeGate === "hidden" &&
-          !connected;
+          connection.acquisition === "container_login" && !connected;
         const receipt = INTEGRATION_RECEIPTS[connection.provider];
         return (
           <div
@@ -231,7 +223,6 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
                   canManage={canManage}
                   connectPaste={connectPaste}
                   startOAuth={startOAuth}
-                  startContainerLogin={startContainerLogin}
                   disconnect={disconnect}
                   refreshConnections={mutate}
                 />

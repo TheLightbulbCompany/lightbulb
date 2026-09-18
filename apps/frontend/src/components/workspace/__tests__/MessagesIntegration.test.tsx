@@ -224,9 +224,9 @@ describe("Messages room/controller boundary", () => {
     await waitFor(() => expect(getWorkspaceSnapshot()).toMatchObject({
       focusedChatAgentId: "agent-b", lastFocusedChatAgentId: "agent-b", visibleChatAgentIds: ["agent-b"],
     }));
-    act(() => openPanel("browser"));
+    act(() => openPanel("file-viewer"));
     expect(getWorkspaceSnapshot().lastFocusedChatAgentId).toBe("agent-b");
-    expect(getWorkspaceSnapshot().activePanelId).toBe("browser");
+    expect(getWorkspaceSnapshot().activePanelId).toBe("file-viewer");
     // The resolved marker is private runtime state, never a persisted selection command.
     expect(api.getPanel(MESSAGES_PANEL_ID)?.params?.agentSelection).toBe("resolved");
     writeLayout("integration", {

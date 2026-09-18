@@ -14,9 +14,6 @@ vi.mock("@/hooks/useProvisioningState", () => ({
     container: { container_status: "running", lifecycle: "ready" },
   }),
 }));
-vi.mock("@/hooks/useRuntimeRpc", () => ({
-  useRuntimeRpc: () => ({ data: { ok: true }, error: null }),
-}));
 vi.mock("@/lib/api", () => ({
   useApi: () => ({ post: vi.fn().mockResolvedValue(null) }),
 }));

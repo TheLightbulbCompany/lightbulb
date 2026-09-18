@@ -10,13 +10,13 @@ Agents get better in two ways. **Skills** teach them how to do something. **Auto
 
 A skill is a packaged capability an agent reads before acting — a workflow, a tool recipe, a house style.
 
-- **Install one.** The **Skills** tab (Control Panel or Settings) browses, enables, and one-click-installs skills, including from the ClawHub registry.
+- **Install one.** The **Skills** tab (Control Panel or Settings) browses and enables the skills your workspace ships with.
 - **Have an agent write one.** Ask any agent to turn a workflow into a skill, or correct it ("from now on, …"). It proposes the skill through its skill workshop rather than editing files directly.
 - **Review proposals.** On paid plans agents also capture durable corrections and proven multi-step workflows automatically as pending proposals. Nothing goes live on its own — you approve or reject each one in **Skill Proposals**. Free-tier workspaces don't auto-capture.
 
 ## What wakes an agent
 
-- **You** — a chat message, or a message from a connected Slack, Discord, or Telegram channel.
+- **You** — a chat message.
 - **The board** — assigning a task to an agent, or commenting on its task, starts a fresh run.
 - **A schedule** — a routine runs an agent on a cadence. Your CEO's nightly self-directed check-in is one.
 - **An event** — a webhook from an external service starts a routine run.
@@ -32,10 +32,10 @@ Open **Company → Automations**, or ask your CEO to set the loop up.
 
 ## What needs a paid plan
 
-Anything always-on — channels, webhooks, routines, and autonomous runs — requires a Workspace or Ultra subscription. A free-tier workspace sleeps when idle: it can chat, but it can't run while you're away.
+Anything always-on — webhooks, routines, and autonomous runs — requires a Workspace or Ultra subscription. A free-tier workspace sleeps when idle: it can chat, but it can't run while you're away.
 
 ## Budgets
 
 Set a monthly budget per agent in Teams and watch spend in **Usage**. On the free tier, inference stops at $3 a day.
 
-Next: [Browser, connectors, and channels](/docs/browser-and-apps).
+Next: [Connectors and agent email](/docs/browser-and-apps).

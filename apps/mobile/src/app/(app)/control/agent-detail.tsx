@@ -6,7 +6,6 @@ import {
   Alert,
   Animated,
   FlatList,
-  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -77,33 +76,25 @@ function findConfigEntry(config: unknown, agentId: string): ConfigAgentEntry | u
 // noted inline, v1.
 // ---------------------------------------------------------------------------
 
+// There is no "Use default" row and no free-text ref box: each agent's own
+// profile IS the setting, so `{model: null}` would write nothing, and a ref the
+// backend never offered is refused (M6 task 10-C, row 31).
 function ModelPickerModal({
   visible,
   models,
   currentRef,
-  allowDefault,
   onClose,
   onSelect,
 }: {
   visible: boolean;
   models: CatalogModel[];
   currentRef: string | undefined;
-  /** "Use default" (and the free-text ref box) exist only where a gateway default to inherit
-   *  does: on AgentCore each agent's own profile IS the setting, `{model: null}` writes
-   *  nothing, and a typed ref the backend never offered is refused (M6 task 10-C, row 31). */
-  allowDefault: boolean;
   onClose: () => void;
   onSelect: (ref: string | null) => void;
 }) {
-  const [manual, setManual] = useState("");
-  const catalogEmpty = models.length === 0 && allowDefault;
-
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        style={styles.modalRoot}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
+      <View style={styles.modalRoot}>
         <Pressable style={styles.scrim} onPress={onClose} />
         <View style={[styles.sheet, styles.pickerSheet]}>
           <View style={styles.sheetHeader}>
@@ -113,93 +104,37 @@ function ModelPickerModal({
             </Pressable>
           </View>
 
-          {catalogEmpty ? (
-            <View style={styles.pickerManual}>
-              <Text style={styles.note}>
-                No models are configured in the gateway. Enter a model ref
-                manually.
-              </Text>
-              <TextInput
-                style={styles.input}
-                value={manual}
-                onChangeText={setManual}
-                placeholder="amazon-bedrock/…"
-                placeholderTextColor={colors.placeholder}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <View style={styles.sheetActions}>
-                <Pressable
-                  style={({ pressed }) => [styles.ghostButton, pressed && styles.pressed]}
-                  onPress={() => onSelect(null)}
-                >
-                  <Text style={styles.ghostButtonText}>Use default</Text>
-                </Pressable>
+          <FlatList
+            data={models}
+            keyExtractor={(m) => m.ref}
+            style={styles.pickerList}
+            renderItem={({ item }) => {
+              const selected = item.ref === currentRef;
+              return (
                 <Pressable
                   style={({ pressed }) => [
-                    styles.primaryButton,
-                    !manual.trim() && styles.primaryButtonDisabled,
-                    pressed && !!manual.trim() && styles.pressed,
+                    styles.pickerRow,
+                    pressed && styles.pickerRowPressed,
                   ]}
-                  onPress={() => manual.trim() && onSelect(manual.trim())}
-                  disabled={!manual.trim()}
+                  onPress={() => onSelect(item.ref)}
                 >
-                  <Text style={styles.primaryButtonText}>Save</Text>
+                  <View style={styles.pickerRowText}>
+                    <Text style={styles.pickerName} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    <Text style={styles.pickerRef} numberOfLines={1}>
+                      {item.ref}
+                    </Text>
+                  </View>
+                  {selected && (
+                    <SymbolView accessibilityElementsHidden name="checkmark" size={18} tintColor={colors.forest} />
+                  )}
                 </Pressable>
-              </View>
-            </View>
-          ) : (
-            <FlatList
-              data={models}
-              keyExtractor={(m) => m.ref}
-              style={styles.pickerList}
-              ListHeaderComponent={
-                allowDefault ? (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.pickerRow,
-                      pressed && styles.pickerRowPressed,
-                    ]}
-                    onPress={() => onSelect(null)}
-                  >
-                    <View style={styles.pickerRowText}>
-                      <Text style={styles.pickerName}>Use default</Text>
-                      <Text style={styles.pickerRef}>Inherit the gateway default</Text>
-                    </View>
-                    {currentRef == null && (
-                      <SymbolView accessibilityElementsHidden name="checkmark" size={18} tintColor={colors.forest} />
-                    )}
-                  </Pressable>
-                ) : null
-              }
-              renderItem={({ item }) => {
-                const selected = item.ref === currentRef;
-                return (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.pickerRow,
-                      pressed && styles.pickerRowPressed,
-                    ]}
-                    onPress={() => onSelect(item.ref)}
-                  >
-                    <View style={styles.pickerRowText}>
-                      <Text style={styles.pickerName} numberOfLines={1}>
-                        {item.name}
-                      </Text>
-                      <Text style={styles.pickerRef} numberOfLines={1}>
-                        {item.ref}
-                      </Text>
-                    </View>
-                    {selected && (
-                      <SymbolView accessibilityElementsHidden name="checkmark" size={18} tintColor={colors.forest} />
-                    )}
-                  </Pressable>
-                );
-              }}
-            />
-          )}
+              );
+            }}
+          />
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </Modal>
   );
 }
@@ -273,15 +208,13 @@ export default function AgentDetail() {
   const callRpc = useRuntimeRpcMutation(live);
 
   const { agents: roster, defaultId, refresh: mutateAgents } = useAgents(live);
-  // M6 task 10-C (scan row 31): the model list comes from `models.list` on AgentCore — the
-  // owner's own Bedrock inference profiles, or Hermes's catalog via the bridge — and from the
-  // gateway config's providers catalog on ECS. Held while the runtime host is unknown
-  // (`undefined` never means "assume ECS": guessing costs a ~55s microVM cold start).
+  // The model list comes from `models.list` — the owner's own Bedrock inference
+  // profiles, or Hermes's catalog via the bridge. Held until a status body names
+  // this workspace's runtime: firing on a guess costs a ~55s microVM cold start.
   const runtimeHost = useRuntimeHost();
-  const onAgentCore = runtimeHost === "agentcore";
   const { data: configSnapshot, mutate: mutateConfig } = useRuntimeRpc<unknown>(
     live,
-    runtimeHost === "agentcore" ? "models.list" : runtimeHost === "ecs" ? "config.get" : null,
+    runtimeHost ? "models.list" : null,
   );
 
   const agent: Agent | undefined = useMemo(
@@ -561,7 +494,6 @@ export default function AgentDetail() {
         visible={pickerOpen}
         models={selectorModels}
         currentRef={currentModelRef}
-        allowDefault={!onAgentCore}
         onClose={() => setPickerOpen(false)}
         onSelect={(ref) => void selectModel(ref)}
       />
@@ -722,7 +654,6 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   pickerSheet: { maxHeight: "70%" },
-  pickerManual: { gap: spacing.sm },
   sheetHeader: {
     flexDirection: "row",
     alignItems: "center",

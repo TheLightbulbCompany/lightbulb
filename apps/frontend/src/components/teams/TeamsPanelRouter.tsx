@@ -41,7 +41,6 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   goals: () => import("./panels/GoalsPanel").then((m) => m.GoalsPanel),
   projects: () => import("./panels/ProjectsListPanel").then((m) => m.ProjectsListPanel),
   artifacts: () => import("./panels/ArtifactsPanel").then((m) => m.ArtifactsPanel),
-  brain: () => import("./panels/BrainPanel").then((m) => m.BrainPanel),
   accounts: () => import("./panels/AccountsPanel").then((m) => m.AccountsPanel),
   search: () => import("./panels/SearchPanel").then((m) => m.SearchPanel),
   settings: () => import("./panels/SettingsPanel").then((m) => m.SettingsPanel),
@@ -89,10 +88,6 @@ const IssuesPanel = dynamic(
 );
 const InboxPanel = dynamic(
   () => import("./panels/InboxPanel").then((m) => m.InboxPanel),
-  { loading: PanelSkeleton },
-);
-const BrainPanel = dynamic(
-  () => import("./panels/BrainPanel").then((m) => m.BrainPanel),
   { loading: PanelSkeleton },
 );
 // Agents absorbed the org chart as its second view — `teams-org-chart` aliases
@@ -204,15 +199,6 @@ export function TeamsPanelRouter({
   }
   if (panel === "inbox") {
     return <InboxPanel section={asInboxSection(panelParams?.section)} />;
-  }
-
-  if (panel === "brain") {
-    return (
-      <BrainPanel
-        initialPath={panelParams?.path ?? null}
-        onPathUnavailable={() => onUpdateDurableParam?.("path", null)}
-      />
-    );
   }
 
   if (panel === "money") {

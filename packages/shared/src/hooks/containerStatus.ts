@@ -22,10 +22,11 @@ import { useSyncExternalStore } from "react";
 
 /**
  * Which runtime hosts this workspace — `containers.runtime_host`, via
- * `core/services/runtime_transport.host_for`, which fails closed to `"ecs"`.
- * A workspace moves ECS -> AgentCore once, one way, and never back.
+ * `core/services/runtime_transport.host_for`. One runtime remains; the field
+ * survives as the "a status body has landed for this workspace" signal that
+ * `useRuntimeHost` publishes (see the block comment further down).
  */
-export type RuntimeHost = "ecs" | "agentcore";
+export type RuntimeHost = "agentcore";
 
 /**
  * The 200 body — the composed `StatusContract` (see `statusContract.ts` and
@@ -40,7 +41,6 @@ export type RuntimeHost = "ecs" | "agentcore";
  * requirement.
  */
 export interface ContainerStatusBody {
-  service_name: string | null;
   container_status: string | null;
   container_substatus: string | null;
   /** Composer's runtime phase — see `readiness_state.resolve_runtime_phase`. */
@@ -53,8 +53,7 @@ export interface ContainerStatusBody {
   onboarded?: boolean;
   /** Set alongside `lifecycle: "parked"` on a deliberately-asleep, wake-gated trial box. */
   parked?: boolean;
-  /** Runtime capability signal — absent on a backend older than M6 task 10, which is
-   * indistinguishable from `"ecs"` and must be treated as such. */
+  /** Which runtime hosts this workspace — absent on a backend that predates the field. */
   runtime_host?: RuntimeHost;
   /** Non-blocking Paperclip (Teams) seed health — `"failed"` is the only
    * value any binding acts on today. */
@@ -166,7 +165,7 @@ export function classifyContainerStatus(res: {
 }
 
 /* ---------------------------------------------------------------------------
- * The runtime capability signal (M6 task 10, row 0)
+ * The runtime signal
  *
  * `runtime_host` arrives on the `/container/status` body, but the surfaces that
  * need it (control panels, deep leaf components) do not hold that body and must
@@ -175,23 +174,19 @@ export function classifyContainerStatus(res: {
  * parameterless subscriber. Module state + a listener set + `useSyncExternalStore`
  * is the pattern `workspaceController.ts` and `lampStore.ts` already use.
  *
- * **The value is SCOPED, and that is the whole safety property.** A workspace
- * switch is client-side (`setActive` + `router.replace`, never a reload), so this
- * module — and anything cached in it — survives it. An unscoped singleton would
- * keep serving the PREVIOUS workspace's runtime until the new one's status fetch
- * resolved, and a panel reading it would open ECS-only surfaces on an AgentCore
- * workspace (or fire an RPC that wakes and bills a microVM). So the reader
- * declares which workspace it is polling (`setRuntimeHostScope`, during render,
- * in the same pass that clears its own sticky body), the publish carries that
- * same scope, and a host from any other scope reads as unknown.
+ * One runtime remains, so the VALUE no longer branches anything. What still
+ * matters is the DEFINEDNESS: `undefined` means NOT KNOWN *FOR THIS WORKSPACE* —
+ * no status has landed yet, a switch is in flight, the poll is disabled, or this
+ * owner has no runtime at all (a fresh, blocked or parked workspace answers 402 /
+ * 404, so nothing publishes). Every caller must treat it as "hold": firing a
+ * runtime RPC on a guess wakes and bills a microVM (~55s cold start).
  *
- * `undefined` therefore means NOT KNOWN *FOR THIS WORKSPACE* — no status has
- * landed yet, a switch is in flight, the poll is disabled, or the backend is
- * older than this change. Every caller must treat it as "hold", never as "this is
- * ECS": the two states differ precisely when guessing wrong is expensive. A
- * caller that ALREADY holds the status body should read `body.runtime_host`
- * directly instead of subscribing here — it gets the answer in the same render
- * with no unknown window at all (`useSystemHealth` does exactly that).
+ * **The value is SCOPED**, so a client-side workspace switch (`setActive` +
+ * `router.replace`, never a reload) does not leave the previous workspace's
+ * answer standing: the reader declares which workspace it is polling
+ * (`setRuntimeHostScope`, during render, in the same pass that clears its own
+ * sticky body), the publish carries that same scope, and a host from any other
+ * scope reads as unknown.
  * ------------------------------------------------------------------------- */
 
 /** The status key the one reader is currently polling — see `setRuntimeHostScope`. */
@@ -250,27 +245,3 @@ export function useRuntimeHost(): RuntimeHost | undefined {
   return useSyncExternalStore(subscribeRuntimeHost, readRuntimeHost, readRuntimeHost);
 }
 
-/* ---------------------------------------------------------------------------
- * M6 task 10-D (owner ruling M6-R50): surfaces with no Hermes/AgentCore
- * equivalent at all -- heartbeat, plugins, dreams, the container browser,
- * channel status/wiring, Shopify's container-side login, Brain. Each of those
- * call sites needs the exact same three-way answer `useRuntimeHost()` gives,
- * so this is the one place that spells it out instead of ten call sites each
- * re-deriving "agentcore" vs. "not yet known" by hand.
- * ------------------------------------------------------------------------- */
-
-/**
- * "loading" -- the host for THIS workspace isn't known yet; render whatever the
- *   surface renders today for a loading state, and hold its RPC exactly as
- *   `useRuntimeHost()`'s own contract requires (never fire on a guess).
- * "hidden" -- confirmed AgentCore; the surface has no equivalent and must not render.
- * "shown" -- ECS (or, transitionally, any host other than "agentcore"); unchanged.
- */
-export type AgentCoreGate = "loading" | "hidden" | "shown";
-
-/** Tri-state gate for a control-panel surface that is deleted outright on AgentCore. */
-export function useHiddenOnAgentCore(): AgentCoreGate {
-  const host = useRuntimeHost();
-  if (host === undefined) return "loading";
-  return host === "agentcore" ? "hidden" : "shown";
-}

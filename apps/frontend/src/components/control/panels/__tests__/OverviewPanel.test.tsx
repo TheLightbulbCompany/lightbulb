@@ -4,7 +4,7 @@ import React from "react";
 import { OverviewPanel, healthCount } from "../OverviewPanel";
 
 // Both RPCs are held until the runtime is known, so a test has to name one.
-let runtimeHost: "ecs" | "agentcore" | undefined = "ecs";
+let runtimeHost: "agentcore" | undefined = "agentcore";
 let healthPayload: Record<string, unknown> = {};
 
 vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => runtimeHost }));
@@ -58,8 +58,8 @@ describe("OverviewPanel", () => {
   const NOW = 1_700_000_000_000;
   beforeEach(() => {
     vi.spyOn(Date, "now").mockReturnValue(NOW);
-    runtimeHost = "ecs";
-    healthPayload = { ok: true, ts: NOW, sessions: { count: 0 }, agents: [] };
+    runtimeHost = "agentcore";
+    healthPayload = { ready: true, uptimeS: 60, agents: 0 };
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -71,11 +71,11 @@ describe("OverviewPanel", () => {
     expect(screen.getByText("System Healthy")).toBeInTheDocument();
   });
 
-  // M6 task 10-E, row 7. The Hermes bridge sends a plain agent count and `uptimeS`, and its
-  // payload has no `ok` key at all (`apps/infra/hermes/bridge/server.py::_health`) — only
-  // `ready`. A fixture that adds `ok: true` back in would hide a regression of H1.
-  it("reads Hermes's numeric count and uptime, and drops the rows Hermes has no answer for", () => {
-    runtimeHost = "agentcore";
+  // The Hermes bridge sends a plain agent count and `uptimeS`, and its payload
+  // has no `ok` key at all (`apps/infra/hermes/bridge/server.py::_health`) —
+  // only `ready`. A fixture that adds `ok: true` back in would hide a
+  // regression of H1.
+  it("reads Hermes's numeric count and uptime, and drops the rows it has no answer for", () => {
     healthPayload = { ready: true, uptimeS: 7_200, agents: 6 };
     render(<OverviewPanel />);
     expect(screen.getByText("2h 0m")).toBeInTheDocument();
@@ -87,40 +87,30 @@ describe("OverviewPanel", () => {
   // H1: the bridge's health payload is `{ready, ...}` with no `ok` key. The Snapshot card must
   // still read the workspace as online.
   it("renders online from a Hermes-shaped `{ready: true}` payload with no `ok` key", () => {
-    runtimeHost = "agentcore";
     healthPayload = { ready: true, uptimeS: 60, agents: 6 };
     render(<OverviewPanel />);
     expect(screen.getByText("OK")).toBeInTheDocument();
     expect(screen.queryByText("Offline")).toBeNull();
   });
 
-  // Ruling M6-R54: the Sessions panel is hidden on AgentCore, so its summary card — a count
-  // Hermes does not send, deep-linking to a panel that is not there — goes with it.
-  it("drops the Sessions card on AgentCore and keeps it on ECS", () => {
-    runtimeHost = "agentcore";
-    healthPayload = { ready: true, uptimeS: 60, agents: 6 };
-    const { unmount } = render(<OverviewPanel />);
-    expect(screen.queryByText("Sessions")).toBeNull();
-    unmount();
-
-    runtimeHost = "ecs";
-    healthPayload = { ok: true, ts: NOW, sessions: { count: 2 }, agents: [] };
-    render(<OverviewPanel />);
-    expect(screen.getByText("Sessions")).toBeInTheDocument();
-  });
-
-  it("keeps the tick/channels rows on ECS", () => {
-    render(<OverviewPanel />);
-    expect(screen.getByText("Tick Interval")).toBeInTheDocument();
-    expect(screen.getByText("Last Channels")).toBeInTheDocument();
-  });
+  // Ruling M6-R54: the Sessions panel is gone, so its summary card — a count
+  // the runtime does not send, deep-linking to a panel that is not there —
+  // goes with it. Same for the ECS-only Service row.
+  it.each(["Sessions", "Service", "Tick Interval", "Last Channels"])(
+    "drops the %s row",
+    (label) => {
+      healthPayload = { ready: true, uptimeS: 60, agents: 6 };
+      render(<OverviewPanel />);
+      expect(screen.queryByText(label)).toBeNull();
+    },
+  );
 });
 
 describe("healthCount", () => {
   it("accepts both runtimes' shapes and keeps 'unknown' distinct from zero", () => {
     expect(healthCount(4)).toBe(4);                 // Hermes: a plain agent count
-    expect(healthCount({ count: 3 })).toBe(3);      // OpenClaw: sessions
-    expect(healthCount([{}, {}])).toBe(2);          // OpenClaw: agents
+    expect(healthCount({ count: 3 })).toBe(3);      // a {count} object
+    expect(healthCount([{}, {}])).toBe(2);          // an agents array
     expect(healthCount(0)).toBe(0);
     expect(healthCount(null)).toBeUndefined();
     expect(healthCount(undefined)).toBeUndefined();

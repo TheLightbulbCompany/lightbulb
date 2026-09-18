@@ -31,9 +31,6 @@ vi.mock("@/components/control/panels/SkillsTab", () => ({
 vi.mock("@/components/control/panels/SkillProposalsPanel", () => ({
   SkillProposalsPanel: () => <div data-testid="skill-proposals-panel" />,
 }));
-vi.mock("@/components/control/panels/ChannelsStatusPanel", () => ({
-  ChannelsStatusPanel: () => <div data-testid="channels-status-panel" />,
-}));
 
 // Mutable membership holder so individual tests can flip admin ↔ non-admin.
 // `null` = personal owner = admin (the `useIsWorkspaceAdmin` personal branch);
@@ -98,7 +95,6 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
     expect(within(navEl).getByText("Profile")).toBeInTheDocument(); // ACCOUNT
     expect(within(navEl).getByText("Billing")).toBeInTheDocument(); // BILLING & USAGE
-    expect(within(navEl).getByText("Channels")).toBeInTheDocument(); // WIRING
     expect(within(navEl).getByText("Webhooks")).toBeInTheDocument(); // WIRING
     expect(within(navEl).getByText("Desktop")).toBeInTheDocument(); // WIRING
     expect(within(navEl).getByText("Marketplace")).toBeInTheDocument(); // SELLER
@@ -181,33 +177,27 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     expect(within(navEl).getByText("Skill Proposals")).toBeInTheDocument();
   });
 
-  it("lists Dreams / Memory again — a memory-core surface, not a Brain tab", () => {
-    render(<SettingsPage />);
-    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
-    expect(within(navEl).getByText("Dreams / Memory")).toBeInTheDocument();
-  });
+  // Channel wiring, channel status and Dreams / Memory were OpenClaw-shaped
+  // surfaces with no equivalent on this runtime — the rows are GONE, not gated,
+  // and a stale deep link falls back to Profile like any other unknown key.
+  it.each(["Channels", "Channel Status", "Dreams / Memory"])(
+    "offers no %s row",
+    (label) => {
+      render(<SettingsPage />);
+      const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
+      expect(within(navEl).queryByText(label)).toBeNull();
+    },
+  );
 
-  // --- Channel Status (ENGINE ROOM) — DISTINCT key from WIRING Channels ---
-  it("registers Channel Status in ENGINE ROOM under a key distinct from Channels", () => {
-    render(<SettingsPage />);
-    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
-    // Both rows coexist: the WIRING org-bots tab (`channels`) and the
-    // read-only ENGINE ROOM status panel (`channel-status`).
-    expect(within(navEl).getByText("Channels")).toBeInTheDocument();
-    const statusRow = within(navEl).getByText("Channel Status");
-    expect(statusRow).toBeInTheDocument();
-    // No key collision: the status row carries the channel-status nav id.
-    const statusLi = statusRow.closest("li");
-    expect(statusLi?.id).toBe("settings-nav-channel-status");
-  });
-
-  // --- Deep link: a relocated-panel ?panel= key resolves ---
-  it("honors a ?panel=channel-status deep link", () => {
-    nav.panel = "channel-status";
-    render(<SettingsPage />);
-    // The channel-status panel mounts (its stub marker is present).
-    expect(screen.getByTestId("channels-status-panel")).toBeInTheDocument();
-  });
+  it.each(["channels", "channel-status", "dreams"])(
+    "falls a stale ?panel=%s deep link back to Profile without redirecting",
+    (panel) => {
+      nav.panel = panel;
+      const { container } = render(<SettingsPage />);
+      expect(container.querySelector("#panel-profile")).toBeInTheDocument();
+      expect(nav.replace).not.toHaveBeenCalled();
+    },
+  );
 
   // --- The Connections row is gone from Settings entirely ---
   it("no longer offers Connections as a Settings row", () => {
@@ -229,7 +219,7 @@ describe("Settings nav — 6 intent-ordered groups", () => {
   });
 
   it("leaves a real tab key alone — only relocated/href rows redirect", () => {
-    nav.panel = "channel-status";
+    nav.panel = "skills";
     render(<SettingsPage />);
     expect(nav.replace).not.toHaveBeenCalled();
   });
@@ -239,6 +229,6 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     nav.panel = "constructor";
     const { container } = render(<SettingsPage />);
     expect(container.querySelector("#panel-profile")).toBeInTheDocument();
-    expect(screen.queryByTestId("channels-status-panel")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("skills-tab")).not.toBeInTheDocument();
   });
 });

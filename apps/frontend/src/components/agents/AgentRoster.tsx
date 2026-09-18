@@ -44,7 +44,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 import { fromInstalledAgent } from "@/lib/agentDesign";
 import { agentDisplayName, getAgentModelString, type Agent } from "@/hooks/useAgents";
-import { buildModelNameMap, displayModelName } from "@/lib/modelDisplay";
+import { displayModelName } from "@/lib/modelDisplay";
 import { classifyAgentStatus } from "@/components/teams/shared/lib/agentStatus";
 import {
   setRosterExpanded,
@@ -240,9 +240,6 @@ interface AgentRosterProps {
   publishedAgentIds: ReadonlySet<string>;
   /** Marketplace hire that just landed — plays the `slideIn` arrival animation. */
   freshlyInstalledAgentId?: string | null;
-  /** The owner's model list, for resolving Bedrock AIP ARNs to display names — either source
-   *  `buildModelNameMap` takes (`models.list` on AgentCore, a `config.get` snapshot on ECS). */
-  configSnapshot?: unknown;
   onSelect: (agentId: string) => void;
   onOpenWork: (agentId: string) => void;
   onInspect: (agentId: string) => void;
@@ -255,7 +252,6 @@ export function AgentRoster({
   activeAgentId,
   publishedAgentIds,
   freshlyInstalledAgentId,
-  configSnapshot,
   onSelect,
   onOpenWork,
   onInspect,
@@ -265,7 +261,6 @@ export function AgentRoster({
   // Memoized as it was in both hosts before the extraction: the roster now
   // re-renders on every live run start/stop, and walking the model catalog on
   // each of those would be work for a value that only changes with `config.get`.
-  const modelNames = useMemo(() => buildModelNameMap(configSnapshot), [configSnapshot]);
   // Same reasoning as `modelNames` — the roster re-renders on every live-run
   // frame, so the sort and the two counts ride the same memo rather than
   // re-running per frame. One pass for both counts.
@@ -357,11 +352,10 @@ export function AgentRoster({
         const name = agentDisplayName(agent);
         const isActive = activeAgentId === agent.id;
         const displayAgent = fromInstalledAgent(agent);
-        // `modelName` is the runtime's own label, carried on the roster row when it is free
-        // (AgentCore — see `Agent.modelName`); the catalog map is the ECS source. Never a
-        // `models.list` dial from here: on BYO/OAuth that is a microVM cold start for a label
-        // (M6-R53).
-        const model = agent.modelName || displayModelName(getAgentModelString(agent), modelNames);
+        // `modelName` is the runtime's own label, carried on the roster row when it is
+        // free (see `Agent.modelName`). Never a `models.list` dial from here: on BYO/OAuth
+        // that is a microVM cold start for a label (M6-R53).
+        const model = agent.modelName || displayModelName(getAgentModelString(agent));
         const stateLabel =
           state === "idle"
             ? null

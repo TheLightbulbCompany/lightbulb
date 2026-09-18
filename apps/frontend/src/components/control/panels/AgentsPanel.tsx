@@ -6,27 +6,23 @@ import {
   RefreshCw,
   Bot,
   Wrench,
-  MessageSquare,
   Mail,
   Plus,
   Trash2,
 } from "lucide-react";
-import { useHiddenOnAgentCore } from "@lightbulb/shared";
 import { AgentCreateChooser } from "@/components/agents/AgentCreateChooser";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { AgentCreateForm } from "./AgentCreateForm";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentToolsTab } from "./AgentToolsTab";
-import { AgentChannelsSection } from "./AgentChannelsSection";
 import { AgentEmailSection } from "./AgentEmailSection";
-import { useBilling } from "@/hooks/useBilling";
 import { useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { useAgents } from "@/hooks/useAgents";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AgentEntry } from "./agents-types";
 
-type AgentTab = "overview" | "tools" | "channels" | "email";
+type AgentTab = "overview" | "tools" | "email";
 
 export interface AgentsPanelProps {
   /**
@@ -44,12 +40,6 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
   const { agents: rosterAgents, defaultId: rosterDefaultId, error, isLoading, refresh: mutate } =
     useAgents();
   const callRpc = useRuntimeRpcMutation();
-  // Channels require an active subscription (or trial). Pre-signup users
-  // shouldn't see the Channels tab. M6 task 10-D, row 25: also gone outright
-  // on a confirmed AgentCore workspace (channel wiring is M5/LATER there).
-  const { isSubscribed } = useBilling();
-  const agentCoreHidden = useHiddenOnAgentCore() === "hidden";
-  const channelsEnabled = isSubscribed && !agentCoreHidden;
   const [selectedAgent, setSelectedAgent] = useState<string | null>(
     () => initialAgentId,
   );
@@ -220,9 +210,6 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
                       { id: "overview", icon: Bot, label: "Overview" },
                       { id: "tools", icon: Wrench, label: "Tools" },
                       { id: "email", icon: Mail, label: "Email" },
-                      ...(channelsEnabled
-                        ? [{ id: "channels", icon: MessageSquare, label: "Channels" } as const]
-                        : []),
                     ] as const
                   ).map((tab) => (
                     <button
@@ -247,9 +234,6 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
               )}
               {activeTab === "tools" && (
                 <AgentToolsTab agentId={selected.id} />
-              )}
-              {activeTab === "channels" && channelsEnabled && (
-                <AgentChannelsSection agentId={selected.id} />
               )}
               {activeTab === "email" && (
                 <AgentEmailSection agentId={selected.id} />

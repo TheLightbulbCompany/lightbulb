@@ -105,11 +105,7 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
         <Header userId={id} agentId={agentId} title={agentId} />
         <EmptyState
           title="Container is stopped"
-          body="Start the user's container to view this agent's detail."
-          action={{
-            label: "Open container tab",
-            href: `/admin/users/${encodeURIComponent(id)}/container`,
-          }}
+          body="The user's runtime is not running, so this agent's detail can't be read."
         />
       </div>
     );

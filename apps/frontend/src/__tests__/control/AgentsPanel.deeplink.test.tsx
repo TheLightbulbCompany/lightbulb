@@ -40,7 +40,6 @@ vi.mock("@/components/control/panels/AgentOverviewTab", () => ({
   AgentOverviewTab: ({ agentId }: { agentId: string }) => <div>overview:{agentId}</div>,
 }));
 vi.mock("@/components/control/panels/AgentToolsTab", () => ({ AgentToolsTab: () => <div /> }));
-vi.mock("@/components/control/panels/AgentChannelsSection", () => ({ AgentChannelsSection: () => <div /> }));
 vi.mock("@/components/control/panels/AgentCreateForm", () => ({
   AgentCreateForm: () => <div>create-form</div>,
 }));

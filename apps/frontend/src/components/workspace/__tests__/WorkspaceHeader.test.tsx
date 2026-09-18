@@ -5,7 +5,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 const setPaletteOpen = vi.fn();
 const openPanel = vi.fn();
 const activateMessagesPanel = vi.fn();
-let activePanelId = "browser";
+let activePanelId = "teams-dashboard";
 
 vi.mock("@/components/teams/command-palette/CommandPaletteProvider", () => ({
   useCommandPalette: () => ({ open: false, setOpen: setPaletteOpen, toggle: vi.fn() }),
@@ -38,7 +38,7 @@ import { trackTeamRunActivity } from "@/components/notifications/teamRunActivity
 import { WorkspaceHeader } from "../WorkspaceHeader";
 
 describe("WorkspaceHeader", () => {
-  it.each([["Home", "teams-dashboard"], ["Activity", "teams-inbox"], ["Tasks", "teams-issues"], ["Browser", "browser"]])("opens %s and marks the active destination", (label, panel) => {
+  it.each([["Home", "teams-dashboard"], ["Activity", "teams-inbox"], ["Tasks", "teams-issues"]])("opens %s and marks the active destination", (label, panel) => {
     activePanelId = panel;
     render(<WorkspaceHeader />);
     const button = screen.getByRole("button", { name: label });
@@ -49,7 +49,7 @@ describe("WorkspaceHeader", () => {
   // Connections opens as a CONTROL-key panel, so its dock id ("control:connections")
   // is not its rail key — the active marker has to resolve through the registry
   // or it silently never lights up.
-  it("opens Connections under Browser and Files and marks it active by its dock id", () => {
+  it("opens Connections under Files and marks it active by its dock id", () => {
     activePanelId = "control:connections";
     render(<WorkspaceHeader />);
     const button = screen.getByRole("button", { name: "Connections" });
@@ -57,12 +57,11 @@ describe("WorkspaceHeader", () => {
     fireEvent.click(button);
     expect(openPanel).toHaveBeenCalledWith("connections", {}, { pushUrl: true });
 
-    // Order matters: the ask was "under browser and workspace files".
+    // Order matters: the ask was "under workspace files".
     const rail = screen.getByRole("navigation", { name: "Workspace" });
     const labels = [...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
-    const browserAt = labels.indexOf("Browser");
-    expect(labels.slice(browserAt, browserAt + 3)).toEqual([
-      "Browser",
+    const filesAt = labels.indexOf("Browse workspace files");
+    expect(labels.slice(filesAt, filesAt + 2)).toEqual([
       "Browse workspace files",
       "Connections",
     ]);
@@ -84,10 +83,10 @@ describe("WorkspaceHeader", () => {
     expect(activateMessagesPanel).toHaveBeenCalled();
     expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
   });
-  it("keeps Messages available but disables container-backed panels until the agents are up", () => {
+  it("keeps Messages available but disables runtime-backed panels until the agents are up", () => {
     render(<WorkspaceHeader chatReady={false} />);
     expect(screen.getByRole("button", { name: "Messages" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Browser" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Browse workspace files" })).toBeDisabled();
   });
   it("opens the existing command palette from a visible search control", () => {
     render(<WorkspaceHeader />);
@@ -97,7 +96,6 @@ describe("WorkspaceHeader", () => {
     expect(setPaletteOpen).toHaveBeenCalledWith(true);
     expect(screen.getByRole("button", { name: /Search agents/ })).toHaveAttribute("title", "Search (⌘/Ctrl K)");
     expect(screen.getByRole("button", { name: "Browse workspace files" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Browser" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Get help" })).toBeInTheDocument();
     expect(screen.getByLabelText("Profile")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reset workspace layout" })).not.toBeInTheDocument();

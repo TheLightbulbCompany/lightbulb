@@ -12,7 +12,6 @@ import { useAuth, useUser, UserButton, useOrganization, useClerk } from "@clerk/
 import { useApi, ApiError } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
-import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
 import { WorkspaceMembersSection } from "@/components/settings/WorkspaceMembersSection";
 import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
 import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
@@ -27,16 +26,12 @@ import { LLMPanel } from "@/components/control/panels/LLMPanel";
 import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
 import { SkillsTab } from "@/components/control/panels/SkillsTab";
 import { SkillProposalsPanel } from "@/components/control/panels/SkillProposalsPanel";
-import { ChannelsStatusPanel } from "@/components/control/panels/ChannelsStatusPanel";
-import { DreamsPanel } from "@/components/control/panels/DreamsPanel";
-import { useHiddenOnAgentCore } from "@lightbulb/shared";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import {
   ADMIN_ONLY_PANELS,
   RELOCATED_PANEL_HREFS,
   SETTINGS_NAV_SECTIONS,
-  filterNavSectionsForRuntime,
   type NavItem,
 } from "@/components/settings/settings-nav-config";
 
@@ -56,15 +51,12 @@ type Panel =
   | "billing"
   | "usage"
   | "providers"
-  | "channels"
   | "mcp"
   | "webhooks"
   | "desktop"
   | "local-mcp"
   | "skills"
   | "skill-proposals"
-  | "dreams"
-  | "channel-status"
   | "marketplace";
 
 // =============================================================================
@@ -561,20 +553,6 @@ function BillingPanel() {
 }
 
 // =============================================================================
-// Channels Panel
-// =============================================================================
-
-function ChannelsPanel() {
-  return (
-    <div className="settings-panel" id="panel-channels" role="tabpanel">
-      <h1 className="settings-page-title">Channels</h1>
-      <p className="settings-page-desc">Link your personal Telegram, Discord, and Slack accounts to your organization&apos;s bots.</p>
-      <MyChannelsSection />
-    </div>
-  );
-}
-
-// =============================================================================
 // Marketplace Panel (seller handle + display name)
 // =============================================================================
 
@@ -646,7 +624,6 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   billing: BillingPanel,
   usage: UsagePanel,
   providers: LLMPanel,
-  channels: ChannelsPanel,
   // Settings variant: renders inside the shared `.settings-panel` frame so MCP
   // servers reads as the same surface as the other Settings panels (the Control
   // tab keeps the default full-bleed variant via ControlPanelRouter).
@@ -660,8 +637,6 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   // owner-level (global) skills surface — the engine-room home.
   skills: () => <SkillsTab />,
   "skill-proposals": SkillProposalsPanel,
-  dreams: DreamsPanel,
-  "channel-status": ChannelsStatusPanel,
   marketplace: MarketplacePanel,
 };
 
@@ -682,12 +657,8 @@ export default function SettingsPage() {
 
 function SettingsPageInner() {
   // The Settings consolidation: 6-group nav + the config panels relocated from
-  // the Control tab (Usage, Model & Credits, MCP servers, the ENGINE ROOM
-  // trio, Channel Status).
-  // M6 task 10-D: Dreams and Channel Status drop off the nav on a confirmed
-  // AgentCore workspace — never merely "not yet known" (see useHiddenOnAgentCore).
-  const agentCoreHidesNav = useHiddenOnAgentCore() === "hidden";
-  const navSections = filterNavSectionsForRuntime(SETTINGS_NAV_SECTIONS, agentCoreHidesNav);
+  // the Control tab (Usage, Model & Credits, MCP servers, the ENGINE ROOM rows).
+  const navSections = SETTINGS_NAV_SECTIONS;
 
   // Personal owners are admins; org members are admins only with org:admin.
   const isAdmin = useIsWorkspaceAdmin();

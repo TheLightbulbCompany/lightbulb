@@ -220,7 +220,7 @@ describe("isCommandTargetOpen (analytics newness check)", () => {
   it.each(["friday-id", "other-agent", "__default__"])("finds the %s chat command in Messages", (agentId) => {
     const cmd = deriveReconcilerAction(`?agent=${agentId}`, null)!.command!;
     expect(isCommandTargetOpen(cmd, [MESSAGES_PANEL_ID])).toBe(true);
-    expect(isCommandTargetOpen(cmd, ["browser"])).toBe(false);
+    expect(isCommandTargetOpen(cmd, ["file-viewer"])).toBe(false);
   });
 });
 

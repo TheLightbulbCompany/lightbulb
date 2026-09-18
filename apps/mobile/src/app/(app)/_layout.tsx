@@ -108,8 +108,6 @@ export default function AppLayout() {
             <Stack.Screen name="control/agents" options={{ title: "Agents" }} />
             <Stack.Screen name="control/agent-detail" options={{ title: "Agent" }} />
             <Stack.Screen name="control/skills" options={{ title: "Skills" }} />
-            <Stack.Screen name="control/sessions" options={{ title: "Sessions" }} />
-            <Stack.Screen name="control/channels" options={{ title: "Channels" }} />
             <Stack.Screen name="control/usage" options={{ title: "Usage" }} />
             <Stack.Screen name="control/llm" options={{ title: "Model & Credits" }} />
             <Stack.Screen name="control/integrations" options={{ title: "Integrations" }} />

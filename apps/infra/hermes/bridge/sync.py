@@ -61,11 +61,47 @@ def _save_lock(agent_id: str) -> threading.Lock:
     with _save_locks_guard:
         return _save_locks.setdefault(agent_id, threading.Lock())
 
+#: Hazard 4 (local-exec persistence report): with ``terminal.backend: local`` the agent's shell
+#: runs IN its profile dir, so a build drops whole dependency/output trees into the directory
+#: save_profile rglobs and restore_profile re-downloads object-by-object. All of it is
+#: reproducible from source, so it is skipped in BOTH directions -- including the cold-start
+#: restore, which is deliberately NOT filtered by EXCLUDE_GLOBS as a whole (the backend-owned
+#: names in there, and the credentials below, still have to land on a fresh microVM).
+#: ``.git/`` is deliberately absent: a fresh clone's objects are packfiles, not thousands of
+#: loose objects, and dropping it means re-cloning on every cold start.
+# ponytail: the ceiling is the per-file S3 fanout itself -- a big SOURCE tree is still one
+# PUT/GET per file, in front of the first reply. Upgrade path when that bites: archive the
+# workspace subtree as ONE object and special-case it in save_profile/restore_profile, the way
+# the SQLite backup API already is below. Not implemented.
+_REPRODUCIBLE_DIRS = (
+    "node_modules", ".venv", "venv", "__pycache__", ".next", "dist", "build", "target",
+    "coverage", ".turbo", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache",
+)
+REPRODUCIBLE_GLOBS = tuple(
+    pattern for name in _REPRODUCIBLE_DIRS for pattern in (f"{name}/*", f"*/{name}/*")
+)
+
+#: Hazard 5: credential shapes the AGENT itself can write while doing git/gh work. Before local
+#: exec, terminal commands never ran inside the profile dir at all, so EXCLUDE_GLOBS only ever
+#: had to cover Hermes's own leak surface. Push-side only, by design: the backend projects
+#: ``.aws/credentials`` / ``.config/gh/hosts.yml`` into the profile as BACKEND-OWNED files
+#: pulled by NAME (``_download_profile``) and by the cold-start tree walk -- exactly the shape
+#: the five ``BACKEND_OWNED_FILES`` already have, in EXCLUDE_GLOBS yet still restored.
+_CREDENTIAL_FILES = (
+    ".git-credentials", ".netrc", ".npmrc", ".pypirc",
+    ".config/gh/hosts.yml", ".aws/credentials", ".docker/config.json",
+)
+CREDENTIAL_GLOBS = tuple(
+    pattern for name in _CREDENTIAL_FILES for pattern in (name, f"*/{name}")
+)
+
 # Hermes writes sessions/request_dump_*.json on EVERY API error with no config switch
 # (report 01 §1). The body is redacted but the file must never reach S3; logs/ likewise;
 # .lightbulb-turn/ holds the per-turn local-session JWT (Task 11). WAL/SHM are skipped
 # because save_profile snapshots SQLite through the backup API instead.
 EXCLUDE_GLOBS = (
+    *REPRODUCIBLE_GLOBS,
+    *CREDENTIAL_GLOBS,
     "sessions/request_dump_*.json",
     "logs/*",
     "logs/**/*",
@@ -96,6 +132,13 @@ EXCLUDE_GLOBS = (
 
 def is_excluded(rel: str) -> bool:
     return any(fnmatch.fnmatch(rel, pattern) for pattern in EXCLUDE_GLOBS)
+
+
+def is_reproducible(rel: str) -> bool:
+    """The subset of ``EXCLUDE_GLOBS`` that is skipped on the way DOWN as well as up. Everything
+    else in there either must still restore (backend-owned names, projected credentials) or
+    simply never exists in S3 to restore."""
+    return any(fnmatch.fnmatch(rel, pattern) for pattern in REPRODUCIBLE_GLOBS)
 
 
 def load_boot_secrets(secret_id: str, client=None) -> dict[str, str]:
@@ -178,6 +221,8 @@ def restore_profile(agent_id: str) -> float:
             rel = obj["Key"][len(prefix):]
             if not rel or rel.endswith("/"):
                 continue  # directory marker: downloading it onto the directory raises
+            if is_reproducible(rel):
+                continue  # Hazard 4: a node_modules already in S3 costs one GET per file here
             target = dest / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             s3.download_file(S3_BUCKET, obj["Key"], str(target))

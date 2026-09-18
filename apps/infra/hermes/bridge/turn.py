@@ -856,6 +856,23 @@ def _terminal_scope(agent_id: str):
     return _scope()
 
 
+# Hazard 1 (local-exec persistence report): one agent = one working tree = one turn at a time.
+# Two turns for the SAME agent in different rooms run concurrently in one process (the FIFO
+# group is room+agent), and with `terminal.backend: local` both run their shell commands in the
+# IDENTICAL profile dir -- a concurrent `git checkout` and `npm test` in one working tree.
+# The pinned Hermes image does not serialize this: tools/terminal_scope.py is a ContextVar
+# policy projection, and the only locks in tools/terminal_tool.py / tools/environments/local.py
+# guard sandbox creation, the env mutation and the session->cwd map, never execution.
+# threading.Lock, not asyncio: server.py dispatches run_turn on a threading.Thread.
+_turn_locks: dict[str, threading.Lock] = {}
+_turn_locks_guard = threading.Lock()
+
+
+def _turn_lock(agent_id: str) -> threading.Lock:
+    with _turn_locks_guard:
+        return _turn_locks.setdefault(agent_id, threading.Lock())
+
+
 def profile_model(config: dict) -> tuple[str, str]:
     """(model id, provider) for this turn, from the profile's OWN `model` block in config.yaml
     — the block the backend's `hermes_profiles.model_block` writes (the CEO's premium tier on a
@@ -948,19 +965,23 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
         import run_agent  # noqa: F401
     except ImportError:
         pass
-    # Refresh BEFORE binding profile secrets/terminal policy and before filling config defaults.
-    sync.ensure_profile(agent_id)
-    with _hermes_home_scope(agent_id), _secret_scope(agent_id), _terminal_scope(agent_id):
-        agent = _construct_agent(agent_id, body, frames, session_key)
-        attach_agent((body.get("run") or {}).get("runId"), agent)
-        result = agent.run_conversation(
-            user_message=_message_content(
-                _turn_user_message(body),
-                images.get((body.get("message") or {}).get("messageId"), []),
-            ),
-            system_message=system_prompt(body, agent_id, media=media),
-            conversation_history=_history(body, agent_id, images) or None,
-        ) or {}
+    # _turn_lock: this agent's other rooms queue here instead of sharing its working tree
+    # (Hazard 1). Taken AFTER run_turn has posted run.started and launched the heartbeat, so a
+    # queued turn keeps heartbeating and the backend sweeper does not close it as never-started.
+    with _turn_lock(agent_id):
+        # Refresh BEFORE binding profile secrets/terminal policy and before filling config defaults.
+        sync.ensure_profile(agent_id)
+        with _hermes_home_scope(agent_id), _secret_scope(agent_id), _terminal_scope(agent_id):
+            agent = _construct_agent(agent_id, body, frames, session_key)
+            attach_agent((body.get("run") or {}).get("runId"), agent)
+            result = agent.run_conversation(
+                user_message=_message_content(
+                    _turn_user_message(body),
+                    images.get((body.get("message") or {}).get("messageId"), []),
+                ),
+                system_message=system_prompt(body, agent_id, media=media),
+                conversation_history=_history(body, agent_id, images) or None,
+            ) or {}
     usage = {**ZERO_USAGE,
              # the model this agent actually ran on (profile_model), not the runtime-wide
              # default -- usage_service prices per model ref, so the CEO's premium tier would

@@ -20,7 +20,7 @@ Extraction is TWO streaming passes over the upload (S3 object or bytes): pass
 dir(s) are; pass 2 extracts with state-relative skip rules so a 300 MB archive
 (Chrome profile, media, caches, global SQLite) costs ~1 MB on EFS. Everything
 under ``agents/<id>/`` is dropped EXCEPT ``agent/openclaw-agent.sqlite`` and
-``sessions/`` — the two history inputs (see openclaw_backup_history.py).
+``sessions/`` — the two history inputs (``_history_for``).
 
 A candidate prefix found via a bare ``openclaw.json`` marker (state-dir shape)
 only counts as a STATE dir — and gets the runtime skip rules applied under

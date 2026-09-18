@@ -1,4 +1,4 @@
-"""Tests for the image-update apply path + the pre-roll config migration.
+"""Tests for the pending-update apply path + the pre-roll config migration.
 
 A container rolled to a newer image reuses its existing on-disk
 openclaw.json. ``migrate_removed_config_keys`` strips keys the new image's
@@ -33,85 +33,6 @@ def _claimed_repo(update_item: dict) -> MagicMock:
     repo.set_apply_target = AsyncMock(return_value=True)
     repo.finish_claimed_apply = AsyncMock(return_value=True)
     return repo
-
-
-@pytest.mark.asyncio
-async def test_queue_fleet_task_definition_refresh_is_atomic_and_skips_conflicts():
-    rows = [
-        {
-            "owner_id": "owner-a",
-            "service_name": "service-a",
-            "access_point_id": "fsap-a",
-            "task_definition_arn": "arn:a",
-            "status": "running",
-        },
-        {
-            "owner_id": "owner-b",
-            "service_name": "service-b",
-            "access_point_id": "fsap-b",
-            "task_definition_arn": "arn:b",
-            "status": "stopped",
-        },
-        {
-            "owner_id": "owner-provisioning",
-            "service_name": "service-provisioning",
-            "access_point_id": "fsap-provisioning",
-            "task_definition_arn": "arn:provisioning",
-            "status": "provisioning",
-        },
-    ]
-    rows.extend(
-        [
-            {
-                "owner_id": "owner-error",
-                "service_name": "service-error",
-                "access_point_id": "fsap-error",
-                "task_definition_arn": "arn:error",
-                "status": "error",
-            },
-            {
-                "owner_id": "owner-claimed-error",
-                "service_name": "service-claimed-error",
-                "access_point_id": "fsap-claimed-error",
-                "task_definition_arn": "arn:claimed-error",
-                "status": "error",
-                "provision_claim_id": "live-provision",
-            },
-            {
-                "owner_id": "owner-incomplete-error",
-                "service_name": "service-incomplete-error",
-                "status": "error",
-            },
-        ]
-    )
-    repo = MagicMock()
-    repo.get_in_flight = AsyncMock(
-        side_effect=[
-            [],
-            [{"changes": {"new_image": "image:already-rolling"}}],
-            [],
-        ]
-    )
-    repo.create = AsyncMock()
-
-    with (
-        patch.object(update_service, "container_repo") as container_repo,
-        patch.object(update_service, "update_repo", repo),
-        patch.object(update_service, "utc_now_iso", return_value="2026-08-15T12:00:00+00:00"),
-    ):
-        container_repo.scan_all = AsyncMock(return_value=rows)
-        queued, skipped = await update_service.queue_fleet_task_definition_refresh("Protocol rollout")
-
-    assert (queued, skipped) == (2, 4)
-    assert [call.kwargs["owner_id"] for call in repo.create.await_args_list] == ["owner-a", "owner-error"]
-    for call in repo.create.await_args_list:
-        assert call.kwargs == {
-            "owner_id": call.kwargs["owner_id"],
-            "update_type": update_service.TASK_DEFINITION_REFRESH_KIND,
-            "description": "Protocol rollout",
-            "changes": {update_service.TASK_DEFINITION_REFRESH_CHANGE: True},
-            "scheduled_at": "2026-08-15T12:00:00+00:00",
-        }
 
 
 @pytest.mark.asyncio
@@ -527,32 +448,10 @@ async def test_apply_update_returns_false_when_claim_is_not_acquired():
 
 # ---------------------------------------------------------------------------
 # Row #14 — a Hermes image bump is not an ECS task-definition change.
-# queue_fleet_image_update skips AgentCore owners at enqueue time;
-# _apply_claimed_update refuses defensively for any ECS-shaped change that
-# reaches it anyway (e.g. a single-owner admin POST bypassing the fleet filter).
+# _apply_claimed_update refuses an ECS-shaped change defensively for an
+# AgentCore owner, whatever door queued the row (e.g. a single-owner admin
+# POST).
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_queue_fleet_image_update_skips_agentcore_owners():
-    scan_result = {
-        "Items": [{"owner_id": "owner_ecs"}, {"owner_id": "owner_agentcore"}],
-    }
-
-    async def fake_is_agentcore(owner_id):
-        return owner_id == "owner_agentcore"
-
-    with (
-        patch("core.dynamodb.get_table"),
-        patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value=scan_result)),
-        patch.object(update_service.runtime_transport, "is_agentcore_owner", new=fake_is_agentcore),
-        patch.object(update_service, "queue_image_update", new=AsyncMock()) as mock_queue,
-    ):
-        queued, skipped = await update_service.queue_fleet_image_update("ecr/openclaw-extended:new")
-
-    assert queued == 1
-    assert skipped == 1
-    mock_queue.assert_awaited_once_with("owner_ecs", "ecr/openclaw-extended:new", None)
 
 
 @pytest.mark.asyncio

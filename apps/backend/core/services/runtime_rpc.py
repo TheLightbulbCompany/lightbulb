@@ -610,6 +610,11 @@ async def execute_sync(
         result = _filter_sessions_for_user(result, user_id)
     elif method == "sessions.search":
         result = _filter_search_hits_for_user(result, user_id)
+    elif method == "skills.status" and await _is_agentcore(owner_id):
+        # The bridge answers the skill ROWS (it has to -- they come from Hermes's own loaders
+        # inside the image). The disabled LIST is the half that gets written back, so it is
+        # owned here: see agentcore_disabled_skill_names.
+        result["disabledNames"] = await agentcore_disabled_skill_names(owner_id)
     return result
 
 
@@ -737,6 +742,38 @@ async def _owner_model_inputs(owner_id: str) -> tuple[str, str | None, dict[str,
     provider_choice, byo_provider = await resolve_provider_choice(owner_id)
     container_row = await container_repo.get_by_owner_id(owner_id) or {}
     return provider_choice, byo_provider, container_row.get("bedrock_aip_arns") or {}
+
+
+async def agentcore_disabled_skill_names(owner_id: str) -> list[str]:
+    """The UNION of ``skills.disabled`` across every profile in an AgentCore owner's roster.
+
+    The Skills panel is workspace-level and its patch fans out to every profile, replacing the
+    list WHOLESALE -- so whatever this returns IS the next write for all of them, and a name
+    missing from it is not merely unchanged, it is DELETED. One profile is not enough:
+    ``agents.create`` -> ``hermes_profiles.write_agent_profile`` -> ``build_profile_config``
+    emits a fresh ``skills`` block with no ``disabled`` key and never reads the owner's current
+    list, so a newly created agent has an empty one and would re-enable every skill the owner
+    had turned off, everywhere (M6-R57 / review N2).
+
+    Served here rather than by the bridge because the backend is the ONLY writer of a profile's
+    ``config.yaml`` (spec §4.5; the bridge has it in ``sync.EXCLUDE_GLOBS``, so a container copy
+    never reaches S3) -- and because ``_s3_get`` already draws the line the bridge had to invent
+    a two-valued "is this read authoritative" flag for: ABSENT is ``None`` (a profile
+    mid-provision contributes nothing, which is correct and complete), and every other S3 error
+    RE-RAISES. So a throttled read fails the RPC loudly instead of yielding a plausibly short
+    list that the panel would write back over every profile.
+    """
+    names: set[str] = set()
+    for row in await load_agent_roster(owner_id):
+        config, _config_hash = await run_in_thread(hermes_profiles.config_snapshot, owner_id, row["id"])
+        raw = (config.get("skills") or {}).get("disabled")
+        if isinstance(raw, str):
+            # Never our writer (we yaml.safe_dump a list), but `hermes config set` stores a list
+            # as a quoted literal string. Reading that as one skill named `["pdf","shopify"]`
+            # would show every skill enabled and let the next toggle wipe the real list.
+            raw = json.loads(raw) if raw.strip().startswith("[") else [raw]
+        names.update(value.strip() for value in raw or [] if isinstance(value, str) and value.strip())
+    return sorted(names)
 
 
 async def _agentcore_models_list(owner_id: str) -> dict[str, Any] | None:

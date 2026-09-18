@@ -115,6 +115,15 @@ Instead: delete the stale grant so ``core.services.provision_gate``'s ``oauth_re
 (``core.services.oauth_service.has_active_oauth``) fires and the owner reconnects once, cleanly,
 on their next visit. Reported as ``reconnect_chatgpt`` in both the plan output and the migration
 result — never silently.
+
+``--keep-chatgpt-grant`` (M6-R12, amended): the ruling stands for the DDB copy — this job still
+never stages one — but the founder migration measured what reconnecting costs the owner:
+~18 minutes of hard-failing turns before they noticed. The LIVE rotated grant survives in the
+retired container's litestream replica, so the flag SKIPS the revoke (the DDB row is left alone)
+and reports ``chatgpt_carry_over_pending`` instead. Nothing here carries it: that is
+``scripts/carry_over_codex_grant.py``, which the operator runs AFTER this job's ECS stop — the
+stopped container can no longer rotate the refresh token, which is the whole reason the extracted
+one is unspent. Without ``--keep-chatgpt-grant`` the behaviour is exactly as before.
 """
 
 from __future__ import annotations
@@ -163,6 +172,14 @@ EXIT_TRANSIENT = 11
 #: only the EFS-override/stop-ECS/stamp tail remains.
 _MODE_FULL = "full"
 _MODE_TAIL = "tail"
+
+#: What this job did with a ChatGPT-OAuth owner's grant — see the module docstring's M6-R12
+#: paragraph. ``reconnect_chatgpt``: the DDB grant was revoked, the owner reconnects.
+#: ``chatgpt_carry_over_pending`` (``--keep-chatgpt-grant``): the grant was left alone and the
+#: operator still owes a ``scripts/carry_over_codex_grant.py`` run — a workspace left in this
+#: state with neither step taken keeps a DDB grant its container already spent.
+_CHATGPT_RECONNECT = "reconnect_chatgpt"
+_CHATGPT_CARRY_OVER = "chatgpt_carry_over_pending"
 
 _PAPERCLIP_TABLE = "paperclip-companies"
 _SOUL_FILE = "SOUL.md"
@@ -266,13 +283,22 @@ async def _build_plan(owner_id: str, roster: list[dict]) -> list[tuple[dict, str
     return plan
 
 
-def _print_plan(owner_id: str, plan, *, dry_run: bool, reconnect_chatgpt: bool) -> None:
+def _chatgpt_status(provider_choice: str, keep_grant: bool) -> str | None:
+    """What the plan and the ``--all`` summary say about a ChatGPT-OAuth owner's grant, and —
+    since ``migrate()`` branches on it — the one place the two can never disagree. ``None`` for
+    every other provider choice."""
+    if provider_choice != "chatgpt_oauth":
+        return None
+    return _CHATGPT_CARRY_OVER if keep_grant else _CHATGPT_RECONNECT
+
+
+def _print_plan(owner_id: str, plan, *, dry_run: bool, chatgpt_status: str | None) -> None:
     tag = "DRY RUN: " if dry_run else ""
     for agent, soul, files in plan:
         file_count = len(files) + (1 if soul else 0)
         print(f"{tag}{owner_id} agent={agent['id']} role={agent.get('role') or 'standard'} efs_files={file_count}")
-    if reconnect_chatgpt:
-        print(f"{tag}{owner_id} reconnect_chatgpt")
+    if chatgpt_status:
+        print(f"{tag}{owner_id} {chatgpt_status}")
 
 
 def _preflight_settings() -> list[str]:
@@ -529,8 +555,12 @@ async def _stamp_migrated(owner_id: str) -> None:
     )
 
 
-async def migrate(owner_id: str, *, dry_run: bool, _company=None) -> int:
-    """``_company``: internal — ``migrate_all`` passes its own already-read Paperclip company
+async def migrate(owner_id: str, *, dry_run: bool, keep_chatgpt_grant: bool = False, _company=None) -> int:
+    """``keep_chatgpt_grant``: skip the M6-R12 revoke and leave the DDB grant alone, because the
+    operator will carry the container's live rotated grant over afterwards
+    (``scripts/carry_over_codex_grant.py``, run after this job's ECS stop).
+
+    ``_company``: internal — ``migrate_all`` passes its own already-read Paperclip company
     row through here so ``_check_preconditions`` never reads it a second time for the same
     owner (Ruling M6-R6 minors)."""
     exit_code, mode, roster, row = await _check_preconditions(owner_id, company=_company)
@@ -538,9 +568,9 @@ async def migrate(owner_id: str, *, dry_run: bool, _company=None) -> int:
         return exit_code
 
     provider_choice, _ = await resolve_provider_choice(owner_id)
-    reconnect_chatgpt = provider_choice == "chatgpt_oauth"
+    chatgpt_status = _chatgpt_status(provider_choice, keep_chatgpt_grant)
     plan = await _build_plan(owner_id, roster)
-    _print_plan(owner_id, plan, dry_run=dry_run, reconnect_chatgpt=reconnect_chatgpt)
+    _print_plan(owner_id, plan, dry_run=dry_run, chatgpt_status=chatgpt_status)
     if dry_run:
         return EXIT_OK
 
@@ -593,7 +623,10 @@ async def migrate(owner_id: str, *, dry_run: bool, _company=None) -> int:
         # merely logged, because only the owner can fix those.
         for provider, outcome in sorted((await reproject_connections(owner_id)).items()):
             print(f"{owner_id} reproject {provider}={outcome}")
-        if reconnect_chatgpt:
+        # Ruling M6-R12: revoke the spent DDB grant so the owner is asked to reconnect. Under
+        # --keep-chatgpt-grant the row is left alone instead and the operator carries the
+        # container's LIVE grant over once the ECS stop below has landed.
+        if chatgpt_status == _CHATGPT_RECONNECT:
             await _reconcile_chatgpt_oauth(owner_id)
         # Ruling M6-R18: the bridge's ensure_profile only re-pulls the backend-owned files
         # (config.yaml/.env/SOUL.md/.revision/lightbulb-facts.json) on a revision change, and
@@ -735,7 +768,7 @@ async def rollback(owner_id: str, *, dry_run: bool = False) -> int:
     return EXIT_OK
 
 
-async def migrate_all(*, dry_run: bool) -> int:
+async def migrate_all(*, dry_run: bool, keep_chatgpt_grant: bool = False) -> int:
     """Task 3 — fleet-wide flip for the per-workspace-flip phase, once prod carries the Hermes
     image (see the module docstring's prod-dispatch precondition). Sequential: a fleet-wide
     migration is an operator-watched event, not a background job, and nothing here has load-
@@ -752,8 +785,8 @@ async def migrate_all(*, dry_run: bool) -> int:
     live profiles over themselves.
 
     ``_load_company`` is read exactly ONCE per owner here (never again inside ``migrate()`` —
-    it is passed through as ``_company``), and its ``reconnect_chatgpt`` status is looked up
-    once more per owner purely for the summary table below.
+    it is passed through as ``_company``), and its ChatGPT status is looked up once more per
+    owner purely for the summary table below.
 
     Ruling M6-R20(b), placement fix (fix round 2, item 2): the settings preflight and the
     EFS-root presence check run ONCE here, before ``scan_all`` and before any Paperclip read —
@@ -774,7 +807,7 @@ async def migrate_all(*, dry_run: bool) -> int:
         return EXIT_PRECONDITION
 
     rows = await container_repo.scan_all()
-    results: list[tuple[str, int, bool]] = []
+    results: list[tuple[str, int, str | None]] = []
     for row in rows:
         owner_id = row.get("owner_id")
         if not owner_id or owner_id.startswith(PASS_KEY_PREFIX) or owner_id == REFERENCE_ORG_ID:
@@ -787,17 +820,17 @@ async def migrate_all(*, dry_run: bool) -> int:
         if not company or company.status != "active":
             logger.info("migrate_all: skipping owner=%s — no active Paperclip company", owner_id)
             continue
-        code = await migrate(owner_id, dry_run=dry_run, _company=company)
+        code = await migrate(owner_id, dry_run=dry_run, keep_chatgpt_grant=keep_chatgpt_grant, _company=company)
         if code == EXIT_TRANSIENT:
             logger.warning("migrate_all: owner=%s exited transient — retrying once", owner_id)
-            code = await migrate(owner_id, dry_run=dry_run, _company=company)
+            code = await migrate(owner_id, dry_run=dry_run, keep_chatgpt_grant=keep_chatgpt_grant, _company=company)
         provider_choice, _ = await resolve_provider_choice(owner_id)
-        results.append((owner_id, code, provider_choice == "chatgpt_oauth"))
+        results.append((owner_id, code, _chatgpt_status(provider_choice, keep_chatgpt_grant)))
 
     tag = "DRY RUN " if dry_run else ""
     print(f"{tag}migrate_all summary:")
-    for owner_id, code, reconnect_chatgpt in results:
-        suffix = " reconnect_chatgpt" if reconnect_chatgpt else ""
+    for owner_id, code, chatgpt_status in results:
+        suffix = f" {chatgpt_status}" if chatgpt_status else ""
         print(f"  {owner_id}: exit={code}{suffix}")
     # Ruling M6-R6 minors: never max(codes) -- 1 (a real failure) always wins over 11 (merely
     # retry-able), and anything else present with neither is a clean 0. max() would let a
@@ -854,6 +887,13 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--rollback", action="store_true")
     parser.add_argument(
+        "--keep-chatgpt-grant",
+        action="store_true",
+        help="Do NOT revoke a ChatGPT-OAuth owner's DDB grant (M6-R12). Reports "
+        "chatgpt_carry_over_pending instead: run scripts/carry_over_codex_grant.py afterwards to "
+        "stage the container's live rotated grant, or the owner is left on a spent one.",
+    )
+    parser.add_argument(
         "--repoint-adapters-only",
         action="store_true",
         help="Re-point an already-migrated AgentCore owner's Paperclip adapters onto the native "
@@ -873,8 +913,8 @@ def main() -> int:
             parser.error("--rollback requires --owner-id")
         return asyncio.run(rollback(args.owner_id, dry_run=args.dry_run))
     if args.all:
-        return asyncio.run(migrate_all(dry_run=args.dry_run))
-    return asyncio.run(migrate(args.owner_id, dry_run=args.dry_run))
+        return asyncio.run(migrate_all(dry_run=args.dry_run, keep_chatgpt_grant=args.keep_chatgpt_grant))
+    return asyncio.run(migrate(args.owner_id, dry_run=args.dry_run, keep_chatgpt_grant=args.keep_chatgpt_grant))
 
 
 if __name__ == "__main__":

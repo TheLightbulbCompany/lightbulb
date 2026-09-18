@@ -757,6 +757,60 @@ async def test_chatgpt_oauth_owner_migrates_without_staging_and_removes_the_stal
     revoke_user_oauth.assert_awaited_once_with(user_id="user_the_connector")
 
 
+async def test_keep_chatgpt_grant_skips_the_revoke_and_reports_carry_over_pending(
+    tmp_path, precondition_ok, monkeypatch, capsys
+):
+    """``--keep-chatgpt-grant``: the DDB row is left alone because the operator will carry the
+    container's LIVE rotated grant over afterwards (scripts/carry_over_codex_grant.py, run after
+    the ECS stop). The plan must say so — a workspace left here with neither step taken keeps a
+    grant its container already spent."""
+    _fake_workspace(tmp_path)
+    monkeypatch.setattr(mod, "get_workspace", lambda: _workspace_at(tmp_path))
+    monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("chatgpt_oauth", None)))
+    monkeypatch.setattr(mod, "_s3_client", lambda: _FakeS3Client([]))
+    monkeypatch.setattr("core.services.hermes_profiles._new_s3_client", lambda: _FakeS3Client([]))
+
+    monkeypatch.setattr(mod.container_repo, "takeover_provision", AsyncMock(return_value="claim-1"))
+    monkeypatch.setattr(mod.container_repo, "update_container_leased", AsyncMock())
+    monkeypatch.setattr(mod, "prepare_hermes_workspace", AsyncMock())
+    monkeypatch.setattr(mod, "provision_hermes_runtime", AsyncMock(return_value="arn:hermes-1"))
+    monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_aips", AsyncMock(return_value={"sonnet": "arn:son"}))
+    monkeypatch.setattr(
+        "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_PROFILE_INPUTS)
+    )
+    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+    monkeypatch.setattr(
+        "core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pcp_live_x")
+    )
+    monkeypatch.setattr(mod, "_stop_runtime_session", MagicMock())
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: SimpleNamespace(stop_user_service=AsyncMock()))
+
+    reconcile = AsyncMock()
+    monkeypatch.setattr(mod, "_reconcile_chatgpt_oauth", reconcile)
+
+    assert await mod.migrate(OWNER, dry_run=False, keep_chatgpt_grant=True) == mod.EXIT_OK
+
+    reconcile.assert_not_awaited()
+    out = capsys.readouterr().out
+    assert mod._CHATGPT_CARRY_OVER in out
+    assert mod._CHATGPT_RECONNECT not in out
+
+
+async def test_all_flag_summary_reports_carry_over_pending_when_the_grant_is_kept(
+    efs_ready, settings_ok, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        mod.container_repo, "scan_all", AsyncMock(return_value=[{"owner_id": "a", "runtime_host": "ecs"}])
+    )
+    monkeypatch.setattr(mod, "_load_company", AsyncMock(return_value=SimpleNamespace(status="active")))
+    monkeypatch.setattr(mod, "migrate", AsyncMock(return_value=mod.EXIT_OK))
+    monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("chatgpt_oauth", None)))
+
+    await mod.migrate_all(dry_run=False, keep_chatgpt_grant=True)
+
+    assert mod._CHATGPT_CARRY_OVER in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # Ruling M6-R3 — rollback
 # ---------------------------------------------------------------------------
@@ -926,7 +980,7 @@ async def test_all_flag_migrates_every_non_reference_row_and_includes_unstamped_
     ]
     migrated: list[str] = []
 
-    async def fake_migrate(owner_id, *, dry_run, _company=None):
+    async def fake_migrate(owner_id, *, dry_run, keep_chatgpt_grant=False, _company=None):
         migrated.append(owner_id)
         return mod.EXIT_OK
 
@@ -943,7 +997,7 @@ async def test_all_flag_skips_pass_admission_rows(efs_ready, settings_ok, monkey
     rows = [{"owner_id": f"{mod.PASS_KEY_PREFIX}nightly-sweep"}, {"owner_id": "a", "runtime_host": "ecs"}]
     migrated: list[str] = []
 
-    async def fake_migrate(owner_id, *, dry_run, _company=None):
+    async def fake_migrate(owner_id, *, dry_run, keep_chatgpt_grant=False, _company=None):
         migrated.append(owner_id)
         return mod.EXIT_OK
 
@@ -960,7 +1014,7 @@ async def test_all_flag_skips_rows_with_no_active_paperclip_company(efs_ready, s
     rows = [{"owner_id": "no-company", "runtime_host": "ecs"}, {"owner_id": "a", "runtime_host": "ecs"}]
     migrated: list[str] = []
 
-    async def fake_migrate(owner_id, *, dry_run, _company=None):
+    async def fake_migrate(owner_id, *, dry_run, keep_chatgpt_grant=False, _company=None):
         migrated.append(owner_id)
         return mod.EXIT_OK
 
@@ -980,7 +1034,7 @@ async def test_all_flag_retries_a_transient_exit_exactly_once(efs_ready, setting
     rows = [{"owner_id": "a", "runtime_host": "ecs"}]
     attempts: list[str] = []
 
-    async def flaky_then_ok(owner_id, *, dry_run, _company=None):
+    async def flaky_then_ok(owner_id, *, dry_run, keep_chatgpt_grant=False, _company=None):
         attempts.append(owner_id)
         return mod.EXIT_TRANSIENT if len(attempts) == 1 else mod.EXIT_OK
 
@@ -997,7 +1051,7 @@ async def test_all_flag_reports_a_persistent_transient_failure(efs_ready, settin
     rows = [{"owner_id": "a", "runtime_host": "ecs"}]
     attempts: list[str] = []
 
-    async def always_transient(owner_id, *, dry_run, _company=None):
+    async def always_transient(owner_id, *, dry_run, keep_chatgpt_grant=False, _company=None):
         attempts.append(owner_id)
         return mod.EXIT_TRANSIENT
 
@@ -1054,7 +1108,7 @@ async def test_all_flag_exit_code_prefers_1_then_11_never_max(
     rows = [{"owner_id": f"o{i}", "runtime_host": "ecs"} for i in range(len(codes))]
     code_by_owner = {f"o{i}": getattr(mod, name) for i, name in enumerate(codes)}
 
-    async def fake_migrate(owner_id, *, dry_run, _company=None):
+    async def fake_migrate(owner_id, *, dry_run, keep_chatgpt_grant=False, _company=None):
         return code_by_owner[owner_id]
 
     monkeypatch.setattr(mod.container_repo, "scan_all", AsyncMock(return_value=rows))
@@ -1090,7 +1144,7 @@ async def test_all_flag_passes_the_loaded_company_into_migrate(efs_ready, settin
     monkeypatch.setattr(mod, "resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None)))
 
     await mod.migrate_all(dry_run=False)
-    migrate.assert_awaited_once_with("a", dry_run=False, _company=company)
+    migrate.assert_awaited_once_with("a", dry_run=False, keep_chatgpt_grant=False, _company=company)
 
 
 async def test_a_provision_superseded_from_the_stamp_maps_to_lost_claim(precondition_ok, monkeypatch, tmp_path):

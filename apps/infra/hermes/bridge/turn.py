@@ -213,6 +213,7 @@ ATTACHMENT_MAX_BYTES_BY_TYPE = {"application/pdf": PDF_ATTACHMENT_MAX_BYTES}
 # dispatch that message was part of (report 03 §1). Widened deliberately.
 ATTACHMENT_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf")
 IMAGE_ATTACHMENT_TYPES = frozenset(ATTACHMENT_TYPES) - {"application/pdf"}
+MAX_NATIVE_IMAGES = 20
 ROOM_EVENT_KINDS = ("user_request", "room_event")
 # agent_mail (Task 20) and paperclip_run (Task 21, fix round C3) carry no room: no
 # participants, no frame channel, no thread, no run block — only a target agent and
@@ -633,29 +634,45 @@ def run_ended_body(run_id, session_key, outcome, error_kind, usage) -> dict:
 
 
 def _native_image_part(path: str) -> dict:
-    """Validate, normalize and encode a bridge-controlled local image with Hermes itself."""
+    """Validate, normalize, resize and encode a bridge-controlled local image with Hermes."""
     import asyncio
 
     from tools.vision_tools import (
-        _image_to_base64_data_url,
+        _EMBED_MAX_DIMENSION,
+        _EMBED_TARGET_BYTES,
         _prepare_image,
+        _resize_prepared,
         _unlink_quietly,
     )
 
     prepared = asyncio.run(_prepare_image(path, None, None, validate_decode=True))
     try:
-        data_url = _image_to_base64_data_url(prepared.path, mime_type=prepared.mime)
+        data_url = asyncio.run(
+            _resize_prepared(
+                prepared,
+                {},
+                max_base64_bytes=_EMBED_TARGET_BYTES,
+                max_dimension=_EMBED_MAX_DIMENSION,
+                force_jpeg=True,
+            )
+        )
+        if len(data_url) > _EMBED_TARGET_BYTES:
+            raise ValueError("image remains too large after native resize")
     finally:
         _unlink_quietly(prepared.path)
     return {"type": "image_url", "image_url": {"url": data_url}}
 
 
 def _message_image_paths(body: dict, media: list[str]) -> dict[str, list[str]]:
-    """Associate materialized image paths with the canonical message that owns them."""
+    """Associate up to 20 images with their messages, prioritizing current then newest history."""
     available = set(media)
     room_id = (body.get("room") or {}).get("id")
     by_message: dict[str, list[str]] = {}
-    for message in [body.get("message") or {}, *body.get("recentHistory", [])]:
+    remaining = MAX_NATIVE_IMAGES
+    messages = [body.get("message") or {}, *reversed(body.get("recentHistory", []))]
+    for message in messages:
+        if remaining == 0:
+            break
         message_id = message.get("messageId")
         if not message_id:
             continue
@@ -666,8 +683,10 @@ def _message_image_paths(body: dict, media: list[str]) -> dict[str, list[str]]:
             path = str(sync.attachment_path(room_id, attachment))
             if path in available:
                 paths.append(path)
+        paths = paths[:remaining]
         if paths:
             by_message[message_id] = paths
+            remaining -= len(paths)
     return by_message
 
 

@@ -916,8 +916,7 @@ async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provide
             await hermes_cli.clear(owner_id, provider, p.wiring.materializer, cred)
         else:
             logger.info(
-                "agentcore: skipping %s materializer teardown for owner=%s — no Hermes projection "
-                "for this rail",
+                "agentcore: skipping %s materializer teardown for owner=%s — no Hermes projection for this rail",
                 provider,
                 owner_id,
             )

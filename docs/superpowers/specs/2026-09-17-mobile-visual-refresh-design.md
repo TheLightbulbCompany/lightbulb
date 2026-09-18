@@ -21,7 +21,9 @@ Approved scope: **targeted fixes, not a full redesign.** Type scale, depth,
 and the DM/group split. The structure stays.
 
 References supplied: Slack (sidebar + home), WhatsApp (chat list), Microsoft
-Teams (chat list).
+Teams (chat list). **Slack is the primary reference** — the owner named it for
+both type scale and gradient placement (2026-09-17). WhatsApp and Teams remain
+useful for row density only.
 
 ## 2. The finding that reframes this
 
@@ -178,14 +180,30 @@ conceptually aligned; do not design a third pattern.
 
 ## 8. Open questions for the owner
 
-§3 is settled — all four. Still open:
+§3 is settled — all four. Type scale and gradient placement are settled too:
+**Slack is the reference for both** (owner, 2026-09-17).
 
-1. How large is "big enough" for text? A reference beats a number: point at a
-   screen and say "this size." Without one, the type bump is a guess, and a
-   guess that lands wrong costs another round trip through `theme.ts`'s ~100
-   call sites.
-2. Where should gradients actually appear? "In the chrome" is not specific
-   enough to build. Naming two or three surfaces (the sidebar? the header? the
-   active row?) is enough.
-3. Does the Brand Identity Manual amendment need anyone else's sign-off, or is
+That answers the two questions that were blocking, because Slack's iOS app is
+a concrete artifact we can measure rather than a taste argument. The
+implementation plan pins exact values off the supplied screenshots; the
+direction is:
+
+- **Type** — Slack's list rows carry a conversation name at roughly body size
+  with a clearly quieter one-line preview beneath. Ours is smaller than that
+  on both lines. Measure the reference, do not invent a scale.
+- **Gradient** — Slack's Home header carries its aubergine wash behind the
+  workspace name, and the ground beneath is a flat dark surface. So the
+  gradient is **one header treatment, not a texture applied everywhere**. That
+  is a much narrower change than "add gradients" implies, and it is the part
+  worth copying: the depth in Slack's list comes from the plane ladder (§4.2),
+  not from gradients.
+
+⚠️ **Slack's palette is not ours.** "Make it look like Slack" is a direction
+about structure, density and where depth comes from — not a licence to adopt
+Slack's aubergine. The gradient goes in our own brand colours, which is
+exactly what the Brand Identity Manual amendment in §3 has to define.
+
+Still open:
+
+1. Does the Brand Identity Manual amendment need anyone else's sign-off, or is
    this decision sufficient?

@@ -1,6 +1,7 @@
 # Messaging sidebar IA: group chats, and where the join link lives
 
-**Status:** PROPOSED — awaiting owner review. No implementation until approved.
+**Status:** Join-link placement DECIDED 2026-09-17 (§4). Grouping proposed.
+No implementation until the plan is approved.
 **Date:** 2026-09-17
 **Scope:** the conversation sidebar on web + mobile, and the placement of the
 workspace join link.
@@ -92,23 +93,17 @@ precisely that Slack's own treatment is confusing.
 Put a **workspace invite affordance in the messaging surface's top-right,
 beside the workspace name.**
 
-Open question for the owner, because the answer changes the work
-substantially:
+**DECIDED 2026-09-17: option (a) — the control opens the existing invite
+page.** It invents no new invite primitive and mints no new credential; it is
+a shortcut to a surface that already exists and already enforces its own
+permissions. No clipboard handling, which matters here: a recent commit
+(`fix(orgs): keep join credentials out of request URLs`) shows join
+credentials are deliberately treated as sensitive in this codebase, so a
+copy-link control would have needed its own justification.
 
-- **(a) A button that opens the existing invite UI.** Cheapest, reuses
-  `WorkspaceMembersSection`'s logic, one click to a familiar dialog.
-- **(b) A copy-link-to-clipboard control.** Fastest for the actual job
-  ("send a link to your teammates"), but silently puts a credential on the
-  clipboard, and the existing invite flow may be per-email rather than a
-  reusable link.
-
-**Recommendation: (a), with a "Copy invite link" action inside it** if and
-only if the backend already mints a reusable join link. It must not invent a
-new invite primitive. Before implementing, verify what
-`WorkspaceMembersSection` and the org endpoints actually support — a recent
-commit (`fix(orgs): keep join credentials out of request URLs`) shows join
-credentials are treated as sensitive, so a link-based flow needs care and is
-not a given.
+Implementation is therefore small: a button beside the workspace name that
+routes to the existing members/invite surface. Do not duplicate any invite
+logic into the messaging components.
 
 ### Visibility
 
@@ -150,8 +145,9 @@ rule.
 
 ## 8. Open questions for the owner
 
-1. Join link: option (a) or (b) above?
-2. On mobile, should the DMs tab show group chats too, or become strictly
+Settled: the join link opens the existing invite page (§4).
+
+1. On mobile, should the DMs tab show group chats too, or become strictly
    one-to-one like the sidebar group?
-3. Should an existing `group-dm` that an owner has already starred or filed
+2. Should an existing `group-dm` that an owner has already starred or filed
    be left exactly where it is (recommended), or re-homed into the new group?

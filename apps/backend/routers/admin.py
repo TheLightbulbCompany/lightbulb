@@ -33,7 +33,6 @@ from core.services import (
     billing_service,
     clerk_admin,
     container_rpc,
-    runtime_transport,
     system_health,
 )
 from core.services.account_wipe import (
@@ -46,7 +45,6 @@ from core.services.account_wipe import (
 )
 from core.services.admin_audit import audit_admin_action, extract_client_ip
 from core.services.admin_service import resolve_admin_owner_id
-from core.services.config_patcher import patch_openclaw_config
 from core.services.runtime_rpc import config_patch_roster
 from core.services.webhook_dedup import idempotency
 from core.services.messaging import ApiProblem
@@ -723,7 +721,7 @@ async def admin_account_resend_verification(
 
 @router.patch(
     "/users/{user_id}/config",
-    description="Deep-merge a config patch into the user's openclaw.json. Patch field redacted in audit row.",
+    description="Fan a config patch out to the user's roster profiles. Patch field redacted in audit row.",
 )
 @audit_admin_action("config.patch", redact_paths=["patch"])
 async def admin_config_patch(
@@ -732,15 +730,11 @@ async def admin_config_patch(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    # EFS workspace lives at /mnt/efs/users/{owner_id}/openclaw.json. For org
-    # members owner_id is the org_id — patching {user_id} writes to a non-
-    # existent personal dir (admin-org-owner-id P1).
+    # For org members owner_id is the org_id — patching {user_id} would target a
+    # workspace that does not exist (admin-org-owner-id P1).
     owner_id, _ = await resolve_admin_owner_id(user_id)
-    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
-        # M6 row #13: same S3-profile fan-out as the other two config-patch doors.
-        await config_patch_roster(owner_id, body.patch, None)
-        return {"status": "patched"}
-    await patch_openclaw_config(owner_id=owner_id, patch=body.patch)
+    # M6 row #13: same S3-profile fan-out as the other two config-patch doors.
+    await config_patch_roster(owner_id, body.patch, None)
     return {"status": "patched"}
 
 

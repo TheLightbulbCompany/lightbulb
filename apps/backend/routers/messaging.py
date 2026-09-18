@@ -489,30 +489,19 @@ async def _resolved_run(auth: AuthContext, run_id: str) -> tuple[str, dict]:
     return owner_id, row
 
 
-async def _post_run_control(url: str, token: str, payload: dict) -> int:
-    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
-        response = await client.post(url, json=payload, headers={"Authorization": f"Bearer {token}"})
-    return response.status_code
-
-
 async def _run_control(owner_id: str, run_id: str, action: str, payload: dict) -> int | None:
     """202 accepted, 404 not active, None when no container is running."""
-    container, ip = await get_ecs_manager().resolve_running_container(owner_id)
-    if not container or not ip:
+    container, address = await get_ecs_manager().resolve_running_container(owner_id)
+    if not container or not address:
         return None
-    if runtime_transport.host_for(container) == "agentcore":
-        response = await runtime_transport.request(
-            container,
-            f"/plugins/lightbulb-channel/runs/{run_id}/{action}",
-            ip=ip,
-            json_body=payload,
-            headers={"Authorization": f"Bearer {container['gateway_token']}"},
-            timeout_s=10.0,
-        )
-        return response.status_code
-    return await _post_run_control(
-        f"http://{ip}:18789/plugins/lightbulb-channel/runs/{run_id}/{action}", container["gateway_token"], payload
+    response = await runtime_transport.request(
+        container,
+        f"/plugins/lightbulb-channel/runs/{run_id}/{action}",
+        json_body=payload,
+        headers={"Authorization": f"Bearer {container['gateway_token']}"},
+        timeout_s=10.0,
     )
+    return response.status_code
 
 
 @router.get("/messaging/runs/{run_id}", response_model=RunStatusResponse)
@@ -775,8 +764,6 @@ async def _paperclip_hermes_runtime_response(
     json_body: dict,
     raw: bool = False,
 ):
-    if runtime_transport.host_for(container) != "agentcore":
-        raise HTTPException(status_code=409, detail="owner does not use the Hermes runtime")
     try:
         response = await runtime_transport.request(
             container,

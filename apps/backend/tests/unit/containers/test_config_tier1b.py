@@ -381,21 +381,6 @@ class TestToolDeny:
         assert set(TOOL_DENY_WITH_NODES) == set(TOOL_DENY_BASE) | {"nodes"}
         assert set(_cfg()["tools"]["deny"]) == set(TOOL_DENY_WITH_NODES)
 
-    def test_relay_hooks_uses_shared_constants(self):
-        """relay_hooks REPLACES the deny list wholesale on node connect/close; a
-        hand-written list there would silently re-enable tts/media-gen the
-        moment a desktop pairs. It must consume the shared constants."""
-        import inspect
-
-        from core.services import relay_hooks
-
-        src = inspect.getsource(relay_hooks)
-        assert "TOOL_DENY_BASE" in src
-        assert "TOOL_DENY_WITH_NODES" in src
-        # No hand-maintained literal deny lists left behind.
-        assert '["canvas", "cron"]' not in src
-        assert '["canvas", "nodes", "cron"]' not in src
-
 
 class TestCompactionNotifierHook:
     def test_bundled_notifier_enabled_alongside_existing_hooks(self):

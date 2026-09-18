@@ -120,13 +120,19 @@ def test_env_overlay_carries_only_terminal_policy_not_arbitrary_child_env(home, 
 
 
 def test_a_native_turn_declares_its_child_env_names_without_leaking_any_value(home, monkeypatch):
-    """The two halves the image then joins up: every name the profile can supply is listed in
-    `terminal.env_passthrough` (so Hermes's filter rescues it) and exists in the process env
-    as an EMPTY placeholder (so the filter iterates it at all -- `_make_run_env` walks
-    `dict(os.environ | env)`), while the VALUES stay in the per-profile secret scope."""
+    """The two halves the image then joins up: every name the profile can supply is registered
+    with Hermes's per-session env passthrough (so its filter rescues it) and exists in the
+    process env as an EMPTY placeholder (so the filter iterates it at all -- `_make_run_env`
+    walks `dict(os.environ | env)`), while the VALUES stay in the per-profile secret scope."""
     profile = home / "profiles" / "agent-1"
     profile.mkdir(parents=True)
     (profile / ".env").write_text("PAPERCLIP_API_KEY=pcp_live_x\nSOME_MCP_TOKEN=t\n")
+
+    registered: set[str] = set()
+    fake_ep = ModuleType("tools.env_passthrough")
+    fake_ep.register_env_passthrough = registered.update
+    monkeypatch.setitem(sys.modules, "tools", ModuleType("tools"))
+    monkeypatch.setitem(sys.modules, "tools.env_passthrough", fake_ep)
 
     installed = {}
     fake_ss = ModuleType("agent.secret_scope")
@@ -150,7 +156,7 @@ def test_a_native_turn_declares_its_child_env_names_without_leaking_any_value(ho
         session_cache_read_tokens = session_cache_write_tokens = 0
 
         def run_conversation(self, **_kw):
-            seen["passthrough"] = set(turn.sync.profile_child_env_names())
+            seen["passthrough"] = set(registered)
             seen["scope"] = dict(installed)
             seen["env"] = {k: os.environ.get(k) for k in seen["scope"]}
             return {"api_calls": 1, "final_response": "done"}
@@ -166,9 +172,12 @@ def test_a_native_turn_declares_its_child_env_names_without_leaking_any_value(ho
     turn.register_paperclip_run(identity, request)
     assert turn._run_native_paperclip(identity, request)[0] == "completed"
 
-    # The bridge's fixed contract UNION the live scope, so an owner-provisioned name the bridge
-    # cannot know ahead of time (SOME_MCP_TOKEN) is carried too.
-    assert seen["passthrough"] == {*turn.sync.BRIDGE_CHILD_ENV_NAMES, "SOME_MCP_TOKEN"}
+    # EXACTLY this turn's scope -- the per-turn identity names, the profile's own static .env
+    # (including an owner-provisioned SOME_MCP_TOKEN the bridge cannot know ahead of time), and
+    # the CLI-connector paths. No fixed contract: `register_env_passthrough` is per session, so
+    # there is no cached list for a wrong-ordered turn to inherit.
+    assert seen["passthrough"] == set(seen["scope"])
+    assert {"PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID", "SOME_MCP_TOKEN"} <= seen["passthrough"]
     assert seen["scope"]["PAPERCLIP_API_KEY"] == "pcp_live_x"
     assert seen["scope"]["PAPERCLIP_RUN_ID"] == "run-1"
     # Present (so Hermes's filter walks them) but VALUE-FREE: the value comes from the scope.
@@ -177,41 +186,39 @@ def test_a_native_turn_declares_its_child_env_names_without_leaking_any_value(ho
     assert set(seen["env"]) <= seen["passthrough"]
     assert set(seen["env"].values()) == {""}
 
-    # Reviewer's finding on #2754, cheapest to pin here: every name the bridge puts in the
-    # per-turn OVERLAY (the scope minus the profile's own static .env) must also be in the fixed
-    # contract. Without this, a lane that adds an overlay name and forgets the tuple still
-    # passes every test -- and then fails only under room-turn-first ordering in a warm microVM,
-    # where Hermes has already cached a name list that does not contain it.
+    # Reviewer's finding on #2754 is now structural rather than a list to keep in step: a lane
+    # that adds a per-turn overlay name gets it registered automatically, because the registered
+    # set IS the scope. The equality assertion above is what keeps that true.
     static_env_names = {
         line.split("=", 1)[0] for line in (profile / ".env").read_text().splitlines() if "=" in line
     }
-    overlay_names = set(seen["scope"]) - static_env_names
-    assert overlay_names <= set(turn.sync.BRIDGE_CHILD_ENV_NAMES), (
-        f"{sorted(overlay_names - set(turn.sync.BRIDGE_CHILD_ENV_NAMES))} reach the scope per-turn but are "
-        "missing from BRIDGE_CHILD_ENV_NAMES -- they would be dropped whenever a room turn runs first"
-    )
+    assert set(seen["scope"]) - static_env_names, "the per-turn overlay should not be empty here"
 
 
-def test_the_declared_name_list_does_not_depend_on_what_this_turn_happens_to_hold(home, monkeypatch):
-    """Hermes caches ``terminal.env_passthrough`` per home for the PROCESS LIFETIME with no
-    invalidation, and one warm microVM serves room turns AND Paperclip runs. So whichever turn
-    runs a shell command first decides the list for every later turn — and a room turn's scope
-    holds only the static `.env`. Deriving the list from the live scope froze it without the
-    five per-turn identity names, and the native turn then got them as EMPTY strings (caught
-    in-image; `tests/smoke/paperclip_child_env_smoke.py` runs a room turn first for this reason).
+def test_the_names_are_registered_through_hermes_own_per_session_api(home, monkeypatch):
+    """The whole reason the bridge used to carry a fixed name contract was the OTHER door:
+    `terminal.env_passthrough` in config.yaml is cached per Hermes home for the PROCESS
+    LIFETIME with no invalidation, so whichever turn ran a shell command first froze the list,
+    and a room turn's scope holds only the static `.env`.
 
-    So the NAME list is a fixed contract, stable no matter what a given turn holds. A unit test
-    cannot prove Hermes's caching; it can prove the list no longer varies, which is the
-    property the cache needs."""
-    fake_ss = ModuleType("agent.secret_scope")
-    fake_ss.current_secret_scope = lambda: {"PAPERCLIP_API_KEY": "k"}  # a ROOM turn's scope
-    monkeypatch.setitem(sys.modules, "agent", ModuleType("agent"))
-    monkeypatch.setitem(sys.modules, "agent.secret_scope", fake_ss)
-    room_turn_names = set(turn.sync.profile_child_env_names())
+    `register_env_passthrough` is ContextVar-scoped per session and is consulted FIRST by
+    `is_env_passthrough`, so there is no list to freeze. This pins that the bridge uses that
+    API and hands it exactly the turn's own scope; the end-to-end proof is
+    `tests/smoke/paperclip_child_env_smoke.py`, which needs the image.
+    """
+    registered: list[list[str]] = []
+    native = ModuleType("tools.env_passthrough")
+    native.register_env_passthrough = lambda names: registered.append(sorted(names))
+    monkeypatch.setitem(sys.modules, "tools", ModuleType("tools"))
+    monkeypatch.setitem(sys.modules, "tools.env_passthrough", native)
 
-    fake_ss.current_secret_scope = lambda: None  # no scope installed at all
-    unscoped_names = set(turn.sync.profile_child_env_names())
+    turn._allow_child_env_names({"PAPERCLIP_RUN_ID": "run-1", "SOME_MCP_TOKEN": "t"})
+    assert registered == [["PAPERCLIP_RUN_ID", "SOME_MCP_TOKEN"]]
 
-    contract = set(turn.sync.BRIDGE_CHILD_ENV_NAMES)
-    assert contract <= room_turn_names and contract <= unscoped_names
-    assert {"PAPERCLIP_API_URL", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID"} <= room_turn_names
+    # And the cached config.yaml door is never written back: pin_profile_defaults no longer
+    # touches terminal.env_passthrough at all.
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    turn.sync.write_profile_config("ceo", {})
+    monkeypatch.setattr(turn.sync, "_aux_defaults", lambda: {})
+    config = turn.sync.pin_profile_defaults("ceo", "aip-aux")
+    assert "env_passthrough" not in (config.get("terminal") or {})

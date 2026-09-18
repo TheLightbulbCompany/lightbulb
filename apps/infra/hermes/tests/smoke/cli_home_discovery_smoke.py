@@ -13,10 +13,14 @@ lane shipped a green mocked test while delivering ZERO variables, because
 
 Network-free, no model call. Two profiles with DIFFERENT projected credentials.
 
-**Turn ORDER is the point of the first turn.** Hermes caches ``terminal.env_passthrough`` per
-home for the PROCESS LIFETIME with no invalidation, so whichever turn runs a shell command first
-decides the name list for every later turn. A plain ROOM turn runs first here, exactly as it
-does in a warm microVM, and only then the turn that reads the credentials.
+**Turn ORDER is the point of the first turn.** Hermes caches the ``terminal.env_passthrough``
+list from **config.yaml** per home for the PROCESS LIFETIME with no invalidation, so whichever
+turn ran a shell command first used to decide the name list for every later turn. A plain ROOM
+turn runs first here, exactly as it does in a warm microVM, and only then the turn that reads
+the credentials. The bridge now registers names through that module's own ContextVar-scoped
+``register_env_passthrough`` (consulted FIRST by ``is_env_passthrough``, never cached), so this
+ordering can no longer freeze anything -- and this smoke is what proves that per-session door
+actually delivers, rather than just looking right in a mock.
 
 **What this proves, and the measurement that shaped the design:** ``$HOME`` is
 ``_is_global_env`` (``agent/secret_scope.py``), so it resolves from ``os.environ`` and FREEZES at
@@ -59,7 +63,7 @@ LOOKUPS = {
     "xurl": '"$HOME/.xurl"',
 }
 
-# Delivered per-profile through terminal.env_passthrough + the secret scope. Each must hold
+# Delivered per-profile through Hermes's per-session env passthrough + the secret scope. Each must hold
 # THIS profile's absolute path -- that is the whole reason they are delivered rather than left
 # to $HOME, which freezes at the first profile to run a shell in the process.
 MUST_BE_PER_PROFILE = ("AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
@@ -200,8 +204,9 @@ with tempfile.TemporaryDirectory() as temp:
     label = {"value": "room"}
 
     def construct(agent_id, body, frames, session_key):
-        # Keep the REAL pin_profile_defaults on the path -- it is what writes
-        # terminal.env_passthrough -- then hand back a stub agent instead of a model call.
+        # Keep the REAL pin_profile_defaults on the path (it is what the turn runs) -- then hand
+        # back a stub agent instead of a model call. The passthrough registration itself happens
+        # in turn._secret_scope, which wraps this call, so it is on the path either way.
         sync.pin_profile_defaults(agent_id, os.environ.get("AUXILIARY_MODEL") or turn.MODEL)
         return Agent(agent_id, label["value"])
 
@@ -243,10 +248,13 @@ with tempfile.TemporaryDirectory() as temp:
         values = {captured[f"{p}:discovery"][f"var:{var}"] for p in PROFILES}
         assert len(values) == len(PROFILES), f"{var} did not re-resolve per profile: {values}"
 
+    # The CACHED door must stay unwritten: `terminal.env_passthrough` in config.yaml is what
+    # `_load_config_passthrough` freezes per home for the process lifetime. The bridge registers
+    # per session instead, so a turn's names cannot be decided by an earlier turn. The real
+    # proof is `check()` above -- the child actually received this profile's own values.
     for profile in PROFILES:
-        listed = (sync.read_profile_config(profile).get("terminal") or {}).get("env_passthrough") or []
-        missing = {"GOG_KEYRING_PASSWORD", "GOG_KEYRING_BACKEND"} - set(listed)
-        assert not missing, f"{profile}: config.yaml passthrough is missing {sorted(missing)}"
+        terminal = sync.read_profile_config(profile).get("terminal") or {}
+        assert "env_passthrough" not in terminal, f"{profile}: {terminal}"
 
     present = {k.split(":", 1)[1].split("=")[0]: v
                for k, v in captured[f"{PROFILES[0]}:room"].items() if k.startswith("binary:")}

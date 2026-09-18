@@ -26,7 +26,6 @@ from core.observability.e2e_correlation import E2ECorrelationMiddleware
 from core.repositories import container_repo
 from core.services.messaging import ApiProblem
 from core.services.paperclip_admin_client import PaperclipApiError
-from core.services.runtime_transport import RuntimeHostUnknownError
 from core.services.update_service import run_scheduled_worker
 from routers import (
     agent_builder,
@@ -34,9 +33,6 @@ from routers import (
     apple_iap,
     automations,
     billing,
-    brain,
-    browser_view,
-    channels,
     config,
     connections,
     container,
@@ -67,7 +63,6 @@ from routers import (
     settings_keys,
     slack_app,
     support_tickets,
-    updates,
     users,
     webhooks,
     websocket_chat,
@@ -507,10 +502,6 @@ openapi_tags = [
         "description": "OpenClaw container RPC proxy for the control panel.",
     },
     {
-        "name": "channels",
-        "description": "Messaging channel management (Telegram, Discord, WhatsApp).",
-    },
-    {
         "name": "integrations",
         "description": "MCP server and ClawHub integration management.",
     },
@@ -555,20 +546,6 @@ app = FastAPI(
 @app.exception_handler(ApiProblem)
 async def messaging_api_problem_handler(request, exc: ApiProblem):
     return JSONResponse(status_code=exc.status_code, content=exc.body())
-
-
-# A write door refused to guess the owner's runtime host (``runtime_transport``'s fail-closed
-# lookup). Nothing was written — the read itself failed — so this is a plain "retry", and
-# answering it in ONE place keeps every such door's own diff to a single keyword instead of a
-# try/except per route. Service callers catch it in their existing rollback paths first and
-# never reach this.
-@app.exception_handler(RuntimeHostUnknownError)
-async def runtime_host_unknown_handler(request, exc: RuntimeHostUnknownError):
-    logger.warning("runtime host lookup failed on %s; refused the write", request.url.path, exc_info=exc)
-    return JSONResponse(
-        status_code=503,
-        content={"detail": "Could not determine this workspace's runtime. Please try again."},
-    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -804,12 +781,8 @@ app.include_router(websocket_chat.router, prefix="/api/v1/ws")
 app.include_router(messaging.router, prefix="/api/v1", tags=["messaging"])
 app.include_router(runtime_rpc.router, prefix="/api/v1/runtime", tags=["messaging"])
 
-# Container browser live-view relay (direct browser WS via the ALB, like the
-# paperclip_proxy relay — NOT the API Gateway WebSocket path above)
-app.include_router(browser_view.router, prefix="/api/v1/browser-view", tags=["browser-view"])
-
 # Raw WebSocket relay for machine clients (desktop node hosts, Paperclip
-# operators) — same door pattern as browser_view above, not the API Gateway
+# operators) — a direct browser-facing WS door on the ALB, not the API Gateway
 # WebSocket path.
 app.include_router(gateway_relay.router, prefix="/api/v1/gateway", tags=["gateway-relay"])
 
@@ -839,16 +812,10 @@ app.include_router(container.router, prefix="/api/v1/container", tags=["containe
 # Workspace file uploads (POST /files)
 app.include_router(container_files.router, prefix="/api/v1/container", tags=["container"])
 
-# Container recovery + gateway control (POST /recover, POST /gateway/restart)
+# Container recovery (POST /recover)
 app.include_router(container_recover.router, prefix="/api/v1/container", tags=["container"])
 
-# Container updates (pending updates, apply/schedule)
-app.include_router(updates.router, prefix=f"{settings.API_V1_STR}/container", tags=["container"])
-
-# Channel management (Telegram, Discord, WhatsApp)
-app.include_router(channels.router, prefix="/api/v1/channels", tags=["channels"])
-
-# Config patching (unified EFS write endpoint)
+# Config read/patch over the owner's roster profiles
 app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
 
 app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
@@ -871,9 +838,6 @@ app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
 
 # Workspace file browser (EFS agent workspace)
 app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["container"])
-
-# Brain — owner surface over the memory-wiki vault (EFS wiki/main/)
-app.include_router(brain.router, prefix="/api/v1/container", tags=["container"])
 
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])

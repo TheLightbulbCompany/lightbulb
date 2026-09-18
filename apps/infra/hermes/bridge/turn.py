@@ -953,8 +953,12 @@ def _declare_child_env_names(secrets: dict) -> None:
 
     An EXISTING value is never overwritten -- ``AWS_BEARER_TOKEN_BEDROCK`` and friends are
     genuinely process-wide, and blanking one would break the very turn this is preparing.
+
+    Seeds the bridge's whole fixed contract, not just this turn's scope keys, for the same
+    reason ``sync.profile_child_env_names`` unions it: whichever turn runs first must not leave
+    a later turn's names invisible to the filter.
     """
-    for name in secrets:
+    for name in {*sync.BRIDGE_CHILD_ENV_NAMES, *secrets}:
         os.environ.setdefault(name, "")
 
 

@@ -654,14 +654,38 @@ def auxiliary_pin(aux_defaults: dict, model: str) -> dict:
             "bedrock": {"discovery": {"enabled": False}}}
 
 
+#: Every name the BRIDGE itself can ever supply to a child, whether or not this turn has a
+#: value for it. It has to be a FIXED CONTRACT rather than a read of the live scope, because
+#: Hermes caches the config list per home for the PROCESS LIFETIME with no invalidation
+#: (``tools/env_passthrough.py::_load_config_passthrough`` stores ``_config_passthrough
+#: [home_key]`` on first read). One warm microVM serves room turns AND Paperclip runs, and
+#: rooms are the front door — so the first turn to run a shell command is usually a ROOM turn,
+#: whose scope holds only the static ``.env``. A list derived from that scope froze without the
+#: five per-turn identity names, and the later native turn then received them as EMPTY strings
+#: even though its own ``config.yaml`` listed them correctly (reproduced in the pinned image).
+#:
+#: Only NAMES belong here; values stay per-turn in the secret scope, and a name with no value
+#: this turn simply resolves to nothing. These six are already a published contract with the
+#: bundled paperclip skill (``skills/paperclip/SKILL.md``), which reads exactly these.
+#: A sibling lane adding child-visible names (e.g. CLI path vars) APPENDS to this tuple.
+BRIDGE_CHILD_ENV_NAMES: tuple[str, ...] = (
+    "PAPERCLIP_API_KEY",
+    "PAPERCLIP_API_URL",
+    "PAPERCLIP_AGENT_ID",
+    "PAPERCLIP_COMPANY_ID",
+    "PAPERCLIP_RUN_ID",
+    "PAPERCLIP_TASK_ID",
+)
+
+
 def profile_child_env_names() -> list[str]:
     """The names this profile's SANDBOXED CHILDREN (terminal, execute_code) may see.
 
-    ONE dict defines it — the profile's active secret scope, which is the profile's own
-    ``.env`` merged with whatever the bridge supplies for this turn. Nothing here is
-    lane-specific: a lane that needs a shell command to see something puts it in the
-    profile env (statically, via ``hermes_profiles.build_profile_env``) or in the per-turn
-    scope overlay, and it appears here automatically.
+    The bridge's fixed contract (``BRIDGE_CHILD_ENV_NAMES``) UNION the profile's active secret
+    scope — its own ``.env`` merged with whatever the bridge supplies for this turn. The union
+    is what makes the list stable across turns (see the constant's note: Hermes caches it once
+    per process) while still carrying owner-provisioned names the bridge cannot know ahead of
+    time, such as ``env_vars`` and translated MCP secrets.
 
     This is the list Hermes's ``terminal.env_passthrough`` wants. Its child envs strip
     secrets by default (``tools/environments/local.py::_filter_secret_env``) and consult
@@ -670,15 +694,16 @@ def profile_child_env_names() -> list[str]:
     process env — so listing a name here grants that profile's child its OWN value and
     never another profile's.
 
-    Empty outside the Hermes image (no ``agent.secret_scope``) and empty with no scope
-    installed, which is the fail-closed direction: an unlisted name simply never reaches a
-    shell.
+    Outside the Hermes image (no ``agent.secret_scope``), or with no scope installed, this is
+    the contract alone — never nothing, because an empty first read is exactly what gets cached
+    for the life of the process.
     """
+    names = set(BRIDGE_CHILD_ENV_NAMES)
     try:
         from agent.secret_scope import current_secret_scope
     except ImportError:  # dev/test environments outside the Hermes image
-        return []
-    return sorted(current_secret_scope() or {})
+        return sorted(names)
+    return sorted(names | set(current_secret_scope() or {}))
 
 
 def env_passthrough_pin(existing: dict, names: list[str]) -> dict:

@@ -123,14 +123,36 @@ def test_a_native_turn_declares_its_child_env_names_without_leaking_any_value(ho
     turn.register_paperclip_run(identity, request)
     assert turn._run_native_paperclip(identity, request)[0] == "completed"
 
-    # The static profile env AND the per-turn identity are one dict -- nothing PAPERCLIP-
-    # specific selects them, which is what lets a sibling lane add its own names the same way.
-    assert seen["passthrough"] == {
-        "PAPERCLIP_API_KEY", "SOME_MCP_TOKEN", "PAPERCLIP_API_URL", "PAPERCLIP_AGENT_ID",
-        "PAPERCLIP_COMPANY_ID", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID",
-    }
+    # The bridge's fixed contract UNION the live scope, so an owner-provisioned name the bridge
+    # cannot know ahead of time (SOME_MCP_TOKEN) is carried too.
+    assert seen["passthrough"] == {*turn.sync.BRIDGE_CHILD_ENV_NAMES, "SOME_MCP_TOKEN"}
     assert seen["scope"]["PAPERCLIP_API_KEY"] == "pcp_live_x"
     assert seen["scope"]["PAPERCLIP_RUN_ID"] == "run-1"
     # Present (so Hermes's filter walks them) but VALUE-FREE: the value comes from the scope.
     assert set(seen["env"]) == seen["passthrough"]
     assert set(seen["env"].values()) == {""}
+
+
+def test_the_declared_name_list_does_not_depend_on_what_this_turn_happens_to_hold(home, monkeypatch):
+    """Hermes caches ``terminal.env_passthrough`` per home for the PROCESS LIFETIME with no
+    invalidation, and one warm microVM serves room turns AND Paperclip runs. So whichever turn
+    runs a shell command first decides the list for every later turn — and a room turn's scope
+    holds only the static `.env`. Deriving the list from the live scope froze it without the
+    five per-turn identity names, and the native turn then got them as EMPTY strings (caught
+    in-image; `tests/smoke/paperclip_child_env_smoke.py` runs a room turn first for this reason).
+
+    So the NAME list is a fixed contract, stable no matter what a given turn holds. A unit test
+    cannot prove Hermes's caching; it can prove the list no longer varies, which is the
+    property the cache needs."""
+    fake_ss = ModuleType("agent.secret_scope")
+    fake_ss.current_secret_scope = lambda: {"PAPERCLIP_API_KEY": "k"}  # a ROOM turn's scope
+    monkeypatch.setitem(sys.modules, "agent", ModuleType("agent"))
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", fake_ss)
+    room_turn_names = set(turn.sync.profile_child_env_names())
+
+    fake_ss.current_secret_scope = lambda: None  # no scope installed at all
+    unscoped_names = set(turn.sync.profile_child_env_names())
+
+    contract = set(turn.sync.BRIDGE_CHILD_ENV_NAMES)
+    assert contract <= room_turn_names and contract <= unscoped_names
+    assert {"PAPERCLIP_API_URL", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID"} <= room_turn_names

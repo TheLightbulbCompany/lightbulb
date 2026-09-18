@@ -107,6 +107,32 @@ async def test_land_survives_a_container_with_no_config_yet():
 
 
 @pytest.mark.asyncio
+async def test_land_refuses_on_agentcore_before_any_write():
+    """The locked RMW into openclaw.json["env"]["vars"] is a dead write on
+    AgentCore -- there is no delivery mechanism yet (that is the profile
+    .env/secret-scope mechanism, out of scope here). Refuse the whole landing
+    rather than silently mark the workflow active with nothing actually
+    reachable by the agent."""
+    from core.services.provisioning_workflow import WorkflowRefused
+
+    with (
+        patch.object(mod.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True)) as is_ac,
+        patch.object(mod.integration_secret_store, "get", AsyncMock()) as sm_get,
+        patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
+        patch.object(mod.integrations_repo, "record_provider_resource", AsyncMock()) as record,
+        patch.object(mod.config_patcher, "set_openclaw_config_path", AsyncMock()) as patch_cfg,
+    ):
+        with pytest.raises(WorkflowRefused) as exc:
+            await mod.land_credentials(owner_id="org_a", resource=RES, env={"X": "1"})
+    assert exc.value.code == "unsupported_on_agentcore"
+    is_ac.assert_awaited_once_with("org_a")
+    sm_get.assert_not_awaited()
+    sm_put.assert_not_awaited()
+    record.assert_not_awaited()
+    patch_cfg.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_land_never_puts_a_secret_value_in_dynamodb():
     with (
         patch.object(mod.integration_secret_store, "get", AsyncMock(return_value=None)),
@@ -251,6 +277,31 @@ async def test_revoke_skips_the_secret_step_when_the_blob_is_already_gone():
     sm_put.assert_not_awaited()
     sm_del.assert_not_awaited()
     del_cfg.assert_awaited_once_with("org_a", ["env", "vars", "K"])
+    drop.assert_awaited_once_with("org_a", "posthog", "res_1")
+
+
+@pytest.mark.asyncio
+async def test_revoke_skips_the_dead_config_write_on_agentcore():
+    """The credential/pointer are backend-owned state (Secrets Manager +
+    DynamoDB) and revoking them is meaningful regardless of runtime host --
+    only the openclaw.json env.vars strip is a dead write on AgentCore (e.g. a
+    resource landed before the workspace migrated). Skip just that write;
+    never fail the whole revoke over it."""
+    with (
+        patch.object(mod.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True)) as is_ac,
+        patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[REVOKE_RES])),
+        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value={"OTHER": "t", "K": "p"})),
+        patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
+        patch.object(mod.integration_secret_store, "delete", AsyncMock()) as sm_del,
+        patch.object(mod.config_patcher, "delete_openclaw_config_path", AsyncMock()) as del_cfg,
+        patch.object(mod.integrations_repo, "remove_provider_resource", AsyncMock(return_value=[])) as drop,
+    ):
+        result = await mod.revoke_credentials(owner_id="org_a", provider="posthog", resource_id="res_1")
+    assert result is True
+    is_ac.assert_awaited_once_with("org_a")
+    sm_put.assert_awaited_once_with("org_a", "projects/posthog", {"OTHER": "t"})
+    sm_del.assert_not_awaited()
+    del_cfg.assert_not_awaited()
     drop.assert_awaited_once_with("org_a", "posthog", "res_1")
 
 

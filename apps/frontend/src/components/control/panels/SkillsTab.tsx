@@ -230,12 +230,13 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
   // roster-wide `config.patch` (no agentId) is the door, and because a deep merge
   // replaces a list wholesale the patch has to carry every name that stays off.
   //
-  // That list is `disabledNames` — the STORED names the bridge read out of config.yaml,
-  // unioned across the roster — never "which rendered rows are off" (reviews I3/N2). A
-  // disabled skill that is not on the profile the bridge scanned renders in no row at all,
-  // and a profile written by `agents.create` carries no `disabled` key; either omission
-  // would ride this wholesale list replace into a silent RE-ENABLE of a skill somebody
-  // deliberately turned off.
+  // That list is `disabledNames` — the STORED names, unioned across the roster, served by
+  // the BACKEND (`runtime_rpc.agentcore_disabled_skill_names`) because only it holds every
+  // profile's config.yaml. Never "which rendered rows are off" (reviews I3/N2): a disabled
+  // skill that is not on the profile the runtime scanned renders in no row at all, and a
+  // profile written by `agents.create` carries no `disabled` key; either omission would ride
+  // this wholesale list replace into a silent RE-ENABLE of a skill somebody deliberately
+  // turned off.
   //
   // No fallback to the rows (review N3): that IS the truncating path, so guessing with it
   // would write the wrong list on the one image where it could fire. Refusing is safer —

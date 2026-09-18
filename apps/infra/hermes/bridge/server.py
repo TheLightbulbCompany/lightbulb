@@ -230,31 +230,27 @@ def _profiles() -> list[str]:
 
 
 #: (expires_at, ids) for _roster's S3 listing. A settings panel can land on a microVM that has
-#: never run a turn, where `profiles/` is EMPTY -- answering "no agents" or "no skills" from
-#: that would be an empty answer that reads as fact. One delimited LIST of the owner's prefix
-#: is the cheap truth; cached because `health` polls every 60 s.
+#: never run a turn, where `profiles/` is EMPTY -- answering "no agents" from that would be an
+#: empty answer that reads as fact. One delimited LIST of the owner's prefix is the cheap truth;
+#: cached because `health` polls every 60 s.
 _ROSTER_TTL_S = 60.0
 _roster_cache: tuple[float, tuple[str, ...]] = (0.0, ())
 
 
-def _roster_listing() -> tuple[list[str], bool]:
-    """(every agent id this owner has, whether that list is AUTHORITATIVE).
+def _roster() -> list[str]:
+    """Every agent id this owner has: the local profile dirs UNION the S3 prefix.
 
-    Local dirs UNION the S3 prefix. A listing blip must not empty a panel, so the fallback is
-    still the local view -- but a short roster is only safe to DISPLAY, never to write back
-    from, so the second element says which one this is (review N5). With no bucket configured
-    the local dirs are the whole truth, so that answer is complete.
+    A listing blip must not empty a panel, so the fallback is the local view. Nothing served
+    from here is ever written BACK -- the one read that is (`skills.disabled`) is answered by
+    the backend, which owns every profile's config.yaml -- so a short answer degrades a display
+    and cannot corrupt a write. That is why there is no "is this AUTHORITATIVE" flag any more.
     """
     global _roster_cache
     names = set(_profiles())
     if not sync.S3_BUCKET:
-        return sorted(names), True
+        return sorted(names)
     expires, cached = _roster_cache
-    # A cached listing that has not expired was obtained successfully, so it is authoritative.
-    # A failed refresh deliberately does NOT advance `expires`, so it stays incomplete and
-    # retries rather than serving a stale list as fact for the rest of the TTL.
-    complete = time.time() < expires
-    if not complete:
+    if time.time() >= expires:
         try:
             prefix = f"{sync.S3_PREFIX}/"
             pages = sync._s3().get_paginator("list_objects_v2").paginate(
@@ -264,15 +260,9 @@ def _roster_listing() -> tuple[list[str], bool]:
                 for page in pages for p in page.get("CommonPrefixes", [])
             ))
             _roster_cache = (time.time() + _ROSTER_TTL_S, cached)
-            complete = True
         except Exception:  # noqa: BLE001 -- keep serving the local view on an S3 blip
             log.warning("roster listing failed", exc_info=True)
-    return sorted(names | set(cached)), complete
-
-
-def _roster() -> list[str]:
-    """The agent ids alone, for readers that only display them."""
-    return _roster_listing()[0]
+    return sorted(names | set(cached))
 
 
 def _boot_ready() -> bool:
@@ -552,18 +542,17 @@ def _profile_scope(agent_id: str):
     return turn._hermes_home_scope(agent_id)
 
 
-def _disabled_names(config: dict) -> set[str]:
-    """One profile's STORED `skills.disabled`, normalized by Hermes's own
-    `parse_config_string_list` -- `hermes config set` writes a list as a quoted JSON/Python
-    literal STRING, and reading that as one skill literally named `["pdf","shopify"]` would
-    show every skill enabled and let the next toggle wipe the real list (review I6.1).
-    That helper is pure (no home scope, no session context), so it is safe to call here.
+def _stored_disabled_names(config: dict) -> set[str]:
+    """One profile's STORED `skills.disabled`, for the per-row `disabled` flag only.
 
-    Deliberately NOT `agent.skill_utils.get_disabled_skill_names`, whose extra behaviours are
-    wrong for a list we hand back to be re-written: it unions `skills.platform_disabled[…]`
-    (promoting a platform-scoped disable to a global one on the next write) and subtracts
-    `ESSENTIAL_SKILLS` (silently deleting a stored name). Both would corrupt the round trip.
-    Recorded in the task report as review I6.2/I6.3.
+    Normalized by Hermes's own `parse_config_string_list` -- `hermes config set` writes a list
+    as a quoted literal STRING, and reading that as one skill literally named
+    `["pdf","shopify"]` would render every row enabled. That helper is pure (no home scope, no
+    session context), so it is safe to call here.
+
+    Deliberately NOT `agent.skill_utils.get_disabled_skill_names`: it unions
+    `skills.platform_disabled[...]` and subtracts `ESSENTIAL_SKILLS`, which are display
+    behaviours we do not want mixed into a stored-state read.
     """
     from agent.skill_utils import parse_config_string_list
 
@@ -571,75 +560,20 @@ def _disabled_names(config: dict) -> set[str]:
     return {v.strip() for v in parse_config_string_list(raw) if v.strip()}
 
 
-def _config_yaml_from_s3(agent_id: str) -> tuple[dict, bool]:
-    """(one profile's `config.yaml`, whether that read is TRUSTWORTHY), read by KEY.
-
-    Not `ensure_profile`, which falls through to `_download_profile` -- a full prefix LIST plus
-    a recency pull of nearly every object (the cost review I2 removed from
-    `models.authStatus`). This is one small GetObject.
-
-    A 404 is complete: a profile mid-provision legitimately has no `config.yaml` yet, and it
-    contributes nothing to the union either way. Any OTHER error (throttle, timeout, denied)
-    falls back to the local copy -- which for a profile this process never restored is `{}` --
-    and reports `False`, because a silently SHORTENED union is a wrong write waiting to happen
-    (review N5), not a cosmetic gap.
-    """
-    if not sync.S3_BUCKET:
-        return sync.read_profile_config(agent_id), True
-    try:
-        import yaml
-
-        key = f"{sync.S3_PREFIX}/{agent_id}/{sync.CONFIG_NAME}"
-        body = sync._s3().get_object(Bucket=sync.S3_BUCKET, Key=key)["Body"].read()
-        return (yaml.safe_load(body.decode("utf-8")) or {}), True
-    except Exception as exc:  # noqa: BLE001 -- classified below, never re-raised into a panel
-        absent = sync._is_absent(exc)
-        log.log(logging.DEBUG if absent else logging.WARNING,
-                "config.yaml read %s for %s", "found nothing" if absent else "failed", agent_id,
-                exc_info=not absent)
-        return sync.read_profile_config(agent_id), absent
-
-
-def _roster_disabled_names(scanned_agent_id: str) -> tuple[list[str], bool]:
-    """(the UNION of `skills.disabled` across every profile in the roster, whether it is
-    COMPLETE) -- ruling M6-R57.
-
-    The panel is workspace-level and its patch fans out to every profile, replacing the list
-    wholesale -- so whatever this returns IS the next write for all of them, and a name missing
-    from it is not merely unchanged, it is DELETED. Reading one profile was wrong because
-    profiles genuinely diverge: `agents.create` -> `hermes_profiles.write_agent_profile` ->
-    `build_profile_config` emits a FRESH `skills` block with no `disabled` key and never reads
-    the owner's current list, so a newly created agent has an empty one. `_roster()` sorts UUIDs,
-    so that agent can land first -- and the next toggle would then re-enable every skill the
-    owner had turned off, everywhere (review N2).
-
-    A union can only over-disable, never under-disable -- **but only when the read is
-    complete** (review N5). Both sources can fail soft: a failed roster LIST serves the local
-    dirs alone, and a throttled per-profile GetObject falls back to a local copy that may not
-    exist. Either produces a SHORT list that is indistinguishable from the truth, and the next
-    toggle would write it to every profile, deleting the entries it never saw. So the caller is
-    told, and omits the list rather than shipping a plausible lie.
-    """
-    roster, complete = _roster_listing()
-    names = _disabled_names(sync.read_profile_config(scanned_agent_id))
-    for agent_id in roster:
-        if agent_id == scanned_agent_id:
-            continue
-        config, trusted = _config_yaml_from_s3(agent_id)
-        names |= _disabled_names(config)
-        complete = complete and trusted
-    return sorted(names), complete
-
-
 def _skills_status(params: dict, **_kwargs) -> dict:
     """Hermes's installed skills, in the shape the Skills panel already reads.
 
-    The skill ROWS are scanned from one profile when the caller names none: the skills a
-    workspace has are the image's `/opt/hermes-skills` external dir plus what the migration
-    copied into each profile, so restoring all six to list them would buy nothing.
+    ROWS ONLY. The skills a workspace has are the image's `/opt/hermes-skills` external dir
+    plus what the migration copied into each profile, so they are scanned from one profile --
+    restoring all six to list them would buy nothing.
 
-    The DISABLED list is the roster-wide union instead (`_roster_disabled_names`), because
-    unlike the rows it is written back.
+    `disabledNames` is NOT answered here. That list is written straight back (the panel's patch
+    replaces `skills.disabled` on every profile wholesale, so a name missing from it is
+    DELETED), and answering it needed the roster-wide union of a file the backend OWNS --
+    every profile's config.yaml, which never leaves the backend for S3 (`sync.EXCLUDE_GLOBS`).
+    The backend serves it in `runtime_rpc.agentcore_disabled_skill_names`, where a throttled
+    read raises instead of yielding a plausibly short list. Each row still carries its own
+    `disabled` flag, which is a display fact and safe from here.
     """
     from agent.skill_utils import ESSENTIAL_SKILLS
     from tools.skills_tool import _find_all_skills
@@ -647,26 +581,14 @@ def _skills_status(params: dict, **_kwargs) -> dict:
     roster = _roster()
     agent_id = params.get("agentId") or (roster[0] if roster else "")
     if not agent_id:
-        return {"ok": True, "payload": {"skills": [], "disabledNames": []}}
+        return {"ok": True, "payload": {"skills": []}}
     with _profile_scope(agent_id):
         found = _find_all_skills(skip_disabled=True)
         skills_dir = str(sync.HOME / "profiles" / agent_id / "skills")
-    disabled_names, complete = _roster_disabled_names(agent_id)
-    disabled = set(disabled_names)
+    disabled = _stored_disabled_names(sync.read_profile_config(agent_id))
     empty = {"bins": [], "env": [], "config": [], "os": []}
     payload = {
         "managedSkillsDir": skills_dir,
-        # Reviews I3 + N2: the STORED names, unioned across the roster -- never "which rendered
-        # rows are off", and never one profile's list. A disabled name whose skill is not on the
-        # scanned profile's disk appears in no row, and a profile written by `agents.create`
-        # carries no `disabled` key at all; either omission would ride the panel's wholesale
-        # list replace straight into a silent RE-ENABLE on every profile. The panel patches
-        # this list, not its own rows.
-        #
-        # OMITTED when the read was partial (review N5): an S3 blip in either source yields a
-        # SHORT union that looks exactly like the truth, and the panel would write it to every
-        # profile. Absent, the panel refuses the toggle with a readable error -- the rows still
-        # render, so the surface degrades to read-only rather than to a wrong write.
         "skills": [{
             "name": s["name"], "description": s.get("description") or "",
             "skillKey": s["name"], "source": s.get("category") or "hermes",
@@ -679,8 +601,6 @@ def _skills_status(params: dict, **_kwargs) -> dict:
             "requirements": dict(empty), "missing": dict(empty), "install": [],
         } for s in found],
     }
-    if complete:
-        payload["disabledNames"] = sorted(disabled)
     return {"ok": True, "payload": payload}
 
 

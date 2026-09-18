@@ -145,68 +145,53 @@ def test_hub_install_and_search_are_cut(home, fake_hermes, method):
     assert obj["error"]["code"] == "UNAVAILABLE"
 
 
-def test_status_returns_the_STORED_disabled_list_not_just_what_rendered(home, fake_hermes):
-    """Review I3. A disabled name whose skill is not on THIS profile's disk renders in no row.
-    A client rebuilding the list from rows would drop it, and because a deep merge replaces a
-    list wholesale, dropping it silently re-enables that skill on every profile."""
+def test_a_row_is_flagged_disabled_from_the_profiles_stored_list_not_from_what_rendered(
+    home, fake_hermes
+):
+    """The per-row `disabled` flag is a DISPLAY fact and stays here. A stored name whose skill
+    is not on this profile's disk simply renders in no row, which is correct -- and is exactly
+    why the written-back LIST cannot be rebuilt from rows, and is served by the backend."""
     (home / "profiles" / "ceo").mkdir(parents=True)
     sync.write_profile_config("ceo", {"skills": {"disabled": ["shopify", "not-on-this-disk"]}})
     payload = call("skills.status")[1]["payload"]
-    assert payload["disabledNames"] == ["not-on-this-disk", "shopify"]
-    # ...and the name with no row is genuinely absent from the rows, which is the whole point.
+    assert {s["name"] for s in payload["skills"] if s["disabled"]} == {"shopify"}
     assert "not-on-this-disk" not in {s["name"] for s in payload["skills"]}
 
 
-def test_disabled_names_are_the_UNION_across_the_roster(home, fake_hermes):
-    """Ruling M6-R57 / review N2. Profiles genuinely diverge: `agents.create` ->
-    `hermes_profiles.write_agent_profile` -> `build_profile_config` writes a fresh `skills`
-    block with NO `disabled` key. `_roster()` sorts UUIDs, so that empty profile can land
-    first — and reading only it would hand the panel `[]`, whose next wholesale patch would
-    re-enable every skill the owner had turned off, on every profile."""
-    for name, disabled in (("a-new-agent", None), ("ceo", ["shopify"]), ("growth", ["pdf"])):
-        (home / "profiles" / name).mkdir(parents=True)
-        sync.write_profile_config(name, {"skills": {"disabled": disabled} if disabled else {}})
-    # The scanned profile is roster[0] — the one with no disabled key at all.
-    assert server._roster()[0] == "a-new-agent"
-    assert call("skills.status")[1]["payload"]["disabledNames"] == ["pdf", "shopify"]
+def test_the_bridge_never_answers_disabled_names(home, fake_hermes):
+    """M6-R57, second half: the list the panel writes BACK is the backend's
+    (`runtime_rpc.agentcore_disabled_skill_names`), because only the backend has every
+    profile's config.yaml -- the bridge has it in `sync.EXCLUDE_GLOBS`, so a container copy
+    never reaches S3, and one profile's list is not the workspace's.
 
-
-def test_toggling_one_skill_off_leaves_another_profiles_entry_intact(home, fake_hermes):
-    """The union IS the next patch. Whatever the client removes from it, every other
-    profile's entry has to still be in what it sends back."""
+    A key here would be WORSE than none: the backend overwrites it, so a bridge answer that
+    drifted would be invisible until the day the overwrite was removed."""
     for name, disabled in (("ceo", ["shopify"]), ("growth", ["pdf"])):
         (home / "profiles" / name).mkdir(parents=True)
         sync.write_profile_config(name, {"skills": {"disabled": disabled}})
-    names = call("skills.status")[1]["payload"]["disabledNames"]
-    # What SkillsTab.toggleSkill does when the owner re-enables "pdf".
-    next_patch = sorted(set(names) - {"pdf"})
-    assert next_patch == ["shopify"]  # growth's entry went, ceo's survived
+    assert "disabledNames" not in call("skills.status")[1]["payload"]
+
+
+def test_a_disabled_list_stored_as_a_json_string_is_unpacked_for_the_row_flags(home, fake_hermes):
+    """Review I6.1: `hermes config set` writes a list as a quoted literal. Read as one name it
+    would render every skill enabled."""
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    sync.write_profile_config("ceo", {"skills": {"disabled": '["pdf", "shopify"]'}})
+    payload = call("skills.status")[1]["payload"]
+    assert {s["name"] for s in payload["skills"] if s["disabled"]} == {"pdf", "shopify"}
 
 
 class _FakeS3:
-    """Enough of the S3 client for the roster LIST and the by-key config.yaml GET.
+    """Enough of the S3 client for the roster LIST."""
 
-    `conftest.py` pins `S3_BUCKET=""` for the whole suite, so until this existed the by-key
-    read and its `except` were executed by NO test at all (review N5). Each hook can be told to
-    raise, which is the only way to reach the fallbacks that caused the finding.
-    """
-
-    def __init__(self, configs, *, list_error=None, get_errors=None):
-        self.configs, self.list_error = configs, list_error
-        self.get_errors = get_errors or {}
+    def __init__(self, agent_ids, *, list_error=None):
+        self.agent_ids, self.list_error = agent_ids, list_error
 
     def get_paginator(self, _name):
         if self.list_error:
             raise self.list_error
-        prefixes = [{"Prefix": f"{sync.S3_PREFIX}/{a}/"} for a in sorted(self.configs)]
+        prefixes = [{"Prefix": f"{sync.S3_PREFIX}/{a}/"} for a in sorted(self.agent_ids)]
         return types.SimpleNamespace(paginate=lambda **_kw: [{"CommonPrefixes": prefixes}])
-
-    def get_object(self, **kwargs):  # botocore's kwargs are PascalCase; read them, don't name them
-        agent_id = kwargs["Key"][len(f"{sync.S3_PREFIX}/"):].split("/", 1)[0]
-        if agent_id in self.get_errors:
-            raise self.get_errors[agent_id]
-        body = f"skills:\n  disabled: {self.configs[agent_id]}\n".encode()
-        return {"Body": types.SimpleNamespace(read=lambda: body)}
 
 
 class _ClientError(Exception):
@@ -223,71 +208,31 @@ def s3(monkeypatch):
     monkeypatch.setattr(sync, "S3_BUCKET", "bucket")
     monkeypatch.setattr(sync, "S3_PREFIX", "org_1/hermes")
 
-    def _install(configs, **kwargs):
-        client = _FakeS3(configs, **kwargs)
+    def _install(agent_ids, **kwargs):
+        client = _FakeS3(agent_ids, **kwargs)
         monkeypatch.setattr(sync, "_s3", lambda: client)
         return client
 
     return _install
 
 
-def test_the_union_reads_each_other_profile_by_key_from_s3(home, fake_hermes, s3):
-    """The by-key GetObject path, which no test reached before. `ceo` is scanned (local); the
-    other two are S3-only and must still contribute."""
+def test_the_roster_unions_the_s3_prefix_with_the_local_profile_dirs(home, s3):
+    """A settings panel can land on a microVM that has never run a turn, where `profiles/` is
+    empty -- answering "no agents" from that would be an empty answer that reads as fact."""
     (home / "profiles" / "ceo").mkdir(parents=True)
-    sync.write_profile_config("ceo", {"skills": {"disabled": ["shopify"]}})
-    s3({"ceo": ["shopify"], "growth": ["pdf"], "finance": ["xlsx"]})
-    payload = call("skills.status")[1]["payload"]
-    assert payload["disabledNames"] == ["pdf", "shopify", "xlsx"]
+    s3(["growth", "finance"])
+    server._roster_cache = (0.0, ())
+    assert server._roster() == ["ceo", "finance", "growth"]
 
 
-def test_a_throttled_profile_read_omits_the_list_rather_than_shortening_it(home, fake_hermes, s3):
-    """Review N5. A short union is indistinguishable from the truth, and the panel would write
-    it to EVERY profile — deleting the entries it never saw. Omitting the field makes the panel
-    refuse the toggle instead; the rows still render, so the surface degrades to read-only."""
+def test_a_failed_roster_listing_still_serves_the_local_view(home, s3):
+    """Nothing served from the roster is written back any more (the one read that was,
+    `skills.disabled`, moved to the backend), so a short answer degrades a display and cannot
+    corrupt a write. That is why there is no "is this AUTHORITATIVE" flag."""
     (home / "profiles" / "ceo").mkdir(parents=True)
-    sync.write_profile_config("ceo", {"skills": {"disabled": ["shopify"]}})
-    s3({"ceo": ["shopify"], "growth": ["pdf"]},
-       get_errors={"growth": _ClientError("SlowDown")})
-    payload = call("skills.status")[1]["payload"]
-    assert "disabledNames" not in payload
-    assert [s["name"] for s in payload["skills"]]  # the rows are still served
-
-
-def test_a_profile_with_no_config_yaml_yet_is_not_a_partial_read(home, fake_hermes, s3):
-    """A 404 is complete: a profile mid-provision legitimately has none, and it contributes
-    nothing to the union either way. Blocking the toggle on that would be a permanent refusal."""
-    (home / "profiles" / "ceo").mkdir(parents=True)
-    sync.write_profile_config("ceo", {"skills": {"disabled": ["shopify"]}})
-    s3({"ceo": ["shopify"], "brand-new": []},
-       get_errors={"brand-new": _ClientError("NoSuchKey")})
-    assert call("skills.status")[1]["payload"]["disabledNames"] == ["shopify"]
-
-
-def test_a_failed_roster_listing_omits_the_list_too(home, fake_hermes, s3):
-    """The other half of N5: `_roster()` falls back to the LOCAL dirs when the LIST fails, so
-    the union silently covers only the profiles this microVM happens to hold.
-
-    Staged as the review describes it — a WARM process that restored one profile for a turn
-    (hence `_restored`) and whose listing then blips. A cold one raises out of
-    `restore_profile` instead and the RPC answers UNAVAILABLE, which is already honest."""
-    (home / "profiles" / "ceo").mkdir(parents=True)
-    sync.write_profile_config("ceo", {"skills": {"disabled": ["shopify"]}})
-    sync._restored.add("ceo")
-    s3({"ceo": ["shopify"], "growth": ["pdf"]}, list_error=_ClientError("SlowDown"))
-    payload = call("skills.status")[1]["payload"]
-    assert "disabledNames" not in payload
-    assert [s["name"] for s in payload["skills"]]  # rows still served, toggle refused
-
-
-def test_a_disabled_list_stored_as_a_json_string_is_unpacked(home, fake_hermes):
-    """Review I6.1: `hermes config set` writes a list as a quoted literal. Read as one name it
-    would show every skill enabled AND let the next toggle wipe the real list."""
-    (home / "profiles" / "ceo").mkdir(parents=True)
-    sync.write_profile_config("ceo", {"skills": {"disabled": '["pdf", "shopify"]'}})
-    payload = call("skills.status")[1]["payload"]
-    assert payload["disabledNames"] == ["pdf", "shopify"]
-    assert {s["name"] for s in payload["skills"] if s["disabled"]} == {"pdf", "shopify"}
+    s3(["growth"], list_error=_ClientError("SlowDown"))
+    server._roster_cache = (0.0, ())
+    assert server._roster() == ["ceo"]
 
 
 # ---- models.authStatus -------------------------------------------------------------------------

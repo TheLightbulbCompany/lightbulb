@@ -150,9 +150,7 @@ emit(creds);
 def write(owner_id: str, provider_key: str, credential: dict) -> None:
     aws_dir = owner_efs_root(owner_id) / ".aws"
     projecting = is_projecting()
-    process = (
-        _HERMES_CREDENTIAL_PROCESS if projecting else f"/usr/bin/env node {_CONTAINER_AWS_DIR}/{HELPER_FILENAME}"
-    )
+    process = _HERMES_CREDENTIAL_PROCESS if projecting else f"/usr/bin/env node {_CONTAINER_AWS_DIR}/{HELPER_FILENAME}"
     section = _HERMES_SECTION if projecting else f"profile {AWS_CONNECTOR_PROFILE}"
     config = f"[{section}]\nregion = {credential['region']}\ncredential_process = {process}\n"
     helper = _HELPER_TEMPLATE.replace("__API_BASE__", settings.PUBLIC_API_BASE)

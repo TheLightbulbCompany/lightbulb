@@ -925,6 +925,10 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
             yield
             return
         secrets = build_profile_secret_scope(_profile_dir(agent_id))
+        # A projected CLI's shell values are profile FACTS, not turn facts, so they join the
+        # same dict every caller's scope is built from. The NAMES are in the fixed contract
+        # above regardless, so a profile with no gog connected simply resolves them to nothing.
+        secrets.update(sync.cli_credential_env(agent_id))
         secrets.update(overlay or {})
         _declare_child_env_names(secrets)
         token = set_secret_scope(secrets)

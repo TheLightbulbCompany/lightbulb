@@ -62,7 +62,7 @@ def test_the_secret_scope_stays_active_through_run_conversation_and_is_reset_aft
 
     turn._run_hermes("ceo", f.ingress(), None)
 
-    assert seen["scope_during_run_conversation"] == {"PAPERCLIP_API_KEY": "pcp_x"}
+    assert seen["scope_during_run_conversation"] ["PAPERCLIP_API_KEY"] == "pcp_x"
     assert state["home_seen"] == sync._profile_dir("ceo")
     assert state["set_calls"] == 1 and state["reset_calls"] == 1
     assert state["scope"] is None  # reset after the turn, not leaked into the next one
@@ -101,7 +101,7 @@ def test_the_secret_scope_is_installed_before_construct_agent_runs(monkeypatch):
 
     turn._run_hermes("ceo", f.ingress(), None)
 
-    assert seen["scope_during_construction"] == {"PAPERCLIP_API_KEY": "pcp_x"}
+    assert seen["scope_during_construction"] ["PAPERCLIP_API_KEY"] == "pcp_x"
 
 
 def test_the_secret_scope_is_a_no_op_when_agent_secret_scope_is_unimportable(monkeypatch):

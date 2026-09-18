@@ -68,6 +68,10 @@ def _save_lock(agent_id: str) -> threading.Lock:
 #: It must EXIST: ``auto`` mode falls back to ``/`` when it does not.
 PROFILE_HOME = "home"
 
+#: Backend-owned VALUES a projected CLI needs in the shell, written by
+#: ``core/services/credentials/hermes_cli.py`` and read by ``cli_credential_env`` below.
+CLI_ENV_FILE = "cli-env.json"
+
 #: The profile paths the backend's CLI-connector projection owns -- mirrors
 #: ``core/services/credentials/hermes_cli.py``'s ``profile_paths()`` + its ``cli-env.json``.
 #: They are BACKEND-OWNED: pulled by name on every revision bump (_pull_cli_credentials) and
@@ -81,7 +85,7 @@ CLI_CREDENTIAL_PREFIXES = (
     f"{PROFILE_HOME}/.local/share/gogcli/",
     f"{PROFILE_HOME}/.xurl",
     "skills/instagram/",
-    "cli-env.json",
+    CLI_ENV_FILE,
 )
 
 #: Hazard of putting ``$HOME`` inside the profile: every tool's dotfiles and caches now sit in
@@ -777,7 +781,68 @@ BRIDGE_CHILD_ENV_NAMES: tuple[str, ...] = (
     "PAPERCLIP_COMPANY_ID",
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_TASK_ID",
+    # The CLI-connector lane (backend credentials/hermes_cli.py). Each names an ABSOLUTE
+    # per-profile path, because $HOME cannot be relied on to be this profile's -- see
+    # cli_credential_env below for the measurement that forced that.
+    "AWS_CONFIG_FILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "GH_CONFIG_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    # gog's file keyring is a password-derived JWE blob and the password has no file to live
+    # in; on ECS the same two arrive as task-def secrets.
+    "GOG_KEYRING_PASSWORD",
+    "GOG_KEYRING_BACKEND",
 )
+
+
+def cli_credential_env(agent_id: str) -> dict[str, str]:
+    """The CLI-connector VALUES this profile's children need, for the turn's secret scope.
+
+    **Why these are ABSOLUTE paths and not just ``$HOME``.** ``TERMINAL_HOME_MODE: profile``
+    does put ``$HOME`` at ``<profile>/home`` — for the FIRST profile to run a shell in the
+    process, and then it stops moving. Measured in the pinned image (two profiles, one process,
+    fresh child PIDs each time, so this is not shell reuse)::
+
+        ceo          -> PID=24 HOME=.../profiles/ceo/home  PAPERCLIP_API_KEY=key-ceo
+        engineering  -> PID=33 HOME=.../profiles/ceo/home  PAPERCLIP_API_KEY=key-engineering
+
+    ``HOME`` is in ``agent.secret_scope._GLOBAL_ENV_EXACT``, so every reader resolves it from
+    ``os.environ`` rather than the per-profile scope, and the child inherits whatever the first
+    turn left there. A passthrough name is not global, so it resolves through the scope and is
+    correct for every profile — which the same run proves in the right-hand column.
+
+    An AgentCore runtime is per-OWNER and serves the whole roster in one process, so relying on
+    ``$HOME`` would have given every agent after the first the FIRST agent's ``~/.aws``,
+    ``~/.config/gh`` and ``~/.xurl``. Hence: one absolute path per CLI, carried on the channel
+    that demonstrably re-resolves per turn.
+
+    ``TERMINAL_HOME_MODE`` stays set — an unset ``$HOME`` is ``/``, which is root-owned, so
+    ``git config --global`` and friends fail outright — but nothing here DEPENDS on it.
+
+    ``HOME`` itself is never returned here and must never be added: it is ``_is_global_env``
+    (so ``resolve_passthrough_value`` hands back the process value) AND owned by
+    ``hermes_constants.apply_subprocess_home_env``.
+
+    ``AWS_PROFILE`` is absent because the projection writes ``[default]`` on this rail
+    (materializers/aws_cli.py) — one name that genuinely did become unnecessary.
+    """
+    home = _profile_dir(agent_id) / PROFILE_HOME
+    env = {
+        "AWS_CONFIG_FILE": str(home / ".aws" / "config"),
+        # Pinned at a file the projection never writes, so `aws` can only resolve through the
+        # projected config's credential_process, never a stray shared-credentials file.
+        "AWS_SHARED_CREDENTIALS_FILE": str(home / ".aws" / "credentials"),
+        "GH_CONFIG_DIR": str(home / ".config" / "gh"),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
+    }
+    try:
+        raw = json.loads((_profile_dir(agent_id) / CLI_ENV_FILE).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 -- absent (no gog connected) or unreadable: not a turn failure
+        return env
+    env.update({str(k): str(v) for k, v in raw.items() if k in BRIDGE_CHILD_ENV_NAMES})
+    return env
 
 
 def profile_child_env_names() -> list[str]:

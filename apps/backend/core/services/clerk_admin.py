@@ -132,6 +132,32 @@ async def delete_user(user_id: str) -> None:
         raise RuntimeError(f"clerk_admin.delete_user failed: http_{response.status_code} body={response.text}")
 
 
+async def delete_organization(org_id: str) -> None:
+    """Permanently delete a Clerk organization — ``scripts/wipe_org.py``'s
+    last step before (optionally) the members' own Clerk users.
+
+    Same posture as ``delete_user`` above and for the same reason: this RAISES
+    on an unexpected failure so the wipe's per-step try/except records a real
+    failure instead of a fake "ok", treats 404 (already deleted) as success so
+    a re-run after a partial wipe is safe, and no-ops when CLERK_SECRET_KEY is
+    unset.
+
+    Deleting the org deletes its memberships, not its members' user accounts —
+    those are a separate, opt-in step.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        return
+
+    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+        response = await client.delete(f"{_CLERK_API_BASE}/organizations/{org_id}", headers=headers)
+
+    if response.status_code == 404:
+        return
+    if response.status_code >= 400:
+        raise RuntimeError(f"clerk_admin.delete_organization failed: http_{response.status_code} body={response.text}")
+
+
 async def resend_verification(user_id: str) -> dict:
     """Resend the email-verification link to the user's primary email.
 

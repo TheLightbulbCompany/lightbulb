@@ -105,6 +105,17 @@ def test_limits_memory_skills_and_sessions_are_all_emitted():
     assert c["skills"]["write_approval"] is False
 
 
+def test_skills_external_dirs_registers_ours_and_hermes_bundled():
+    """Ours (baked, image-immutable) plus Hermes's own 58 bundled skills, since our bridge never
+    runs the CLI's normal ``tools.skills_sync.sync_skills`` copy-in step -- registering the
+    package's own skills dir is what makes them visible at all. List order is COSMETIC, not a
+    precedence rule: ``skills_tool._locate_skill`` REFUSES a name that exists in more than one
+    dir as ambiguous rather than picking the first match, so a same-named skill in both dirs must
+    be resolved by loading its categorised path (e.g. ``productivity/pdf``), not by this order."""
+    assert cfg()["skills"]["external_dirs"] == ["/opt/hermes-skills", "/opt/hermes/skills"]
+    assert cfg()["skills"]["external_dirs"] == hermes_profiles.SKILLS_EXTERNAL_DIRS
+
+
 def test_no_secret_ever_lands_in_config_yaml():
     import json
 

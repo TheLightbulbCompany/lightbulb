@@ -89,9 +89,9 @@ ROOT_DIR: dict[str, str] = dict.fromkeys(("aws_cli", "gh_cli", "gog_cli", "xurl_
 #: a password-derived JWE blob and the container's gog must decrypt it with the SAME shared
 #: password the backend encrypted it with (on ECS that arrives as a task-def secret).
 #:
-#: It is a VALUE STORE, not a delivery mechanism. Delivery is `terminal.env_passthrough`, which
-#: #2754 is building generically (one per-profile env dict -> passthrough names + secret-scope
-#: values); this file is what that dict will be populated from. Nothing reads it yet.
+#: It is a VALUE STORE, not a delivery mechanism. Delivery is the bridge's own
+#: `sync.cli_credential_env`, which reads this file into the turn's secret scope (the names
+#: are then registered with Hermes's per-session env passthrough by `turn._allow_child_env_names`).
 CLI_ENV_FILE = "cli-env.json"
 
 

@@ -833,8 +833,8 @@ async def test_get_agent_detail_returns_error_when_container_not_running():
 @pytest.mark.asyncio
 async def test_get_agent_detail_agentcore_owner_never_invokes_runtime():
     """Parity audit row 80: identity comes from the roster/model listing, config from the
-    agent's own Hermes profile in S3 -- zero container_rpc calls, sessions/skills/emoji/theme
-    marked unavailable rather than waking a parked microVM."""
+    agent's own Hermes profile in S3 -- zero container_rpc calls, sessions/skills come back
+    empty rather than waking a parked microVM."""
     from core.services import admin_service
 
     never_call = AsyncMock(side_effect=AssertionError("container_rpc.call must not be invoked for an agentcore owner"))
@@ -866,7 +866,6 @@ async def test_get_agent_detail_agentcore_owner_never_invokes_runtime():
     assert result["sessions"] == []
     assert result["skills"] == []
     assert result["config_redacted"]["providers"]["anthropic_api_key"] == "***redacted***"
-    assert result["unavailable_fields"] == ["sessions", "skills", "agent.emoji", "agent.theme"]
     config_snapshot.assert_called_once_with("u1", "a1")
     never_call.assert_not_awaited()
 

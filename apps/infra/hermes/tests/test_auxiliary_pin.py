@@ -1,3 +1,5 @@
+import pytest
+
 from bridge import sync
 
 AUX_DEFAULTS = {
@@ -88,3 +90,28 @@ def test_pin_profile_defaults_still_fills_a_task_the_profile_never_had(home, mon
     monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
     config = sync.pin_profile_defaults("ceo", "aip-aux")
     assert config["auxiliary"]["compression"] == {"provider": "bedrock", "model": "aip-aux", "fallback_chain": []}
+
+
+# ---- #2749 fix-forward: a profile from before that PR can still carry the legacy backend ------
+# #2749 made freshly written profiles default to terminal.backend: local and made the bridge
+# honour whatever backend a profile's config.yaml names. Node/Mac execution is deferred and no
+# product surface can set lightbulb_node any more, so an old profile that still carries it would
+# route every shell command at a Mac node that isn't attached once the bridge starts honouring it.
+def test_pin_profile_defaults_normalizes_legacy_lightbulb_node_terminal_backend(home, monkeypatch):
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    sync.write_profile_config("ceo", {"terminal": {"backend": "lightbulb_node"}})
+    monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
+    config = sync.pin_profile_defaults("ceo", "aip-aux")
+    assert config["terminal"]["backend"] == "local"
+
+
+@pytest.mark.parametrize("terminal_block", [{"backend": "local"}, None])
+def test_pin_profile_defaults_leaves_local_or_missing_terminal_backend_as_local(home, monkeypatch, terminal_block):
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    written = {"auxiliary": {"vision": {"timeout": 300}}}
+    if terminal_block is not None:
+        written["terminal"] = terminal_block
+    sync.write_profile_config("ceo", written)
+    monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
+    config = sync.pin_profile_defaults("ceo", "aip-aux")
+    assert config.get("terminal", {}).get("backend", "local") == "local"

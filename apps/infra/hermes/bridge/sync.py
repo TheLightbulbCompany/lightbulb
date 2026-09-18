@@ -688,8 +688,18 @@ def pin_profile_defaults(agent_id: str, model: str) -> dict:
 
     ``plugins.enabled`` stays a UNION regardless of merge direction: ``plugins_pin`` already
     computes it from whatever ``existing`` holds, and this second merge line is unchanged.
+
+    #2749 fix-forward: freshly written profiles now default to ``terminal.backend: local`` and
+    the bridge honours whatever backend a profile's config.yaml names. A profile written before
+    that PR can still carry the legacy ``lightbulb_node`` value -- Node/Mac execution is
+    deferred and no product surface can set it any more, so left alone it would route every
+    shell command at a Mac node that isn't attached. Normalized here, before ``existing`` is
+    read by anything else.
     """
     existing = read_profile_config(agent_id)
+    terminal = existing.get("terminal")
+    if isinstance(terminal, dict) and terminal.get("backend") == "lightbulb_node":
+        existing = {**existing, "terminal": {**terminal, "backend": "local"}}
     config = deep_merge(auxiliary_pin(_aux_defaults(), model), existing)
     config = deep_merge(config, plugins_pin(existing))
     write_profile_config(agent_id, config)

@@ -105,6 +105,15 @@ def test_limits_memory_skills_and_sessions_are_all_emitted():
     assert c["skills"]["write_approval"] is False
 
 
+def test_skills_external_dirs_registers_ours_then_hermes_bundled():
+    """Ours (baked, image-immutable) first so a same-named skill still resolves to our version;
+    Hermes's own 58 bundled skills second, since our bridge never runs the CLI's normal
+    ``tools.skills_sync.sync_skills`` copy-in step -- registering the package's own skills dir is
+    what makes them visible at all."""
+    assert cfg()["skills"]["external_dirs"] == ["/opt/hermes-skills", "/opt/hermes/skills"]
+    assert cfg()["skills"]["external_dirs"] == hermes_profiles.SKILLS_EXTERNAL_DIRS
+
+
 def test_no_secret_ever_lands_in_config_yaml():
     import json
 

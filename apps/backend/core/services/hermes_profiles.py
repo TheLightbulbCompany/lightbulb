@@ -118,6 +118,24 @@ _DISABLED_TOOLSETS = ("cronjob", "tts", "video_gen")
 #: Hermes's ``hermes_cli/plugins_discovery.py::gate_manifest`` reads only ``plugins.enabled``.
 _LIGHTBULB_PLUGINS = ("lightbulb", "lightbulb_node")
 
+#: ``skills.external_dirs`` — public (not ``_``-prefixed): the ops entry point
+#: (``scripts/reapply_hermes_skills_dirs.py``) imports this same list so a re-apply can never
+#: drift from what a fresh profile gets.
+#:
+#: Ours (baked by ``apps/infra/hermes/Dockerfile``'s ``COPY skills/ /opt/hermes-skills/``) FIRST,
+#: so a same-named skill still resolves to our version — Hermes's loader gives profile-local
+#: skills top precedence and walks ``external_dirs`` in order after that.
+SKILLS_DIR_LIGHTBULB = "/opt/hermes-skills"
+#: Hermes's OWN bundled skills (58 of them), shipped inside the ``nousresearch/hermes-agent``
+#: base image at its package root (``/opt/hermes``). The real Hermes CLI seeds these into every
+#: fresh profile via ``tools.skills_sync.sync_skills`` (run by ``hermes chat``/``hermes profile
+#: create``/``hermes update``) — our bridge never runs that CLI seeding step, so without this
+#: entry a profile only ever sees the two baked skills above. Hermes's own sync code already
+#: defers to an external dir over copying into it, so registering the path is the whole fix; no
+#: copy step is needed, and this stays read-only (the image is immutable per profile).
+SKILLS_DIR_HERMES_BUNDLED = "/opt/hermes/skills"
+SKILLS_EXTERNAL_DIRS = [SKILLS_DIR_LIGHTBULB, SKILLS_DIR_HERMES_BUNDLED]
+
 #: Fix round 1, I4: ONLY the Hermes provider NAME (a namespace this module alone owns — Hermes's
 #: own "openai-api" differs from the openclaw-style "openai" ref prefix ``core.containers.config``
 #: uses) and the "standard" (non-premium, non-cheap) default-tier id, which has no standalone
@@ -247,7 +265,7 @@ def build_profile_config(
         # enforces, unrelated to skill-creation gating. Leaving it unset keeps Hermes's own default.
         "skills": {
             "write_approval": False,
-            "external_dirs": ["/opt/hermes-skills"],
+            "external_dirs": list(SKILLS_EXTERNAL_DIRS),
         },
         "sessions": {
             "auto_prune": True,

@@ -448,23 +448,15 @@ class TestAdminMutationOwnerResolution:
 
     @pytest.mark.asyncio
     async def test_config_patch_uses_org_owner_id(self, async_client, admin_env, org_mode):
-        with (
-            # This door asks ``is_agentcore_owner(fail_closed=True)``, which raises rather than
-            # guessing when the container read fails -- and there is no DynamoDB here.
-            patch("routers.admin.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)),
-            patch(
-                "routers.admin.patch_openclaw_config",
-                new=AsyncMock(return_value=None),
-            ) as mock_patch,
-        ):
+        with patch("routers.admin.config_patch_roster", new=AsyncMock(return_value={"hash": "h"})) as mock_patch:
             res = await async_client.patch(
                 "/api/v1/admin/users/user_123/config",
                 json={"patch": {"agents": {"defaults": {}}}},
             )
         assert res.status_code == 200
         mock_patch.assert_awaited_once()
-        # owner_id keyword — patch_openclaw_config is called with kwargs.
-        assert mock_patch.await_args.kwargs.get("owner_id") == "org_abc"
+        # The org owner id, not the {user_id} in the path.
+        assert mock_patch.await_args.args[0] == "org_abc"
 
     @pytest.mark.asyncio
     async def test_agent_delete_uses_org_owner_id(self, async_client, admin_env, org_mode):

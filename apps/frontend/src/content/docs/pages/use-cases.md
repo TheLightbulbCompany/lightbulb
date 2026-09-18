@@ -16,7 +16,7 @@ The highest-leverage use of Lightbulb isn't one-off prompting. It's a loop: some
 ## Support inbox routing
 
 - **Trigger:** an Intercom webhook, or a scheduled sweep of the inbox.
-- **Agent:** a support agent with the company wiki as its knowledge base.
+- **Agent:** a support agent with your product docs as its knowledge base.
 - **Tools:** Intercom; Notion or Linear for escalations.
 - **Gate:** routine questions are answered; refunds and account changes come to you.
 

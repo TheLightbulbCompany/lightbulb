@@ -719,6 +719,12 @@ def _get_backend_bytes(path: str) -> bytes:
         return res.read()
 
 
+def attachment_path(room_id: str, attachment: dict) -> Path:
+    return HOME / "media" / "messaging" / "attachments" / room_id / (
+        f"{attachment['id']}{_EXT.get(attachment.get('contentType'), '')}"
+    )
+
+
 def materialize_attachments(body: dict) -> list[str]:
     """Download the attachments a turn can see into the plugin-era layout; skip files
     already present (a turn revisiting the same history does not re-fetch them). One
@@ -730,7 +736,7 @@ def materialize_attachments(body: dict) -> list[str]:
     out: list[str] = []
     for m in [body.get("message") or {}] + list(body.get("recentHistory", [])):
         for att in m.get("attachments") or []:
-            target = HOME / "media" / "messaging" / "attachments" / room_id / f"{att['id']}{_EXT.get(att.get('contentType'), '')}"
+            target = attachment_path(room_id, att)
             if not target.exists():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 try:

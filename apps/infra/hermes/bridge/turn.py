@@ -212,6 +212,8 @@ ATTACHMENT_MAX_BYTES_BY_TYPE = {"application/pdf": PDF_ATTACHMENT_MAX_BYTES}
 # plugin's parser accepted four image types, so a PDF anywhere in history 400'd every
 # dispatch that message was part of (report 03 §1). Widened deliberately.
 ATTACHMENT_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf")
+IMAGE_ATTACHMENT_TYPES = frozenset(ATTACHMENT_TYPES) - {"application/pdf"}
+MAX_NATIVE_IMAGES = 20
 ROOM_EVENT_KINDS = ("user_request", "room_event")
 # agent_mail (Task 20) and paperclip_run (Task 21, fix round C3) carry no room: no
 # participants, no frame channel, no thread, no run block — only a target agent and
@@ -631,7 +633,72 @@ def run_ended_body(run_id, session_key, outcome, error_kind, usage) -> dict:
     return body
 
 
-def _history(body: dict, agent_id: str) -> list[dict]:
+def _native_image_part(path: str) -> dict:
+    """Validate, normalize, resize and encode a bridge-controlled local image with Hermes."""
+    import asyncio
+
+    from tools.vision_tools import (
+        _EMBED_MAX_DIMENSION,
+        _EMBED_TARGET_BYTES,
+        _prepare_image,
+        _resize_prepared,
+        _unlink_quietly,
+    )
+
+    prepared = asyncio.run(_prepare_image(path, None, None, validate_decode=True))
+    try:
+        data_url = asyncio.run(
+            _resize_prepared(
+                prepared,
+                {},
+                max_base64_bytes=_EMBED_TARGET_BYTES,
+                max_dimension=_EMBED_MAX_DIMENSION,
+                force_jpeg=True,
+            )
+        )
+        if len(data_url) > _EMBED_TARGET_BYTES:
+            raise ValueError("image remains too large after native resize")
+    finally:
+        _unlink_quietly(prepared.path)
+    return {"type": "image_url", "image_url": {"url": data_url}}
+
+
+def _message_image_paths(body: dict, media: list[str]) -> dict[str, list[str]]:
+    """Associate up to 20 images with their messages, prioritizing current then newest history."""
+    available = set(media)
+    room_id = (body.get("room") or {}).get("id")
+    by_message: dict[str, list[str]] = {}
+    remaining = MAX_NATIVE_IMAGES
+    messages = [body.get("message") or {}, *reversed(body.get("recentHistory", []))]
+    for message in messages:
+        if remaining == 0:
+            break
+        message_id = message.get("messageId")
+        if not message_id:
+            continue
+        paths = []
+        for attachment in message.get("attachments") or []:
+            if attachment.get("contentType") not in IMAGE_ATTACHMENT_TYPES:
+                continue
+            path = str(sync.attachment_path(room_id, attachment))
+            if path in available:
+                paths.append(path)
+        paths = paths[:remaining]
+        if paths:
+            by_message[message_id] = paths
+            remaining -= len(paths)
+    return by_message
+
+
+def _message_content(text: str, image_paths: list[str]) -> str | list[dict]:
+    if not image_paths:
+        return text
+    content = [{"type": "text", "text": text}] if text else []
+    content.extend(_native_image_part(path) for path in image_paths)
+    return content
+
+
+def _history(body: dict, agent_id: str, image_paths: dict[str, list[str]] | None = None) -> list[dict]:
     """The room's recent messages as Hermes conversation history: this agent's own messages are
     the assistant, everything else is a user turn prefixed with the author's name."""
     names = {p["id"]: (p.get("displayName") or p.get("name") or p["id"]) for p in body.get("participants", [])}
@@ -639,12 +706,15 @@ def _history(body: dict, agent_id: str) -> list[dict]:
     for m in body.get("recentHistory", []):
         author = m.get("author") or {}
         text = (m.get("text") or "").strip()
-        if not text:
+        images = (image_paths or {}).get(m.get("messageId"), [])
+        if not text and not images:
             continue
         if author.get("kind") == "agent" and author.get("id") == agent_id:
-            out.append({"role": "assistant", "content": text})
+            content = _message_content(text, images)
+            out.append({"role": "assistant", "content": content})
         else:
-            out.append({"role": "user", "content": f"{names.get(author.get('id'), author.get('id', '?'))}: {text}"})
+            content = _message_content(f"{names.get(author.get('id'), author.get('id', '?'))}: {text}", images)
+            out.append({"role": "user", "content": content})
     return out
 
 
@@ -848,6 +918,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
 def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str, dict]:
     """The one seam every other test replaces instead of constructing a real AIAgent."""
     media = sync.materialize_attachments(body)
+    images = _message_image_paths(body, media)
     session_key = _resolve_session_key(agent_id, body)
     try:
         # Priming import, deliberately OUTSIDE _hermes_home_scope below: run_agent.py:94
@@ -865,9 +936,12 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
         agent = _construct_agent(agent_id, body, frames, session_key)
         attach_agent((body.get("run") or {}).get("runId"), agent)
         result = agent.run_conversation(
-            user_message=_turn_user_message(body),
+            user_message=_message_content(
+                _turn_user_message(body),
+                images.get((body.get("message") or {}).get("messageId"), []),
+            ),
             system_message=system_prompt(body, agent_id, media=media),
-            conversation_history=_history(body, agent_id) or None,
+            conversation_history=_history(body, agent_id, images) or None,
         ) or {}
     usage = {**ZERO_USAGE,
              # the model this agent actually ran on (profile_model), not the runtime-wide

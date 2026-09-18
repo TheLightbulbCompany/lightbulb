@@ -481,7 +481,7 @@ async def test_apply_agentcore_reads_is_agentcore_owner_exactly_once(monkeypatch
     monkeypatch.setattr(ac.registry, "get_provider", lambda key: provider)
     reads = []
 
-    async def fake_is_agentcore(owner_id):
+    async def fake_is_agentcore(owner_id, **_):
         reads.append(owner_id)
         return True
 
@@ -498,11 +498,15 @@ async def test_apply_agentcore_reads_is_agentcore_owner_exactly_once(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_apply_ecs_owner_unaffected_by_a_raising_agentcore_check(monkeypatch):
-    """M6-R26 fix round 1, Important 3: a DynamoDB throttle inside the
-    real is_agentcore_owner (not mocked here) must not turn an ECS owner's
-    connect into apply_failed/502 -- it degrades to the ECS path, exactly one
-    read attempted."""
+async def test_apply_refuses_when_the_runtime_host_cannot_be_read(monkeypatch):
+    """Inverts what M6-R26 fix round 1, Important 3 pinned here, deliberately.
+
+    That ruling (a read failure degrades to the ECS path) still holds for the relay/connect
+    probe doors, but a CREDENTIAL PROJECTION is a write: the migration leaves the EFS tree in
+    place, so the ECS branch succeeds on a migrated workspace and the connect reports success
+    for a credential the agent can never see. ``apply_connection`` therefore asks with
+    ``fail_closed=True`` -- one read attempted, nothing written, and the raise lands in the
+    connect routes' existing rollback (secret deleted, row never marked connected, 502)."""
     from core.services.credentials import apply_connection as ac
 
     # Restore the REAL is_agentcore_owner (the autouse fixture above mocked it
@@ -522,8 +526,8 @@ async def test_apply_ecs_owner_unaffected_by_a_raising_agentcore_check(monkeypat
 
     monkeypatch.setattr(ac.config_patcher, "set_openclaw_config_path", fake_set)
 
-    result = await ac.apply_connection("org_1", "parallel", {"token": "par-x"})
+    with pytest.raises(_runtime_transport_module.RuntimeHostUnknownError):
+        await ac.apply_connection("org_1", "parallel", {"token": "par-x"})
 
-    assert result is None
     assert reads == ["org_1"]  # exactly one read attempted
-    assert set_calls  # the ECS write proceeded
+    assert set_calls == []  # and no write on either host

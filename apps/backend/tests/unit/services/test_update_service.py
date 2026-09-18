@@ -17,6 +17,15 @@ import pytest
 from core.services import update_service
 
 
+@pytest.fixture(autouse=True)
+def _ecs_owner_by_default():
+    """The write doors below ask ``is_agentcore_owner(fail_closed=True)``, which raises rather
+    than guessing when the container read fails -- and there is no DynamoDB here. Answer ECS;
+    the AgentCore tests override it per test."""
+    with patch("core.services.update_service.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)):
+        yield
+
+
 def _claimed_repo(update_item: dict) -> MagicMock:
     repo = MagicMock()
     repo.claim_apply = AsyncMock(return_value={**update_item, "status": "applying"})

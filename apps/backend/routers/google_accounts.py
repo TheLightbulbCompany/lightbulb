@@ -58,7 +58,7 @@ async def assign_account(email: str, body: AssignBody, auth: AuthContext = Depen
     # neither the `gog` binary nor its EFS-resident keyring exists on a Hermes microVM (see
     # `google_identity.seed_agent_google_identity`). Refuse instead of storing a row and
     # answering 200 — same shape as the Shopify container-login refusal (M6 task 10-D).
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
         raise HTTPException(status_code=422, detail="unsupported_on_agentcore")
     await google_accounts_repo.set_assignment(owner_id, body.agent_id, email)
     # Project the new binding into the agent's IDENTITY.md so it acts as the

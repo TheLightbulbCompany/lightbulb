@@ -75,6 +75,14 @@ def _owner_row(**overrides):
     return SimpleNamespace(**base)
 
 
+@pytest.fixture(autouse=True)
+def _ecs_owner_by_default(monkeypatch):
+    """The write doors below ask ``is_agentcore_owner(fail_closed=True)``, which raises rather
+    than guessing when the container read fails -- and there is no DynamoDB here. Answer ECS;
+    the AgentCore tests override it per test."""
+    monkeypatch.setattr("core.services.runtime_transport.is_agentcore_owner", AsyncMock(return_value=False))
+
+
 @pytest.fixture
 def env(monkeypatch):
     repo = MagicMock()

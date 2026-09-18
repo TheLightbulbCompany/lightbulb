@@ -736,7 +736,7 @@ async def admin_config_patch(
     # members owner_id is the org_id — patching {user_id} writes to a non-
     # existent personal dir (admin-org-owner-id P1).
     owner_id, _ = await resolve_admin_owner_id(user_id)
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
         # M6 row #13: same S3-profile fan-out as the other two config-patch doors.
         await config_patch_roster(owner_id, body.patch, None)
         return {"status": "patched"}

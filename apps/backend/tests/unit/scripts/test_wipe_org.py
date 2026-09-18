@@ -75,10 +75,19 @@ def paperclip_repo():
     """One shared AsyncMock repo behind every ``PaperclipRepo(...)`` construction."""
     repo = MagicMock()
     repo.list_by_org_id = AsyncMock(return_value=[_paperclip_row()])
-    repo.get_user_ids_for_company = AsyncMock(return_value=[MEMBER])
     repo.delete = AsyncMock()
     repo.delete_pending_brief = AsyncMock(return_value=True)
     return repo
+
+
+@pytest.fixture
+def company_row_user_ids(monkeypatch):
+    """The script-local include-inactive by-company-id query. It is local
+    (not a repo kwarg) because the copied file runs against the DEPLOYED
+    core/, whose get_user_ids_for_company is active-only and takes no flag."""
+    fn = AsyncMock(return_value=[MEMBER])
+    monkeypatch.setattr(mod, "_company_row_user_ids", fn)
+    return fn
 
 
 @pytest.fixture
@@ -131,14 +140,17 @@ def wipe_mocks(monkeypatch, paperclip_repo, tmp_path):
         agent_email_repo=MagicMock(delete_all_for_owner=AsyncMock(return_value=["ceo@x"])),
         slack_installs_repo=MagicMock(delete_all_for_owner=AsyncMock(return_value=["T1"])),
         clerk_admin=MagicMock(
-            get_organization=AsyncMock(return_value={"id": ORG, "name": "Target Workspace", "members_count": 1}),
             list_organization_members=AsyncMock(return_value=[{"user_id": MEMBER, "email": f"{MEMBER}@example.com"}]),
             list_user_organizations=AsyncMock(return_value=[{"id": ORG}]),
             revoke_sessions=AsyncMock(return_value={"ok": True}),
-            delete_organization=AsyncMock(),
             delete_user=AsyncMock(),
         ),
         admin_actions_repo=MagicMock(create=AsyncMock()),
+        # Script-local (see the module docstring): the deployed clerk_admin has no
+        # org delete and its get_organization takes no include_members_count.
+        clerk_org_read=AsyncMock(return_value={"id": ORG, "name": "Target Workspace", "members_count": 1}),
+        clerk_org_delete=AsyncMock(),
+        company_row_user_ids=AsyncMock(return_value=[MEMBER]),
     )
 
     def _company_stripe_ok(steps, *, owner_id):
@@ -173,6 +185,9 @@ def wipe_mocks(monkeypatch, paperclip_repo, tmp_path):
     monkeypatch.setattr(mod, "slack_installs_repo", m.slack_installs_repo)
     monkeypatch.setattr(mod, "clerk_admin", m.clerk_admin)
     monkeypatch.setattr(mod, "admin_actions_repo", m.admin_actions_repo)
+    monkeypatch.setattr(mod, "_clerk_org_with_member_count", m.clerk_org_read)
+    monkeypatch.setattr(mod, "_clerk_delete_organization", m.clerk_org_delete)
+    monkeypatch.setattr(mod, "_company_row_user_ids", m.company_row_user_ids)
     monkeypatch.setattr(mod.settings, "LITESTREAM_BUCKET", "lightbulb-dev-litestream")
     monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev")
     return m
@@ -205,8 +220,7 @@ async def test_refuses_protected_orgs(org_id):
 
 
 @pytest.mark.asyncio
-async def test_refuses_multi_member_without_flag(paperclip_repo, monkeypatch):
-    monkeypatch.setattr(mod, "PaperclipRepo", MagicMock(return_value=paperclip_repo))
+async def test_refuses_multi_member_without_flag(company_row_user_ids):
     inv = _inventory(
         members=[
             {"user_id": MEMBER, "email": "a@x"},
@@ -217,15 +231,14 @@ async def test_refuses_multi_member_without_flag(paperclip_repo, monkeypatch):
     with pytest.raises(mod.Refusal, match="has 2 members"):
         await mod.check_refusals(inv, allow_multi_member=False)
     # ...and the same org is accepted once the operator says so explicitly.
-    paperclip_repo.get_user_ids_for_company.return_value = [MEMBER, OTHER_MEMBER]
+    company_row_user_ids.return_value = [MEMBER, OTHER_MEMBER]
     await mod.check_refusals(inv, allow_multi_member=True)
 
 
 @pytest.mark.asyncio
-async def test_refuses_multi_member_hidden_in_paperclip_rows(paperclip_repo, monkeypatch):
+async def test_refuses_multi_member_hidden_in_paperclip_rows():
     """A Clerk roster read that comes back short (it returns [] on ANY error)
     must not be able to smuggle a second member past the guard."""
-    monkeypatch.setattr(mod, "PaperclipRepo", MagicMock(return_value=paperclip_repo))
     inv = _inventory(
         members=[],
         org={"id": ORG, "name": "n", "members_count": 0},
@@ -261,10 +274,9 @@ async def test_refuses_when_clerk_org_unreadable_but_rows_remain():
 
 
 @pytest.mark.asyncio
-async def test_allows_missing_clerk_org_when_nothing_is_left(paperclip_repo, monkeypatch):
+async def test_allows_missing_clerk_org_when_nothing_is_left():
     """The idempotent re-run: step 9 already deleted the org and steps 1-8
     already emptied DDB, so there is no roster left to get wrong."""
-    monkeypatch.setattr(mod, "PaperclipRepo", MagicMock(return_value=paperclip_repo))
     inv = _inventory(org=None, members=[], paperclip_rows=[], container=None, billing=None, user_rows={})
     await mod.check_refusals(inv, allow_multi_member=False)
 
@@ -283,8 +295,7 @@ async def test_refuses_member_with_no_resolvable_email():
 
 
 @pytest.mark.asyncio
-async def test_users_row_email_is_the_third_source(paperclip_repo, monkeypatch):
-    monkeypatch.setattr(mod, "PaperclipRepo", MagicMock(return_value=paperclip_repo))
+async def test_users_row_email_is_the_third_source(company_row_user_ids):
     inv = _inventory(
         members=[{"user_id": MEMBER, "email": ""}],
         paperclip_rows=[_paperclip_row(paperclip_email="")],
@@ -318,8 +329,7 @@ async def test_refuses_bootstrap_admin_found_only_on_the_users_row():
 
 
 @pytest.mark.asyncio
-async def test_refuses_rows_naming_more_than_one_company(paperclip_repo, monkeypatch):
-    monkeypatch.setattr(mod, "PaperclipRepo", MagicMock(return_value=paperclip_repo))
+async def test_refuses_rows_naming_more_than_one_company():
     inv = _inventory(
         members=[{"user_id": MEMBER, "email": "a@x"}, {"user_id": OTHER_MEMBER, "email": "b@x"}],
         paperclip_rows=[_paperclip_row(MEMBER), _paperclip_row(OTHER_MEMBER, company_id="company-other")],
@@ -329,28 +339,56 @@ async def test_refuses_rows_naming_more_than_one_company(paperclip_repo, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_refuses_company_shared_with_another_workspace(paperclip_repo, monkeypatch):
-    monkeypatch.setattr(mod, "PaperclipRepo", MagicMock(return_value=paperclip_repo))
-    paperclip_repo.get_user_ids_for_company.return_value = [MEMBER, "user_from_another_org"]
+async def test_refuses_company_shared_with_another_workspace(company_row_user_ids):
+    company_row_user_ids.return_value = [MEMBER, "user_from_another_org"]
     with pytest.raises(mod.Refusal, match="two workspaces share"):
         await mod.check_refusals(_inventory(), allow_multi_member=False)
 
 
 @pytest.mark.asyncio
-async def test_shared_company_check_counts_disabled_rows_too(paperclip_repo, monkeypatch):
-    """A disabled row is a suspended member whose access can come back, so it
-    still means somebody else lives in this company."""
+async def test_company_row_user_ids_counts_disabled_rows_too(paperclip_repo, monkeypatch):
+    """The REAL script-local query, not a stand-in. A disabled row is a
+    suspended member whose access can come back (entitlement_teardown disables
+    with a 30-day purge grace), so it still means somebody else lives in this
+    company — and the deployed repo's own get_user_ids_for_company filters
+    those out, which is exactly why this query is script-local."""
+
+    async def _pages(**kwargs):
+        assert kwargs["IndexName"] == "by-company-id"
+        yield {
+            "Items": [
+                {"user_id": MEMBER, "status": "active"},
+                {"user_id": OTHER_MEMBER, "status": "disabled"},
+                {"status": "active"},  # no user_id — skipped
+            ]
+        }
+
+    paperclip_repo._query_pages = _pages
     monkeypatch.setattr(mod, "PaperclipRepo", MagicMock(return_value=paperclip_repo))
-    paperclip_repo.get_user_ids_for_company.return_value = [MEMBER]
-    await mod.check_refusals(_inventory(), allow_multi_member=False)
-    assert paperclip_repo.get_user_ids_for_company.await_args.kwargs == {"include_inactive": True}
+
+    assert await mod._company_row_user_ids(COMPANY) == [MEMBER, OTHER_MEMBER]
+
+
+@pytest.mark.asyncio
+async def test_disabled_outsider_row_blocks_the_company_delete(paperclip_repo, monkeypatch):
+    """End to end through check_refusals: the disabled row belongs to someone
+    outside this org, so the company is shared and must not be deleted."""
+
+    async def _pages(**kwargs):
+        yield {"Items": [{"user_id": MEMBER, "status": "active"}, {"user_id": "user_other_org", "status": "disabled"}]}
+
+    paperclip_repo._query_pages = _pages
+    monkeypatch.setattr(mod, "PaperclipRepo", MagicMock(return_value=paperclip_repo))
+
+    with pytest.raises(mod.Refusal, match="two workspaces share"):
+        await mod.check_refusals(_inventory(), allow_multi_member=False)
 
 
 @pytest.mark.asyncio
 async def test_main_exits_2_on_refusal_without_running_anything(wipe_mocks):
     assert await mod.main(["--org", mod.FOUNDER_ORG_ID, "--execute"]) == 2
     wipe_mocks.ecs.delete_user_service.assert_not_called()
-    wipe_mocks.clerk_admin.delete_organization.assert_not_called()
+    wipe_mocks.clerk_org_delete.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -366,7 +404,7 @@ async def test_main_refuses_when_environment_is_unset(wipe_mocks, monkeypatch):
     silently defaults to dev everywhere else in this codebase."""
     monkeypatch.setattr(mod.settings, "ENVIRONMENT", "")
     assert await mod.main(["--org", ORG, "--execute"]) == 2
-    wipe_mocks.clerk_admin.get_organization.assert_not_called()
+    wipe_mocks.clerk_org_read.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +442,7 @@ async def test_preview_deletes_nothing(wipe_mocks):
     wipe_mocks.paperclip_repo.delete.assert_not_called()
     wipe_mocks.messaging_repo.delete_owner_partition.assert_not_called()
     wipe_mocks.clerk_admin.revoke_sessions.assert_not_called()
-    wipe_mocks.clerk_admin.delete_organization.assert_not_called()
+    wipe_mocks.clerk_org_delete.assert_not_called()
     wipe_mocks.clerk_admin.delete_user.assert_not_called()
 
 
@@ -454,7 +492,7 @@ async def test_execute_ecs_org_calls_every_step_once(wipe_mocks):
     wipe_mocks.company_slug_repo.delete_for_owner.assert_awaited_once_with(ORG)
     wipe_mocks.agent_email_repo.delete_all_for_owner.assert_awaited_once_with(ORG)
     wipe_mocks.slack_installs_repo.delete_all_for_owner.assert_awaited_once_with(ORG)
-    wipe_mocks.clerk_admin.delete_organization.assert_awaited_once_with(ORG)
+    wipe_mocks.clerk_org_delete.assert_awaited_once_with(ORG)
     # The member's paperclip row + the two owner-keyed synthetic items.
     assert wipe_mocks.paperclip_repo.delete.await_count == 2
     wipe_mocks.paperclip_repo.delete_pending_brief.assert_awaited_once_with(ORG)
@@ -484,7 +522,7 @@ async def test_execute_agentcore_org_uses_the_same_seam(wipe_mocks):
     assert "runtime_host=agentcore" in _detail(report, "ecs_service")
     # The drain is inapplicable, not failed, so the replica delete still runs.
     wipe_mocks.delete_replica_prefix.assert_awaited_once_with(ORG)
-    wipe_mocks.clerk_admin.delete_organization.assert_awaited_once_with(ORG)
+    wipe_mocks.clerk_org_delete.assert_awaited_once_with(ORG)
 
 
 @pytest.mark.asyncio
@@ -517,7 +555,7 @@ async def test_failed_drain_blocks_the_replica_delete(wipe_mocks):
     assert _statuses(report, "litestream_replicas") == ["failed"]
     wipe_mocks.delete_replica_prefix.assert_not_called()
     # The teardown still continues past both.
-    wipe_mocks.clerk_admin.delete_organization.assert_awaited_once_with(ORG)
+    wipe_mocks.clerk_org_delete.assert_awaited_once_with(ORG)
 
 
 @pytest.mark.asyncio
@@ -531,7 +569,7 @@ async def test_step_failure_is_recorded_and_later_steps_still_run(wipe_mocks):
     assert "paperclip timed out" in failed[0].error
     # Everything after it still ran, including the always-last Clerk org delete.
     wipe_mocks.ecs.delete_user_service.assert_awaited_once()
-    wipe_mocks.clerk_admin.delete_organization.assert_awaited_once_with(ORG)
+    wipe_mocks.clerk_org_delete.assert_awaited_once_with(ORG)
 
 
 @pytest.mark.asyncio
@@ -549,14 +587,14 @@ async def test_missing_paperclip_row_is_reported_loudly_not_as_a_clean_skip(wipe
     wipe_mocks.delete_company.assert_not_called()
     wipe_mocks.archive_member.assert_not_called()
     # The org itself still goes.
-    wipe_mocks.clerk_admin.delete_organization.assert_awaited_once_with(ORG)
+    wipe_mocks.clerk_org_delete.assert_awaited_once_with(ORG)
 
 
 @pytest.mark.asyncio
 async def test_unresolvable_paperclip_exits_non_zero(wipe_mocks, paperclip_repo):
     paperclip_repo.list_by_org_id.return_value = []
     wipe_mocks.clerk_admin.list_organization_members.return_value = []
-    wipe_mocks.clerk_admin.get_organization.return_value = {"id": ORG, "name": "n", "members_count": 0}
+    wipe_mocks.clerk_org_read.return_value = {"id": ORG, "name": "n", "members_count": 0}
     wipe_mocks.container_repo.get_by_owner_id.return_value = None
     wipe_mocks.billing_repo.get_by_owner_id.return_value = None
 
@@ -602,7 +640,7 @@ async def test_clerk_user_delete_refused_when_the_human_owns_another_org(wipe_mo
     assert "org_their_real_workspace" in _detail(report, "clerk_user")
     wipe_mocks.clerk_admin.delete_user.assert_not_called()
     # The workspace itself is still torn down.
-    wipe_mocks.clerk_admin.delete_organization.assert_awaited_once_with(ORG)
+    wipe_mocks.clerk_org_delete.assert_awaited_once_with(ORG)
 
 
 @pytest.mark.asyncio
@@ -640,7 +678,7 @@ async def test_failed_session_revoke_is_a_failed_step(wipe_mocks):
     report = await mod.wipe_org(_inventory(), execute=True, delete_clerk_users=False)
 
     assert _statuses(report, "clerk_sessions") == ["failed"]
-    wipe_mocks.clerk_admin.delete_organization.assert_awaited_once_with(ORG)
+    wipe_mocks.clerk_org_delete.assert_awaited_once_with(ORG)
 
 
 # ---------------------------------------------------------------------------

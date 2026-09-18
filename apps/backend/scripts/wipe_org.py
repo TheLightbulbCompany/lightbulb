@@ -38,6 +38,25 @@ what to REPORT, never that a delete may be skipped.
 
 WHAT IT DOES NOT TOUCH: the ``admin-actions`` table — it is the audit trail,
 and this script APPENDS one row per executed org rather than deleting any.
+
+SELF-CONTAINED ON PURPOSE. This file is COPIED into a running backend task, so
+it executes against whatever ``core/`` that task's image was built with — NOT
+this checkout. Three things it needs have no entry point in the deployed
+modules, and all three are implemented *here*, against those modules' current
+signatures, rather than by widening them:
+
+* ``_clerk_delete_organization``   — clerk_admin has no org delete.
+* ``_clerk_org_with_member_count`` — ``clerk_admin.get_organization`` takes no
+  ``include_members_count``, and the count is what proves Clerk answered.
+* ``_company_row_user_ids``        — ``get_user_ids_for_company`` filters to
+  ACTIVE rows; the shared-company guard must see disabled ones too.
+
+Each is built from primitives the deployed modules already expose
+(``clerk_admin._CLERK_API_BASE``/``_TIMEOUT_S``, ``PaperclipRepo._query_pages``),
+so there is exactly one definition of the base URL and one pagination loop. Do
+not "clean this up" by moving them into core/: the copy would then TypeError on
+a task whose image predates that change, which is every task until the next
+promotion.
 """
 
 from __future__ import annotations
@@ -62,6 +81,9 @@ if not os.path.isdir(os.path.join(_BACKEND_ROOT, "core")):
     _BACKEND_ROOT = os.getcwd()
 if _BACKEND_ROOT not in sys.path:
     sys.path.insert(0, _BACKEND_ROOT)
+
+import httpx  # noqa: E402
+from boto3.dynamodb.conditions import Key  # noqa: E402
 
 from core.auth import is_org_owner_id  # noqa: E402
 from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes  # noqa: E402
@@ -117,6 +139,97 @@ _PAPERCLIP_TABLE = "paperclip-companies"
 
 class Refusal(Exception):
     """A guard said no. Raised during validation, before any org's first step."""
+
+
+# ---------------------------------------------------------------------------
+# The three script-local primitives (see the module docstring for why they are
+# here and not in core/). Each mirrors the posture of its neighbours in the
+# deployed module it borrows from.
+# ---------------------------------------------------------------------------
+
+
+def _clerk_headers() -> dict[str, str] | None:
+    """Auth header, or None when no key is configured (clerk_admin's own
+    local-dev stub posture: every function there returns empty rather than
+    raising)."""
+    if not settings.CLERK_SECRET_KEY:
+        return None
+    return {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+
+
+async def _clerk_org_with_member_count(org_id: str) -> dict | None:
+    """``clerk_admin.get_organization`` plus ``?include_members_count=true``.
+
+    Same collapse as the function it stands in for — None for a 404, a network
+    error and an unset key alike — because ``check_refusals`` is what separates
+    those, using the DDB footprint as the tiebreak. The count is the point:
+    ``list_organization_members`` reports ANY error as an empty list, so this
+    is the independent second read that catches a short roster.
+    """
+    headers = _clerk_headers()
+    if headers is None:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=clerk_admin._TIMEOUT_S) as client:
+            response = await client.get(
+                f"{clerk_admin._CLERK_API_BASE}/organizations/{org_id}",
+                headers=headers,
+                params={"include_members_count": "true"},
+            )
+    except Exception as e:  # noqa: BLE001 — mirrors get_organization
+        logger.warning("wipe_org: clerk get organization %s network error: %s", org_id, e)
+        return None
+    if response.status_code == 404:
+        return None
+    if response.status_code >= 400:
+        logger.warning("wipe_org: clerk get organization %s HTTP %s", org_id, response.status_code)
+        return None
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
+async def _clerk_delete_organization(org_id: str) -> None:
+    """``DELETE /v1/organizations/{id}``.
+
+    Same contract as ``clerk_admin.delete_user``, which is the closest thing
+    the module has: 404 (already deleted) is success so a re-run after a
+    partial wipe is safe, anything else RAISES so the step is recorded failed
+    rather than a fake "ok", and an unset key is a no-op.
+
+    Deleting the org deletes its memberships, not its members' user accounts —
+    those are a separate, opt-in step.
+    """
+    headers = _clerk_headers()
+    if headers is None:
+        return
+    async with httpx.AsyncClient(timeout=clerk_admin._TIMEOUT_S) as client:
+        response = await client.delete(f"{clerk_admin._CLERK_API_BASE}/organizations/{org_id}", headers=headers)
+    if response.status_code == 404:
+        return
+    if response.status_code >= 400:
+        raise RuntimeError(f"clerk delete organization failed: http_{response.status_code} body={response.text}")
+
+
+async def _company_row_user_ids(company_id: str) -> list[str]:
+    """Every user_id naming ``company_id``, INCLUDING non-active rows.
+
+    ``PaperclipRepo.get_user_ids_for_company`` filters to ``status="active"``
+    because its caller wants a notification audience. This guard is asking a
+    different question — "does any other workspace still lay claim to this
+    company" — and a disabled row is a suspended member whose access can come
+    back (``entitlement_teardown`` disables with a 30-day purge grace). Reusing
+    the repo's own paginated GSI reader, so there is one pagination loop.
+    """
+    repo = PaperclipRepo(table_name=_PAPERCLIP_TABLE)
+    user_ids: list[str] = []
+    async for page in repo._query_pages(
+        IndexName="by-company-id",
+        KeyConditionExpression=Key("company_id").eq(company_id),
+    ):
+        user_ids.extend(item["user_id"] for item in page.get("Items", []) if item.get("user_id"))
+    return user_ids
 
 
 @dataclass
@@ -218,7 +331,7 @@ async def read_inventory(org_id: str) -> _Inventory:
     repo = PaperclipRepo(table_name=_PAPERCLIP_TABLE)
     inv = _Inventory(
         org_id=org_id,
-        org=await clerk_admin.get_organization(org_id, include_members_count=True),
+        org=await _clerk_org_with_member_count(org_id),
         members=await clerk_admin.list_organization_members(org_id),
         paperclip_rows=await repo.list_by_org_id(org_id),
         container=await container_repo.get_by_owner_id(org_id, consistent=True),
@@ -309,9 +422,7 @@ async def check_refusals(inv: _Inventory, *, allow_multi_member: bool) -> None:
     # can come back (entitlement_teardown disables with a 30-day grace), so it
     # still counts as "somebody else lives here".
     if inv.company_id:
-        repo = PaperclipRepo(table_name=_PAPERCLIP_TABLE)
-        rows_for_company = await repo.get_user_ids_for_company(inv.company_id, include_inactive=True)
-        outsiders = sorted(set(rows_for_company) - set(member_ids))
+        outsiders = sorted(set(await _company_row_user_ids(inv.company_id)) - set(member_ids))
         if outsiders:
             raise Refusal(
                 f"{org_id}'s Paperclip company {inv.company_id} is also named by row(s) for "
@@ -997,7 +1108,7 @@ async def _delete_slack_installs(org_id: str) -> str:
 
 
 async def _delete_clerk_org(org_id: str) -> str:
-    await clerk_admin.delete_organization(org_id)
+    await _clerk_delete_organization(org_id)
     return org_id
 
 

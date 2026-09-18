@@ -132,32 +132,6 @@ async def delete_user(user_id: str) -> None:
         raise RuntimeError(f"clerk_admin.delete_user failed: http_{response.status_code} body={response.text}")
 
 
-async def delete_organization(org_id: str) -> None:
-    """Permanently delete a Clerk organization — ``scripts/wipe_org.py``'s
-    last step before (optionally) the members' own Clerk users.
-
-    Same posture as ``delete_user`` above and for the same reason: this RAISES
-    on an unexpected failure so the wipe's per-step try/except records a real
-    failure instead of a fake "ok", treats 404 (already deleted) as success so
-    a re-run after a partial wipe is safe, and no-ops when CLERK_SECRET_KEY is
-    unset.
-
-    Deleting the org deletes its memberships, not its members' user accounts —
-    those are a separate, opt-in step.
-    """
-    if not settings.CLERK_SECRET_KEY:
-        return
-
-    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
-    async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
-        response = await client.delete(f"{_CLERK_API_BASE}/organizations/{org_id}", headers=headers)
-
-    if response.status_code == 404:
-        return
-    if response.status_code >= 400:
-        raise RuntimeError(f"clerk_admin.delete_organization failed: http_{response.status_code} body={response.text}")
-
-
 async def resend_verification(user_id: str) -> dict:
     """Resend the email-verification link to the user's primary email.
 
@@ -219,27 +193,20 @@ async def get_primary_email(user_id: str) -> str:
     raise RuntimeError(f"clerk user {user_id} has no email address")
 
 
-async def get_organization(org_id: str, *, include_members_count: bool = False) -> dict | None:
+async def get_organization(org_id: str) -> dict | None:
     """Single Clerk organization by org_id. Returns None on 404 / no key.
 
     Mirrors get_user's defensive posture: catches network errors, logs,
     returns None. Callers should handle None as "no metadata available"
     rather than as failure.
-
-    ``include_members_count`` asks Clerk for the org's ``members_count``, which
-    the endpoint omits by default. ``scripts/wipe_org.py`` uses it as an
-    independent cross-check on ``list_organization_members``, which returns []
-    on ANY error and so cannot distinguish "empty org" from "Clerk unreachable"
-    on its own. Off by default so existing callers pay nothing extra.
     """
     if not settings.CLERK_SECRET_KEY:
         return None
 
     headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
-    params = {"include_members_count": "true"} if include_members_count else None
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
-            response = await client.get(f"{_CLERK_API_BASE}/organizations/{org_id}", headers=headers, params=params)
+            response = await client.get(f"{_CLERK_API_BASE}/organizations/{org_id}", headers=headers)
     except Exception as e:  # noqa: BLE001
         logger.warning("clerk_admin.get_organization network error: %s", e)
         return None

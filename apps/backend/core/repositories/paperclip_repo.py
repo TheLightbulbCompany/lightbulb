@@ -603,7 +603,7 @@ class PaperclipRepo:
                     return item["company_id"]
         return None
 
-    async def get_user_ids_for_company(self, company_id: str, *, include_inactive: bool = False) -> list[str]:
+    async def get_user_ids_for_company(self, company_id: str) -> list[str]:
         """Return the Clerk user_ids of every ACTIVE row in ``company_id``.
 
         Push-notification audience for inbound Paperclip plugin events
@@ -611,16 +611,6 @@ class PaperclipRepo:
         row; an org company has one row per member, all sharing the same
         ``company_id``. Queries the ``by-company-id`` GSI (PK: ``company_id``,
         projection INCLUDE ``status``) declared in ``database-stack.ts``.
-
-        ``include_inactive`` drops the status filter, mirroring
-        ``find_owner_row``'s flag of the same name. The one caller is
-        ``scripts/wipe_org.py``'s shared-company refusal: it is asking "does
-        ANY other workspace still name this company", and a disabled row
-        (``entitlement_teardown`` sets that on a lapsed subscription, with a
-        30-day purge grace) is a member whose access can come back. Filtering
-        it out would let the wipe hard-delete a company somebody else is
-        merely suspended in. Every other caller wants the active audience and
-        leaves this False.
         """
         user_ids: list[str] = []
         async for page in self._query_pages(
@@ -630,7 +620,7 @@ class PaperclipRepo:
             user_ids.extend(
                 item["user_id"]
                 for item in page.get("Items", [])
-                if (include_inactive or item.get("status") == "active") and item.get("user_id")
+                if item.get("status") == "active" and item.get("user_id")
             )
         return user_ids
 

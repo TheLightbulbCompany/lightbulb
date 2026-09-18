@@ -101,6 +101,59 @@ def test_falls_back_to_a_generic_text_when_no_wake_reason_or_task_is_given(clien
     assert captured["json_body"]["message"] == {"text": "Paperclip triggered a run."}
 
 
+def test_the_real_paperclip_context_record_is_accepted_not_rejected(client):
+    """Regression for the live 422. Paperclip's `http` adapter sends
+    ``context = parseObject(run.contextSnapshot)`` -- its OWN free-form run record, not the
+    three keys our docs named. Typed with ``ContractModel``'s ``extra="forbid"``, the first
+    real run on a migrated workspace was rejected three times and the agent never woke, while
+    room chat (which rides the WORK bus, not the adapter) looked fine. Extras on a payload
+    Paperclip owns must be ignored; only the ids we route on stay strict."""
+    captured = {}
+
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["json_body"] = json_body
+        return runtime_transport.RuntimeResponse(202, "{}", {})
+
+    body = {
+        "runId": RUN,
+        "agentId": AGENT,
+        "context": {
+            "taskId": "task_9",
+            "wakeReason": "New comment on your task",
+            "projectId": "proj_1",
+            "executionWorkspaceId": "ws_1",
+            "paperclipWorkspace": {"id": "ws_1", "path": "/work"},
+            "paperclipEnvironment": {"kind": "local"},
+            "paperclipSessionHandoffMarkdown": "# handoff",
+        },
+    }
+    with _container(), patch("routers.messaging.runtime_transport.request", fake_request):
+        r = client.post(f"/api/v1/internal/paperclip/runs/{OWNER}", json=body, headers=H)
+
+    assert r.status_code == 202
+    assert captured["json_body"]["message"] == {"text": "New comment on your task"}
+
+
+def test_a_non_string_wake_reason_does_not_500(client):
+    """``context`` is Paperclip's record, so its VALUES are not ours to assume either."""
+    captured = {}
+
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["json_body"] = json_body
+        return runtime_transport.RuntimeResponse(202, "{}", {})
+
+    body = {"runId": RUN, "agentId": AGENT, "context": {"wakeReason": {"kind": "comment"}, "taskId": 7}}
+    with _container(), patch("routers.messaging.runtime_transport.request", fake_request):
+        r = client.post(f"/api/v1/internal/paperclip/runs/{OWNER}", json=body, headers=H)
+
+    assert r.status_code == 202
+    assert isinstance(captured["json_body"]["message"]["text"], str)
+
+
 def test_malformed_body_missing_run_id_or_agent_id_is_422(client):
     """The body is now a typed ContractModel (PaperclipRunRequest), not a hand-parsed dict --
     a malformed request must 422 (FastAPI's native validation response), never reach the

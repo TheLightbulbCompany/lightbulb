@@ -630,18 +630,21 @@ async def get_internal_attachment(owner_id: str, room_id: str, attachment_id: st
 async def post_paperclip_run(owner_id: str, body: PaperclipRunRequest, request: Request):
     """Paperclip's ``http`` adapter (``paperclip_adapter_config.HTTP_ADAPTER_TYPE``) posts a
     run trigger here instead of dialing an operator gateway socket -- Hermes has none for it to
-    connect to. This door re-shapes the fork's own webhook body (fork docs/adapters/http.md:
-    ``{runId, agentId, companyId, context:{taskId, wakeReason, commentId}}``) into the bridge's
-    inbound ingress envelope, tags it ``eventKind: "paperclip_run"``, and returns whatever the
-    bridge answered (its ``202 accepted`` is what Paperclip's adapter captures as the run
-    result; the agent's actual output still comes back over Paperclip's own callback API,
-    unchanged from every other adapter). ``body`` is a typed model (not a hand-parsed dict) so
-    a malformed request 422s instead of 500ing.
+    connect to. This door re-shapes the fork's own webhook body (``{...payloadTemplate,
+    agentId, runId, context}``, see ``PaperclipRunRequest``) into the bridge's inbound ingress
+    envelope, tags it ``eventKind: "paperclip_run"``, and returns whatever the bridge answered
+    (its ``202 accepted`` is what Paperclip's adapter captures as the run result; the agent's
+    actual output still comes back over Paperclip's own callback API, unchanged from every
+    other adapter). ``body`` is a typed model (not a hand-parsed dict) so a body missing the
+    ids 422s instead of reaching a KeyError -- but everything beyond them is Paperclip's to
+    shape, so unknown fields are ignored rather than rejected.
     """
     container = await _require_hook_token(owner_id, request)
-    context = body.context
-    wake_reason = (context.wake_reason if context else "") or ""
-    task_id = (context.task_id if context else "") or ""
+    context = body.context or {}
+    # Free-form record straight off Paperclip's run row -- read defensively, never assume a
+    # type: a non-string here must not turn a run trigger into a 500.
+    wake_reason = str(context.get("wakeReason") or "")
+    task_id = str(context.get("taskId") or "")
     text = wake_reason or (f"Paperclip task {task_id}" if task_id else "Paperclip triggered a run.")
     try:
         response = await runtime_transport.request(

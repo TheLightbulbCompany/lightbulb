@@ -4,6 +4,8 @@ from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 from core.config import settings
 from core.services import runtime_transport
 
@@ -111,7 +113,7 @@ def test_create_preserves_native_body_and_uses_validated_identity_for_routing(cl
         "request": BODY,
     }
     assert captured["headers"] == {"Authorization": f"Bearer {GATEWAY_TOKEN}"}
-    assert captured["timeout_s"] == 90.0
+    assert captured["timeout_s"] == 25.0  # under the 30s public-gateway ceiling, see below
     repo.resolve_owner_row.assert_awaited_once_with(OWNER)
     admin.get_agent.assert_awaited_once_with(session_cookie="admin-cookie", agent_id=AGENT)
     admin.get_issue.assert_awaited_once_with(session_cookie="admin-cookie", issue_id=ISSUE)
@@ -226,6 +228,73 @@ def test_an_unreachable_paperclip_answers_a_retryable_503_not_an_unhandled_error
 
     assert response.status_code == 503
     assert response.json()["retryable"] is True
+
+
+def test_the_runtime_budget_stays_under_the_public_gateway_ceiling(client):
+    """Paperclip reaches this over the public API Gateway, whose ALB integration is capped at
+    30 s (`api-stack.ts` `timeoutInMillis: 30000`). A 90 s budget cannot be waited out — the
+    gateway 504s over us first, and the adapter gets an answer we did not write."""
+    captured = {}
+
+    async def fake_request(_container, _path, **kwargs):
+        captured.update(kwargs)
+        return _runtime_response(202, {"run_id": RUN, "status": "queued", "session_id": SESSION})
+
+    with _dependencies(), patch("routers.messaging.runtime_transport.request", fake_request):
+        assert client.post(BASE, json=BODY, headers=HEADERS).status_code == 202
+
+    assert captured["timeout_s"] < 30.0
+
+
+def test_a_cold_microvm_timeout_answers_a_retryable_503_not_a_gateway_504(client):
+    """A cold microVM is 54-57 s, so the first call to a parked workspace times out no matter
+    what. It must come back as our own retryable 503 — the adapter classifies >=500 as
+    `transient_upstream` and retries onto the now-warming microVM. `httpx.ReadTimeout` is an
+    `httpx.HTTPError`, so this is already the behaviour; this test is what keeps it."""
+
+    async def cold(*_args, **_kwargs):
+        raise httpx.ReadTimeout("agentcore invoke exceeded 25s")
+
+    with _dependencies(), patch("routers.messaging.runtime_transport.request", cold):
+        response = client.post(BASE, json=BODY, headers=HEADERS)
+
+    assert response.status_code == 503
+    assert response.json()["retryable"] is True
+
+
+def test_a_row_claiming_agentcore_with_no_runtime_arn_is_classified_not_a_500(client):
+    """`runtime_transport._request_agentcore` raises a bare ValueError for that row state."""
+
+    async def missing_arn(*_args, **_kwargs):
+        raise ValueError("agentcore transport requires containers.agentcore_runtime_arn")
+
+    with _dependencies(), patch("routers.messaging.runtime_transport.request", missing_arn):
+        assert client.post(BASE, json=BODY, headers=HEADERS).status_code == 503
+
+
+def test_a_retry_with_the_same_idempotency_key_reaches_the_bridge_as_the_same_run(client):
+    """The facade holds no run state: it derives `runId` from the `Idempotency-Key` header and
+    forwards it verbatim, so an adapter retry of the SAME Paperclip run arrives at the bridge
+    under the key that already has an entry and is replayed (200) rather than started twice.
+
+    This does NOT cover the orphan window: Paperclip retrying a FAILED run mints a NEW run id,
+    hence a new key, hence a second turn — see the report."""
+    seen = []
+    replies = [
+        _runtime_response(202, {"run_id": RUN, "status": "queued", "session_id": SESSION}),
+        _runtime_response(200, {"run_id": RUN, "status": "running", "session_id": SESSION}),
+    ]
+
+    async def fake_request(_container, _path, **kwargs):
+        seen.append(kwargs["json_body"]["identity"]["runId"])
+        return replies[len(seen) - 1]
+
+    with _dependencies(), patch("routers.messaging.runtime_transport.request", fake_request):
+        first = client.post(BASE, json=BODY, headers=HEADERS)
+        retry = client.post(BASE, json=BODY, headers=HEADERS)
+
+    assert seen == [RUN, RUN]  # one run id, not two
+    assert (first.status_code, retry.status_code) == (202, 200)
 
 
 def test_stop_forwards_to_real_interrupt_route(client):

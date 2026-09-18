@@ -52,32 +52,52 @@ def test_profile_terminal_scope_covers_construction_and_run_and_resets(home, mon
     assert active.get() is None
 
 
-def test_a_native_paperclip_turn_hands_the_terminal_child_its_key_and_run_identity(home, monkeypatch):
-    """The whole point of the native lane is that the agent can disposition the issue, which it
-    does by calling the Paperclip API from a terminal command. A terminal child inherits NEITHER
-    the profile ``.env`` NOR the secret scope (measured in the pinned image:
-    ``PROFILE_CREDENTIAL=False``), so the key and the run identity must ride Hermes's own
-    ``env_overlay`` -- and nothing may reach ``os.environ``, which two concurrent profiles in one
-    process would race over."""
-    profile = home / "profiles" / "agent-1"
-    profile.mkdir(parents=True)
-    (profile / ".env").write_text("PAPERCLIP_API_KEY=pcp_live_x\nUNRELATED=nope\n")
+def test_env_overlay_carries_only_terminal_policy_not_arbitrary_child_env(home, monkeypatch):
+    """A REGRESSION FENCE, not a shape assertion.
 
-    active = ContextVar("terminal", default=None)
+    `build_profile_terminal_scope` keeps only keys prefixed `TERMINAL_`
+    (`tools/terminal_scope.py:137` in `lightbulb/hermes-spike:m1-rc4`). An earlier pass on
+    this branch used `env_overlay` to deliver `PAPERCLIP_*` to a shell; it passed a mocked
+    test and delivered nothing. So this asserts the bridge does NOT put anything else there
+    -- the real child-env contract is `terminal.env_passthrough` + the secret scope, and its
+    end-to-end proof is `tests/smoke/paperclip_child_env_smoke.py`, which needs the image."""
+    seen = {}
     native = ModuleType("tools.terminal_scope")
-    native.install_profile_terminal_scope = lambda _profile, *, env_overlay: active.set(env_overlay)
-    native.reset_terminal_scope = active.reset
+    native.install_profile_terminal_scope = lambda _p, *, env_overlay: seen.update(env_overlay) or "T"
+    native.reset_terminal_scope = lambda _t: None
     monkeypatch.setitem(sys.modules, "tools.terminal_scope", native)
 
+    with turn._terminal_scope("ceo"):
+        pass
+
+    assert set(seen) == {"TERMINAL_CWD"}, (
+        f"only TERMINAL_* survives Hermes's overlay filter; {sorted(set(seen) - {'TERMINAL_CWD'})} "
+        "would be silently dropped"
+    )
+
+
+def test_a_native_turn_declares_its_child_env_names_without_leaking_any_value(home, monkeypatch):
+    """The two halves the image then joins up: every name the profile can supply is listed in
+    `terminal.env_passthrough` (so Hermes's filter rescues it) and exists in the process env
+    as an EMPTY placeholder (so the filter iterates it at all -- `_make_run_env` walks
+    `dict(os.environ | env)`), while the VALUES stay in the per-profile secret scope."""
+    profile = home / "profiles" / "agent-1"
+    profile.mkdir(parents=True)
+    (profile / ".env").write_text("PAPERCLIP_API_KEY=pcp_live_x\nSOME_MCP_TOKEN=t\n")
+
+    installed = {}
     fake_ss = ModuleType("agent.secret_scope")
     fake_ss.build_profile_secret_scope = lambda home_dir: dict(
         line.split("=", 1) for line in (home_dir / ".env").read_text().splitlines() if "=" in line
     )
-    fake_ss.set_secret_scope = lambda mapping: None
-    fake_ss.reset_secret_scope = lambda token: None
+    fake_ss.set_secret_scope = lambda mapping: installed.update(mapping) or "T"
+    fake_ss.reset_secret_scope = lambda _t: installed.clear()
+    fake_ss.current_secret_scope = lambda: dict(installed)
     monkeypatch.setitem(sys.modules, "agent", ModuleType("agent"))
     monkeypatch.setitem(sys.modules, "agent.secret_scope", fake_ss)
-    monkeypatch.setattr(turn.sync, "ensure_profile", lambda _agent: None)
+    monkeypatch.setattr(turn.sync, "ensure_profile", lambda _a: None)
+    for name in ("PAPERCLIP_API_KEY", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID", "SOME_MCP_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
 
     seen = {}
 
@@ -87,32 +107,30 @@ def test_a_native_paperclip_turn_hands_the_terminal_child_its_key_and_run_identi
         session_cache_read_tokens = session_cache_write_tokens = 0
 
         def run_conversation(self, **_kw):
-            seen["overlay"] = dict(active.get() or {})
+            seen["passthrough"] = set(turn.sync.profile_child_env_names())
+            seen["scope"] = dict(installed)
+            seen["env"] = {k: os.environ.get(k) for k in seen["scope"]}
             return {"api_calls": 1, "final_response": "done"}
 
     monkeypatch.setattr(turn, "_construct_agent", lambda *a: _Agent())
-    before = dict(os.environ)
 
     identity = {
-        "runId": "run-1",
-        "companyId": "company-1",
-        "agentId": "agent-1",
+        "runId": "run-1", "companyId": "company-1", "agentId": "agent-1", "issueId": "issue-1",
         "sessionId": "paperclip:company:company-1:agent:agent-1:issue:issue-1",
-        "issueId": "issue-1",
         "paperclipApiUrl": "http://paperclip.internal:3100",
     }
     request = {"input": "go", "instructions": "do"}
     turn.register_paperclip_run(identity, request)
     assert turn._run_native_paperclip(identity, request)[0] == "completed"
 
-    assert seen["overlay"] == {
-        "TERMINAL_CWD": str(profile),
-        "PAPERCLIP_API_KEY": "pcp_live_x",  # the .env key, never exported process-wide
-        "PAPERCLIP_API_URL": "http://paperclip.internal:3100",
-        "PAPERCLIP_AGENT_ID": "agent-1",
-        "PAPERCLIP_COMPANY_ID": "company-1",
-        "PAPERCLIP_RUN_ID": "run-1",
-        "PAPERCLIP_TASK_ID": "issue-1",
+    # The static profile env AND the per-turn identity are one dict -- nothing PAPERCLIP-
+    # specific selects them, which is what lets a sibling lane add its own names the same way.
+    assert seen["passthrough"] == {
+        "PAPERCLIP_API_KEY", "SOME_MCP_TOKEN", "PAPERCLIP_API_URL", "PAPERCLIP_AGENT_ID",
+        "PAPERCLIP_COMPANY_ID", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID",
     }
-    assert active.get() is None  # reset after the turn, never left installed
-    assert dict(os.environ) == before
+    assert seen["scope"]["PAPERCLIP_API_KEY"] == "pcp_live_x"
+    assert seen["scope"]["PAPERCLIP_RUN_ID"] == "run-1"
+    # Present (so Hermes's filter walks them) but VALUE-FREE: the value comes from the scope.
+    assert set(seen["env"]) == seen["passthrough"]
+    assert set(seen["env"].values()) == {""}

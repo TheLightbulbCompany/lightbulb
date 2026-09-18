@@ -199,9 +199,19 @@ def test_native_paperclip_identity_overlays_profile_secrets_without_process_leak
         "PAPERCLIP_RUN_ID": "run-1",
         "PAPERCLIP_TASK_ID": "issue-1",
     }
+    for name in {"PAPERCLIP_API_KEY", *dynamic}:
+        monkeypatch.delenv(name, raising=False)
     before = dict(os.environ)
     with turn._secret_scope("ceo", dynamic):
         assert _stub_get_secret("PAPERCLIP_API_KEY") == "pcp_live_x"
         assert {key: _stub_get_secret(key) for key in dynamic} == dynamic
     assert _TEST_SCOPE.get() is None
-    assert dict(os.environ) == before
+    # The scope adds each NAME to the process env as an empty placeholder -- that is the only
+    # thing that makes Hermes's child-env filter iterate it (`_make_run_env` walks
+    # `dict(os.environ | env)`), and a name carries no tenant data. What must never appear
+    # process-wide is a VALUE: those stay in the per-profile scope, where
+    # `resolve_passthrough_value` reads them, so two profiles cannot see each other's.
+    added = {k: v for k, v in os.environ.items() if k not in before}
+    assert set(added) == {"PAPERCLIP_API_KEY", *dynamic}
+    assert set(added.values()) == {""}
+    assert {k: v for k, v in os.environ.items() if k in before} == before

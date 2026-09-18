@@ -654,6 +654,41 @@ def auxiliary_pin(aux_defaults: dict, model: str) -> dict:
             "bedrock": {"discovery": {"enabled": False}}}
 
 
+def profile_child_env_names() -> list[str]:
+    """The names this profile's SANDBOXED CHILDREN (terminal, execute_code) may see.
+
+    ONE dict defines it — the profile's active secret scope, which is the profile's own
+    ``.env`` merged with whatever the bridge supplies for this turn. Nothing here is
+    lane-specific: a lane that needs a shell command to see something puts it in the
+    profile env (statically, via ``hermes_profiles.build_profile_env``) or in the per-turn
+    scope overlay, and it appears here automatically.
+
+    This is the list Hermes's ``terminal.env_passthrough`` wants. Its child envs strip
+    secrets by default (``tools/environments/local.py::_filter_secret_env``) and consult
+    this allowlist for the exceptions, resolving each name's VALUE back through the profile
+    secret scope (``tools/env_passthrough.py::resolve_passthrough_value``) rather than the
+    process env — so listing a name here grants that profile's child its OWN value and
+    never another profile's.
+
+    Empty outside the Hermes image (no ``agent.secret_scope``) and empty with no scope
+    installed, which is the fail-closed direction: an unlisted name simply never reaches a
+    shell.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope
+    except ImportError:  # dev/test environments outside the Hermes image
+        return []
+    return sorted(current_secret_scope() or {})
+
+
+def env_passthrough_pin(existing: dict, names: list[str]) -> dict:
+    """UNION ``terminal.env_passthrough``, for the same reason ``plugins_pin`` unions
+    ``plugins.enabled``: ``deep_merge`` replaces lists wholesale, so an operator- or
+    agent-added name would be dropped by a plain merge."""
+    current = ((existing.get("terminal") or {}).get("env_passthrough")) or []
+    return {"terminal": {"env_passthrough": list(dict.fromkeys([*current, *names]))}}
+
+
 LIGHTBULB_PLUGINS = ("lightbulb", "lightbulb_node")
 
 
@@ -692,6 +727,10 @@ def pin_profile_defaults(agent_id: str, model: str) -> dict:
     existing = read_profile_config(agent_id)
     config = deep_merge(auxiliary_pin(_aux_defaults(), model), existing)
     config = deep_merge(config, plugins_pin(existing))
+    # Same merge direction and reason as plugins_pin: a UNION that must win over `existing`.
+    # This runs INSIDE the turn's secret scope (see _construct_agent's caller), which is what
+    # makes profile_child_env_names() see this profile's env rather than another's.
+    config = deep_merge(config, env_passthrough_pin(existing, profile_child_env_names()))
     write_profile_config(agent_id, config)
     return config
 

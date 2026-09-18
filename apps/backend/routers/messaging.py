@@ -770,6 +770,20 @@ async def _verify_paperclip_hermes_identity(owner_id: str, identity: dict, *, fu
         ) from exc
 
 
+#: Budget for a Paperclip-originated call, which arrives over the PUBLIC API Gateway — whose
+#: ALB integration is hard-capped at 30 s (`api-stack.ts`'s `timeoutInMillis: 30000`). Anything
+#: longer cannot be waited out: the gateway 504s over us and the caller never sees our answer.
+#: `_AGENTCORE_INGRESS_TIMEOUT_S` (90 s) is right for `openclaw_work`, an SQS consumer with no
+#: gateway in front, and wrong here.
+#:
+#: A cold microVM is 54-57 s (measured, see `runtime_transport`'s module docstring), so the
+#: FIRST call to a parked workspace cannot succeed at any budget under that ceiling. Failing at
+#: 25 s with a retryable 503 is the best available outcome: the adapter treats >=500 as
+#: `transient_upstream` and retries onto the now-warming microVM, instead of the gateway
+#: returning an uninterpretable 504 after 30 s.
+PAPERCLIP_HERMES_TIMEOUT_S = 25.0
+
+
 async def _paperclip_hermes_runtime_response(
     container: dict,
     path: str,
@@ -787,9 +801,13 @@ async def _paperclip_hermes_runtime_response(
             method=method,
             json_body=json_body,
             headers={"Authorization": f"Bearer {(container or {}).get('gateway_token') or ''}"},
-            timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
+            timeout_s=PAPERCLIP_HERMES_TIMEOUT_S,
         )
-    except httpx.HTTPError as exc:
+    # httpx.ReadTimeout is an httpx.HTTPError, so a cold-start timeout already lands here and
+    # answers the same retryable 503 a transport failure does (pinned by a test). ValueError is
+    # what `_request_agentcore` raises for a row that says `runtime_host=agentcore` with no
+    # `agentcore_runtime_arn` — a real, if rare, state that would otherwise surface as a 500.
+    except (httpx.HTTPError, ValueError) as exc:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not reach the runtime.", retryable=True, retry_after=3) from exc
     if raw:
         return response

@@ -926,6 +926,7 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
             return
         secrets = build_profile_secret_scope(_profile_dir(agent_id))
         secrets.update(overlay or {})
+        _declare_child_env_names(secrets)
         token = set_secret_scope(secrets)
         try:
             yield
@@ -935,17 +936,38 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
     return _scope()
 
 
-def _terminal_scope(agent_id: str, env_overlay: dict[str, str] | None = None):
+def _declare_child_env_names(secrets: dict) -> None:
+    """Make each name VISIBLE (never its value) to Hermes's child-env filter.
+
+    ``tools/environments/local.py::_make_run_env`` builds a terminal child's environment by
+    iterating ``dict(os.environ | env)`` and filtering it, so a name absent from BOTH is
+    never considered at all — ``terminal.env_passthrough`` can only rescue a name the filter
+    actually walks past. An empty placeholder is what puts the name in that walk.
+
+    The placeholder is only ever the empty string. The VALUE comes from the profile secret
+    scope, which ``resolve_passthrough_value`` consults instead of the fallback whenever a
+    scope is installed — so two profiles running concurrently in this process each get their
+    own value, and a process-global read gets nothing. That is why this may safely leave the
+    names behind: a name carries no tenant data, and the set must stay present for whichever
+    profile is mid-turn.
+
+    An EXISTING value is never overwritten -- ``AWS_BEARER_TOKEN_BEDROCK`` and friends are
+    genuinely process-wide, and blanking one would break the very turn this is preparing.
+    """
+    for name in secrets:
+        os.environ.setdefault(name, "")
+
+
+def _terminal_scope(agent_id: str):
     """Use Hermes's profile-local policy and default shell cwd, never process globals.
 
-    ``env_overlay`` is Hermes's OWN supported way to hand a terminal child scoped
-    environment — the same parameter ``TERMINAL_CWD`` already rides. It is the ONLY thing
-    that reaches the child: the profile's ``.env`` + ``_secret_scope`` populate the
-    ``${VAR}`` resolver for ``config.yaml``, but a terminal child is spawned with neither
-    (measured in ``lightbulb/hermes-spike:m1-rc4``: ``PROFILE_CREDENTIAL=False``). So a
-    native Paperclip turn's ``PAPERCLIP_API_KEY`` and its run/company/issue identity are
-    passed HERE, per turn, per ContextVar — never exported into ``os.environ``, which two
-    concurrent profiles in one process would race over."""
+    ``env_overlay`` is NOT a general child-environment channel and must not be used as one:
+    ``build_profile_terminal_scope`` keeps only keys prefixed ``TERMINAL_``
+    (``tools/terminal_scope.py:137``, verified in ``lightbulb/hermes-spike:m1-rc4``), so
+    ``TERMINAL_CWD`` rides and anything else is silently dropped. Per-profile credentials and
+    run identity reach a child through ``terminal.env_passthrough`` + the secret scope
+    instead — see ``sync.profile_child_env_names`` and ``_declare_child_env_names``.
+    """
     from contextlib import contextmanager
 
     @contextmanager
@@ -956,26 +978,13 @@ def _terminal_scope(agent_id: str, env_overlay: dict[str, str] | None = None):
             yield
             return
         home = _profile_dir(agent_id)
-        token = install_profile_terminal_scope(
-            home, env_overlay={"TERMINAL_CWD": str(home), **(env_overlay or {})}
-        )
+        token = install_profile_terminal_scope(home, env_overlay={"TERMINAL_CWD": str(home)})
         try:
             yield
         finally:
             reset_terminal_scope(token)
 
     return _scope()
-
-
-def _profile_secrets(agent_id: str) -> dict[str, str]:
-    """The profile's own ``.env`` values, or {} outside the Hermes image — the same source
-    ``_secret_scope`` installs, read directly so the terminal overlay can carry the agent's
-    ``PAPERCLIP_API_KEY`` without a process-global export."""
-    try:
-        from agent.secret_scope import build_profile_secret_scope
-    except ImportError:
-        return {}
-    return dict(build_profile_secret_scope(_profile_dir(agent_id)) or {})
 
 
 def profile_model(config: dict) -> tuple[str, str]:
@@ -1119,13 +1128,11 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     if identity.get("issueId"):
         env["PAPERCLIP_TASK_ID"] = identity["issueId"]
     # The agent dispositions the issue by calling the Paperclip API from a terminal command,
-    # and a terminal child inherits neither the profile `.env` nor the secret scope -- only
-    # `env_overlay`. So the identity AND the profile's own key are handed to _terminal_scope;
-    # _secret_scope still gets the identity so a `${PAPERCLIP_RUN_ID}` config ref resolves.
-    terminal_env = {**env, **{
-        key: value for key, value in _profile_secrets(agent_id).items() if key == "PAPERCLIP_API_KEY"
-    }}
-    with _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, terminal_env):
+    # so this identity has to reach a SHELL, not just config.yaml's `${VAR}` resolver. Putting
+    # it in the secret scope IS the mechanism: `_declare_child_env_names` makes the names
+    # visible to Hermes's child-env filter, `pin_profile_defaults` lists them in
+    # `terminal.env_passthrough`, and Hermes resolves each value back out of this same scope.
+    with _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id):
         agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
         attach_agent(run_id, agent)
         if paperclip_run_aborted(run_id):

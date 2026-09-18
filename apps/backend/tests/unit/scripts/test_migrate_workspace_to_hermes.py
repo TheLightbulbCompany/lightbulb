@@ -1089,3 +1089,60 @@ async def test_stamp_migrated_clears_an_earlier_error(monkeypatch):
     assert fields["hermes_migrated_at"]
     assert fields["hermes_migrate_error"] is None
     assert fields["hermes_migrate_exit_code"] is None
+
+
+# --- re-pointing an ALREADY-migrated owner's adapters (task 18) -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_repoint_adapters_only_runs_for_an_already_migrated_owner(monkeypatch):
+    """The gate `migrate()` needs is exactly the one that locks this out: `_check_preconditions`
+    exits 2 for any row already carrying `hermes_migrated_at`, and every owner that needs the
+    native-adapter re-point is BY DEFINITION already migrated. So this door skips it."""
+    repoint = AsyncMock()
+    monkeypatch.setattr(mod, "_repoint_paperclip_adapters", repoint)
+    monkeypatch.setattr(mod, "load_agent_roster", AsyncMock(return_value=ROSTER))
+    monkeypatch.setattr(
+        mod.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "runtime_host": "agentcore", "hermes_migrated_at": "2026-09-17"}),
+    )
+    precondition = AsyncMock()
+    monkeypatch.setattr(mod, "_check_preconditions", precondition)
+
+    assert await mod.repoint_adapters_only("org_1", dry_run=False) == 0
+
+    precondition.assert_not_awaited()
+    repoint.assert_awaited_once_with("org_1", ROSTER, runtime_host="agentcore")
+
+
+@pytest.mark.asyncio
+async def test_repoint_adapters_only_refuses_an_owner_not_on_agentcore(monkeypatch):
+    """Re-pointing an ECS owner onto the native adapter would aim its runs at a runtime it does
+    not have. The row decides, not the flag."""
+    repoint = AsyncMock()
+    monkeypatch.setattr(mod, "_repoint_paperclip_adapters", repoint)
+    monkeypatch.setattr(mod, "load_agent_roster", AsyncMock(return_value=ROSTER))
+    monkeypatch.setattr(
+        mod.container_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_1", "runtime_host": "ecs"})
+    )
+
+    assert await mod.repoint_adapters_only("org_1", dry_run=False) == 2
+    repoint.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_repoint_adapters_only_dry_run_writes_nothing(monkeypatch, capsys):
+    repoint = AsyncMock()
+    monkeypatch.setattr(mod, "_repoint_paperclip_adapters", repoint)
+    monkeypatch.setattr(mod, "load_agent_roster", AsyncMock(return_value=ROSTER))
+    monkeypatch.setattr(
+        mod.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "runtime_host": "agentcore"}),
+    )
+
+    assert await mod.repoint_adapters_only("org_1", dry_run=True) == 0
+
+    repoint.assert_not_awaited()
+    assert "Ada" in capsys.readouterr().out

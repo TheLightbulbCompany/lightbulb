@@ -142,15 +142,17 @@ def wipe_mocks(monkeypatch, paperclip_repo, tmp_path):
         clerk_admin=MagicMock(
             list_organization_members=AsyncMock(return_value=[{"user_id": MEMBER, "email": f"{MEMBER}@example.com"}]),
             list_user_organizations=AsyncMock(return_value=[{"id": ORG}]),
-            revoke_sessions=AsyncMock(return_value={"ok": True}),
             delete_user=AsyncMock(),
         ),
         admin_actions_repo=MagicMock(create=AsyncMock()),
         # Script-local (see the module docstring): the deployed clerk_admin has no
         # org delete and its get_organization takes no include_members_count.
-        clerk_org_read=AsyncMock(return_value={"id": ORG, "name": "Target Workspace", "members_count": 1}),
+        # Returns (org, clerk_reachable) — a 404 and an unreachable Clerk are
+        # NOT the same answer, and check_refusals treats them differently.
+        clerk_org_read=AsyncMock(return_value=({"id": ORG, "name": "Target Workspace", "members_count": 1}, True)),
         clerk_org_delete=AsyncMock(),
         company_row_user_ids=AsyncMock(return_value=[MEMBER]),
+        revoke_sessions=AsyncMock(return_value="revoked"),
     )
 
     def _company_stripe_ok(steps, *, owner_id):
@@ -188,6 +190,7 @@ def wipe_mocks(monkeypatch, paperclip_repo, tmp_path):
     monkeypatch.setattr(mod, "_clerk_org_with_member_count", m.clerk_org_read)
     monkeypatch.setattr(mod, "_clerk_delete_organization", m.clerk_org_delete)
     monkeypatch.setattr(mod, "_company_row_user_ids", m.company_row_user_ids)
+    monkeypatch.setattr(mod, "_revoke_sessions", m.revoke_sessions)
     monkeypatch.setattr(mod.settings, "LITESTREAM_BUCKET", "lightbulb-dev-litestream")
     monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev")
     return m
@@ -265,11 +268,20 @@ async def test_refuses_when_clerk_omits_members_count():
 
 
 @pytest.mark.asyncio
-async def test_refuses_when_clerk_org_unreadable_but_rows_remain():
-    """get_organization collapses 404 and "Clerk is down" into None; DDB rows
-    are the tiebreak — a workspace that still owns things is never wiped
-    against a roster we could not read."""
-    with pytest.raises(mod.Refusal, match="refusing rather than wiping against an unverifiable roster"):
+async def test_refuses_when_clerk_did_not_answer_even_with_no_ddb_rows():
+    """An unreachable Clerk is NOT the 404 case and has no DDB tiebreak: every
+    roster guard reads an empty list that means "no answer", so the run stops
+    whatever the footprint looks like."""
+    inv = _inventory(org=None, clerk_reachable=False, members=[], paperclip_rows=[], container=None, billing=None)
+    with pytest.raises(mod.Refusal, match="did not answer the organization read"):
+        await mod.check_refusals(inv, allow_multi_member=True)
+
+
+@pytest.mark.asyncio
+async def test_refuses_when_clerk_404s_the_org_but_rows_remain():
+    """Clerk ANSWERED — the org is genuinely gone — but the workspace still
+    owns rows. A deleted org with live residue is a hand-fix, not a wipe."""
+    with pytest.raises(mod.Refusal, match="does not exist, but this workspace still has rows"):
         await mod.check_refusals(_inventory(org=None), allow_multi_member=True)
 
 
@@ -441,7 +453,7 @@ async def test_preview_deletes_nothing(wipe_mocks):
     wipe_mocks.billing_repo.delete.assert_not_called()
     wipe_mocks.paperclip_repo.delete.assert_not_called()
     wipe_mocks.messaging_repo.delete_owner_partition.assert_not_called()
-    wipe_mocks.clerk_admin.revoke_sessions.assert_not_called()
+    wipe_mocks.revoke_sessions.assert_not_called()
     wipe_mocks.clerk_org_delete.assert_not_called()
     wipe_mocks.clerk_admin.delete_user.assert_not_called()
 
@@ -463,7 +475,7 @@ async def test_execute_ecs_org_calls_every_step_once(wipe_mocks):
     report = await mod.wipe_org(_inventory(), execute=True, delete_clerk_users=False)
 
     assert not [s for s in report.steps if s.status == "failed"], report.to_dict()
-    wipe_mocks.clerk_admin.revoke_sessions.assert_awaited_once_with(MEMBER)
+    wipe_mocks.revoke_sessions.assert_awaited_once_with(MEMBER)
     wipe_mocks.archive_member.assert_awaited_once_with(MEMBER)
     wipe_mocks.delete_paperclip_user.assert_awaited_once()
     assert wipe_mocks.delete_paperclip_user.await_args.kwargs["paperclip_user_id"] == f"pc_{MEMBER}"
@@ -594,11 +606,44 @@ async def test_missing_paperclip_row_is_reported_loudly_not_as_a_clean_skip(wipe
 async def test_unresolvable_paperclip_exits_non_zero(wipe_mocks, paperclip_repo):
     paperclip_repo.list_by_org_id.return_value = []
     wipe_mocks.clerk_admin.list_organization_members.return_value = []
-    wipe_mocks.clerk_org_read.return_value = {"id": ORG, "name": "n", "members_count": 0}
+    wipe_mocks.clerk_org_read.return_value = ({"id": ORG, "name": "n", "members_count": 0}, True)
     wipe_mocks.container_repo.get_by_owner_id.return_value = None
     wipe_mocks.billing_repo.get_by_owner_id.return_value = None
 
     assert await mod.main(["--org", ORG, "--execute"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_company_stripe_skip_is_reported_as_skipped_not_ok(wipe_mocks):
+    """_wipe_company_stripe re-reads the billing row strongly consistent, so a
+    binding that vanished since our snapshot means nothing was revoked.
+    Reporting that as ok would claim the platform let go of an account it never
+    touched."""
+
+    def _skipped(steps, *, owner_id):
+        steps.append(mod.WipeStep("stripe", "deauthorize_company_account", "skipped", "no company_stripe_account_id"))
+
+    wipe_mocks.wipe_company_stripe.side_effect = _skipped
+
+    report = await mod.wipe_org(_inventory(), execute=True, delete_clerk_users=False)
+
+    deauth = [s for s in report.steps if s.action == "deauthorize_company_account"]
+    assert [s.status for s in deauth] == ["skipped"]
+    assert deauth[0].detail == "no company_stripe_account_id"
+
+
+@pytest.mark.asyncio
+async def test_company_stripe_failure_is_still_a_failed_step(wipe_mocks):
+    def _failed(steps, *, owner_id):
+        steps.append(mod.WipeStep("stripe", "deauthorize_company_account", "failed", "", "stripe did not confirm"))
+
+    wipe_mocks.wipe_company_stripe.side_effect = _failed
+
+    report = await mod.wipe_org(_inventory(), execute=True, delete_clerk_users=False)
+
+    deauth = [s for s in report.steps if s.action == "deauthorize_company_account"]
+    assert [s.status for s in deauth] == ["failed"]
+    assert "stripe did not confirm" in deauth[0].error
 
 
 @pytest.mark.asyncio
@@ -671,14 +716,153 @@ async def test_clerk_user_delete_runs_after_the_org_delete(wipe_mocks):
 
 @pytest.mark.asyncio
 async def test_failed_session_revoke_is_a_failed_step(wipe_mocks):
-    """revoke_sessions swallows errors into {"error": ...} for its UX callers;
-    here a silent failure means the workspace can regrow under the teardown."""
-    wipe_mocks.clerk_admin.revoke_sessions.return_value = {"error": "http_500"}
+    """A member this cannot sign out can re-provision the workspace under the
+    teardown, so it must be a visible failure, never a silent pass."""
+    wipe_mocks.revoke_sessions.side_effect = RuntimeError("clerk revoke session sess_1 failed: http_500")
 
     report = await mod.wipe_org(_inventory(), execute=True, delete_clerk_users=False)
 
     assert _statuses(report, "clerk_sessions") == ["failed"]
+    # ...and the rest of the teardown still runs.
     wipe_mocks.clerk_org_delete.assert_awaited_once_with(ORG)
+
+
+@pytest.mark.asyncio
+async def test_session_revoke_is_scoped_to_clerk_members_only(wipe_mocks):
+    """Signing someone out is the ONE per-member action that must not use the
+    Clerk-UNION-Paperclip set: a stale paperclip row for a human who already
+    left would end THEIR sessions in the workspaces they still work in."""
+    inv = _inventory(
+        members=[{"user_id": MEMBER, "email": f"{MEMBER}@example.com"}],
+        paperclip_rows=[_paperclip_row(MEMBER), _paperclip_row(OTHER_MEMBER)],
+    )
+
+    report = await mod.wipe_org(inv, execute=True, delete_clerk_users=False)
+
+    assert OTHER_MEMBER in inv.member_ids and OTHER_MEMBER not in inv.clerk_member_ids
+    assert _statuses(report, "clerk_sessions") == ["ok"]
+    wipe_mocks.revoke_sessions.assert_awaited_once_with(MEMBER)
+    # The departed human's OTHER per-member steps still run — only the signout is narrowed.
+    assert wipe_mocks.archive_member.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# _revoke_sessions itself — the real helper, httpx mocked
+# ---------------------------------------------------------------------------
+
+
+class _Resp:
+    def __init__(self, status_code: int, payload=None):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def _fake_clerk(monkeypatch, *, get, post):
+    """Install a fake httpx.AsyncClient on the script module and return the
+    call log. ``get``/``post`` are callables (url, **kwargs) -> _Resp."""
+    calls: list[tuple[str, str]] = []
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, **kwargs):
+            calls.append(("GET", url))
+            return get(url, **kwargs)
+
+        async def post(self, url, **kwargs):
+            calls.append(("POST", url))
+            return post(url, **kwargs)
+
+    monkeypatch.setattr(mod, "httpx", SimpleNamespace(AsyncClient=lambda **kw: _Client()))
+    monkeypatch.setattr(mod.settings, "CLERK_SECRET_KEY", "sk_test_123")
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_revoke_sessions_lists_active_then_revokes_each(monkeypatch):
+    """The real Clerk pair: GET /v1/sessions then POST /v1/sessions/{id}/revoke.
+    clerk_admin.revoke_sessions posts /v1/users/{id}/revoke_session, which is
+    not a Clerk route at all — it 404s and revokes nothing."""
+    calls = _fake_clerk(
+        monkeypatch,
+        get=lambda url, **kw: _Resp(200, {"data": [{"id": "sess_1"}, {"id": "sess_2"}]}),
+        post=lambda url, **kw: _Resp(200, {}),
+    )
+
+    detail = await mod._revoke_sessions(MEMBER)
+
+    assert calls == [
+        ("GET", "https://api.clerk.com/v1/sessions"),
+        ("POST", "https://api.clerk.com/v1/sessions/sess_1/revoke"),
+        ("POST", "https://api.clerk.com/v1/sessions/sess_2/revoke"),
+    ]
+    assert "revoked 2 of 2" in detail
+
+
+@pytest.mark.asyncio
+async def test_revoke_sessions_accepts_a_bare_list_envelope(monkeypatch):
+    """Older Clerk API versions return a bare list instead of {data, …}."""
+    _fake_clerk(
+        monkeypatch,
+        get=lambda url, **kw: _Resp(200, [{"id": "sess_1"}]),
+        post=lambda url, **kw: _Resp(200, {}),
+    )
+    assert "revoked 1 of 1" in await mod._revoke_sessions(MEMBER)
+
+
+@pytest.mark.asyncio
+async def test_revoke_sessions_treats_404_on_the_list_as_success(monkeypatch):
+    """The Clerk user is already gone — same reading _clerk_delete_organization takes."""
+    _fake_clerk(monkeypatch, get=lambda url, **kw: _Resp(404), post=lambda url, **kw: _Resp(200, {}))
+    assert "already gone" in await mod._revoke_sessions(MEMBER)
+
+
+@pytest.mark.asyncio
+async def test_revoke_sessions_treats_404_on_a_revoke_as_success(monkeypatch):
+    """That session ended between the list and the revoke."""
+    _fake_clerk(
+        monkeypatch,
+        get=lambda url, **kw: _Resp(200, {"data": [{"id": "sess_1"}, {"id": "sess_2"}]}),
+        post=lambda url, **kw: _Resp(404 if url.endswith("sess_1/revoke") else 200, {}),
+    )
+    assert "revoked 1 of 2" in await mod._revoke_sessions(MEMBER)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing", ["list", "revoke"])
+async def test_revoke_sessions_raises_on_any_other_error(monkeypatch, failing):
+    _fake_clerk(
+        monkeypatch,
+        get=lambda url, **kw: _Resp(500 if failing == "list" else 200, {"data": [{"id": "sess_1"}]}),
+        post=lambda url, **kw: _Resp(500, {}),
+    )
+    with pytest.raises(RuntimeError, match="http_500"):
+        await mod._revoke_sessions(MEMBER)
+
+
+@pytest.mark.asyncio
+async def test_revoke_sessions_pages_until_a_short_page(monkeypatch):
+    """A session left alive is exactly the re-provision step 0 prevents, so the
+    list is paged rather than capped at one request."""
+    pages = [
+        {"data": [{"id": f"sess_{i}"} for i in range(mod._CLERK_SESSION_PAGE)]},
+        {"data": [{"id": "sess_last"}]},
+    ]
+    _fake_clerk(
+        monkeypatch,
+        get=lambda url, **kw: _Resp(200, pages[kw["params"]["offset"] // mod._CLERK_SESSION_PAGE]),
+        post=lambda url, **kw: _Resp(200, {}),
+    )
+    assert f"revoked {mod._CLERK_SESSION_PAGE + 1} of {mod._CLERK_SESSION_PAGE + 1}" in await mod._revoke_sessions(
+        MEMBER
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -41,15 +41,17 @@ and this script APPENDS one row per executed org rather than deleting any.
 
 SELF-CONTAINED ON PURPOSE. This file is COPIED into a running backend task, so
 it executes against whatever ``core/`` that task's image was built with — NOT
-this checkout. Three things it needs have no entry point in the deployed
-modules, and all three are implemented *here*, against those modules' current
-signatures, rather than by widening them:
+this checkout. Four things it needs are missing or WRONG in the deployed
+modules, and all four are implemented *here*, against those modules' current
+signatures, rather than by changing them:
 
 * ``_clerk_delete_organization``   — clerk_admin has no org delete.
 * ``_clerk_org_with_member_count`` — ``clerk_admin.get_organization`` takes no
   ``include_members_count``, and the count is what proves Clerk answered.
 * ``_company_row_user_ids``        — ``get_user_ids_for_company`` filters to
   ACTIVE rows; the shared-company guard must see disabled ones too.
+* ``_revoke_sessions``             — ``clerk_admin.revoke_sessions`` posts to
+  ``/v1/users/{id}/revoke_session``, which is not a Clerk Backend API route.
 
 Each is built from primitives the deployed modules already expose
 (``clerk_admin._CLERK_API_BASE``/``_TIMEOUT_S``, ``PaperclipRepo._query_pages``),
@@ -67,7 +69,7 @@ import logging
 import os
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Awaitable, Callable
 
 # Make ``core.*`` importable however this file is invoked. Two shapes matter:
@@ -142,7 +144,7 @@ class Refusal(Exception):
 
 
 # ---------------------------------------------------------------------------
-# The three script-local primitives (see the module docstring for why they are
+# The four script-local primitives (see the module docstring for why they are
 # here and not in core/). Each mirrors the posture of its neighbours in the
 # deployed module it borrows from.
 # ---------------------------------------------------------------------------
@@ -157,18 +159,25 @@ def _clerk_headers() -> dict[str, str] | None:
     return {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
 
 
-async def _clerk_org_with_member_count(org_id: str) -> dict | None:
+async def _clerk_org_with_member_count(org_id: str) -> tuple[dict | None, bool]:
     """``clerk_admin.get_organization`` plus ``?include_members_count=true``.
 
-    Same collapse as the function it stands in for — None for a 404, a network
-    error and an unset key alike — because ``check_refusals`` is what separates
-    those, using the DDB footprint as the tiebreak. The count is the point:
-    ``list_organization_members`` reports ANY error as an empty list, so this
-    is the independent second read that catches a short roster.
+    Returns ``(org, reachable)``. Unlike the function it stands in for, a real
+    **404** and a failure are NOT collapsed: ``(None, True)`` means Clerk
+    answered and the org is genuinely gone, ``(None, False)`` means Clerk did
+    not answer at all (network error, non-404 HTTP, unparseable body, or no
+    key). ``check_refusals`` treats those completely differently — an
+    already-deleted org still re-runs cleanly, while an unreachable Clerk is
+    refused no matter what DDB shows, because every roster-shaped guard is
+    then reading an empty list that means nothing.
+
+    The count is the point: ``list_organization_members`` reports ANY error as
+    an empty list, so this is the independent second read that catches a short
+    roster.
     """
     headers = _clerk_headers()
     if headers is None:
-        return None
+        return None, False
     try:
         async with httpx.AsyncClient(timeout=clerk_admin._TIMEOUT_S) as client:
             response = await client.get(
@@ -178,16 +187,82 @@ async def _clerk_org_with_member_count(org_id: str) -> dict | None:
             )
     except Exception as e:  # noqa: BLE001 — mirrors get_organization
         logger.warning("wipe_org: clerk get organization %s network error: %s", org_id, e)
-        return None
+        return None, False
     if response.status_code == 404:
-        return None
+        return None, True
     if response.status_code >= 400:
         logger.warning("wipe_org: clerk get organization %s HTTP %s", org_id, response.status_code)
-        return None
+        return None, False
     try:
-        return response.json()
+        return response.json(), True
     except ValueError:
-        return None
+        return None, False
+
+
+#: One page of ``GET /v1/sessions``. Looped rather than single-shot: a session
+#: left alive is precisely the re-provision this step exists to prevent.
+_CLERK_SESSION_PAGE = 100
+
+
+async def _revoke_sessions(user_id: str) -> str:
+    """Sign one human out of every ACTIVE Clerk session.
+
+    NOT ``clerk_admin.revoke_sessions``: that posts
+    ``/v1/users/{id}/revoke_session``, which is not a route in Clerk's Backend
+    API — the real pair is ``GET /v1/sessions`` + ``POST
+    /v1/sessions/{id}/revoke``. It answers ``{"error": "http_404"}``, which its
+    UX caller swallows, so nothing ever noticed; here it would fail step 0 for
+    every member of every run while revoking nothing at all.
+
+    404 on either call is success — the user, or that one session, is already
+    gone, the same reading ``_clerk_delete_organization`` takes. Any other
+    non-2xx raises, so a member this could not sign out is a recorded failure
+    rather than a silent pass.
+    """
+    headers = _clerk_headers()
+    if headers is None:
+        return f"{user_id}: no Clerk key — nothing revoked"
+
+    listed: list[str] = []
+    revoked = 0
+    async with httpx.AsyncClient(timeout=clerk_admin._TIMEOUT_S) as client:
+        offset = 0
+        while True:
+            response = await client.get(
+                f"{clerk_admin._CLERK_API_BASE}/sessions",
+                headers=headers,
+                params={
+                    "user_id": user_id,
+                    "status": "active",
+                    "limit": _CLERK_SESSION_PAGE,
+                    "offset": offset,
+                },
+            )
+            if response.status_code == 404:
+                return f"{user_id}: no Clerk user (already gone)"
+            if response.status_code >= 400:
+                raise RuntimeError(f"clerk list sessions for {user_id} failed: http_{response.status_code}")
+            payload = response.json()
+            # Clerk wraps collections as {data, total_count} on current API
+            # versions and returned a bare list on older ones — accept both,
+            # the same way list_user_organizations does.
+            rows = payload.get("data") if isinstance(payload, dict) else payload
+            if not isinstance(rows, list):
+                break
+            listed.extend(s["id"] for s in rows if isinstance(s, dict) and s.get("id"))
+            if len(rows) < _CLERK_SESSION_PAGE:
+                break
+            offset += _CLERK_SESSION_PAGE
+
+        for session_id in listed:
+            response = await client.post(f"{clerk_admin._CLERK_API_BASE}/sessions/{session_id}/revoke", headers=headers)
+            if response.status_code == 404:
+                continue  # already ended between the list and now
+            if response.status_code >= 400:
+                raise RuntimeError(f"clerk revoke session {session_id} failed: http_{response.status_code}")
+            revoked += 1
+
+    return f"{user_id}: revoked {revoked} of {len(listed)} active session(s)"
 
 
 async def _clerk_delete_organization(org_id: str) -> None:
@@ -244,12 +319,18 @@ class _Inventory:
 
     org_id: str
     org: dict | None
-    """The Clerk organization, or None (404 / already deleted / unreachable —
-    ``get_organization`` collapses all three). ``check_refusals`` is what
-    separates them; nothing downstream may assume which it was."""
+    """The Clerk organization, or None when Clerk answered 404 (already
+    deleted) OR could not be reached at all — ``clerk_reachable`` is what
+    tells those apart."""
 
     members: list[dict]
     """Clerk memberships — ``{"user_id", "email", ...}``, see clerk_admin."""
+
+    clerk_reachable: bool = True
+    """False when the org read did not get an answer out of Clerk (network
+    error, non-404 HTTP, no key). Every roster-shaped guard below reads an
+    empty list in that state, so ``check_refusals`` stops the run outright
+    rather than letting empty mean "nothing to protect"."""
 
     paperclip_rows: list[dict] = field(default_factory=list)
     """Raw ``paperclip-companies`` rows for this org, via the by-org-id GSI.
@@ -264,6 +345,12 @@ class _Inventory:
     org is deleted, so the list containing ``org_id`` is the proof the lookup
     worked. An empty list is therefore "Clerk did not answer", not "no orgs",
     and the Clerk-user delete refuses on it."""
+
+    @property
+    def clerk_member_ids(self) -> list[str]:
+        """Only the humans Clerk itself lists in this org. Narrower than
+        ``member_ids`` on purpose — see step 0."""
+        return [m["user_id"] for m in self.members if m.get("user_id")]
 
     @property
     def member_ids(self) -> list[str]:
@@ -329,9 +416,11 @@ class _Inventory:
 
 async def read_inventory(org_id: str) -> _Inventory:
     repo = PaperclipRepo(table_name=_PAPERCLIP_TABLE)
+    org, clerk_reachable = await _clerk_org_with_member_count(org_id)
     inv = _Inventory(
         org_id=org_id,
-        org=await _clerk_org_with_member_count(org_id),
+        org=org,
+        clerk_reachable=clerk_reachable,
         members=await clerk_admin.list_organization_members(org_id),
         paperclip_rows=await repo.list_by_org_id(org_id),
         container=await container_repo.get_by_owner_id(org_id, consistent=True),
@@ -360,12 +449,22 @@ async def check_refusals(inv: _Inventory, *, allow_multi_member: bool) -> None:
     # independent second read: Clerk answered, and this is how many members it
     # says there are. A mismatch means list_organization_members came back
     # short — which it does silently, on ANY error.
+    if not inv.clerk_reachable:
+        # Not a 404 — Clerk never answered. The DDB footprint is NOT a tiebreak
+        # here: an empty one would let a run proceed with members=[] that means
+        # "no answer", disarming the multi-member, bootstrap-email and
+        # cross-org-user guards all at once.
+        raise Refusal(
+            f"Clerk did not answer the organization read for {org_id} (network error, non-404 HTTP, "
+            "or no CLERK_SECRET_KEY). Every roster guard reads an empty list in that state, so there "
+            "is nothing to verify against — fix Clerk access and re-run"
+        )
     if inv.org is None:
         if inv.has_ddb_footprint:
             raise Refusal(
-                f"Clerk returned no organization for {org_id}, and this workspace still has rows "
-                "(container / billing / paperclip). That is either a deleted org with live residue or "
-                "an unreachable Clerk — refusing rather than wiping against an unverifiable roster"
+                f"Clerk says organization {org_id} does not exist, but this workspace still has rows "
+                "(container / billing / paperclip) — a deleted org with live residue. Resolve that by "
+                "hand rather than wiping against a roster nobody can enumerate any more"
             )
         logger.warning(
             "wipe_org: %s has no Clerk organization and no DDB rows — treating as an already-torn-down "
@@ -476,10 +575,15 @@ async def wipe_org(inv: _Inventory, *, execute: bool, delete_clerk_users: bool) 
     # --- Step 0: stop the workspace regrowing under the teardown -----------
     # Every member's /container/status poll re-runs ensure_user_ready, which
     # re-provisions. Killing their Clerk sessions first makes that poll 401
-    # instead of racing steps 1-8. Not a delete — a live session is not a
-    # resource this script owns, so it is execute-only like everything else
-    # but has nothing to preview beyond "these are the members".
-    for user_id in inv.member_ids:
+    # instead of racing steps 1-8.
+    #
+    # Scoped to inv.clerk_member_ids, NOT the Clerk-UNION-Paperclip member_ids
+    # every other per-member step uses. The union exists so a stale paperclip
+    # row cannot hide a member from the guards; signing someone out is the one
+    # action where that breadth is wrong. A row left behind by a human who
+    # already left this workspace would otherwise end THEIR sessions in the
+    # other workspaces they are still working in.
+    for user_id in inv.clerk_member_ids:
         await _do(
             steps,
             system="clerk_sessions",
@@ -731,6 +835,7 @@ async def wipe_org(inv: _Inventory, *, execute: bool, delete_clerk_users: bool) 
     # The company's OWN Stripe account is never deleted — it is their business
     # account. This only releases the platform's authorization on it.
     company_account_id = (inv.billing or {}).get("company_stripe_account_id") or ""
+    company_stripe_outcome: list[WipeStep] = []
     await _do(
         steps,
         system="stripe",
@@ -738,8 +843,15 @@ async def wipe_org(inv: _Inventory, *, execute: bool, delete_clerk_users: bool) 
         execute=execute,
         present=bool(company_account_id),
         detail=company_account_id or "no company_stripe_account_id on billing row",
-        fn=lambda: _deauthorize_company_stripe(org_id),
+        fn=lambda: _deauthorize_company_stripe(org_id, company_stripe_outcome),
     )
+    # _wipe_company_stripe decides its own status, and it can legitimately
+    # SKIP: it re-reads the billing row strongly consistent, so a binding that
+    # vanished between our snapshot and that read means nothing was revoked.
+    # Reporting a no-op as "ok" would claim the platform let go of an account
+    # it never touched.
+    if company_stripe_outcome and company_stripe_outcome[-1].status == "skipped" and steps[-1].status == "ok":
+        steps[-1] = replace(steps[-1], status="skipped", detail=company_stripe_outcome[-1].detail)
     await _do(
         steps,
         system="billing_row",
@@ -918,16 +1030,6 @@ async def _clerk_user_step(
 # ---------------------------------------------------------------------------
 
 
-async def _revoke_sessions(user_id: str) -> str:
-    result = await clerk_admin.revoke_sessions(user_id)
-    if result.get("error"):
-        # revoke_sessions swallows failures into {"error": ...} for its UX
-        # callers. Here a silent failure means the workspace can regrow under
-        # the teardown, so surface it as a failed step.
-        raise RuntimeError(f"clerk revoke_sessions failed for {user_id}: {result['error']}")
-    return f"{user_id}: sessions revoked" + (" (stubbed — no Clerk key)" if result.get("stubbed") else "")
-
-
 async def _archive_member(user_id: str) -> str:
     await _archive_paperclip_member_call(user_id)
     return f"membership archived for {user_id}"
@@ -1039,16 +1141,19 @@ async def _delete_stripe(org_id: str, stripe_customer_id: str) -> str:
     return f"stripe_customer_id={stripe_customer_id} deleted={await delete_stripe_customer(org_id)}"
 
 
-async def _deauthorize_company_stripe(org_id: str) -> str:
+async def _deauthorize_company_stripe(org_id: str, outcome: list[WipeStep]) -> str:
     """account_wipe's own step 8b, which appends its result to a step list.
-    Run it against a scratch list and re-raise its failure so this script's
-    single ``_do`` seam reports it like every other step."""
-    scratch: list[WipeStep] = []
-    await _wipe_company_stripe(scratch, owner_id=org_id)
-    outcome = scratch[-1]
-    if outcome.status == "failed":
-        raise RuntimeError(outcome.error or "company stripe deauthorize failed")
-    return outcome.detail
+
+    Run it against the caller's ``outcome`` list and re-raise its failure so
+    this script's single ``_do`` seam reports it like every other step. The
+    caller reads ``outcome`` afterwards because ``_step`` can only produce
+    ok/failed, and this collaborator has a third answer — ``skipped``.
+    """
+    await _wipe_company_stripe(outcome, owner_id=org_id)
+    last = outcome[-1]
+    if last.status == "failed":
+        raise RuntimeError(last.error or "company stripe deauthorize failed")
+    return last.detail
 
 
 async def _delete_billing_row(org_id: str) -> str:

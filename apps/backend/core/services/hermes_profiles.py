@@ -122,9 +122,17 @@ _LIGHTBULB_PLUGINS = ("lightbulb", "lightbulb_node")
 #: (``scripts/reapply_hermes_skills_dirs.py``) imports this same list so a re-apply can never
 #: drift from what a fresh profile gets.
 #:
-#: Ours (baked by ``apps/infra/hermes/Dockerfile``'s ``COPY skills/ /opt/hermes-skills/``) FIRST,
-#: so a same-named skill still resolves to our version — Hermes's loader gives profile-local
-#: skills top precedence and walks ``external_dirs`` in order after that.
+#: List order here is COSMETIC — it does not resolve a naming collision. Verified against the
+#: image's ``/opt/hermes/tools/skills_tool.py``: ``_find_all_skills`` (which builds the
+#: agent-visible index) advertises a name that exists in more than one dir, but
+#: ``_locate_skill``/``skill_view`` then REFUSES to load it
+#: (``{"success": false, "error": "Ambiguous skill name '<name>': N skills match…"}``) — a
+#: same-named skill in both dirs is worse than shadowing, since the index still offers a name
+#: every load then rejects. No collision exists in the founder's profiles today, but the
+#: openclaw->Hermes migration copies owner skills into the profile-local dir, and several
+#: Hermes-bundled names below are common (``pdf``, ``docx``, ``xlsx``, ``github``, ``notion``,
+#: ``systematic-debugging``, …) — a future collision has to be resolved by loading via its
+#: categorised path (e.g. ``productivity/pdf``), not by this list's order.
 SKILLS_DIR_LIGHTBULB = "/opt/hermes-skills"
 #: Hermes's OWN bundled skills (58 of them), shipped inside the ``nousresearch/hermes-agent``
 #: base image at its package root (``/opt/hermes``). The real Hermes CLI seeds these into every

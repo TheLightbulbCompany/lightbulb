@@ -836,7 +836,7 @@ app.include_router(google_accounts.router, prefix="/api/v1", tags=["google-accou
 # write. See routers/automations.py.
 app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
 
-# Workspace file browser (EFS agent workspace)
+# Workspace file browser (the agent's S3 Hermes profile)
 app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["container"])
 
 # Debug routes (dev-only container provisioning)

@@ -160,7 +160,7 @@ async def presign_import(
     return {"upload_url": url, "key": key, "max_bytes": backup_import.MAX_UPLOAD_BYTES, "expires_in": PRESIGN_TTL_S}
 
 
-def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None, container: dict | None = None):
+def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None):
     s3 = _s3()
     bucket = settings.MARKETPLACE_ARTIFACTS_BUCKET
     staging_dir = _staging_dir(owner_id, import_id)
@@ -225,7 +225,7 @@ def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None, co
 @router.post("", response_model=schemas.ImportPreviewResponse)
 async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[AuthContext, Depends(get_current_user)]):
     owner_id = resolve_owner_id(auth)
-    container = await _require_container(owner_id)
+    await _require_container(owner_id)
     m = _KEY_RE.match(payload.key)
     if not m or m.group(1) != owner_id:
         raise HTTPException(status_code=400, detail="invalid upload key")
@@ -243,7 +243,7 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
     import_id = f"import-{uuid.uuid4().hex[:12]}"
     staging_dir = _staging_dir(owner_id, import_id)
     try:
-        staged = await run_in_thread(_stage_from_s3, owner_id, import_id, payload.key, etag, container)
+        staged = await run_in_thread(_stage_from_s3, owner_id, import_id, payload.key, etag)
     except agent_export.ExportTooLargeError as exc:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise HTTPException(status_code=413, detail=str(exc)) from exc

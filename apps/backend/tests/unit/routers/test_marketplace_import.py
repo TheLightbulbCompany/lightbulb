@@ -554,6 +554,75 @@ def test_confirm_without_include_history_skips_stage_history(client):
     mock_ecs.force_redeploy_user_service.assert_not_awaited()
 
 
+def test_confirm_on_agentcore_skips_plugins_history_and_bounce(client):
+    """AgentCore has no openclaw.json / EFS sessions/ delivery path and no ECS
+    service to bounce yet -- writing plugins/history there, or redeploying a
+    service that does not exist, is a dead write. The response must say so,
+    never claim they landed (hermes/honest-agentcore-branches)."""
+    c, _, s3, get_row = client
+    sqlite_bytes = b"SQLite format 3\x00" + bytes(84)
+    s3.objects[KEY] = _archive(
+        extra={
+            "plugins/installs.json": json.dumps(
+                {
+                    "version": 1,
+                    "plugins": [
+                        {
+                            "pluginId": "weather",
+                            "packageName": "openclaw-weather",
+                            "packageVersion": "1.2.0",
+                            "origin": "npm",
+                            "rootDir": "/home/node/.openclaw/extensions/weather",
+                            "enabled": True,
+                        }
+                    ],
+                }
+            ),
+            "extensions/weather/package.json": json.dumps({"name": "openclaw-weather", "version": "1.2.0"}),
+            "extensions/weather/index.js": "module.exports = {}\n",
+            "agents/main/agent/openclaw-agent.sqlite": sqlite_bytes,
+            "agents/main/sessions/sessions.json": "{}",
+        }
+    )
+    import_id = _start(c)  # ECS at start time -- the AgentCore switch happens only for confirm
+    get_row.return_value = {"owner_id": OWNER, "gateway_token": "gw", "runtime_host": "agentcore"}
+    mock_ecs = MagicMock()
+    mock_ecs.force_redeploy_user_service = AsyncMock()
+    with (
+        patch(
+            "routers.marketplace_import.agent_export.export_built_agent_from_staging",
+            return_value=_stub_package(),
+        ),
+        patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
+        patch("routers.marketplace_import.apply_plugins", new_callable=AsyncMock) as apply,
+        patch("routers.marketplace_import.stage_history") as stage,
+        patch("routers.marketplace_import.get_ecs_manager", return_value=mock_ecs),
+    ):
+        reg.return_value = {
+            "agent_id": "uuid-main",
+            "name": "Quill",
+            "registered": True,
+            "publish_hint": "",
+            "warnings": [],
+        }
+        r = c.post(
+            f"/api/v1/marketplace/import/{import_id}/confirm",
+            json={"plugins": ["weather"], "include_history": True},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Agent registration itself still works on AgentCore -- only the three
+    # ECS/EFS-only steps are refused.
+    assert body["agents"][0]["ok"] is True
+    assert body["plugins_installed"] == []
+    assert body["history_staged"] == []
+    assert body["restarting"] is False
+    assert any("unsupported_on_agentcore" in w for w in body["warnings"])
+    apply.assert_not_awaited()
+    stage.assert_not_called()
+    mock_ecs.force_redeploy_user_service.assert_not_awaited()
+
+
 def test_confirm_unknown_import_404_and_bad_id_400(client):
     c, _, _, _ = client
     assert c.post("/api/v1/marketplace/import/import-000000000000/confirm", json={}).status_code == 404

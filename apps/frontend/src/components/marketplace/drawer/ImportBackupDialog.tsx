@@ -52,6 +52,9 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
   const [target, setTarget] = useState("");
   const [claudeCols, setClaudeCols] = useState<Set<string>>(new Set());
   const [claudeItems, setClaudeItems] = useState<NonNullable<ImportConfirmResult["claude_items"]> | null>(null);
+  // ImportConfirmResponse.warnings — shared by both confirm branches (e.g. the claude branch's
+  // own warnings, or a non-claude confirm's "unsupported_on_agentcore" plugin/history skips).
+  // Never both populated at once: `kind` selects exactly one branch per confirm() call.
   const [claudeWarnings, setClaudeWarnings] = useState<string[]>([]);
   // Bumped by reset(): a native export resolving after the dialog closed
   // compares against this and drops its result instead of re-driving upload.
@@ -143,6 +146,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
         agent_ids: [...agents], skills: [...skills], mcp_servers: [...mcps], include_memory: memory, include_cron: cron,
         plugins: [...plugins], include_history: history && anyHistory,
       })) as ImportConfirmResult;
+      setClaudeWarnings(r.warnings ?? []);
       const ok = r.agents.filter((a) => a.ok && a.agent_id);
       const failed = r.agents.filter((a) => !a.ok);
       if (!ok.length) throw new Error(failed[0]?.error || "nothing was imported");
@@ -319,6 +323,16 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
                 </ul>
                 <p className="mt-2">The staged import is kept — fix and retry, or continue.</p>
               </div>
+            )}
+
+            {/* Same rendering as the claude branch's own warnings list (~L266-270) — e.g. a
+                plugin/history skip on an AgentCore workspace. Only reachable when confirm()
+                didn't close the dialog (a partial failure, or a retry after an error): a clean
+                full success still closes immediately, same as before this block existed. */}
+            {claudeWarnings.length > 0 && (
+              <ul className="mt-2 list-disc space-y-1 rounded-xl border border-[var(--warn)] p-2 pl-6 text-[var(--warn)]">
+                {claudeWarnings.map((w) => <li key={w}>{w}</li>)}
+              </ul>
             )}
             </>)}
 

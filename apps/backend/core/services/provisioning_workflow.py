@@ -92,7 +92,9 @@ class WorkflowRefused(RuntimeError):
     """A refusal the caller renders: ``not_eligible``, ``requirements_pending``,
     ``service_unavailable``, ``invalid_configuration``,
     ``no_company_stripe_account``, ``no_company``, ``cannot_cancel``,
-    ``needs_review_first``."""
+    ``needs_review_first``, ``unsupported_on_agentcore`` (raised by
+    ``provisioning_landing.land_credentials``, not this module -- imported
+    locally there to avoid a circular import)."""
 
     def __init__(self, code: str, message: str, *, requirements: list[str] | None = None):
         super().__init__(message)

@@ -1101,9 +1101,12 @@ class TestDisconnect:
         mock_store.get = AsyncMock(return_value=None)
         remover = mock_removers.get.return_value
         mock_accounts.list_accounts = AsyncMock(return_value=[{"email": "a@x.com"}, {"email": "b@x.com"}])
-        mock_accounts.list_assignments = AsyncMock(return_value={"agent_1": "a@x.com", "agent_2": "b@x.com"})
+        assignments = {"agent_1": "a@x.com", "agent_2": "b@x.com"}
+        mock_accounts.list_assignments = AsyncMock(side_effect=lambda owner_id: dict(assignments))
         mock_accounts.remove_account = AsyncMock()
-        mock_accounts.remove_assignment = AsyncMock()
+        mock_accounts.remove_assignment = AsyncMock(
+            side_effect=lambda owner_id, agent_id: assignments.pop(agent_id, None)
+        )
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_patcher.set_openclaw_config_path = AsyncMock()
@@ -1118,12 +1121,45 @@ class TestDisconnect:
         mock_accounts.remove_account.assert_awaited_once_with("org_test_456", "a@x.com")
         # Only the assignment pointing at a@x.com dropped; agent_2 (b@x.com) kept.
         mock_accounts.remove_assignment.assert_awaited_once_with("org_test_456", "agent_1")
-        # Only the agent stripped of a@x.com is re-seeded (its block is removed);
-        # agent_2, still on b@x.com, is left alone.
-        mock_seed.assert_awaited_once_with("org_test_456", "agent_1")
+        # agent_1 is re-seeded so its block goes with its account; agent_2 is re-seeded
+        # because the projection's cli-env.json is provider-keyed, so this disconnect wiped
+        # its GOG_ACCOUNT too (see the disconnect-A-keeps-B test below).
+        assert [c.args for c in mock_seed.await_args_list] == [
+            ("org_test_456", "agent_1"),
+            ("org_test_456", "agent_2"),
+        ]
         # Provider-level status row + secret NOT dropped on a single-account disconnect.
         mock_repo.delete.assert_not_called()
         mock_store.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.seed_agent_google_identity", new_callable=AsyncMock)
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.MATERIALIZER_REMOVERS")
+    @patch("routers.connections.config_patcher")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnecting_one_google_account_reprojects_the_survivors(
+        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_accounts, mock_seed, async_client
+    ):
+        """On AgentCore the binding lives as GOG_ACCOUNT in each agent's profile
+        ``cli-env.json``, which the PROVIDER-keyed projection deletes on any google
+        disconnect. Nothing removes the row of an agent bound to an account that SURVIVES,
+        so without an explicit re-seed that agent loses its binding permanently."""
+        mock_store.get = AsyncMock(return_value=None)
+        mock_accounts.list_accounts = AsyncMock(return_value=[{"email": "a@x.com"}, {"email": "b@x.com"}])
+        # Nothing here points at the disconnected account: agent_2 is never touched by the
+        # removal loop, and is exactly the agent the old code left stripped.
+        mock_accounts.list_assignments = AsyncMock(return_value={"agent_2": "b@x.com"})
+        mock_accounts.remove_account = AsyncMock()
+        mock_accounts.remove_assignment = AsyncMock()
+        mock_patcher.set_openclaw_config_path = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/google?account=a@x.com")
+        assert response.status_code == 200
+
+        mock_accounts.remove_assignment.assert_not_called()
+        mock_seed.assert_awaited_once_with("org_test_456", "agent_2")
 
     @pytest.mark.asyncio
     @patch("routers.connections.google_accounts_repo")
@@ -1489,6 +1525,7 @@ class TestOAuthCallback:
         mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock(return_value="user@example.com")
         mock_accounts.add_account = AsyncMock()
+        mock_accounts.list_assignments = AsyncMock(return_value={})
 
         response = await async_client.get(
             "/api/v1/oauth/google/callback?code=abc&state=st1",
@@ -1584,13 +1621,14 @@ class TestOAuthCallback:
         mock_repo.put_status.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch("routers.connections.seed_agent_google_identity", new_callable=AsyncMock)
     @patch("routers.connections.google_accounts_repo")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections.oauth_dance")
     async def test_google_callback_records_connected_account(
-        self, mock_dance, mock_repo, mock_store, mock_apply, mock_accounts, async_client
+        self, mock_dance, mock_repo, mock_store, mock_apply, mock_accounts, mock_seed, async_client
     ):
         # A successful Google connect must record the connected account's email in
         # the per-owner inventory, on top of the provider-level "connected" status.
@@ -1600,6 +1638,9 @@ class TestOAuthCallback:
         # apply_connection surfaces the connected account email (gog_cli rail).
         mock_apply.apply_connection = AsyncMock(return_value="alice@example.com")
         mock_accounts.add_account = AsyncMock()
+        # An agent already bound to another account: the projection just rewrote every
+        # profile's cli-env.json from its own keys, so that binding needs re-projecting.
+        mock_accounts.list_assignments = AsyncMock(return_value={"agent_1": "bob@example.com"})
 
         response = await async_client.get(
             "/api/v1/oauth/google/callback?code=abc&state=st1",
@@ -1613,6 +1654,9 @@ class TestOAuthCallback:
         assert mock_repo.put_status.await_args.args == ("org_1", "google", "connected")
         # The connected account is added to the owner's inventory.
         mock_accounts.add_account.assert_awaited_once_with("org_1", "alice@example.com")
+        # ...and the surviving binding is re-projected, since the connect's cli-env.json
+        # rewrite dropped it.
+        mock_seed.assert_awaited_once_with("org_1", "agent_1")
 
     @pytest.mark.asyncio
     @patch("routers.connections.google_accounts_repo")
@@ -1629,6 +1673,7 @@ class TestOAuthCallback:
         mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred, None))
         mock_repo.put_status = AsyncMock()
         mock_accounts.add_account = AsyncMock()
+        mock_accounts.list_assignments = AsyncMock(return_value={})
 
         mock_apply.apply_connection = AsyncMock(return_value="alice@example.com")
         await async_client.get("/api/v1/oauth/google/callback?code=a1&state=s1", follow_redirects=False)

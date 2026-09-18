@@ -13,15 +13,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def _ecs_owner_by_default():
-    """The write doors below ask ``is_agentcore_owner(fail_closed=True)``, which raises rather
-    than guessing when the container read fails -- and there is no DynamoDB here. Answer ECS;
-    the AgentCore tests override it per test."""
-    with patch("routers.google_accounts.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)):
-        yield
-
-
 class TestListAccounts:
     """GET /api/v1/google/accounts — owner's accounts + per-agent assignments."""
 
@@ -124,27 +115,28 @@ class TestAssignAccount:
         mock_seed.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("routers.google_accounts.runtime_transport.is_agentcore_owner", new_callable=AsyncMock)
+    @patch("core.services.runtime_transport.is_agentcore_owner", new_callable=AsyncMock)
     @patch("routers.google_accounts.seed_agent_google_identity", new_callable=AsyncMock)
     @patch("routers.google_accounts.google_accounts_repo")
-    async def test_assign_refuses_on_an_agentcore_workspace(self, mock_repo, mock_seed, mock_agentcore, async_client):
-        """M6 task-14 row 4: the binding is only ever delivered as a ``gog -a <email>``
-        instruction, and neither the ``gog`` binary nor its EFS keyring exists on a Hermes
-        microVM. Storing the row and answering 200 is the silent-success shape this pass
-        removes — refuse, same as the Shopify container login (task 10-D)."""
+    async def test_assign_is_allowed_on_an_agentcore_workspace(
+        self, mock_repo, mock_seed, mock_agentcore, async_client
+    ):
+        """The old 422 rested on "no gog on a microVM", which is no longer true: the image ships
+        it and the seeder delivers the binding as ``GOG_ACCOUNT`` in the agent's profile. The
+        router has no runtime branch left — it writes the row and re-seeds like any other."""
         mock_agentcore.return_value = True
         mock_repo.list_accounts = AsyncMock(return_value=[{"email": "alice@example.com"}])
         mock_repo.set_assignment = AsyncMock()
+        mock_repo.list_assignments = AsyncMock(return_value={"agent_1": "alice@example.com"})
 
         response = await async_client.post(
             "/api/v1/google/accounts/alice@example.com/assign",
             json={"agent_id": "agent_1"},
         )
 
-        assert response.status_code == 422
-        assert response.json()["detail"] == "unsupported_on_agentcore"
-        mock_repo.set_assignment.assert_not_called()
-        mock_seed.assert_not_called()
+        assert response.status_code == 200
+        mock_repo.set_assignment.assert_awaited_once_with("org_test_456", "agent_1", "alice@example.com")
+        mock_seed.assert_awaited_once_with("org_test_456", "agent_1")
 
     @pytest.mark.asyncio
     @patch("routers.google_accounts.seed_agent_google_identity", new_callable=AsyncMock)

@@ -822,6 +822,23 @@ async def _seed_identity_best_effort(owner_id: str, agent_id: str) -> None:
         )
 
 
+async def _reseed_surviving_google_assignments(owner_id: str) -> None:
+    """Re-project every assignment that SURVIVES an account-level google change.
+
+    On AgentCore the binding lives as ``GOG_ACCOUNT`` in each agent's profile
+    ``cli-env.json``, and that file is owned by the PROVIDER-keyed projection
+    (``credentials/hermes_cli``): a connect rewrites it wholesale from the gog keyring
+    password, and a disconnect deletes it outright. Either therefore strips the binding of
+    an agent the change never named — disconnect account A and an agent bound to B loses B,
+    with no row removed to drive a re-seed. Re-seeding the survivors is what puts it back.
+
+    Idempotent and cheap on ECS, where the seeder skips the write when the block is already
+    current. Best-effort per agent: the authoritative keyring/inventory change has already
+    committed."""
+    for agent_id in await google_accounts_repo.list_assignments(owner_id):
+        await _seed_identity_best_effort(owner_id, agent_id)
+
+
 async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, account: str) -> None:
     """Disconnect a single Google account: drop its keyring token, its inventory
     row, and any per-agent assignments pointing at it. The provider-level status
@@ -859,6 +876,9 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
             # — a seed failure here must not fail the disconnect, since the
             # authoritative keyring + inventory removal has already happened.
             await _seed_identity_best_effort(owner_id, agent_id)
+    # The projection's cli-env.json is provider-keyed, so this disconnect also wiped the
+    # GOG_ACCOUNT of agents bound to the accounts that REMAIN. Put those back.
+    await _reseed_surviving_google_assignments(owner_id)
 
 
 @router.delete("/{provider}")
@@ -1225,4 +1245,7 @@ async def oauth_callback(
     # email that apply_connection surfaced from the gog keyring seed.
     if prov == "google" and connection_identity:
         await google_accounts_repo.add_account(owner_id, connection_identity)
+        # This connect rewrote every profile's cli-env.json from the projection's own keys,
+        # dropping each agent's GOG_ACCOUNT. Re-seed the existing assignments.
+        await _reseed_surviving_google_assignments(owner_id)
     return _done(f"connected={prov}")

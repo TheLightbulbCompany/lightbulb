@@ -81,17 +81,19 @@ _REPRODUCIBLE_GLOBS = tuple(
 #: Hazard 5: credential shapes the AGENT itself can write while doing git/gh work. Before local
 #: exec, terminal commands never ran inside the profile dir at all, so EXCLUDE_GLOBS only ever
 #: had to cover Hermes's own leak surface.
+#: ``.aws/credentials`` and ``.config/gh/hosts.yml`` are covered at the profile ROOT by the
+#: CLI-credential rail's own broader ``.aws/*`` / ``.config/gh/*`` too. That duplicate is
+#: deliberate and harmless -- ``is_excluded`` is an ``any()``, and keeping them here means this
+#: file does not depend on which of the two lands first. The ``*/``-prefixed forms are NOT
+#: duplicates: that rail's prefixes are root-anchored and never match the copy an agent writes
+#: inside a clone. The two lists stay separate -- its ``_pull_cli_credentials`` UNLINKS local
+#: files under its prefixes that S3 lacks, which must never be pointed at an agent-owned path.
 _CREDENTIAL_FILES = (
     ".git-credentials", ".netrc", ".npmrc", ".pypirc", ".docker/config.json",
+    ".aws/credentials", ".config/gh/hosts.yml",
 )
-#: Nested copies only. The CLI-credential rail owns ``.aws/`` and ``.config/gh/`` at the profile
-#: ROOT -- it excludes those prefixes itself and projects them by name, unlinking what S3 no
-#: longer has -- so a root-anchored entry here is a strict duplicate. Its prefixes are
-#: root-anchored, though, and do NOT match the copy an agent writes inside a clone: that is this.
-_NESTED_ONLY_CREDENTIAL_FILES = (".aws/credentials", ".config/gh/hosts.yml")
 _CREDENTIAL_GLOBS = tuple(
-    [pattern for name in _CREDENTIAL_FILES for pattern in (name, f"*/{name}")]
-    + [f"*/{name}" for name in _NESTED_ONLY_CREDENTIAL_FILES]
+    pattern for name in _CREDENTIAL_FILES for pattern in (name, f"*/{name}")
 )
 
 # Hermes writes sessions/request_dump_*.json on EVERY API error with no config switch

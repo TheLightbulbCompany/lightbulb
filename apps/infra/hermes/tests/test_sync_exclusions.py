@@ -34,8 +34,9 @@ CREDENTIALS = (
     ".npmrc",
     ".pypirc",
     ".docker/config.json",
+    ".aws/credentials",
+    ".config/gh/hosts.yml",
     "repo/.npmrc",
-    # nested-only: the CLI-credential rail owns the root-anchored .aws/ and .config/gh/
     "repo/.aws/credentials",
     "repo/.config/gh/hosts.yml",
 )
@@ -63,15 +64,14 @@ def test_agent_written_credentials_never_go_up():
         assert sync.is_excluded(rel) is True, rel
 
 
-def test_the_cli_credential_rails_root_anchored_paths_are_left_to_it():
-    """Overlap resolution with the CLI-credential rail: it already excludes ``.aws/*`` and
-    ``.config/gh/*`` at the profile root AND owns them (it projects them by name and unlinks
-    what S3 no longer has). Duplicating those here is dead weight; the NESTED copies are not,
-    because its prefixes are root-anchored."""
-    assert sync.is_excluded("repo/.aws/credentials") is True
-    assert sync.is_excluded("repo/.config/gh/hosts.yml") is True
-    assert ".aws/credentials" not in sync.EXCLUDE_GLOBS
-    assert ".config/gh/hosts.yml" not in sync.EXCLUDE_GLOBS
+def test_nested_credential_copies_are_covered_whichever_pr_lands_first():
+    """Overlap with the CLI-credential rail: its root-anchored ``.aws/*`` / ``.config/gh/*``
+    make the root entries here a harmless duplicate (``is_excluded`` is an ``any()``), kept so
+    this file does not depend on merge order. The NESTED forms are not duplicates at all --
+    its prefixes are root-anchored and never match a copy inside a clone."""
+    for rel in (".aws/credentials", "repo/.aws/credentials",
+                ".config/gh/hosts.yml", "repo/deep/.config/gh/hosts.yml"):
+        assert sync.is_excluded(rel) is True, rel
 
 
 def test_save_profile_uploads_neither_build_output_nor_credentials(home, monkeypatch):

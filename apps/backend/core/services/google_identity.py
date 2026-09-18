@@ -8,6 +8,11 @@ is no default fallback. An unassigned agent gets no block and uses bare
 a stale ``gog -a <email>`` instruction behind when that default account is
 later disconnected, since an unassigned agent has no row to drive a cleanup.
 
+On AgentCore there is no IDENTITY.md and no instruction is needed: the same
+assignment is written as ``GOG_ACCOUNT`` (gog's own default-account variable)
+into the agent's Hermes profile ``cli-env.json``, which the bridge delivers to
+the turn's shell.
+
 The instruction lives in IDENTITY.md because OpenClaw auto-loads IDENTITY.md
 into the agent's chat context — so the agent reads "use this account" without
 us threading it through a tool. But IDENTITY.md is otherwise seeded
@@ -33,13 +38,9 @@ agent without a base file simply isn't seeded yet.
 
 from __future__ import annotations
 
-import logging
-
 from core.containers.workspace import Workspace, WorkspaceError, get_workspace
 from core.observability.metrics import put_metric
 from core.repositories import google_accounts_repo
-
-logger = logging.getLogger(__name__)
 
 # Markers delimiting the managed region inside IDENTITY.md. HTML comments so
 # they render invisibly when the markdown is viewed, yet are trivially
@@ -126,29 +127,26 @@ async def seed_agent_google_identity(
     edits an existing file, never creates one — so an agent with no base file
     simply isn't seeded.
 
-    **AgentCore workspaces get no block at all**, deliberately (task-14 row 4 /
-    task-15 item 5). The block's whole content is a ``gog -a <email>``
-    instruction, and the ``gog`` rail does not exist on Hermes in either half:
-    the binary is not in ``apps/infra/hermes/Dockerfile`` (only
-    git/curl/jq/ripgrep/unzip), and its keyring is an EFS-resident JWE blob the
-    materializer seeds at ``/home/node/.openclaw/.local/share/gogcli`` — a path
-    a microVM has no mount for. Porting the write into the profile's
-    ``AGENTS.md`` would therefore be WORSE than the current no-op: the agent
-    would be instructed, on every Google request, to run a command that does not
-    exist. So the honest behaviour is to write nothing and say so — the assign
-    door refuses up front (``routers/google_accounts.py``) rather than storing a
-    binding it cannot deliver, and this early return covers the disconnect
-    re-seed path, whose caller swallows exceptions by design.
+    **AgentCore workspaces get the binding as ENV, not as a block.** The premise
+    of the old refusal ("no gog binary, no keyring on a microVM") is gone: the
+    Hermes image ships ``gog``, the keyring is projected into the agent's own
+    profile (``credentials/hermes_cli.py``), and the bridge already delivers
+    per-profile shell values from ``cli-env.json``. So the assignment is written
+    as ``GOG_ACCOUNT`` — gog's default-account variable — instead of an
+    instruction to type ``-a <email>``: there is no IDENTITY.md on a profile,
+    and env needs no agent cooperation. Unassigned deletes the key.
     """
     from core.services import runtime_transport
+    from core.services.credentials import hermes_cli
 
-    if await runtime_transport.is_agentcore_owner(owner_id):
-        logger.info(
-            "seed_agent_google_identity: skipping owner=%s agent=%s — no gog rail on AgentCore",
-            owner_id,
-            agent_id,
-        )
-        put_metric("google_identity.seed.skipped_agentcore")
+    # fail_closed: this is a MUTATING writer whose destination depends on the answer, and the
+    # migration never deletes the EFS tree — so guessing "ECS" on a throttled read writes an
+    # IDENTITY.md block no Hermes agent reads and reports success. Raising instead lands in the
+    # assign door's 503 (and is swallowed by the disconnect path's best-effort wrapper).
+    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
+        email = await google_accounts_repo.get_assignment(owner_id, agent_id)
+        await hermes_cli.set_profile_cli_env(owner_id, agent_id, {"GOG_ACCOUNT": email})
+        put_metric("google_identity.seed.cleared" if email is None else "google_identity.seed.applied")
         return
 
     ws = workspace or get_workspace()

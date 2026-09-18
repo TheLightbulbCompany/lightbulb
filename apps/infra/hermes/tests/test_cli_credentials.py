@@ -59,6 +59,20 @@ def test_the_profile_home_exists_before_any_turn(home):
     assert (home / "profiles" / "ceo" / sync.PROFILE_HOME).is_dir()
 
 
+def test_cli_env_json_carries_the_per_agent_google_account(home):
+    """``GOG_ACCOUNT`` is written per agent by the backend's google_identity seeder; it only
+    reaches the shell if it is in ``CLI_ENV_FILE_NAMES``, the allow-list this file is read
+    through (the agent can write ``cli-env.json`` too, so an unfiltered read is an injection)."""
+    profile = home / "profiles" / "ceo"
+    profile.mkdir(parents=True)
+    (profile / "cli-env.json").write_text('{"GOG_ACCOUNT": "alice@gmail.com", "NOT_ALLOWED": "x"}')
+
+    env = sync.cli_credential_env("ceo")
+
+    assert env["GOG_ACCOUNT"] == "alice@gmail.com"
+    assert "NOT_ALLOWED" not in env
+
+
 def test_ensure_profile_home_is_idempotent(home):
     first = sync.ensure_profile_home("ceo")
     (first / ".gitconfig").write_text("keep me")

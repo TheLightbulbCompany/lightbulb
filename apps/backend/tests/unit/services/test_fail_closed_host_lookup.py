@@ -126,14 +126,19 @@ class TestConfigPatchDoor:
 
 class TestGoogleAssignDoor:
     @pytest.mark.asyncio
-    async def test_a_failed_lookup_answers_503_and_stores_no_binding(self, async_client):
-        """The refusal this gate exists for (task-14 row 4) must not be skipped by a throttle:
-        the binding is undeliverable on AgentCore, so storing the row and seeding IDENTITY.md
-        on the abandoned EFS tree is the silent-success shape."""
+    async def test_a_failed_lookup_answers_503_and_projects_nothing(self, async_client):
+        """The gate moved into the seeder, which is where the runtime now decides the
+        DESTINATION (IDENTITY.md on EFS vs GOG_ACCOUNT in the Hermes profile) rather than
+        whether to refuse. The migration never deletes the EFS tree, so guessing "ECS" on a
+        throttled read writes where no Hermes agent reads and answers 200. The row is stored
+        (it is the truth, and a retry re-projects it); the door reports 503 and nothing is
+        written to either destination."""
+        from core.services import google_identity
+
         with (
             _read_fails(),
             patch("routers.google_accounts.google_accounts_repo") as repo,
-            patch("routers.google_accounts.seed_agent_google_identity", new_callable=AsyncMock) as seed,
+            patch.object(google_identity, "get_workspace") as workspace,
         ):
             repo.list_accounts = AsyncMock(return_value=[{"email": "alice@example.com"}])
             repo.set_assignment = AsyncMock()
@@ -141,5 +146,4 @@ class TestGoogleAssignDoor:
                 "/api/v1/google/accounts/alice@example.com/assign", json={"agent_id": "agent_1"}
             )
         assert resp.status_code == 503
-        repo.set_assignment.assert_not_awaited()
-        seed.assert_not_awaited()
+        workspace.assert_not_called()

@@ -842,7 +842,10 @@ def auxiliary_pin(aux_defaults: dict, model: str) -> dict:
 #: gog is the only member: its file keyring is a password-derived JWE blob and the container's
 #: gog must decrypt it with the SAME shared password the backend encrypted it with (on ECS the
 #: same two arrive as task-def secrets).
-CLI_ENV_FILE_NAMES: tuple[str, ...] = ("GOG_KEYRING_PASSWORD", "GOG_KEYRING_BACKEND")
+#: ``GOG_ACCOUNT`` is the odd one out -- not a credential but gog's default account, written PER
+#: AGENT by the backend's ``google_identity`` seeder (the profile twin of the ECS IDENTITY.md
+#: ``gog -a <email>`` instruction).
+CLI_ENV_FILE_NAMES: tuple[str, ...] = ("GOG_KEYRING_PASSWORD", "GOG_KEYRING_BACKEND", "GOG_ACCOUNT")
 
 
 def cli_credential_env(agent_id: str) -> dict[str, str]:

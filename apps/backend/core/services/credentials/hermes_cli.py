@@ -192,6 +192,44 @@ def _run_and_sync(
     return result
 
 
+def _merge_cli_env(owner_id: str, agent_id: str, updates: dict[str, str | None]) -> None:
+    from core.services import hermes_profiles
+
+    with _owner_lock(owner_id), tempfile.TemporaryDirectory(prefix="hermes-cli-env-") as tmp:
+        root = Path(tmp)
+        hermes_profiles.fetch_profile_subtree(owner_id, agent_id, (CLI_ENV_FILE,), root)
+        try:
+            env = json.loads((root / CLI_ENV_FILE).read_text())
+        except (OSError, ValueError):
+            env = {}  # Absent (nothing projected yet) or corrupt: the backend owns it, rebuild.
+        if not isinstance(env, dict):
+            env = {}
+        for key, value in updates.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
+        hermes_profiles.write_profile_subtree(owner_id, agent_id, {CLI_ENV_FILE: json.dumps(env).encode()}, ())
+
+
+async def set_profile_cli_env(owner_id: str, agent_id: str, updates: dict[str, str | None]) -> None:
+    """Merge backend-owned shell values into ONE agent's ``cli-env.json``; ``None`` deletes a key.
+
+    Per-AGENT, unlike ``project()``'s roster fan-out — the caller is a per-agent binding
+    (``google_identity``'s ``GOG_ACCOUNT``), i.e. exactly the values that must NOT be identical
+    across profiles. Read-modify-write under the same owner lock the projection takes, so a
+    concurrent connect cannot lose the merge, and ``.revision`` is bumped by
+    ``write_profile_subtree`` so the bridge re-pulls the file on the agent's next turn
+    (``cli-env.json`` is in the bridge's ``CLI_CREDENTIAL_PREFIXES``).
+
+    Known gap: a LATER gog connect/disconnect rewrites ``cli-env.json`` wholesale from
+    ``_shell_env`` (one dict fanned out to the whole roster), dropping per-agent keys until the
+    next assign. Left standing on purpose — a per-agent merge inside ``_run_and_sync`` is the
+    thing this module's docstring warns against without a per-profile rail.
+    """
+    await run_in_thread(_merge_cli_env, owner_id, agent_id, updates)
+
+
 async def _roster(owner_id: str) -> list[str]:
     from core.services.messaging import load_agent_roster
 

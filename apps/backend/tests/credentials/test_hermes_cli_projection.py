@@ -260,3 +260,30 @@ async def test_a_file_prefix_does_not_seed_from_a_longer_sibling(s3, roster, mon
 
     assert s3["org_1/hermes/ceo/home/.xurlfoo"] == b"not ours"
     assert set(yaml.safe_load(s3["org_1/hermes/ceo/home/.xurl"].decode())["apps"]) == {"lightbulb-x"}
+
+
+# ---- set_profile_cli_env: the per-AGENT leg of cli-env.json ------------------------------------
+@pytest.mark.asyncio
+async def test_set_profile_cli_env_merges_creates_and_bumps_the_revision(s3):
+    """Read-modify-write on ONE agent: the projection's own keys survive, the sibling profile is
+    untouched (this value is per agent), and .revision moves so the bridge re-pulls it."""
+    s3["org_1/hermes/ceo/cli-env.json"] = json.dumps({"GOG_KEYRING_PASSWORD": "kp"}).encode()
+
+    await hermes_cli.set_profile_cli_env("org_1", "ceo", {"GOG_ACCOUNT": "a@b.co"})
+
+    assert json.loads(s3["org_1/hermes/ceo/cli-env.json"].decode()) == {
+        "GOG_KEYRING_PASSWORD": "kp",
+        "GOG_ACCOUNT": "a@b.co",
+    }
+    assert "org_1/hermes/ceo/.revision" in s3
+    assert "org_1/hermes/eng/cli-env.json" not in s3
+
+
+@pytest.mark.asyncio
+async def test_set_profile_cli_env_creates_the_file_and_none_deletes_the_key(s3):
+    await hermes_cli.set_profile_cli_env("org_1", "ceo", {"GOG_ACCOUNT": "a@b.co"})
+    assert json.loads(s3["org_1/hermes/ceo/cli-env.json"].decode()) == {"GOG_ACCOUNT": "a@b.co"}
+
+    await hermes_cli.set_profile_cli_env("org_1", "ceo", {"GOG_ACCOUNT": None})
+
+    assert json.loads(s3["org_1/hermes/ceo/cli-env.json"].decode()) == {}

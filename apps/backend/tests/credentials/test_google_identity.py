@@ -258,20 +258,38 @@ async def test_unassign_then_disconnect_leaves_no_stale_block(real_repo):
     assert final.startswith(base.rstrip("\n"))
 
 
-@pytest.mark.asyncio
-async def test_agentcore_workspace_is_never_seeded(monkeypatch, patch_resolver):
-    """M6 task-14 row 4 / task-15 item 5. The block's entire content is a ``gog -a <email>``
-    instruction, and the ``gog`` rail does not exist on Hermes in either half — the binary is not
-    in the image, and its keyring is an EFS-resident blob a microVM has no mount for. So the EFS
-    write went to a file nothing reads, and porting it into the profile would be WORSE: the agent
-    would be told to run a command that isn't there. It must write nothing, and not read either."""
+@pytest.fixture
+def agentcore(monkeypatch):
+    """An AgentCore owner + a stand-in for the profile cli-env writer."""
     monkeypatch.setattr(
         "core.services.runtime_transport.is_agentcore_owner", AsyncMock(return_value=True), raising=False
     )
+    setter = AsyncMock()
+    monkeypatch.setattr("core.services.credentials.hermes_cli.set_profile_cli_env", setter, raising=False)
+    return setter
+
+
+@pytest.mark.asyncio
+async def test_agentcore_assignment_is_delivered_as_gog_account_env(agentcore, patch_resolver):
+    """The Hermes image ships ``gog`` and the bridge carries per-profile shell values, so the
+    binding is the env var gog itself reads — not an IDENTITY.md instruction (there is no
+    IDENTITY.md on a profile, and the EFS file nothing reads was the old no-op)."""
     patch_resolver("alice@gmail.com")
     ws = _make_workspace("# IDENTITY.md\n")
 
     await seed_agent_google_identity("org_1", "agent_x", workspace=ws)
 
+    agentcore.assert_awaited_once_with("org_1", "agent_x", {"GOG_ACCOUNT": "alice@gmail.com"})
+    # The EFS leg stays untouched: an AgentCore owner has no workspace file to seed.
     ws.write_file.assert_not_called()
     ws.read_file.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_agentcore_unassigned_deletes_the_key(agentcore, patch_resolver):
+    patch_resolver(None)
+    ws = _make_workspace("# IDENTITY.md\n")
+
+    await seed_agent_google_identity("org_1", "agent_x", workspace=ws)
+
+    agentcore.assert_awaited_once_with("org_1", "agent_x", {"GOG_ACCOUNT": None})

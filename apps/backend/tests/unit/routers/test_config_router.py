@@ -18,6 +18,15 @@ def client():
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _ecs_owner_by_default():
+    """The write doors below ask ``is_agentcore_owner(fail_closed=True)``, which raises rather
+    than guessing when the container read fails -- and there is no DynamoDB here. Answer ECS;
+    the AgentCore tests override it per test."""
+    with patch("routers.config.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)):
+        yield
+
+
 def _personal_auth(user_id: str = "user_personal") -> AuthContext:
     return AuthContext(user_id=f"human_{user_id}", org_id=user_id, org_role="org:admin")
 

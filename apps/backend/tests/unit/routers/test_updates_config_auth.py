@@ -91,6 +91,15 @@ def admin_env(app):
 
 
 @pytest.fixture(autouse=True)
+def _ecs_owner_by_default():
+    """The write doors below ask ``is_agentcore_owner(fail_closed=True)``, which raises rather
+    than guessing when the container read fails -- and there is no DynamoDB here. Answer ECS;
+    the AgentCore tests override it per test."""
+    with patch("routers.updates.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def mock_audit_repo():
     """Patch the audit repo — the decorator writes synchronously on every call."""
     with patch("core.repositories.admin_actions_repo.create", new=AsyncMock(return_value={})) as mock:

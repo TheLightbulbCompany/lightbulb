@@ -151,7 +151,7 @@ async def patch_config(
 
     owner_id = resolve_owner_id(auth)
 
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
         # Fix round 1, minor: this branch now runs AHEAD of the channels-entitlement gate
         # below. Channels have no Hermes/AgentCore equivalent yet (task-9-scan.md rows
         # #10/#11, LATER/M5) -- rejecting outright here means a channels patch never lands

@@ -516,7 +516,9 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
         # One read serves both the ECS-shaped guard below AND the config-patch branch --
         # fix round 1, item 3 added the second consumer, so this is no longer paid only
         # when ecs_shaped is already true.
-        is_agentcore = (ecs_shaped or config_patch) and await runtime_transport.is_agentcore_owner(owner_id)
+        is_agentcore = (ecs_shaped or config_patch) and await runtime_transport.is_agentcore_owner(
+            owner_id, fail_closed=True
+        )
         if ecs_shaped and is_agentcore:
             # Row #14 defensive backstop. queue_fleet_image_update skips AgentCore owners
             # outright (an explicit is_agentcore_owner check at enqueue time). Fix round 1,

@@ -989,6 +989,13 @@ class TestConfigPatch:
     patches frequently contain BYOK/api keys and other secrets.
     """
 
+    @pytest.fixture(autouse=True)
+    def _ecs_owner_by_default(self):
+        """This door asks ``is_agentcore_owner(fail_closed=True)``, which raises rather than
+        guessing when the container read fails -- and there is no DynamoDB here."""
+        with patch("routers.admin.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)):
+            yield
+
     @pytest.mark.asyncio
     async def test_happy_path(self, async_client, admin_env):
         with patch(

@@ -13,6 +13,15 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _ecs_owner_by_default():
+    """The write doors below ask ``is_agentcore_owner(fail_closed=True)``, which raises rather
+    than guessing when the container read fails -- and there is no DynamoDB here. Answer ECS;
+    the AgentCore tests override it per test."""
+    with patch("routers.google_accounts.runtime_transport.is_agentcore_owner", new=AsyncMock(return_value=False)):
+        yield
+
+
 class TestListAccounts:
     """GET /api/v1/google/accounts — owner's accounts + per-agent assignments."""
 

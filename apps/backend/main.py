@@ -26,6 +26,7 @@ from core.observability.e2e_correlation import E2ECorrelationMiddleware
 from core.repositories import container_repo
 from core.services.messaging import ApiProblem
 from core.services.paperclip_admin_client import PaperclipApiError
+from core.services.runtime_transport import RuntimeHostUnknownError
 from core.services.update_service import run_scheduled_worker
 from routers import (
     agent_builder,
@@ -554,6 +555,20 @@ app = FastAPI(
 @app.exception_handler(ApiProblem)
 async def messaging_api_problem_handler(request, exc: ApiProblem):
     return JSONResponse(status_code=exc.status_code, content=exc.body())
+
+
+# A write door refused to guess the owner's runtime host (``runtime_transport``'s fail-closed
+# lookup). Nothing was written — the read itself failed — so this is a plain "retry", and
+# answering it in ONE place keeps every such door's own diff to a single keyword instead of a
+# try/except per route. Service callers catch it in their existing rollback paths first and
+# never reach this.
+@app.exception_handler(RuntimeHostUnknownError)
+async def runtime_host_unknown_handler(request, exc: RuntimeHostUnknownError):
+    logger.warning("runtime host lookup failed on %s; refused the write", request.url.path, exc_info=exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Could not determine this workspace's runtime. Please try again."},
+    )
 
 
 @app.exception_handler(RequestValidationError)

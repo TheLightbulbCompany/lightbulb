@@ -576,7 +576,7 @@ async def container_login(provider: str, body: ContainerLoginBody, auth: AuthCon
     # container and the owner finishes it in the Browser panel — neither exists on
     # AgentCore (no exec shell, no container browser), so there is nothing this could
     # even start.
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
         raise HTTPException(status_code=422, detail="unsupported_on_agentcore")
     try:
         store = shopify_login.normalize_store(body.store)
@@ -823,7 +823,9 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
     # google is a pure CLI-skill materializer (gog_cli) with no Hermes
     # equivalent — an AgentCore owner has no EFS keyring for the remover to
     # touch (M6-R24, "same for revoke/disconnect").
-    if any(a["email"] == account for a in accounts) and not await runtime_transport.is_agentcore_owner(owner_id):
+    if any(a["email"] == account for a in accounts) and not await runtime_transport.is_agentcore_owner(
+        owner_id, fail_closed=True
+    ):
         remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer) if p.wiring.materializer else None
         if remover:
             try:
@@ -884,7 +886,7 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
 async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provider) -> None:
     # M6-R24 ("same for revoke/disconnect"): an AgentCore owner has no EFS —
     # neither a materializer's on-disk artifact nor an openclaw.json to patch.
-    agentcore = await runtime_transport.is_agentcore_owner(owner_id)
+    agentcore = await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True)
     # Materializer-backed providers wrote credential files onto EFS; remove
     # those first so disconnect leaves no on-disk residue. The remover deletes
     # the artifact by owner/provider and does not need the secret value.

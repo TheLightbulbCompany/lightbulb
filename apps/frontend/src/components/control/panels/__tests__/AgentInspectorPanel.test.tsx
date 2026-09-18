@@ -15,11 +15,6 @@ vi.mock("../AgentToolsTab", () => ({
     <div data-testid="tools-tab">tools:{agentId}</div>
   ),
 }));
-vi.mock("../AgentChannelsSection", () => ({
-  AgentChannelsSection: ({ agentId }: { agentId: string }) => (
-    <div data-testid="channels-tab">channels:{agentId}</div>
-  ),
-}));
 vi.mock("../AgentInstructionsTab", () => ({
   AgentInstructionsTab: ({ agentId }: { agentId: string }) => (
     <div data-testid="instructions-tab">instructions:{agentId}</div>
@@ -78,11 +73,6 @@ vi.mock("@/hooks/useRuntimeRpc", () => ({
   useRuntimeRpcMutation: () => vi.fn(),
 }));
 
-// Channels tab only renders for subscribed owners.
-let subscribed = true;
-vi.mock("@/hooks/useBilling", () => ({
-  useBilling: () => ({ isSubscribed: subscribed }),
-}));
 
 // The Overview tab folds in the Teams org controls (reports-to + lifecycle).
 // Stub AgentOrgControls so we can assert it mounts with the matched roster
@@ -115,30 +105,22 @@ describe("AgentInspectorPanel", () => {
   beforeEach(() => {
     agentParam = "agent_42";
     inspectorTabParam = null;
-    subscribed = true;
     rosterData = { agents: [{ id: "agent_42", name: "Scout" }] };
     rosterError = undefined;
   });
 
-  it("renders the five tab labels", () => {
+  it("renders the four tab labels", () => {
     renderInspector();
     expect(screen.getByRole("tab", { name: "Overview" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Instructions" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Tools" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Channels" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Schedule" })).toBeInTheDocument();
   });
 
-  it("orders the tabs Overview·Instructions·Tools·Channels·Schedule", () => {
+  it("orders the tabs Overview·Instructions·Tools·Schedule", () => {
     renderInspector();
     const labels = screen.getAllByRole("tab").map((t) => t.textContent);
-    expect(labels).toEqual([
-      "Overview",
-      "Instructions",
-      "Tools",
-      "Channels",
-      "Schedule",
-    ]);
+    expect(labels).toEqual(["Overview", "Instructions", "Tools", "Schedule"]);
   });
 
   it("mounts the Instructions tab with the ?agent id when selected", () => {
@@ -156,23 +138,24 @@ describe("AgentInspectorPanel", () => {
     expect(screen.queryByTestId("tools-tab")).not.toBeInTheDocument();
   });
 
-  it("opens the Channels tab when ?inspectorTab=channels deep-links in", () => {
-    inspectorTabParam = "channels";
+  it("opens a real tab when ?inspectorTab deep-links in", () => {
+    inspectorTabParam = "tools";
     renderInspector();
-    expect(screen.getByTestId("channels-tab")).toHaveTextContent("channels:agent_42");
+    expect(screen.getByTestId("tools-tab")).toHaveTextContent("tools:agent_42");
     expect(screen.queryByTestId("overview-tab")).not.toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Channels" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Tools" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
   });
 
-  it("falls back to Overview when ?inspectorTab=channels but the owner is unsubscribed", () => {
-    subscribed = false;
+  // Channel wiring has no equivalent on this runtime — the tab is gone, so a
+  // stale deep link lands on Overview like any other unknown value.
+  it("falls back to Overview for a retired ?inspectorTab=channels link", () => {
     inspectorTabParam = "channels";
     renderInspector();
     expect(screen.getByTestId("overview-tab")).toHaveTextContent("overview:agent_42");
-    expect(screen.queryByTestId("channels-tab")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Channels" })).toBeNull();
   });
 
   it("falls back to Overview for an unknown ?inspectorTab value", () => {
@@ -187,8 +170,8 @@ describe("AgentInspectorPanel", () => {
     expect(screen.getByTestId("tools-tab")).toHaveTextContent("tools:agent_42");
     expect(screen.queryByTestId("overview-tab")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Channels" }));
-    expect(screen.getByTestId("channels-tab")).toHaveTextContent("channels:agent_42");
+    fireEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    expect(screen.getByTestId("instructions-tab")).toHaveTextContent("instructions:agent_42");
     expect(screen.queryByTestId("tools-tab")).not.toBeInTheDocument();
   });
 
@@ -221,13 +204,6 @@ describe("AgentInspectorPanel", () => {
   it("renders the agent name in the header", () => {
     renderInspector();
     expect(screen.getByText("Scout")).toBeInTheDocument();
-  });
-
-  it("hides the Channels tab for non-subscribed owners", () => {
-    subscribed = false;
-    renderInspector();
-    expect(screen.queryByRole("tab", { name: "Channels" })).not.toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Overview" })).toBeInTheDocument();
   });
 
   it("shows a calm empty state when no ?agent is present", () => {

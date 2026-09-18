@@ -273,15 +273,13 @@ export default function AgentDetail() {
   const callRpc = useRuntimeRpcMutation(live);
 
   const { agents: roster, defaultId, refresh: mutateAgents } = useAgents(live);
-  // M6 task 10-C (scan row 31): the model list comes from `models.list` on AgentCore — the
-  // owner's own Bedrock inference profiles, or Hermes's catalog via the bridge — and from the
-  // gateway config's providers catalog on ECS. Held while the runtime host is unknown
-  // (`undefined` never means "assume ECS": guessing costs a ~55s microVM cold start).
+  // The model list comes from `models.list` — the owner's own Bedrock inference
+  // profiles, or Hermes's catalog via the bridge. Held until a status body names
+  // this workspace's runtime: firing on a guess costs a ~55s microVM cold start.
   const runtimeHost = useRuntimeHost();
-  const onAgentCore = runtimeHost === "agentcore";
   const { data: configSnapshot, mutate: mutateConfig } = useRuntimeRpc<unknown>(
     live,
-    runtimeHost === "agentcore" ? "models.list" : runtimeHost === "ecs" ? "config.get" : null,
+    runtimeHost ? "models.list" : null,
   );
 
   const agent: Agent | undefined = useMemo(
@@ -561,7 +559,7 @@ export default function AgentDetail() {
         visible={pickerOpen}
         models={selectorModels}
         currentRef={currentModelRef}
-        allowDefault={!onAgentCore}
+        allowDefault={false}
         onClose={() => setPickerOpen(false)}
         onSelect={(ref) => void selectModel(ref)}
       />

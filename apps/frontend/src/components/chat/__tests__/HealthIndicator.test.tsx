@@ -73,21 +73,21 @@ describe("HealthIndicator", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("GATEWAY_DOWN_DEAD renders the red dot with the reason text and a 'Restart Gateway' button", () => {
+  it("CONTAINER_DOWN renders the red dot with the reason text and a 'Restart Agent' button", () => {
     const onRecover = vi.fn(async () => null);
     mockHealth.mockReturnValue({
-      state: "GATEWAY_DOWN_DEAD",
-      reason: "Gateway not responding",
+      state: "CONTAINER_DOWN",
+      reason: "Agents are not running",
       canRecover: true,
-      actionLabel: "Restart Gateway",
+      actionLabel: "Restart Agent",
       recover: onRecover,
       isRecovering: false,
     });
     const { container } = render(<HealthIndicator />);
-    expect(screen.getByText("Gateway not responding")).toBeInTheDocument();
+    expect(screen.getByText("Agents are not running")).toBeInTheDocument();
     const dot = container.querySelector("span.rounded-full");
     expect(dot?.className).toContain("bg-err");
-    const btn = screen.getByRole("button", { name: "Restart Gateway" });
+    const btn = screen.getByRole("button", { name: "Restart Agent" });
     expect(btn).toBeInTheDocument();
   });
 });

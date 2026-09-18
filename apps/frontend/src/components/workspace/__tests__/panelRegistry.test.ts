@@ -18,8 +18,6 @@ describe("panelRegistry", () => {
     expect(resolvePanelAlias("teams-skills")).toBe("teams-dashboard");
     expect(resolvePanelAlias("teams-costs")).toBe("teams-dashboard");
     expect(resolvePanelAlias("teams-inbox")).toBe("teams-inbox");
-    // Dreams is NOT an alias any more — it is its own control panel again.
-    expect(resolvePanelAlias("dreams")).toBe("dreams");
     // Money is ONE page: its four absorbed keys alias to its panel id, or the
     // dock (which dedupes by panel id) opens four sibling tabs all called
     // "Money" — Home links three of them.
@@ -28,28 +26,6 @@ describe("panelRegistry", () => {
     }
     // The org chart is a VIEW of the roster, so its key aliases onto Agents.
     expect(resolvePanelAlias("teams-org-chart")).toBe("teams-agents");
-  });
-
-  it("describes ?panel=dreams as the standalone Dreams control panel", () => {
-    // It folded into Brain as a tab for a while; the fold is reversed, and the
-    // key must keep resolving either way — old links, persisted layouts.
-    expect(describePanel("dreams", {})).toEqual({
-      panelId: "control:dreams",
-      component: "control",
-      title: "Dreams",
-      params: { controlKey: "dreams" },
-    });
-  });
-
-  it("keeps describing teams-brain, which is off the rail but not retired", () => {
-    // Brain stopped being offered (owner ruling 2026-09-08) without being
-    // absorbed or aliased: ?panel=teams-brain must still open it.
-    expect(describePanel("teams-brain", {})).toEqual({
-      panelId: "teams-brain",
-      component: "teams",
-      title: "Brain",
-      params: { teamsKey: "brain" },
-    });
   });
 
   it("builds deterministic chat panel ids", () => {
@@ -175,23 +151,6 @@ describe("panelRegistry", () => {
     expect(describePanel("file-viewer", {})?.params).toEqual({});
   });
 
-  it("describes the brain panel with a durable ?path deep link", () => {
-    expect(describePanel("teams-brain", {})).toEqual({
-      panelId: "teams-brain",
-      component: "teams",
-      title: "Brain",
-      params: { teamsKey: "brain" },
-    });
-    // ?path mirrors the file-viewer grammar: deep links select a page;
-    // in-panel selection clicks never write it back.
-    expect(describePanel("teams-brain", { path: "main/facts.md" })?.params).toEqual({
-      teamsKey: "brain",
-      path: "main/facts.md",
-    });
-    expect(durableParamsFor("teams-brain")).toEqual(["panel", "path"]);
-    expect(clearablePanelParamKeys("teams-brain")).toEqual(["path"]);
-  });
-
   it("describes the money panel with a durable ?day deep link", () => {
     expect(describePanel("teams-money", { day: "2026-09-05" })).toEqual({
       panelId: "teams-money", component: "teams", title: "Money", params: { teamsKey: "money", day: "2026-09-05" },
@@ -307,7 +266,7 @@ describe("panelRegistry", () => {
 
   it("registers exactly the component keys the shell's components map will have", () => {
     expect([...PANEL_COMPONENT_KEYS].sort()).toEqual(
-      ["browser", "chat", "control", "file-viewer", "missing", "teams"].sort(),
+      ["chat", "control", "file-viewer", "missing", "teams"].sort(),
     );
   });
 
@@ -319,19 +278,4 @@ describe("panelRegistry", () => {
     expect(durableParamsFor(MESSAGES_PANEL_ID)).toContain("session");
   });
 
-  it("resolves the browser panel as a parameterless singleton", () => {
-    // One container = one Xvfb display = one browser panel. A second open must
-    // resolve to the SAME panelId so dockview focuses the existing panel
-    // instead of mounting a second VNC session against the same framebuffer.
-    const desc = describePanel("browser", {});
-    expect(desc).toEqual({
-      panelId: "browser",
-      component: "browser",
-      title: "Browser",
-      params: {},
-    });
-    // Params the URL happens to carry must not leak into the descriptor —
-    // they'd change the persisted layout blob for no behavioral reason.
-    expect(describePanel("browser", { agent: "agent_x" })).toEqual(desc);
-  });
 });

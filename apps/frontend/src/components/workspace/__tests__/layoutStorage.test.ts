@@ -40,7 +40,7 @@ describe("layoutStorage", () => {
   });
 
   it("drops every superseded blob on read, leaving the current one intact", () => {
-    const layout = minimalLayout({ browser: { id: "browser", contentComponent: "browser", params: {} } });
+    const layout = minimalLayout({ "file-viewer": { id: "file-viewer", contentComponent: "file-viewer", params: {} } });
     writeLayout("u1", layout);
     window.localStorage.setItem("isol8.workspace.layout.v1:u1", "{}");
     window.localStorage.setItem("isol8.workspace.layout.v2:u1", "{}");
@@ -217,27 +217,6 @@ describe("layoutStorage", () => {
     expect(leafData.activeView).toBe("teams-dashboard");
   });
 
-  it("leaves a persisted control:dreams entry alone — it is a live panel again", () => {
-    // dreams spent a while retired by alias into teams-brain, and layouts
-    // saved then were migrated across. The alias is gone: the panel is its own
-    // control surface once more, so the sanitizer must keep it as it found it.
-    const dirty = leafLayout(["control:dreams"], "control:dreams", {
-      "control:dreams": {
-        id: "control:dreams",
-        contentComponent: "control",
-        params: { controlKey: "dreams" },
-      },
-    });
-    const clean = sanitizeLayout(dirty);
-    expect(clean.panels["control:dreams"]).toEqual({
-      id: "control:dreams",
-      contentComponent: "control",
-      params: { controlKey: "dreams" },
-    });
-    const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
-    expect(leafData.views).toEqual(["control:dreams"]);
-  });
-
   it("sanitizer migrates a persisted teams-spend panel to teams-money", () => {
     // Money absorbed Payments/Products/Customers/Spend, so a layout saved
     // before that carries a panel id the registry no longer knows.
@@ -369,7 +348,7 @@ describe("layoutStorage", () => {
           size: 800,
           data: [
             { type: "leaf", size: 400, data: { id: "g1", views: ["chat:friday"], activeView: "chat:friday" } },
-            { type: "leaf", size: 400, data: { id: "g2", views: ["chat:atlas", "browser"], activeView: "chat:atlas" } },
+            { type: "leaf", size: 400, data: { id: "g2", views: ["chat:atlas", "file-viewer"], activeView: "chat:atlas" } },
           ],
         },
         height: 600,
@@ -379,7 +358,7 @@ describe("layoutStorage", () => {
       panels: {
         "chat:friday": { id: "chat:friday", contentComponent: "chat", params: { agentId: "friday" } },
         "chat:atlas": { id: "chat:atlas", contentComponent: "chat", title: "Atlas", params: { agentId: "atlas" } },
-        browser: { id: "browser", contentComponent: "browser", params: {} },
+        "file-viewer": { id: "file-viewer", contentComponent: "file-viewer", params: {} },
       },
       activeGroup: "g2",
     } as unknown as SerializedDockview;
@@ -387,14 +366,14 @@ describe("layoutStorage", () => {
 
   it("migrates the active legacy chat into Messages and keeps auxiliary panels", () => {
     const clean = sanitizeLayout(chatLayout(), ["friday", "atlas"]);
-    expect(Object.keys(clean.panels).sort()).toEqual([MESSAGES_PANEL_ID, "browser"].sort());
+    expect(Object.keys(clean.panels).sort()).toEqual([MESSAGES_PANEL_ID, "file-viewer"].sort());
     expect(clean.panels[MESSAGES_PANEL_ID]).toMatchObject({
       id: MESSAGES_PANEL_ID, params: { agentId: "atlas" }, title: "Messages",
     });
-    expect(clean.panels.browser).toEqual(chatLayout().panels.browser);
+    expect(clean.panels["file-viewer"]).toEqual(chatLayout().panels["file-viewer"]);
     expect(clean.grid.root.type).toBe("leaf");
     expect(clean.grid.root.data).toMatchObject({
-      id: "g2", views: [MESSAGES_PANEL_ID, "browser"], activeView: MESSAGES_PANEL_ID,
+      id: "g2", views: [MESSAGES_PANEL_ID, "file-viewer"], activeView: MESSAGES_PANEL_ID,
     });
     expect(clean.activeGroup).toBe("g2");
     expect(sanitizeLayout(clean, ["friday", "atlas"])).toEqual(clean);
@@ -403,7 +382,7 @@ describe("layoutStorage", () => {
   it("falls back to the sentinel when the winning agent is absent from a settled roster", () => {
     const clean = sanitizeLayout(chatLayout(), ["friday"]);
     expect(clean.panels[MESSAGES_PANEL_ID].params).toEqual({ agentId: DEFAULT_AGENT_SENTINEL });
-    expect(clean.panels.browser).toBeDefined();
+    expect(clean.panels["file-viewer"]).toBeDefined();
   });
 
   it("preserves the winner while the roster is unknown or empty", () => {
@@ -414,14 +393,14 @@ describe("layoutStorage", () => {
   });
 
   it("prefers existing Messages when an auxiliary panel is active", () => {
-    const dirty = leafLayout(["chat:friday", MESSAGES_PANEL_ID, "browser"], "browser", {
+    const dirty = leafLayout(["chat:friday", MESSAGES_PANEL_ID, "file-viewer"], "file-viewer", {
       "chat:friday": chatLayout().panels["chat:friday"],
-      browser: chatLayout().panels.browser,
+      "file-viewer": chatLayout().panels["file-viewer"],
       [MESSAGES_PANEL_ID]: { id: MESSAGES_PANEL_ID, contentComponent: "chat", params: { agentId: "saved-agent" } },
     });
     const clean = sanitizeLayout(dirty);
     expect(clean.panels[MESSAGES_PANEL_ID].params).toEqual({ agentId: "saved-agent" });
-    expect(clean.grid.root.data).toMatchObject({ views: [MESSAGES_PANEL_ID, "browser"], activeView: "browser" });
+    expect(clean.grid.root.data).toMatchObject({ views: [MESSAGES_PANEL_ID, "file-viewer"], activeView: "file-viewer" });
   });
 
   it("prefers the active legacy chat even when Messages already exists", () => {
@@ -435,9 +414,9 @@ describe("layoutStorage", () => {
   });
 
   it("uses the first legacy chat ID when no selected chat or parameter is recoverable", () => {
-    const dirty = leafLayout(["chat:friday", "browser"], "browser", {
+    const dirty = leafLayout(["chat:friday", "file-viewer"], "file-viewer", {
       "chat:friday": { id: "chat:friday", contentComponent: "chat" },
-      browser: chatLayout().panels.browser,
+      "file-viewer": chatLayout().panels["file-viewer"],
     });
     expect(sanitizeLayout(dirty).panels[MESSAGES_PANEL_ID].params).toEqual({ agentId: "friday" });
   });

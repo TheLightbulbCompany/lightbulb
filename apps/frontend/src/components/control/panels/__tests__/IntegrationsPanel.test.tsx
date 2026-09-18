@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import React from "react";
 import { IntegrationsPanel } from "../IntegrationsPanel";
 
@@ -12,9 +12,6 @@ vi.mock("@/components/control/panels/GoogleAccountsSection", () => ({
   GoogleAccountsSection: () => <div data-testid="google-accounts" />,
 }));
 vi.mock("@/components/control/panels/McpServersTab", () => ({ McpServersTab: () => <div data-testid="mcp-servers-tab" /> }));
-vi.mock("@/components/control/panels/PluginsTab", () => ({
-  PluginsTab: () => <div data-testid="plugins-tab" />,
-}));
 
 describe("IntegrationsPanel", () => {
   beforeEach(() => {
@@ -48,10 +45,10 @@ describe("IntegrationsPanel", () => {
     expect(screen.getByTestId("mcp-servers-tab")).toBeInTheDocument();
   });
 
-  it("tucks plugin switches behind the Advanced disclosure", () => {
+  // `config.plugins.entries` has no reader on this runtime, so the Advanced
+  // disclosure is gone rather than opening onto a permanently-empty panel.
+  it("offers no Advanced plugins disclosure", () => {
     render(<IntegrationsPanel />);
-    expect(screen.queryByTestId("plugins-tab")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /advanced — plugins/i }));
-    expect(screen.getByTestId("plugins-tab")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /advanced/i })).toBeNull();
   });
 });

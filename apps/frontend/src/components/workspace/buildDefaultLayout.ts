@@ -13,10 +13,8 @@
 // load, only for owners who actually open the tab. Chat keeps
 // `renderer: "always"` because its state must survive being tabbed away from.
 //
-// BrowserDockPanel still resizes the real display, so the slot IS the agent's
-// Chrome viewport — as a full-width tab that viewport gets wider, never
-// smaller. Built by code (never persisted as a preset blob) so the default
-// evolves with releases; Reset re-applies it.
+// Built by code (never persisted as a preset blob) so the default evolves with
+// releases; Reset re-applies it.
 import type { DockviewApi } from "dockview-react";
 import { MESSAGES_PANEL_ID, DEFAULT_AGENT_SENTINEL } from "./panelRegistry";
 
@@ -30,12 +28,6 @@ export function buildMissionControlLayout(api: DockviewApi): void {
   });
   // No `position`: dockview falls back to the active group, so each of these
   // stacks as a tab beside Chat instead of splitting the dock.
-  api.addPanel({
-    id: "browser",
-    component: "browser",
-    title: "Browser",
-    params: {},
-  });
   api.addPanel({
     id: "teams-inbox",
     component: "teams",

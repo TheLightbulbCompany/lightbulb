@@ -65,14 +65,12 @@ export interface StatusContract {
   container_status: string | null;
   container_substatus: string | null;
   parked: boolean;
-  /** Which runtime hosts this workspace — the capability signal migrated-workspace
-   * surfaces branch on. Optional: absent on a backend older than M6 task 10, which
-   * is indistinguishable from `"ecs"` and must be read as such. */
+  /** Which runtime hosts this workspace. Optional: absent on a backend that
+   * predates the field. */
   runtime_host?: RuntimeHost;
   onboarded: boolean;
   last_error: string | null;
   last_error_at: string | null;
-  service_name?: string | null;
   created_at: string | null;
   updated_at: string | null;
   /** AWS region the container runs in (`settings.AWS_REGION`) — always set,

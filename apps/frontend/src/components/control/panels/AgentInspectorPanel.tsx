@@ -1,36 +1,25 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Bot, ScrollText, Wrench, MessageSquare, CalendarClock } from "lucide-react";
-import { useHiddenOnAgentCore } from "@lightbulb/shared";
+import { Bot, ScrollText, Wrench, CalendarClock } from "lucide-react";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentInstructionsTab } from "./AgentInstructionsTab";
 import { AgentToolsTab } from "./AgentToolsTab";
-import { AgentChannelsSection } from "./AgentChannelsSection";
 import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
-import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import type { AgentEntry } from "./agents-types";
 
-type InspectorTab =
-  | "overview"
-  | "instructions"
-  | "tools"
-  | "channels"
-  | "schedule";
+type InspectorTab = "overview" | "instructions" | "tools" | "schedule";
 
-// Module-level tab metadata (no inline component literals). The `channels`
-// entry is filtered out at render time when the owner has no active
-// subscription — same gate AgentsPanel applies.
+// Module-level tab metadata (no inline component literals).
 const TABS: { id: InspectorTab; icon: typeof Bot; label: string }[] = [
   { id: "overview", icon: Bot, label: "Overview" },
   { id: "instructions", icon: ScrollText, label: "Instructions" },
   { id: "tools", icon: Wrench, label: "Tools" },
-  { id: "channels", icon: MessageSquare, label: "Channels" },
   { id: "schedule", icon: CalendarClock, label: "Schedule" },
 ];
 
@@ -50,7 +39,7 @@ export interface AgentInspectorPanelProps {
  *
  * Takes the inspected agent id as a prop (each shell reads its own channel: the
  * ?agent URL param on mobile, dock params on desktop) and re-mounts the EXISTING
- * per-agent control surfaces (Overview / Tools / Channels) as tabs — the same
+ * per-agent control surfaces (Overview / Instructions / Tools) as tabs — the same
  * components AgentsPanel mounts in its detail pane, wired with the same props.
  * No new write path: every save still flows through the tabs' existing RPCs.
  */
@@ -58,14 +47,6 @@ export function AgentInspectorPanel({
   agentId = null,
   initialTab = null,
 }: AgentInspectorPanelProps = {}) {
-  // Channels require an active subscription (or trial), mirroring AgentsPanel.
-  // M6 task 10-D, row 25: also gone outright on a confirmed AgentCore
-  // workspace — channel wiring is M5/LATER there, and the tab's own probe
-  // (`channels.status`) always answers `[]`.
-  const { isSubscribed } = useBilling();
-  const agentCoreHidden = useHiddenOnAgentCore() === "hidden";
-  const channelsEnabled = isSubscribed && !agentCoreHidden;
-
   // Header name/emoji: read from agents.list exactly as AgentsPanel does (the
   // inspector only has an id from the URL, not the agent object).
   const { agents: gatewayAgents } = useAgents();
@@ -89,16 +70,11 @@ export function AgentInspectorPanel({
     [rosterError, rosterAgents, agentId],
   );
 
-  // The Get Started "Connect a channel" CTA deep-links here with
-  // initialTab=channels so a fresh user lands directly on the bot-create
-  // surface. Seeded at mount; manual tab clicks own the state thereafter. A
-  // new command with a different tab re-applies (render-time prev-compare) so a
-  // re-delivered intent isn't ignored. Falls back to Overview for a
-  // missing/unknown tab, or when the requested Channels tab is hidden because
-  // the owner has no active subscription.
-  const canApplyInitialTab =
-    isInspectorTab(initialTab) &&
-    (initialTab !== "channels" || channelsEnabled);
+  // A deep link can preselect a tab. Seeded at mount; manual tab clicks own the
+  // state thereafter. A new command with a different tab re-applies (render-time
+  // prev-compare) so a re-delivered intent isn't ignored. Falls back to Overview
+  // for a missing/unknown tab.
+  const canApplyInitialTab = isInspectorTab(initialTab);
   const [activeTab, setActiveTab] = useState<InspectorTab>(() =>
     canApplyInitialTab ? (initialTab as InspectorTab) : "overview",
   );
@@ -116,9 +92,6 @@ export function AgentInspectorPanel({
     );
   }
 
-  const visibleTabs = TABS.filter(
-    (tab) => tab.id !== "channels" || channelsEnabled,
-  );
   const emoji = agent?.identity?.emoji;
   const displayName = agent?.name || agentId;
 
@@ -134,7 +107,7 @@ export function AgentInspectorPanel({
         role="tablist"
         aria-label="Agent inspector sections"
       >
-        {visibleTabs.map((tab) => (
+        {TABS.map((tab) => (
           <button
             key={tab.id}
             type="button"
@@ -185,9 +158,6 @@ export function AgentInspectorPanel({
           <AgentInstructionsTab agentId={agentId} />
         ) : null}
         {activeTab === "tools" ? <AgentToolsTab agentId={agentId} /> : null}
-        {activeTab === "channels" && channelsEnabled ? (
-          <AgentChannelsSection agentId={agentId} />
-        ) : null}
         {activeTab === "schedule" ? (
           // RoutinesPanel needs no TeamsEventsProvider/CommandPaletteProvider:
           // useTeamsApi is Clerk-backed and useInlineTeamsNav is null-safe. It

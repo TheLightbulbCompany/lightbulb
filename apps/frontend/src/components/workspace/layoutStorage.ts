@@ -192,7 +192,6 @@ function canonicalPanelTitle(
       break;
     }
     case "file-viewer":
-    case "browser":
       key = component;
       break;
     default:
@@ -289,7 +288,7 @@ export function sanitizeLayout(
       if (params) {
         if (migration.teamsKey !== undefined) params.teamsKey = migration.teamsKey;
         if (migration.controlKey !== undefined) params.controlKey = migration.controlKey;
-        // Crossing control -> teams drops the stale controlKey — teams-brain
+        // Crossing control -> teams drops the stale controlKey — a teams panel
         // takes only teamsKey, and a leftover controlKey would just be dead
         // weight in the persisted params.
         if (migration.component === "teams") delete params.controlKey;

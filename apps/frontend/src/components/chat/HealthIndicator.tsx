@@ -14,7 +14,6 @@ const DOT_STYLES: Record<HealthState, string> = {
   // a pulse so the user sees motion (the run is alive); NOT the red alarm
   // we used to show during a normal long Bedrock turn.
   GATEWAY_BUSY: "bg-warn animate-pulse",
-  GATEWAY_DOWN_DEAD: "bg-err",
   CONTAINER_DOWN: "bg-err",
 };
 
@@ -24,7 +23,6 @@ const LABEL_STYLES: Record<HealthState, string> = {
   STARTING: "text-warn",
   RECOVERING: "text-warn",
   GATEWAY_BUSY: "text-warn",
-  GATEWAY_DOWN_DEAD: "text-err",
   CONTAINER_DOWN: "text-err",
 };
 

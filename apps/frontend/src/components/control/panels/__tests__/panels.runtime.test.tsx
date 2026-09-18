@@ -1,8 +1,6 @@
 /**
- * M6 task 10-E: what Skills and Skill Proposals show on a migrated (AgentCore + Hermes)
- * workspace. Ruling M6-R50: Hermes's own skills and providers — nothing OpenClaw-shaped is
- * emulated, and nothing fires before the runtime is known. Sessions is NOT here: ruling
- * M6-R54 hides that panel on this runtime (see ControlPanelRouter.agentcore.test.tsx).
+ * What Skills and Skill Proposals show: Hermes's own skills and providers, and
+ * nothing fires before a status body has named this workspace's runtime.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
@@ -11,7 +9,7 @@ import React from "react";
 import { SkillsTab } from "../SkillsTab";
 import { SkillProposalsPanel } from "../SkillProposalsPanel";
 
-let runtimeHost: "ecs" | "agentcore" | undefined;
+let runtimeHost: "agentcore" | undefined;
 const rpcMethods: (string | null)[] = [];
 const mockCallRpc = vi.fn();
 const rpcData = vi.fn();
@@ -55,8 +53,8 @@ beforeEach(() => {
   runtimeHost = "agentcore";
 });
 
-describe("SkillsTab on an AgentCore workspace", () => {
-  it("holds skills.status until the runtime is known rather than guessing ECS", () => {
+describe("SkillsTab", () => {
+  it("holds skills.status until the runtime is known", () => {
     runtimeHost = undefined;
     render(<SkillsTab />);
     expect(rpcMethods.every((method) => method === null)).toBe(true);
@@ -107,30 +105,16 @@ describe("SkillsTab on an AgentCore workspace", () => {
     expect(mockCallRpc).not.toHaveBeenCalled();
   });
 
-  it("still sends skills.update on ECS", () => {
-    runtimeHost = "ecs";
+  // Ruling M6-R56: hub search + install are cut on this runtime. The panel is a READ.
+  it("offers no hub search", () => {
     rpcData.mockReturnValue({ skills: [hermesSkill()] });
     render(<SkillsTab />);
-    fireEvent.click(screen.getByRole("button", { name: /^disable$/i }));
-    expect(mockCallRpc).toHaveBeenCalledWith("skills.update", { skillKey: "pdf", enabled: false });
-  });
-
-  // Ruling M6-R56: hub search + install are cut on this runtime. The panel is a READ.
-  it("offers no hub search on AgentCore, and still does on ECS", () => {
-    rpcData.mockReturnValue({ skills: [hermesSkill()] });
-    const { unmount } = render(<SkillsTab />);
     fireEvent.change(screen.getByPlaceholderText(/search skills/i), { target: { value: "pdf" } });
     expect(screen.queryByRole("button", { name: /Search ClawHub for/i })).toBeNull();
-    unmount();
-
-    runtimeHost = "ecs";
-    render(<SkillsTab />);
-    fireEvent.change(screen.getByPlaceholderText(/search skills/i), { target: { value: "pdf" } });
-    expect(screen.getByRole("button", { name: /Search ClawHub for/i })).toBeInTheDocument();
   });
 });
 
-describe("SkillProposalsPanel on an AgentCore workspace", () => {
+describe("SkillProposalsPanel", () => {
   it("explains that nothing can be proposed instead of implying an empty inbox", () => {
     rpcData.mockReturnValue({ proposals: [], reason: "write_approval_disabled" });
     render(<SkillProposalsPanel />);

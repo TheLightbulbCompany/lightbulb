@@ -1,15 +1,9 @@
 /**
- * M6 task 10-C, scan rows 2/8/9. On a migrated workspace the model picker used to be empty
- * (`config.models.providers` does not exist in a Hermes config) and 400 on anything it did send,
- * and the identity card read a stubbed `agent.identity.get` — a ~55s microVM start to render
- * four em-dashes. Both now come from what the runtime really has: `models.list` and the roster
- * row `agents.list` already returned.
- *
- * M6 task 10-D, rows 3/10. Heartbeats have no Hermes equivalent — the card is
- * dropped both once AgentCore is confirmed AND while the host isn't known yet
- * (fix round 1, review M1: Save writes into every roster profile, so a click
- * inside the pre-resolution window must not be possible either), and mounts
- * unchanged on ECS.
+ * The model picker and the identity card come from what the runtime really has:
+ * `models.list` and the roster row `agents.list` already returned. Neither the
+ * stubbed `agent.identity.get` nor `config.get` is dialled — each was a ~55s
+ * microVM start to render em-dashes. Heartbeats have no equivalent here, so the
+ * card is gone rather than inert.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -21,19 +15,11 @@ import { AgentOverviewTab } from "../AgentOverviewTab";
 const ARN_SONNET = "arn:aws:bedrock:us-east-1:1:application-inference-profile/son";
 const ARN_OPUS = "arn:aws:bedrock:us-east-1:1:application-inference-profile/opu";
 
-let runtimeHost: "ecs" | "agentcore" | undefined;
+let runtimeHost: "agentcore" | undefined;
 const rpcCalls: { method: string | null }[] = [];
 const mockCallRpc = vi.fn();
 
-// `useHiddenOnAgentCore` is derived from the SAME `runtimeHost` the real hook builds it
-// from (undefined -> "loading", "agentcore" -> "hidden", else -> "shown") — two independent
-// mock knobs would let a test express a combination ("ecs" + "hidden") the real hooks can
-// never produce.
-vi.mock("@lightbulb/shared", () => ({
-  useRuntimeHost: () => runtimeHost,
-  useHiddenOnAgentCore: () =>
-    runtimeHost === undefined ? "loading" : runtimeHost === "agentcore" ? "hidden" : "shown",
-}));
+vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => runtimeHost }));
 vi.mock("@/hooks/useRuntimeRpc", () => ({
   useRuntimeRpc: (method: string | null) => {
     rpcCalls.push({ method });
@@ -42,8 +28,6 @@ vi.mock("@/hooks/useRuntimeRpc", () => ({
   useRuntimeRpcMutation: () => mockCallRpc,
 }));
 vi.mock("@/hooks/useConfigPatch", () => ({
-  // AgentHeartbeatCard reads this one — only reachable on a "shown" (ECS) host now that
-  // M6 task 10-D mounts it conditionally, but the stub stays inert-safe regardless.
   useConfigPatch: () => ({ config: undefined, configReady: false, patchConfig: vi.fn(), refreshConfig: vi.fn() }),
   useModelCatalog: () => ({
     source: {
@@ -66,7 +50,7 @@ const agent = {
   model: ARN_OPUS,
 };
 
-describe("AgentOverviewTab on an AgentCore workspace", () => {
+describe("AgentOverviewTab", () => {
   beforeEach(() => {
     rpcCalls.length = 0;
     mockCallRpc.mockReset();
@@ -103,41 +87,15 @@ describe("AgentOverviewTab on an AgentCore workspace", () => {
     expect((screen.getByLabelText("Role") as HTMLSelectElement).value).toBe("engineer");
   });
 
-  it("holds every RPC while the host is unknown rather than guessing ECS", () => {
+  it("holds every RPC while the host is unknown", () => {
     runtimeHost = undefined;
     render(<AgentOverviewTab agentId="a1" agent={agent} />);
     expect(rpcCalls.every((call) => call.method === null)).toBe(true);
   });
 
-  it("still dials the ECS surfaces on ECS", () => {
-    runtimeHost = "ecs";
-    render(<AgentOverviewTab agentId="a1" agent={agent} />);
-    expect(rpcCalls.map((call) => call.method)).toContain("agent.identity.get");
-    expect(rpcCalls.map((call) => call.method)).toContain("config.get");
-  });
-});
-
-describe("AgentOverviewTab — Heartbeat card on AgentCore", () => {
-  beforeEach(() => {
-    rpcCalls.length = 0;
-    mockCallRpc.mockReset();
-    runtimeHost = "ecs";
-  });
-
-  it("mounts the Heartbeat card on ECS", () => {
-    runtimeHost = "ecs";
-    render(<AgentOverviewTab agentId="a1" />);
-    expect(screen.getByText("Heartbeat")).toBeInTheDocument();
-  });
-
-  it("holds the Heartbeat card while the host isn't known yet, rather than guessing ECS", () => {
-    runtimeHost = undefined;
-    render(<AgentOverviewTab agentId="a1" />);
-    expect(screen.queryByText("Heartbeat")).toBeNull();
-  });
-
-  it("drops the Heartbeat card outright once AgentCore is confirmed", () => {
-    runtimeHost = "agentcore";
+  // Hermes's scheduler is `cron` jobs and `cron.allow_agent_scheduling` is
+  // pinned false, so there is no heartbeat to show or to write.
+  it("shows no Heartbeat card", () => {
     render(<AgentOverviewTab agentId="a1" />);
     expect(screen.queryByText("Heartbeat")).toBeNull();
   });

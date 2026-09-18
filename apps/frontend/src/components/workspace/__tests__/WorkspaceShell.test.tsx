@@ -19,7 +19,6 @@ vi.mock("@/hooks/useAgents", () => ({ useAgents: () => {
   if (!state.organization) throw new Error("Owner data requested without a workspace");
   return { agents: [], defaultId: undefined, isSettled: true };
 } }));
-vi.mock("../useBrowserToolAutoOpen", () => ({ useBrowserToolAutoOpen: () => {} }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => null }));
 vi.mock("../workspaceController", () => ({
   useWorkspaceState: () => ({ activePanelId: state.activePanelId }),

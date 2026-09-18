@@ -2,9 +2,8 @@
 
 import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
-import { Bell, Chrome, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Plug, Search, Settings } from "lucide-react";
+import { Bell, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Plug, Search, Settings } from "lucide-react";
 import Link from "next/link";
-import { useHiddenOnAgentCore } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
 import { useSupport } from "@/components/support/SupportProvider";
@@ -18,7 +17,6 @@ const DESTINATIONS = [
   { panel: "teams-dashboard", label: "Home", Icon: Home },
   { panel: "teams-inbox", label: "Activity", Icon: Bell },
   { panel: "teams-issues", label: "Tasks", Icon: ListTodo },
-  { panel: "browser", label: "Browser", Icon: Chrome },
   { panel: "file-viewer", label: "Browse workspace files", Icon: FolderOpen },
   { panel: "connections", label: "Connections", Icon: Plug },
 ] as const;
@@ -29,19 +27,12 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
   const { setOpen } = useCommandPalette();
   const { activePanelId } = useWorkspaceState();
   const activeTeamRunCount = useActiveTeamRunCount();
-  // M6 task 10-D, row 21: the container browser (one Xvfb display per
-  // container) has no AgentCore equivalent yet — drop the rail entry outright
-  // rather than offering a panel whose start-probe can only spin and fail.
-  const browserHidden = useHiddenOnAgentCore() === "hidden";
-  const destinations = browserHidden
-    ? DESTINATIONS.filter((d) => d.panel !== "browser")
-    : DESTINATIONS;
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <button type="button" className="workspace-rail__search" aria-label="Search agents, issues, and projects" title="Search (⌘/Ctrl K)" onClick={() => setOpen(true)}>
         <Search size={20} aria-hidden="true" />
       </button>
-      {destinations.map(({ panel, label, Icon }) => {
+      {DESTINATIONS.map(({ panel, label, Icon }) => {
         // The panel KEY is not always the panel ID — a control-key destination
         // (Connections) opens as `control:connections`. Resolve through the
         // registry so the active marker follows the id the dock actually uses.
@@ -56,7 +47,6 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
           aria-current={activePanelId === panelId ? "page" : undefined}
           onClick={() => {
             if (panel === "file-viewer") capture("file_browser_opened");
-            if (panel === "browser") capture("browser_view_opened");
             if (panel === MESSAGES_PANEL_ID) activateMessagesPanel();
             else openPanel(panel, {}, { pushUrl: true });
           }}>

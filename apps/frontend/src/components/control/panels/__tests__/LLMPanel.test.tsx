@@ -68,7 +68,7 @@ let mockAuthStatusError: Error | undefined;
 // The read is held until the runtime is DEFINITE, so these tests declare one.
 // The panel does NOT branch on it beyond that: the Hermes bridge reports the same
 // provider ids llm-auth-status.ts already resolves (M6 task 10, row 22).
-let runtimeHost: "ecs" | "agentcore" | undefined = "ecs";
+let runtimeHost: "agentcore" | undefined = "agentcore";
 const authStatusMethods: (string | null)[] = [];
 vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => runtimeHost }));
 vi.mock("@/hooks/useRuntimeRpc", () => ({
@@ -370,7 +370,6 @@ describe("LLMPanel", () => {
     // which belongs to a different lane.
     expect(authStatusMethods).not.toContain("models.authStatus");
     expect(screen.getByTestId("provider-health-dot")).toHaveAttribute("data-color", "neutral");
-    runtimeHost = "ecs";
   });
 
   it("resolves a BYO-key dot from the Hermes provider id (openai-api)", () => {
@@ -384,7 +383,6 @@ describe("LLMPanel", () => {
     });
     render(<LLMPanel />);
     expect(screen.getByTestId("provider-health-dot")).toHaveAttribute("data-color", "green");
-    runtimeHost = "ecs";
   });
 
   it("opens the change-provider modal from the initialAction prop", () => {

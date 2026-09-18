@@ -11,7 +11,6 @@ import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
 import { useRuntimeHost } from "@lightbulb/shared";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { CreditsSection } from "./CreditsSection";
-import { ModelRoutingCard } from "./ModelRoutingCard";
 import { OpenAIIcon, AnthropicIcon } from "@/components/chat/ProviderIcons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -627,11 +626,6 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
           Non-Bedrock providers bill through their own account, so nothing
           renders for them. */}
       {user.provider_choice === "bedrock_claude" && <CreditsSection />}
-
-      {/* Owner-level model routing (default + overhead model). Provider-aware:
-          renders dropdowns when there's a routable catalog (Bedrock), a fixed
-          summary on the flat-rate ChatGPT plan, and hides for catalog-less BYO. */}
-      <ModelRoutingCard providerChoice={user.provider_choice ?? null} />
 
       <ChangeProviderModal
         open={modalOpen}

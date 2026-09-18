@@ -2,12 +2,10 @@
 
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { Loader2, AlertCircle } from "lucide-react";
-import { useHiddenOnAgentCore, useRuntimeHost } from "@lightbulb/shared";
-import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
+import { useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { useModelCatalog } from "@/hooks/useConfigPatch";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import { buildModelNameMap, displayModelName, listCatalogModels } from "@/lib/modelDisplay";
-import { AgentHeartbeatCard } from "@/components/control/agents/AgentHeartbeatCard";
 import { Button } from "@/components/ui/button";
 import { AgentPaperclipFields } from "@/components/control/agents/AgentPaperclipFields";
 import {
@@ -16,13 +14,7 @@ import {
   type PaperclipMeta,
   type PaperclipRole,
 } from "@/lib/paperclipMeta";
-import type { AgentEntry, AgentIdentity, ConfigSnapshot } from "./agents-types";
-
-function resolveModelPrimary(model?: string | { primary?: string; fallbacks?: string[] }): string | undefined {
-  if (typeof model === "string") return model.trim() || undefined;
-  if (typeof model === "object" && model) return model.primary?.trim() || undefined;
-  return undefined;
-}
+import type { AgentEntry } from "./agents-types";
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
@@ -34,63 +26,26 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: string; agent?: AgentEntry; onAgentUpdated?: () => void }) {
-  // M6 task 10-C (scan rows 1/8/9): on AgentCore the identity, the model and the Paperclip meta
-  // all come from the roster row `agents.list` already returned. `agent.identity.get` is stubbed
-  // on the bridge (a ~55s microVM start to render an error) and `config.agents.list` does not
-  // exist in a Hermes config, so neither RPC is dialled there. Both are held while the runtime
-  // host is unknown — guessing costs that same cold start.
-  const runtimeHost = useRuntimeHost();
-  const onAgentCore = runtimeHost === "agentcore";
-  const rpcReady = runtimeHost === "ecs";
-  // M6 task 10-D, rows 3/10: heartbeats have no Hermes equivalent (Hermes's
-  // scheduler is `cron` jobs and we pin `cron.allow_agent_scheduling: false`) —
-  // the card is dropped outright rather than shown inert, and its writes
-  // (`config.patch` fanning out to every roster profile) never fire.
-  const heartbeatVisibility = useHiddenOnAgentCore();
-  const { data } = useRuntimeRpc<Record<string, unknown>>(
-    rpcReady ? "agent.identity.get" : null,
-    { agentId },
-  );
-  const { data: configSnapshot, mutate: mutateConfig } = useRuntimeRpc<ConfigSnapshot>(
-    rpcReady ? "config.get" : null,
-  );
+  // The identity, the model and the Paperclip meta all come from the roster row
+  // `agents.list` already returned — `agent.identity.get` is stubbed on the
+  // bridge and a Hermes config has no `agents.list`, so neither RPC is dialled.
   const { source: catalogSource } = useModelCatalog();
   const callRpc = useRuntimeRpcMutation();
   const [updatingModel, setUpdatingModel] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
 
-  const identity = (data || agent?.identity) as AgentIdentity | undefined;
-  const configInner = configSnapshot?.config;
+  const currentModel = agent?.model ?? "";
 
-  const modelsCatalog = useMemo(
-    () => configInner?.agents?.defaults?.models ?? {},
-    [configInner?.agents?.defaults?.models],
-  );
-
-  const defaultModelPrimary = resolveModelPrimary(configInner?.agents?.defaults?.model);
-  const agentConfigEntry = configInner?.agents?.list?.find(a => a?.id === agentId);
-  const agentModelPrimary = resolveModelPrimary(agentConfigEntry?.model);
-  const currentModel = onAgentCore
-    ? (agent?.model ?? "")
-    : agentModelPrimary || defaultModelPrimary || "";
-
-  // Paperclip meta — role/title/capabilities. Persisted on the agent
-  // entry under params.paperclip and mirrored to Paperclip via
-  // _intercept_agents_update on the backend. Initial value seeded from
-  // the agent's existing params.paperclip block if present — or, on
-  // AgentCore, from the roster row, which IS the Paperclip row. Without
-  // that the form would seed "general" for every agent and Save would
-  // silently demote an engineer's role.
-  const existingPaperclip = useMemo(() => {
-    if (onAgentCore) {
-      return agent?.role
+  // Paperclip meta — role/title/capabilities, seeded from the roster row, which
+  // IS the Paperclip row. Without that the form would seed "general" for every
+  // agent and Save would silently demote an engineer's role.
+  const existingPaperclip = useMemo(
+    () =>
+      agent?.role
         ? ({ role: agent.role, title: agent.title, capabilities: agent.capabilities, icon: agent.icon } as Partial<PaperclipMeta>)
-        : undefined;
-    }
-    const block = (agentConfigEntry?.params as Record<string, unknown> | undefined)?.paperclip;
-    if (!block || typeof block !== "object") return undefined;
-    return block as Partial<PaperclipMeta>;
-  }, [agentConfigEntry, onAgentCore, agent?.role, agent?.title, agent?.capabilities, agent?.icon]);
+        : undefined,
+    [agent?.role, agent?.title, agent?.capabilities, agent?.icon],
+  );
 
   const [meta, setMeta] = useState<PaperclipMeta>(() => ({
     role:
@@ -133,10 +88,10 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId]);
 
-  // Within an agent session, re-seed from SWR's eventual result so
-  // the form picks up the agent's stored values once config.get
-  // resolves. Skipped once the user starts typing — otherwise a
-  // background SWR revalidate would clobber in-flight edits.
+  // Within an agent session, re-seed from the roster's eventual result so the
+  // form picks up the agent's stored values once it resolves. Skipped once the
+  // user starts typing — otherwise a background revalidate would clobber
+  // in-flight edits.
   useEffect(() => {
     if (metaDirty || !existingPaperclip) return;
     setMeta({
@@ -179,12 +134,6 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
         agentId,
         params: { paperclip: block },
       });
-      // Re-read config.get before clearing the dirty flag. The form
-      // re-seeds itself from config.get's params.paperclip whenever
-      // the dirty flag is false; without a fresh read it would re-seed
-      // from the pre-save snapshot and the just-saved values would
-      // appear to vanish on navigating back to this agent.
-      await mutateConfig();
       setMetaDirty(false);
       onAgentUpdated?.();
     } catch (err) {
@@ -192,7 +141,7 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
     } finally {
       setSavingMeta(false);
     }
-  }, [agentId, callRpc, meta, mutateConfig, onAgentUpdated]);
+  }, [agentId, callRpc, meta, onAgentUpdated]);
 
   const handleModelChange = useCallback(async (newModel: string) => {
     setUpdatingModel(true);
@@ -202,7 +151,6 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
         agentId,
         ...(newModel ? { model: newModel } : { model: null }),
       });
-      mutateConfig();
       onAgentUpdated?.();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -211,28 +159,20 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
     } finally {
       setUpdatingModel(false);
     }
-  }, [callRpc, agentId, onAgentUpdated, mutateConfig]);
+  }, [callRpc, agentId, onAgentUpdated]);
 
-  // Display names from the owner's model list — the `models.list` RPC on AgentCore, the
-  // gateway config's providers catalog on ECS. Bedrock ids are application-inference-profile
-  // ARNs whose last segment is an opaque random suffix, so the old split("/").pop() fallback
-  // rendered garbage like "ykpc0bdu467l".
+  // Display names from the owner's model list (the `models.list` RPC). Bedrock
+  // ids are application-inference-profile ARNs whose last segment is an opaque
+  // random suffix, so the old split("/").pop() fallback rendered garbage like
+  // "ykpc0bdu467l".
   const modelNames = useMemo(() => buildModelNameMap(catalogSource), [catalogSource]);
 
   const selectorModels = useMemo(() => {
-    // Primary source: the owner's model list (see above).
-    // agents.defaults.models is a per-deployment alias map that provision
-    // does NOT write — kept as a secondary source for hand-edited ECS configs.
     const models: { id: string; name: string }[] = listCatalogModels(catalogSource).map((m) => ({
       id: m.ref,
       name: m.name,
     }));
     const seen = new Set(models.map((m) => m.id));
-    for (const [id, entry] of Object.entries(modelsCatalog)) {
-      if (seen.has(id)) continue;
-      models.push({ id, name: entry.alias || displayModelName(id, modelNames) || id });
-      seen.add(id);
-    }
     if (currentModel && !seen.has(currentModel)) {
       models.unshift({
         id: currentModel,
@@ -240,23 +180,15 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
       });
     }
     return models;
-  }, [catalogSource, modelsCatalog, currentModel, modelNames]);
+  }, [catalogSource, currentModel, modelNames]);
 
-  // Hermes has no emoji/theme \u2014 identity there is the Paperclip row plus SOUL.md, so the two
-  // rows that would always read "\u2014" are replaced by the two that carry the answer (row 8).
-  const identityRows: [string, string][] = onAgentCore
-    ? [
-        ["Agent ID", agentId],
-        ["Name", agent?.name || "\u2014"],
-        ["Role", PAPERCLIP_ROLE_LABELS[agent?.role as PaperclipRole] || agent?.role || "\u2014"],
-        ["Title", agent?.title || "\u2014"],
-      ]
-    : [
-        ["Agent ID", agentId],
-        ["Name", identity?.name || agent?.name || "\u2014"],
-        ["Emoji", identity?.emoji || "\u2014"],
-        ["Theme", identity?.theme || "\u2014"],
-      ];
+  // Hermes has no emoji/theme \u2014 identity is the Paperclip row plus SOUL.md.
+  const identityRows: [string, string][] = [
+    ["Agent ID", agentId],
+    ["Name", agent?.name || "\u2014"],
+    ["Role", PAPERCLIP_ROLE_LABELS[agent?.role as PaperclipRole] || agent?.role || "\u2014"],
+    ["Title", agent?.title || "\u2014"],
+  ];
 
   return (
     <div className="space-y-4 mt-2">
@@ -276,9 +208,9 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
             models={selectorModels}
             selectedModel={currentModel}
             onModelChange={handleModelChange}
-            // On AgentCore the write is an `agents.update`, gated on nothing but the list —
+            // The write is an `agents.update`, gated on nothing but the list —
             // there is no config hash in play (the profile is CAS'd server-side).
-            disabled={updatingModel || (!onAgentCore && !configSnapshot?.hash)}
+            disabled={updatingModel}
           />
         ) : (
           <p className="text-xs text-[var(--midnight-muted)]">
@@ -294,12 +226,6 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
           </p>
         )}
       </div>
-
-      {/* Fix round 1 (review M1): held for "loading" too, not just "shown" —
-          the card's Save writes agents.list[{id,heartbeat}] into every roster
-          profile, and a click inside the brief pre-resolution window would
-          still pollute an AgentCore workspace's profiles. */}
-      {heartbeatVisibility === "shown" && <AgentHeartbeatCard agentId={agentId} />}
 
       <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-cream">
         <h3 className="text-sm font-medium text-[var(--midnight)]">Role &amp; description</h3>
@@ -321,17 +247,6 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
           </Button>
         </div>
       </div>
-
-      {data && (
-        <details className="group">
-          <summary className="text-xs text-midnight-muted cursor-pointer hover:text-[var(--midnight-muted)]">
-            Raw identity data
-          </summary>
-          <pre className="mt-2 text-xs bg-[var(--cream-deep)] rounded-lg p-3 overflow-auto max-h-48 text-[var(--midnight-soft)]">
-            {JSON.stringify(data, null, 2)}
-          </pre>
-        </details>
-      )}
     </div>
   );
 }

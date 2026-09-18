@@ -2,10 +2,10 @@
 /**
  * Parked-state health derivation — the exact if/else branch (checked BEFORE
  * the stopped/live-reconnect branches) that regressed twice in review. A parked
- * trial box is ECS-stopped and live delivery is disconnected, so without this
- * branch it would derive CONTAINER_DOWN / GATEWAY_DOWN_DEAD (red dot + Restart CTA)
- * over a chat surface the stepper simultaneously renders as ready. These tests
- * lock the backend lifecycle contract so a future reorder can't ship silently.
+ * trial box reads as stopped and live delivery is disconnected, so without this
+ * branch it would derive CONTAINER_DOWN (red dot + Restart CTA) over a chat
+ * surface the stepper simultaneously renders as ready. These tests lock the
+ * backend lifecycle contract so a future reorder can't ship silently.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
@@ -25,9 +25,6 @@ vi.mock("@/hooks/useLiveEvents", () => ({
 }));
 vi.mock("@/hooks/useProvisioningState", () => ({
   useProvisioningState: () => ({ container, phase: "normal", blocked: null, refresh: vi.fn() }),
-}));
-vi.mock("@/hooks/useRuntimeRpc", () => ({
-  useRuntimeRpc: () => ({ data: { ok: true }, error: null }),
 }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post: vi.fn().mockResolvedValue(null) }) }));
 
@@ -55,7 +52,7 @@ describe("useSystemHealth parked", () => {
     };
     const { result } = renderHook(() => useSystemHealth());
     expect(result.current.state).toBe("STARTING");
-    expect(result.current.reason).toBe("Restarting container...");
+    expect(result.current.reason).toBe("Restarting agents...");
   });
 
   it("a genuinely stopped (non-parked) box still maps to CONTAINER_DOWN", () => {

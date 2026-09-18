@@ -29,22 +29,20 @@ export type ConfigPatchResult = {
  * concurrency-safe: a concurrent edit changes the hash and the patch is
  * rejected instead of clobbering.
  *
- * `agentId` (M6 task 10-C, scan rows 1/5) picks ONE Hermes profile on an
- * AgentCore workspace: there is no single `openclaw.json` there, so
+ * `agentId` picks ONE Hermes profile: there is no single config document, so
  * `config.get`/`config.patch` without an id read a roster MAP and fan the
  * write out to every profile. That fan-out is right for an owner-level
  * setting and wrong for a per-agent one — a per-agent save used to write
  * into all six profiles and bump all six `.revision`s. Pass the agent's id
  * for a per-agent surface; omit it for an owner-level one.
  *
- * Both RPCs are held while the runtime host is unknown (`undefined` =
- * "not known for THIS workspace", never "assume ECS") — the same policy
- * `AgentToolsTab`/`useSystemHealth` follow, for the same reason: guessing
- * costs a ~55s microVM cold start.
+ * Both RPCs are held until a status body names this workspace's runtime
+ * (`useRuntimeHost() === undefined` = "not known for THIS workspace"):
+ * guessing costs a ~55s microVM cold start.
  */
 export function useConfigPatch(agentId?: string) {
   const runtimeHost = useRuntimeHost();
-  const perProfile = runtimeHost === "agentcore" && Boolean(agentId);
+  const perProfile = Boolean(runtimeHost) && Boolean(agentId);
   // Per-profile reads ask for that profile by id, so `hash` is ITS hash — the map hash a
   // no-agentId read returns would never match the per-profile CAS the backend does.
   const { data: snapshot, mutate } = useRuntimeRpc<ConfigGetSnapshot>(
@@ -82,13 +80,12 @@ export function useConfigPatch(agentId?: string) {
   );
 
   return {
-    // An owner-level read on AgentCore lands on the roster map. Every key such a surface reads
+    // An owner-level read lands on the roster map. Every key such a surface reads
     // is owner-level and therefore identical across profiles, so the first one is the
     // representative — the patch still fans out to all of them.
-    config:
-      runtimeHost === "agentcore" && !perProfile
-        ? Object.values((snapshot?.config ?? {}) as Record<string, unknown>)[0]
-        : snapshot?.config,
+    config: perProfile
+      ? snapshot?.config
+      : Object.values((snapshot?.config ?? {}) as Record<string, unknown>)[0],
     configReady: Boolean(baseHash),
     patchConfig,
     refreshConfig: mutate,
@@ -96,21 +93,19 @@ export function useConfigPatch(agentId?: string) {
 }
 
 /**
- * The owner's model list, from whichever RPC carries it on this runtime (M6 task 10-C, rows
- * 2/9/23/27/31). AgentCore answers `models.list` — the owner's own Bedrock inference profiles,
- * served by the backend with no microVM wake, or Hermes's provider catalog via the bridge on
- * BYO/OAuth. ECS answers with the gateway config's providers catalog. `source` feeds
- * `buildModelNameMap`/`listCatalogModels`, which take either shape.
+ * The owner's model list, from `models.list` — the owner's own Bedrock inference
+ * profiles, served by the backend with no microVM wake, or Hermes's provider
+ * catalog via the bridge on BYO/OAuth. `source` feeds
+ * `buildModelNameMap`/`listCatalogModels`.
  *
- * One hook so the "which RPC holds the catalog" decision lives in one place rather than in
- * every picker. Held (`source: undefined`) while the runtime host is unknown.
+ * One hook so every picker reads the catalog the same way. Held
+ * (`source: undefined`) until the runtime is known for this workspace.
  */
 export function useModelCatalog(): { source: unknown; defaultId?: string; ready: boolean } {
   const runtimeHost = useRuntimeHost();
-  const method = runtimeHost === "agentcore" ? "models.list" : runtimeHost === "ecs" ? "config.get" : null;
-  const { data } = useRuntimeRpc<{ config?: unknown; defaultId?: string }>(method);
+  const { data } = useRuntimeRpc<{ config?: unknown; defaultId?: string }>(
+    runtimeHost ? "models.list" : null,
+  );
   if (!data) return { source: undefined, ready: false };
-  return runtimeHost === "agentcore"
-    ? { source: data, defaultId: data.defaultId, ready: true }
-    : { source: data.config, ready: true };
+  return { source: data, defaultId: data.defaultId, ready: true };
 }

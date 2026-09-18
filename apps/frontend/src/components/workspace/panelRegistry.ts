@@ -3,7 +3,7 @@
 // components map all derive from this file — nothing else may invent a
 // panel id or component name.
 
-export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "missing";
+export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "missing";
 
 export interface PanelDescriptor {
   panelId: string;
@@ -122,7 +122,6 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   issues: "Tasks",
   routines: "Automations",
   artifacts: "Library",
-  brain: "Brain",
   accounts: "Accounts",
   search: "Search",
   settings: "Team Settings",
@@ -159,11 +158,6 @@ const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {
 // dock panels but are NOT in the sidebar — /settings remains their home.
 const CONTROL_KEYS: Readonly<Record<string, string>> = {
   overview: "Overview",
-  // Its own panel again (owner ruling 2026-09-08): Brain is the vault, and a
-  // memory-core control surface does not belong behind a business tab.
-  dreams: "Dreams",
-  sessions: "Sessions",
-  channels: "Channels",
   usage: "Usage",
   agents: "Agents",
   skills: "Skills",
@@ -182,7 +176,6 @@ export const PANEL_COMPONENT_KEYS: ReadonlySet<string> = new Set([
   "teams",
   "control",
   "file-viewer",
-  "browser",
   "missing",
 ]);
 
@@ -245,12 +238,6 @@ export function describePanel(
     return { panelId: "file-viewer", component: "file-viewer", title: "Files", params: p };
   }
 
-  if (key === "browser") {
-    // Singleton, no params: the container has ONE browser (one Xvfb display),
-    // so a second open focuses the existing panel rather than double-viewing.
-    return { panelId: "browser", component: "browser", title: "Browser", params: {} };
-  }
-
   if (key === "agent-inspector") {
     const p: Record<string, string> = { controlKey: "agent-inspector" };
     if (params.agent) p.agentId = params.agent;
@@ -310,9 +297,6 @@ export function describePanel(
         // list, which lives on Tasks — those land at the top of Inbox.
         else if (params.tab === "approvals") p.section = "needs-you";
       }
-      // ?path mirrors the file-viewer grammar: a deep link selects a wiki
-      // page; in-panel selection clicks never write it back.
-      if (teamsKey === "brain" && params.path) p.path = params.path;
       // ?day scopes the Payments section to one UTC day — the hero bar on Home links here.
       if (teamsKey === "money" && params.day) p.day = params.day;
       // The four absorbed keys (teams-payments/products/customers/spend) alias
@@ -353,7 +337,6 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "teams-agents") return ["panel", "view"];
   if (panelId === "teams-issues") return ["panel", "agent", "groupBy"];
   if (panelId === "teams-inbox") return ["panel", "section"];
-  if (panelId === "teams-brain") return ["panel", "path"];
   if (panelId === "teams-money") return ["panel", "day", "section"];
   if (/^teams-(issue|routine|project|goal|run)-detail:/.test(panelId)) return ["panel", "detailId"];
   return ["panel"];
@@ -373,7 +356,6 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === "teams-agents") return ["view"];
   if (panelId === "teams-issues") return ["agent", "groupBy"];
   if (panelId === "teams-inbox") return ["section"];
-  if (panelId === "teams-brain") return ["path"];
   if (panelId === "teams-money") return ["day", "section"];
   if (panelId === "file-viewer") return ["path", "agent"];
   if (panelId === "agent-inspector" || panelId === "control:agents") {

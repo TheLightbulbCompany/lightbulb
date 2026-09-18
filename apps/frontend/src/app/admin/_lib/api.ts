@@ -624,18 +624,6 @@ export interface AvailableImagesResponse {
   current_prod_tag?: string;
 }
 
-export async function listAvailableImages(
-  token: string,
-  limit?: number,
-): Promise<AvailableImagesResponse> {
-  const result = await adminFetch<AvailableImagesResponse>(
-    token,
-    "/admin/container/available-images",
-    { query: { limit } },
-  );
-  return result ?? { images: [] };
-}
-
 // ---------------------------------------------------------------------------
 // Admin diagnostic reads (fleet, deployments, and alarms)
 // ---------------------------------------------------------------------------

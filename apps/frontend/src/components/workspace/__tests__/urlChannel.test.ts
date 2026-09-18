@@ -27,11 +27,6 @@ describe("parseCommand", () => {
   it("resolves retired aliases", () => {
     expect(parseCommand("?panel=teams-approvals")?.descriptor.panelId).toBe("teams-inbox");
     expect(parseCommand("?panel=credits")?.descriptor.panelId).toBe("control:llm");
-    // Dreams is its own control panel again — ?panel=dreams opens it, not the
-    // Brain panel it spent a while folded into.
-    const dreamsCmd = parseCommand("?panel=dreams");
-    expect(dreamsCmd?.descriptor.panelId).toBe("control:dreams");
-    expect(dreamsCmd?.descriptor.params).toEqual({ controlKey: "dreams" });
     // The org chart is a view of the roster now.
     const chartCmd = parseCommand("?panel=teams-org-chart");
     expect(chartCmd?.descriptor.panelId).toBe("teams-agents");

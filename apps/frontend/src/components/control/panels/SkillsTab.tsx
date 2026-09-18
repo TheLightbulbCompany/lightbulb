@@ -19,7 +19,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { SKILL_INTEGRATIONS } from "./skill-integrations";
-import { ClawHubSearch } from "./ClawHubSearch";
 
 // --- Types matching the skills.status response ---
 // Both runtimes answer this shape. Hermes has no per-skill dependency manifest,
@@ -188,7 +187,6 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
   // on a guess costs a microVM start on AgentCore, so the RPC waits for a definite
   // answer (same hold as AgentToolsTab).
   const runtimeHost = useRuntimeHost();
-  const onAgentCore = runtimeHost === "agentcore";
   const params = agentId ? { agentId } : {};
   const { data: raw, error, isLoading, mutate } = useRuntimeRpc<SkillStatusReport | SkillStatusEntry[]>(
     runtimeHost ? "skills.status" : null,
@@ -243,13 +241,6 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
   // and the panel renders an error with no toggle at all.
   const storedDisabled = Array.isArray(raw) ? undefined : raw?.disabledNames;
   const toggleSkill = async (skill: SkillStatusEntry) => {
-    if (!onAgentCore) {
-      await callRpc("skills.update", {
-        skillKey: skill.skillKey || skill.name,
-        enabled: skill.disabled,
-      });
-      return;
-    }
     if (!storedDisabled) {
       throw new Error(
         "This runtime did not report which skills are off, so changing one could silently " +
@@ -293,9 +284,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
               Skill Store
             </h2>
             <p className="text-sm text-[var(--midnight-muted)] mt-0.5">
-              {onAgentCore
-                ? "Your agents' skills. Turn one off, or ask an agent to write a new one."
-                : "Discover and install skills for your agent"}
+              Your agents&apos; skills. Turn one off, or ask an agent to write a new one.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -350,15 +339,6 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
             onChange={(e) => setFilter(e.target.value)}
           />
         </div>
-
-        {/* ClawHub registry search — in-app browse + one-click install. OpenClaw only
-            (ruling M6-R56): Hermes's hub runs inside the agent's own home, so browsing it
-            from a settings RPC dragged its multi-MB index cache into the profile, wanted a
-            secret scope, and could not fit the ingress budget. On Hermes the panel is a
-            READ, and the agent writes its own skills through skill-creator (above). */}
-        {!onAgentCore && (
-          <ClawHubSearch query={filter} callRpc={callRpc} onInstalled={mutate} />
-        )}
 
         {/* Category pills */}
         <div className="flex items-center gap-2 overflow-x-auto pb-1">

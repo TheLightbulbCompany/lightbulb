@@ -93,29 +93,9 @@ describe("TeamsDockPanel — partial parameter updates", () => {
   });
 });
 
-describe("TeamsDockPanel — Brain `path` deep link (F1 seam)", () => {
-  // F1: the registry fully advertises `path` for teams-brain (describePanel,
-  // durableParamsFor, clearablePanelParamKeys — panelRegistry.ts) and
-  // TeamsPanelRouter reads panelParams?.path, but the dock panel's own
-  // params-forwarding spread silently dropped it before it ever reached the
-  // router. Nothing else in this suite mounts the dock wiring with an initial
-  // `path` param, so this is the one place that wire can't silently drop
-  // again without a test going red.
-  it("forwards the initial `path` param through to TeamsPanelRouter", () => {
-    const { props } = makePanelProps("teams-brain", { teamsKey: "brain", path: "main/facts.md" });
-    render(<TeamsDockPanel {...props} />);
-    expect(lastRouterProps().panel).toBe("brain");
-    expect((lastRouterProps().panelParams as Params).path).toBe("main/facts.md");
-  });
-
-  it("forwards a `path` delivered later via updateParameters", () => {
-    const { props, fire } = makePanelProps("teams-brain", { teamsKey: "brain" });
-    render(<TeamsDockPanel {...props} />);
-    expect((lastRouterProps().panelParams as Params).path).toBeUndefined();
-    act(() => fire({ path: "main/facts.md" }));
-    expect((lastRouterProps().panelParams as Params).path).toBe("main/facts.md");
-  });
-
+describe("TeamsDockPanel — durable params forwarding", () => {
+  // The dock panel's own params-forwarding spread once silently dropped a
+  // durable param before it ever reached the router; these are the wire.
   it("forwards the money `day` param through to TeamsPanelRouter", () => {
     const { props } = makePanelProps("teams-money", { teamsKey: "money", day: "2026-09-05" });
     render(<TeamsDockPanel {...props} />);

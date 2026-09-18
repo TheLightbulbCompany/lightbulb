@@ -87,11 +87,7 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
         {orgBanner}
         <EmptyState
           title="Container is stopped"
-          body="The user's container is not running. Start it first to see their agents."
-          action={{
-            label: "Open container tab",
-            href: `/admin/users/${encodeURIComponent(id)}/container`,
-          }}
+          body="The user's runtime is not running, so their agents can't be read."
         />
       </div>
     );

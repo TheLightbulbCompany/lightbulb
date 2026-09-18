@@ -37,8 +37,8 @@
  *                 substatus === "error_retrying" (backend is auto-retrying)
  *   parked      — 200 with phase === "parked" (deliberately-asleep trial box)
  *   error       — 200 with raw status === "error" and ANY substatus other than
- *                 "error_retrying" — provision_failed, deployment_failed (the
- *                 ECS rollout circuit breaker), a bare error with no substatus
+ *                 "error_retrying" — provision_failed, deployment_failed, a
+ *                 bare error with no substatus
  *                 (auto-retry gated / standing down), or any unknown value —
  *                 i.e. a TERMINAL failure (PR3 honest-contract consumption).
  *                 CRITICAL: `phase` still resolves to "provisioning" for a dead

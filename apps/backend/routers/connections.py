@@ -5,7 +5,6 @@ import hmac
 import logging
 import re
 import secrets
-import subprocess
 import time
 from collections import defaultdict, deque
 
@@ -23,7 +22,6 @@ from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import google_accounts_repo, integrations_repo
-from core.services import config_patcher, runtime_transport
 from core.services.credentials import (
     apply_connection,
     aws_cfn,
@@ -39,9 +37,7 @@ from core.services.credentials import (
 # itself never changes underneath that patch.
 from core.services.credentials.apply_connection import RuntimeUnsupportedError
 from core.services.credentials import hermes_cli
-from core.services.credentials.materializers import MATERIALIZER_REMOVERS
 from core.services.credentials.mcp_server import reconcile_integrations
-from core.services import shopify_login
 from core.services.efs_file_lock import SidecarLockTimeoutError
 from core.services.google_identity import seed_agent_google_identity
 from core.services.owner_lifecycle import owner_lifecycle_guard
@@ -71,42 +67,17 @@ def _retains_secret(p: registry.Provider) -> bool:
 
 
 async def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, credential: dict) -> None:
-    """On a FAILED apply, remove any partially-materialized on-disk artifacts so a
-    failed connect leaves no durable credential residue on EFS -- or, for an AgentCore
-    owner, in the Hermes profiles ``hermes_cli`` projects into (the row is deleted
-    separately). A materializer can write one file before a later step raises — e.g.
-    gog's `credentials set` succeeds but `tokens import` fails — and without this the
-    artifact lingers while the UI shows disconnected and no row remains to clean it up
-    on a later disconnect. No-op for openclaw_paths/paste providers (no materializer).
-
-    The remover runs in a worker thread (run_in_thread): a remover may drive an async
-    config_patcher via asyncio.run (mcp_oauth), which raises if called on the running
-    request loop — offloading gives it a thread with no running loop, matching the
-    write path's run_in_thread offload. Pure file-op removers are unaffected."""
+    """On a FAILED apply, remove any partially-materialized artifacts so a failed connect
+    leaves no durable credential residue in the Hermes profiles ``hermes_cli`` projects
+    into (the row is deleted separately). A materializer can write one file before a later
+    step raises — e.g. gog's `credentials set` succeeds but `tokens import` fails — and
+    without this the artifact lingers while the UI shows disconnected and no row remains to
+    clean it up on a later disconnect. No-op for openclaw_paths/paste providers (no
+    materializer)."""
     if not p.wiring.materializer:
         return
-    # Deliberately NOT fail_closed, unlike every other mutating caller on this door (#2759):
-    # this IS the rollback, so raising here would replace the connect's real error with a
-    # RuntimeHostUnknownError and lose it. The cost of guessing ECS on a throttle is residue
-    # from a connect that already failed — inert (the row is gone) and overwritten by the next
-    # successful connect — which is the same class of loss the surrounding except already
-    # accepts.
-    if await runtime_transport.is_agentcore_owner(owner_id):
-        # The residue is in S3, not on EFS — and hermes_cli.clear is already best-effort.
-        await hermes_cli.clear(owner_id, p.key, p.wiring.materializer, credential)
-        return
-    remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer)
-    if not remover:
-        return
-    try:
-        await run_in_thread(remover, owner_id, p.key, credential)
-    except Exception:
-        logger.warning(
-            "failed to remove materialized artifacts for owner=%s provider=%s during rollback",
-            owner_id,
-            p.key,
-            exc_info=True,
-        )
+    # The residue is in S3 — and hermes_cli.clear is already best-effort.
+    await hermes_cli.clear(owner_id, p.key, p.wiring.materializer, credential)
 
 
 class PasteBody(BaseModel):
@@ -565,68 +536,6 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     return {"status": "connected", "provider": provider}
 
 
-class ContainerLoginBody(BaseModel):
-    store: str = Field(min_length=1, max_length=512)
-
-
-@router.post("/{provider}/login")
-async def container_login(provider: str, body: ContainerLoginBody, auth: AuthContext = Depends(get_current_user)):
-    """Start a `container_login` provider's sign-in INSIDE the owner's container.
-
-    Shopify's CLI runs the OAuth grant, but its callback is loopback-bound to the
-    host running the CLI, so nothing redirects the owner's browser: the container
-    runs `shopify store auth`, its Chrome gets the authorize page, and the owner
-    finishes in the Browser panel. The row is marked connected by the status
-    poll below, never here — the CLI has stored nothing yet.
-    """
-    require_org_admin(auth)
-    owner_id = resolve_owner_id(auth)
-    p = _get_provider_or_404(provider, owner_id)
-    if p.acquisition != "container_login":
-        raise HTTPException(status_code=400, detail=f"{provider} does not sign in from the container")
-    # M6 task 10-D, row 26: the CLI login runs `shopify store auth` inside the owner's
-    # container and the owner finishes it in the Browser panel — neither exists on
-    # AgentCore (no exec shell, no container browser), so there is nothing this could
-    # even start.
-    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
-        raise HTTPException(status_code=422, detail="unsupported_on_agentcore")
-    try:
-        store = shopify_login.normalize_store(body.store)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    await shopify_login.start_login(owner_id, store)
-    return {"status": "awaiting_login", "provider": provider, "store": store}
-
-
-@router.get("/{provider}/login/status")
-async def container_login_status(provider: str, store: str, auth: AuthContext = Depends(get_current_user)):
-    """The poll behind the Connect button: `connected` once the CLI's own session
-    list holds the store (the row is written then, with the store as identity),
-    `pending` while the CLI still waits on Shopify's callback, `failed` with the
-    CLI's last line otherwise."""
-    require_org_admin(auth)
-    owner_id = resolve_owner_id(auth)
-    p = _get_provider_or_404(provider, owner_id)
-    if p.acquisition != "container_login":
-        raise HTTPException(status_code=400, detail=f"{provider} does not sign in from the container")
-    try:
-        store = shopify_login.normalize_store(store)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    state = await shopify_login.login_status(owner_id, store)
-    if state["connected"]:
-        await integrations_repo.put_status(owner_id, provider, "connected", identity=store)
-        return {"status": "connected", "provider": provider, "store": store}
-    if state["pending"]:
-        return {"status": "pending", "provider": provider, "store": store}
-    return {
-        "status": "failed",
-        "provider": provider,
-        "store": store,
-        "error": state["error"] or "The sign-in did not complete.",
-    }
-
-
 @router.get("/{provider}/aws-setup")
 async def aws_setup(provider: str, auth: AuthContext = Depends(get_current_user)):
     """Stage the AWS read-only connect: mint (or reuse) the per-owner STS
@@ -850,21 +759,10 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
     can't find) for the case where the keyring drifted from the inventory."""
     accounts = await google_accounts_repo.list_accounts(owner_id)
     if any(a["email"] == account for a in accounts):
-        if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
-            # An AgentCore owner's keyring lives in every Hermes profile, not on EFS. Running
-            # gog against a scratch copy of it is what keeps the owner's OTHER Google accounts
-            # (the founder has four) when one is disconnected.
-            await hermes_cli.clear(owner_id, p.key, p.wiring.materializer or "", {"email": account})
-        elif remover := (MATERIALIZER_REMOVERS.get(p.wiring.materializer) if p.wiring.materializer else None):
-            try:
-                # Offload to a worker thread so a remover that drives an async
-                # config_patcher via asyncio.run isn't called on the request loop
-                # (matches the write path); the subprocess error still surfaces.
-                await run_in_thread(remover, owner_id, p.key, {"email": account})
-            except subprocess.CalledProcessError:
-                # Account already absent from the keyring — treat as success so a
-                # double-disconnect doesn't surface a 500.
-                pass
+        # The keyring lives in every Hermes profile. Running gog against a scratch copy
+        # of it is what keeps the owner's OTHER Google accounts (the founder has four)
+        # when one is disconnected.
+        await hermes_cli.clear(owner_id, p.key, p.wiring.materializer or "", {"email": account})
     await google_accounts_repo.remove_account(owner_id, account)
     assignments = await google_accounts_repo.list_assignments(owner_id)
     for agent_id, email in assignments.items():
@@ -915,18 +813,12 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
 
 
 async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provider) -> None:
-    # M6-R24 ("same for revoke/disconnect"): an AgentCore owner has no EFS —
-    # neither a materializer's on-disk artifact nor an openclaw.json to patch.
-    agentcore = await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True)
-    # Materializer-backed providers wrote credential files onto EFS; remove
-    # those first so disconnect leaves no on-disk residue. The remover deletes
-    # the artifact by owner/provider and does not need the secret value.
     # A pure CLI-skill materializer (gh_cli/xurl_cli/skill_cli/instagram_cli/
     # gog_cli/aws_cli) has no Hermes equivalent and is skipped outright; an
     # MCP-shaped one (mcp_oauth/qbo_dotenv) needs no remover call either — its
     # mcp-tokens/*.json cleanup happens inside reconcile_integrations below,
     # once the row this function deletes is gone from the connected set.
-    if p.wiring.materializer and agentcore:
+    if p.wiring.materializer:
         # Symmetric with the connect projection (credentials.hermes_cli): run the materializer's
         # own remover against a scratch copy of the profile state and sync the result, so a
         # provider-level disconnect drops exactly what it owns. google carries the same
@@ -946,42 +838,11 @@ async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provide
                 provider,
                 owner_id,
             )
-    elif p.wiring.materializer:
-        remover = MATERIALIZER_REMOVERS.get(p.wiring.materializer)
-        if remover:
-            # Some removers locate the on-disk artifact by a credential field
-            # (e.g. toml_cli uses credential["cli"]), so fetch the retained
-            # secret before deleting it. Actor-refresh providers have none
-            # (get -> {}), and their removers (gog) ignore the credential.
-            cred = await integration_secret_store.get(owner_id, provider) or {}
-            # gog (google) holds many accounts in one keyring and must tell a full
-            # provider disconnect (drop everything) apart from a failed-connect
-            # rollback (leave the keyring intact). Signal disconnect_all + hand it
-            # the account inventory so each grant is revoked at Google before the
-            # wipe. Scoped to google: only gog reads these keys, and the other
-            # materializers fully remove on any disconnect.
-            if provider == "google":
-                cred = {
-                    **cred,
-                    "disconnect_all": True,
-                    "accounts": [a["email"] for a in await google_accounts_repo.list_accounts(owner_id)],
-                }
-            # Offload to a worker thread: a remover may drive an async
-            # config_patcher via asyncio.run (mcp_oauth), which can't run on the
-            # request loop. Matches the write path's run_in_thread offload.
-            await run_in_thread(remover, owner_id, provider, cred)
     # aws_sts revocation is server-side: deleting the secret below drops the
     # cli_token_hash, so the container's next credential fetch 401s. Already-
     # vended sessions expire within 1h (DurationSeconds cap).
     # Drop the retained secret (no-op for actor providers, which never stored
     # one) and the status row, then blank any per-agent openclaw.json slots.
-    # container_login (Shopify): the session is the CLI's own, on the owner's
-    # EFS; ask the container to drop it. Best-effort — see shopify_login.logout.
-    if p.acquisition == "container_login":
-        row = await integrations_repo.get(owner_id, provider)
-        store = (row or {}).get("identity")
-        if isinstance(store, str) and store:
-            await shopify_login.logout(owner_id, store)
     await integration_secret_store.delete(owner_id, provider)
     await integrations_repo.delete(owner_id, provider)
     # NB: a DCR provider's cached public client in oauth_app_store is deliberately
@@ -999,37 +860,25 @@ async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provide
             # No accounts remain, so re-seeding removes each agent's gog-account
             # block. Best-effort: a seed failure must not fail the disconnect.
             await _seed_identity_best_effort(owner_id, agent_id)
-    if agentcore:
-        # MCP/OAuth-shaped: re-project every REMAINING connected integration into
-        # every Hermes profile in one shot — the row this function just deleted is
-        # already gone from the connected set, so it drops out of the rebuilt
-        # mcp_servers block. A CLI-skill materializer never touched a profile, so
-        # there's nothing to refresh.
-        if apply_connection.is_mcp_shaped(p):
-            try:
-                # agentcore=True: already resolved above -- no second read.
-                await reconcile_integrations(owner_id, agentcore=True)
-            except Exception:  # noqa: BLE001 — a disconnect must never fail because the refresh did
-                logger.exception(
-                    "agentcore: profile refresh after disconnect failed for owner=%s provider=%s",
-                    owner_id,
-                    provider,
-                )
-        elif p.wiring.openclaw_paths:
-            # M6-R31: reconcile_integrations has no fan-out for an openclaw_paths
-            # provider at all (mcp_servers/.env only) — clear this one's own
-            # projection (env value + config.yaml selector) directly instead.
-            await apply_connection.clear_hermes_openclaw_paths_projection(owner_id, provider)
-        return
-    if p.wiring.openclaw_paths:
-        for op in p.wiring.openclaw_paths:
-            await config_patcher.set_openclaw_config_path(owner_id, op.path.split("."), "")
-    if p.wiring.mcp_server:
-        # The integration owns mcp.servers.<key> as a whole block, so remove the
-        # entire server entry — leaving only the env leaf would strand a
-        # command-less (invalid) server, and a blanked token would keep a dead
-        # entry around.
-        await config_patcher.delete_openclaw_config_path(owner_id, ["mcp", "servers", p.wiring.mcp_server.key])
+    # MCP/OAuth-shaped: re-project every REMAINING connected integration into
+    # every Hermes profile in one shot — the row this function just deleted is
+    # already gone from the connected set, so it drops out of the rebuilt
+    # mcp_servers block. A CLI-skill materializer never touched a profile, so
+    # there's nothing to refresh.
+    if apply_connection.is_mcp_shaped(p):
+        try:
+            await reconcile_integrations(owner_id, agentcore=True)
+        except Exception:  # noqa: BLE001 — a disconnect must never fail because the refresh did
+            logger.exception(
+                "agentcore: profile refresh after disconnect failed for owner=%s provider=%s",
+                owner_id,
+                provider,
+            )
+    elif p.wiring.openclaw_paths:
+        # M6-R31: reconcile_integrations has no fan-out for an openclaw_paths
+        # provider at all (mcp_servers/.env only) — clear this one's own
+        # projection (env value + config.yaml selector) directly instead.
+        await apply_connection.clear_hermes_openclaw_paths_projection(owner_id, provider)
 
 
 @router.put("/{provider}/byo-app")

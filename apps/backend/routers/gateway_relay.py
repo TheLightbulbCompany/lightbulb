@@ -20,7 +20,7 @@ from websockets.exceptions import ConnectionClosed
 
 from core.containers import get_ecs_manager
 from core.observability.metrics import put_metric
-from core.services import desktop_pair, machine_auth, node_broker, relay_hooks, runtime_transport
+from core.services import desktop_pair, machine_auth, node_broker, relay_hooks
 from core.services.connection_service import ConnectionService
 from core.services.container_rpc import GATEWAY_PORT
 from core.services.container_wake import request_wake_silent
@@ -177,7 +177,7 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
     legs: set[asyncio.Task] = set()
     refresher: asyncio.Task | None = None
     try:
-        if kind == "node" and runtime_transport.host_for(container) == "agentcore":
+        if kind == "node":
             # No second socket: the BACKEND is the gateway for this workspace, terminating
             # the node protocol itself (spec §4.4) instead of dialling a container that does
             # not exist. `_serve_node_protocol` owns the connection end to end (including its

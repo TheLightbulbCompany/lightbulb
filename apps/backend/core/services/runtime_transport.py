@@ -92,14 +92,6 @@ def host_for(container: dict) -> str:
     return "agentcore"
 
 
-class RuntimeHostUnknownError(RuntimeError):
-    """Dead: nothing raises this any more (``is_agentcore_owner`` no longer reads a row).
-
-    Kept for one PR because ``main.py`` registers an exception handler for it; both go together
-    when ``main.py``'s router mounts are pruned.
-    """
-
-
 async def is_agentcore_owner(owner_id: str, *, fail_closed: bool = False) -> bool:
     """Always ``True``: AgentCore is the only runtime, so there is nothing left to classify.
 

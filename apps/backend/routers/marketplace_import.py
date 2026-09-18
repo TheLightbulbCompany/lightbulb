@@ -19,8 +19,7 @@ context (a tar of ``~/.claude``) into the owner's roster.
          here mints an agent.
        → anything else: for each selected agent: restage → staging export →
          register_staged_agent_under_claim (the Atlas mint →
-         deploy_from_artifact → pair → rollback envelope) → plugins (Task 7)
-         → history hand-off (Task 8) → one container bounce if either ran →
+         deploy_from_artifact → pair → rollback envelope) →
          staging removed only when every agent succeeded.
   DELETE /api/v1/marketplace/import/{import_id}
 
@@ -56,9 +55,6 @@ from core.repositories import container_repo
 from core.services import agent_export
 from core.services import claude_code_import
 from core.services import openclaw_backup_import as backup_import
-from core.services import runtime_transport
-from core.services.openclaw_backup_history import stage_history
-from core.services.openclaw_backup_plugins import apply_plugins
 from routers.agent_builder import RegisterBuiltAgentRequest, register_staged_agent_under_claim
 from schemas import marketplace as schemas
 
@@ -125,16 +121,15 @@ def _export(
     owner_id: str,
     import_id: str,
     normalized: backup_import.ImportNormalized,
-    container: dict | None = None,
 ):
+    # No ``container=``: this import's staging dir is the one ``_stage_from_s3`` just
+    # extracted the upload into, NOT the owner's Hermes profile. Resolving the profile
+    # prefix here read a key nothing had written and 400'd every import.
     package = agent_export.export_built_agent_from_staging(
         owner_id=owner_id,
         staging_agent_id=import_id,
         selected_mcps=normalized.mcp_names,
         selected_skills=normalized.skill_names,
-        # Fix round 1, item 1: an AgentCore owner's staging build reads its
-        # Hermes S3 profile instead of assuming EFS.
-        container=container,
     )
     package.openclaw_slice["cron_jobs"] = normalized.cron_jobs
     return package
@@ -165,7 +160,7 @@ async def presign_import(
     return {"upload_url": url, "key": key, "max_bytes": backup_import.MAX_UPLOAD_BYTES, "expires_in": PRESIGN_TTL_S}
 
 
-def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None, container: dict | None = None):
+def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None):
     s3 = _s3()
     bucket = settings.MARKETPLACE_ARTIFACTS_BUCKET
     staging_dir = _staging_dir(owner_id, import_id)
@@ -215,7 +210,7 @@ def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None, co
             return normalized
 
         normalized, report = backup_import.stage_upload(_get, staging_dir, fleet_version=deployed_upstream_version())
-        package = _export(owner_id, import_id, normalized, container)
+        package = _export(owner_id, import_id, normalized)
         _delete_raw()
         return normalized, report, package
     except (backup_import.BackupImportError, claude_code_import.ClaudeImportError):
@@ -230,7 +225,7 @@ def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None, co
 @router.post("", response_model=schemas.ImportPreviewResponse)
 async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[AuthContext, Depends(get_current_user)]):
     owner_id = resolve_owner_id(auth)
-    container = await _require_container(owner_id)
+    await _require_container(owner_id)
     m = _KEY_RE.match(payload.key)
     if not m or m.group(1) != owner_id:
         raise HTTPException(status_code=400, detail="invalid upload key")
@@ -248,7 +243,7 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
     import_id = f"import-{uuid.uuid4().hex[:12]}"
     staging_dir = _staging_dir(owner_id, import_id)
     try:
-        staged = await run_in_thread(_stage_from_s3, owner_id, import_id, payload.key, etag, container)
+        staged = await run_in_thread(_stage_from_s3, owner_id, import_id, payload.key, etag)
     except agent_export.ExportTooLargeError as exc:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise HTTPException(status_code=413, detail=str(exc)) from exc
@@ -428,7 +423,7 @@ async def confirm_import(
             normalized = await run_in_thread(
                 backup_import.restage, staging_dir, agent_id=source_agent_id, selection=selection, fleet_version=fleet
             )
-            package = await run_in_thread(_export, owner_id, import_id, normalized, container)
+            package = await run_in_thread(_export, owner_id, import_id, normalized)
             result = await register_staged_agent_under_claim(
                 owner_id=owner_id,
                 payload=RegisterBuiltAgentRequest(
@@ -486,61 +481,14 @@ async def confirm_import(
     plugins_installed: list[str] = []
     history_staged: list[str] = []
     restarting = False
-    # Plugins land in openclaw.json, history in EFS sessions/, and the bounce below restarts
-    # an ECS service -- all three are dead writes to a location Hermes never reads, with no
-    # AgentCore-side equivalent yet. Skip them and say so; the agent registration above is
-    # unaffected (agent_export already reads/writes the Hermes S3 profile for this owner).
-    is_agentcore = runtime_transport.host_for(container) == "agentcore"
-
+    # Plugins landed in openclaw.json and history in EFS sessions/ -- both write where
+    # Hermes never reads, and neither has an AgentCore-side equivalent yet. Skip them and
+    # say so; the agent registration above is unaffected (agent_export already reads and
+    # writes the Hermes S3 profile for this owner).
     if registered and payload.plugins != []:
-        if is_agentcore:
-            warnings.append("Installing plugins is unsupported_on_agentcore — skipped.")
-        else:
-            plugin_res = await apply_plugins(
-                owner_id=owner_id,
-                plugins=backup_import.list_plugins(source),
-                chosen=set(payload.plugins) if payload.plugins is not None else None,
-            )
-            plugins_installed = plugin_res.installed
-            warnings.extend(plugin_res.warnings)
-            if plugins_installed:
-                restarting = True
-
+        warnings.append("Installing plugins is unsupported_on_agentcore — skipped.")
     if payload.include_history and registered:
-        if is_agentcore:
-            warnings.append("Importing session history is unsupported_on_agentcore — skipped.")
-        else:
-            by_source = {c.id: c for c in candidates}
-            for source_agent_id, new_agent_id in registered:
-                hist = by_source[source_agent_id].history
-                if hist is None:
-                    continue
-                warnings.extend(
-                    await run_in_thread(
-                        stage_history,
-                        owner_id=owner_id,
-                        source_agent_id=source_agent_id,
-                        new_agent_id=new_agent_id,
-                        history=hist,
-                    )
-                )
-                history_staged.append(new_agent_id)
-            if history_staged:
-                restarting = True
-
-    if restarting:
-        try:
-            await get_ecs_manager().force_redeploy_user_service(owner_id)
-        except Exception:
-            # The bounce is a convenience, not a correctness requirement —
-            # plugins/history are already staged on EFS and the container
-            # picks them up on its NEXT restart regardless. Failing the whole
-            # confirm here would make the caller think nothing landed.
-            logger.exception("import %s: could not start a workspace restart", import_id)
-            restarting = False
-            warnings.append(
-                "workspace restart could not be started — imported plugins/history will apply on its next restart"
-            )
+        warnings.append("Importing session history is unsupported_on_agentcore — skipped.")
     if all(r["ok"] for r in results):
         shutil.rmtree(staging_dir, ignore_errors=True)
     return {

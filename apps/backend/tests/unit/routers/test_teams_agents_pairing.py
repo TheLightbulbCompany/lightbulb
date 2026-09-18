@@ -254,19 +254,14 @@ def _wire_create_agent(monkeypatch, *, container, paperclip_agent):
 
 
 @pytest.mark.asyncio
-async def test_teams_create_agent_on_agentcore_writes_the_hermes_profile(monkeypatch):
-    """The profile write IS this transport's pairing -- through the same
-    ``hermes_provisioning.write_profile_for_agent`` seam runtime_rpc's agents.create uses,
-    and with no container pairing attempted at all."""
+async def test_teams_create_agent_writes_the_hermes_profile(monkeypatch):
+    """The profile write IS the pairing -- through the same
+    ``hermes_provisioning.write_profile_for_agent`` seam runtime_rpc's agents.create uses."""
     paperclip_agent = {"id": "11111111-1111-1111-1111-111111111111", "name": "Helper", "role": "engineer"}
     _wire_create_agent(monkeypatch, container=_AGENTCORE_ROW, paperclip_agent=paperclip_agent)
     write_profile = AsyncMock()
     monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", write_profile)
-    pair_mock = AsyncMock()
-    monkeypatch.setattr("routers.teams.agents.pair_with_openclaw", pair_mock)
-    paired_mock = AsyncMock()
-    monkeypatch.setattr("routers.teams.agents.ensure_operator_device_paired", paired_mock)
-    reachable = AsyncMock(side_effect=AssertionError("no container probe on an agentcore row"))
+    reachable = AsyncMock(side_effect=AssertionError("create_agent must not probe for a container"))
     monkeypatch.setattr("routers.teams.agents._container_is_reachable", reachable)
 
     from routers.teams.agents import create_agent
@@ -280,8 +275,6 @@ async def test_teams_create_agent_on_agentcore_writes_the_hermes_profile(monkeyp
     assert args[0] == "org_xyz"
     assert args[1]["id"] == paperclip_agent["id"]
     assert kwargs["container_row"] == _AGENTCORE_ROW
-    pair_mock.assert_not_awaited()
-    paired_mock.assert_not_awaited()
     reachable.assert_not_awaited()
 
 

@@ -70,15 +70,12 @@ router = APIRouter(prefix="/api/v1/marketplace", tags=["marketplace"])
 
 
 async def _container_for_export_routing(owner_id: str) -> dict | None:
-    """Container-row read for the export/preview S3-vs-EFS branch
-    (agent_export._resolve_agent_location via runtime_transport.host_for).
+    """Container-row read for the export/preview path (``agent_export._resolve_agent_location``).
 
     Fix round 2, gap 2: a read failure RAISES ``ApiProblem("RUNTIME_UNAVAILABLE")``
     (503) instead of degrading to ``None`` -- mirrors
     ``core.services.messaging.load_agent_roster``'s handling of a
-    container-row read failure. Degrading here used to route an AgentCore
-    seller onto the EFS branch on a mere transient blip, which then 404s as
-    "agent not found" instead of surfacing the real, retryable failure.
+    container-row read failure.
     """
     try:
         return await container_repo.get_by_owner_id(owner_id)

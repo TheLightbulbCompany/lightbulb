@@ -1,9 +1,8 @@
-"""Config router — read + write endpoints for openclaw.json.
+"""Config router — read + write endpoints over the owner's roster profiles.
 
-GET wraps read_openclaw_config_from_efs; PATCH wraps patch_openclaw_config.
-Derives owner_id from the auth context, enforces org_admin for org callers
-on writes, and gates channel-related patches behind the paid always-on
-entitlement (channels are autonomous — not part of the free tier).
+The raw editor and the settings-panel RPC path share one seam
+(``runtime_rpc._config_get_roster_map`` / ``config_patch_roster``), so they can never
+disagree about what "the config" is.
 """
 
 import logging
@@ -16,14 +15,6 @@ from core.auth import (
     require_org_admin,
     resolve_owner_id,
 )
-from core.containers.config import read_openclaw_config_from_efs
-from core.repositories import billing_repo
-from core.services import runtime_transport
-from core.services.config_patcher import (
-    ConfigPatchError,
-    patch_openclaw_config,
-)
-from core.services.provision_gate import has_always_on_entitlement
 from core.services.runtime_rpc import _config_get_roster_map, config_patch_roster
 from schemas.config import ConfigPatchRequest
 
@@ -50,66 +41,13 @@ def _patch_touches_channels(patch: dict) -> bool:
     return False
 
 
-async def _check_token_collision(owner_id: str, patch: dict) -> None:
-    """Raise 409 token_already_assigned_to_other_agent if the patch introduces
-    a botToken that already exists under a different accounts.<agent_id> entry
-    in the owner's openclaw.json.
-    """
-    channels = patch.get("channels")
-    if not isinstance(channels, dict):
-        return
-
-    # Collect (provider, agent_id, token) tuples in the patch
-    patch_tokens: list[tuple[str, str, str]] = []
-    for provider, provider_cfg in channels.items():
-        if not isinstance(provider_cfg, dict):
-            continue
-        accounts = provider_cfg.get("accounts")
-        if not isinstance(accounts, dict):
-            continue
-        for agent_id, account_cfg in accounts.items():
-            if not isinstance(account_cfg, dict):
-                continue
-            token = account_cfg.get("botToken")
-            if isinstance(token, str) and token.strip():
-                patch_tokens.append((provider, agent_id, token.strip()))
-
-    if not patch_tokens:
-        return
-
-    current = await read_openclaw_config_from_efs(owner_id) or {}
-    current_channels = current.get("channels", {}) if isinstance(current, dict) else {}
-
-    for provider, incoming_agent, incoming_token in patch_tokens:
-        provider_cfg = current_channels.get(provider, {})
-        if not isinstance(provider_cfg, dict):
-            continue
-        existing_accounts = provider_cfg.get("accounts", {})
-        if not isinstance(existing_accounts, dict):
-            continue
-        for existing_agent, existing_cfg in existing_accounts.items():
-            if existing_agent == incoming_agent:
-                continue  # same agent, overwrite is fine
-            if not isinstance(existing_cfg, dict):
-                continue
-            if existing_cfg.get("botToken") == incoming_token:
-                raise HTTPException(
-                    status_code=409,
-                    detail="token_already_assigned_to_other_agent",
-                )
-
-
 @router.get(
     "",
-    summary="Read the caller's openclaw.json config",
+    summary="Read the caller's roster config",
     description=(
-        "Returns the caller's owner_id openclaw.json from EFS, or null if "
-        "the file does not exist yet (e.g. mid-provisioning). Org callers "
-        "resolve to org-scoped config; personal callers to user-scoped. "
-        "Org callers must be org_admin — the config carries shared secrets "
-        "(channels.*.accounts.*.botToken, future MCP env, etc.) that "
-        "non-admin members shouldn't see. Personal callers always own "
-        "their own secrets, so no extra gate."
+        "Returns the merged config of the caller's agent roster. Org callers must be "
+        "org_admin — the config carries shared secrets (future MCP env, etc.) that "
+        "non-admin members shouldn't see."
     ),
 )
 async def get_config(
@@ -117,29 +55,20 @@ async def get_config(
 ):
     # Mirror patch_config's gate. The shared org config carries secrets
     # only the admin set up; without this, a non-admin member could read
-    # botTokens / MCP env via this endpoint or the Overview Configuration
-    # button even though they can't manage them via PATCH /config.
+    # MCP env via this endpoint or the Overview Configuration button even
+    # though they can't manage them via PATCH /config.
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    if await runtime_transport.is_agentcore_owner(owner_id):
-        # M6 row #12: an AgentCore owner's config lives in per-agent S3 profiles, not
-        # openclaw.json on EFS -- reuse the SAME roster-map read runtime_rpc's own
-        # config.get intercept serves (_config_get_roster_map), so this raw editor and
-        # the settings-panel RPC path can never disagree about what "the config" is.
-        roster_map = await _config_get_roster_map(owner_id)
-        return {"owner_id": owner_id, "config": roster_map["config"], "hash": roster_map["hash"]}
-    config = await read_openclaw_config_from_efs(owner_id)
-    return {"owner_id": owner_id, "config": config}
+    roster_map = await _config_get_roster_map(owner_id)
+    return {"owner_id": owner_id, "config": roster_map["config"], "hash": roster_map["hash"]}
 
 
 @router.patch(
     "",
-    summary="Patch the caller's openclaw.json config",
+    summary="Patch the caller's roster config",
     description=(
-        "Deep-merges the patch into the caller's owner_id openclaw.json on EFS. "
-        "Derives owner_id from auth context (org_id if org, else user_id). "
-        "Requires org_admin for org callers. Channel fields require the paid "
-        "always-on entitlement (active or Stripe-trialing subscription)."
+        "Fans the patch out to every roster profile. Derives owner_id from the auth "
+        "context (org_id if org, else user_id). Requires org_admin for org callers."
     ),
 )
 async def patch_config(
@@ -151,44 +80,16 @@ async def patch_config(
 
     owner_id = resolve_owner_id(auth)
 
-    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
-        # Fix round 1, minor: this branch now runs AHEAD of the channels-entitlement gate
-        # below. Channels have no Hermes/AgentCore equivalent yet (task-9-scan.md rows
-        # #10/#11, LATER/M5) -- rejecting outright here means a channels patch never lands
-        # as inert `channels.*` junk in every roster profile's config.yaml, which the ECS
-        # entitlement/token-collision checks below have no reason to run against anyway.
-        if _patch_touches_channels(body.patch):
-            raise HTTPException(
-                status_code=400,
-                detail="INVALID_REQUEST: channels are not supported on an AgentCore workspace yet",
-            )
-        # M6 row #12: fan the patch out to every roster profile via the same
-        # config_patch_roster the config.patch RPC intercept uses (M4-R48) -- this
-        # router's ConfigPatchRequest carries no baseHash, so CAS is skipped (None),
-        # matching this door's own pre-existing no-CAS behaviour on the ECS path.
-        result = await config_patch_roster(owner_id, body.patch, None)
-        return {"status": "patched", "owner_id": owner_id, "hash": result["hash"]}
-
-    # Always-on entitlement gate on channel fields. Channels are a PAID
-    # always-on feature — bound bots keep triggering runs while the owner
-    # is away, so trial_local owners (who can chat) must not bind them,
-    # and neither can pre-signup (no billing row) or canceled/past_due
-    # users. The legacy stripe_subscription_id fallback (for accounts
-    # mid-cutover) is handled inside ``has_always_on_entitlement``.
+    # Channels have no Hermes equivalent yet (task-9-scan.md rows #10/#11, LATER/M5) --
+    # rejecting outright means a channels patch never lands as inert `channels.*` junk in
+    # every roster profile's config.yaml.
     if _patch_touches_channels(body.patch):
-        account = await billing_repo.get_by_owner_id(owner_id)
-        if not has_always_on_entitlement(account):
-            raise HTTPException(
-                status_code=403,
-                detail="channels_require_subscription",
-            )
-
-        # Bot token collision pre-check
-        await _check_token_collision(owner_id, body.patch)
-
-    try:
-        await patch_openclaw_config(owner_id, body.patch)
-    except ConfigPatchError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-    return {"status": "patched", "owner_id": owner_id}
+        raise HTTPException(
+            status_code=400,
+            detail="INVALID_REQUEST: channels are not supported on an AgentCore workspace yet",
+        )
+    # M6 row #12: fan the patch out to every roster profile via the same
+    # config_patch_roster the config.patch RPC intercept uses (M4-R48) -- this
+    # router's ConfigPatchRequest carries no baseHash, so CAS is skipped (None).
+    result = await config_patch_roster(owner_id, body.patch, None)
+    return {"status": "patched", "owner_id": owner_id, "hash": result["hash"]}

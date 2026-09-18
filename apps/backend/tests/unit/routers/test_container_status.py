@@ -1,4 +1,4 @@
-"""Tests for container endpoints: GET /status and POST /gateway/restart."""
+"""Tests for container endpoints: GET /status."""
 
 import asyncio
 import contextlib
@@ -1094,90 +1094,6 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
         assert captured == ["_noop_ensure_user_ready"], (
             f"org admin on container-exists path must dispatch ensure_user_ready, got {captured}"
         )
-
-
-class TestGatewayRestart:
-    """Test POST /api/v1/container/gateway/restart."""
-
-    @pytest.fixture(autouse=True)
-    def mock_efs_config(self):
-        with patch(
-            "routers.container_recover.read_openclaw_config_from_efs",
-            new=AsyncMock(return_value={"gateway": {"mode": "local"}}),
-        ):
-            yield
-
-    @pytest.fixture
-    def mock_ecs_manager(self):
-        with patch("routers.container_recover.get_ecs_manager") as mock_getter:
-            manager = AsyncMock()
-            mock_getter.return_value = manager
-            yield manager
-
-    @pytest.fixture
-    def mock_call_gateway_rpc(self):
-        # gateway_restart now lives in container_recover and reaches the
-        # gateway through container_rpc.call.
-        with patch("routers.container_recover.container_rpc.call", new_callable=AsyncMock) as mock_rpc:
-            mock_rpc.return_value = {}
-            yield mock_rpc
-
-    @pytest.fixture
-    def running_container(self, mock_ecs_manager):
-        """Set up ECS manager to return a running container with IP."""
-        container = {
-            "gateway_token": "test-gw-token",
-            "owner_id": "user_test_123",
-            "service_name": "openclaw-test",
-            "status": "running",
-        }
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
-        return container
-
-    @pytest.mark.asyncio
-    async def test_gateway_restart_success(
-        self, async_client, mock_ecs_manager, mock_call_gateway_rpc, running_container
-    ):
-        """Happy path: should return ok=true and call config.apply via
-        container_rpc.call (config.apply is operator.admin-reserved)."""
-        response = await async_client.post("/api/v1/container/gateway/restart")
-        assert response.status_code == 200
-        assert response.json() == {"ok": True}
-        mock_call_gateway_rpc.assert_awaited_once()
-        call = mock_call_gateway_rpc.await_args
-        assert call.args[0]  # owner_id (positional)
-        assert call.args[1] == "config.apply"
-        assert call.args[2] == {"raw": '{"gateway":{"mode":"local"}}'}
-        assert call.kwargs["timeout_s"] == 30.0
-
-    @pytest.mark.asyncio
-    async def test_gateway_restart_no_container(self, async_client, mock_ecs_manager, mock_call_gateway_rpc):
-        """Should return 404 when no container is found."""
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
-        response = await async_client.post("/api/v1/container/gateway/restart")
-        assert response.status_code == 404
-        assert "No running container" in response.json()["detail"]
-        mock_call_gateway_rpc.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_gateway_restart_gateway_unreachable(
-        self, async_client, mock_ecs_manager, mock_call_gateway_rpc, running_container
-    ):
-        """Should return 502 when the gateway is unreachable."""
-        mock_call_gateway_rpc.side_effect = ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True)
-        response = await async_client.post("/api/v1/container/gateway/restart")
-        assert response.status_code == 502
-        assert "Gateway is not responding" in response.json()["detail"]
-
-    @pytest.mark.asyncio
-    async def test_gateway_restart_times_out(
-        self, async_client, mock_ecs_manager, mock_call_gateway_rpc, running_container
-    ):
-        """Should return 502 when the gateway RPC times out."""
-        mock_call_gateway_rpc.side_effect = TimeoutError()
-        response = await async_client.post("/api/v1/container/gateway/restart")
-        assert response.status_code == 502
-        assert "Gateway restart timed out" in response.json()["detail"]
 
 
 class TestContainerStatusTrialConversion:

@@ -6,14 +6,13 @@ dev/local/test or unset (see ``assert_debug_enabled``), refused everywhere else.
 """
 
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, get_owner_type, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.containers import get_ecs_manager, get_workspace
+from core.containers import get_ecs_manager
 from core.containers.ecs_manager import EcsManagerError
 from core.repositories import (
     billing_repo,
@@ -26,7 +25,7 @@ from core.repositories import (
 )
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import connection_service, runtime_transport
-from core.services.container_provision import resolve_provider_choice
+from core.services.provision_dispatch import dispatch_provision
 from core.services.credentials import integration_secret_store
 
 logger = logging.getLogger(__name__)
@@ -63,17 +62,15 @@ async def require_non_production() -> None:
 
 @router.post(
     "/provision",
-    summary="Provision container (dev only)",
+    summary="Provision the caller's workspace runtime (dev only)",
     description=(
-        "Manually provisions an ECS Fargate service for the authenticated user. "
-        "Only available in non-production environments for local testing."
+        "Runs the same provisioning funnel production uses (SFN watchdog + "
+        "scripts/provision_runner.py). Only available in non-production environments."
     ),
     operation_id="debug_provision_container",
     dependencies=[Depends(require_non_production)],
     responses={
         403: {"description": "Not available outside dev/local/test (or unset)"},
-        409: {"description": "Container already running"},
-        503: {"description": "Provisioning failed"},
     },
 )
 async def provision_container(
@@ -82,90 +79,33 @@ async def provision_container(
     owner_id = resolve_owner_id(auth)
     owner_type = get_owner_type(auth)
 
-    # Check for existing service
     existing = await container_repo.get_by_owner_id(owner_id)
-    if existing and runtime_transport.host_for(existing) == "agentcore":
-        # Row #18: this door writes ECS-shaped config and spins an ECS service --
-        # meaningless for a workspace already on AgentCore. POST /agentcore/provision
-        # is the correct, idempotent re-entry point for that row.
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "This workspace already runs on AgentCore. Use "
-                "POST /api/v1/debug/agentcore/provision to (re)provision it there."
-            ),
-        )
     if existing and existing.get("status") in ("running", "provisioning"):
-        return {
-            "status": "already_running",
-            "service_name": existing.get("service_name"),
-            "owner_id": owner_id,
-            "owner_type": owner_type,
-        }
+        return {"status": "already_running", "owner_id": owner_id, "owner_type": owner_type}
 
-    try:
-        # Provision through the SAME entry point production uses, rather than
-        # hand-rolling create_user_service -> write_user_configs ->
-        # start_user_service. The hand-rolled sequence skipped the Bedrock mint
-        # block entirely and instead reused ``bedrock_aip_arns`` off whatever
-        # row happened to still be there, which breaks the DELETE-then-POST
-        # reprovision CLAUDE.md documents:
-        #
-        # DELETE goes through delete_user_service, whose teardown seam
-        # (reap_owner_bedrock_resources) DESTROYS the owner's AIPs, gate-token
-        # rows and per-owner IAM role along with the containers row that was the
-        # only handle naming them. So on the POST there was no row and no ARNs,
-        # and build_provider_block fail-closed with "bedrock_claude requires
-        # aip_arns with at least a 'sonnet' key" — leaving the owner with no
-        # container and no documented way back.
-        #
-        # Preserving the ARNs across the DELETE would NOT have been the fix: they
-        # name profiles the reap deleted, so a config written from them boots a
-        # container that AccessDenies on every turn. The row is a cache, the
-        # Bedrock/IAM resources are the truth, and after a teardown the truth is
-        # "gone" — re-minting is the only honest recovery, and it lives in
-        # provision_user_container (ensure_owner_aips + ensure_owner_bedrock_role
-        # + mint_gate_token, then configs, then start).
-        #
-        # provider_choice is RESOLVED from billing, never hardcoded — that is
-        # what keeps the re-mint away from the trial-stamping trap. Hardcoding
-        # "bedrock_claude" would make ensure_owner_aips mint all three tiers and
-        # stamp plan="paid" on the reverse-index rows the meter Lambda reads to
-        # arm the $3/day cap kill. A trial_local owner resolves to
-        # ``bedrock_trial``, whose sonnet-only mint stamps plan="trial" — byte
-        # for byte the call the real provisioner makes for that owner.
-        provider_choice, byo_provider = await resolve_provider_choice(owner_id)
-        service_name = await get_ecs_manager().provision_user_container(
-            owner_id,
-            provider_choice=provider_choice,
-            byo_provider=byo_provider,
-            owner_type=owner_type,
-        )
-
-        return {
-            "status": "provisioned",
-            "service_name": service_name,
-            "owner_id": owner_id,
-            "owner_type": owner_type,
-        }
-    except EcsManagerError as e:
-        logger.error("Dev provision failed for owner %s: %s", owner_id, e)
-        raise HTTPException(status_code=503, detail=str(e))
+    # The SAME entry point production uses, rather than a hand-rolled sequence: the
+    # runner owns the Bedrock AIP / role / gate-token mint, the roster profiles and the
+    # AgentCore runtime, in that order. DELETE below destroys the AIPs along with the
+    # row that named them, so re-minting here is the only honest recovery -- which is
+    # exactly what the runner does. ``dispatch_provision`` never raises; a dispatch
+    # failure releases the row to ``error`` for the status poll's own retry.
+    await dispatch_provision(owner_id)
+    return {"status": "provisioning", "owner_id": owner_id, "owner_type": owner_type}
 
 
 @router.patch(
     "/provision",
-    summary="Update config and redeploy (dev only)",
+    summary="Rewrite the roster profiles and cold-restart the runtime (dev only)",
     description=(
-        "Rewrites openclaw.json with the latest config template and forces "
-        "a new ECS deployment so the gateway picks up the changes."
+        "Rewrites every roster profile from the container row's own AIP ARNs, then stops "
+        "the AgentCore session so the next invoke cold-restores instead of a warm microVM "
+        "serving whatever it cached mid-turn."
     ),
     operation_id="debug_redeploy_container",
     dependencies=[Depends(require_non_production)],
     responses={
         403: {"description": "Not available outside dev/local/test (or unset)"},
         404: {"description": "No container found"},
-        503: {"description": "Redeploy failed"},
     },
 )
 async def redeploy_container(
@@ -178,86 +118,38 @@ async def redeploy_container(
     if not container:
         raise HTTPException(status_code=404, detail="No container found")
 
-    if runtime_transport.host_for(container) == "agentcore":
-        # Row #18: the AgentCore twin of the ECS wholesale-rewrite below -- rewrite every
-        # roster profile from the row's own aip_arns (the same inputs write_profiles
-        # already sources at fresh provision -- resolve_profile_inputs), then stop the
-        # runtime session so the NEXT invoke cold-restores instead of a warm microVM
-        # serving whatever it cached mid-turn. Never touches ECS for this row.
-        from core.services import hermes_provisioning
+    # Row #18: rewrite every roster profile from the row's own aip_arns (the same inputs
+    # write_profiles already sources at fresh provision -- resolve_profile_inputs), then
+    # stop the runtime session so the NEXT invoke cold-restores.
+    from core.services import hermes_provisioning
 
-        await hermes_provisioning.write_profiles(owner_id, container.get("bedrock_aip_arns") or {})
-        runtime_arn = container.get("agentcore_runtime_arn")
-        if runtime_arn:
-            from core.dynamodb import run_in_thread
-            from scripts.migrate_workspace_to_hermes import _stop_runtime_session
+    await hermes_provisioning.write_profiles(owner_id, container.get("bedrock_aip_arns") or {})
+    runtime_arn = container.get("agentcore_runtime_arn")
+    if runtime_arn:
+        from core.dynamodb import run_in_thread
+        from scripts.migrate_workspace_to_hermes import _stop_runtime_session
 
-            try:
-                await run_in_thread(_stop_runtime_session, runtime_arn, runtime_transport.session_id_for(owner_id))
-            except Exception:  # noqa: BLE001 — best-effort, same as the migration job's own use of this helper
-                logger.warning(
-                    "debug redeploy: StopRuntimeSession failed for owner=%s runtime_arn=%s",
-                    owner_id,
-                    runtime_arn,
-                    exc_info=True,
-                )
-        return {
-            "status": "profiles_rewritten",
-            "owner_id": owner_id,
-            "owner_type": owner_type,
-            "runtime_host": "agentcore",
-        }
-
-    try:
-        # Under the flat-fee model, openclaw.json is generated wholly from
-        # provider_choice — there is no per-tier "backend policy patch" to
-        # deep-merge. The dev redeploy path just rewrites the file via
-        # write_user_configs and bumps the service.
-        ecs_manager = get_ecs_manager()
-        # Thread hook_token through so the openclaw.json placeholder lines
-        # up with the env-var T2 injects on the per-user task def. Render
-        # is the same either way (literal placeholder), but threading
-        # keeps the rotate-flow plumbing uniform across provision paths.
-        # provider_choice is RESOLVED, not hardcoded. Hardcoding "bedrock_claude"
-        # rewrote a chatgpt_oauth/byo_key owner's config onto a Bedrock block
-        # they hold no AIPs for (build_provider_block then raises, same 500 as
-        # the POST route used to), and flattened a trial owner's one-model
-        # free-tier lockdown into the paid catalog shape.
-        #
-        # Unlike the POST route this stays a CONFIG rewrite, so the ARNs still
-        # come off the live container row (the way update_service.reapply_owner_config
-        # reads them) — the row exists here by definition, its AIPs are live, and
-        # ensure_owner_aips has no business running on a redeploy.
-        provider_choice, byo_provider = await resolve_provider_choice(owner_id)
-        await ecs_manager.write_user_configs(
-            owner_id,
-            container["gateway_token"],
-            provider_choice=provider_choice,
-            byo_provider=byo_provider,
-            hook_token=container.get("hook_token"),
-            owner_type=owner_type,
-            aip_arns=container.get("bedrock_aip_arns"),
-        )
-
-        # force: dev-only redeploy (403 in prod) — an operator action, not a
-        # customer wake. Same escape hatch as the POST route above.
-        await ecs_manager.start_user_service(owner_id, force=True)
-
-        return {
-            "status": "redeploying",
-            "service_name": container["service_name"],
-            "owner_id": owner_id,
-            "owner_type": owner_type,
-        }
-    except EcsManagerError as e:
-        logger.error("Dev redeploy failed for owner %s: %s", owner_id, e)
-        raise HTTPException(status_code=503, detail=str(e))
+        try:
+            await run_in_thread(_stop_runtime_session, runtime_arn, runtime_transport.session_id_for(owner_id))
+        except Exception:  # noqa: BLE001 — best-effort, same as the migration job's own use of this helper
+            logger.warning(
+                "debug redeploy: StopRuntimeSession failed for owner=%s runtime_arn=%s",
+                owner_id,
+                runtime_arn,
+                exc_info=True,
+            )
+    return {
+        "status": "profiles_rewritten",
+        "owner_id": owner_id,
+        "owner_type": owner_type,
+        "runtime_host": "agentcore",
+    }
 
 
 @router.delete(
     "/provision",
-    summary="Remove container (dev only)",
-    description="Removes the user's ECS Fargate service. Dev only.",
+    summary="Remove the caller's runtime (dev only)",
+    description="Tears down the caller's AgentCore runtime and per-owner resources. Dev only.",
     operation_id="debug_remove_container",
     dependencies=[Depends(require_non_production)],
     responses={
@@ -272,20 +164,6 @@ async def remove_container(
     if auth.is_org_context:
         require_org_admin(auth)
 
-    container = await container_repo.get_by_owner_id(owner_id)
-    if container and runtime_transport.host_for(container) == "agentcore":
-        # Row #18: no ECS service exists for this row to tear down. Point at the
-        # dedicated rollback path instead of silently no-oping or 503ing on a
-        # nonexistent ECS service lookup.
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "This workspace runs on AgentCore -- ECS teardown does not apply. Use "
-                "scripts/migrate_workspace_to_hermes.py --rollback --owner-id "
-                f"{owner_id} to move it back to ECS."
-            ),
-        )
-
     try:
         await get_ecs_manager().delete_user_service(owner_id)
         return {"status": "removed"}
@@ -298,12 +176,13 @@ async def remove_container(
     "/user-data",
     summary="DEV/TEST ONLY: atomically delete all per-user data",
     description=(
-        "Tears down ECS service, EFS access point, EFS folder, all "
-        "per-user task-def revisions, and rows from all 9 per-user "
-        "DDB tables (including paperclip-companies, whose row carries the "
-        "onboarding generation/funnel/bootstrap fields — see INV-10). "
-        "Used by the e2e harness at the end of each run. "
-        "Caller can only delete their own data (owner_id derived from JWT)."
+        "Tears down the owner's AgentCore runtime and every S3 Hermes profile under "
+        "their prefix, then rows from all 9 per-user DDB tables (including "
+        "paperclip-companies, whose row carries the onboarding "
+        "generation/funnel/bootstrap fields — see INV-10). Leaves an empty slate: the "
+        "e2e harness calls it at the end of each run and the next provision must not "
+        "restore anything. Caller can only delete their own data (owner_id derived from "
+        "JWT)."
     ),
     operation_id="debug_delete_user_data",
     responses={
@@ -326,87 +205,43 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # Without this split, org E2E teardown would target the org id for both,
     # leaving the Clerk user row + WS connection rows behind on every run.
     user_id = auth.user_id
-    deleted: dict = {"ecs": False, "efs": False, "ddb": []}
+    deleted: dict = {"runtime": False, "ddb": []}
     # Track failures so we can return 500 at the end. Test cleanup needs to
-    # know if anything leaked — a green 200 with leaked ECS/EFS state was
-    # silently accumulating orphan services on every run.
+    # know if anything leaked — a green 200 with a leaked runtime was silently
+    # accumulating orphans on every run.
     # Each step is still best-effort (we attempt every step regardless of
     # earlier failures so the spec sees a complete summary), but we surface
     # a non-success status at the end if any destructive step errored.
     failures: list[str] = []
 
-    # ---- Container teardown -------------------------------------------------
-    # Read the row first so we have access_point_id + task_definition_arn
-    # available even if the service-delete path doesn't clean them up.
-    # NB: ECS teardown is NOT gated on the row's existence — if a previous
-    # partial run failed at ECS but successfully wiped the DDB row, every
-    # subsequent retry would skip ECS and orphan the service forever. The
-    # service name is derived from owner_id alone, so delete_user_service
-    # can always attempt the call (it treats ServiceNotFoundException as
-    # idempotent success).
-    container = await container_repo.get_by_owner_id(owner_id)
-    ecs_mgr = get_ecs_manager()
-    ecs_succeeded = False
+    # ---- Runtime teardown ---------------------------------------------------
+    # NOT gated on the row's existence — if a previous partial run failed here but
+    # successfully wiped the DDB row, every subsequent retry would skip teardown and
+    # orphan the runtime forever. ``delete_user_service`` derives everything it needs
+    # from owner_id and treats "already gone" as idempotent success.
+    #
+    # ``delete_hermes_profiles=True`` is this endpoint's answer to the EFS ``rm -rf``
+    # it replaces: the owner's S3 profile prefix IS their workspace content, and the
+    # e2e harness's empty-slate contract breaks silently if the next provision restores
+    # it. Only a terminal wipe passes True (see ``delete_user_service``'s docstring).
+    runtime_succeeded = False
     try:
-        await ecs_mgr.delete_user_service(owner_id)
-        deleted["ecs"] = True
-        ecs_succeeded = True
+        await get_ecs_manager().delete_user_service(owner_id, delete_hermes_profiles=True)
+        deleted["runtime"] = True
+        runtime_succeeded = True
     except Exception as e:
-        logger.warning("ECS teardown failed for %s: %s", owner_id, e)
-        failures.append(f"ecs: {e}")
-    # Belt-and-suspenders: deregister the per-user task-def revision if we
-    # still have the arn from the DDB row. delete_user_service normally
-    # handles this; the explicit retry here covers the case where the row
-    # was wiped but the task def revision was orphaned. Best-effort.
-    if container and container.get("task_definition_arn"):
-        try:
-            ecs_mgr._deregister_task_definition(container["task_definition_arn"])
-        except Exception:
-            pass
-
-    # ---- EFS folder rm -rf --------------------------------------------------
-    try:
-        get_workspace().delete_user_dir(owner_id)
-        deleted["efs"] = True
-    except Exception as e:
-        logger.warning("EFS rm -rf failed for %s: %s", owner_id, e)
-        failures.append(f"efs: {e}")
-
-    # ---- Litestream S3 replicas (local-sqlite layout) --------------------
-    # Without this, the reprovisioned container's boot script RESTORES the
-    # pre-wipe hot state from S3 and the "empty slate" contract silently
-    # breaks. No-op on the EFS layout (LITESTREAM_BUCKET unset).
-    from core.services.litestream_replicas import delete_replica_prefix
-
-    # Drain first: the service delete above is asynchronous, and a still
-    # running container's litestream can upload AFTER the prefix delete — the
-    # reprovision would then restore the state this endpoint just wiped. A
-    # drain timeout is a failure, not a licence to delete anyway. The budget
-    # exceeds the container's stopTimeout (120s).
-    if settings.LITESTREAM_BUCKET:
-        try:
-            drained = await ecs_mgr.wait_until_drained(owner_id, timeout_s=180.0)
-        except Exception as e:  # noqa: BLE001 — treated as not-drained below
-            logger.warning("drain wait failed for %s: %s", owner_id, e)
-            drained = False
-        if not drained:
-            failures.append("litestream_replicas: container did not drain; replicas left intact")
-        elif not await delete_replica_prefix(owner_id):
-            failures.append("litestream_replicas: delete failed (stale state will restore)")
-        else:
-            deleted["litestream_replicas"] = True
+        logger.warning("runtime teardown failed for %s: %s", owner_id, e)
+        failures.append(f"runtime: {e}")
 
     # ---- DynamoDB cleanup, all 8 per-user tables ----------------------------
     # Per-step try/except so one transient throttle on (e.g.) container_repo
     # doesn't abort the rest of the teardown — we want every table attempted,
     # then surface a 500 with the failure list at the end if anything broke.
-    # NB: do NOT add ("containers", ...) here unconditionally. If ECS
-    # teardown failed, the row still holds the access_point_id +
-    # task_definition_arn that the next retry needs to clean up the
-    # orphaned resources — wiping the row turns a transient ECS error
-    # into an unrecoverable leak. On the happy path delete_user_service has
-    # already removed the row, so the explicit delete here is just
-    # belt-and-suspenders.
+    # NB: do NOT add ("containers", ...) here unconditionally. If the runtime
+    # teardown failed, the row still holds the runtime ARN and gate-token hash
+    # the next retry needs — wiping the row turns a transient error into an
+    # unrecoverable leak. On the happy path delete_user_service has already
+    # removed the row, so the explicit delete here is just belt-and-suspenders.
     async def _wipe_integrations() -> None:
         # Sweep both the secret-free status rows AND the per-provider Secrets
         # Manager credentials. List the rows first so the SM secrets can be
@@ -436,7 +271,7 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             await svc.delete_key(owner_id, provider)
 
     ddb_steps = []
-    if ecs_succeeded:
+    if runtime_succeeded:
         ddb_steps.append(("containers", lambda: container_repo.delete(owner_id)))
     ddb_steps.extend(
         [
@@ -498,42 +333,6 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
         )
 
     return {"deleted": deleted}
-
-
-@router.get(
-    "/efs-exists",
-    summary="DEV/TEST ONLY: check whether an EFS path exists",
-    description=(
-        "Read-only existence probe used by the e2e teardown verification "
-        "pass. The path must live under the workspace mount root "
-        "(``settings.EFS_MOUNT_PATH``) — paths outside that prefix are "
-        "rejected with 400 to keep this from doubling as an arbitrary "
-        "filesystem reader."
-    ),
-    operation_id="debug_efs_exists",
-    responses={
-        400: {"description": "Path outside the workspace mount root"},
-        403: {"description": "Not available outside dev/local/test (or unset)"},
-    },
-)
-async def efs_exists(path: str, auth: AuthContext = Depends(get_current_user)):
-    assert_debug_enabled("efs-exists")
-
-    # Scope the probe to the caller's own workspace dir. Without this, any
-    # authenticated dev/staging user could probe whether files exist in
-    # another owner's workspace by passing `<mount>/<other_owner>/...`.
-    # Resolve both sides first so traversal segments like
-    # `<mount>/<self>/../<other>` can't escape the owner_root either.
-    workspace = get_workspace()
-    owner_id = resolve_owner_id(auth)
-    owner_root = workspace.user_path(owner_id).resolve()
-    requested = Path(path).resolve()
-    if requested != owner_root and not requested.is_relative_to(owner_root):
-        raise HTTPException(
-            status_code=400,
-            detail=f"path must be under {owner_root}/",
-        )
-    return {"exists": requested.exists()}
 
 
 @router.get(

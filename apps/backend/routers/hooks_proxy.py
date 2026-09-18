@@ -3,9 +3,8 @@
 External webhook senders (Zapier / Stripe / GitHub / custom integrations)
 POST to ``/api/v1/hooks/u/{owner_id}/{hook_path}`` with bearer-token
 auth. We validate the token at the edge against the ``containers`` row,
-look up the user's container IP via ``EcsManager.resolve_running_container``,
-rewrite X-Forwarded-* with the true caller IP, and forward to
-``http://<ip>:18789/hooks/{hook_path}``.
+resolve the owner's runtime row, rewrite X-Forwarded-* with the true caller
+IP, and forward to ``/hooks/{hook_path}`` on the owner's AgentCore runtime.
 
 **Auth model.** This router is the ONLY isol8 router that does NOT use
 ``Depends(get_current_user)``. External callers don't have Clerk tokens.
@@ -50,7 +49,6 @@ from core.services.rate_bucket import RateBucket
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-GATEWAY_PORT = 18789
 RATE_LIMIT_PER_MINUTE = 60
 
 # Module-level so the bucket survives across requests inside one process.
@@ -170,9 +168,9 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
             media_type="application/json",
         )
 
-    # 5. Resolve container IP
-    resolved_container, ip = await ecs_manager.resolve_running_container(owner_id)
-    if not ip:
+    # 5. Resolve the owner's runtime row
+    resolved_container, address = await ecs_manager.resolve_running_container(owner_id)
+    if not address:
         return Response(
             status_code=503,
             headers={"Retry-After": "30"},
@@ -193,37 +191,13 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
     upstream_body = b""
     upstream_headers: dict[str, str] = {}
 
-    if runtime_transport.host_for(resolved_container or {}) == "agentcore":
-        path = f"/hooks/{hook_path}" + (f"?{query}" if query else "")
-        try:
-            upstream = await runtime_transport.request(
-                resolved_container, path, ip=ip, content=body, headers=headers, timeout_s=30.0
-            )
-            upstream_status = upstream.status_code
-            upstream_body = upstream.text.encode("utf-8")
-            upstream_headers = {
-                k: v
-                for k, v in upstream.headers.items()
-                if k.lower() not in ("content-length", "transfer-encoding", "connection")
-            }
-        except httpx.RequestError as exc:
-            logger.warning("hook proxy upstream error owner=%s err=%s", owner_id, exc)
-            upstream_body = b'{"detail":"upstream_unreachable"}'
-        return Response(
-            status_code=upstream_status,
-            content=upstream_body,
-            headers=upstream_headers,
-            media_type=upstream_headers.get("content-type", "application/json"),
-        )
-
-    target = f"http://{ip}:{GATEWAY_PORT}/hooks/{hook_path}"
-    if query:
-        target = f"{target}?{query}"
+    path = f"/hooks/{hook_path}" + (f"?{query}" if query else "")
     try:
-        async with _client_factory() as client:
-            upstream = await client.post(target, headers=headers, content=body)
+        upstream = await runtime_transport.request(
+            resolved_container, path, content=body, headers=headers, timeout_s=30.0
+        )
         upstream_status = upstream.status_code
-        upstream_body = upstream.content
+        upstream_body = upstream.text.encode("utf-8")
         upstream_headers = {
             k: v
             for k, v in upstream.headers.items()

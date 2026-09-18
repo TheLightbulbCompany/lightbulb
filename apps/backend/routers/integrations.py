@@ -1,14 +1,9 @@
 """MCP server integration management endpoints.
 
-CRUD for OpenClaw-native MCP server definitions stored under ``mcp.servers``
-in the owner's ``openclaw.json``. Equivalent to ``openclaw mcp list/show/set/unset``
-inside the container — but operated from the Isol8 control panel via the
-file-locked patcher in ``core.services.config_patcher``.
-
-Reads use ``read_openclaw_config_from_efs``. Writes use the same atomic
-file-lock + chown machinery as channels, updates, catalog, admin — every
-patch triggers OpenClaw's chokidar-based hot reload, so changes take effect
-without a container restart.
+CRUD over the owner's MANUAL MCP servers, stored on the reserved
+``integrations_repo.MANUAL_MCP_KEY`` row. Every write fans the
+(manual ∪ connected-integration) merge out to every Hermes profile, and the
+response body is that merge — see ``_agentcore_refresh``.
 """
 
 import logging
@@ -18,14 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
-from core.containers.config import read_openclaw_config_from_efs
 from core.repositories import integrations_repo
-from core.services import runtime_transport
-from core.services.config_patcher import (
-    ConfigPatchError,
-    delete_openclaw_config_path,
-    set_openclaw_config_path,
-)
 from core.services.credentials.mcp_server import (
     build_connected_integration_servers,
     integration_owned_server_keys,
@@ -225,9 +213,8 @@ async def _agentcore_refresh(owner_id: str) -> dict:
     this is called. Best-effort like the ECS reconcile call: the manual write
     already committed, so a profile-refresh hiccup must not 500 it.
 
-    Every call site already resolved runtime_transport.is_agentcore_owner to
-    decide to call this at all -- agentcore=True skips reconcile_integrations'
-    own second read (M6-R26 fix round 1, Important 4)."""
+    ``agentcore=True`` skips reconcile_integrations' own second read
+    (M6-R26 fix round 1, Important 4)."""
     try:
         await reconcile_integrations(owner_id, agentcore=True)
     except Exception:
@@ -235,24 +222,12 @@ async def _agentcore_refresh(owner_id: str) -> dict:
     return await build_connected_integration_servers(owner_id)
 
 
-async def _read_mcp_servers(owner_id: str) -> dict:
-    """Return the current ``mcp.servers`` block, or empty dict if absent."""
-    config = await read_openclaw_config_from_efs(owner_id)
-    if not isinstance(config, dict):
-        return {}
-    mcp = config.get("mcp")
-    if not isinstance(mcp, dict):
-        return {}
-    servers = mcp.get("servers")
-    return servers if isinstance(servers, dict) else {}
-
-
 @router.get(
     "/integrations/mcp/servers",
     summary="List configured MCP servers",
     description=(
-        "Returns all MCP server entries from the owner's openclaw.json "
-        "mcp.servers block. Org callers must be org_admin — the entries "
+        "Returns the owner's manual MCP server entries merged with their "
+        "connected integrations'. Org callers must be org_admin — the entries "
         "carry per-server `env` secrets that non-admin members shouldn't "
         "see (mirrors the existing org-admin gate on the write endpoints "
         "and the GET /config gate)."
@@ -270,22 +245,16 @@ async def list_mcp_servers(
     if auth.is_org_context:
         require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    # M6-R26 fix round 1, Critical 2: an AgentCore owner has no openclaw.json,
-    # so _read_mcp_servers (EFS) always answered {} here -- and the frontend's
-    # McpServersTab merges {...previousServers, ...newlyWritten} on every add,
-    # so a GET that always reads back empty made every write's "success" state
-    # silently drop everything that came before it. Same merged shape the
-    # write endpoints already return.
-    if await runtime_transport.is_agentcore_owner(owner_id):
-        return {"servers": await build_connected_integration_servers(owner_id)}
-    servers = await _read_mcp_servers(owner_id)
-    return {"servers": servers}
+    # The same merged shape the write endpoints return: the frontend's McpServersTab
+    # merges {...previousServers, ...newlyWritten} on every add, so a GET that read
+    # back less than the writes returned would silently drop everything before it.
+    return {"servers": await build_connected_integration_servers(owner_id)}
 
 
 @router.put(
     "/integrations/mcp/servers",
     summary="Replace all MCP server configurations",
-    description="Replaces the entire mcp.servers dict in the owner's openclaw.json.",
+    description="Replaces the entire manual mcp.servers dict for the owner.",
     response_model=ServersResponse,
     operation_id="replace_mcp_servers",
     tags=["integrations"],
@@ -299,30 +268,10 @@ async def replace_mcp_servers(
         require_org_admin(auth)
     servers = _validate_servers(body.servers)
     await _reject_integration_owned_key_collisions(owner_id, set(servers))
-    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
-        # No openclaw.json to write into -- the manual bucket IS the whole
-        # replace target, mirroring PUT's "keys not present are deleted"
-        # semantics for the manual-only dict.
-        await integrations_repo.set_manual_mcp_servers(owner_id, servers)
-        return {"servers": await _agentcore_refresh(owner_id)}
-    try:
-        await set_openclaw_config_path(owner_id, ["mcp", "servers"], servers)
-    except ConfigPatchError as exc:
-        raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
-    # The whole-dict replace drops any integration-owned key the user's body
-    # omits (e.g. a connected integration's `stripe` server). Re-assert those
-    # keys so a manual edit can't clobber a live integration. Best-effort: the
-    # user's write already committed, so a Secrets-Manager/reconcile hiccup must
-    # not 500 a successful write — the next reconcile/reprovision self-heals.
-    try:
-        await reconcile_integrations(owner_id)
-    except Exception:
-        logger.exception("integration reconcile after manual MCP write failed for %s", owner_id)
-    # Re-read AFTER reconcile so the response reflects the final on-disk state.
-    # Returning body.servers would omit integration-owned keys reconcile just
-    # re-asserted (e.g. `stripe`) and misrepresent what's in openclaw.json.
-    servers = await _read_mcp_servers(owner_id)
-    return {"servers": servers}
+    # The manual bucket IS the whole replace target, mirroring PUT's "keys not
+    # present are deleted" semantics for the manual-only dict.
+    await integrations_repo.set_manual_mcp_servers(owner_id, servers)
+    return {"servers": await _agentcore_refresh(owner_id)}
 
 
 @router.patch(
@@ -343,34 +292,16 @@ async def upsert_mcp_server(
         require_org_admin(auth)
     entry = _normalize_entry(body)
     await _reject_integration_owned_key_collisions(owner_id, {name})
-    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
-        manual = await integrations_repo.get_manual_mcp_servers(owner_id)
-        manual[name] = entry
-        await integrations_repo.set_manual_mcp_servers(owner_id, manual)
-        return {"servers": await _agentcore_refresh(owner_id)}
-    try:
-        await set_openclaw_config_path(owner_id, ["mcp", "servers", name], entry)
-    except ConfigPatchError as exc:
-        raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
-    # Fix round 1, minor: the stale comment here described re-asserting an
-    # integration-owned key THIS upsert's own name collided with -- that case is
-    # now rejected outright above (_reject_integration_owned_key_collisions,
-    # M6-R32) before any write happens. This reconcile call is the same general
-    # self-heal every other write endpoint here runs (a stale/missed reconcile
-    # elsewhere, a reprovision). Best-effort — read AFTER reconcile so the
-    # response reflects the final state.
-    try:
-        await reconcile_integrations(owner_id)
-    except Exception:
-        logger.exception("integration reconcile after manual MCP write failed for %s", owner_id)
-    servers = await _read_mcp_servers(owner_id)
-    return {"servers": servers}
+    manual = await integrations_repo.get_manual_mcp_servers(owner_id)
+    manual[name] = entry
+    await integrations_repo.set_manual_mcp_servers(owner_id, manual)
+    return {"servers": await _agentcore_refresh(owner_id)}
 
 
 @router.delete(
     "/integrations/mcp/servers/{name}",
     summary="Remove an MCP server",
-    description="Removes an MCP server entry by name from the owner's openclaw.json mcp.servers.",
+    description="Removes a manual MCP server entry by name.",
     response_model=ServersResponse,
     operation_id="delete_mcp_server",
     tags=["integrations"],
@@ -382,22 +313,7 @@ async def delete_mcp_server(
     owner_id = resolve_owner_id(auth)
     if auth.is_org_context:
         require_org_admin(auth)
-    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
-        manual = await integrations_repo.get_manual_mcp_servers(owner_id)
-        manual.pop(name, None)
-        await integrations_repo.set_manual_mcp_servers(owner_id, manual)
-        return {"servers": await _agentcore_refresh(owner_id)}
-    try:
-        await delete_openclaw_config_path(owner_id, ["mcp", "servers", name])
-    except ConfigPatchError as exc:
-        raise HTTPException(status_code=503, detail=f"container_not_ready: {exc}") from exc
-    # Deleting an integration-owned key (e.g. `stripe`) via the manual panel must
-    # not silently break a still-connected integration: re-assert integration-owned
-    # keys so ownership wins. A user-owned (non-provider) key stays deleted, since
-    # reconcile only touches connected integration providers. Best-effort; read after.
-    try:
-        await reconcile_integrations(owner_id)
-    except Exception:
-        logger.exception("integration reconcile after manual MCP delete failed for %s", owner_id)
-    servers = await _read_mcp_servers(owner_id)
-    return {"servers": servers}
+    manual = await integrations_repo.get_manual_mcp_servers(owner_id)
+    manual.pop(name, None)
+    await integrations_repo.set_manual_mcp_servers(owner_id, manual)
+    return {"servers": await _agentcore_refresh(owner_id)}

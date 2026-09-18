@@ -301,7 +301,6 @@ def test_agentcore_row_forwards_through_the_runtime_transport_seam(client, fake_
     ):
         captured["container"] = container
         captured["path"] = path
-        captured["ip"] = ip
         captured["content"] = content
         captured["headers"] = headers
         captured["timeout_s"] = timeout_s
@@ -330,7 +329,6 @@ def test_agentcore_row_forwards_through_the_runtime_transport_seam(client, fake_
     assert r.json() == {"ok": True}
     assert captured["container"] is agentcore_container
     assert captured["path"] == "/hooks/wake?challenge=abc"
-    assert captured["ip"] == runtime_transport.AGENTCORE_ADDRESS
     assert captured["headers"]["Authorization"] == "Bearer " + fake_container["hook_token"]
     assert captured["content"] == r.request.content
     assert captured["timeout_s"] == 30.0

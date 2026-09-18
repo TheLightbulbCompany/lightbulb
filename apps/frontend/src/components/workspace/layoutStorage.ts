@@ -211,6 +211,21 @@ function canonicalPanelTitle(
 // A settled, non-empty roster can identify a stale agent target; reset that
 // target to the default while keeping Messages and all valid auxiliary panels.
 // An omitted or empty roster is unknown, so preserve the requested agent.
+/**
+ * Panel ids whose SURFACE was deleted (not renamed, not absorbed): the browser
+ * live view, the Brain memory wiki, and the dreams/sessions/channels control
+ * panels. A saved layout holding one must lose it on restore — see the drop in
+ * `sanitizeLayout`. Distinct from `RETIRED_PANEL_ALIASES`, which renames a key
+ * whose surface still exists.
+ */
+const RETIRED_PANEL_IDS: ReadonlySet<string> = new Set([
+  "browser",
+  "teams-brain",
+  "control:dreams",
+  "control:sessions",
+  "control:channels",
+]);
+
 export function sanitizeLayout(
   raw: SerializedDockview,
   knownAgentIds?: readonly string[],
@@ -240,6 +255,17 @@ export function sanitizeLayout(
     // is dropped the same way a retired-panel duplicate is dropped, pruning
     // its now-empty leaf along with it.
     if (id.startsWith("session:")) {
+      dropped.add(id);
+      continue;
+    }
+    // Same shape, same reason: panels whose surface was deleted outright with
+    // the OpenClaw runtime. `browser` is the one that matters in practice — it
+    // shipped in the DEFAULT mission-control layout, so nearly every returning
+    // desktop user has it in their saved blob, and without this it remaps to
+    // 'missing' and restores as a dead "Browser" tab. The rest would restore
+    // as an "Unknown panel" (teams-brain) or silently render Overview through
+    // ControlPanelRouter's fallback (the three control keys).
+    if (RETIRED_PANEL_IDS.has(id)) {
       dropped.add(id);
       continue;
     }

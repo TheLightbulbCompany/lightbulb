@@ -83,7 +83,7 @@ it("shares one messaging owner across sidebar and dock, subscribing only to acti
   expect(within(owner).getByRole("navigation", { name: "Workspace" })).toBeInTheDocument();
   expect(within(owner).getByLabelText("Dock")).toHaveAttribute("data-dnd-disabled", "true");
   expect(owner).toHaveAttribute("data-subscribed", "true");
-  state.activePanelId = "browser";
+  state.activePanelId = "control:overview";
   view.rerender(<WorkspaceShell />);
   expect(owner).toHaveAttribute("data-subscribed", "false");
   state.activePanelId = "chat:__default__";

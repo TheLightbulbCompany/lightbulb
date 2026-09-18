@@ -1,10 +1,10 @@
 ---
-title: "Browser, connectors, and channels"
-description: "Three ways agents reach the outside world: native integrations, chat channels, and a real browser for everything else."
+title: "Connectors and agent email"
+description: "How agents reach the outside world: native integrations, an authenticated CLI, bundled skills, and their own email address."
 order: 4
 ---
 
-**Agents reach the outside world three ways: native integrations for connected tools, chat channels for Slack, Discord and Telegram, and a real Chrome browser for everything that has no API.** Native connectors are preferred; the browser is the practical fallback for login-bound or UI-only tools.
+**Agents reach the outside world through connected tools.** Connect a service once and every agent can use it as a tool, as an authenticated CLI in its shell, or through a bundled skill.
 
 ## Integrations
 
@@ -12,28 +12,18 @@ order: 4
 
 Rows come in three kinds:
 
-- **Connect** — one click; you authorize in the browser. An agent can start this for you: it opens the provider's sign-in in the Browser panel, you finish it there.
+- **Connect** — one click; you authorize in the browser.
 - **Bring your own app** — Google Workspace and X need your own OAuth app. The row walks you through creating one and pasting the client ID and secret.
 - **Request access** — not generally available yet. The button emails a human.
 
 Once connected, an agent uses the service as tools (Stripe, Notion, Linear, …), as an authenticated CLI in its shell (`gh`, `aws`, `gog`), or through a bundled skill (web search, Vercel). No restart needed.
 
-## Channels
-
-**Control Panel → Channels**: Telegram, Discord, and Slack. Each agent can have its own bot, so you can message your CEO from your phone or give a support agent its own Slack channel. An inbound message wakes the paired agent. Channels need a paid workspace.
-
-## The browser
-
-Every workspace runs a real Chrome. The **Browser** panel is a live view of it: watch the agent work, or click and type yourself — sign in to a tool once and the agent takes it from there. Use it for anything without a clean integration: a dashboard that only exists as a UI, a login-bound admin panel, a social platform.
-
-Two honest limits: sites that block automation may still challenge the browser, and an agent never types your credentials — you sign in, it works.
-
 ## Agent email
 
 Each agent can have its own address, `<agent>@<company>.flickmeon.ai`, minted on first use from the company name — so name the company first. Mail from you or an allow-listed sender wakes the agent; anything else (verification codes, newsletters) waits in its inbox for 30 days. Agents can always email you. Emailing anyone else is off until you enable it in **Control Panel → Agents → Email**, and outbound pauses for the whole account if a recipient reports spam.
 
-## Files and the company brain
+## Files
 
-Attach files in chat or point an agent at its workspace; files persist across sessions and restarts. Every agent in the company reads and writes one shared wiki — decisions, entities, durable facts — so context outlives any single conversation.
+Attach files in chat or point an agent at its workspace; files persist across sessions and restarts.
 
 Next: [Approvals, security, and privacy](/docs/approvals-security-privacy).

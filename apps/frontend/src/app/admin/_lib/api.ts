@@ -606,25 +606,6 @@ export async function getCloudwatchUrl(
 }
 
 // ---------------------------------------------------------------------------
-// Container — available images (queue-image-update dropdown)
-// ---------------------------------------------------------------------------
-
-export interface AvailableImage {
-  image_uri: string;
-  tag: string;
-  digest?: string | null;
-  pushed_at?: string | null;
-}
-
-export interface AvailableImagesResponse {
-  images: AvailableImage[];
-  /** Mirrors openclaw-version.json#dev.tag at the time of the request. */
-  current_dev_tag?: string;
-  /** Mirrors openclaw-version.json#prod.tag at the time of the request. */
-  current_prod_tag?: string;
-}
-
-// ---------------------------------------------------------------------------
 // Admin diagnostic reads (fleet, deployments, and alarms)
 // ---------------------------------------------------------------------------
 

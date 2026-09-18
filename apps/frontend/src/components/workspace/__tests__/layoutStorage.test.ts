@@ -147,6 +147,52 @@ describe("layoutStorage", () => {
     expect(readLayout("u-session")).toEqual(clean);
   });
 
+  // `browser` shipped in the DEFAULT mission-control layout, so nearly every
+  // returning desktop user has one in their saved blob. Its surface is gone, and
+  // so are Brain and the dreams/sessions/channels control panels — leaving them
+  // to the generic path restores a dead "Browser" tab, an "Unknown panel: brain",
+  // or three tabs silently rendering Overview. They are DROPPED, like session:.
+  it("drops every panel whose surface was deleted with the OpenClaw runtime", () => {
+    const retired = ["browser", "teams-brain", "control:dreams", "control:sessions", "control:channels"];
+    const dirty: SerializedDockview = {
+      grid: {
+        root: {
+          type: "branch",
+          data: [
+            { type: "leaf", data: { id: "group-retired", views: retired, activeView: "browser" } },
+            { type: "leaf", data: { id: "group-messages", views: [MESSAGES_PANEL_ID], activeView: MESSAGES_PANEL_ID } },
+          ],
+        },
+        height: 600,
+        width: 800,
+        orientation: "HORIZONTAL" as SerializedDockview["grid"]["orientation"],
+      },
+      panels: {
+        browser: { id: "browser", contentComponent: "browser", title: "Browser", params: {} },
+        "teams-brain": { id: "teams-brain", contentComponent: "teams", title: "Brain", params: { teamsKey: "brain" } },
+        "control:dreams": { id: "control:dreams", contentComponent: "control", title: "Dreams", params: { controlKey: "dreams" } },
+        "control:sessions": { id: "control:sessions", contentComponent: "control", title: "Sessions", params: { controlKey: "sessions" } },
+        "control:channels": { id: "control:channels", contentComponent: "control", title: "Channels", params: { controlKey: "channels" } },
+        [MESSAGES_PANEL_ID]: { id: MESSAGES_PANEL_ID, contentComponent: "chat", params: {} },
+      },
+    };
+
+    const clean = sanitizeLayout(dirty);
+    for (const id of retired) expect(clean.panels[id]).toBeUndefined();
+    expect(clean.panels[MESSAGES_PANEL_ID]).toBeDefined();
+    // Nothing is remapped to the missing-panel placeholder on the way out.
+    expect(
+      Object.values(clean.panels).some((p) => p.contentComponent === "missing"),
+    ).toBe(false);
+    // The leaf that held only retired panels is pruned, not kept empty.
+    const root = clean.grid.root as unknown as { type: string; data: { id?: string } };
+    expect(root.type).toBe("leaf");
+    expect((root.data as { id: string }).id).toBe("group-messages");
+
+    writeLayout("u-retired", dirty);
+    expect(readLayout("u-retired")).toEqual(clean);
+  });
+
   it("sanitizer strips persist-only params (initialTab) so a nav intent can't restore forever", () => {
     const dirty = minimalLayout({
       "agent-inspector": {

@@ -968,12 +968,19 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
     # _turn_lock: this agent's other rooms queue here instead of sharing its working tree
     # (Hazard 1). Taken AFTER run_turn has posted run.started and launched the heartbeat, so a
     # queued turn keeps heartbeating and the backend sweeper does not close it as never-started.
+    run_id = (body.get("run") or {}).get("runId")
     with _turn_lock(agent_id):
+        # Queueing widens the abort window run_turn's own pre-dispatch check covers: a stop that
+        # lands while this turn waits has no agent to interrupt yet, so without this the turn
+        # runs a whole conversation and only then reports `aborted`. run_turn's post-_run_hermes
+        # check sees the same flag, so the outcome it reports is unchanged.
+        if run_id and RUNS.get(run_id, {}).get("aborted"):
+            return "aborted", None, "", ZERO_USAGE
         # Refresh BEFORE binding profile secrets/terminal policy and before filling config defaults.
         sync.ensure_profile(agent_id)
         with _hermes_home_scope(agent_id), _secret_scope(agent_id), _terminal_scope(agent_id):
             agent = _construct_agent(agent_id, body, frames, session_key)
-            attach_agent((body.get("run") or {}).get("runId"), agent)
+            attach_agent(run_id, agent)
             result = agent.run_conversation(
                 user_message=_message_content(
                     _turn_user_message(body),

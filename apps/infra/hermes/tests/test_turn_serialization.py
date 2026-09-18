@@ -59,3 +59,46 @@ def test_two_agents_still_run_concurrently(home, posted, monkeypatch):
     """The lock is per agent, not global: the Engineering agent must not queue behind the CEO
     -- they have different profile dirs, so there is nothing to serialize."""
     assert _run_both(monkeypatch, ("ceo", "engineering")) == 2
+
+
+def test_a_turn_aborted_while_queued_never_runs(home, posted, monkeypatch):
+    """Queueing widens the abort window: without a re-check after the lock, a turn aborted
+    while it waits still burns a whole conversation and only then reports `aborted`."""
+    ran, entered, release, queued = [], threading.Event(), threading.Event(), threading.Event()
+
+    def run_conversation(**_kwargs):
+        ran.append(1)
+        entered.set()
+        release.wait(10)
+        return {"api_calls": 1, "final_response": "ack"}
+
+    monkeypatch.setattr(turn, "_construct_agent",
+                        lambda *args: SimpleNamespace(run_conversation=run_conversation))
+    # materialize_attachments is the first statement of _run_hermes, just OUTSIDE the lock:
+    # seeing the second call proves the queued turn is past run_turn's own pre-lock abort check
+    # and can only be blocked on _turn_lock.
+    real = turn.sync.materialize_attachments
+    monkeypatch.setattr(turn.sync, "materialize_attachments",
+                        lambda body: (queued.set() if ran else None, real(body))[1])
+
+    def start(run_id):
+        thread = threading.Thread(target=turn.run_turn, args=(
+            "ceo", f.ingress(run={"runId": run_id, "workspaceId": f.ROOM,
+                                  "frameChannel": "", "frameEndpoint": ""})))
+        thread.start()
+        return thread
+
+    first = start("run-first")
+    assert entered.wait(10)
+    second = start("run-queued")
+    assert queued.wait(10)          # second turn is inside _run_hermes, waiting on the lock
+    assert turn.abort_run("run-queued") is True
+    release.set()
+    first.join(10)
+    second.join(10)
+
+    assert ran == [1]               # the queued turn never reached run_conversation
+    ended = {b["runId"]: b for path, b in posted if b.get("type") == "run.ended"}
+    assert ended["run-queued"]["outcome"] == "aborted"
+    assert ended["run-queued"]["usage"] == turn.ZERO_USAGE
+    assert ended["run-first"]["outcome"] == "completed"

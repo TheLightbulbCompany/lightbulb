@@ -20,10 +20,16 @@
 #
 # --platform=$BUILDPLATFORM + GOARCH=arm64 cross-compiles on the amd64 builder instead of running
 # a whole Go toolchain under the QEMU emulation this image's arm64 build uses. golang:1.27.1
-# because gogcli's go.mod declares `toolchain go1.27.1`. GOBIN is honoured for a cross build too.
+# because gogcli's go.mod declares `toolchain go1.27.1`. GOBIN is NOT honoured for a cross build --
+# `go install` refuses GOBIN when GOOS/GOARCH differ from the builder and drops the binary under
+# $GOPATH/bin/<GOOS>_<GOARCH>/ instead, so we copy it out explicitly (also covers a native-arm64
+# builder, where it lands straight in $GOPATH/bin/).
 FROM --platform=$BUILDPLATFORM golang:1.27.1-trixie AS gocli
-ENV CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOBIN=/out/bin
-RUN go install github.com/openclaw/gogcli/cmd/gog@v0.39.1 && test -x /out/bin/gog
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=arm64
+RUN go install github.com/openclaw/gogcli/cmd/gog@v0.39.1 \
+ && mkdir -p /out/bin \
+ && cp "$(ls /go/bin/linux_arm64/gog 2>/dev/null || ls /go/bin/gog)" /out/bin/gog \
+ && test -x /out/bin/gog
 
 FROM nousresearch/hermes-agent@sha256:a5b2eac62d3f97686e027eedd837d38bc5cc7d941f3107bebefdcef38126d103
 

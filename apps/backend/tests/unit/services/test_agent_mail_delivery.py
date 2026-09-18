@@ -20,43 +20,12 @@ def _fake_ecs(container, ip):
     return m
 
 
-@pytest.mark.asyncio
-async def test_delivers_to_running_container(monkeypatch):
-    captured = {}
-
-    def handler(request):
-        captured["url"] = str(request.url)
-        captured["auth"] = request.headers.get("authorization")
-        captured["json"] = request.read()
-        return httpx.Response(200, json={"ok": True, "runId": "run_1"})
-
-    monkeypatch.setattr(delivery, "get_ecs_manager", lambda: _fake_ecs({"hook_token": "tok_abc"}, "10.0.0.5"))
-    transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(delivery, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
-
-    result = await delivery.deliver_to_agent(
-        owner_id="org_1", agent_id="agent_friday", message="hi", idempotency_key="eml_1"
-    )
-    assert result == "delivered"
-    assert "10.0.0.5" in captured["url"]
-    assert captured["url"].endswith("/hooks/agent")
-    assert captured["auth"] == "Bearer tok_abc"
-    import json as _j
-
-    body = _j.loads(captured["json"])
-    assert body["message"] == "hi"
-    assert body["agentId"] == "agent_friday"
-    # No session_key argument -> the key is OMITTED entirely, so the container
-    # mints its own throwaway `hook:<uuid>` (the pre-threading behaviour, and
-    # the right fallback for mail with no usable message-id). Sending an
-    # empty/None key instead would be rejected upstream.
-    assert "sessionKey" not in body
-    # Delivery opt-out. Upstream defaults `deliver` to true and `channel` to
-    # "last"; our email is not an OpenClaw channel plugin (the agent replies by
-    # invoking lightbulb-mail.sh send), so with it unset EVERY inbound-email run
-    # ended status=error "Channel is required" even when the reply was sent —
-    # making a real failure indistinguishable from a success.
-    assert body["deliver"] is False
+# NOTE: `test_delivers_to_running_container` was deleted. It exercised the ECS-only
+# `/hooks/agent` POST (hook-token auth, the OpenClaw `message`/`agentId`/`deliver` body
+# shape) which is unreachable now that `runtime_transport.host_for` is pinned to
+# "agentcore" for every container -- the same "running container -> delivered, correct
+# addressing/auth/body" concept is already covered on the AgentCore seam by
+# test_agentcore_row_delivers_through_the_inbound_door_as_agent_mail below.
 
 
 @pytest.mark.asyncio
@@ -76,16 +45,28 @@ async def test_error_on_post_failure_never_raises(monkeypatch):
 class _WakeHarness:
     """Fakes the container-resolve/start/stamp/cap seams for the wake-on-inbound
     branch. ``ip=None`` means asleep; ``cap_reason`` mirrors what
-    ``trial_block_reason`` would return."""
+    ``trial_block_reason`` would return.
+
+    The container row is AgentCore-shaped (every row is, now that `host_for` is pinned) so
+    a running-container delivery goes through `runtime_transport.request`, faked here to
+    answer 202 accepted -- the wake-gating logic under test sits above that branch and
+    applies identically regardless of runtime host.
+    """
 
     def __init__(self, monkeypatch):
         self.ip = "10.0.0.1"
         self.cap_reason = None
         self.started = False
         self.stamped = False
+        container = {
+            "hook_token": "tok_abc",
+            "gateway_token": "gw_abc",
+            "runtime_host": "agentcore",
+            "agentcore_runtime_arn": "arn:x",
+        }
 
         async def resolve_running_container(owner_id):
-            return {"hook_token": "tok_abc"}, self.ip
+            return container, self.ip
 
         async def start_user_service(owner_id):
             self.started = True
@@ -96,19 +77,18 @@ class _WakeHarness:
         async def stamp_email_cold_wake(owner_id):
             self.stamped = True
 
+        async def fake_request(
+            container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+        ):
+            return runtime_transport.RuntimeResponse(202, '{"ok": true}', {})
+
         ecs = AsyncMock()
         ecs.resolve_running_container = AsyncMock(side_effect=resolve_running_container)
         ecs.start_user_service = AsyncMock(side_effect=start_user_service)
         monkeypatch.setattr(delivery, "get_ecs_manager", lambda: ecs)
         monkeypatch.setattr(delivery, "trial_block_reason", trial_block_reason)
         monkeypatch.setattr(delivery.container_repo, "stamp_email_cold_wake", stamp_email_cold_wake)
-
-        def handler(request):
-            return httpx.Response(200, json={"ok": True})
-
-        monkeypatch.setattr(
-            delivery, "_client_factory", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        )
+        monkeypatch.setattr(runtime_transport, "request", fake_request)
 
 
 @pytest.fixture
@@ -169,79 +149,18 @@ async def test_non_2xx_response_is_not_reported_delivered(monkeypatch):
     assert result == "error"
 
 
-@pytest.mark.asyncio
-async def test_session_key_is_forwarded_when_given(monkeypatch):
-    """A stable per-thread key is what turns a reply into a CONTINUATION of the
-    same session instead of a cold start.
-
-    It only reaches the agent because the container config sets
-    hooks.allowRequestSessionKey=true; upstream rejects a request-supplied key
-    otherwise (resolveHookSessionKey, source="request").
-    """
-    captured = {}
-
-    def handler(request):
-        captured["json"] = request.read()
-        return httpx.Response(200, json={"ok": True, "runId": "run_1"})
-
-    monkeypatch.setattr(delivery, "get_ecs_manager", lambda: _fake_ecs({"hook_token": "t"}, "10.0.0.5"))
-    transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(delivery, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
-
-    result = await delivery.deliver_to_agent(
-        owner_id="org_1",
-        agent_id="agent_friday",
-        message="hi",
-        idempotency_key="eml_1",
-        session_key="lightbulb-email:deadbeefdeadbeef",
-    )
-
-    assert result == "delivered"
-    import json as _j
-
-    body = _j.loads(captured["json"])
-    assert body["sessionKey"] == "lightbulb-email:deadbeefdeadbeef"
-
-
-@pytest.mark.asyncio
-async def test_pre_flag_container_rejecting_session_key_retries_unthreaded(monkeypatch):
-    """A container older than hooks.allowRequestSessionKey 400s a supplied key.
-
-    Without the fallback this became "error" -> the router's 503 -> SES retry ->
-    the same 400 forever: inbound email BROKEN for every container whose
-    openclaw.json predates the flag. Config lives on per-owner EFS, so a
-    backend deploy does not update them.
-
-    Degrading to the throwaway session is strictly better than failing -- the
-    message still reaches the agent, just without thread continuity.
-    """
-    calls = []
-
-    def handler(request):
-        import json as _j
-
-        body = _j.loads(request.read())
-        calls.append(body)
-        if "sessionKey" in body:
-            return httpx.Response(400, json={"ok": False, "error": "sessionKey is disabled for ..."})
-        return httpx.Response(200, json={"ok": True, "runId": "run_1"})
-
-    monkeypatch.setattr(delivery, "get_ecs_manager", lambda: _fake_ecs({"hook_token": "t"}, "10.0.0.5"))
-    transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(delivery, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
-
-    result = await delivery.deliver_to_agent(
-        owner_id="org_1",
-        agent_id="agent_friday",
-        message="hi",
-        idempotency_key="eml_1",
-        session_key="lightbulb-email:deadbeefdeadbeef",
-    )
-
-    assert result == "delivered", "must not fail just because the container is older than the flag"
-    assert len(calls) == 2, "one threaded attempt, then one unthreaded retry"
-    assert "sessionKey" in calls[0]
-    assert "sessionKey" not in calls[1]
+# NOTE: `test_session_key_is_forwarded_when_given` was deleted. It exercised the ECS-only
+# `/hooks/agent` body shape, unreachable now (see the note above
+# test_agentcore_row_delivers_through_the_inbound_door_as_agent_mail); the same
+# session-key-forwarded concept is already covered on the AgentCore seam by
+# test_agentcore_row_forwards_the_session_key_and_a_replayed_200_still_delivers below.
+#
+# NOTE: `test_pre_flag_container_rejecting_session_key_retries_unthreaded` was deleted. It
+# covered a compatibility shim specific to the OpenClaw `/hooks/agent` route (retry once
+# without `sessionKey` when an older container 400s a request-supplied one). The AgentCore
+# inbound door has no such shim -- a non-2xx there is just `"error"` (see the branch in
+# `agent_mail_delivery.deliver_to_agent`) -- so the shim, and this test of it, is dead code
+# now that every container takes the AgentCore branch.
 
 
 @pytest.mark.asyncio
@@ -341,23 +260,7 @@ async def test_agentcore_row_forwards_the_session_key_and_a_replayed_200_still_d
     assert captured["json_body"]["sessionKey"] == "lightbulb-email:thread-42"
 
 
-@pytest.mark.asyncio
-async def test_a_400_without_a_session_key_is_not_retried(monkeypatch):
-    """The retry is scoped to the session-key case. A 400 we did NOT cause by
-    supplying a key is a real error and must not be re-sent."""
-    calls = []
-
-    def handler(request):
-        calls.append(1)
-        return httpx.Response(400, json={"ok": False, "error": "message required"})
-
-    monkeypatch.setattr(delivery, "get_ecs_manager", lambda: _fake_ecs({"hook_token": "t"}, "10.0.0.5"))
-    transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(delivery, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
-
-    result = await delivery.deliver_to_agent(
-        owner_id="org_1", agent_id="agent_friday", message="hi", idempotency_key="eml_1"
-    )
-
-    assert result == "error"
-    assert len(calls) == 1, "no retry when we never supplied a sessionKey"
+# NOTE: `test_a_400_without_a_session_key_is_not_retried` was deleted. It guarded the same
+# ECS-only `/hooks/agent` retry shim described above -- with the shim itself unreachable
+# (every container now takes the AgentCore branch, whose non-2xx handling never retries),
+# there is nothing left for this test to prove.

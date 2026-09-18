@@ -64,32 +64,47 @@ class FakeSqs:
 
 @pytest.mark.asyncio
 async def test_invocation_header_keeps_canonical_body_and_gateway_authorization_unchanged(monkeypatch):
+    """The invocation grant rides its own header, built once in `_post` before the
+    transport branch -- so this holds for AgentCore too. `host_for` is pinned to
+    "agentcore" fleet-wide (deletion PR-1), so the raw ECS httpx POST this test used to
+    drive (a `{}` container with no `runtime_host`) is dead code now; this drives the
+    same assertions through the surviving `runtime_transport.request` seam instead."""
     import json
     from core.services import local_session_grants
+    from core.services import openclaw_work as work
+    from core.services import runtime_transport
 
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
     grant = local_session_grants.mint(
         "owner_test", "11111111-1111-4111-8111-111111111111", "friday", "22222222-2222-4222-8222-222222222222"
     )
     body = {"version": 1, "eventId": "canonical"}
+    captured = {}
 
-    async def receive(request):
-        assert json.loads(request.content) == body
-        assert grant not in request.content.decode()
-        assert request.headers["Authorization"] == "Bearer gateway-dummy"
-        assert request.headers["X-Lightbulb-Local-Session-Token"] == grant
-        return httpx.Response(202)
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["json_body"] = json_body
+        captured["headers"] = headers
+        return runtime_transport.RuntimeResponse(202, "{}", {})
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(receive)) as client:
-        worker = OpenClawWorkWorker(sqs_client=FakeSqs(), http_client=client)
-        await worker._post(
-            {},  # no runtime_host => the ECS transport, which is what this test exercises
-            "127.0.0.1",
-            "/plugins/lightbulb-channel/inbound/friday",
-            body,
-            "gateway-dummy",
-            grant,
-        )
+    monkeypatch.setattr(work.runtime_transport, "request", fake_request)
+
+    agentcore_container = {"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
+    worker = OpenClawWorkWorker(sqs_client=FakeSqs())
+    await worker._post(
+        agentcore_container,
+        runtime_transport.AGENTCORE_ADDRESS,
+        "/plugins/lightbulb-channel/inbound/friday",
+        body,
+        "gateway-dummy",
+        grant,
+    )
+
+    assert captured["json_body"] == body
+    assert grant not in json.dumps(captured["json_body"])
+    assert captured["headers"]["Authorization"] == "Bearer gateway-dummy"
+    assert captured["headers"]["X-Lightbulb-Local-Session-Token"] == grant
 
 
 @pytest.mark.asyncio

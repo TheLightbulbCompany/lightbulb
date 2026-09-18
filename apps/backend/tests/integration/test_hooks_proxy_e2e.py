@@ -1,120 +1,18 @@
-"""End-to-end smoke for the hooks proxy.
+"""End-to-end smoke for the hooks proxy -- REMOVED.
 
-Boots a stub HTTP server posing as the user's OpenClaw container,
-and POSTs a real request through the FastAPI app's TestClient.
-Verifies the body is forwarded, the audit row lands, and
-NO X-Forwarded-* / Forwarded / X-Real-IP reaches the container -- OpenClaw
-8.1 answers 403 proxy_attribution_required to forwarded headers from an
-address outside gateway.trustedProxies, so the proxy asserts none.
+This file used to boot a stub HTTP server posing as the user's OpenClaw container and POST a
+real request through the FastAPI app's TestClient, exercising the proxy's raw httpx forward
+(`GATEWAY_PORT`-addressed) end to end: body pass-through, the audit row, and the
+X-Forwarded-*/Forwarded/X-Real-IP stripping guarantee OpenClaw 8.1's ingress attribution
+depends on.
 
-This test is "integration" in the lightweight sense: no emulated AWS,
-no real DDB, no real ECS — but it exercises the full request path
-through the FastAPI app, the proxy router, an httpx outbound call,
-and a stub upstream HTTP server. It catches issues that pure
-unit-with-mocks tests (test_hooks_proxy.py) miss, like the duplicate
-Authorization-header bug found during T6 review.
+That mechanism is dead code now (deletion PR-1): `runtime_transport.host_for` is pinned to
+"agentcore" fleet-wide, so `routers/hooks_proxy.py` always takes the `runtime_transport.request`
+branch and never dials a real socket at `GATEWAY_PORT`. A real end-to-end equivalent for the
+AgentCore transport would mean standing up a fake `bedrock-agentcore` boto3 endpoint behind
+`invoke_agent_runtime` -- a materially different test, not an adaptation of this one -- so it
+was not rebuilt here. The same header-stripping/body-forwarding guarantee this test protected
+is covered at the unit level (with `runtime_transport.request` faked, the same seam every other
+AgentCore test in this repo uses) by
+`tests/unit/routers/test_hooks_proxy.py::test_successful_forward_passes_body_and_writes_audit`.
 """
-
-import json
-import secrets
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-import pytest
-from fastapi.testclient import TestClient
-
-
-@pytest.fixture
-def stub_container():
-    """Run a tiny HTTP server that imitates OpenClaw's /hooks endpoint."""
-    received = {"body": None, "headers": None}
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            length = int(self.headers.get("Content-Length", 0))
-            received["body"] = self.rfile.read(length)
-            received["headers"] = dict(self.headers)
-            self.send_response(202)
-            self.end_headers()
-            self.wfile.write(b'{"queued":true}')
-
-        def log_message(self, *_a, **_k):
-            pass
-
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    yield {"port": port, "received": received}
-    server.shutdown()
-
-
-@pytest.fixture(autouse=True)
-def _reset_rate_limiter():
-    """Match the unit-test fixture's behavior — clear the in-process rate
-    bucket so a prior unit test's 60-POST bucket doesn't pre-charge this one
-    (and vice versa, so this test doesn't poison anything that runs after)."""
-    from routers import hooks_proxy
-
-    hooks_proxy._RATE.clear()
-    yield
-    hooks_proxy._RATE.clear()
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_hooks_proxy_end_to_end(stub_container, monkeypatch):
-    from main import app
-    from core.repositories import billing_repo, container_repo
-
-    token = secrets.token_urlsafe(32)
-    fake_container = {
-        "owner_id": "u_e2e",
-        "hook_token": token,
-        "service_name": "stub",
-        "status": "running",
-    }
-
-    async def fake_get(owner_id):
-        return fake_container if owner_id == "u_e2e" else None
-
-    async def fake_billing_get(owner_id):
-        # Paid owner — the always-on entitlement gate must pass so the
-        # request reaches the forwarding path under test.
-        return {"owner_id": owner_id, "subscription_status": "active"}
-
-    async def fake_resolve(owner_id):
-        return (fake_container, "127.0.0.1")
-
-    # Point the proxy's GATEWAY_PORT at the stub.
-    from routers import hooks_proxy
-
-    monkeypatch.setattr(hooks_proxy, "GATEWAY_PORT", stub_container["port"])
-    monkeypatch.setattr(container_repo, "get_by_owner_id", fake_get)
-    monkeypatch.setattr(billing_repo, "get_by_owner_id", fake_billing_get)
-    monkeypatch.setattr(hooks_proxy.ecs_manager, "resolve_running_container", fake_resolve)
-
-    client = TestClient(app)
-    payload = {"text": "new email", "metadata": {"source": "stripe"}}
-    r = client.post(
-        "/api/v1/hooks/u/u_e2e/wake",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "User-Agent": "Stripe/1.0",
-            # Spoofed attribution from the caller: must be stripped, not relayed.
-            "X-Forwarded-For": "1.2.3.4",
-            "X-Forwarded-Proto": "https",
-            "X-Real-IP": "1.2.3.4",
-        },
-        json=payload,
-    )
-
-    assert r.status_code == 202
-    assert r.json() == {"queued": True}
-    assert json.loads(stub_container["received"]["body"]) == payload
-    forwarded = stub_container["received"]["headers"]
-    lowered = {h.lower() for h in forwarded}
-    assert not any(h.startswith("x-forwarded-") for h in lowered), lowered
-    assert "forwarded" not in lowered
-    assert "x-real-ip" not in lowered
-    assert forwarded.get("Authorization") == f"Bearer {token}"

@@ -45,9 +45,12 @@ def paid_account():
 
 
 class TestIsParkedTrial:
-    @pytest.mark.asyncio
-    async def test_parked_trial_row_is_parked(self):
-        assert await wake_policy.is_parked_trial("u1", _parked_row(), account=_trial_account()) is True
+    # NOTE: `test_parked_trial_row_is_parked` was deleted. `_parked_row()`'s
+    # status="stopped"/stop_reason="trial_idle" shape only ever mattered via the ECS leg of
+    # `is_parked_trial`, unreachable now that `host_for` is pinned to "agentcore" fleet-wide
+    # (the row has no `last_interactive_at`, so the surviving AgentCore leg fails OPEN --
+    # False, not True). The happy-path "parked" result now lives entirely in
+    # TestIsParkedTrialAgentCore::test_an_idle_agentcore_trial_row_reads_as_parked below.
 
     @pytest.mark.asyncio
     async def test_flag_off_is_never_parked(self, monkeypatch):
@@ -105,10 +108,15 @@ class TestIsParkedTrial:
 
     @pytest.mark.asyncio
     async def test_billing_row_fetched_when_not_supplied(self, monkeypatch):
+        """`_is_trial`'s "fetch from the repo when `account` isn't supplied" behavior is
+        shared by both legs of `is_parked_trial` -- exercised here via the surviving
+        AgentCore leg (`host_for` is pinned to "agentcore" fleet-wide), with a row shaped
+        so the fetched trial account is what tips it into "parked"."""
         from core.repositories import billing_repo
 
         monkeypatch.setattr(billing_repo, "get_by_owner_id", AsyncMock(return_value=_trial_account()))
-        assert await wake_policy.is_parked_trial("u1", _parked_row()) is True
+        row = {"status": "running", "last_interactive_at": _iso(60 * 9)}
+        assert await wake_policy.is_parked_trial("u1", row) is True
 
 
 class TestLegacyWakeBudget:
@@ -187,9 +195,9 @@ class TestIsParkedTrialAgentCore:
         row = {"runtime_host": "agentcore", "status": "running", "last_interactive_at": _iso(60 * 9)}
         assert await wake_policy.is_parked_trial("org_a", row, account=paid_account) is False
 
-    @pytest.mark.asyncio
-    async def test_the_ecs_predicate_is_untouched(self, trial_account):
-        row = {"runtime_host": "ecs", "status": "stopped", "stop_reason": "trial_idle"}
-        assert await wake_policy.is_parked_trial("org_a", row, account=trial_account) is True
-        row = {"runtime_host": "ecs", "status": "running", "last_interactive_at": _iso(60 * 9)}
-        assert await wake_policy.is_parked_trial("org_a", row, account=trial_account) is False
+    # NOTE: `test_the_ecs_predicate_is_untouched` was deleted -- `host_for` no longer reads
+    # `runtime_host` at all (it's pinned to "agentcore" fleet-wide, deletion PR-1), so a
+    # `runtime_host: "ecs"` row now takes the exact same AgentCore leg as every other row:
+    # the stopped/trial_idle shape reads as NOT parked (fails open, no `last_interactive_at`),
+    # and the "running" shape reads as parked once idle long enough -- the opposite of what
+    # this test asserted.

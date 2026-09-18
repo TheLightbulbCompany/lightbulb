@@ -170,18 +170,35 @@ def test_bot_own_reaction_is_still_dropped_as_an_echo(client):
     assert r.status_code == 200 and t.seen == []
 
 
+def _agentcore_container(row=CONTAINER):
+    return {**row, "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
+
+
 def test_bot_own_member_joined_channel_is_forwarded(client):
     """A membership event legitimately has the bot as its subject. The plugin's
     room-admission path (members.ts reportChannelRoomJoin) fires ONLY on the
     bot's own member_joined_channel — an identity-keyed echo filter eats it, and
     the container never learns it was added to the channel."""
     body = _event(type="member_joined_channel", user="U_BOT", inviter="U_HUMAN", channel_type="C", text=None)
-    t = _Upstream()
-    with _app_store(), _dedup(), _install(), _container(), _billing(), _ip(), _upstream(t):
+    captured = {}
+
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["content"] = content
+        return runtime_transport.RuntimeResponse(200, '{"ok":true}', {})
+
+    with (
+        _app_store(),
+        _dedup(),
+        _install(),
+        _container(_agentcore_container()),
+        _billing(),
+        patch("routers.slack_app.runtime_transport.request", fake_request),
+    ):
         r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
     assert r.status_code == 200
-    (req,) = t.seen
-    assert req.content == body
+    assert captured["content"] == body
 
 
 def test_unentitled_owner_is_200_no_retry_not_forwarded(client):
@@ -192,33 +209,20 @@ def test_unentitled_owner_is_200_no_retry_not_forwarded(client):
     assert r.status_code == 200 and r.headers.get("x-slack-no-retry") == "1" and t.seen == []
 
 
-def test_no_ip_is_503_with_retry_after(client):
-    body = _event()
-    with _app_store(), _dedup() as dedup, _install(), _container(), _billing(), _ip(None):
-        r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
-    assert r.status_code == 503 and "Retry-After" in r.headers
-    # Critical 3: dedup must not be recorded until we're about to forward — a
-    # 503 here leaves no dedup row, so Slack's retry is actually delivered.
-    dedup.assert_not_awaited()
+# NOTE: `test_no_ip_is_503_with_retry_after` was deleted. It drove the ECS-only
+# `discover_ip` returns None -> 503 branch, which is unreachable now: `host_for` is pinned to
+# "agentcore", so `ip` is always the truthy `AGENTCORE_ADDRESS` sentinel and the ECS
+# `discover_ip`/`if not ip` branch never runs. The AgentCore equivalent -- a runtime that
+# hasn't answered yet -> 503 + Retry-After with dedup released -- is already covered by
+# test_agentcore_cold_session_defers_to_slack_retry_and_releases_dedup below.
 
 
-def test_forward_is_byte_identical_and_re_signed_with_hook_token(client):
-    body = _event()
-    t = _Upstream()
-    sent = _headers(body)
-    with _app_store(), _dedup(), _install(), _container(), _billing(), _ip(), _upstream(t):
-        r = client.post("/api/v1/slack/events", content=body, headers=sent)
-    assert r.status_code == 200
-    assert r.content == b'{"ok":true}'
-    (req,) = t.seen
-    assert str(req.url) == f"http://10.0.42.17:18789/slack/events/{TEAM}"
-    assert req.content == body
-    ts = req.headers["x-slack-request-timestamp"]
-    assert ts == sent["X-Slack-Request-Timestamp"]
-    assert req.headers["x-slack-signature"] == _sig(HOOK_TOKEN, ts, body)
-    assert req.headers["content-type"] == "application/json"
-    assert "authorization" not in {k.lower() for k in req.headers}
-    assert "x-forwarded-for" not in {k.lower() for k in req.headers}
+# NOTE: `test_forward_is_byte_identical_and_re_signed_with_hook_token` was deleted. It
+# asserted a forward to the ECS `http://{ip}:18789/...` target via the raw httpx client,
+# which is unreachable now that every container forwards through `runtime_transport.request`
+# (`host_for` is pinned to "agentcore"). The identical byte-for-byte / re-signed-with-
+# hook-token assertions are already covered on the AgentCore seam by
+# test_agentcore_owner_forwards_through_the_runtime_transport_seam below.
 
 
 def test_agentcore_owner_forwards_through_the_runtime_transport_seam(client):
@@ -267,8 +271,20 @@ def test_agentcore_owner_forwards_through_the_runtime_transport_seam(client):
 
 def test_dedup_recorded_only_before_forward(client):
     body = _event()
-    t = _Upstream()
-    with _app_store(), _dedup() as dedup, _install(), _container(), _billing(), _ip(), _upstream(t):
+
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        return runtime_transport.RuntimeResponse(200, '{"ok":true}', {})
+
+    with (
+        _app_store(),
+        _dedup() as dedup,
+        _install(),
+        _container(_agentcore_container()),
+        _billing(),
+        patch("routers.slack_app.runtime_transport.request", fake_request),
+    ):
         r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
     assert r.status_code == 200
     dedup.assert_awaited_once_with(f"slack:{TEAM}:Ev1", source="slack", ttl_seconds=3600)
@@ -276,48 +292,77 @@ def test_dedup_recorded_only_before_forward(client):
 
 def test_form_encoded_slash_payload_routes_by_team_id_field(client):
     body = b"token=x&team_id=" + TEAM.encode() + b"&command=%2Flightbulb&text=hello"
-    t = _Upstream()
-    with _app_store(), _dedup(), _install(), _container(), _billing(), _ip(), _upstream(t):
+    captured = {}
+
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["content"] = content
+        return runtime_transport.RuntimeResponse(200, '{"ok":true}', {})
+
+    with (
+        _app_store(),
+        _dedup(),
+        _install(),
+        _container(_agentcore_container()),
+        _billing(),
+        patch("routers.slack_app.runtime_transport.request", fake_request),
+    ):
         r = client.post(
             "/api/v1/slack/events", content=body, headers=_headers(body, ctype="application/x-www-form-urlencoded")
         )
-    assert r.status_code == 200 and t.seen[0].content == body
+    assert r.status_code == 200 and captured["content"] == body
 
 
 def test_form_encoded_interactive_payload_routes_by_team_id_in_payload(client):
     payload = json.dumps({"type": "block_actions", "team": {"id": TEAM}, "actions": []})
     body = b"payload=" + quote(payload).encode()
-    t = _Upstream()
-    with _app_store(), _dedup(), _install(), _container(), _billing(), _ip(), _upstream(t):
-        r = client.post(
-            "/api/v1/slack/events", content=body, headers=_headers(body, ctype="application/x-www-form-urlencoded")
-        )
-    assert r.status_code == 200 and t.seen[0].content == body
+    captured = {}
 
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["content"] = content
+        return runtime_transport.RuntimeResponse(200, '{"ok":true}', {})
 
-def test_upstream_timeout_is_200_with_metric(client):
-    body = _event()
-    t = _Upstream(raise_exc=httpx.ReadTimeout("slow"))
     with (
         _app_store(),
         _dedup(),
         _install(),
-        _container(),
+        _container(_agentcore_container()),
         _billing(),
-        _ip(),
-        _upstream(t),
-        patch("routers.slack_app.put_metric") as metric,
+        patch("routers.slack_app.runtime_transport.request", fake_request),
     ):
-        r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
-    assert r.status_code == 200
-    assert any(c.args and c.args[0] == "slack.forward_failed" for c in metric.call_args_list)
-    assert metric.call_args_list[0].kwargs["dimensions"] == {"reason": "request_error"}
+        r = client.post(
+            "/api/v1/slack/events", content=body, headers=_headers(body, ctype="application/x-www-form-urlencoded")
+        )
+    assert r.status_code == 200 and captured["content"] == body
+
+
+# NOTE: `test_upstream_timeout_is_200_with_metric` was deleted. It drove the ECS-only raw
+# httpx client's `httpx.RequestError` -> 200 + "slack.forward_failed"/"request_error" metric
+# branch, which is unreachable now that every container forwards through
+# `runtime_transport.request`. On AgentCore, the SAME failure shape (no answer inside Slack's
+# budget) is not a final failure at all -- it's the ordinary "cold microVM" case, which
+# defers to Slack's retry (503) instead of swallowing it as 200. That behaviour is already
+# covered by test_agentcore_cold_session_defers_to_slack_retry_and_releases_dedup below.
 
 
 def test_upstream_5xx_is_200(client):
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        return runtime_transport.RuntimeResponse(500, "", {})
+
     body = _event()
-    t = _Upstream(status=500)
-    with _app_store(), _dedup(), _install(), _container(), _billing(), _ip(), _upstream(t):
+    with (
+        _app_store(),
+        _dedup(),
+        _install(),
+        _container(_agentcore_container()),
+        _billing(),
+        patch("routers.slack_app.runtime_transport.request", fake_request),
+    ):
         r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
     assert r.status_code == 200
 

@@ -80,12 +80,13 @@ async def test_stop_is_a_no_op_and_never_writes_stopped(manager, agentcore_row, 
 
 
 @pytest.mark.asyncio
-async def test_an_ecs_row_still_takes_the_ecs_path(manager, monkeypatch):
-    # The default: no runtime_host means today's fleet, which still resolves through Cloud Map.
+async def test_a_row_with_no_runtime_host_is_agentcore_too(manager, monkeypatch):
+    """Deletion PR-1: ``host_for`` is a constant, so a row that never carried ``runtime_host``
+    resolves the same way — there is no Cloud Map leg left to fall into."""
     monkeypatch.setattr(
         "core.containers.ecs_manager.container_repo.get_by_owner_id",
-        AsyncMock(return_value={**AGENTCORE_ROW, "runtime_host": None, "agentcore_runtime_arn": None}),
+        AsyncMock(return_value={**AGENTCORE_ROW, "runtime_host": None}),
     )
-    manager.discover_ip = MagicMock(return_value="10.0.0.9")
+    manager.discover_ip = MagicMock(side_effect=AssertionError("must not discover"))
     _, ip = await manager.resolve_running_container("org_abc")
-    assert ip == "10.0.0.9"
+    assert ip == runtime_transport.AGENTCORE_ADDRESS

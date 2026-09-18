@@ -826,12 +826,20 @@ class TestDeleteThenPostReprovision:
     async def test_delete_then_post_reprovisions_a_bedrock_owner(
         self, container_rows, fake_container_repo, fake_ecs, async_client
     ):
+        """DELETE itself now 409s for ANY existing row -- `host_for` is pinned to
+        "agentcore" fleet-wide, so `container_repo`'s row (ECS-shaped or not) is always
+        treated as an AgentCore one, and TestAgentCoreDebugRoutes covers that 409 directly.
+        What this test still guards is the re-mint trap in the POST leg, which fires
+        whenever `existing` is None -- exactly the state a real DELETE used to leave
+        behind -- so it drives the fixture straight to that state instead of going
+        through the (now-blocked) DELETE call."""
         billing_row = {
             "owner_id": "user_test_123",
             "subscription_status": "active",
             "provider_choice": "bedrock_claude",
         }
         before = dict(billing_row)
+        container_rows["row"] = None  # the post-DELETE state
 
         with (
             patch("routers.debug.container_repo", fake_container_repo),
@@ -839,10 +847,6 @@ class TestDeleteThenPostReprovision:
             patch("core.services.container_provision.billing_repo") as mock_billing,
         ):
             mock_billing.get_by_owner_id = AsyncMock(return_value=billing_row)
-
-            deleted = await async_client.delete("/api/v1/debug/provision")
-            assert deleted.status_code == 200
-            assert container_rows["row"] is None, "DELETE must leave no row for the POST to read"
 
             provisioned = await async_client.post("/api/v1/debug/provision")
 
@@ -881,6 +885,9 @@ class TestDeleteThenPostReprovision:
 
         billing_row = {"owner_id": "user_test_123", "subscription_status": "trial_local"}
         before = dict(billing_row)
+        # Same reasoning as test_delete_then_post_reprovisions_a_bedrock_owner above: DELETE
+        # now 409s for any existing row, so drive straight to the post-DELETE state (no row).
+        container_rows["row"] = None
 
         with (
             patch("routers.debug.container_repo", fake_container_repo),
@@ -888,7 +895,6 @@ class TestDeleteThenPostReprovision:
             patch("core.services.container_provision.billing_repo") as mock_billing,
         ):
             mock_billing.get_by_owner_id = AsyncMock(return_value=billing_row)
-            await async_client.delete("/api/v1/debug/provision")
             provisioned = await async_client.post("/api/v1/debug/provision")
 
         assert provisioned.status_code == 200, provisioned.text
@@ -897,35 +903,15 @@ class TestDeleteThenPostReprovision:
         assert choice != "bedrock_claude"
         assert billing_row == before
 
-    @pytest.mark.asyncio
-    async def test_patch_redeploy_resolves_the_provider_and_reuses_row_aips(
-        self, fake_container_repo, fake_ecs, async_client
-    ):
-        """PATCH stays a config rewrite — the row and its live AIPs both exist —
-        but its provider_choice was hardcoded to bedrock_claude too, which
-        rewrote a chatgpt_oauth/byo_key owner's config onto a Bedrock block they
-        hold no AIPs for (the same fail-closed raise) and flattened a trial
-        owner's one-model lockdown into the paid catalog shape."""
-        billing_row = {
-            "owner_id": "user_test_123",
-            "subscription_status": "active",
-            "provider_choice": "byo_key",
-            "byo_provider": "anthropic",
-        }
-
-        with (
-            patch("routers.debug.container_repo", fake_container_repo),
-            patch("routers.debug.get_ecs_manager", return_value=fake_ecs),
-            patch("core.services.container_provision.billing_repo") as mock_billing,
-        ):
-            mock_billing.get_by_owner_id = AsyncMock(return_value=billing_row)
-            res = await async_client.patch("/api/v1/debug/provision")
-
-        assert res.status_code == 200, res.text
-        kwargs = fake_ecs.write_user_configs.await_args.kwargs
-        assert kwargs["provider_choice"] == "byo_key"
-        assert kwargs["byo_provider"] == "anthropic"
-        assert kwargs["aip_arns"] == {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/x"}
+    # NOTE: `test_patch_redeploy_resolves_the_provider_and_reuses_row_aips` was deleted. Its
+    # point -- PATCH must RESOLVE provider_choice rather than hardcode "bedrock_claude" when
+    # rewriting the ECS config via `write_user_configs` -- is unreachable now: `host_for` is
+    # pinned to "agentcore" fleet-wide, so PATCH always takes the `hermes_provisioning.
+    # write_profiles` branch instead (see `routers/debug.py`'s PATCH handler), which has no
+    # provider_choice/build_provider_block concept to mis-hardcode in the first place. The
+    # AgentCore PATCH branch's own "reuses the row's aip_arns" behaviour is covered by
+    # test_patch_provision_rewrites_profiles_and_stops_the_session in TestAgentCoreDebugRoutes
+    # below.
 
 
 class TestAgentCoreProvision:
@@ -1068,34 +1054,8 @@ class TestAgentCoreDebugRoutes:
             res = await async_client.patch("/api/v1/debug/provision")
         assert res.status_code == 200, res.text
 
-    @pytest.mark.asyncio
-    async def test_patch_provision_ecs_row_keeps_the_original_redeploy_behaviour(self, async_client):
-        row = {
-            "owner_id": "org_test_456",
-            "status": "running",
-            "service_name": "openclaw-org_test_456-abc",
-            "gateway_token": "gw-tok",
-            "bedrock_aip_arns": {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/sonnet"},
-        }
-        repo = MagicMock()
-        repo.get_by_owner_id = AsyncMock(return_value=row)
-        ecs = MagicMock()
-        ecs.write_user_configs = AsyncMock()
-        ecs.start_user_service = AsyncMock()
-        with (
-            patch("routers.debug.container_repo", repo),
-            patch("routers.debug.get_ecs_manager", return_value=ecs),
-            patch("core.services.container_provision.billing_repo") as mock_billing,
-        ):
-            mock_billing.get_by_owner_id = AsyncMock(
-                return_value={
-                    "owner_id": "org_test_456",
-                    "subscription_status": "active",
-                    "provider_choice": "bedrock_claude",
-                }
-            )
-            res = await async_client.patch("/api/v1/debug/provision")
-        assert res.status_code == 200, res.text
-        assert res.json()["status"] == "redeploying"
-        ecs.write_user_configs.assert_awaited_once()
-        ecs.start_user_service.assert_awaited_once()
+    # NOTE: `test_patch_provision_ecs_row_keeps_the_original_redeploy_behaviour` was deleted.
+    # Its premise -- "the ECS branch stays byte-identical" for a row with no explicit
+    # `runtime_host` -- is exactly what this deletion PR ends: `host_for` no longer reads the
+    # row, so this same row now takes the AgentCore PATCH branch (write_profiles) instead of
+    # `write_user_configs`/`start_user_service`, just like every other row in this class.

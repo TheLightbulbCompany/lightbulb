@@ -94,8 +94,11 @@ class TestResolveRuntimePhase:
         assert readiness_state.resolve_runtime_phase(container, True) == "provisioning"
         assert readiness_state.resolve_runtime_phase(container, False) == "provisioning"
 
-    def test_running_without_gateway_liveness_is_starting(self):
-        assert readiness_state.resolve_runtime_phase({"status": "running"}, False) == "starting"
+    # NOTE: `test_running_without_gateway_liveness_is_starting` was deleted. `resolve_runtime_
+    # phase` now reports "ready" for ANY running row unconditionally (`host_for` is pinned to
+    # "agentcore", and an agentcore row is reported ready without a health probe -- see the
+    # function's own docstring) -- there is no "running but not gateway-connected" phase left
+    # to reach "starting" through.
 
     def test_running_with_gateway_liveness_is_ready(self):
         assert readiness_state.resolve_runtime_phase({"status": "running"}, True) == "ready"
@@ -145,13 +148,9 @@ class TestComputeStatusLifecycleScenarios:
         assert contract["runtime_phase"] == "provisioning"
         assert contract["chat_available"] is False
 
-    @pytest.mark.asyncio
-    async def test_cold_start_starting(self):
-        container = {"status": "running", "substatus": None}
-        contract = await _compute("user_x", container=container, account=_account(), gateway_connected=False)
-        assert contract["lifecycle"] == "starting"
-        assert contract["runtime_phase"] == "starting"
-        assert contract["chat_available"] is False
+    # NOTE: `test_cold_start_starting` was deleted -- it asserted `runtime_phase == "starting"`
+    # for a running-but-not-gateway-connected row, which `resolve_runtime_phase` can no
+    # longer produce (see the note above `test_running_with_gateway_liveness_is_ready`).
 
     @pytest.mark.asyncio
     async def test_error(self):
@@ -337,45 +336,13 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
             contract = await readiness_state.compute_status("user_x", container=container)
         assert contract["chat_available"] is True
 
-    @pytest.mark.asyncio
-    async def test_gateway_liveness_read_failure_defaults_to_not_connected(self):
-        """A health-probe failure must never raise, and must fail toward
-        "not ready" (starting), never a false "ready"."""
-        container = {"status": "running", "substatus": None}
-        paperclip_repo = MagicMock()
-        paperclip_repo.get_onboarding_state = AsyncMock(
-            return_value={
-                "onboarding_generation": None,
-                "funnel_state": "not_started",
-                "funnel_submitted_at": None,
-                "funnel_completed_at": None,
-                "onboarding_goal_id": None,
-                "onboarding_project_id": None,
-                "onboarding_submitted_by": None,
-                "bootstrap_state": "not_started",
-                "bootstrap_dispatch_id": None,
-                "bootstrap_dispatched_at": None,
-                "bootstrap_delivered_at": None,
-                "bootstrap_attempts": 0,
-                "bootstrap_last_error": None,
-                "teams_state": None,
-                "company_id": None,
-                "paperclip_user_id": None,
-                "user_id": None,
-            }
-        )
-        with (
-            patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=_account())),
-            patch(
-                "core.services.container_rpc.call",
-                new=AsyncMock(side_effect=RuntimeError("gateway probe down")),
-            ),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo),
-            patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
-        ):
-            contract = await readiness_state.compute_status("user_x", container=container)
-        assert contract["runtime_phase"] == "starting"
-        assert contract["chat_available"] is False
+
+# NOTE: `test_gateway_liveness_read_failure_defaults_to_not_connected` was deleted. It
+# asserted a probe failure defaults `runtime_phase` to "starting" -- but `compute_status`
+# never probes a running row any more (`host_for` is pinned to "agentcore", and the running +
+# agentcore branch sets `gateway_connected = False` WITHOUT calling `container_rpc.call`, then
+# reports "ready" unconditionally regardless of that value). There is no probe-failure path
+# left to default away from a false "ready".
 
 
 class TestTeamsState:
@@ -677,15 +644,10 @@ class TestRuntimeHost:
     way at all to tell an AgentCore workspace from an ECS one, so every remapped control
     panel had nothing to branch on."""
 
-    @pytest.mark.asyncio
-    async def test_an_ecs_row_reports_ecs(self):
-        contract = await _compute(
-            "org_x",
-            container={"status": "running", "runtime_host": "ecs"},
-            account=_account(),
-            gateway_connected=True,
-        )
-        assert contract["runtime_host"] == "ecs"
+    # NOTE: `test_an_ecs_row_reports_ecs` was deleted -- `host_for` no longer reads the row
+    # at all (it's pinned to "agentcore" fleet-wide), so a `runtime_host: "ecs"` row now also
+    # reports "agentcore" (see test_an_agentcore_row_reports_agentcore right below, which is
+    # unaffected since it already expects "agentcore").
 
     @pytest.mark.asyncio
     async def test_an_agentcore_row_reports_agentcore(self):
@@ -696,12 +658,6 @@ class TestRuntimeHost:
         )
         assert contract["runtime_host"] == "agentcore"
 
-    @pytest.mark.asyncio
-    async def test_a_row_with_no_runtime_host_fails_closed_to_ecs(self):
-        """host_for's own default -- a pre-migration row, and a poll with no container row at
-        all, must both read as the runtime every workspace was on before M6."""
-        contract = await _compute("org_x", container={"status": "running"}, account=_account(), gateway_connected=True)
-        assert contract["runtime_host"] == "ecs"
-
-        no_row = await _compute("org_x", container=None, account=_account())
-        assert no_row["runtime_host"] == "ecs"
+    # NOTE: `test_a_row_with_no_runtime_host_fails_closed_to_ecs` was deleted -- `host_for`'s
+    # ECS fail-closed default is gone; it now always returns "agentcore" regardless of the
+    # row (or the absence of one), per this deletion PR.

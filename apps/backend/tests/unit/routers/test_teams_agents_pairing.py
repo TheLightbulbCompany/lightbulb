@@ -22,87 +22,29 @@ os.environ.setdefault("PAPERCLIP_SERVICE_TOKEN_KEY", "test-key-not-used")
 
 @pytest.fixture(autouse=True)
 def _ecs_default_container(monkeypatch):
-    """Every test in this file exercises the ECS/openclaw_gateway path.
-    ``create_agent`` now picks its adapter type via
+    """``create_agent`` picks its ADAPTER TYPE via
     ``paperclip_agent_lifecycle.resolve_agent_adapter``, which reads the owner's
     container row (``adapter_type_for``) -- a row that doesn't exist under test. A
-    MISSING row is the correct ECS default (see that function's docstring), not a
-    real DynamoDB call, so this stands in for "no container row yet" everywhere."""
+    MISSING row is the correct ECS default for that selection (see that function's
+    docstring), not a real DynamoDB call, so this stands in for "no container row
+    yet" everywhere. This is independent of ``runtime_transport.host_for``, which
+    is pinned to AgentCore fleet-wide -- every test's actual post-create wiring
+    goes through the Hermes profile write, never container pairing (deletion PR-1;
+    see ``tests/unit/services/test_runtime_rpc_agent_lifecycle_agentcore.py``)."""
     from core.repositories import container_repo
 
     monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value=None))
 
 
 @pytest.mark.asyncio
-async def test_teams_create_agent_pairs_with_openclaw_when_container_up(monkeypatch):
-    """After Paperclip create_agent succeeds, the route calls
-    pair_with_openclaw with the new agent's UUID against the OWNER's
-    container."""
-    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-    paperclip_agent = {
-        "id": pc_uuid,
-        "name": "Code Reviewer",
-        "role": "engineer",
-    }
-
-    # Patch the symbols used by the route. Names match the imports in
-    # routers/teams/agents.py.
-    pair_mock = AsyncMock()
-    monkeypatch.setattr(
-        "routers.teams.agents.pair_with_openclaw",
-        pair_mock,
-    )
-    monkeypatch.setattr(
-        "routers.teams.agents._container_is_reachable",
-        AsyncMock(return_value=(True, "10.0.0.5", "gw_token")),
-    )
-
-    # Patch the admin client to return a known paperclip_agent.
-    admin_instance = MagicMock()
-    admin_instance.create_agent = AsyncMock(return_value=paperclip_agent)
-    monkeypatch.setattr(
-        "routers.teams.agents._admin",
-        lambda: admin_instance,
-    )
-
-    # Stub anything else the route needs that touches I/O.
-    monkeypatch.setattr(
-        "routers.teams.agents._user_session",
-        AsyncMock(return_value="cookie123"),
-    )
-
-    from routers.teams.agents import create_agent
-    from routers.teams.schemas import CreateAgentBody
-
-    ctx = MagicMock()
-    ctx.auth.user_id = "user_member_b"
-    ctx.auth.org_id = "org_xyz"
-    ctx.company_id = "co_xyz"
-
-    body = CreateAgentBody(name="Code Reviewer", role="engineer")
-    await create_agent(body, ctx)
-
-    pair_mock.assert_awaited_once()
-    kwargs = pair_mock.await_args.kwargs
-    # Container key is owner_id (org_id for org members).
-    assert kwargs["owner_id"] == "org_xyz"
-    assert kwargs["paperclip_agent"]["id"] == pc_uuid
-
-
-@pytest.mark.asyncio
 async def test_teams_create_agent_uses_user_id_for_personal_owner(monkeypatch):
-    """Personal user (no org_id) → owner_id == user_id."""
+    """Personal user (no org_id) → owner_id == user_id, threaded through to the
+    Hermes profile write -- the only reachable transport (``host_for`` is
+    pinned to AgentCore; there is no container to pair with any more)."""
     pc_uuid = "11111111-1111-1111-1111-111111111111"
 
-    pair_mock = AsyncMock()
-    monkeypatch.setattr(
-        "routers.teams.agents.pair_with_openclaw",
-        pair_mock,
-    )
-    monkeypatch.setattr(
-        "routers.teams.agents._container_is_reachable",
-        AsyncMock(return_value=(True, "10.0.0.5", "gw_token")),
-    )
+    write_profile = AsyncMock()
+    monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", write_profile)
 
     admin_instance = MagicMock()
     admin_instance.create_agent = AsyncMock(return_value={"id": pc_uuid, "name": "Helper", "role": "engineer"})
@@ -125,96 +67,7 @@ async def test_teams_create_agent_uses_user_id_for_personal_owner(monkeypatch):
 
     await create_agent(CreateAgentBody(name="Helper", role="engineer"), ctx)
 
-    assert pair_mock.await_args.kwargs["owner_id"] == "user_personal"
-
-
-@pytest.mark.asyncio
-async def test_teams_create_agent_skips_pairing_when_container_down(monkeypatch):
-    """If the container isn't reachable, /teams create still succeeds —
-    pairing is deferred to the next container provision (which will
-    pick up the new agent via list_agents)."""
-    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-
-    pair_mock = AsyncMock()
-    monkeypatch.setattr(
-        "routers.teams.agents.pair_with_openclaw",
-        pair_mock,
-    )
-    monkeypatch.setattr(
-        "routers.teams.agents._container_is_reachable",
-        AsyncMock(return_value=(False, None, None)),
-    )
-
-    admin_instance = MagicMock()
-    admin_instance.create_agent = AsyncMock(return_value={"id": pc_uuid, "name": "Code Reviewer", "role": "engineer"})
-    monkeypatch.setattr(
-        "routers.teams.agents._admin",
-        lambda: admin_instance,
-    )
-    monkeypatch.setattr(
-        "routers.teams.agents._user_session",
-        AsyncMock(return_value="cookie123"),
-    )
-
-    from routers.teams.agents import create_agent
-    from routers.teams.schemas import CreateAgentBody
-
-    ctx = MagicMock()
-    ctx.auth.user_id = "user_member_b"
-    ctx.auth.org_id = "org_xyz"
-    ctx.company_id = "co_xyz"
-
-    await create_agent(CreateAgentBody(name="Code Reviewer", role="engineer"), ctx)
-
-    pair_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_teams_create_agent_pairing_failure_is_non_fatal(monkeypatch, caplog):
-    """If pair_with_openclaw raises, the route still returns the
-    Paperclip agent (pairing is deferred). Failure is logged."""
-    import logging
-
-    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-
-    pair_mock = AsyncMock(side_effect=RuntimeError("gateway timeout"))
-    monkeypatch.setattr(
-        "routers.teams.agents.pair_with_openclaw",
-        pair_mock,
-    )
-    monkeypatch.setattr(
-        "routers.teams.agents._container_is_reachable",
-        AsyncMock(return_value=(True, "10.0.0.5", "gw_token")),
-    )
-
-    admin_instance = MagicMock()
-    admin_instance.create_agent = AsyncMock(return_value={"id": pc_uuid, "name": "Code Reviewer", "role": "engineer"})
-    monkeypatch.setattr(
-        "routers.teams.agents._admin",
-        lambda: admin_instance,
-    )
-    monkeypatch.setattr(
-        "routers.teams.agents._user_session",
-        AsyncMock(return_value="cookie123"),
-    )
-
-    from routers.teams.agents import create_agent
-    from routers.teams.schemas import CreateAgentBody
-
-    ctx = MagicMock()
-    ctx.auth.user_id = "user_a"
-    ctx.auth.org_id = "org_xyz"
-    ctx.company_id = "co_xyz"
-
-    with caplog.at_level(logging.WARNING):
-        # Should not raise — the route returns successfully.
-        result = await create_agent(
-            CreateAgentBody(name="Code Reviewer", role="engineer"),
-            ctx,
-        )
-    assert result is not None
-    # Warning was logged.
-    assert any("pair_with_openclaw failed" in rec.message for rec in caplog.records)
+    assert write_profile.await_args.args[0] == "user_personal"
 
 
 @pytest.mark.asyncio
@@ -285,13 +138,13 @@ async def test_teams_create_agent_mints_service_token_with_owner_id(monkeypatch)
         synth_mock,
     )
 
+    # host_for is pinned to AgentCore now -- the row-less owner (the autouse
+    # fixture's ``None``) still routes through the Hermes profile write, not
+    # container pairing; mock it out so create_agent completes instead of
+    # rolling back on a real S3/Paperclip call.
     monkeypatch.setattr(
-        "routers.teams.agents.pair_with_openclaw",
+        "core.services.hermes_provisioning.write_profile_for_agent",
         AsyncMock(),
-    )
-    monkeypatch.setattr(
-        "routers.teams.agents._container_is_reachable",
-        AsyncMock(return_value=(True, "10.0.0.5", "gw_token")),
     )
     admin_instance = MagicMock()
     admin_instance.create_agent = AsyncMock(return_value={"id": "a_new"})
@@ -334,13 +187,11 @@ async def test_teams_create_agent_mints_with_user_id_for_personal_owner(monkeypa
         "core.services.paperclip_agent_lifecycle.synthesize_openclaw_adapter",
         MagicMock(return_value={"authToken": "svc.tok.minted-for-personal"}),
     )
+    # host_for is pinned to AgentCore now -- see the comment in the sibling
+    # org-context test above.
     monkeypatch.setattr(
-        "routers.teams.agents.pair_with_openclaw",
+        "core.services.hermes_provisioning.write_profile_for_agent",
         AsyncMock(),
-    )
-    monkeypatch.setattr(
-        "routers.teams.agents._container_is_reachable",
-        AsyncMock(return_value=(False, None, None)),
     )
     admin_instance = MagicMock()
     admin_instance.create_agent = AsyncMock(return_value={"id": "a_new"})
@@ -458,34 +309,6 @@ async def test_teams_create_agent_on_agentcore_rolls_back_when_the_profile_write
 
 
 @pytest.mark.asyncio
-async def test_teams_create_agent_on_ecs_row_never_writes_a_hermes_profile(monkeypatch):
-    """The ECS branch is unchanged: container pairing, no S3 profile."""
-    paperclip_agent = {"id": "33333333-3333-3333-3333-333333333333", "name": "Helper", "role": "engineer"}
-    _wire_create_agent(
-        monkeypatch,
-        container={"owner_id": "org_xyz", "runtime_host": "ecs", "gateway_token": "gw"},
-        paperclip_agent=paperclip_agent,
-    )
-    write_profile = AsyncMock()
-    monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", write_profile)
-    pair_mock = AsyncMock()
-    monkeypatch.setattr("routers.teams.agents.pair_with_openclaw", pair_mock)
-    monkeypatch.setattr("routers.teams.agents.ensure_operator_device_paired", AsyncMock())
-    monkeypatch.setattr(
-        "routers.teams.agents._container_is_reachable",
-        AsyncMock(return_value=(True, "10.0.0.5", "gw_token")),
-    )
-
-    from routers.teams.agents import create_agent
-    from routers.teams.schemas import CreateAgentBody
-
-    await create_agent(CreateAgentBody(name="Helper", role="engineer"), _agentcore_ctx())
-
-    write_profile.assert_not_awaited()
-    pair_mock.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("container", "body_kwargs", "expected"),
     [
@@ -493,7 +316,6 @@ async def test_teams_create_agent_on_ecs_row_never_writes_a_hermes_profile(monke
         (_AGENTCORE_ROW, {"title": "Head of Ops"}, True),
         # budgetMonthlyCents never appears in SOUL.md -- no S3 round trip for it.
         (_AGENTCORE_ROW, {"budget_monthly_cents": 500}, False),
-        ({"owner_id": "org_xyz", "runtime_host": "ecs"}, {"name": "Renamed"}, False),
     ],
 )
 async def test_teams_patch_agent_refreshes_soul_only_on_agentcore_identity_edits(

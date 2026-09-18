@@ -1,47 +1,30 @@
-"""RFC #1406 gap-1 / F1 probe: what a COLD provider change does to a RUNNING
-container.
+"""RFC #1406 gap-1 / F1 probe: what a COLD provider change does on ECS.
 
-Prior to the F1 fix, change_provider's cold path (BYO involved on either
-side, or targeting bedrock_claude) dispatched ``dispatch_provision``
-directly. ``dispatch_provision``'s FIRST act is the single-flight lease
-claim (container_provision.py:90-94), and ``try_claim_provision``'s
-ConditionExpression admits only no-row / error / stopped / stale-provisioning
-— ``running`` was NOT claimable (container_repo.py:157-199). So a RUNNING
-container's provider switch silently stood down: the dispatched provision
-lost the claim, ``provision_user_container`` was never reached, and the row
-was left untouched — even though the caller was told ``restart: True``.
+Historical context: prior to the F1 fix, change_provider's cold path (BYO
+involved on either side, or targeting bedrock_claude) dispatched
+``dispatch_provision`` directly, and a RUNNING ECS row silently stood down
+(``try_claim_provision`` doesn't admit "running"). The fix made the cold path
+await ``stop_user_service`` first, then dispatch
+``ecs_manager.drain_then_dispatch_provision``. Every RUNNING-row scenario this
+file used to pin (stop-then-drain, the poll-claim race across the stop, revert
+on a genuine ECS stop failure) is now dead: deletion PR-1 made
+``runtime_transport.host_for`` unconditionally report ``"agentcore"``, so
+``EcsManager._hosted_on_agentcore`` is ``True`` for ANY existing container row
+regardless of its actual ``runtime_host`` or ``status`` — ``stop_user_service``
+no-ops (never touches ECS, never flips the row) for every owner that already
+has a row. Those tests were deleted with the ECS branch they pinned.
 
-The fix (spec PR-11): the cold path now awaits ``stop_user_service`` (one
-fast, fail-loud ECS call) and then dispatches
-``ecs_manager.drain_then_dispatch_provision`` as a background task — it
-waits for the drain (up to 90s, which is why it must not be awaited on the
-request path) and then dispatches ``dispatch_provision``. That lands the
-dispatch on the scale-from-zero branch (the only one that rewrites configs /
-re-registers the task def) instead of racing a still-"running" row and
-losing. The task deliberately does NOT re-stop: a status-poll wake can
-legitimately claim the exposed "stopped" row first, and a second stop would
-clobber its "provisioning" status back to claimable and let a second
-executor start (see the poll-claim race test).
+What remains genuinely exercises the create-from-scratch / already-claimable
+paths, which don't depend on an ECS stop actually running:
 
-Post-SFN (spec §7 PR-10), ``dispatch_provision`` funnels to the durable
-Step Functions executor (``provision_dispatch``): once the single-flight claim
-is won against the row, its only side effect is ``StartExecution``; the actual
-``provision_user_container`` runs in a SEPARATE one-shot ECS task
-(``scripts.provision_runner``), out of process, which reads the (already
-committed) provider off the billing row. So these tests drive the REAL
-conditional write (moto) end-to-end through change_provider and pin the FIXED
-behavior at the dispatch boundary (``_spawn_inline`` — post-inline-fast-path,
-a won claim runs attempt 0 as a backend child process; ``start_execution`` is
-now only Branch A's handoff, and must stay silent on these happy paths):
-
-  * RUNNING row  -> stop-first flips the row to "stopped", the SAME dispatch
-    then wins the claim and STARTS a provision execution (the runner applies
-    the new provider) — no more silent stand-down.
-  * STOPPED row  -> control. Already claimable; behaves the same as before —
-    proving the running-row fix isn't a stubbing artifact.
-  * NO row / NO ECS service -> nothing to stop; the dispatch falls through to
-    the create-from-scratch claim path — a subscribed-but-never-provisioned
-    owner's provider change must not 500 after committing the choice.
+  * STOPPED row  -> already claimable; the dispatch wins the claim and starts
+    a provision execution with the new provider.
+  * NO row / NO ECS service -> ``_hosted_on_agentcore`` is False for a
+    nonexistent row, so the stop genuinely reaches ECS, hits
+    ServiceNotFoundException (treated as idempotent), and the dispatch falls
+    through to the create-from-scratch claim path — a subscribed-but-never-
+    provisioned owner's provider change must not 500 after committing the
+    choice.
 """
 
 import asyncio
@@ -237,56 +220,6 @@ def cold_change_env(containers_table):
 
 
 @pytest.mark.asyncio
-async def test_cold_provider_change_on_running_container_reprovisions(cold_change_env):
-    """F1 fix: a RUNNING row is stopped first, so the SAME dispatch wins the
-    claim and applies the new provider — no more silent stand-down."""
-    env = cold_change_env
-    env["table"].put_item(Item={"owner_id": "org_cold", "status": "running", "service_name": "openclaw-org_cold-abc"})
-
-    result = await _run_cold_change(env["created"])
-
-    # The API told the caller a restart is coming.
-    assert result == {
-        "status": "ok",
-        "provider_choice": "byo_key",
-        "byo_provider": "anthropic",
-        "restart": True,
-    }
-
-    # The stop was AWAITED on the request path (real container_repo write
-    # against the moto table flipped the row to "stopped") — by the time
-    # change_provider returned, the old-provider container was draining.
-    env["manager"]._ecs.update_service.assert_called()
-    assert env["manager"]._ecs.update_service.call_args.kwargs["desiredCount"] == 0
-    row = env["table"].get_item(Key={"owner_id": "org_cold"}).get("Item")
-    assert row["status"] == "stopped"
-
-    # The drain-wait + provision dispatch ran OFF the request path: exactly
-    # one drain_then_dispatch_provision task was dispatched. Run it — it
-    # sees the drained service (NO second stop — see the poll-claim race
-    # test below) and dispatches dispatch_provision (created[1]). Then
-    # run that to completion.
-    assert len(env["created"]) == 1, "expected exactly one drain-then-dispatch task"
-    await env["created"][0]
-    assert len(env["created"]) == 2, "expected the drain task to dispatch dispatch_provision"
-    await env["created"][1]
-
-    # Stop-first means the row was "stopped" by the time the claim ran: the
-    # claim is WON and attempt 0 is dispatched (an inline runner subprocess)
-    # — the runner applies the committed new provider off the billing row. The
-    # fix's whole point: the running-row change is no longer a silent no-op.
-    env["spawn"].assert_called_once()
-
-    # The row reflects a genuinely-claimed reprovision, not a silent stand-down:
-    # try_claim_provision stamped it "provisioning" with a real fencing token.
-    row = env["table"].get_item(Key={"owner_id": "org_cold"}).get("Item")
-    assert row["status"] == "provisioning"
-    assert row["provision_claim_id"]
-    # The new provider is committed on the billing row the runner reads.
-    assert result["provider_choice"] == "byo_key"
-
-
-@pytest.mark.asyncio
 async def test_cold_provider_change_on_stopped_container_applies_new_provider(cold_change_env):
     """Control: the identical call against an already-STOPPED row also wins
     the claim and reaches provision_user_container with the NEW provider —
@@ -348,181 +281,3 @@ async def test_cold_provider_change_with_no_container_still_provisions(cold_chan
     row = env["table"].get_item(Key={"owner_id": "org_cold"}).get("Item")
     assert row is not None and row["status"] == "provisioning"
     assert result["provider_choice"] == "byo_key"
-
-
-@pytest.mark.asyncio
-async def test_poll_claim_between_stop_and_drain_task_is_not_clobbered(cold_change_env):
-    """Single-flight under the accepted status-poll race: if a poll wake
-    claims the exposed "stopped" row BEFORE the drain task runs, the drain
-    task must neither clobber the claim (no second stop → no update_status
-    over "provisioning"; it is conditioned on the row existing, not on the
-    lease, so being scoped does not save it) nor start a second executor — its
-    own dispatched dispatch_provision loses the lease and stands down."""
-    from core.repositories import container_repo
-
-    env = cold_change_env
-    env["table"].put_item(Item={"owner_id": "org_cold", "status": "running", "service_name": "openclaw-org_cold-abc"})
-
-    await _run_cold_change(env["created"])
-    assert len(env["created"]) == 1  # the drain task, not yet run
-
-    # A status-poll wake lands NOW: real conditional claim on the stopped row.
-    poll_claim = await container_repo.try_claim_provision("org_cold")
-    assert poll_claim, "poll should win the claim on the exposed stopped row"
-
-    # Run the drain task. It must NOT reset the row to "stopped", and its
-    # dispatched dispatch_provision must LOSE the lease and stand down.
-    await env["created"][0]
-    assert len(env["created"]) == 2
-    await env["created"][1]
-
-    # The drain task's dispatch LOST the lease to the poll's claim: NOTHING
-    # provisioned — no inline attempt spawned and no SFN execution started
-    # (single-flight — exactly one executor). This is the fence this file
-    # exists for; it now lands on _spawn_inline.
-    env["spawn"].assert_not_called()
-    env["sfn"].start_execution.assert_not_called()
-
-    # The poll's claim survived untouched — still provisioning, same token.
-    row = env["table"].get_item(Key={"owner_id": "org_cold"}).get("Item")
-    assert row["status"] == "provisioning"
-    assert row["provision_claim_id"] == poll_claim
-
-
-@pytest.mark.asyncio
-async def test_cold_provider_change_stop_failure_reverts_commit_and_retry_works(cold_change_env):
-    """A GENUINE ECS stop failure (not service-not-found) after the provider
-    commit must revert the billing row, so a retry re-runs the full switch
-    instead of hitting the no-op fast-path and silently dispatching nothing
-    — the running container would otherwise keep the old provider forever
-    (running rows are neither poll-retryable nor claimable)."""
-    env = cold_change_env
-    env["table"].put_item(Item={"owner_id": "org_cold", "status": "running", "service_name": "openclaw-org_cold-abc"})
-    env["manager"]._ecs.update_service.side_effect = ClientError(
-        {"Error": {"Code": "ClusterNotFoundException", "Message": "throttled"}},
-        "UpdateService",
-    )
-
-    with pytest.raises(billing_service.ChangeProviderError) as exc:
-        await _run_cold_change(env["created"])
-    assert exc.value.code == "reprovision_stop_failed"
-
-    # The commit was REVERTED — the shared row-mirror reflects the old
-    # provider again — and no reprovision task was dispatched.
-    account = await billing_service.billing_repo.get_by_owner_id("org_cold")
-    assert account["provider_choice"] == "bedrock_claude"
-    assert env["created"] == []
-
-    # The stop was NOT applied (ECS itself failed), so the row must NOT be
-    # re-stamped "stopped" — that would trigger a pointless restart cycle
-    # of a genuinely-running container on a transient ECS throttle.
-    row = env["table"].get_item(Key={"owner_id": "org_cold"}).get("Item")
-    assert row["status"] == "running"
-
-    # Retry once ECS recovers: NOT a noop — the full switch re-runs and the
-    # provision executor applies the new provider.
-    env["manager"]._ecs.update_service.side_effect = None
-    result = await _run_cold_change(env["created"])
-    assert result["status"] == "ok"
-    assert result["restart"] is True
-
-    assert len(env["created"]) == 1
-    await env["created"][0]
-    assert len(env["created"]) == 2
-    await env["created"][1]
-
-    env["spawn"].assert_called_once()
-    assert result["provider_choice"] == "byo_key"
-
-
-@pytest.mark.asyncio
-async def test_stop_failure_reverts_legacy_row_to_default_not_stuck(cold_change_env):
-    """A LEGACY billing row carries no provider_choice (resolves to
-    bedrock_claude). On a genuine stop failure after the commit, the revert
-    must restore the effective default rather than skip — otherwise the row
-    keeps the newly-committed provider and a retry hits the no-op fast path,
-    stranding the still-running container on the old provider forever."""
-    env = cold_change_env
-    del env["row"]["provider_choice"]  # legacy: never chose a provider
-    env["table"].put_item(Item={"owner_id": "org_cold", "status": "running", "service_name": "openclaw-org_cold-abc"})
-    env["manager"]._ecs.update_service.side_effect = ClientError(
-        {"Error": {"Code": "ClusterNotFoundException", "Message": "throttled"}},
-        "UpdateService",
-    )
-
-    with pytest.raises(billing_service.ChangeProviderError):
-        await _run_cold_change(env["created"])
-
-    # Reverted to the resolved legacy default -- NOT left on the requested
-    # byo_key (which would no-op the retry), NOT left absent (repo rejects None).
-    account = await billing_service.billing_repo.get_by_owner_id("org_cold")
-    assert account["provider_choice"] == "bedrock_claude"
-    assert env["created"] == []  # nothing dispatched
-
-
-@pytest.mark.asyncio
-async def test_cold_change_fences_out_in_flight_poll_wake_claim(cold_change_env):
-    """A poll wake that claimed BEFORE the provider commit resolved the OLD
-    provider; without a fence it would keep passing its leased checkpoints
-    (the stop's row write preserves its claim) and finish with the old
-    config while our delayed dispatch stands down. The cold path now
-    takeover_provision's after the stop — same deliberate-door fencing as
-    conversion //recover/admin — so the stale run dies at its next
-    checkpoint and OUR dispatch applies the new provider."""
-    from core.repositories import container_repo
-    from core.repositories.container_repo import ProvisionSuperseded
-
-    env = cold_change_env
-    env["table"].put_item(Item={"owner_id": "org_cold", "status": "stopped"})
-    poll_claim = await container_repo.try_claim_provision("org_cold")
-    assert poll_claim, "poll wake should win the claim on the stopped row"
-
-    result = await _run_cold_change(env["created"])
-    assert result["restart"] is True
-
-    # The in-flight poll run is SUPERSEDED: its next checkpoint raises
-    # instead of letting it write the pre-commit provider's config.
-    with pytest.raises(ProvisionSuperseded):
-        await container_repo.update_container_leased("org_cold", poll_claim, {"substatus": "poison"})
-
-    # Our own dispatch proceeds end-to-end with the NEW provider.
-    assert len(env["created"]) == 1
-    await env["created"][0]
-    assert len(env["created"]) == 2
-    await env["created"][1]
-    env["spawn"].assert_called_once()
-    assert result["provider_choice"] == "byo_key"
-
-
-@pytest.mark.asyncio
-async def test_stop_row_write_failure_also_reverts_commit(cold_change_env):
-    """The revert must cover the WHOLE stop path, not just the wrapped ECS
-    call: stop_user_service's row writes after desiredCount=0 (update_status /
-    stamp_stop_reason) propagate raw DDB exceptions, and skipping the revert
-    for those would leave the provider row committed with no dispatch and no
-    convergence path."""
-    env = cold_change_env
-    env["table"].put_item(Item={"owner_id": "org_cold", "status": "running", "service_name": "openclaw-org_cold-abc"})
-
-    update_status_mock = AsyncMock(
-        side_effect=ClientError(
-            {"Error": {"Code": "InternalServerError", "Message": "ddb blip"}},
-            "UpdateItem",
-        )
-    )
-    with patch("core.repositories.container_repo.update_status", new=update_status_mock):
-        with pytest.raises(billing_service.ChangeProviderError) as exc:
-            await _run_cold_change(env["created"])
-    assert exc.value.code == "reprovision_stop_failed"
-
-    # Reverted + nothing dispatched — same contract as the ECS-failure case.
-    account = await billing_service.billing_repo.get_by_owner_id("org_cold")
-    assert account["provider_choice"] == "bedrock_claude"
-    assert env["created"] == []
-
-    # The ECS stop DID land in this shape, so the handler attempted the
-    # best-effort "stopped" re-stamp (a second update_status call — here it
-    # fails too, which is tolerated; /recover remains the backstop). The
-    # ECS-failure case must NOT re-stamp — pinned by the running-row status
-    # assert in the retry-works test above.
-    assert update_status_mock.call_count == 2

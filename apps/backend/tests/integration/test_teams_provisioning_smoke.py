@@ -315,9 +315,24 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
     }
 
     try:
-        with patch(
-            "core.services.clerk_admin.get_user",
-            new=AsyncMock(return_value=fake_clerk_user),
+        with (
+            patch(
+                "core.services.clerk_admin.get_user",
+                new=AsyncMock(return_value=fake_clerk_user),
+            ),
+            # `create_agent`'s post-create branch is gated on `runtime_transport.host_for`,
+            # which is pinned to "agentcore" fleet-wide (deletion PR-1) -- so EVERY owner,
+            # including this smoke's owner with no `containers` row at all, now takes the
+            # Hermes-profile-write branch instead of the old ECS `pair_with_openclaw` one
+            # (which silently no-oped on a missing/unreachable container -- the reason this
+            # smoke never needed to touch that seam before). A genuine end-to-end profile
+            # write needs a billing-accounts table + S3 bucket this smoke doesn't set up,
+            # and isn't this test's point anyway (the wire shape sent to Paperclip's create
+            # endpoint, asserted below, is) -- so it's mocked to a no-op success here.
+            patch(
+                "core.services.hermes_provisioning.write_profile_for_agent",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             with TestClient(app) as client:
                 resp = client.post(

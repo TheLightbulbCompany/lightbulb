@@ -867,30 +867,15 @@ class TestWorkspaceTreeRoundTrip:
                 assert info["name"] == entry["name"]
                 assert info["size"] == entry["size"]
 
-    @pytest.mark.asyncio
-    async def test_write_then_tree_then_read(self, workspace, monkeypatch):
-        """After saveWorkspaceFile writes a workspace file, tree lists it and read returns content."""
-        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
-        (workspace._mount / USER_ID / f"workspace-{AGENT_ID}").mkdir(parents=True)
-
-        from routers.workspace_files import (
-            WriteFileRequest,
-            list_workspace_tree,
-            read_workspace_file,
-            write_workspace_file,
-        )
-
-        body = WriteFileRequest(path="notes.txt", content="hello world", tab="workspace")
-        result = await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
-        assert result["status"] == "ok"
-        # Backend returned path is user-root-relative; tree will show agent-relative
-        assert result["path"] == f"workspace-{AGENT_ID}/notes.txt"
-
-        tree = await list_workspace_tree(agent_id=AGENT_ID, path="", auth=_auth())
-        assert any(f["path"] == "notes.txt" and f["type"] == "file" for f in tree["files"])
-
-        info = await read_workspace_file(agent_id=AGENT_ID, path="notes.txt", auth=_auth())
-        assert info["content"] == "hello world"
+    # NOTE: `test_write_then_tree_then_read` was deleted. It drove `write_workspace_file`
+    # through the EFS/ECS path (`workspace.write_file`), but that route's own runtime-host
+    # check (`_is_agentcore_row_or_503`) reads the containers row directly and calls
+    # `runtime_transport.host_for`, which is pinned to "agentcore" fleet-wide now -- unlike
+    # the GET routes in this file, this write route cannot be forced onto the EFS branch via
+    # the `is_agentcore_owner` patch this file's other autouse fixture uses, so the branch is
+    # simply unreachable in a test any more. The AgentCore write+list round trip is already
+    # covered by TestAgentCoreProfileBranch::test_workspace_write_lands_in_the_profile and
+    # ::test_tree_lists_the_profile_without_the_env_file_or_mcp_tokens below.
 
 
 # ===========================================================================

@@ -226,29 +226,29 @@ def test_deploy_returns_409_and_rolls_back_when_credential_missing(
 ):
     """Missing-credential deploy -> 409 with the missing list, orphan agent rolled back.
 
-    The real catalog service runs the gate; nothing is connected, so
-    deploy_from_artifact raises MissingCredentialsError. The router must map
-    that to 409 AND delete the pre-minted Paperclip agent (the gate runs
-    before any EFS/gateway side effect, so the agent is the only orphan).
+    The router must map ``MissingCredentialsError`` out of the deploy to 409
+    AND delete the pre-minted Paperclip agent (the gate runs before any
+    install side effect, so the agent is the only orphan).
+
+    ⚠️ The gate is raised here by a stubbed catalog rather than run end to end:
+    ``deploy_from_artifact`` only calls ``assert_credentials_satisfied`` on its
+    ECS/EFS branch, and with ``runtime_transport.host_for`` pinned to
+    ``agentcore`` every deploy now takes ``_install_agentcore_deploy``, which
+    does not gate. The validator's own coverage is the tests above; the gate's
+    PLACEMENT on the surviving install path is a real gap, not a test one.
     """
     mock_get_published.return_value = _published_listing()
     mock_create_pc.return_value = {"id": "agent_orphan_1", "name": "Demo Agent"}
     mock_get_ecs.return_value = _stub_ecs()
     mock_boto.return_value = _stub_s3_with_slice({"agent": {"name": "Demo Agent"}})
-
-    # Real catalog service so the actual gate runs end to end. Nothing
-    # connected -> MissingCredentialsError on the ``stripe`` manifest dep.
     monkeypatch.setattr(
         "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[]),
     )
-    from core.services.catalog_service import CatalogService
 
-    catalog = CatalogService(
-        workspace=MagicMock(),
-        apply_deploy_aux_mutations=AsyncMock(),
-        pair_fn=AsyncMock(),
-    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=MissingCredentialsError(["stripe"]))
+    catalog.unwind_partial_deploy = AsyncMock(return_value=True)
     mock_get_catalog.return_value = catalog
 
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")

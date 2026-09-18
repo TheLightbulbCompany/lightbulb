@@ -85,15 +85,6 @@ async def test_step_0_still_runs_and_still_refuses_a_non_org_owner(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_with_the_flag_off_the_ecs_leg_is_unchanged(monkeypatch, runner_env):
-    monkeypatch.setattr(provision_runner.settings, "HERMES_RUNTIME", False)
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _ok)
-    monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", _explodes_if_called)
-    monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", _explodes_if_called)
-    await provision_runner.run("org_a", "claim-1")  # the ECS manager double is what runs
-
-
-@pytest.mark.asyncio
 async def test_an_existing_agentcore_row_takes_the_hermes_leg_even_with_the_flag_off(monkeypatch, runner_env):
     """Minor (predeploy review, M6-R39): the flag is ONE per-environment switch -- a dispatch
     that reaches an already-migrated owner while HERMES_RUNTIME happens to read False must not
@@ -139,24 +130,6 @@ async def test_with_the_flag_on_step_0_is_seeded_with_the_agentcore_runtime_host
 
     await provision_runner.run("org_a", "claim-1")
     assert seed_calls == ["agentcore"]
-
-
-@pytest.mark.asyncio
-async def test_with_the_flag_off_step_0_gets_no_runtime_host_hint(monkeypatch, runner_env):
-    """With the flag off, the hint is None — the ECS default, unchanged."""
-    seed_calls = []
-
-    async def _spy_seed(owner_id, *, runtime_host=None):
-        seed_calls.append(runtime_host)
-        return provision_runner.EXIT_OK
-
-    monkeypatch.setattr(provision_runner.settings, "HERMES_RUNTIME", False)
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _spy_seed)
-    monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", _explodes_if_called)
-    monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", _explodes_if_called)
-
-    await provision_runner.run("org_a", "claim-1")
-    assert seed_calls == [None]
 
 
 # --- M4-R33: hook_token must exist BEFORE step 0 seeds the roster (the exact bug) ----------

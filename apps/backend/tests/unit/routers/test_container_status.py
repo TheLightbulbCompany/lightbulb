@@ -175,6 +175,13 @@ def _stub_trial_armer(request):
 
 @pytest.mark.asyncio
 async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll():
+    """The trial clock arms exactly once, at the poll where the composed `runtime_phase`
+    first reads "ready" -- never before, never twice. This used to cycle a RUNNING row
+    through a "starting" (not-yet-gateway-connected) intermediate before "ready", but
+    `resolve_runtime_phase` now reports "ready" for any running row unconditionally, with
+    no health probe at all (`host_for` is pinned to "agentcore" fleet-wide) -- a running row
+    is ready on its very first poll. "provisioning"/"error" are what still exercise the
+    not-yet-ready leg the arm-only-once assertion depends on."""
     import boto3
     from moto import mock_aws
     from core.repositories import billing_repo
@@ -193,27 +200,20 @@ async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll()
             resolve_running_container=AsyncMock(side_effect=lambda _: (row, "10.0.0.1")),
             has_live_service=AsyncMock(return_value=True),
         )
-        gateway_reachable = {"v": False}
-
-        async def _health(*_a, **_kw):
-            if not gateway_reachable["v"]:
-                raise ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True)
-            return {"ok": True}
 
         with (
             patch.object(billing_repo, "_get_table", return_value=table),
             patch("routers.container.get_ecs_manager", return_value=ecs),
-            patch("core.services.container_rpc.call", AsyncMock(side_effect=_health)),
+            patch("core.services.container_rpc.call", AsyncMock(return_value={"ok": True})),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
             patch("routers.container.evaluate_provision_gate", AsyncMock(return_value=None)),
         ):
-            for status, phase in [("provisioning", "provisioning"), ("running", "starting"), ("error", "provisioning")]:
+            for status, phase in [("provisioning", "provisioning"), ("error", "provisioning")]:
                 row["status"] = status
                 result = await container_status(_workspace_auth(), wake="0", flow=None)
                 assert result["runtime_phase"] == phase
                 assert "trial_end" not in (await billing_repo.get_by_owner_id("org_x"))
             row["status"] = "running"
-            gateway_reachable["v"] = True
             with patch("core.repositories.billing_repo.time.time", return_value=1_000):
                 result = await container_status(_workspace_auth(), wake="0", flow=None)
             assert result["runtime_phase"] == "ready"
@@ -268,54 +268,19 @@ async def test_ready_paid_workspace_does_not_try_to_arm_a_trial():
 
 
 class TestContainerStatusPhaseField:
-    """Verify the /status response actually carries the phase."""
+    """Verify the /status response actually carries the phase.
 
-    @pytest.mark.asyncio
-    @patch("core.services.container_rpc.call", new_callable=AsyncMock)
-    @patch("routers.container.get_ecs_manager")
-    async def test_phase_starting_when_running_but_no_pool(self, mock_get_ecs, mock_gateway_connected, async_client):
-        mock_ecs = AsyncMock()
-        mock_get_ecs.return_value = mock_ecs
-        mock_ecs.resolve_running_container = AsyncMock(
-            return_value=(
-                {
-                    "service_name": "openclaw-abc",
-                    "status": "running",
-                    "created_at": "2026-01-15T12:00:00+00:00",
-                    "updated_at": "2026-01-15T12:00:00+00:00",
-                },
-                "10.0.1.5",
-            )
-        )
-        mock_gateway_connected.side_effect = ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True)
-
-        response = await async_client.get("/api/v1/container/status")
-        assert response.status_code == 200
-        assert response.json()["runtime_phase"] == "starting"
-
-    @pytest.mark.asyncio
-    @patch("core.services.container_rpc.call", new_callable=AsyncMock)
-    @patch("routers.container.get_ecs_manager")
-    async def test_phase_ready_when_pool_connected(self, mock_get_ecs, mock_gateway_connected, async_client):
-        mock_ecs = AsyncMock()
-        mock_get_ecs.return_value = mock_ecs
-        mock_ecs.resolve_running_container = AsyncMock(
-            return_value=(
-                {
-                    "service_name": "openclaw-abc",
-                    "status": "running",
-                    "created_at": "2026-01-15T12:00:00+00:00",
-                    "updated_at": "2026-01-15T12:00:00+00:00",
-                },
-                "10.0.1.5",
-            )
-        )
-        mock_gateway_connected.return_value = {"ok": True}
-
-        response = await async_client.get("/api/v1/container/status")
-        assert response.status_code == 200
-        assert response.json()["runtime_phase"] == "ready"
-        mock_gateway_connected.assert_awaited_once_with("org_test_456", "health", timeout_s=2.0, wake=False)
+    NOTE: `test_phase_starting_when_running_but_no_pool` and
+    `test_phase_ready_when_pool_connected` were deleted. Both drove a running container row
+    through the gateway health-probe branch of `resolve_runtime_phase`/`compute_status` --
+    unreachable now that `runtime_transport.host_for` is pinned to "agentcore" fleet-wide:
+    a running row is reported "ready" unconditionally, with `container_rpc.call` never
+    awaited at all (see the "Never probe a running AgentCore row" comment in
+    `core/services/readiness_state.py`). That composed behaviour has its own direct unit
+    coverage in tests/unit/services/test_readiness_state.py and
+    test_readiness_state_agentcore_parked.py; this router-level duplicate would just assert
+    dead code.
+    """
 
 
 class TestContainerStatus:

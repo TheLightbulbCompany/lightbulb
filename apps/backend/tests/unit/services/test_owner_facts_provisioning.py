@@ -13,8 +13,10 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from core.services import owner_facts as mod  # noqa: E402
 
 
-def _writer(written: dict):
-    return lambda owner, name, body: written.update(body=body)
+def _profile_writer(written: dict):
+    """Every owner is AgentCore now: the write lands via
+    ``hermes_profiles.write_facts_to_profiles`` rather than EFS."""
+    return lambda owner_id, agent_ids, facts_json: written.update(body=facts_json)
 
 
 def test_default_is_an_empty_list():
@@ -63,9 +65,11 @@ async def test_names_only_never_a_value_and_rejected_survives():
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"subscription_status": "active"})),
         patch.object(mod, "_lookup_email_address", AsyncMock(return_value=None)),
         patch("core.repositories.provisioning_workflow_repo.list_for_owner", AsyncMock(return_value=rows)),
-        patch.object(mod, "get_workspace") as ws,
+        patch.object(mod.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True)),
+        patch("core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "agent-ceo"}])),
+        patch("core.services.hermes_profiles.write_facts_to_profiles") as write_facts,
     ):
-        ws.return_value.write_file.side_effect = _writer(written)
+        write_facts.side_effect = _profile_writer(written)
         await mod.write_owner_facts("org_a")
     body = written["body"]
     assert "NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN" in body  # the NAME is useful
@@ -100,9 +104,11 @@ async def test_writer_reads_the_workflow_table_once_and_keeps_the_newest_per_pai
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"subscription_status": "active"})),
         patch.object(mod, "_lookup_email_address", AsyncMock(return_value=None)),
         patch("core.repositories.provisioning_workflow_repo.list_for_owner", AsyncMock(return_value=rows)) as listed,
-        patch.object(mod, "get_workspace") as ws,
+        patch.object(mod.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True)),
+        patch("core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "agent-ceo"}])),
+        patch("core.services.hermes_profiles.write_facts_to_profiles") as write_facts,
     ):
-        ws.return_value.write_file.side_effect = _writer(written)
+        write_facts.side_effect = _profile_writer(written)
         await mod.write_owner_facts("org_a")
     listed.assert_awaited_once_with("org_a")
     body = written["body"]
@@ -120,9 +126,11 @@ async def test_a_failed_workflow_read_never_blocks_the_facts_write():
             "core.repositories.provisioning_workflow_repo.list_for_owner",
             AsyncMock(side_effect=RuntimeError("ddb down")),
         ),
-        patch.object(mod, "get_workspace") as ws,
+        patch.object(mod.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True)),
+        patch("core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "agent-ceo"}])),
+        patch("core.services.hermes_profiles.write_facts_to_profiles") as write_facts,
     ):
-        ws.return_value.write_file.side_effect = _writer(written)
+        write_facts.side_effect = _profile_writer(written)
         await mod.write_owner_facts("org_a")
     assert '"provisioning": []' in written["body"]
 

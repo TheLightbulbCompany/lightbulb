@@ -8,7 +8,6 @@ Clerk tokens. Auth is timing-safe bearer-token compare against
 
 from unittest.mock import AsyncMock, patch
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -155,23 +154,32 @@ def test_no_running_task_returns_503(client, fake_container):
 
 
 def test_successful_forward_passes_body_and_writes_audit(client, fake_container):
-    forwarded_kwargs = {}
+    """The header-stripping guarantee (module docstring: every external webhook was DEAD on
+    every 8.1 container until X-Forwarded-*/Forwarded/X-Real-IP came out) is built once in
+    `_build_forwarded_headers` and handed to whichever transport forwards the call -- ECS's
+    raw httpx client is dead now that `host_for` is pinned to "agentcore" fleet-wide, so this
+    drives the SAME assertions through `runtime_transport.request` instead."""
+    from core.services import runtime_transport
 
-    class StubTransport(httpx.AsyncBaseTransport):
-        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-            forwarded_kwargs["url"] = str(request.url)
-            forwarded_kwargs["body"] = request.content
-            forwarded_kwargs["headers"] = dict(request.headers)
-            return httpx.Response(200, content=b'{"ok": true}')
+    agentcore_container = {**fake_container, "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
+    captured = {}
+
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["path"] = path
+        captured["content"] = content
+        captured["headers"] = headers
+        return runtime_transport.RuntimeResponse(200, '{"ok": true}', {"content-type": "application/json"})
 
     with (
-        patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
+        patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=agentcore_container)),
         _mock_billing("active"),
         patch(
             "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
+            new=AsyncMock(return_value=(agentcore_container, runtime_transport.AGENTCORE_ADDRESS)),
         ),
-        patch("routers.hooks_proxy._client_factory", lambda: httpx.AsyncClient(transport=StubTransport())),
+        patch("routers.hooks_proxy.runtime_transport.request", fake_request),
     ):
         r = client.post(
             "/api/v1/hooks/u/u_1/wake",
@@ -187,9 +195,10 @@ def test_successful_forward_passes_body_and_writes_audit(client, fake_container)
 
     assert r.status_code == 200
     assert r.json() == {"ok": True}
-    assert forwarded_kwargs["url"] == "http://10.0.42.17:18789/hooks/wake"
+    assert captured["path"] == "/hooks/wake"
+    assert captured["content"] == r.request.content
     # Headers we control:
-    assert forwarded_kwargs["headers"]["authorization"] == "Bearer " + fake_container["hook_token"]
+    assert captured["headers"]["Authorization"] == "Bearer " + fake_container["hook_token"]
     # NO X-Forwarded-* may reach the container. 2026.8.1 ingress attribution
     # (gateway/ingress-attribution.ts) fails CLOSED -- 403 proxy_attribution_required,
     # before the hooks handler runs -- for any request carrying forwarded headers
@@ -200,32 +209,39 @@ def test_successful_forward_passes_body_and_writes_audit(client, fake_container)
     # "message required" without the headers, 403 with them. Every external
     # webhook through this proxy was dead on every 8.1 container until this.
     # The caller's spoofed value must still not pass through either.
-    for h in forwarded_kwargs["headers"]:
+    for h in captured["headers"]:
         assert not h.lower().startswith("x-forwarded-"), h
-    assert "forwarded" not in {h.lower() for h in forwarded_kwargs["headers"]}
-    assert "x-real-ip" not in {h.lower() for h in forwarded_kwargs["headers"]}
+    assert "forwarded" not in {h.lower() for h in captured["headers"]}
+    assert "x-real-ip" not in {h.lower() for h in captured["headers"]}
 
 
 def test_query_string_is_forwarded_verbatim(client, fake_container):
     """Webhook senders carry verification/signature material in the query
     string (Slack URL-verification ``?challenge=``, custom ``?routing_key=``,
     etc.). The proxy must forward it verbatim — dropping it silently breaks
-    those handshakes."""
-    forwarded_kwargs = {}
+    those handshakes. The ECS raw-httpx forward is dead now (`host_for` is
+    pinned to "agentcore" fleet-wide), so this drives the same assertion
+    through `runtime_transport.request` instead -- the query-string append is
+    shared code (``path = f"/hooks/{hook_path}" + (f"?{query}" if query else "")``)."""
+    from core.services import runtime_transport
 
-    class StubTransport(httpx.AsyncBaseTransport):
-        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-            forwarded_kwargs["url"] = str(request.url)
-            return httpx.Response(200, content=b'{"ok": true}')
+    agentcore_container = {**fake_container, "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
+    captured = {}
+
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["path"] = path
+        return runtime_transport.RuntimeResponse(200, '{"ok": true}', {})
 
     with (
-        patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
+        patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=agentcore_container)),
         _mock_billing("active"),
         patch(
             "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
+            new=AsyncMock(return_value=(agentcore_container, runtime_transport.AGENTCORE_ADDRESS)),
         ),
-        patch("routers.hooks_proxy._client_factory", lambda: httpx.AsyncClient(transport=StubTransport())),
+        patch("routers.hooks_proxy.runtime_transport.request", fake_request),
     ):
         r = client.post(
             "/api/v1/hooks/u/u_1/wake?challenge=abc&signature=xyz",
@@ -234,7 +250,7 @@ def test_query_string_is_forwarded_verbatim(client, fake_container):
         )
 
     assert r.status_code == 200
-    assert forwarded_kwargs["url"].endswith("wake?challenge=abc&signature=xyz")
+    assert captured["path"].endswith("wake?challenge=abc&signature=xyz")
 
 
 @pytest.mark.asyncio
@@ -321,20 +337,25 @@ def test_agentcore_row_forwards_through_the_runtime_transport_seam(client, fake_
 
 
 def test_rate_limiter_returns_429_after_60_per_minute(client, fake_container):
-    """In-process token bucket caps at 60/min per owner."""
+    """In-process token bucket caps at 60/min per owner. The limiter check runs before IP
+    resolution/forwarding either way, but the loop below still needs each of the 60 calls to
+    complete cleanly rather than raising on the (now dead) ECS forward path -- `host_for` is
+    pinned to "agentcore" fleet-wide, so the container is agentcore-shaped here too."""
+    from core.services import runtime_transport
 
-    class StubTransport(httpx.AsyncBaseTransport):
-        async def handle_async_request(self, request):
-            return httpx.Response(200, content=b"{}")
+    agentcore_container = {**fake_container, "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
+
+    async def fake_request(*_a, **_kw):
+        return runtime_transport.RuntimeResponse(200, "{}", {})
 
     with (
-        patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
+        patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=agentcore_container)),
         _mock_billing("active"),
         patch(
             "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
+            new=AsyncMock(return_value=(agentcore_container, runtime_transport.AGENTCORE_ADDRESS)),
         ),
-        patch("routers.hooks_proxy._client_factory", lambda: httpx.AsyncClient(transport=StubTransport())),
+        patch("routers.hooks_proxy.runtime_transport.request", fake_request),
     ):
         # Exhaust the bucket (60).
         for _ in range(60):

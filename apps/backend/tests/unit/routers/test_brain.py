@@ -113,17 +113,14 @@ class TestBrainAgentCoreFence:
             await delete_brain_file(path="index.md", auth=_auth())
         assert exc.value.status_code == 410
 
-    @pytest.mark.asyncio
-    async def test_tree_unaffected_for_ecs_row(self, workspace, wiki_root, monkeypatch):
-        """An explicit ECS row (not just a missing one) behaves exactly like today."""
-        from routers.brain import list_brain_tree
-
-        monkeypatch.setattr(
-            "routers.brain.container_repo.get_by_owner_id",
-            AsyncMock(return_value={"runtime_host": "ecs"}),
-        )
-        tree = await list_brain_tree(auth=_auth())
-        assert {f["path"] for f in tree["files"]} >= {"index.md", "topics/agents.md"}
+    # NOTE: `test_tree_unaffected_for_ecs_row` was deleted. `runtime_transport.host_for` no
+    # longer reads `runtime_host` at all (it's pinned to "agentcore" fleet-wide, deletion
+    # PR-1), so an explicit `{"runtime_host": "ecs"}` row now 410s exactly like a genuine
+    # AgentCore row -- there is no longer a distinct "explicit ECS row" shape to keep
+    # unaffected. The "missing/None row still behaves normally" case (the `_resolve_ecs_
+    # owner_id` guard is `if container and host_for(container) == "agentcore"`, so a falsy
+    # `container` short-circuits regardless of `host_for`) is exercised by every other test
+    # in this file via the module's own `_ecs_container_row` autouse fixture.
 
 
 # ===========================================================================

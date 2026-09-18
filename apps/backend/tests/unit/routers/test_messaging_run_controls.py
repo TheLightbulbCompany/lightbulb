@@ -43,13 +43,44 @@ def _common(row=ROW, control_status=202, member_error=None, member={"id": AGENT_
         yield post, gate_chat_mock
 
 
-@pytest.mark.asyncio
-async def test_abort_posts_to_the_plugin_route():
-    from routers.messaging import abort_run
+@contextlib.contextmanager
+def _common_agentcore(row=ROW, response=None, member_error=None, member={"id": AGENT_ID}):
+    """Same shape as `_common` above, but the container is AgentCore-addressed -- every
+    container is, now that `runtime_transport.host_for` is pinned to "agentcore" fleet-wide
+    -- so `_run_control` reaches `runtime_transport.request` instead of the now-dead
+    `_post_run_control` ECS path."""
+    container = {"gateway_token": "gw", "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
+    manager = MagicMock()
+    manager.resolve_running_container = AsyncMock(return_value=(container, "agentcore"))
+    captured = {}
 
-    with _common() as (post, _):
-        assert await abort_run("run-1", auth=_auth()) == AbortRunResponse(run_id="run-1", state="aborting")
-    post.assert_awaited_once_with("http://10.0.0.9:18789/plugins/lightbulb-channel/runs/run-1/abort", "gw", {})
+    async def fake_request(
+        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+    ):
+        captured["path"] = path
+        captured["json_body"] = json_body
+        return response
+
+    with (
+        patch("routers.messaging.messaging_repo.get_run", new_callable=AsyncMock, return_value=row),
+        patch("routers.messaging.service.require_room_member", new_callable=AsyncMock, side_effect=member_error),
+        patch("routers.messaging.messaging_repo.get_member", new_callable=AsyncMock, return_value=member),
+        patch("routers.messaging.get_ecs_manager", return_value=manager),
+        patch(
+            "routers.messaging.chat_gate.gate_chat", new_callable=AsyncMock, return_value={"blocked": False}
+        ) as gate_chat_mock,
+        patch("routers.messaging.container_repo.touch_last_interactive", new_callable=AsyncMock),
+        patch("routers.messaging.runtime_transport.request", fake_request),
+    ):
+        yield captured, gate_chat_mock
+
+
+# NOTE: `test_abort_posts_to_the_plugin_route` was deleted. It asserted a forward to the ECS
+# `http://{ip}:18789/...` URL via `_post_run_control`, which `_run_control` never reaches now
+# that `runtime_transport.host_for` is pinned to "agentcore" (every container takes the
+# `runtime_transport.request` branch instead). The identical "abort posts to the plugin
+# route" concept is already covered on the AgentCore seam by
+# test_abort_on_an_agentcore_row_goes_through_the_runtime_transport_seam below.
 
 
 @pytest.mark.asyncio
@@ -71,7 +102,7 @@ async def test_abort_reports_an_unreachable_runtime_rather_than_a_false_terminal
     """
     from routers.messaging import abort_run
 
-    with _common(control_status=401):
+    with _common_agentcore(response=runtime_transport.RuntimeResponse(401, "", {})):
         with pytest.raises(ApiProblem) as exc:
             await abort_run("run-1", auth=_auth())
     assert exc.value.error.code == "RUNTIME_UNAVAILABLE"
@@ -103,11 +134,10 @@ async def test_abort_refuses_a_run_whose_agent_left_the_room():
 async def test_steer_gates_then_posts_text():
     from routers.messaging import steer_run
 
-    with _common() as (post, gate_chat_mock):
+    with _common_agentcore(response=runtime_transport.RuntimeResponse(202, "{}", {})) as (captured, gate_chat_mock):
         assert await steer_run("run-1", SteerRunRequest(text="focus"), auth=_auth()) == SteerRunResponse(run_id="run-1")
-    post.assert_awaited_once_with(
-        "http://10.0.0.9:18789/plugins/lightbulb-channel/runs/run-1/steer", "gw", {"text": "focus"}
-    )
+    assert captured["path"] == "/plugins/lightbulb-channel/runs/run-1/steer"
+    assert captured["json_body"] == {"text": "focus"}
     assert gate_chat_mock.await_args.kwargs["session_key"] == f"agent:{AGENT_ID}:lightbulb:channel:{ROOM_ID}"
 
 
@@ -157,7 +187,7 @@ async def test_abort_on_an_agentcore_row_goes_through_the_runtime_transport_seam
 async def test_steer_404_from_the_plugin_is_run_not_active():
     from routers.messaging import steer_run
 
-    with _common(control_status=404):
+    with _common_agentcore(response=runtime_transport.RuntimeResponse(404, "", {})):
         with pytest.raises(ApiProblem) as exc:
             await steer_run("run-1", SteerRunRequest(text="focus"), auth=_auth())
     assert exc.value.error.code == "RUN_NOT_ACTIVE"

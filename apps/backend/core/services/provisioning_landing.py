@@ -147,33 +147,29 @@ async def revoke_credentials(*, owner_id: str, provider: str, resource_id: str) 
                 await integration_secret_store.put(owner_id, secret_key, blob)
             else:
                 await integration_secret_store.delete(owner_id, secret_key)
-        # The credential/pointer above are backend-owned (Secrets Manager + DynamoDB) and
-        # revoking them is meaningful regardless of runtime host; only this openclaw.json
-        # strip is AgentCore-dead (e.g. a resource landed before the workspace migrated) --
-        # skip just the write rather than fail the whole revoke over it.
-        if await runtime_transport.is_agentcore_owner(owner_id):
+        # This is a pure EFS locked-RMW file op -- it never talks to the container, so unlike
+        # the RPC calls elsewhere in the AgentCore rollout there is no "dead write" cost to
+        # avoid here. Always attempt it: a workspace that migrated ECS->AgentCore still has a
+        # real openclaw.json on EFS (migration doesn't delete that tree) and may still hold the
+        # plaintext secret value in it -- skipping this scrub would leave that plaintext
+        # resident indefinitely. The existing ConfigPatchError catch below already no-ops
+        # gracefully for a native AgentCore owner with no openclaw.json at all.
+        try:
+            for key in env_keys:
+                # One locked RMW per var, same reasoning as land_credentials:
+                # a single "delete the whole map" write would drop every var
+                # landed by another provider.
+                await config_patcher.delete_openclaw_config_path(owner_id, ["env", "vars", key])
+        except ConfigPatchError:
+            # No openclaw.json yet (container not provisioned) or the path is
+            # already gone. Not an error: the Secrets Manager copy is already
+            # gone, which is what matters, and the pointer removal below is
+            # still safe to retry.
             logger.info(
-                "provisioning: owner=%s is on agentcore; %s revoke skips the openclaw.json config strip",
+                "provisioning: no container config yet for owner=%s; %s revoke skips config strip",
                 owner_id,
                 provider,
             )
-        else:
-            try:
-                for key in env_keys:
-                    # One locked RMW per var, same reasoning as land_credentials:
-                    # a single "delete the whole map" write would drop every var
-                    # landed by another provider.
-                    await config_patcher.delete_openclaw_config_path(owner_id, ["env", "vars", key])
-            except ConfigPatchError:
-                # No openclaw.json yet (container not provisioned) or the path is
-                # already gone. Not an error: the Secrets Manager copy is already
-                # gone, which is what matters, and the pointer removal below is
-                # still safe to retry.
-                logger.info(
-                    "provisioning: no container config yet for owner=%s; %s revoke skips config strip",
-                    owner_id,
-                    provider,
-                )
 
     await integrations_repo.remove_provider_resource(owner_id, provider, resource_id)
     logger.info("provisioning: revoked %s/%s for owner=%s", provider, resource_id, owner_id)

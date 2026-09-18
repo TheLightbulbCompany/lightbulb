@@ -138,6 +138,30 @@ describe("ImportBackupDialog", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
+  it("non-claude confirm: response warnings render alongside a partial failure", async () => {
+    // Backend-honest AgentCore skip (hermes/honest-agentcore-branches) surfaced in
+    // ImportConfirmResponse.warnings — previously only captured on the claude branch.
+    mockPost.mockImplementation(async (url: string) => {
+      if (url === "/marketplace/import/presign") return { upload_url: "https://s3/put", key: "k", max_bytes: 1e9, expires_in: 900 };
+      if (url === "/marketplace/import") return PREVIEW;
+      if (url.endsWith("/confirm")) return {
+        agents: [
+          { source_agent_id: "main", agent_id: "uuid-ok", name: "Quill", ok: true, warnings: [] },
+          { source_agent_id: "work", agent_id: null, name: "Work Bot", ok: false, error: "container starting — retry in a moment" },
+        ],
+        plugins_installed: [], history_staged: [], restarting: false,
+        warnings: ["Installing plugins is unsupported_on_agentcore — skipped."],
+      };
+      throw new Error("unexpected " + url);
+    });
+    render(<ImportBackupDialog open onOpenChange={() => {}} onImported={() => {}} />);
+    pickFile();
+    await screen.findByText("Quill");
+    fireEvent.click(screen.getByRole("button", { name: /add to my team/i }));
+    expect(await screen.findByText(/Work Bot — container starting/)).toBeInTheDocument();
+    expect(screen.getByText(/unsupported_on_agentcore — skipped/)).toBeInTheDocument();
+  });
+
   it("claude preview: agent picker gates confirm, collection toggles ride the POST body", async () => {
     mockPost.mockImplementation(async (url: string) => {
       if (url === "/marketplace/import/presign") return { upload_url: "https://s3/put", key: "k", max_bytes: 1e9, expires_in: 900 };

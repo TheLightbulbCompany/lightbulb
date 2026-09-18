@@ -281,12 +281,13 @@ async def test_revoke_skips_the_secret_step_when_the_blob_is_already_gone():
 
 
 @pytest.mark.asyncio
-async def test_revoke_skips_the_dead_config_write_on_agentcore():
-    """The credential/pointer are backend-owned state (Secrets Manager +
-    DynamoDB) and revoking them is meaningful regardless of runtime host --
-    only the openclaw.json env.vars strip is a dead write on AgentCore (e.g. a
-    resource landed before the workspace migrated). Skip just that write;
-    never fail the whole revoke over it."""
+async def test_revoke_still_strips_openclaw_json_for_a_migrated_agentcore_owner():
+    """The config strip is a pure EFS locked-RMW file op -- it never talks to
+    the container, so there is no AgentCore RPC cost to avoid. A workspace
+    that migrated ECS->AgentCore keeps its EFS tree (migration doesn't delete
+    it), and that stale openclaw.json can still hold the plaintext secret
+    value: revoke must scrub it there too, exactly like on ECS. Skipping this
+    write would leave the plaintext resident indefinitely."""
     with (
         patch.object(mod.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True)) as is_ac,
         patch.object(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[REVOKE_RES])),
@@ -298,10 +299,10 @@ async def test_revoke_skips_the_dead_config_write_on_agentcore():
     ):
         result = await mod.revoke_credentials(owner_id="org_a", provider="posthog", resource_id="res_1")
     assert result is True
-    is_ac.assert_awaited_once_with("org_a")
+    is_ac.assert_not_awaited()  # revoke's config strip never branches on runtime host
     sm_put.assert_awaited_once_with("org_a", "projects/posthog", {"OTHER": "t"})
     sm_del.assert_not_awaited()
-    del_cfg.assert_not_awaited()
+    del_cfg.assert_awaited_once_with("org_a", ["env", "vars", "K"])
     drop.assert_awaited_once_with("org_a", "posthog", "res_1")
 
 

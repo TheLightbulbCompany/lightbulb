@@ -6,8 +6,47 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from bridge import turn
+from bridge import sync, turn
 from tests import factories as f
+
+
+# ---- fix round: first turn after an image roll dies in image prep --------------------------
+# pin_profile_defaults normalizes a legacy `terminal.backend: lightbulb_node` to `local`, but it
+# used to run only INSIDE _construct_agent -- which _run_hermes calls AFTER _terminal_scope's
+# `with` entry has already installed the scope. tools.terminal_scope.build_profile_terminal_scope
+# reads config.yaml once, at THAT install instant, so a profile carrying the legacy value got a
+# STALE `lightbulb_node` scope on the first turn after a roll: image_source._is_local_terminal_
+# backend() read it back false, took the non-local fallback path, and _native_image_part raised
+# _ImagePrepError. The second turn worked only because the first turn's pin had already
+# rewritten the file. Fixed by normalizing before the `with` block, not inside construction.
+def test_terminal_scope_installs_after_the_legacy_backend_is_already_normalized_on_disk(home, monkeypatch):
+    sync.write_profile_config("ceo", {"terminal": {"backend": "lightbulb_node"}})
+
+    seen = {}
+    native = ModuleType("tools.terminal_scope")
+
+    def install(profile, *, env_overlay):
+        # The scope's own install reads config.yaml at THIS instant -- assert it already sees
+        # the normalized value, not the legacy one still on disk when this test started.
+        seen["backend_at_install"] = sync.read_profile_config("ceo").get("terminal", {}).get("backend")
+        return "TOKEN"
+
+    native.install_profile_terminal_scope = install
+    native.reset_terminal_scope = lambda _t: None
+    monkeypatch.setitem(sys.modules, "tools.terminal_scope", native)
+
+    class _Agent:
+        session_input_tokens = session_output_tokens = 0
+        session_cache_read_tokens = session_cache_write_tokens = 0
+
+        def run_conversation(self, **_kw):
+            return {"api_calls": 1, "final_response": "ok"}
+
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: _Agent())
+
+    turn._run_hermes("ceo", f.ingress(), None)
+
+    assert seen["backend_at_install"] == "local"
 
 
 @pytest.mark.parametrize("fails", [False, True])

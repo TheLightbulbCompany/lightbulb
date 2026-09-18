@@ -952,6 +952,37 @@ def plugins_pin(existing: dict) -> dict:
     return {"plugins": {"enabled": enabled}}
 
 
+def normalize_legacy_terminal_backend(agent_id: str) -> dict:
+    """Rewrite a legacy ``terminal.backend: lightbulb_node`` to ``local`` on disk, right now,
+    and return the (possibly rewritten) config.
+
+    Pulled out of ``pin_profile_defaults`` (fix round, first-turn-after-an-image-roll bug) so a
+    caller can run JUST this normalization -- no ``hermes_cli`` import, unlike the rest of
+    ``pin_profile_defaults`` -- before anything installs a scope that snapshots config.yaml at
+    INSTALL time. ``bridge.turn._terminal_scope`` is exactly that: its
+    ``tools.terminal_scope.install_profile_terminal_scope`` call reads config.yaml once, when
+    installed, and used to run BEFORE ``_construct_agent`` (and its ``pin_profile_defaults``
+    call) had a chance to normalize a legacy value -- so the FIRST turn after an image roll
+    installed a stale ``lightbulb_node`` scope and ``_native_image_part`` raised
+    ``_ImagePrepError`` on that turn only (the second turn worked because the file was already
+    rewritten by then). Calling this here, ahead of the scope, closes that window; the
+    ``pin_profile_defaults`` call inside ``_construct_agent`` still runs afterwards and repeats
+    the same (by-then-already-true) check, which is why this is safe to call twice.
+
+    #2749 fix-forward: freshly written profiles now default to ``terminal.backend: local`` and
+    the bridge honours whatever backend a profile's config.yaml names. A profile written before
+    that PR can still carry the legacy ``lightbulb_node`` value -- Node/Mac execution is
+    deferred and no product surface can set it any more, so left alone it would route every
+    shell command at a Mac node that isn't attached.
+    """
+    existing = read_profile_config(agent_id)
+    terminal = existing.get("terminal")
+    if isinstance(terminal, dict) and terminal.get("backend") == "lightbulb_node":
+        existing = {**existing, "terminal": {**terminal, "backend": "local"}}
+        write_profile_config(agent_id, existing)
+    return existing
+
+
 def pin_profile_defaults(agent_id: str, model: str) -> dict:
     """Fill-missing, not force-pin (fix round, M4-R2).
 
@@ -974,17 +1005,12 @@ def pin_profile_defaults(agent_id: str, model: str) -> dict:
     ``plugins.enabled`` stays a UNION regardless of merge direction: ``plugins_pin`` already
     computes it from whatever ``existing`` holds, and this second merge line is unchanged.
 
-    #2749 fix-forward: freshly written profiles now default to ``terminal.backend: local`` and
-    the bridge honours whatever backend a profile's config.yaml names. A profile written before
-    that PR can still carry the legacy ``lightbulb_node`` value -- Node/Mac execution is
-    deferred and no product surface can set it any more, so left alone it would route every
-    shell command at a Mac node that isn't attached. Normalized here, before ``existing`` is
-    read by anything else.
+    A legacy ``terminal.backend: lightbulb_node`` is normalized to ``local`` before ``existing``
+    is read by anything else -- see ``normalize_legacy_terminal_backend``'s own docstring for
+    why that normalization is ALSO its own standalone function, called separately (and earlier)
+    by ``bridge.turn._run_hermes``/``_run_native_paperclip``.
     """
-    existing = read_profile_config(agent_id)
-    terminal = existing.get("terminal")
-    if isinstance(terminal, dict) and terminal.get("backend") == "lightbulb_node":
-        existing = {**existing, "terminal": {**terminal, "backend": "local"}}
+    existing = normalize_legacy_terminal_backend(agent_id)
     config = deep_merge(auxiliary_pin(_aux_defaults(), model), existing)
     config = deep_merge(config, plugins_pin(existing))
     # Same merge direction and reason as plugins_pin: a UNION that must win over `existing`.

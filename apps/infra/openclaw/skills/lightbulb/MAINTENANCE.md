@@ -5,6 +5,20 @@ meant every agent on the fleet paid for it on every load — the comment
 is invisible in rendered markdown but not to a model reading the file.
 Moved out so the skill body carries only what an agent needs.
 
+This tree is ALSO the source of the Hermes image's bundled skills:
+`apps/infra/hermes/build-skills.sh` copies it, swaps a handful of tokens
+(`/app/skills/` -> `/opt/hermes-skills/`, `exec` -> `terminal`,
+`~/.openclaw/lightbulb-facts.json` -> `$HERMES_HOME/lightbulb-facts.json`,
+`skill_workshop` -> `skills`), drops `shopify/` and `references/follow-ups.md`,
+and overlays `apps/infra/hermes/skills-overlay/` for the few files whose content
+genuinely differs there (no ACP coding harness, no `openclaw backup create`, no
+Shopify plugin routes). So an edit here reaches BOTH images -- but if it names a
+tool, a path, or a capability, check whether the Hermes build needs the overlay
+updated too. Hermes tool names are anchored to its `CONFIGURABLE_TOOLSETS`
+(`terminal`, `file`, `web`, `memory`, `skills`, `browser`, `secrets`) plus our
+own plugin tools in `apps/infra/hermes/plugins/lightbulb/__init__.py`
+(`send_room_message`, `hire_suggestion`, `lightbulb_local_sessions`).
+
 MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   code. This skill is the fleet's knowledge of the platform. It is SPLIT: a
   thin SKILL.md (routing table + non-negotiables) plus references/ read on

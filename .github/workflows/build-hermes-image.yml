@@ -20,6 +20,11 @@ on:
       - main
     paths:
       - "apps/infra/hermes/**"
+      # The bundled skills are BUILT from the OpenClaw tree by apps/infra/hermes/
+      # build-skills.sh, so an edit there changes this image. Without this path the
+      # Hermes copy silently drifts -- which is exactly what happened before it was
+      # derived (follow-ups.md and the Shopify guidance reached only OpenClaw).
+      - "apps/infra/openclaw/skills/**"
       - ".github/workflows/build-hermes-image.yml"
   workflow_dispatch: {}
 
@@ -50,6 +55,12 @@ jobs:
           DATE=$(date -u +%Y.%-m.%-d)
           SHORT_SHA=$(git rev-parse --short=7 HEAD)
           echo "tag=h-${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      # The Dockerfile's build context is apps/infra/hermes, which cannot reach the
+      # OpenClaw skills tree, so the derived copy is materialized into the context here.
+      # It is gitignored: a checked-in copy is the duplicate this replaced.
+      - name: Build the bundled skills tree
+        run: apps/infra/hermes/build-skills.sh
 
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4

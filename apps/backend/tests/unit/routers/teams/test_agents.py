@@ -204,10 +204,8 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     mint_mock.assert_called_once_with("o1")
 
 
-def test_create_agent_on_agentcore_owner_gets_the_http_adapter(client, monkeypatch):
-    """An AgentCore-hosted owner has no gateway for an operator socket to connect to --
-    /teams create must route through resolve_agent_adapter's http branch, not the
-    device-paired openclaw_gateway one."""
+def test_create_agent_on_agentcore_owner_gets_the_native_hermes_adapter(client, monkeypatch):
+    """AgentCore owners use Paperclip's native polling adapter through our backend."""
     admin = MagicMock()
     admin.create_agent = AsyncMock(return_value={"id": "a_new"})
     from routers.teams import agents as agents_mod
@@ -241,9 +239,11 @@ def test_create_agent_on_agentcore_owner_gets_the_http_adapter(client, monkeypat
     )
     assert r.status_code == 200
     call = admin.create_agent.await_args
-    assert call.kwargs["adapter_type"] == "http"
-    assert call.kwargs["adapter_config"]["headers"]["Authorization"] == "Bearer hook_abc"
-    assert call.kwargs["adapter_config"]["url"] == "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/runs/o1"
+    assert call.kwargs["adapter_type"] == "hermes_gateway"
+    assert call.kwargs["adapter_config"]["apiKey"] == "hook_abc"
+    assert call.kwargs["adapter_config"]["apiBaseUrl"] == (
+        "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/hermes/o1"
+    )
     write_profile.assert_awaited_once()
 
 

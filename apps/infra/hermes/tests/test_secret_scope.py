@@ -13,6 +13,7 @@ short-circuit) silently falls back to ``os.environ`` — never automatically tha
 """
 
 import contextvars
+import os
 import sys
 import types
 from pathlib import Path
@@ -176,3 +177,31 @@ def test_a_paperclip_api_key_reference_resolves_from_the_profiles_env_under_the_
     with turn._secret_scope("ceo"):
         assert _stub_get_secret("PAPERCLIP_API_KEY") == "pcp_live_x"
     assert _stub_get_secret("PAPERCLIP_API_KEY") is None  # reset after
+
+
+def test_native_paperclip_identity_overlays_profile_secrets_without_process_leak(home, monkeypatch):
+    profile = sync._profile_dir("ceo")
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / ".env").write_text("PAPERCLIP_API_KEY=pcp_live_x\n")
+
+    fake_agent_pkg = types.ModuleType("agent")
+    fake_ss = types.ModuleType("agent.secret_scope")
+    fake_ss.build_profile_secret_scope = _stub_build_profile_secret_scope
+    fake_ss.set_secret_scope = _stub_set_secret_scope
+    fake_ss.reset_secret_scope = _stub_reset_secret_scope
+    monkeypatch.setitem(sys.modules, "agent", fake_agent_pkg)
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", fake_ss)
+
+    dynamic = {
+        "PAPERCLIP_API_URL": "http://paperclip.internal:3100",
+        "PAPERCLIP_AGENT_ID": "ceo",
+        "PAPERCLIP_COMPANY_ID": "company-1",
+        "PAPERCLIP_RUN_ID": "run-1",
+        "PAPERCLIP_TASK_ID": "issue-1",
+    }
+    before = dict(os.environ)
+    with turn._secret_scope("ceo", dynamic):
+        assert _stub_get_secret("PAPERCLIP_API_KEY") == "pcp_live_x"
+        assert {key: _stub_get_secret(key) for key in dynamic} == dynamic
+    assert _TEST_SCOPE.get() is None
+    assert dict(os.environ) == before

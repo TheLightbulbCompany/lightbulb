@@ -1,6 +1,7 @@
 """One Hermes turn: profile restore, run the agent, post run/reply callbacks to the backend."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -71,6 +72,103 @@ def finish_run(run_id: str, outcome: str) -> None:
         if entry is not None:
             entry.update(state="ended", outcome=outcome, agent=None)
     prune_runs()
+
+
+_PAPERCLIP_IDENTITY_KEYS = ("runId", "companyId", "agentId", "sessionId", "issueId")
+
+
+def _paperclip_fingerprint(identity: dict, request: dict) -> str:
+    routing_identity = {key: identity.get(key) for key in _PAPERCLIP_IDENTITY_KEYS}
+    canonical = json.dumps(
+        {"identity": routing_identity, "request": request},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _paperclip_identity_matches(entry: dict, identity: dict) -> bool:
+    stored = entry.get("identity") or {}
+    return entry.get("kind") == "paperclip" and all(
+        stored.get(key) == identity.get(key) for key in _PAPERCLIP_IDENTITY_KEYS
+    )
+
+
+def register_paperclip_run(identity: dict, request: dict) -> str:
+    """Atomically register a native run, or classify an idempotent replay/conflict."""
+    run_id = identity["runId"]
+    fingerprint = _paperclip_fingerprint(identity, request)
+    with _RUNS_LOCK:
+        existing = RUNS.get(run_id)
+        if existing is not None:
+            if _paperclip_identity_matches(existing, identity) and existing.get("requestHash") == fingerprint:
+                return "replayed"
+            return "conflict"
+        RUNS[run_id] = {
+            "state": "queued",
+            "agent": None,
+            "aborted": False,
+            "outcome": None,
+            "started": False,
+            "kind": "paperclip",
+            "identity": dict(identity),
+            "requestHash": fingerprint,
+            "output": "",
+            "error": None,
+            "usage": dict(ZERO_USAGE),
+        }
+    return "created"
+
+
+def paperclip_run_aborted(run_id: str) -> bool:
+    with _RUNS_LOCK:
+        return bool((RUNS.get(run_id) or {}).get("aborted"))
+
+
+def finish_paperclip_run(run_id: str, outcome: str, *, output: str, error: str | None, usage: dict) -> None:
+    with _RUNS_LOCK:
+        entry = RUNS.get(run_id)
+        if entry is not None:
+            entry.update(
+                state="ended",
+                outcome=outcome,
+                output=output,
+                error=error,
+                usage=dict(usage),
+                agent=None,
+            )
+    prune_runs()
+
+
+def paperclip_run_status(run_id: str, identity: dict) -> dict | None:
+    with _RUNS_LOCK:
+        entry = RUNS.get(run_id)
+        if entry is None or not _paperclip_identity_matches(entry, identity):
+            return None
+        snapshot = dict(entry)
+    status = snapshot["state"]
+    if status == "ended":
+        outcome = snapshot.get("outcome")
+        status = "completed" if outcome == "completed" else "cancelled" if outcome == "cancelled" else "failed"
+    result = {
+        "run_id": run_id,
+        "status": status,
+        "session_id": (snapshot.get("identity") or {}).get("sessionId"),
+    }
+    if snapshot["state"] == "ended":
+        usage = snapshot.get("usage") or ZERO_USAGE
+        result["usage"] = {
+            "model": usage.get("model") or MODEL,
+            "input_tokens": int(usage.get("inputTokens") or 0),
+            "output_tokens": int(usage.get("outputTokens") or 0),
+            "cached_input_tokens": int(usage.get("cacheReadTokens") or 0),
+        }
+        if status == "completed":
+            result["output"] = snapshot.get("output") or ""
+        elif snapshot.get("error"):
+            result["error"] = snapshot["error"]
+    return result
 
 
 MAX_RUNS_ENTRIES = 512
@@ -799,7 +897,7 @@ def _hermes_home_scope(agent_id: str):
     return _scope()
 
 
-def _secret_scope(agent_id: str):
+def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
     """Hold the profile's secret scope for construction AND the whole run_conversation — the
     SAME lifetime as ``_hermes_home_scope`` above, and for the same reason: ``${VAR}`` refs in
     ``config.yaml`` resolve via ``agent.secret_scope.get_secret`` at CALL time
@@ -826,7 +924,9 @@ def _secret_scope(agent_id: str):
         except ImportError:
             yield
             return
-        token = set_secret_scope(build_profile_secret_scope(_profile_dir(agent_id)))
+        secrets = build_profile_secret_scope(_profile_dir(agent_id))
+        secrets.update(overlay or {})
+        token = set_secret_scope(secrets)
         try:
             yield
         finally:
@@ -835,8 +935,17 @@ def _secret_scope(agent_id: str):
     return _scope()
 
 
-def _terminal_scope(agent_id: str):
-    """Use Hermes's profile-local policy and default shell cwd, never process globals."""
+def _terminal_scope(agent_id: str, env_overlay: dict[str, str] | None = None):
+    """Use Hermes's profile-local policy and default shell cwd, never process globals.
+
+    ``env_overlay`` is Hermes's OWN supported way to hand a terminal child scoped
+    environment — the same parameter ``TERMINAL_CWD`` already rides. It is the ONLY thing
+    that reaches the child: the profile's ``.env`` + ``_secret_scope`` populate the
+    ``${VAR}`` resolver for ``config.yaml``, but a terminal child is spawned with neither
+    (measured in ``lightbulb/hermes-spike:m1-rc4``: ``PROFILE_CREDENTIAL=False``). So a
+    native Paperclip turn's ``PAPERCLIP_API_KEY`` and its run/company/issue identity are
+    passed HERE, per turn, per ContextVar — never exported into ``os.environ``, which two
+    concurrent profiles in one process would race over."""
     from contextlib import contextmanager
 
     @contextmanager
@@ -847,13 +956,26 @@ def _terminal_scope(agent_id: str):
             yield
             return
         home = _profile_dir(agent_id)
-        token = install_profile_terminal_scope(home, env_overlay={"TERMINAL_CWD": str(home)})
+        token = install_profile_terminal_scope(
+            home, env_overlay={"TERMINAL_CWD": str(home), **(env_overlay or {})}
+        )
         try:
             yield
         finally:
             reset_terminal_scope(token)
 
     return _scope()
+
+
+def _profile_secrets(agent_id: str) -> dict[str, str]:
+    """The profile's own ``.env`` values, or {} outside the Hermes image — the same source
+    ``_secret_scope`` installs, read directly so the terminal overlay can carry the agent's
+    ``PAPERCLIP_API_KEY`` without a process-global export."""
+    try:
+        from agent.secret_scope import build_profile_secret_scope
+    except ImportError:
+        return {}
+    return dict(build_profile_secret_scope(_profile_dir(agent_id)) or {})
 
 
 def profile_model(config: dict) -> tuple[str, str]:
@@ -976,6 +1098,110 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
     if not reply:
         return "error", "empty_response", "", usage
     return "completed", None, reply, usage
+
+
+def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | None, str, dict]:
+    """Execute the native adapter's already-rendered prompt without room re-rendering."""
+    agent_id = identity["agentId"]
+    run_id = identity["runId"]
+    session_id = identity["sessionId"]
+    try:
+        import run_agent  # noqa: F401
+    except ImportError:
+        pass
+    sync.ensure_profile(agent_id)
+    env = {
+        "PAPERCLIP_API_URL": identity["paperclipApiUrl"],
+        "PAPERCLIP_AGENT_ID": agent_id,
+        "PAPERCLIP_COMPANY_ID": identity["companyId"],
+        "PAPERCLIP_RUN_ID": run_id,
+    }
+    if identity.get("issueId"):
+        env["PAPERCLIP_TASK_ID"] = identity["issueId"]
+    # The agent dispositions the issue by calling the Paperclip API from a terminal command,
+    # and a terminal child inherits neither the profile `.env` nor the secret scope -- only
+    # `env_overlay`. So the identity AND the profile's own key are handed to _terminal_scope;
+    # _secret_scope still gets the identity so a `${PAPERCLIP_RUN_ID}` config ref resolves.
+    terminal_env = {**env, **{
+        key: value for key, value in _profile_secrets(agent_id).items() if key == "PAPERCLIP_API_KEY"
+    }}
+    with _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, terminal_env):
+        agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
+        attach_agent(run_id, agent)
+        if paperclip_run_aborted(run_id):
+            return "cancelled", None, "", dict(ZERO_USAGE)
+        try:
+            result = agent.run_conversation(
+                user_message=request["input"],
+                system_message=request["instructions"],
+            ) or {}
+        except Exception:
+            if paperclip_run_aborted(run_id):
+                return "cancelled", None, "", _agent_usage(agent)
+            raise
+    usage = _agent_usage(agent)
+    if paperclip_run_aborted(run_id):
+        return "cancelled", None, "", usage
+    reply = result.get("final_response") or ""
+    if not result.get("api_calls"):
+        return "failed", "model_unavailable", "", usage
+    if not reply:
+        return "failed", "empty_response", "", usage
+    return "completed", None, reply, usage
+
+
+def _agent_usage(agent) -> dict:
+    return {
+        **ZERO_USAGE,
+        "model": getattr(agent, "model", "") or MODEL,
+        "inputTokens": int(getattr(agent, "session_input_tokens", 0) or 0),
+        "outputTokens": int(getattr(agent, "session_output_tokens", 0) or 0),
+        "cacheReadTokens": int(getattr(agent, "session_cache_read_tokens", 0) or 0),
+        "cacheWriteTokens": int(getattr(agent, "session_cache_write_tokens", 0) or 0),
+    }
+
+
+def run_paperclip_turn(identity: dict, request: dict) -> None:
+    """Run one native Paperclip turn and leave its terminal result in the bounded registry."""
+    run_id = identity["runId"]
+    agent_id = identity["agentId"]
+    session_id = identity["sessionId"]
+    _busy_add(1)
+    started = time.time()
+    outcome, error, output, usage = "failed", None, "", dict(ZERO_USAGE)
+    try:
+        try:
+            sync.restore_root_auth()
+            restore_profile(agent_id)
+            if paperclip_run_aborted(run_id):
+                outcome = "cancelled"
+            else:
+                outcome, error, output, usage = _run_native_paperclip(identity, request)
+        except Exception as exc:  # noqa: BLE001 -- return the class, never exception text/prompt data
+            if paperclip_run_aborted(run_id):
+                outcome, error = "cancelled", None
+            else:
+                outcome, error = "failed", type(exc).__name__
+                log.error("native Paperclip turn %s failed\n%s", run_id, traceback.format_exc())
+        finish_paperclip_run(run_id, outcome, output=output, error=error, usage=usage)
+        report_usage(
+            session_id,
+            agent_id,
+            run_id,
+            outcome == "completed",
+            int((time.time() - started) * 1000),
+            usage,
+        )
+        try:
+            save_profile(agent_id)
+        except Exception:  # noqa: BLE001 -- best effort, same as room turns
+            log.warning("save_profile failed for native Paperclip turn", exc_info=True)
+        try:
+            sync.save_root_auth()
+        except Exception:  # noqa: BLE001
+            log.warning("save_root_auth failed for native Paperclip turn", exc_info=True)
+    finally:
+        _busy_add(-1)
 
 
 def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) -> None:

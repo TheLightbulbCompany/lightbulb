@@ -400,11 +400,8 @@ async def test_ecs_owner_adapter_selection_is_byte_identical_via_the_real_resolv
 
 
 @pytest.mark.asyncio
-async def test_agentcore_owner_gets_the_http_adapter_via_the_real_resolver(monkeypatch):
-    """The one shared resolver (paperclip_agent_lifecycle.resolve_agent_adapter) picks the
-    adapter type from the owner's ACTUAL container row -- an AgentCore-hosted owner's
-    company-deploy agents get the fork's http adapter, not a device-paired openclaw_gateway
-    one that has no gateway to pair with."""
+async def test_agentcore_owner_gets_the_native_hermes_adapter_via_the_real_resolver(monkeypatch):
+    """The shared resolver selects the native Hermes adapter for AgentCore owners."""
     plan = _simple_plan()
     h = Harness()
     _install(monkeypatch, h, plan=plan)
@@ -420,9 +417,11 @@ async def test_agentcore_owner_gets_the_http_adapter_via_the_real_resolver(monke
 
     assert h.admin.create_calls
     for call in h.admin.create_calls:
-        assert call["adapter_type"] == "http"
-        assert call["adapter_config"]["headers"]["Authorization"] == "Bearer hook_abc"
-        assert call["adapter_config"]["url"] == f"https://api-dev.flickmeon.ai/api/v1/internal/paperclip/runs/{OWNER}"
+        assert call["adapter_type"] == "hermes_gateway"
+        assert call["adapter_config"]["apiKey"] == "hook_abc"
+        assert call["adapter_config"]["apiBaseUrl"] == (
+            f"https://api-dev.flickmeon.ai/api/v1/internal/paperclip/hermes/{OWNER}"
+        )
 
 
 @pytest.mark.asyncio

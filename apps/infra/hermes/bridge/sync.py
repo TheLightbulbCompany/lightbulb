@@ -61,38 +61,37 @@ def _save_lock(agent_id: str) -> threading.Lock:
     with _save_locks_guard:
         return _save_locks.setdefault(agent_id, threading.Lock())
 
-#: Hazard 4 (local-exec persistence report): with ``terminal.backend: local`` the agent's shell
-#: runs IN its profile dir, so a build drops whole dependency/output trees into the directory
-#: save_profile rglobs and restore_profile re-downloads object-by-object. All of it is
-#: reproducible from source, so it is skipped in BOTH directions -- including the cold-start
-#: restore, which is deliberately NOT filtered by EXCLUDE_GLOBS as a whole (the backend-owned
-#: names in there, and the credentials below, still have to land on a fresh microVM).
-#: ``.git/`` is deliberately absent: a fresh clone's objects are packfiles, not thousands of
-#: loose objects, and dropping it means re-cloning on every cold start.
-# ponytail: the ceiling is the per-file S3 fanout itself -- a big SOURCE tree is still one
-# PUT/GET per file, in front of the first reply. Upgrade path when that bites: archive the
-# workspace subtree as ONE object and special-case it in save_profile/restore_profile, the way
-# the SQLite backup API already is below. Not implemented.
+#: Hazard 4 (local-exec persistence report): ``terminal.backend: local`` runs the agent's shell
+#: IN its profile dir, so a build drops whole dependency/output trees into what save_profile
+#: rglobs. PUSH-side only (see is_reproducible) -- ``.git/`` is deliberately absent, a fresh
+#: clone's objects being packfiles rather than thousands of loose ones.
+# ponytail: two ceilings left standing. (1) The per-file S3 fanout itself: a big SOURCE tree is
+# still one PUT/GET per file, in front of the first reply. (2) save_profile still rglobs INTO
+# these dirs and stamps every file before discarding it -- the PUTs go, the local walk does not.
+# Upgrade path for both: archive the workspace subtree as ONE object and special-case it in
+# save_profile/restore_profile, the way the SQLite backup API already is below. Not implemented.
 _REPRODUCIBLE_DIRS = (
     "node_modules", ".venv", "venv", "__pycache__", ".next", "dist", "build", "target",
     "coverage", ".turbo", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache",
 )
-REPRODUCIBLE_GLOBS = tuple(
+_REPRODUCIBLE_GLOBS = tuple(
     pattern for name in _REPRODUCIBLE_DIRS for pattern in (f"{name}/*", f"*/{name}/*")
 )
 
 #: Hazard 5: credential shapes the AGENT itself can write while doing git/gh work. Before local
 #: exec, terminal commands never ran inside the profile dir at all, so EXCLUDE_GLOBS only ever
-#: had to cover Hermes's own leak surface. Push-side only, by design: the backend projects
-#: ``.aws/credentials`` / ``.config/gh/hosts.yml`` into the profile as BACKEND-OWNED files
-#: pulled by NAME (``_download_profile``) and by the cold-start tree walk -- exactly the shape
-#: the five ``BACKEND_OWNED_FILES`` already have, in EXCLUDE_GLOBS yet still restored.
+#: had to cover Hermes's own leak surface.
 _CREDENTIAL_FILES = (
-    ".git-credentials", ".netrc", ".npmrc", ".pypirc",
-    ".config/gh/hosts.yml", ".aws/credentials", ".docker/config.json",
+    ".git-credentials", ".netrc", ".npmrc", ".pypirc", ".docker/config.json",
 )
-CREDENTIAL_GLOBS = tuple(
-    pattern for name in _CREDENTIAL_FILES for pattern in (name, f"*/{name}")
+#: Nested copies only. The CLI-credential rail owns ``.aws/`` and ``.config/gh/`` at the profile
+#: ROOT -- it excludes those prefixes itself and projects them by name, unlinking what S3 no
+#: longer has -- so a root-anchored entry here is a strict duplicate. Its prefixes are
+#: root-anchored, though, and do NOT match the copy an agent writes inside a clone: that is this.
+_NESTED_ONLY_CREDENTIAL_FILES = (".aws/credentials", ".config/gh/hosts.yml")
+_CREDENTIAL_GLOBS = tuple(
+    [pattern for name in _CREDENTIAL_FILES for pattern in (name, f"*/{name}")]
+    + [f"*/{name}" for name in _NESTED_ONLY_CREDENTIAL_FILES]
 )
 
 # Hermes writes sessions/request_dump_*.json on EVERY API error with no config switch
@@ -100,8 +99,7 @@ CREDENTIAL_GLOBS = tuple(
 # .lightbulb-turn/ holds the per-turn local-session JWT (Task 11). WAL/SHM are skipped
 # because save_profile snapshots SQLite through the backup API instead.
 EXCLUDE_GLOBS = (
-    *REPRODUCIBLE_GLOBS,
-    *CREDENTIAL_GLOBS,
+    *_CREDENTIAL_GLOBS,
     "sessions/request_dump_*.json",
     "logs/*",
     "logs/**/*",
@@ -135,10 +133,14 @@ def is_excluded(rel: str) -> bool:
 
 
 def is_reproducible(rel: str) -> bool:
-    """The subset of ``EXCLUDE_GLOBS`` that is skipped on the way DOWN as well as up. Everything
-    else in there either must still restore (backend-owned names, projected credentials) or
-    simply never exists in S3 to restore."""
-    return any(fnmatch.fnmatch(rel, pattern) for pattern in REPRODUCIBLE_GLOBS)
+    """Reproducible dependency/build/cache output. **PUSH side only**, deliberately not part of
+    ``EXCLUDE_GLOBS``: an object under one of these names reaching S3 was put there by a BACKEND
+    writer, never by ``save_profile``, and those must restore. Two do it -- the migration carries
+    ``skills/**`` verbatim (``migrate_workspace_to_hermes._collect_carry_files``, which refuses
+    the same directory names at the source), and the Files panel accepts any non-dot path
+    (``hermes_profiles.is_hidden_profile_path``), so ``dist/``/``build/`` are uploadable by hand.
+    Skipping those on the way down half-materialises a skill with no error anywhere."""
+    return any(fnmatch.fnmatch(rel, pattern) for pattern in _REPRODUCIBLE_GLOBS)
 
 
 def load_boot_secrets(secret_id: str, client=None) -> dict[str, str]:
@@ -221,8 +223,6 @@ def restore_profile(agent_id: str) -> float:
             rel = obj["Key"][len(prefix):]
             if not rel or rel.endswith("/"):
                 continue  # directory marker: downloading it onto the directory raises
-            if is_reproducible(rel):
-                continue  # Hazard 4: a node_modules already in S3 costs one GET per file here
             target = dest / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             s3.download_file(S3_BUCKET, obj["Key"], str(target))
@@ -272,7 +272,7 @@ def save_profile(agent_id: str) -> float:
         # rglob can yield it back as a file of its own.
         for path in sorted(src.rglob("*")):
             rel = path.relative_to(src).as_posix()
-            if not path.is_file() or is_excluded(rel):
+            if not path.is_file() or is_excluded(rel) or is_reproducible(rel):
                 continue
             stamp = _change_stamp(path)
             if mtimes.get(rel) == stamp:

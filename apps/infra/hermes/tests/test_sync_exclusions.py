@@ -33,18 +33,20 @@ CREDENTIALS = (
     ".netrc",
     ".npmrc",
     ".pypirc",
-    ".config/gh/hosts.yml",
-    ".aws/credentials",
     ".docker/config.json",
     "repo/.npmrc",
+    # nested-only: the CLI-credential rail owns the root-anchored .aws/ and .config/gh/
     "repo/.aws/credentials",
+    "repo/.config/gh/hosts.yml",
 )
 
 
-def test_reproducible_trees_are_excluded_in_both_directions():
+def test_reproducible_trees_are_push_excluded_only():
+    """``is_reproducible`` is deliberately NOT part of ``EXCLUDE_GLOBS``: it is consulted by
+    save_profile and by nothing on the way down (see the predicate's docstring)."""
     for rel in REPRODUCIBLE:
-        assert sync.is_excluded(rel) is True, rel
         assert sync.is_reproducible(rel) is True, rel
+        assert sync.is_excluded(rel) is False, rel
 
 
 def test_source_and_git_stay_synced():
@@ -61,12 +63,15 @@ def test_agent_written_credentials_never_go_up():
         assert sync.is_excluded(rel) is True, rel
 
 
-def test_credentials_are_not_blocked_on_the_way_down():
-    """The backend projects ``.aws/credentials``/``.config/gh/hosts.yml`` into the profile as
-    BACKEND-OWNED files, exactly like the five in ``BACKEND_OWNED_FILES`` -- which are likewise
-    in ``EXCLUDE_GLOBS`` and likewise still have to land on a cold start."""
-    for rel in CREDENTIALS:
-        assert sync.is_reproducible(rel) is False, rel
+def test_the_cli_credential_rails_root_anchored_paths_are_left_to_it():
+    """Overlap resolution with the CLI-credential rail: it already excludes ``.aws/*`` and
+    ``.config/gh/*`` at the profile root AND owns them (it projects them by name and unlinks
+    what S3 no longer has). Duplicating those here is dead weight; the NESTED copies are not,
+    because its prefixes are root-anchored."""
+    assert sync.is_excluded("repo/.aws/credentials") is True
+    assert sync.is_excluded("repo/.config/gh/hosts.yml") is True
+    assert ".aws/credentials" not in sync.EXCLUDE_GLOBS
+    assert ".config/gh/hosts.yml" not in sync.EXCLUDE_GLOBS
 
 
 def test_save_profile_uploads_neither_build_output_nor_credentials(home, monkeypatch):
@@ -86,20 +91,31 @@ def test_save_profile_uploads_neither_build_output_nor_credentials(home, monkeyp
     assert uploaded == [f"{sync.S3_PREFIX}/ceo/repo/src/index.ts"]
 
 
-def test_restore_profile_skips_build_output_but_still_pulls_backend_owned_files(home, monkeypatch):
-    """The cold-start tree walk is where a ``node_modules`` already in S3 costs one GetObject
-    per file, in front of the first reply. It must still pull the backend-owned names and the
-    projected credentials -- ``restore_profile`` is NOT filtered by ``EXCLUDE_GLOBS`` whole."""
+def test_restore_profile_downloads_everything_in_the_prefix(home, monkeypatch):
+    """Fix round 1 (B1): the cold-start walk has NO reproducible filter. An object under one of
+    those names got into S3 from a BACKEND writer -- the migration carries ``skills/**``
+    verbatim, and the Files panel accepts any non-dot path -- and skipping it half-materialises
+    a skill with no error anywhere."""
     monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
     sync._restored.discard("a1")
     now = time.time()
     keys = ("config.yaml", ".revision", ".aws/credentials", ".config/gh/hosts.yml",
-            "repo/src/index.ts", "node_modules/left-pad/index.js", "repo/.venv/bin/python")
+            "repo/src/index.ts", "skills/tool/node_modules/index.js", "dist/report.html")
     prefix = f"{sync.S3_PREFIX}/a1/"
     fake = FakeS3({prefix + key: ("x", now) for key in keys})
     monkeypatch.setattr(sync, "_s3", lambda: fake)
 
     sync.restore_profile("a1")
-    assert sorted(key[len(prefix):] for key in fake.downloaded) == [
-        ".aws/credentials", ".config/gh/hosts.yml", ".revision", "config.yaml", "repo/src/index.ts",
-    ]
+    assert sorted(key[len(prefix):] for key in fake.downloaded) == sorted(keys)
+
+
+def test_a_backend_written_build_dir_still_re_pulls_on_a_revision_bump(home, monkeypatch):
+    """The recency walk honours EXCLUDE_GLOBS, which is exactly why the reproducible names are
+    not in it: a Files-panel upload into ``dist/`` has to reach the microVM."""
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    prefix = f"{sync.S3_PREFIX}/a1/"
+    fake = FakeS3({prefix + "dist/report.html": ("x", time.time())})
+    monkeypatch.setattr(sync, "_s3", lambda: fake)
+
+    assert sync._pull_changed_objects("a1") is True
+    assert fake.downloaded == [prefix + "dist/report.html"]

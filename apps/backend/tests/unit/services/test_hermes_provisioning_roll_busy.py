@@ -6,24 +6,27 @@ wrote -- an in-progress clone, an uncommitted ``git add``, a test run's output. 
 ``terminal.backend: local`` runs that work inside the microVM it is real work, not scratch.
 """
 
+import asyncio
+
 import pytest
 
 from core.services import container_rpc, hermes_provisioning
+from core.services.messaging import ApiProblem
 
 from tests.unit.services.test_hermes_provisioning_roll import _wire
 
 
 def _health(monkeypatch, *answers):
     """Stand in for ``container_rpc.call``, answering one queued ``health`` payload per call;
-    the last answer repeats. ``None`` raises -- the bridge is unreachable."""
+    the last answer repeats. An answer that is an exception INSTANCE is raised instead."""
     queue, probes = list(answers), []
 
     async def call(owner_id, method, params=None, **kwargs):
         assert method == "health" and kwargs.get("wake") is False
         probes.append(owner_id)
         answer = queue.pop(0) if len(queue) > 1 else queue[0]
-        if answer is None:
-            raise RuntimeError("no live session")
+        if isinstance(answer, BaseException):
+            raise answer
         return answer
 
     monkeypatch.setattr(container_rpc, "call", call)
@@ -55,11 +58,12 @@ async def test_roll_leaves_a_still_busy_session_running(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_an_unreachable_bridge_is_not_a_running_turn(monkeypatch):
-    """No live session is the common case -- ``_stop_runtime_session``'s own tolerance for it
-    must not become a ten-minute stall on every parked owner."""
+async def test_an_unreachable_runtime_is_not_a_running_turn(monkeypatch):
+    """``ApiProblem`` is the transport's real answer for "no reachable runtime" -- the common
+    case, and ``_stop_runtime_session``'s own tolerance for it must not become a ten-minute
+    stall on every parked owner."""
     calls = _wire(monkeypatch, current_image="x:old")
-    probes = _health(monkeypatch, None)
+    probes = _health(monkeypatch, ApiProblem("RUNTIME_UNAVAILABLE", "gone", retryable=True))
 
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
     assert [c[0] for c in calls] == ["update", "ready", "stop"]
@@ -67,9 +71,19 @@ async def test_an_unreachable_bridge_is_not_a_running_turn(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dry_run_never_probes_the_bridge(monkeypatch):
+@pytest.mark.parametrize(
+    "raised",
+    [asyncio.TimeoutError("health timed out"), RuntimeError('{"code": "NOT_READY"}')],
+    ids=["timeout", "gateway_error"],
+)
+async def test_a_slow_or_failing_probe_is_never_read_as_idle(monkeypatch, raised):
+    """Fix round 1 (S1): this used to fail OPEN. A CPU-starved microVM answers /health slowly
+    precisely BECAUSE a turn is hammering it (the 2026-09-14 founder-container freeze shape), so
+    treating a timeout as "idle" would authorise the exact mid-turn stop this guard prevents."""
     calls = _wire(monkeypatch, current_image="x:old")
-    probes = _health(monkeypatch, {"busy": 1})
+    probes = _health(monkeypatch, raised)
+    monkeypatch.setattr(hermes_provisioning, "ROLL_IDLE_WAIT_S", 0.0)
 
-    assert await hermes_provisioning.roll_runtime_image("org_a", dry_run=True) == "would-update"
-    assert calls == [] and probes == []
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated-session-busy"
+    assert [c[0] for c in calls] == ["update", "ready"]  # no stop
+    assert probes == ["org_a"]

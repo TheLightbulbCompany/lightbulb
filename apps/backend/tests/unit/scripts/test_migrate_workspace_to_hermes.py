@@ -157,6 +157,32 @@ def test_collect_carry_files_drops_raw_memory_and_carries_built_memories(tmp_pat
     assert "daily note" in memory_text
 
 
+def test_collect_carry_files_refuses_reproducible_subtrees_inside_a_skill(tmp_path):
+    """Fix round 1 (task-21 B1): the skills walk had no exclusion list at all, so a skill that
+    vendors node_modules/ or ships a built dist/ was uploaded file-by-file into the profile
+    prefix and re-downloaded on every cold start forever. The bridge's save_profile refuses the
+    same names, but nothing the MIGRATION writes goes through it."""
+    root = _fake_workspace(tmp_path)
+    skill = root / f"workspace-{CEO_ID}" / "skills" / "example"
+    for rel in (
+        "node_modules/left-pad/index.js",
+        "dist/bundle.js",
+        "__pycache__/m.pyc",
+        ".venv/bin/python",
+        "coverage/lcov.info",
+    ):
+        path = skill / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("junk")
+    (skill / "reference.md").write_text("# keep me")
+
+    files = mod._collect_carry_files(root / f"workspace-{CEO_ID}")
+
+    assert "skills/example/SKILL.md" in files
+    assert "skills/example/reference.md" in files
+    assert not [k for k in files if any(part in mod._SKIP_CARRY_DIR_NAMES for part in k.split("/"))]
+
+
 # ---------------------------------------------------------------------------
 # Task 1 — dry run
 # ---------------------------------------------------------------------------

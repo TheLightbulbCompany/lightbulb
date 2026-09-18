@@ -555,6 +555,10 @@ def build_runtime_request_for_owner(owner_id: str, role_arn: str, aip_arns: dict
 #: mid-turn loses everything that turn wrote -- an in-progress clone, an uncommitted ``git
 #: add``, a test run's output. Now that the agent's shell runs inside the microVM (M6 #2749),
 #: that is real work, not a scratch dir.
+#: Real wall-clock ceiling per busy owner is ~10.5 min, not 10: an AgentCore probe can take the
+#: full ``runtime_transport.AGENTCORE_INGRESS_TIMEOUT_S`` (90 s) that ``container_rpc.call``
+#: floors every caller to, so one iteration is up to ~105 s. ``roll_hermes_runtimes`` is a
+#: sequential loop, so that is per owner, serially.
 ROLL_IDLE_WAIT_S = 600.0
 ROLL_IDLE_POLL_S = 15.0
 
@@ -563,19 +567,28 @@ async def _wait_for_idle_session(owner_id: str) -> bool:
     """Poll the bridge's ``health`` RPC (which reports ``turn._busy``) until no turn is in
     flight, up to ``ROLL_IDLE_WAIT_S``. False means still busy at the deadline.
 
-    An unreachable bridge counts as idle: there is no warm session to protect, which is the
-    common case (``_stop_runtime_session``'s own tolerance for it) and must not become a
-    ten-minute stall on every parked owner. Note the probe is an ``InvokeAgentRuntime``, so on
-    a parked workspace it starts a session -- on the NEW image, since the update has already
-    landed, and the stop below tears it straight back down."""
+    FAILS CLOSED, and only ``ApiProblem`` is treated as idle. That one is the transport's real
+    answer for "no reachable runtime", the common case, and must not become a ten-minute stall
+    on every parked owner. Everything else -- an ``asyncio.TimeoutError`` from the plugin's own
+    504, a botocore read timeout, a ``RuntimeError`` from ``ok:false`` -- is NOT proof a turn
+    isn't running: a CPU-starved microVM answers ``/health`` slowly precisely BECAUSE a turn is
+    hammering it (the 2026-09-14 founder-container freeze shape), and reading that as "idle" is
+    how this guard would authorise the exact mid-turn stop it exists to prevent.
+
+    The probe is an ``InvokeAgentRuntime`` (``wake=False`` cannot suppress it: AgentCore rows
+    resolve to a sentinel address, not a task IP), so on a parked workspace it starts a session
+    -- on the NEW image, since the update has already landed, and the stop tears it back down."""
     from core.services import container_rpc
+    from core.services.messaging import ApiProblem
 
     deadline = time.monotonic() + ROLL_IDLE_WAIT_S
     while True:
         try:
-            payload = await container_rpc.call(owner_id, "health", timeout_s=10.0, wake=False)
-        except Exception:  # noqa: BLE001 -- unreachable means there is nothing to protect
-            return True
+            payload = await container_rpc.call(owner_id, "health", wake=False)
+        except ApiProblem:
+            return True  # no reachable runtime: there is no warm session to protect
+        except Exception:  # noqa: BLE001 -- a slow or failing answer is not proof of idle
+            payload = {"busy": 1}
         if not (payload or {}).get("busy"):
             return True
         if time.monotonic() >= deadline:

@@ -1,9 +1,7 @@
-"""Container recovery + gateway-control endpoints.
+"""Container recovery.
 
 `/recover` inspects current container + gateway state and dispatches the
-appropriate recovery action. `/gateway/restart` forces a config reload on a
-running gateway. Both reach the gateway through the shared signed one-shot
-helper.
+appropriate recovery action, reaching the gateway through ``container_rpc``.
 
 The in-process per-owner recovery lock this router used to hold is REMOVED
 (spec §7, PR-10): every reprovision sub-branch below now routes through
@@ -16,18 +14,14 @@ of one blocking behind an advisory lock; the only remaining cost of
 concurrency is a redundant (harmless, read-only) gateway health probe.
 """
 
-import asyncio
-import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_ecs_manager
-from core.containers.config import read_openclaw_config_from_efs
 from core.repositories import container_repo
 from core.services import container_rpc, provision_gate, trial_cap
-from core.services.messaging import ApiProblem
 from core.services.provision_dispatch import dispatch_provision
 from core.services.stripe_webhook_handlers import conversion_guard_active
 from routers.container import _owner_role
@@ -244,47 +238,3 @@ async def container_recover(
             "state": "GATEWAY_DOWN_DEAD",
             "reason": "Gateway restart failed — reprovisioning",
         }
-
-
-@router.post(
-    "/gateway/restart",
-    summary="Restart the OpenClaw gateway on the user's container",
-    description=(
-        "Sends a config.apply RPC to the user's running gateway container, "
-        "which triggers a gateway process restart. "
-        "Use this when the WebSocket connection is down but the container is running."
-    ),
-    operation_id="gateway_restart",
-    responses={
-        404: {"description": "No running container for this user"},
-        502: {"description": "Gateway is not responding"},
-    },
-)
-async def gateway_restart(
-    auth: AuthContext = Depends(get_current_user),
-):
-    owner_id = resolve_owner_id(auth)
-    container, ip = await get_ecs_manager().resolve_running_container(owner_id)
-    if not container:
-        raise HTTPException(status_code=404, detail="No running container")
-    if not ip:
-        raise HTTPException(status_code=502, detail="Container gateway is starting up")
-
-    try:
-        # OpenClaw 9.3 requires the complete raw document; an inherited empty
-        # params object is schema-invalid.
-        config = await read_openclaw_config_from_efs(owner_id)
-        if not isinstance(config, dict):
-            raise RuntimeError("OpenClaw config is unavailable")
-        await container_rpc.call(
-            owner_id, "config.apply", {"raw": json.dumps(config, separators=(",", ":"))}, timeout_s=30.0
-        )
-    except (ApiProblem, ConnectionRefusedError):
-        raise HTTPException(status_code=502, detail="Gateway is not responding")
-    except (TimeoutError, asyncio.TimeoutError):
-        raise HTTPException(status_code=502, detail="Gateway restart timed out")
-    except Exception as e:
-        logger.error("Gateway restart failed for user %s: %s", owner_id, e)
-        raise HTTPException(status_code=502, detail="Gateway restart failed")
-
-    return {"ok": True}

@@ -60,7 +60,7 @@ def test_the_scope_is_a_no_op_when_hermes_constants_is_unimportable(monkeypatch)
     assert (outcome, kind, reply) == ("completed", None, "ok")
 
 
-def test_construct_agent_ensures_the_profile_before_pinning_defaults(monkeypatch):
+def test_turn_ensures_the_profile_before_pinning_defaults(monkeypatch):
     """Task 13b: ensure_profile() must run BEFORE pin_profile_defaults() -- a hot patch that
     landed since this process's last turn has to be pulled onto disk before the fill-missing
     pin reads (and re-writes) the profile's config.yaml, or the pin would fill gaps against a
@@ -72,8 +72,10 @@ def test_construct_agent_ensures_the_profile_before_pinning_defaults(monkeypatch
     monkeypatch.setattr(turn, "pin_profile_defaults", lambda agent_id, model: calls.append(("pin", agent_id)))
 
     fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = lambda **kw: object()
+    fake_run_agent.AIAgent = lambda **kw: types.SimpleNamespace(
+        run_conversation=lambda **kw: {"api_calls": 1, "final_response": "ok"},
+    )
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    turn._construct_agent("ceo", f.ingress(), None, "session-key")
+    turn._run_hermes("ceo", f.ingress(), None)
     assert calls == [("ensure", "ceo"), ("pin", "ceo")]

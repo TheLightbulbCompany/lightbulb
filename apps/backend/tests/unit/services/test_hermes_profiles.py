@@ -157,6 +157,10 @@ def test_chatgpt_oauth_pins_every_aux_task_to_the_codex_provider_not_auto():
         assert c["auxiliary"][task]["fallback_chain"] == [], task
 
 
+def test_terminal_runs_locally_without_an_attached_node():
+    assert cfg()["terminal"]["backend"] == "local"
+
+
 def test_plugins_enabled_is_a_flat_list_never_entries():
     c = cfg()
     assert c["plugins"] == {"enabled": ["lightbulb", "lightbulb_node"]}

@@ -254,7 +254,7 @@ def build_profile_config(
             "auto_archive": True,
             "vacuum_after_prune": True,
         },
-        "terminal": {"backend": "lightbulb_node"},
+        "terminal": {"backend": "local"},
         "mcp_servers": dict(mcp_servers or {}),
         "plugins": {"enabled": list(_LIGHTBULB_PLUGINS)},
     }

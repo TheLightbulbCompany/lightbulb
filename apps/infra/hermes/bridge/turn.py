@@ -765,6 +765,27 @@ def _secret_scope(agent_id: str):
     return _scope()
 
 
+def _terminal_scope(agent_id: str):
+    """Use Hermes's profile-local policy and default shell cwd, never process globals."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _scope():
+        try:
+            from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+        except ImportError:  # tests outside the Hermes image
+            yield
+            return
+        home = _profile_dir(agent_id)
+        token = install_profile_terminal_scope(home, env_overlay={"TERMINAL_CWD": str(home)})
+        try:
+            yield
+        finally:
+            reset_terminal_scope(token)
+
+    return _scope()
+
+
 def profile_model(config: dict) -> tuple[str, str]:
     """(model id, provider) for this turn, from the profile's OWN `model` block in config.yaml
     — the block the backend's `hermes_profiles.model_block` writes (the CEO's premium tier on a
@@ -809,11 +830,6 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
     Hermes session keyed "None:<agent>"."""
     from run_agent import AIAgent
 
-    # Task 13b: a hot patch that landed since this process's last turn must be on disk BEFORE
-    # the fill-missing pin below reads (and re-writes) config.yaml -- otherwise the pin fills
-    # gaps against a stale local copy and immediately re-uploads it, clobbering the fresher
-    # backend write (the same clobber-by-save_profile risk fix round 1's C4 flagged).
-    sync.ensure_profile(agent_id)
     config = pin_profile_defaults(agent_id, os.environ.get("AUXILIARY_MODEL") or MODEL)
     model, provider = profile_model(config)  # the profile's tier, not the runtime-wide one
     room = body.get("room") or {}
@@ -861,7 +877,9 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
         import run_agent  # noqa: F401
     except ImportError:
         pass
-    with _hermes_home_scope(agent_id), _secret_scope(agent_id):
+    # Refresh BEFORE binding profile secrets/terminal policy and before filling config defaults.
+    sync.ensure_profile(agent_id)
+    with _hermes_home_scope(agent_id), _secret_scope(agent_id), _terminal_scope(agent_id):
         agent = _construct_agent(agent_id, body, frames, session_key)
         attach_agent((body.get("run") or {}).get("runId"), agent)
         result = agent.run_conversation(

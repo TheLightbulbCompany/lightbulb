@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
+from core.services import paperclip_adapter_config as cfg_module
 from core.services import paperclip_agent_lifecycle as lifecycle
 
 
@@ -150,19 +151,18 @@ async def test_repoint_moves_an_existing_agent_onto_the_http_adapter(monkeypatch
     assert await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="agentcore") is True
 
     body = admin.patch_agent.await_args.kwargs["body"]
-    assert body["adapterType"] == lifecycle.HTTP_ADAPTER_TYPE
+    assert body["adapterType"] == lifecycle.HERMES_GATEWAY_TYPE
     assert body["replaceAdapterConfig"] is True
-    assert body["adapterConfig"]["url"].endswith("/api/v1/internal/paperclip/runs/org_1")
-    assert body["adapterConfig"]["headers"]["Authorization"] == "Bearer hook-tok"
-    # The REAL agent id, not a name label: a create cannot know it, a re-point always can.
-    assert body["adapterConfig"]["headers"]["X-Lightbulb-Agent"] == "agent-1"
+    assert body["adapterConfig"]["apiBaseUrl"].endswith("/api/v1/internal/paperclip/hermes/org_1")
+    assert body["adapterConfig"]["apiKey"] == "hook-tok"
+    assert body["adapterConfig"]["sessionKeyStrategy"] == "issue"
 
 
 @pytest.mark.asyncio
 async def test_repoint_is_idempotent_on_an_agent_already_on_the_target(monkeypatch):
     """A re-entered migration tail / re-run rollback must re-point only what is still wrong."""
     admin = _wire_repoint(monkeypatch)
-    agent = {"id": "agent-1", "adapterType": lifecycle.HTTP_ADAPTER_TYPE}
+    agent = {"id": "agent-1", "adapterType": lifecycle.HERMES_GATEWAY_TYPE}
 
     assert await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="agentcore") is False
 
@@ -170,13 +170,16 @@ async def test_repoint_is_idempotent_on_an_agent_already_on_the_target(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_repoint_refuses_to_write_an_http_adapter_with_no_hook_token(monkeypatch):
-    """``build_http_adapter_config`` happily emits ``Bearer `` — an adapter whose every run 401s
-    at the internal door. Failing here is the point: a half-re-pointed workspace looks healthy."""
+async def test_repoint_refuses_to_write_a_native_adapter_with_no_hook_token(monkeypatch):
+    """An empty token mints an adapter whose every run 401s at the facade — and Paperclip
+    reports that per RUN (``hermes_gateway_auth_failed``), not as a broken agent, so a
+    half-re-pointed workspace looks healthy. The guard now lives in the shared builder
+    (``AdapterConfigError``), so the seed and ``/teams`` create refuse it identically rather
+    than this door alone having a private check."""
     admin = _wire_repoint(monkeypatch, hook_token="")
     agent = {"id": "agent-1", "adapterType": "openclaw_gateway"}
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(cfg_module.AdapterConfigError, match="hook_token"):
         await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="agentcore")
 
     admin.patch_agent.assert_not_awaited()
@@ -191,7 +194,7 @@ async def test_repoint_back_to_gateway_binds_the_operator_device(monkeypatch):
     monkeypatch.setattr(lifecycle.service_token, "mint", lambda owner_id: "svc-jwt")
     paired = AsyncMock()
     monkeypatch.setattr("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", paired)
-    agent = {"id": "agent-1", "adapterType": lifecycle.HTTP_ADAPTER_TYPE}
+    agent = {"id": "agent-1", "adapterType": lifecycle.HERMES_GATEWAY_TYPE}
 
     assert await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="ecs", gateway_token="gw") is True
 
@@ -208,7 +211,7 @@ async def test_repoint_back_to_gateway_binds_the_operator_device(monkeypatch):
 @pytest.mark.asyncio
 async def test_repoint_back_to_gateway_requires_the_gateway_token_before_patching(monkeypatch):
     admin = _wire_repoint(monkeypatch)
-    agent = {"id": "agent-1", "adapterType": lifecycle.HTTP_ADAPTER_TYPE}
+    agent = {"id": "agent-1", "adapterType": lifecycle.HERMES_GATEWAY_TYPE}
 
     with pytest.raises(RuntimeError, match="gateway_token"):
         await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="ecs")

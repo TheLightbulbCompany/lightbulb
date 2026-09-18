@@ -1,12 +1,8 @@
-"""Server-side synthesis of openclaw_gateway adapter config for Paperclip.
+"""Server-owned Paperclip adapter configuration.
 
-Spec §5 security invariant: the BFF NEVER accepts ``adapterType``,
-``adapterConfig``, or any nested URL/header field from the client.
-Every agent-mutating BFF endpoint calls ``synthesize_openclaw_adapter``
-to assemble the upstream body. The URL is allowlisted against the
-env-derived gateway hostnames; an out-of-allowlist URL is an operator
-bug (the URL is read from our own infrastructure), not user input,
-so we raise rather than 4xx.
+ECS agents keep the device-paired ``openclaw_gateway`` shape below. AgentCore agents use
+Paperclip's deployed ``hermes_gateway`` adapter, pointed at the hook-token-authenticated backend
+facade rather than a private runtime address. No client controls either adapter type or config.
 
 Field shape per ``paperclip/packages/adapters/openclaw-gateway/src/index.ts``:
 { url, authToken, sessionKeyStrategy, sessionKey }. Note ``authToken``,
@@ -51,25 +47,21 @@ from core.repositories import container_repo
 
 OPENCLAW_GATEWAY_TYPE: Final[str] = "openclaw_gateway"
 
-# Paperclip's own first-party webhook adapter (fork docs/adapters/http.md at
-# v2026.813-isol8.6, confirmed against cli/src/adapters/registry.ts's
-# `httpCLIAdapter` / `adaptersByType` at the same tag): Paperclip POSTs the run
-# to a URL and the agent calls back to the Paperclip API. No fork patch, no
-# operator socket -- which is the whole point, because a Hermes microVM has no
-# gateway for an operator to connect to. The same tag also ships built-in
-# `hermes_local`/`hermes_gateway` adapter types (a "Hermes API server" the
-# fork dials directly), but that would mean handing Paperclip a door straight
-# into the bridge/runtime outside our backend's hook-token boundary -- the
-# spec's own shape (§4.9) is "a backend door that invokes the bridge", i.e.
-# this `http` adapter POSTing into OUR route, not a native Hermes adapter
-# bypassing it.
-HTTP_ADAPTER_TYPE: Final[str] = "http"
+# Paperclip's deployed native adapter. It keeps the Paperclip run open while it
+# polls our authenticated backend facade for the real Hermes terminal result.
+HERMES_GATEWAY_TYPE: Final[str] = "hermes_gateway"
 
-# Generous ceiling for a Paperclip-driven run reaching us over the `http`
-# adapter's webhook -- these are substantive single-run wakes, not a
-# heartbeat ping. Mirrors the reasoning behind AGENT_RUN_TIMEOUT_SEC below,
-# just for the new adapter type.
 PAPERCLIP_RUN_TIMEOUT_SEC: Final[int] = 900
+
+# Both are the adapter's own CLAMP CEILINGS (execute.ts clamps eventReconnectMs to
+# 250..30_000 and pollIntervalMs to 250..10_000), chosen deliberately at the top of each
+# range because every one of those requests is an `InvokeAgentRuntime` into the owner's
+# microVM. The adapter's defaults -- 2 s reconnect, 1 s poll -- would cost ~900 invokes on a
+# single 900 s run. At the ceilings it is ~90. The SSE `/events` route is deliberately
+# unimplemented (the adapter falls back to polling and logs one line per reconnect), which
+# is the other reason eventReconnectMs is pinned as high as it will go.
+PAPERCLIP_EVENT_RECONNECT_MS: Final[int] = 30_000
+PAPERCLIP_POLL_INTERVAL_MS: Final[int] = 10_000
 
 
 async def adapter_type_for(owner_id: str, *, runtime_host: str | None = None) -> str:
@@ -87,33 +79,36 @@ async def adapter_type_for(owner_id: str, *, runtime_host: str | None = None) ->
     if host is None:
         container = await container_repo.get_by_owner_id(owner_id)
         host = (container or {}).get("runtime_host")
-    return HTTP_ADAPTER_TYPE if host == "agentcore" else OPENCLAW_GATEWAY_TYPE
+    return HERMES_GATEWAY_TYPE if host == "agentcore" else OPENCLAW_GATEWAY_TYPE
 
 
-def build_http_adapter_config(owner_id: str, agent_id: str, *, hook_token: str) -> dict:
-    """adapterConfig for the ``http`` adapter type.
+def build_hermes_gateway_adapter_config(owner_id: str, *, hook_token: str) -> dict:
+    """Native Hermes adapter config through the owner-authenticated backend facade.
 
-    Paperclip POSTs its run-trigger webhook to our own
-    ``POST /internal/paperclip/runs/{owner_id}`` door (hook-token authed, same
-    boundary every other internal callback in ``routers/messaging.py`` uses),
-    which invokes the bridge with ``eventKind: "paperclip_run"`` and answers
-    with the bridge's own response -- the "agent calls back to the Paperclip
-    API" leg from the fork's docs is unchanged, it just starts here instead of
-    inside a container.
+    An EMPTY ``hook_token`` raises rather than minting a config: the adapter would send
+    ``Authorization: Bearer `` on every run and 401 at the facade, and Paperclip reports that
+    as ``hermes_gateway_auth_failed`` on each individual run rather than as a broken agent.
+    That is the M4-R33 shape -- a seed racing ahead of ``prepare_hermes_workspace`` -- and it
+    must fail at WIRING time, where one loud error names the owner, not silently per run.
 
-    Both timeout spellings are written on purpose: the adapter's own
-    documentation names ``timeoutSec``, but its code reads ``config.timeoutMs``
-    (fork ``server/src/adapters/http/execute.ts``), so the documented key alone
-    leaves the fetch with no AbortController at all and a stalled backend would
-    hang the run forever. Unknown adapterConfig keys are ignored by the fork, so
-    carrying both costs nothing and survives whichever one it settles on.
+    ``apiKey`` is a schema secret field on Paperclip's side, so a literal value is persisted
+    as a managed company secret and resolved back at runtime. That means the token is a
+    SNAPSHOT: rotating an owner's ``hook_token`` requires re-pointing the adapter
+    (``repoint_agent_adapter``), exactly as the previous ``http`` adapter's baked header did.
     """
-    return {
-        "url": f"{settings.PUBLIC_API_BASE.rstrip('/')}/api/v1/internal/paperclip/runs/{owner_id}",
-        "headers": {"Authorization": f"Bearer {hook_token}", "X-Lightbulb-Agent": agent_id},
+    if not hook_token:
+        raise AdapterConfigError(f"hermes_gateway adapter for owner={owner_id} needs a hook_token")
+    config = {
+        "apiBaseUrl": (f"{settings.PUBLIC_API_BASE.rstrip('/')}/api/v1/internal/paperclip/hermes/{owner_id}"),
+        "apiKey": hook_token,
+        "sessionKeyStrategy": "issue",
         "timeoutSec": PAPERCLIP_RUN_TIMEOUT_SEC,
-        "timeoutMs": PAPERCLIP_RUN_TIMEOUT_SEC * 1000,
+        "eventReconnectMs": PAPERCLIP_EVENT_RECONNECT_MS,
+        "pollIntervalMs": PAPERCLIP_POLL_INTERVAL_MS,
     }
+    if settings.PAPERCLIP_INTERNAL_URL:
+        config["paperclipApiUrl"] = settings.PAPERCLIP_INTERNAL_URL
+    return config
 
 
 # clientId the synthesized adapter URL advertises so the gateway relay's

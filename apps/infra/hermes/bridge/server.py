@@ -1,12 +1,12 @@
-"""Hermes-on-AgentCore bridge (spike). One process, two routes, no gateway.
+"""Hermes-on-AgentCore bridge: authenticated ingress, control RPC, and native runs.
 
 AgentCore speaks to this container on :8080 (GET /ping, POST /invocations). /invocations carries
 the {path, method, headers, body} envelope the backend's runtime_transport already sends, and this
-process answers the two paths the lightbulb-channel plugin answers today, so the backend cannot
-tell a Hermes microVM from an OpenClaw one:
+process answers the lightbulb-channel paths plus Paperclip's native run lifecycle:
 
   POST /plugins/lightbulb-channel/inbound/<agentId>   202 accepted, then the turn runs in a thread
   POST /plugins/lightbulb-channel/rpc                  health, agents.list
+  /internal/paperclip/v1/runs[/<id>[/stop]]            create, poll, and interrupt a real turn
 
 A turn = restore the agent's profile dir from S3 (once per process), run one Hermes AIAgent turn
 under that profile's HERMES_HOME, post run.started/run.ended and the reply to the backend with the
@@ -48,11 +48,91 @@ def _header(headers: dict, name: str) -> str | None:
 
 
 _RUN_CONTROL_RE = re.compile(r"^/plugins/lightbulb-channel/runs/([0-9a-f-]{36})/(abort|steer)$")
+# Underscore included deliberately: it must not be NARROWER than the backend facade's own
+# run-id charset (routers/messaging.py's _HERMES_RUN_ID_RE), or a run id the facade accepts
+# 404s here -- and the facade reads a 404 as "the microVM lost this run", failing a run that
+# was in fact never addressable.
+_PAPERCLIP_RUN_RE = re.compile(r"^/internal/paperclip/v1/runs/([A-Za-z0-9_-]+)(/stop)?$")
+_PAPERCLIP_SESSION_RE = re.compile(
+    r"^paperclip:company:([A-Za-z0-9-]+):agent:([A-Za-z0-9-]+):(issue|run):([A-Za-z0-9-]+)$"
+)
+
+
+def _paperclip_envelope(body, *, path_run_id: str | None = None, require_request: bool = False):
+    if not isinstance(body, dict) or not isinstance(body.get("identity"), dict):
+        return None
+    identity = body["identity"]
+    required = ("runId", "companyId", "agentId", "sessionId", "paperclipApiUrl")
+    if any(not isinstance(identity.get(key), str) or not identity[key] for key in required):
+        return None
+    if path_run_id is not None and identity["runId"] != path_run_id:
+        return None
+    match = _PAPERCLIP_SESSION_RE.fullmatch(identity["sessionId"])
+    if not match or (match.group(1), match.group(2)) != (identity["companyId"], identity["agentId"]):
+        return None
+    scope_kind, scope_id = match.group(3), match.group(4)
+    if scope_kind == "issue":
+        if identity.get("issueId") != scope_id:
+            return None
+    elif scope_id != identity["runId"] or identity.get("issueId"):
+        return None
+    request = body.get("request")
+    if require_request:
+        if not isinstance(request, dict):
+            return None
+        if any(not isinstance(request.get(key), str) or not request[key] for key in ("input", "instructions")):
+            return None
+        if request.get("session_id") != identity["sessionId"]:
+            return None
+    return identity, request
+
+
+def _handle_paperclip_run(path: str, method: str, body) -> tuple[int, dict] | None:
+    if path == "/internal/paperclip/v1/runs" and method == "POST":
+        parsed = _paperclip_envelope(body, require_request=True)
+        if parsed is None:
+            return 400, {"error": "invalid_paperclip_run"}
+        identity, request = parsed
+        registration = turn.register_paperclip_run(identity, request)
+        if registration == "conflict":
+            return 409, {"error": "idempotency_conflict"}
+        status = turn.paperclip_run_status(identity["runId"], identity)
+        if registration == "replayed":
+            return 200, status
+        threading.Thread(
+            target=turn.run_paperclip_turn,
+            args=(dict(identity), dict(request)),
+            daemon=True,
+            name=f"paperclip-{identity['runId']}",
+        ).start()
+        return 202, status
+    match = _PAPERCLIP_RUN_RE.fullmatch(path)
+    if not match or method not in ("GET", "POST"):
+        return None
+    run_id, stop = match.group(1), bool(match.group(2))
+    if (stop and method != "POST") or (not stop and method != "GET"):
+        return None
+    parsed = _paperclip_envelope(body, path_run_id=run_id)
+    if parsed is None:
+        return 400, {"error": "invalid_paperclip_identity"}
+    identity, _request = parsed
+    status = turn.paperclip_run_status(run_id, identity)
+    if status is None:
+        return 404, {"error": "run_not_found"}
+    if not stop or status["status"] in ("completed", "failed", "cancelled"):
+        return 200, status
+    if not turn.abort_run(run_id):
+        latest = turn.paperclip_run_status(run_id, identity)
+        return (200, latest) if latest is not None else (404, {"error": "run_not_found"})
+    return 202, {"run_id": run_id, "status": "stopping", "session_id": identity["sessionId"]}
 
 
 def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dict]:
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}
+    paperclip = _handle_paperclip_run(path, method, body)
+    if paperclip is not None:
+        return paperclip
     control = _RUN_CONTROL_RE.match(path)
     if control and method == "POST" and control.group(2) == "abort":
         run_id = control.group(1)

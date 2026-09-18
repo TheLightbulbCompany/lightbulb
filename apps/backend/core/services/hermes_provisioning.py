@@ -10,12 +10,10 @@ already holds (M4-R28/M4-R33):
 
 1. ``prepare_hermes_workspace`` — mints (or reuses) ``hook_token``/``gateway_token``, mints a fresh
    gate bearer, writes the ONE JSON boot secret, and writes the two tokens onto the containers row.
-   Runs BEFORE step 0 (the Paperclip seed): the seed's starter-agent loop bakes ``hook_token`` into
-   the ``http`` adapter's ``Authorization`` header at seed time
-   (``paperclip_adapter_config.build_http_adapter_config``), so a fresh Hermes provision that seeded
-   before minting a token shipped every starter agent with an EMPTY bearer — the exact bug M4-R33
-   fixes. A NON-terminal, lease-REFRESHING write (``release_lease=False``): the provision is not
-   done yet.
+   Runs BEFORE step 0 (the Paperclip seed): the starter-agent loop bakes ``hook_token`` into the
+   native Hermes adapter's ``apiKey`` at seed time, so seeding before minting it would ship every
+   starter agent with an empty credential. A NON-terminal, lease-REFRESHING write
+   (``release_lease=False``): the provision is not done yet.
 2. ``provision_hermes_runtime`` — writes the Hermes profiles to S3, creates the AgentCore runtime,
    waits for it to reach READY, and writes the TERMINAL row fields. Fully idempotent-return only
    once ``status="running"``. The ARN is recorded on the row NON-terminally IMMEDIATELY after
@@ -442,9 +440,8 @@ async def prepare_hermes_workspace(
 ) -> None:
     """M4-R33: mint the owner's hook/gateway tokens + a fresh gate bearer, write the ONE JSON boot
     secret, and persist ``hook_token``/``gateway_token`` onto the row — BEFORE step 0 seeds the
-    roster, so the ``http`` adapter's ``Authorization`` header
-    (``paperclip_adapter_config.build_http_adapter_config``) bakes in a REAL token instead of the
-    empty string a missing row field falls back to.
+    roster, so the native Hermes adapter's ``apiKey`` bakes in a real token instead of the empty
+    string a missing row field falls back to.
 
     Idempotent: a no-op (no AWS call, no row write) once the owner already has an
     ``agentcore_runtime_arn`` — the whole workspace, tokens included, is already provisioned by

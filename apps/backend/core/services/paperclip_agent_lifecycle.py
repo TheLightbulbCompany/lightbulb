@@ -30,10 +30,10 @@ from core.services.paperclip_agent_idempotency import (
 )
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_adapter_config import (
-    HTTP_ADAPTER_TYPE,
+    HERMES_GATEWAY_TYPE,
     OPENCLAW_GATEWAY_TYPE,
     adapter_type_for,
-    build_http_adapter_config,
+    build_hermes_gateway_adapter_config,
     desired_agent_adapter_fields,
     synthesize_openclaw_adapter,
 )
@@ -56,17 +56,13 @@ async def resolve_agent_adapter(
     ``routers/teams/agents.py``'s ``/agents`` endpoint) so the ECS-vs-AgentCore pick lives in
     exactly one place.
 
-    Hermes/AgentCore has no gateway for an operator socket to connect to, so those
-    owners get the fork's own `http` webhook adapter (paperclip_adapter_config.
-    HTTP_ADAPTER_TYPE) -- no device pairing needed. Everyone else keeps the
-    existing device-paired openclaw_gateway adapter unchanged.
+    Hermes/AgentCore owners use Paperclip's native ``hermes_gateway`` adapter through the
+    authenticated backend facade; no operator device pairing is needed. Everyone else keeps the
+    existing device-paired ``openclaw_gateway`` adapter unchanged.
 
-    ``agent_label`` stands in for the Paperclip-assigned agent id, which isn't
-    known until ``create_agent`` returns: the run's own webhook body carries
-    Paperclip's real ``agentId``, so this is a log label on the `http` adapter's
-    config, not a routing key. Wiring the real post-create id back in (the
-    `http`-adapter analogue of ``desired_agent_adapter_fields``'s post-create
-    patch for openclaw_gateway) is provisioning-writer work, out of scope here.
+    ``agent_label`` is retained in this shared create API because ECS call sites use it in their
+    own post-create pairing flow. The native adapter derives the real agent id from Paperclip's
+    signed run context and sends it in ``X-Hermes-Session-Key``.
 
     ``runtime_host``: an optional hint forwarded to ``adapter_type_for`` -- a caller that
     already read the owner's container row (for any other reason) can pass its
@@ -76,12 +72,11 @@ async def resolve_agent_adapter(
     seed-time DynamoDB blip should surface as a failure, not a mis-wired agent).
     """
     adapter_type = await adapter_type_for(owner_id, runtime_host=runtime_host)
-    if adapter_type == HTTP_ADAPTER_TYPE:
-        # Only the http-adapter branch needs the container row (for its hook token) -- the
-        # far more common ECS branch reads nothing beyond what adapter_type_for already did.
+    if adapter_type == HERMES_GATEWAY_TYPE:
+        # Only the native Hermes branch needs the container row (for its hook token).
         container = await container_repo.get_by_owner_id(owner_id)
-        return adapter_type, build_http_adapter_config(
-            owner_id, agent_label, hook_token=(container or {}).get("hook_token") or ""
+        return adapter_type, build_hermes_gateway_adapter_config(
+            owner_id, hook_token=(container or {}).get("hook_token") or ""
         )
     return adapter_type, synthesize_openclaw_adapter(
         gateway_url=_ws_gateway_url(settings.ENVIRONMENT or ""),
@@ -157,12 +152,10 @@ async def repoint_agent_adapter(
         _, adapter_config = await resolve_agent_adapter(
             owner_id, agent_label=agent_id, gateway_user_id=owner_id, runtime_host=runtime_host
         )
-        if (adapter_config.get("headers") or {}).get("Authorization") == "Bearer ":
-            # build_http_adapter_config accepts an empty hook token and would mint an adapter whose
-            # every run 401s at `/internal/paperclip/runs/{owner}` -- exactly the silent shape above.
-            raise RuntimeError(
-                f"repoint_agent_adapter: owner={owner_id} has no hook_token to authorize the http adapter"
-            )
+        # The empty-hook-token guard moved INTO build_hermes_gateway_adapter_config, which
+        # raises AdapterConfigError before this line: every door onto the native adapter
+        # (seed, /teams create, this re-point) now gets the same refusal, instead of one door
+        # having a private check the other two lacked.
     async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
         admin = PaperclipAdminClient(http_client=http)
         cookie = await get_admin_session_cookie(http)

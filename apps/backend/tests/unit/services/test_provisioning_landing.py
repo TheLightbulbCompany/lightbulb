@@ -20,93 +20,6 @@ RES = {
 
 
 @pytest.mark.asyncio
-async def test_land_writes_secrets_manager_then_the_row_then_the_container():
-    order: list[str] = []
-    with (
-        # Patched even though the brief's version leaves it real: unpatched it
-        # makes a live Secrets Manager call, which passes only on a machine
-        # with AWS creds and raises NoCredentialsError in CI.
-        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value=None)),
-        patch.object(
-            mod.integration_secret_store, "put", AsyncMock(side_effect=lambda *a, **k: order.append("sm"))
-        ) as sm_put,
-        patch.object(
-            mod.integrations_repo,
-            "record_provider_resource",
-            AsyncMock(side_effect=lambda *a, **k: order.append("row") or []),
-        ) as record,
-        patch.object(
-            mod.config_patcher, "set_openclaw_config_path", AsyncMock(side_effect=lambda *a, **k: order.append("cfg"))
-        ) as patch_cfg,
-    ):
-        await mod.land_credentials(
-            owner_id="org_a", resource=RES, env={"NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN": "phc_live_abc"}
-        )
-    assert order == ["sm", "row", "cfg"]
-    # NAMESPACED secret key: the bare (owner, "posthog") blob belongs to the
-    # OAuth rail. The repo call keeps the BARE provider — it namespaces the
-    # sort key itself.
-    sm_put.assert_awaited_once_with("org_a", "projects/posthog", {"NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN": "phc_live_abc"})
-    assert record.await_args.args[:2] == ("org_a", "posthog")
-    assert record.await_args.args[2]["resource_id"] == "res_1"
-    patch_cfg.assert_awaited_once_with("org_a", ["env", "vars", "NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"], "phc_live_abc")
-
-
-@pytest.mark.asyncio
-async def test_land_merges_new_env_with_what_the_provider_already_had():
-    """A second resource for the same provider must not blank the first one's
-    vars — the Secrets Manager blob is per-(owner, provider)."""
-    with (
-        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value={"OLD_KEY": "old"})),
-        patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
-        patch.object(mod.integrations_repo, "record_provider_resource", AsyncMock(return_value=[])),
-        patch.object(mod.config_patcher, "set_openclaw_config_path", AsyncMock()),
-    ):
-        await mod.land_credentials(owner_id="org_a", resource=RES, env={"NEW_KEY": "new"})
-    assert sm_put.await_args.args[2] == {"OLD_KEY": "old", "NEW_KEY": "new"}
-
-
-@pytest.mark.asyncio
-async def test_land_merges_the_blob_verbatim_including_non_string_fields():
-    """Merged with no type filter: the store documents a round-trip of the exact
-    dict, so a filter would silently drop any non-string field a landing adds."""
-    blob = {"a_token": "t", "expires_in": 3600, "meta": None}
-    with (
-        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value=blob)),
-        patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
-        patch.object(mod.integrations_repo, "record_provider_resource", AsyncMock(return_value=[])),
-        patch.object(mod.config_patcher, "set_openclaw_config_path", AsyncMock()),
-    ):
-        await mod.land_credentials(owner_id="org_a", resource=RES, env={"X": "1"})
-    assert sm_put.await_args.args[2] == {
-        "a_token": "t",
-        "expires_in": 3600,
-        "meta": None,
-        "X": "1",
-    }
-
-
-@pytest.mark.asyncio
-async def test_land_survives_a_container_with_no_config_yet():
-    """No openclaw.json means the container is not provisioned. The credential is
-    already durable and build_provisioned_env injects it at provision, so the
-    landing must not fail."""
-    with (
-        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value=None)),
-        patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
-        patch.object(mod.integrations_repo, "record_provider_resource", AsyncMock(return_value=[])) as record,
-        patch.object(
-            mod.config_patcher,
-            "set_openclaw_config_path",
-            AsyncMock(side_effect=mod.ConfigPatchError("no config")),
-        ),
-    ):
-        await mod.land_credentials(owner_id="org_a", resource=RES, env={"X": "1"})
-    sm_put.assert_awaited_once()
-    record.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_land_refuses_on_agentcore_before_any_write():
     """The locked RMW into openclaw.json["env"]["vars"] is a dead write on
     AgentCore -- there is no delivery mechanism yet (that is the profile
@@ -130,23 +43,6 @@ async def test_land_refuses_on_agentcore_before_any_write():
     sm_put.assert_not_awaited()
     record.assert_not_awaited()
     patch_cfg.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_land_never_puts_a_secret_value_in_dynamodb():
-    with (
-        patch.object(mod.integration_secret_store, "get", AsyncMock(return_value=None)),
-        patch.object(mod.integration_secret_store, "put", AsyncMock()),
-        patch.object(mod.integrations_repo, "record_provider_resource", AsyncMock(return_value=[])) as record,
-        patch.object(mod.config_patcher, "set_openclaw_config_path", AsyncMock()),
-    ):
-        await mod.land_credentials(
-            owner_id="org_a", resource=RES, env={"NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN": "phc_secret"}
-        )
-    assert "phc_secret" not in repr(record.await_args.args[2])
-    # The row gets the caller's pointer dict itself — names, never values.
-    assert record.await_args.args[2] is RES
-    assert record.await_args.args[2]["env_keys"] == ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"]
 
 
 REVOKE_RES = {"resource_id": "res_1", "provider": "posthog", "env_keys": ["K"]}

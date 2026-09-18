@@ -671,76 +671,6 @@ async def test_list_user_agents_returns_none_when_no_container():
     assert result["container_status"] == "none"
 
 
-def _fake_call(rpc_callable):
-    """container_rpc.call stand-in: adapts its (owner_id, method, params,
-    *, timeout_s) positional shape onto the pool-style
-    ``rpc_callable(method=..., params=...)`` callables the tests below build,
-    so only this helper needed to change."""
-
-    async def _call(owner_id, method, params, **_kwargs):
-        return await rpc_callable(method=method, params=params)
-
-    return AsyncMock(side_effect=_call)
-
-
-def _fake_ecs(container_token="t", ip="10.0.0.1"):
-    from unittest.mock import MagicMock
-
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": container_token}, ip))
-    return ecs
-
-
-@pytest.mark.asyncio
-async def test_list_user_agents_handles_gateway_timeout(monkeypatch):
-    """CEO E2: gateway RPC > timeout → render container_status=timeout, no hang."""
-    monkeypatch.setattr("core.services.admin_service._GATEWAY_RPC_TIMEOUT_S", 0.05)
-
-    from core.services import admin_service
-
-    async def slow_rpc(**kwargs):
-        await asyncio.sleep(1.0)
-        return {"agents": []}
-
-    call = _fake_call(slow_rpc)
-    ecs = _fake_ecs()
-
-    with (
-        patch(
-            "core.services.admin_service.container_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"status": "running"}),
-        ),
-        patch("core.services.admin_service.get_ecs_manager", return_value=ecs),
-        patch("core.services.admin_service.container_rpc.call", call),
-    ):
-        result = await admin_service.list_user_agents("u1")
-
-    assert result["container_status"] == "timeout"
-    assert result["error"] == "gateway_rpc_timeout"
-
-
-@pytest.mark.asyncio
-async def test_list_user_agents_returns_agents_on_running_container():
-    from core.services import admin_service
-
-    call = _fake_call(AsyncMock(return_value={"agents": [{"agent_id": "a", "name": "Agent A"}], "cursor": None}))
-    ecs = _fake_ecs()
-
-    with (
-        patch(
-            "core.services.admin_service.container_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"status": "running"}),
-        ),
-        patch("core.services.admin_service.get_ecs_manager", return_value=ecs),
-        patch("core.services.admin_service.container_rpc.call", call),
-    ):
-        result = await admin_service.list_user_agents("u1")
-
-    assert result["container_status"] == "running"
-    assert len(result["agents"]) == 1
-    assert result["agents"][0]["agent_id"] == "a"
-
-
 @pytest.mark.asyncio
 async def test_list_user_agents_agentcore_owner_never_invokes_runtime():
     """Parity audit row 80: an AgentCore invoke wakes a parked microVM (90s floor,
@@ -777,43 +707,6 @@ async def test_list_user_agents_agentcore_owner_never_invokes_runtime():
 
 
 # ---- get_agent_detail -----------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_agent_detail_redacts_config_secrets():
-    """CEO S3: openclaw.json secrets stripped before return."""
-    from core.services import admin_service
-
-    # RPC names match the main-app call sites (see get_agent_detail in
-    # admin_service.py): agent.identity.get / sessions.list / skills.status /
-    # config.get. sessions.list is unfiltered; the service filters by agentId
-    # client-side — seed s1 with a matching agentId so it survives the filter.
-    rpc_results = {
-        "agent.identity.get": {"agent_id": "a", "name": "Agent A"},
-        "sessions.list": {"sessions": [{"id": "s1", "agentId": "a"}]},
-        "skills.status": {"skills": [{"id": "x"}]},
-        "config.get": {"providers": {"anthropic_api_key": "sk-secret-shh"}},
-    }
-
-    async def fake_rpc(**kwargs):
-        return rpc_results[kwargs["method"]]
-
-    call = _fake_call(fake_rpc)
-    ecs = _fake_ecs()
-
-    with (
-        patch(
-            "core.services.admin_service.container_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"status": "running"}),
-        ),
-        patch("core.services.admin_service.get_ecs_manager", return_value=ecs),
-        patch("core.services.admin_service.container_rpc.call", call),
-    ):
-        result = await admin_service.get_agent_detail("u1", "a")
-
-    assert result["agent"]["agent_id"] == "a"
-    assert result["sessions"][0]["id"] == "s1"
-    assert result["config_redacted"]["providers"]["anthropic_api_key"] == "***redacted***"
 
 
 @pytest.mark.asyncio

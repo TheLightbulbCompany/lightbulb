@@ -7,6 +7,10 @@ self-describing: the skeleton-generator nests the agent's own ``openclaw.json``
 ``build-manifest.json`` at the staging-dir root. The export tars the inner
 ``workspace/`` (files land at the tarball root) and builds the slice from the
 staging dir's OWN config — never the owner's root openclaw.json.
+
+Every workspace runs on AgentCore, so the staging dir reaches the export as the
+owner's Hermes S3 profile (``<owner>/hermes/<staging_agent_id>``); the
+``hermes_profile_s3`` fixture below serves the on-disk sample tree from there.
 """
 
 import io
@@ -18,9 +22,53 @@ from unittest.mock import patch
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
+import boto3  # noqa: E402
 import pytest  # noqa: E402
+from moto import mock_aws  # noqa: E402
 
+from core.config import settings  # noqa: E402
 from core.services import agent_export  # noqa: E402
+
+
+_HERMES_BUCKET = "test-replicas"
+
+
+@pytest.fixture
+def hermes_profile_s3(tmp_path: Path):
+    """Serve an on-disk staging tree as the owner's Hermes S3 profile.
+
+    Tests build their sample content on disk at
+    ``<tmp_path>/users/<owner>/workspace-<staging_agent_id>/``; this fixture
+    mirrors it into a moto bucket when the export asks for the profile, then
+    runs the REAL ``_download_s3_profile``, so the profile's own exclusions
+    (dotfiles, ``sessions/``/``logs/``/``mcp-tokens/``) apply as in production.
+    """
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=_HERMES_BUCKET)
+        real_download = agent_export._download_s3_profile
+
+        def _serve_from_disk(prefix: str, dest: Path) -> None:
+            owner_id, _hermes, agent_id = prefix.split("/", 2)
+            src_dir = tmp_path / "users" / owner_id / f"workspace-{agent_id}"
+            if src_dir.is_dir():
+                for root, _dirs, files in os.walk(src_dir):
+                    for name in files:
+                        path = Path(root) / name
+                        if path.is_symlink():
+                            continue
+                        s3.put_object(
+                            Bucket=_HERMES_BUCKET,
+                            Key=f"{prefix}/{path.relative_to(src_dir).as_posix()}",
+                            Body=path.read_bytes(),
+                        )
+            real_download(prefix, dest)
+
+        with (
+            patch.object(settings, "OWNER_STATE_BUCKET", _HERMES_BUCKET),
+            patch.object(agent_export, "_download_s3_profile", _serve_from_disk),
+        ):
+            yield s3
 
 
 def _staging_openclaw_config(agent_id: str = "atlas-staging-build-001") -> dict:
@@ -64,7 +112,7 @@ def _staging_openclaw_config(agent_id: str = "atlas-staging-build-001") -> dict:
 
 
 @pytest.fixture
-def fake_staging(tmp_path: Path):
+def fake_staging(tmp_path: Path, hermes_profile_s3):
     """Builds /tmp/<root>/users/<owner>/workspace-<staging-id>/ with the
     skeleton-generator on-disk layout (files under workspace/, build-manifest
     at staging root) and patches get_workspace() to anchor at <root>/users.
@@ -177,7 +225,7 @@ def test_staging_export_description_reaches_manifest(fake_staging):
     assert agent.get("identity") == {"name": "lex-legal", "emoji": "🛠"}
 
 
-def test_staging_export_falls_back_to_root_openclaw_json(tmp_path: Path):
+def test_staging_export_falls_back_to_root_openclaw_json(tmp_path: Path, hermes_profile_s3):
     """Defensive: if there's no workspace/ subdir, tar the staging root and
     read the root-level openclaw.json instead."""
     owner_id = "org_owner_flat"
@@ -203,7 +251,7 @@ def test_staging_export_falls_back_to_root_openclaw_json(tmp_path: Path):
     assert pkg.manifest["agent_id"] == staging_agent_id
 
 
-def test_staging_export_never_adopts_a_build_chosen_agent_id(tmp_path: Path):
+def test_staging_export_never_adopts_a_build_chosen_agent_id(tmp_path: Path, hermes_profile_s3):
     """A staged config carrying an id the BUILD picked (the display-name slug
     that put ``product-analytics-scorecard`` into prod) is not adopted: the
     export normalizes it to the staging handle the platform resolved, and the
@@ -233,7 +281,7 @@ def test_staging_export_never_adopts_a_build_chosen_agent_id(tmp_path: Path):
     assert pkg.manifest["name"] == "lex-legal"
 
 
-def test_staging_export_accepts_a_bundle_with_no_agent_id(tmp_path: Path):
+def test_staging_export_accepts_a_bundle_with_no_agent_id(tmp_path: Path, hermes_profile_s3):
     """The ideal bundle carries no id at all. The schema requires the field so
     the generator emits the staging token, but the export must not depend on it:
     the platform is the assigner either way."""
@@ -257,7 +305,7 @@ def test_staging_export_accepts_a_bundle_with_no_agent_id(tmp_path: Path):
     assert pkg.openclaw_slice["agent"].get("name") == "lex-legal"
 
 
-def test_staging_export_missing_config_raises(tmp_path: Path):
+def test_staging_export_missing_config_raises(tmp_path: Path, hermes_profile_s3):
     """A staging dir with no parseable openclaw.json raises BuiltAgentConfigError
     (router maps to 400)."""
     owner_id = "org_owner_nocfg"
@@ -275,7 +323,7 @@ def test_staging_export_missing_config_raises(tmp_path: Path):
             agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
 
 
-def test_staging_export_multi_agent_config_raises(tmp_path: Path):
+def test_staging_export_multi_agent_config_raises(tmp_path: Path, hermes_profile_s3):
     """A built agent must be single-agent — a config listing >1 agent fails loud
     rather than silently snapshotting agents[0] and discarding the rest."""
     owner_id = "org_owner_multi"
@@ -293,20 +341,6 @@ def test_staging_export_multi_agent_config_raises(tmp_path: Path):
     with patch.object(agent_export, "get_workspace", return_value=fake_ws):
         with pytest.raises(agent_export.BuiltAgentConfigError, match="multiple agents"):
             agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
-
-
-def test_staging_export_missing_dir_raises_not_found(fake_staging):
-    """A staging_agent_id with no workspace dir 404s (AgentNotFoundError)."""
-    owner_id, _, _ = fake_staging
-    with pytest.raises(agent_export.AgentNotFoundError):
-        agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id="never-built-this")
-
-
-def test_staging_export_invalid_id_rejected(fake_staging):
-    """A path-traversal / malformed staging id raises InvalidAgentIdError."""
-    owner_id, _, _ = fake_staging
-    with pytest.raises(agent_export.InvalidAgentIdError):
-        agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id="../escape")
 
 
 def test_staging_export_selected_mcps_and_skills_ride_the_slice(fake_staging):

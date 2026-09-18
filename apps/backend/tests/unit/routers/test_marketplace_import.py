@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from core.auth import AuthContext, get_current_user  # noqa: E402
 from core.containers import workspace as workspace_module  # noqa: E402
-from core.services.openclaw_backup_plugins import PluginApplyResult  # noqa: E402
 from routers import marketplace_import  # noqa: E402
 
 OWNER = "user_owner_1"
@@ -92,9 +91,24 @@ def client(tmp_path: Path):
         patch("routers.marketplace_import._s3", return_value=s3),
         patch("routers.marketplace_import.settings") as settings,
         patch("routers.marketplace_import.container_repo.get_by_owner_id", new_callable=AsyncMock) as get_row,
+        # Every owner is on AgentCore, so agent_export reads the agent's Hermes
+        # profile out of S3 (``<owner>/hermes/<id>/``) rather than the EFS
+        # staging dir these tests write. The export itself is covered by its own
+        # unit file; stub it here so the HTTP contract this file pins -- preview
+        # shape, confirm wiring, staging cleanup -- is what's under test. A test
+        # that needs a specific package re-patches this inside its own body.
+        patch(
+            "routers.marketplace_import.agent_export.export_built_agent_from_staging",
+            side_effect=lambda **_kwargs: _stub_package(),
+        ),
     ):
         settings.MARKETPLACE_ARTIFACTS_BUCKET = "bkt"
-        get_row.return_value = {"owner_id": OWNER, "gateway_token": "gw"}
+        get_row.return_value = {
+            "owner_id": OWNER,
+            "gateway_token": "gw",
+            "runtime_host": "agentcore",
+            "agentcore_runtime_arn": "arn:x",
+        }
         yield TestClient(app), tmp_path / "users" / OWNER, s3, get_row
 
 
@@ -168,7 +182,12 @@ def test_import_surfaces_safety_flags_without_required_snippet(client):
             "workspace/IDENTITY.md": '- **Name:** Quill\napi_key = "sk-live-abcdefghijklmnop"\n',
         }
     )
-    r = c.post("/api/v1/marketplace/import", json={"key": KEY})
+    snippetless = {"pattern": "api_key", "severity": "high", "file": "IDENTITY.md", "line": 2}
+    with patch(
+        "routers.marketplace_import.agent_export.export_built_agent_from_staging",
+        side_effect=lambda **_kwargs: _stub_package(manifest={"safety_flags": [snippetless]}),
+    ):
+        r = c.post("/api/v1/marketplace/import", json={"key": KEY})
     assert r.status_code == 200, r.text
     assert r.json()["safety_flags"]
 
@@ -223,12 +242,12 @@ def _start(c) -> str:
     return c.post("/api/v1/marketplace/import", json={"key": KEY}).json()["import_id"]
 
 
-def _stub_package():
+def _stub_package(manifest=None):
     from core.services.catalog_package import CatalogPackage
 
     return CatalogPackage(
         format="openclaw",
-        manifest={},
+        manifest=manifest if manifest is not None else {},
         openclaw_slice={},
         tarball_bytes=b"fake",
         tarball_contents=[],
@@ -380,90 +399,6 @@ def _plugin_archive() -> bytes:
     )
 
 
-def test_confirm_with_plugins_installs_and_bounces_container(client):
-    c, _, s3, _ = client
-    s3.objects[KEY] = _plugin_archive()
-    import_id = _start(c)
-    mock_ecs = MagicMock()
-    mock_ecs.force_redeploy_user_service = AsyncMock()
-    with (
-        patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
-        patch("routers.marketplace_import.apply_plugins", new_callable=AsyncMock) as apply,
-        patch("routers.marketplace_import.get_ecs_manager", return_value=mock_ecs),
-    ):
-        reg.return_value = {
-            "agent_id": "uuid-main",
-            "name": "Quill",
-            "registered": True,
-            "publish_hint": "",
-            "warnings": [],
-        }
-        apply.return_value = PluginApplyResult(installed=["weather"])
-        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"plugins": ["weather"]})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["plugins_installed"] == ["weather"]
-    assert body["restarting"] is True
-    apply.assert_awaited_once()
-    assert apply.await_args.kwargs["owner_id"] == OWNER
-    assert apply.await_args.kwargs["chosen"] == {"weather"}
-    assert [p.id for p in apply.await_args.kwargs["plugins"]] == ["weather"]
-    mock_ecs.force_redeploy_user_service.assert_awaited_once_with(OWNER)
-
-
-def test_confirm_bounce_failure_is_best_effort(client):
-    c, user_root, s3, _ = client
-    s3.objects[KEY] = _plugin_archive()
-    import_id = _start(c)
-    mock_ecs = MagicMock()
-    mock_ecs.force_redeploy_user_service = AsyncMock(side_effect=RuntimeError("ecs unreachable"))
-    with (
-        patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
-        patch("routers.marketplace_import.apply_plugins", new_callable=AsyncMock) as apply,
-        patch("routers.marketplace_import.get_ecs_manager", return_value=mock_ecs),
-    ):
-        reg.return_value = {
-            "agent_id": "uuid-main",
-            "name": "Quill",
-            "registered": True,
-            "publish_hint": "",
-            "warnings": [],
-        }
-        apply.return_value = PluginApplyResult(installed=["weather"])
-        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"plugins": ["weather"]})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["restarting"] is False
-    assert any("workspace restart could not be started" in w for w in body["warnings"])
-    # all agents succeeded, so staging is still removed despite the bounce failure
-    assert not (user_root / f"workspace-{import_id}").exists()
-
-
-def test_confirm_no_plugins_field_selects_all(client):
-    c, _, s3, _ = client
-    s3.objects[KEY] = _plugin_archive()
-    import_id = _start(c)
-    mock_ecs = MagicMock()
-    mock_ecs.force_redeploy_user_service = AsyncMock()
-    with (
-        patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
-        patch("routers.marketplace_import.apply_plugins", new_callable=AsyncMock) as apply,
-        patch("routers.marketplace_import.get_ecs_manager", return_value=mock_ecs),
-    ):
-        reg.return_value = {
-            "agent_id": "uuid-main",
-            "name": "Quill",
-            "registered": True,
-            "publish_hint": "",
-            "warnings": [],
-        }
-        apply.return_value = PluginApplyResult(installed=["weather"])
-        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={})
-    assert r.status_code == 200, r.text
-    apply.assert_awaited_once()
-    assert apply.await_args.kwargs["chosen"] is None
-
-
 def test_confirm_plugins_empty_skips_apply_and_bounce(client):
     c, _, s3, _ = client
     s3.objects[KEY] = _plugin_archive()
@@ -489,43 +424,6 @@ def test_confirm_plugins_empty_skips_apply_and_bounce(client):
     assert body["restarting"] is False
     apply.assert_not_awaited()
     mock_ecs.force_redeploy_user_service.assert_not_awaited()
-
-
-def test_confirm_with_include_history_stages_and_bounces_container(client):
-    c, _, s3, _ = client
-    sqlite_bytes = b"SQLite format 3\x00" + bytes(84)
-    s3.objects[KEY] = _archive(
-        extra={
-            "agents/main/agent/openclaw-agent.sqlite": sqlite_bytes,
-            "agents/main/sessions/sessions.json": "{}",
-        }
-    )
-    import_id = _start(c)
-    mock_ecs = MagicMock()
-    mock_ecs.force_redeploy_user_service = AsyncMock()
-    with (
-        patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
-        patch("routers.marketplace_import.stage_history", return_value=["staged"]) as stage,
-        patch("routers.marketplace_import.get_ecs_manager", return_value=mock_ecs),
-    ):
-        reg.return_value = {
-            "agent_id": "uuid-main",
-            "name": "Quill",
-            "registered": True,
-            "publish_hint": "",
-            "warnings": [],
-        }
-        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"include_history": True})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["history_staged"] == ["uuid-main"]
-    assert body["restarting"] is True
-    assert "staged" in body["warnings"]
-    stage.assert_called_once()
-    assert stage.call_args.kwargs["owner_id"] == OWNER
-    assert stage.call_args.kwargs["source_agent_id"] == "main"
-    assert stage.call_args.kwargs["new_agent_id"] == "uuid-main"
-    mock_ecs.force_redeploy_user_service.assert_awaited_once_with(OWNER)
 
 
 def test_confirm_without_include_history_skips_stage_history(client):
@@ -559,7 +457,7 @@ def test_confirm_on_agentcore_skips_plugins_history_and_bounce(client):
     service to bounce yet -- writing plugins/history there, or redeploying a
     service that does not exist, is a dead write. The response must say so,
     never claim they landed (hermes/honest-agentcore-branches)."""
-    c, _, s3, get_row = client
+    c, _, s3, _ = client
     sqlite_bytes = b"SQLite format 3\x00" + bytes(84)
     s3.objects[KEY] = _archive(
         extra={
@@ -584,15 +482,10 @@ def test_confirm_on_agentcore_skips_plugins_history_and_bounce(client):
             "agents/main/sessions/sessions.json": "{}",
         }
     )
-    import_id = _start(c)  # ECS at start time -- the AgentCore switch happens only for confirm
-    get_row.return_value = {"owner_id": OWNER, "gateway_token": "gw", "runtime_host": "agentcore"}
+    import_id = _start(c)
     mock_ecs = MagicMock()
     mock_ecs.force_redeploy_user_service = AsyncMock()
     with (
-        patch(
-            "routers.marketplace_import.agent_export.export_built_agent_from_staging",
-            return_value=_stub_package(),
-        ),
         patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
         patch("routers.marketplace_import.apply_plugins", new_callable=AsyncMock) as apply,
         patch("routers.marketplace_import.stage_history") as stage,

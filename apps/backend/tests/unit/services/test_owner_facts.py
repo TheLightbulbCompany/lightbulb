@@ -61,54 +61,28 @@ def test_build_owner_facts_no_account():
 
 
 @pytest.mark.asyncio
-async def test_write_owner_facts_writes_json(monkeypatch):
-    written = {}
-
-    class FakeWs:
-        def write_file(self, user_id, path, content):
-            written["user_id"] = user_id
-            written["path"] = path
-            written["content"] = content
-
-        def delete_file(self, user_id, path):
-            written["deleted"] = path
-
-    async def fake_get(owner_id, *, consistent_read=False):
-        return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
-
-    monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_get)
-    monkeypatch.setattr(owner_facts, "get_workspace", lambda: FakeWs())
-
-    await owner_facts.write_owner_facts("user_abc")
-
-    assert written["user_id"] == "user_abc"
-    assert written["path"] == "lightbulb-facts.json"
-    facts = json.loads(written["content"])
-    assert facts["provider_choice"] == "bedrock_claude"
-    assert facts["plan"] == "Workspace ($50/mo)"
-    # The pre-rename file is removed, not left behind: a stale facts file would
-    # hand an agent frozen plan/provider state. The write is wrapped in a
-    # best-effort try/except, so without a delete_file on this stub the call
-    # would be swallowed as an AttributeError and the assertion below is what
-    # proves the delete actually ran.
-    assert written["deleted"] == "isol8-facts.json"
-
-
-@pytest.mark.asyncio
 async def test_write_owner_facts_overrides_beat_stale_row(monkeypatch):
     # The row re-read after an update_item is eventually consistent — the
     # caller's just-committed values must win over whatever the read returns.
-    written = {}
+    # Every owner is AgentCore now, so the write lands via hermes_profiles
+    # rather than EFS — the override-wins assertion is what survives.
+    from core.services import hermes_profiles
 
-    class FakeWs:
-        def write_file(self, user_id, path, content):
-            written["content"] = content
+    written = {}
 
     async def stale_get(owner_id, *, consistent_read=False):
         return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
 
+    async def fake_roster(owner_id):
+        return [{"id": "agent-ceo"}]
+
+    def fake_write_facts(owner_id, agent_ids, facts_json):
+        written["content"] = facts_json
+
     monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", stale_get)
-    monkeypatch.setattr(owner_facts, "get_workspace", lambda: FakeWs())
+    monkeypatch.setattr(owner_facts.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", fake_roster)
+    monkeypatch.setattr(hermes_profiles, "write_facts_to_profiles", fake_write_facts)
 
     await owner_facts.write_owner_facts(
         "user_abc", account_overrides={"provider_choice": "chatgpt_oauth", "byo_provider": None}
@@ -158,11 +132,13 @@ def test_build_owner_facts_uses_ultra_plan_label():
 
 
 def _facts_env(monkeypatch, owner_facts, rows, written):
-    """Shared doubles: billing row, workspace capture, address rows."""
+    """Shared doubles: billing row, hermes-profile write capture, address rows.
 
-    class FakeWs:
-        def write_file(self, user_id, path, content):
-            written["content"] = content
+    Every owner is AgentCore now (``is_agentcore_owner`` always ``True``), so
+    the write lands via ``hermes_profiles.write_facts_to_profiles`` rather
+    than EFS.
+    """
+    from core.services import hermes_profiles
 
     async def fake_billing(owner_id, *, consistent_read=False):
         return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
@@ -172,9 +148,17 @@ def _facts_env(monkeypatch, owner_facts, rows, written):
             return rows(owner_id)
         return rows
 
+    async def fake_roster(owner_id):
+        return [{"id": "agent-ceo"}]
+
+    def fake_write_facts(owner_id, agent_ids, facts_json):
+        written["content"] = facts_json
+
     monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_billing)
-    monkeypatch.setattr(owner_facts, "get_workspace", lambda: FakeWs())
+    monkeypatch.setattr(owner_facts.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
     monkeypatch.setattr(owner_facts.agent_email_repo, "query_by_owner", fake_query_by_owner)
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", fake_roster)
+    monkeypatch.setattr(hermes_profiles, "write_facts_to_profiles", fake_write_facts)
 
 
 @pytest.mark.asyncio

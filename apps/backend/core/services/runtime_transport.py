@@ -1,26 +1,18 @@
-"""One way to reach an owner's OpenClaw gateway, whichever platform hosts it.
+"""One way to reach an owner's gateway. There is exactly one: AgentCore.
 
-Two transports, chosen per owner by ``containers.runtime_host``:
+``InvokeAgentRuntime`` carries a ``{path, method, headers, body}`` envelope, which the
+runtime's contract server unwraps onto 127.0.0.1:18789.
 
-``ecs`` (default, today's fleet)
-    Dial the task's Cloud Map IP on :18789 directly.
-
-``agentcore``
-    ``InvokeAgentRuntime`` with a ``{path, method, headers, body}`` envelope, which the
-    container's contract server unwraps onto 127.0.0.1:18789. Proven end to end on
-    2026-09-16: an authenticated ``/plugins/lightbulb-channel/rpc`` call returned 200 with a
-    real payload from inside a microVM.
-
-The choice is per OWNER, not global, because moving the fleet is a per-workspace rollout —
-each workspace moves once, one way. It is NOT a fallback: nothing routes back to ECS after a
-workspace has cut over (owner ruling, see the spec's §3).
+Every prod and dev workspace is on AgentCore, so ``containers.runtime_host`` is no longer
+consulted and the ECS transport is gone (deletion PR-1). ``host_for`` survives as a constant
+only so the ECS branches it used to select can be deleted file-by-file in the follow-up PRs.
 
 **Why the session id is derived from the owner id.** AgentCore creates a NEW microVM for every
 distinct ``runtimeSessionId`` and keeps them warm in parallel. Two live sessions for one
-workspace means two gateways on one EFS access point and two litestream replicators on one S3
-prefix — which was reproduced on 2026-09-16 and corrupts the replica set silently (divergent
-transaction histories; every later restore hangs with no error). Deriving the id from the owner
-makes at-most-one-session structural rather than a rule someone has to remember.
+workspace means two gateways on one profile prefix and two writers on one S3 prefix — which was
+reproduced on 2026-09-16 and corrupts the replica set silently (divergent transaction
+histories; every later restore hangs with no error). Deriving the id from the owner makes
+at-most-one-session structural rather than a rule someone has to remember.
 """
 
 from __future__ import annotations
@@ -29,19 +21,18 @@ import asyncio
 import concurrent.futures
 import hashlib
 import json
-import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
-logger = logging.getLogger(__name__)
-
+#: Nothing here dials it any more; ``openclaw_work``'s own ECS leg is the last reader, so it
+#: goes with that file.
 GATEWAY_PORT = 18789
 
-#: What ``resolve_running_container`` reports as the address of an AgentCore workspace. Truthy
-#: on purpose: every "no ip → wake ECS / 503" door stays shut. Never dialled — the transport
-#: addresses the runtime by ARN and ignores it.
+#: What ``resolve_running_container`` reports as the address of a workspace. Truthy on purpose:
+#: every "no ip → 503" door stays shut. Never dialled — the transport addresses the runtime by
+#: ARN and ignores it. Goes when the last caller stops unpacking an ``ip``.
 AGENTCORE_ADDRESS = "agentcore"
 
 #: F4 (predeploy review, M6-R37): the RPC budget for a call to a possibly-parked AgentCore
@@ -65,7 +56,7 @@ _EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_pr
 
 @dataclass(frozen=True)
 class RuntimeResponse:
-    """A gateway reply, shaped the same whichever transport carried it."""
+    """A gateway reply."""
 
     status_code: int
     text: str
@@ -93,51 +84,30 @@ def session_id_for(owner_id: str) -> str:
 
 
 def host_for(container: dict) -> str:
-    """Which transport this owner is on. Absent/unknown means ECS — the pre-migration default."""
-    host = container.get("runtime_host")
-    return host if host in ("ecs", "agentcore") else "ecs"
+    """Which transport this owner is on. Always AgentCore — the ECS runtime is deleted.
+
+    The argument is ignored (no row read). Kept as a function rather than inlined at its ~50
+    call sites so each caller's dead ECS branch can be removed with its own file.
+    """
+    return "agentcore"
 
 
 class RuntimeHostUnknownError(RuntimeError):
-    """``containers.runtime_host`` could not be read, and the caller cannot afford a guess.
+    """Dead: nothing raises this any more (``is_agentcore_owner`` no longer reads a row).
 
-    Raised only by ``is_agentcore_owner(..., fail_closed=True)``. ``main.py`` answers it with a
-    503 so a router that does nothing but pass the flag still returns "retry", not a 500.
+    Kept for one PR because ``main.py`` registers an exception handler for it; both go together
+    when ``main.py``'s router mounts are pruned.
     """
 
 
 async def is_agentcore_owner(owner_id: str, *, fail_closed: bool = False) -> bool:
-    """``host_for`` for a call site that only has an owner id (the relay hooks, which fire
-    from ``owner_id``/``user_id``/``device_id`` alone). A caller that already has the
-    container row in hand — the relay's own transport branch — should call
-    ``host_for(container)`` directly instead of paying for this extra read.
+    """Always ``True``: AgentCore is the only runtime, so there is nothing left to classify.
 
-    M6-R26 fix round 1, Important 3: a DynamoDB read failure here defaults to
-    ``False`` (ECS — the overwhelmingly common case and the pre-migration
-    default) with a WARNING, rather than propagating. Every caller added
-    during the M6 AgentCore rollout treats this as a routine per-request
-    check; before that rollout NOTHING on the connect/disconnect/manual-MCP
-    doors read this table at all, so a transient throttle must not turn into
-    a hard failure (``apply_failed``/502) for an ECS owner who paid no read
-    here previously.
-
-    ``fail_closed=True`` (predeploy review, before global ``HERMES_RUNTIME``) inverts that for
-    a MUTATING caller, where "probably ECS" is not a safe guess: the migration never deletes
-    the EFS tree, so the ECS branch SUCCEEDS on a migrated workspace — the write lands where no
-    Hermes agent reads and the door answers 200. Raising ``RuntimeHostUnknownError`` instead
-    lands in the caller's existing failure path (rollback/502/503) and the owner retries. Read
-    doors keep the default: their worst case is stale content, not a lost write.
+    Still ``async`` and still accepting ``fail_closed`` — both inert — so the ~30 call sites do
+    not churn in a behavioural PR. They go with their ECS branches in PR-3…PR-5, and
+    ``RuntimeHostUnknownError`` goes with them: nothing raises it any more.
     """
-    from core.repositories import container_repo
-
-    try:
-        container = await container_repo.get_by_owner_id(owner_id)
-    except Exception as exc:  # noqa: BLE001 — see docstring: default False unless fail_closed
-        if fail_closed:
-            raise RuntimeHostUnknownError(f"could not read the runtime host for owner {owner_id}") from exc
-        logger.warning("is_agentcore_owner: read failed for owner=%s; defaulting to ecs", owner_id, exc_info=True)
-        return False
-    return bool(container) and host_for(container) == "agentcore"
+    return True
 
 
 async def request(
@@ -153,53 +123,24 @@ async def request(
 ) -> RuntimeResponse:
     """Send one request to the owner's gateway.
 
-    ``ip`` is required for the ECS transport and ignored by AgentCore, whose addressing comes
-    from the container row's ``agentcore_runtime_arn``. ``content`` is a raw body for proxies
-    that forward bytes verbatim (webhooks); it wins over ``json_body``.
+    ``ip`` is accepted and ignored: addressing comes from the container row's
+    ``agentcore_runtime_arn``. The kwarg stays only so the nine call sites still passing it can
+    drop it with their own files. ``content`` is a raw body for proxies that forward bytes
+    verbatim (webhooks); it wins over ``json_body``.
 
-    Failures are httpx-shaped on both transports — ``httpx.ReadTimeout`` when the gateway did
-    not answer in time, ``httpx.ConnectError`` for anything else in the way — so a caller's
-    existing ``except httpx.…`` covers a microVM exactly as it covers a task IP.
+    Failures are httpx-shaped — ``httpx.ReadTimeout`` when the gateway did not answer in time,
+    ``httpx.ConnectError`` for anything else in the way — so a caller's existing
+    ``except httpx.…`` covers a microVM exactly as it used to cover a task IP.
     """
-    if host_for(container) == "agentcore":
-        return await _request_agentcore(
-            container,
-            path,
-            method=method,
-            json_body=json_body,
-            content=content,
-            headers=headers,
-            timeout_s=timeout_s,
-        )
-    return await _request_ecs(
-        ip, path, method=method, json_body=json_body, content=content, headers=headers, timeout_s=timeout_s
+    return await _request_agentcore(
+        container,
+        path,
+        method=method,
+        json_body=json_body,
+        content=content,
+        headers=headers,
+        timeout_s=timeout_s,
     )
-
-
-async def _request_ecs(
-    ip: str | None,
-    path: str,
-    *,
-    method: str,
-    json_body: Any,
-    content: bytes | None,
-    headers: dict[str, str] | None,
-    timeout_s: float,
-) -> RuntimeResponse:
-    if not ip:
-        raise ValueError("ecs transport requires a container ip")
-    # margin bounds the HTTP ceiling just above the plugin's own timeout, so the plugin's 504
-    # fires first on a slow call rather than httpx aborting the connection under it.
-    margin = min(5.0, timeout_s)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s + margin, connect=margin)) as client:
-        response = await client.request(
-            method,
-            f"http://{ip}:{GATEWAY_PORT}{path}",
-            content=content,
-            json=json_body if content is None else None,
-            headers=headers or {},
-        )
-    return RuntimeResponse(status_code=response.status_code, text=response.text, headers=dict(response.headers))
 
 
 async def _request_agentcore(
@@ -229,8 +170,8 @@ async def _request_agentcore(
     # The caller's budget is the whole budget. A cold session is held by AgentCore through the
     # microVM start and gateway boot (54-57s measured), so the one caller that wakes a parked
     # workspace — room ingress — passes a budget that outlasts it; probes pass a short one and
-    # simply report "not ready". boto's read timeout is the caller's budget plus the same margin
-    # the ECS transport uses, and the outer wait sits just above it so the THREAD gives up first:
+    # simply report "not ready". boto's read timeout is the caller's budget plus a
+    # small margin, and the outer wait sits just above it so the THREAD gives up first:
     # an invoke never outlives its caller, so a retried delivery cannot race an abandoned one.
     margin = min(5.0, timeout_s)
     read_timeout = timeout_s + margin
@@ -290,5 +231,5 @@ async def _request_agentcore(
     try:
         return await asyncio.wait_for(loop.run_in_executor(_EXECUTOR, _invoke), timeout=read_timeout + 2.0)
     except asyncio.TimeoutError as exc:
-        # Same shape as the ECS transport's httpx timeout, so callers need one except clause.
+        # httpx-shaped, so callers need one except clause.
         raise httpx.ReadTimeout(f"agentcore invoke exceeded {read_timeout:.0f}s") from exc

@@ -271,20 +271,6 @@ def _simple_plan(routines=None):
     )
 
 
-def _plan_of(n: int):
-    """A flat ``n``-agent company: a CEO plus ``n-1`` direct reports.
-
-    Ids mint as ``pc_1``..``pc_n`` in creation order (see ``FakeAdmin``).
-    """
-    return DeployPlan(
-        slug="acme",
-        ceo_slug="ceo",
-        agents=[_agent("ceo", name="CEO", role="ceo", reports_to_slug=None)]
-        + [_agent(f"a{i}", name=f"A{i}", reports_to_slug="ceo") for i in range(2, n + 1)],
-        routines=[],
-    )
-
-
 # ---------------------------------------------------------------------------
 # Happy path (real gstack fixture tarball → parse → deploy)
 # ---------------------------------------------------------------------------
@@ -300,7 +286,10 @@ def _tar_fixture(pkg_dir: Path) -> bytes:
 @pytest.mark.asyncio
 async def test_gstack_full_deploy_topological(monkeypatch):
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     _install(monkeypatch, h, plan=None)  # real parse path
+    _resolve_calls, write_profile, upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
 
     tar_bytes = _tar_fixture(FIXTURE)
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=tar_bytes)
@@ -332,10 +321,13 @@ async def test_gstack_full_deploy_topological(monkeypatch):
     assert by_name["Release Engineer"]["reports_to"] == cto_id
     assert by_name["Staff Engineer"]["reports_to"] == cto_id
 
-    # Every agent paired + operator-device-trusted + materialized.
-    assert len(h.pair_calls) == 5
-    assert len(h.ensure_calls) == 5
-    assert len(h.materialize_calls) == 5
+    # Every agent's Hermes profile written (AgentCore transport -- no pairing,
+    # no EFS materialize).
+    assert len(write_profile.calls) == 5
+    assert len(upload_files.calls) == 5
+    assert h.pair_calls == []
+    assert h.ensure_calls == []
+    assert h.materialize_calls == []
     # No rollback on the happy path.
     assert h.deleted == []
     # Admin session closed.
@@ -348,27 +340,13 @@ async def test_gstack_full_deploy_topological(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_every_agent_created_paired_and_materialized(monkeypatch):
-    plan = _simple_plan()
-    h = Harness()
-    _install(monkeypatch, h, plan=plan)
-
-    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
-
-    ceo_id = h.admin.name_to_id["CEO"]
-    cto_id = h.admin.name_to_id["CTO"]
-    worker_id = h.admin.name_to_id["Worker"]
-    assert h.pair_calls == [ceo_id, cto_id, worker_id]
-    assert h.ensure_calls == [ceo_id, cto_id, worker_id]
-    assert h.materialize_calls == [ceo_id, cto_id, worker_id]
-    assert h.deleted == []
-
-
-@pytest.mark.asyncio
 async def test_every_create_carries_server_adapter_and_budget(monkeypatch):
     plan = _simple_plan()
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
+    _wire_agentcore_profile(monkeypatch)
 
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
@@ -386,7 +364,10 @@ async def test_ecs_owner_adapter_selection_is_byte_identical_via_the_real_resolv
     fake (above) already asserts."""
     plan = _simple_plan()
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
+    _wire_agentcore_profile(monkeypatch)
     monkeypatch.setattr(svc, "resolve_agent_adapter", real_resolve_agent_adapter)
     monkeypatch.setattr(svc.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr(service_token_mod, "mint", lambda owner_id: "svc_tok")
@@ -404,7 +385,10 @@ async def test_agentcore_owner_gets_the_native_hermes_adapter_via_the_real_resol
     """The shared resolver selects the native Hermes adapter for AgentCore owners."""
     plan = _simple_plan()
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
+    _wire_agentcore_profile(monkeypatch)
     monkeypatch.setattr(svc, "resolve_agent_adapter", real_resolve_agent_adapter)
     monkeypatch.setattr(
         svc.container_repo,
@@ -428,7 +412,10 @@ async def test_agentcore_owner_gets_the_native_hermes_adapter_via_the_real_resol
 async def test_child_reports_to_freshly_minted_manager(monkeypatch):
     plan = _simple_plan()
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
+    _wire_agentcore_profile(monkeypatch)
 
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
@@ -454,7 +441,10 @@ async def test_routines_created_via_create_agent_routines(monkeypatch):
         ]
     )
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
+    _wire_agentcore_profile(monkeypatch)
 
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
@@ -471,7 +461,10 @@ async def test_no_cron_routines_creates_none(monkeypatch):
     still completes without raising."""
     plan = _simple_plan(routines=[])
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
+    _wire_agentcore_profile(monkeypatch)
 
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
@@ -487,7 +480,10 @@ async def test_routine_failure_does_not_roll_back_materialized_company(monkeypat
     raises."""
     plan = _simple_plan(routines=[PlannedRoutine(agent_slug="cto", title="Nightly", description="d", cron="0 8 * * *")])
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
+    _resolve_calls, write_profile, upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
 
     async def boom(*, admin, session_cookie, company_id, agent_id, routines):
         raise RuntimeError("routine creation exploded")
@@ -497,9 +493,9 @@ async def test_routine_failure_does_not_roll_back_materialized_company(monkeypat
     # Must NOT raise.
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
-    # All three agents were created + materialized...
+    # All three agents were created + their Hermes profiles written...
     assert [c["name"] for c in h.admin.create_calls] == ["CEO", "CTO", "Worker"]
-    assert len(h.materialize_calls) == 3
+    assert len(write_profile.calls) == 3
     # ...and NONE were rolled back despite the routine failure.
     assert h.deleted == []
     assert h.unwound == []
@@ -514,20 +510,25 @@ async def test_routine_failure_does_not_roll_back_materialized_company(monkeypat
 
 @pytest.mark.asyncio
 async def test_failure_rolls_back_created_set_and_skips_seeded(monkeypatch):
-    """A materialize failure mid-run tears down exactly the agents created so
-    far (delete + unwind), guarding is_seeded_agent so a seed is never
+    """A Hermes profile-write failure mid-run tears down exactly the agents
+    created so far via a straight Paperclip delete (AgentCore rollback has no
+    EFS/openclaw.json to unwind), guarding is_seeded_agent so a seed is never
     deleted."""
     plan = _simple_plan()
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
+    _resolve_calls, write_profile, upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
 
-    async def boom(*, owner_id, new_agent_id, planned, skill_assets, workspace, apply_aux):
-        if planned.name == "CTO":
-            raise RuntimeError("materialize exploded")
-        h.materialize_calls.append(new_agent_id)
-        return {"id": new_agent_id}
+    async def boom(owner_id, agent_row, *, container_row, inputs=None, soul_md_override=None):
+        if agent_row["name"] == "CTO":
+            raise RuntimeError("profile write exploded")
+        write_profile.calls.append(
+            {"owner_id": owner_id, "agent_row": agent_row, "container_row": container_row, "inputs": inputs}
+        )
 
-    monkeypatch.setattr(svc, "materialize_agent", boom)
+    monkeypatch.setattr(svc, "write_profile_for_agent", boom)
     # Pretend the CEO's freshly-minted id is a seeded agent (never deletable).
     h.seeded_ids = {"pc_1"}
 
@@ -537,127 +538,13 @@ async def test_failure_rolls_back_created_set_and_skips_seeded(monkeypatch):
     # Two agents were created (CEO pc_1, CTO pc_2) before the crash; the Worker
     # was never reached.
     assert [c["name"] for c in h.admin.create_calls] == ["CEO", "CTO"]
-    # pc_2 (CTO) is not seeded -> deleted + unwound. pc_1 (CEO) is seeded -> skipped.
+    # pc_2 (CTO) is not seeded -> deleted. pc_1 (CEO) is seeded -> skipped.
     assert h.deleted == ["pc_2"]
-    assert h.unwound == ["pc_2"]
+    # AgentCore rollback deletes directly -- never the ECS/EFS unwind path.
+    assert h.unwound == []
     assert "pc_1" not in h.deleted
     # Admin session still closed on the failure path.
     assert h.http.closed is True
-
-
-@pytest.mark.asyncio
-async def test_run_company_deploy_never_raises_and_rolls_back(monkeypatch):
-    """A pairing failure on the first agent is swallowed (never escapes the
-    background target) and the one created agent is rolled back."""
-    plan = _simple_plan()
-    h = Harness()
-    _install(monkeypatch, h, plan=plan)
-
-    async def boom(*, owner_id, paperclip_agent, extra_update_fields=None):
-        raise RuntimeError("pair exploded")
-
-    monkeypatch.setattr(svc, "pair_with_openclaw", boom)
-
-    # Must NOT raise.
-    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
-
-    # Only the CEO was created before pairing blew up; it is rolled back.
-    assert [c["name"] for c in h.admin.create_calls] == ["CEO"]
-    assert h.deleted == ["pc_1"]
-    assert h.unwound == ["pc_1"]
-    assert len(h.unwind_causes) == 1
-    assert isinstance(h.unwind_causes[0], RuntimeError)
-
-
-@pytest.mark.asyncio
-async def test_run_company_deploy_timeout_keeps_both_sides_of_the_install(monkeypatch):
-    """pair_with_openclaw can raise TimeoutError after exhausting its
-    bounded retry — a client-side 'no answer yet', not a failure. The
-    rollback threads that exception through to unwind_partial_deploy as
-    ``cause`` so it can skip the EFS/openclaw.json edit, and because the
-    container-side install is therefore still standing the Paperclip row is
-    KEPT with it. Deleting only the Paperclip row is what left an agent in the
-    container that nobody could see or remove from Teams."""
-    plan = _simple_plan()
-    h = Harness()
-    _install(monkeypatch, h, plan=plan)
-
-    async def boom(*, owner_id, paperclip_agent, extra_update_fields=None):
-        raise TimeoutError()
-
-    monkeypatch.setattr(svc, "pair_with_openclaw", boom)
-
-    # Must NOT raise.
-    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
-
-    assert [c["name"] for c in h.admin.create_calls] == ["CEO"]
-    # unwind_partial_deploy was still called (it makes the skip decision
-    # itself); the TimeoutError was threaded through as its cause.
-    assert h.unwound == ["pc_1"]
-    assert len(h.unwind_causes) == 1
-    assert isinstance(h.unwind_causes[0], TimeoutError)
-    # ...and it reported "skipped", so the Paperclip row stays put.
-    assert h.deleted == []
-
-
-@pytest.mark.asyncio
-async def test_timeout_on_the_last_agent_still_unwinds_the_earlier_ones(monkeypatch):
-    """A 10-agent deploy whose LAST agent times out must unwind the other nine.
-
-    ``created`` is appended to right after ``create_agent`` and before that
-    agent is paired, so only ``created[-1]`` can still be mid-write; every
-    earlier agent finished its RPCs. Applying the one TimeoutError to the whole
-    list skipped the unwind for all ten — stranding nine EFS workspaces and
-    openclaw.json entries forever while their Paperclip rows were deleted
-    anyway, i.e. nine unreachable ghosts.
-    """
-    plan = _plan_of(10)
-    h = Harness()
-    _install(monkeypatch, h, plan=plan)
-
-    real_pair = svc.pair_with_openclaw
-
-    async def boom(*, owner_id, paperclip_agent, extra_update_fields=None):
-        if paperclip_agent["id"] == "pc_10":
-            raise TimeoutError()
-        return await real_pair(owner_id=owner_id, paperclip_agent=paperclip_agent)
-
-    monkeypatch.setattr(svc, "pair_with_openclaw", boom)
-
-    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
-
-    assert h.unwound == [f"pc_{i}" for i in range(1, 11)]
-    # Only the agent the timeout landed on carries the cause.
-    assert [c is None for c in h.unwind_causes[:9]] == [True] * 9
-    assert isinstance(h.unwind_causes[9], TimeoutError)
-    # The nine completed agents are fully rolled back; the timed-out one is
-    # kept on BOTH sides so it stays visible + deletable in Teams.
-    assert h.deleted == [f"pc_{i}" for i in range(1, 10)]
-
-
-@pytest.mark.asyncio
-async def test_rollback_keeps_the_row_when_the_unwind_itself_raises(monkeypatch):
-    """``unwind_partial_deploy`` is documented never to raise, so a raise is an
-    unknown-unknown: the container may still hold the workspace, the agents.list
-    entry and the sidecar. Deleting the Paperclip row on top of that produces an
-    agent Teams cannot show or remove. A retained row is recoverable; a ghost
-    is not."""
-    plan = _simple_plan()
-    h = Harness()
-    h.unwind_raises = RuntimeError("efs stalled")
-    _install(monkeypatch, h, plan=plan)
-
-    async def boom(*, owner_id, paperclip_agent, extra_update_fields=None):
-        raise RuntimeError("pair blew up")
-
-    monkeypatch.setattr(svc, "pair_with_openclaw", boom)
-
-    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
-
-    # The unwind was attempted...
-    assert h.unwound != []
-    # ...but because it raised, the Paperclip row is KEPT, not deleted.
-    assert h.deleted == []
 
 
 # ---------------------------------------------------------------------------
@@ -868,28 +755,6 @@ async def test_agentcore_mid_loop_failure_rolls_back_by_paperclip_delete_only(mo
     assert h.unwound == []
 
 
-@pytest.mark.asyncio
-async def test_agentcore_ecs_row_stays_on_the_unchanged_pairing_path(monkeypatch):
-    """Sanity check that the branch really is transport-gated: an ECS row (the default
-    Harness container) still pairs + materializes, never touching the AgentCore helpers."""
-    plan = _simple_plan()
-    h = Harness()
-    _install(monkeypatch, h, plan=plan)
-    _resolve_calls, write_profile, upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
-    # Undo the pairing/ensure restoration for THIS test -- the harness's own fakes should be
-    # the ones reached on an ECS row, not the real network-bound implementations.
-    fake_pair = AsyncMock()
-    monkeypatch.setattr(svc, "pair_with_openclaw", fake_pair)
-    monkeypatch.setattr(svc, "ensure_operator_device_paired", AsyncMock())
-
-    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
-
-    assert len(h.materialize_calls) == 3
-    assert fake_pair.await_count == 3
-    assert write_profile.calls == []
-    assert upload_files.calls == []
-
-
 # ---------------------------------------------------------------------------
 # _find_friday_id — the true apex, not just "first ceo"
 # ---------------------------------------------------------------------------
@@ -935,6 +800,8 @@ async def test_deploy_grafts_onto_rootless_friday_not_prior_package_ceo(monkeypa
     division head still reports to the rootless Friday, not the prior CEO."""
     plan = _simple_plan()
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     h.admin = FakeAdmin(
         roster=[
             {"id": "pc_prior_ceo", "role": "ceo", "reportsTo": FRIDAY_ID},  # earlier deploy, first
@@ -942,6 +809,7 @@ async def test_deploy_grafts_onto_rootless_friday_not_prior_package_ceo(monkeypa
         ]
     )
     _install(monkeypatch, h, plan=plan)
+    _wire_agentcore_profile(monkeypatch)
 
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
@@ -990,7 +858,10 @@ async def test_no_paperclip_company_creates_nothing(monkeypatch):
 async def test_admin_http_closed_on_success(monkeypatch):
     plan = _simple_plan()
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
+    _wire_agentcore_profile(monkeypatch)
 
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
@@ -1008,7 +879,10 @@ async def test_claim_extended_per_agent_and_released_on_success(monkeypatch):
     agent (a company's wall clock is N x a single deploy's) and released with
     no cause when the run succeeds."""
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     _install(monkeypatch, h, plan=_simple_plan())
+    _wire_agentcore_profile(monkeypatch)
     extends: list[str] = []
     releases: list[tuple[str, BaseException | None]] = []
 
@@ -1030,16 +904,19 @@ async def test_claim_extended_per_agent_and_released_on_success(monkeypatch):
 @pytest.mark.asyncio
 async def test_claim_released_with_the_failure_as_cause(monkeypatch):
     """A failed run releases the claim with the failure as ``cause`` — so a
-    pairing TimeoutError HOLDS the claim (release no-ops on it), exactly like
+    profile-write failure HOLDS the claim (release no-ops on it), exactly like
     the single-agent path."""
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     _install(monkeypatch, h, plan=_simple_plan())
-    boom = RuntimeError("pair failed")
+    _wire_agentcore_profile(monkeypatch)
+    boom = RuntimeError("profile write failed")
 
-    async def fail_pair(*, owner_id, paperclip_agent, extra_update_fields=None):
+    async def fail_write(owner_id, agent_row, *, container_row, inputs=None, soul_md_override=None):
         raise boom
 
-    monkeypatch.setattr(svc, "pair_with_openclaw", fail_pair)
+    monkeypatch.setattr(svc, "write_profile_for_agent", fail_write)
 
     async def fake_extend(owner_id, *, token):
         return None
@@ -1087,7 +964,10 @@ async def test_no_claim_token_touches_no_claim(monkeypatch):
 @pytest.mark.asyncio
 async def test_success_writes_the_deployed_company_marker(monkeypatch):
     h = Harness()
+    h.container = dict(AGENTCORE_CONTAINER)
+    h.ip = "agentcore"
     _install(monkeypatch, h, plan=_simple_plan())
+    _wire_agentcore_profile(monkeypatch)
 
     await svc.run_company_deploy(owner_id=OWNER, listing={"listing_id": "l1", "name": "Acme"}, tar_bytes=b"")
 

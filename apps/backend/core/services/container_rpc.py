@@ -1,10 +1,8 @@
-"""One HTTP request per gateway RPC, to the container's baked lightbulb-channel plugin.
+"""One request per gateway RPC, carried to the owner's AgentCore runtime.
 
-Replaces the per-owner gateway WebSocket pool. ``call`` raises ``asyncio.TimeoutError``
-on a 504, ``RuntimeError(json.dumps(error))`` when the gateway reports ``{"ok": false}``,
-and ``ApiProblem("RUNTIME_UNAVAILABLE", ...)`` when there is no reachable container or the
-HTTP transport itself fails. ``wake=False`` resolves the container without ever dispatching
-a wake for a stopped row -- for read/best-effort callers that must not start a container.
+``call`` raises ``asyncio.TimeoutError`` on a 504, ``RuntimeError(json.dumps(error))`` when the
+gateway reports ``{"ok": false}``, and ``ApiProblem("RUNTIME_UNAVAILABLE", ...)`` when the owner
+has no addressable runtime row or the transport itself fails.
 """
 
 from __future__ import annotations
@@ -16,41 +14,38 @@ from typing import Any
 
 import httpx
 
-from core.containers import get_ecs_manager
 from core.observability.metrics import put_metric
 from core.services import runtime_transport
 from core.repositories import container_repo
 from core.services.messaging import ApiProblem
 
+#: Only ``routers.gateway_relay`` still imports this; it goes with that router's ECS leg.
 GATEWAY_PORT = 18789
 RPC_PATH = "/plugins/lightbulb-channel/rpc"
 
 
-async def running_container(owner_id: str, *, wake: bool = True) -> tuple[dict, str]:
-    """The owner's running container row and IP; wakes a stopped one and reports retryable.
-
-    ``wake=False`` skips the wake dispatch for a stopped/absent row (still raises the
-    same ``ApiProblem``) -- for read/best-effort callers that must never start a container.
-    """
-    manager = get_ecs_manager()
-    container, ip = await manager.resolve_running_container(owner_id)
-    if container and ip:
-        token = container.get("gateway_token")
-        if isinstance(token, str) and token:
-            return container, ip
-    row = container or await container_repo.get_by_owner_id(owner_id, consistent=True)
-    if wake and row and row.get("status") == "stopped":
-        from core.services.container_wake import request_wake_silent
-
-        await request_wake_silent(owner_id)
-        raise ApiProblem(
-            "RUNTIME_UNAVAILABLE", "The runtime is waking. Try again shortly.", retryable=True, retry_after=3
-        )
-    raise ApiProblem("RUNTIME_UNAVAILABLE", "The runtime is temporarily unavailable.", retryable=True, retry_after=3)
-
-
 def _unavailable() -> ApiProblem:
     return ApiProblem("RUNTIME_UNAVAILABLE", "The runtime is temporarily unavailable.", retryable=True, retry_after=3)
+
+
+async def running_container(owner_id: str, *, wake: bool = True) -> tuple[dict, str]:
+    """The owner's runtime row plus the AgentCore address sentinel; raises retryable when there
+    is no row to address.
+
+    ``wake`` is inert -- AgentCore starts the microVM on invoke, so there is no stopped service
+    to scale up and nothing a read-only caller can accidentally start. The kwarg stays so the
+    ``wake=False`` call sites do not churn here.
+
+    Status is deliberately NOT gated: a row is addressable as soon as it carries its gateway
+    token, and a parked runtime answers the invoke that wakes it. ``runtime_transport.request``
+    is the one place that insists on ``agentcore_runtime_arn`` -- a row without one fails there
+    as the same ``ApiProblem``.
+    """
+    container = await container_repo.get_by_owner_id(owner_id)
+    token = (container or {}).get("gateway_token")
+    if container and isinstance(token, str) and token:
+        return container, runtime_transport.AGENTCORE_ADDRESS
+    raise _unavailable()
 
 
 async def call(
@@ -62,35 +57,26 @@ async def call(
     wake: bool = True,
     target: tuple[dict, str] | None = None,
 ) -> Any:
-    """``target``, when given, is an already-resolved ``(container, ip)`` pair
-    (e.g. from a prior ``running_container`` call) -- skips resolution so a
-    caller making many calls for one owner pays one DDB read + one Cloud Map
-    lookup, not one per call."""
+    """``target``, when given, is an already-resolved ``(container, address)`` pair (e.g. from
+    a prior ``running_container`` call) -- skips resolution so a caller making many calls for
+    one owner pays one DynamoDB read, not one per call."""
     started = time.perf_counter()
     outcome = "unavailable"
     try:
-        container, ip = target if target is not None else await running_container(owner_id, wake=wake)
-        # F4 (predeploy review, M6-R37): a parked AgentCore workspace holds an invoke through
-        # the microVM start + gateway boot (54-57s measured) -- a caller's shorter default
-        # (30s in runtime_rpc, 10s/5s/2s in narrower probes) fails on the first call to a cold
-        # workspace and only succeeds on a retry. Floor, never lower: a caller that already
-        # asked for a longer budget than the AgentCore floor keeps it.
-        effective_timeout_s = timeout_s
-        if runtime_transport.host_for(container) == "agentcore":
-            effective_timeout_s = max(timeout_s, runtime_transport.AGENTCORE_INGRESS_TIMEOUT_S)
-        # margin bounds the HTTP-transport ceiling just above the plugin's own
-        # timeoutMs (== timeout_s): the plugin's own 504 must fire first on a
-        # slow RPC, not httpx aborting the connection out from under it.
+        container, _address = target if target is not None else await running_container(owner_id, wake=wake)
+        # F4 (predeploy review, M6-R37): a parked workspace holds an invoke through the microVM
+        # start + gateway boot (54-57s measured) -- a caller's shorter default (30s in
+        # runtime_rpc, 10s/5s/2s in narrower probes) fails on the first call to a cold workspace
+        # and only succeeds on a retry. Floor, never lower: a caller that already asked for a
+        # longer budget keeps it.
+        effective_timeout_s = max(timeout_s, runtime_transport.AGENTCORE_INGRESS_TIMEOUT_S)
         try:
-            # runtime_transport owns HOW to reach the gateway: dial the task IP for an ECS
-            # owner, or an InvokeAgentRuntime envelope for one on AgentCore. The choice is
-            # per-owner (containers.runtime_host) because the migration is a per-workspace
-            # rollout. Timeout margin lives in the transport for the same reason it used to
-            # live here: the plugin's own 504 must fire before the HTTP client gives up.
+            # runtime_transport owns HOW to reach the gateway (an InvokeAgentRuntime envelope).
+            # Timeout margin lives there for the same reason it used to live here: the plugin's
+            # own 504 must fire before the transport gives up.
             response = await runtime_transport.request(
                 container,
                 RPC_PATH,
-                ip=ip,
                 method="POST",
                 json_body={"method": method, "params": params or {}, "timeoutMs": int(effective_timeout_s * 1000)},
                 headers={"Authorization": f"Bearer {container['gateway_token']}"},

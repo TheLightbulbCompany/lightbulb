@@ -4,8 +4,9 @@ An AgentCore buyer has no EFS workspace -- their Hermes profile lives in S3
 under ``<owner>/hermes/<agent_id>/`` instead. ``deploy_from_artifact``
 branches on ``runtime_transport.host_for(container)`` into
 ``_install_agentcore_deploy`` (Paperclip mint-if-needed -> Hermes profile ->
-tarball content, M6-R9) instead of the EFS extract + gateway-pairing path
-exercised by test_catalog_service.py.
+tarball content, M6-R9). ``host_for`` is now pinned to ``agentcore``, so this
+is the ONLY install path -- the EFS extract + gateway-pairing branch is dead
+and its tests are gone.
 """
 
 import contextlib
@@ -538,47 +539,3 @@ async def test_deploy_from_artifact_never_rolls_back_a_pre_supplied_agentcore_id
             )
 
     delete_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_deploy_from_artifact_keeps_efs_path_when_container_omitted():
-    """No container in hand (every existing caller, today) must keep taking
-    the EFS/gateway-RPC path byte-for-byte."""
-    svc, workspace, pair_fn, apply_aux = _make_service_for_deploy()
-
-    with (
-        patch("core.repositories.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
-        patch("core.services.catalog_service.deploy_tarball_to_profile", new=AsyncMock(return_value=None)) as mocked,
-    ):
-        await svc.deploy_from_artifact(
-            owner_id="user_buyer",
-            slug="demo",
-            manifest={"name": "Demo", "version": 1},
-            slice_={"agent": {"name": "Demo"}},
-            tar_bytes=b"<gz>",
-            new_agent_id="agent_abc",
-        )
-
-    mocked.assert_not_awaited()
-    workspace.extract_tarball_to_workspace.assert_called_once()
-    pair_fn.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_deploy_from_artifact_keeps_efs_path_for_an_explicit_ecs_container():
-    svc, workspace, pair_fn, _apply_aux = _make_service_for_deploy()
-
-    with patch("core.services.catalog_service.deploy_tarball_to_profile", new=AsyncMock(return_value=None)) as mocked:
-        await svc.deploy_from_artifact(
-            owner_id="user_buyer",
-            slug="demo",
-            manifest={"name": "Demo", "version": 1},
-            slice_={"agent": {"name": "Demo"}},
-            tar_bytes=b"<gz>",
-            new_agent_id="agent_abc",
-            container={"runtime_host": "ecs"},
-        )
-
-    mocked.assert_not_awaited()
-    workspace.extract_tarball_to_workspace.assert_called_once()
-    pair_fn.assert_awaited_once()

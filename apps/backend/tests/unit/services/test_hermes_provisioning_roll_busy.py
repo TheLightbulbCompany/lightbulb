@@ -7,11 +7,12 @@ wrote -- an in-progress clone, an uncommitted ``git add``, a test run's output. 
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
+from core.repositories import container_repo
 from core.services import container_rpc, hermes_provisioning, runtime_transport
 from core.services.messaging import ApiProblem
 
@@ -109,19 +110,21 @@ async def test_a_starved_microvm_arrives_as_an_apiproblem_and_is_not_idle(monkey
     monkeypatch.setattr(container_rpc, "call", _REAL_CONTAINER_RPC_CALL)
     monkeypatch.setattr(hermes_provisioning, "ROLL_IDLE_WAIT_S", 0.0)
 
-    manager = MagicMock()
-    manager.resolve_running_container = AsyncMock(
-        return_value=(
-            {
+    # `container_rpc.running_container` reads the containers row directly now (it no longer
+    # calls `EcsManager.resolve_running_container` -- deletion PR-1's container_rpc change),
+    # so the row to address is mocked at its actual source.
+    monkeypatch.setattr(
+        container_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
                 "gateway_token": "gw",
                 "runtime_host": "agentcore",
                 "agentcore_runtime_arn": "arn:rt",
                 "status": "running",
-            },
-            runtime_transport.AGENTCORE_ADDRESS,
-        )
+            }
+        ),
     )
-    monkeypatch.setattr(container_rpc, "get_ecs_manager", lambda: manager)
 
     async def _timed_out(*args, **kwargs):
         raise httpx.ReadTimeout("agentcore invoke exceeded 90s")

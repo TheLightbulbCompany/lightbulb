@@ -2,13 +2,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.services import runtime_transport as _runtime_transport_module
-
-# Captured at collection time, before any test's monkeypatch runs, so this
-# stays the REAL implementation regardless of what the autouse fixture below
-# (or any test) later does to the module attribute of the same name.
-_REAL_IS_AGENTCORE_OWNER = _runtime_transport_module.is_agentcore_owner
-
 
 @pytest.fixture(autouse=True)
 def _ecs_owner_by_default(monkeypatch):
@@ -529,39 +522,3 @@ async def test_apply_agentcore_reads_is_agentcore_owner_exactly_once(monkeypatch
     await ac.apply_connection("org_1", "acme", {"token": "x"})
 
     assert reads == ["org_1"]  # exactly one read for the whole connect
-
-
-@pytest.mark.asyncio
-async def test_apply_refuses_when_the_runtime_host_cannot_be_read(monkeypatch):
-    """Inverts what M6-R26 fix round 1, Important 3 pinned here, deliberately.
-
-    That ruling (a read failure degrades to the ECS path) still holds for the relay/connect
-    probe doors, but a CREDENTIAL PROJECTION is a write: the migration leaves the EFS tree in
-    place, so the ECS branch succeeds on a migrated workspace and the connect reports success
-    for a credential the agent can never see. ``apply_connection`` therefore asks with
-    ``fail_closed=True`` -- one read attempted, nothing written, and the raise lands in the
-    connect routes' existing rollback (secret deleted, row never marked connected, 502)."""
-    from core.services.credentials import apply_connection as ac
-
-    # Restore the REAL is_agentcore_owner (the autouse fixture above mocked it
-    # to a canned False) so its own try/except is what's under test here.
-    monkeypatch.setattr(ac.runtime_transport, "is_agentcore_owner", _REAL_IS_AGENTCORE_OWNER)
-    reads = []
-
-    async def _raise(owner_id):
-        reads.append(owner_id)
-        raise Exception("dynamodb throttled")
-
-    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _raise)
-    set_calls = []
-
-    async def fake_set(owner, path, value):
-        set_calls.append((owner, path, value))
-
-    monkeypatch.setattr(ac.config_patcher, "set_openclaw_config_path", fake_set)
-
-    with pytest.raises(_runtime_transport_module.RuntimeHostUnknownError):
-        await ac.apply_connection("org_1", "parallel", {"token": "par-x"})
-
-    assert reads == ["org_1"]  # exactly one read attempted
-    assert set_calls == []  # and no write on either host

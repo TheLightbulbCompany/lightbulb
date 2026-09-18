@@ -104,29 +104,13 @@ def test_stopped_container_wakes_and_closes_1013():
     wake.assert_awaited_once_with("org_1", door="relay")
 
 
-def test_frames_are_piped_verbatim_and_presence_is_written_then_deleted():
-    # The delete_connection assertion below is on finally-block behavior, so
-    # (same as test_node_ready_and_closed_hooks_fire_for_a_node) the test must
-    # not exit `with ws:` until the SERVER has closed on its own -- a
-    # client-initiated disconnect can race the relay's own teardown and
-    # return before its finally block (and therefore delete_connection) has
-    # run.
-    upstream = FakeUpstream()
-    patches, svc = _patches(NODE, upstream)
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
-        with pytest.raises(WebSocketDisconnect):
-            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
-                ws.send_text('{"type":"req","id":"1","method":"connect","params":{"role":"node"}}')
-                upstream.feed('{"type":"res","id":"1","ok":true,"payload":{"type":"hello-ok"}}')
-                assert json.loads(ws.receive_text())["payload"]["type"] == "hello-ok"
-                upstream.feed(b"\x00\x01")
-                assert ws.receive_bytes() == b"\x00\x01"
-                upstream.feed(None)
-                ws.receive_text()  # blocks until the relay's own close (1000) propagates
-    assert upstream.sent[0] == '{"type":"req","id":"1","method":"connect","params":{"role":"node"}}'
-    row = svc.put_relay_presence.await_args.kwargs
-    assert row["identity"] == NODE and row["connection_id"].startswith("relay#")
-    svc.delete_connection.assert_called_once_with(row["connection_id"])
+# NOTE: `test_frames_are_piped_verbatim_and_presence_is_written_then_deleted` was deleted.
+# A NODE connection now ALWAYS terminates in `_serve_node_protocol` (host_for is pinned to
+# "agentcore" fleet-wide), so the classic ip-relay pipe it drove for a node is dead code;
+# verbatim node-protocol framing plus presence coverage live in
+# test_gateway_relay_agentcore.py. An OPERATOR still runs the classic pipe (see
+# test_operator_wake_gate_answers_the_client_and_drops_the_frame and the presence/close
+# tests below), so that mechanism keeps its own coverage here.
 
 
 def test_operator_wake_gate_answers_the_client_and_drops_the_frame():
@@ -159,43 +143,30 @@ def test_operator_wake_gate_answers_the_client_and_drops_the_frame():
     assert upstream.sent == []
 
 
-def test_not_paired_from_the_container_triggers_the_self_heal():
-    upstream = FakeUpstream()
-    patches, _ = _patches(NODE, upstream)
-    with (
-        patches[0],
-        patches[1],
-        patches[2],
-        patches[3],
-        patches[4],
-        patches[5],
-        patches[6],
-        patch(
-            "routers.gateway_relay.heal_desktop_device_not_paired", new_callable=AsyncMock, return_value=True
-        ) as heal,
-    ):
-        with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
-            upstream.feed(
-                '{"type":"res","id":"1","ok":false,"error":{"code":"NOT_PAIRED","details":{"requestId":"req-1","deviceId":"'
-                + "a" * 64
-                + '"}}}'
-            )
-            assert json.loads(ws.receive_text())["error"]["code"] == "NOT_PAIRED"  # still forwarded
-            upstream.feed(None)
-    heal.assert_awaited_once_with(owner_id="org_1", device_id="a" * 64, request_id="req-1")
+# NOTE: `test_not_paired_from_the_container_triggers_the_self_heal` was deleted. It drove a
+# NODE identity through the classic ip-relay pipe's NOT_PAIRED self-heal branch, which is
+# gated `kind == "node"` in the OUTER handler -- but a node never reaches that handler branch
+# any more (host_for is pinned to "agentcore", so a node always terminates in
+# `_serve_node_protocol` instead). The self-heal gate itself is identical for both kinds
+# (`_self_heal(kind, ...)` doesn't branch on kind), and is still covered end-to-end by
+# test_operator_not_paired_routes_through_the_same_self_heal_gate_as_a_node below.
 
 
 # --- Task 3 review fix round ---
 
 
 def test_revoked_presence_closes_the_socket_1008(monkeypatch):
+    # OPERATOR, not NODE: a node now always terminates in `_serve_node_protocol` (host_for is
+    # pinned to "agentcore"), which never reaches the classic relay's presence-refresh loop
+    # this test targets. An operator still runs the classic pipe unconditionally, so it
+    # exercises the exact same `_refresh_presence_loop` -> 1008 mechanism.
     monkeypatch.setattr(gateway_relay, "_REFRESH_SECONDS", 0)
     upstream = FakeUpstream()
-    patches, svc = _patches(NODE, upstream)
+    patches, svc = _patches(OPERATOR, upstream)
     svc.refresh_relay_presence = AsyncMock(return_value=False)
     with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
         with pytest.raises(WebSocketDisconnect) as exc:
-            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
+            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=paperclip-operator") as ws:
                 ws.receive_text()
     assert exc.value.code == 1008
 
@@ -260,23 +231,13 @@ def test_operator_not_paired_approves_once_even_if_the_frame_repeats():
     heal.assert_awaited_once_with(owner_id="org_1", device_id="b" * 64, request_id="req-1")
 
 
-def test_node_ready_and_closed_hooks_fire_for_a_node():
-    # Both assertions are on finally-block behavior (on_node_closed only runs
-    # after the presence delete), so the test must not exit `with ws:` until
-    # the SERVER has closed on its own -- a client-initiated disconnect (just
-    # falling out of the block) can race the relay's own teardown and return
-    # before its finally block has run.
-    upstream = FakeUpstream()
-    patches, _ = _patches(NODE, upstream)
-    with patches[0], patches[1], patches[2], patches[3], patches[4] as on_ready, patches[5] as on_closed, patches[6]:
-        with pytest.raises(WebSocketDisconnect):
-            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
-                upstream.feed('{"type":"res","id":"1","ok":true,"payload":{"type":"hello-ok"}}')
-                ws.receive_text()
-                upstream.feed(None)
-                ws.receive_text()  # blocks until the relay's own close (1000) propagates
-    on_ready.assert_awaited_once_with("org_1", "user_1", "a" * 64)
-    on_closed.assert_awaited_once_with("org_1", "user_1", stale_row_undeleted=False)
+# NOTE: `test_node_ready_and_closed_hooks_fire_for_a_node` was deleted. It drove a NODE
+# identity through the classic pipe's hello-ok detection (`upstream_to_client`'s own
+# `on_node_ready` call), which is unreachable now that a node always terminates in
+# `_serve_node_protocol` -- that function fires `relay_hooks.on_node_ready`/`on_node_closed`
+# itself (see tests/unit/services/test_relay_hooks_agentcore.py for that hook's own coverage;
+# test_gateway_relay_agentcore.py deliberately treats the hooks as noise and patches them
+# out, asserting only the protocol layer).
 
 
 def test_trailing_slash_route_is_accepted():
@@ -290,11 +251,14 @@ def test_trailing_slash_route_is_accepted():
 
 
 def test_upstream_close_code_propagates_to_the_client():
+    # OPERATOR: a node no longer dials an upstream container socket at all (it terminates in
+    # `_serve_node_protocol`), so there is no upstream close code to propagate for node kind
+    # any more. An operator still opens the classic upstream socket unconditionally.
     upstream = FakeUpstream()
-    patches, _ = _patches(NODE, upstream)
+    patches, _ = _patches(OPERATOR, upstream)
     with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
         with pytest.raises(WebSocketDisconnect) as exc:
-            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
+            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=paperclip-operator") as ws:
                 upstream.close_code = 4401
                 upstream.feed(None)
                 ws.receive_text()  # blocks until the relay's own close (now 4401) propagates
@@ -302,13 +266,17 @@ def test_upstream_close_code_propagates_to_the_client():
 
 
 def test_leg_exception_closes_1011_and_logs_it(caplog):
+    # OPERATOR: same reasoning as test_upstream_close_code_propagates_to_the_client -- the
+    # classic pipe (and its leg-exception handling) is unreachable for a node now.
     upstream = FakeUpstream()
     upstream.send = AsyncMock(side_effect=RuntimeError("boom"))
-    patches, _ = _patches(NODE, upstream)
+    patches, _ = _patches(OPERATOR, upstream)
     with caplog.at_level(logging.WARNING, logger="routers.gateway_relay"):
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             with pytest.raises(WebSocketDisconnect) as exc:
-                with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
+                with TestClient(_app()).websocket_connect(
+                    "/api/v1/gateway/ws?token=x&clientId=paperclip-operator"
+                ) as ws:
                     ws.send_text('{"type":"req","id":"1","method":"connect","params":{}}')
                     ws.receive_text()
     assert exc.value.code == 1011
@@ -381,19 +349,13 @@ def test_presence_write_failure_closes_1011_and_never_dials_upstream():
     ws_connect_mock.assert_not_called()  # fail closed -- never opens the upstream leg
 
 
-def test_delete_connection_failure_still_floors_the_node_count():
-    """A finally-block delete_connection failure must not silently skip the
-    last-node re-patch decision -- on_node_closed is told the row may still
-    be sitting in DDB via stale_row_undeleted=True (relay_hooks own test
-    covers the count-flooring math; this proves the flag is threaded)."""
-    upstream = FakeUpstream()
-    patches, svc = _patches(NODE, upstream)
-    svc.delete_connection = MagicMock(side_effect=RuntimeError("ddb down"))
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as on_closed, patches[6]:
-        with pytest.raises(WebSocketDisconnect):
-            with TestClient(_app()).websocket_connect("/api/v1/gateway/ws?token=x&clientId=openclaw-macos") as ws:
-                upstream.feed('{"type":"res","id":"1","ok":true,"payload":{"type":"hello-ok"}}')
-                ws.receive_text()
-                upstream.feed(None)
-                ws.receive_text()  # blocks until the relay's own close propagates
-    on_closed.assert_awaited_once_with("org_1", "user_1", stale_row_undeleted=True)
+# NOTE: `test_delete_connection_failure_still_floors_the_node_count` was deleted. Its
+# `stale_row_undeleted` dispatch lives in the OUTER handler's `finally`, gated on
+# `kind == "node" and node_ready` -- and `node_ready` is a local that only the classic pipe's
+# `upstream_to_client` ever sets. A node no longer reaches that pipe (it terminates in
+# `_serve_node_protocol`, which fires its own on_node_closed with no stale_row_undeleted
+# flag), so this outer dispatch is now permanently dead for node kind -- confirmed by the
+# router's own comment at the
+# `if kind == "node" and runtime_transport.host_for(container) == "agentcore":` branch: "none
+# of node_ready/legs/refresher below ever get set on this path -- the shared finally skips
+# the ECS-shaped on_node_closed dispatch as a result."

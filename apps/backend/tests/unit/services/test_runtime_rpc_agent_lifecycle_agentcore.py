@@ -13,9 +13,14 @@ below drives the REAL ``_create_agent`` / ``_mirror_agent_update`` /
 ``write_profile_for_agent`` -- only the S3, Paperclip, and DynamoDB edges are
 mocked (``pair_with_openclaw``, ``container_rpc.call``, and the two
 orchestration functions above are never replaced with a stand-in on an
-AgentCore path; the ECS-parity tests, which are not exercising AgentCore
-behaviour, keep the lighter mocking style ``test_runtime_rpc_agent_create.py``
-already established).
+AgentCore path).
+
+Deletion PR-1 pinned ``runtime_transport.host_for`` to always return
+``"agentcore"``, so the ECS branches these two RPC doors used to have (the
+``pair_with_openclaw``/``ensure_operator_device_paired``/
+``apply_paperclip_meta`` half of ``_create_agent``) are now unreachable dead
+code; their coverage (formerly here and in the deleted
+``test_runtime_rpc_agent_create.py``) went with them.
 """
 
 import os
@@ -135,38 +140,6 @@ async def test_agents_create_on_agentcore_row_writes_the_real_profile_with_no_pa
         "runtime.resource.invalidated",
         {"resource": "agents"},
     )
-
-
-@pytest.mark.asyncio
-async def test_agents_create_on_ecs_row_still_pairs_and_applies_paperclip_meta(monkeypatch):
-    """The ECS branch stays byte-identical -- not an AgentCore test, so the lighter mocking
-    style test_runtime_rpc_agent_create.py already uses is fine here too."""
-    container = {"gateway_token": "tok"}  # no runtime_host -> "ecs" (host_for's own default)
-    paperclip_agent = {"id": "agent_new", "name": "Ada"}
-    monkeypatch.setattr(rpc.container_rpc, "running_container", AsyncMock(return_value=(container, "10.0.0.1")))
-    monkeypatch.setattr(rpc, "create_paperclip_for_chat", AsyncMock(return_value=paperclip_agent))
-    monkeypatch.setattr(rpc, "pair_with_openclaw", AsyncMock())
-    monkeypatch.setattr(rpc, "ensure_operator_device_paired", AsyncMock())
-    apply_meta = AsyncMock()
-    monkeypatch.setattr("core.services.config_patcher.apply_paperclip_meta", apply_meta)
-    write_profile = AsyncMock()
-    monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", write_profile)
-    publish = AsyncMock()
-    monkeypatch.setattr(rpc, "publish_owner_users", publish)
-
-    result = await rpc.execute_sync(
-        owner_id="owner_1",
-        user_id="user_1",
-        request_id="r1",
-        method="agents.create",
-        params={"name": "Ada", "params": {"paperclip": {"role": "engineer", "title": "Backend engineer"}}},
-    )
-
-    assert result["agentId"] == "agent_new"
-    apply_meta.assert_awaited_once()
-    assert apply_meta.await_args.kwargs["meta"] == {"role": "engineer", "title": "Backend engineer"}
-    write_profile.assert_not_awaited()
-    publish.assert_not_awaited()  # unchanged ECS behaviour: agents.create never invalidated here
 
 
 @pytest.mark.asyncio

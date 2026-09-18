@@ -29,129 +29,24 @@ class TestSessionId:
 
 
 class TestHostSelection:
-    def test_absent_flag_means_ecs(self):
-        # Every pre-migration row has no runtime_host; it must keep dialling its IP.
-        assert rt.host_for({}) == "ecs"
+    """There is one runtime. ``host_for`` is a constant that ignores its argument, and
+    ``is_agentcore_owner`` performs no read at all -- a row that cannot be classified no longer
+    exists, so neither can answer "ecs"."""
 
-    def test_unknown_value_falls_back_to_ecs(self):
-        assert rt.host_for({"runtime_host": "wat"}) == "ecs"
-
-    def test_agentcore_is_honoured(self):
-        assert rt.host_for({"runtime_host": "agentcore"}) == "agentcore"
-
-
-class TestIsAgentcoreOwner:
-    """M6-R26 fix round 1, Important 3: a read failure must default to ECS
-    (False) with a warning, never propagate -- every new caller added during
-    the M6 rollout treats this as a routine per-request check, and before
-    that rollout nothing on these doors read this table at all."""
+    def test_every_row_is_agentcore(self):
+        assert rt.host_for({}) == "agentcore"
+        assert rt.host_for({"runtime_host": "ecs"}) == "agentcore"
+        assert rt.host_for({"runtime_host": "wat"}) == "agentcore"
 
     @pytest.mark.asyncio
-    async def test_read_failure_defaults_to_ecs(self, monkeypatch, caplog):
-        async def _raise(owner_id):
-            raise Exception("dynamodb throttled")
+    async def test_is_agentcore_owner_never_reads_the_table(self, monkeypatch):
+        async def _boom(owner_id, **kw):
+            raise AssertionError("is_agentcore_owner must not read containers any more")
 
-        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _raise)
-
-        with caplog.at_level("WARNING"):
-            result = await rt.is_agentcore_owner("org_1")
-
-        assert result is False
-        assert "org_1" in caplog.text
-
-    @pytest.mark.asyncio
-    async def test_agentcore_row_reads_true(self, monkeypatch):
-        async def _get(owner_id):
-            return {"runtime_host": "agentcore"}
-
-        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _get)
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _boom)
         assert await rt.is_agentcore_owner("org_1") is True
-
-    @pytest.mark.asyncio
-    async def test_no_row_reads_false(self, monkeypatch):
-        async def _get(owner_id):
-            return None
-
-        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _get)
-        assert await rt.is_agentcore_owner("org_1") is False
-
-
-class TestEcsTransport:
-    """respx 0.20.2 is incompatible with this repo's httpx (see test_owner_posthog.py), so the
-    client surface is patched directly — the codebase's established convention."""
-
-    @pytest.mark.asyncio
-    async def test_posts_to_the_container_ip(self, monkeypatch):
-        seen = {}
-
-        class _Resp:
-            status_code = 200
-            text = '{"ok": true}'
-            headers = {}
-
-        class _Client:
-            def __init__(self, *a, **k):
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                return False
-
-            async def request(self, method, url, json=None, headers=None, content=None):
-                seen.update(method=method, url=url, json=json, headers=headers, content=content)
-                return _Resp()
-
-        monkeypatch.setattr("httpx.AsyncClient", _Client)
-        res = await rt.request(
-            {"runtime_host": "ecs"},
-            "/plugins/lightbulb-channel/rpc",
-            ip="10.0.0.5",
-            json_body={"method": "health"},
-            headers={"Authorization": "Bearer tok"},
-        )
-        assert res.status_code == 200
-        assert res.json() == {"ok": True}
-        # The URL shape the fleet depends on today.
-        assert seen["url"] == "http://10.0.0.5:18789/plugins/lightbulb-channel/rpc"
-        assert seen["method"] == "POST"
-        assert seen["headers"]["Authorization"] == "Bearer tok"
-
-    @pytest.mark.asyncio
-    async def test_refuses_without_an_ip(self):
-        with pytest.raises(ValueError, match="requires a container ip"):
-            await rt.request({}, "/healthz", ip=None)
-
-    @pytest.mark.asyncio
-    async def test_raw_content_is_forwarded_verbatim_and_wins_over_json(self, monkeypatch):
-        # Webhook proxies forward the sender's bytes untouched (signatures cover them).
-        seen = {}
-
-        class _Resp:
-            status_code = 200
-            text = "ok"
-            headers = {"content-type": "text/plain"}
-
-        class _Client:
-            def __init__(self, *a, **k):
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                return False
-
-            async def request(self, method, url, json=None, headers=None, content=None):
-                seen.update(json=json, content=content)
-                return _Resp()
-
-        monkeypatch.setattr("httpx.AsyncClient", _Client)
-        res = await rt.request({}, "/hooks/x", ip="10.0.0.5", json_body={"ignored": 1}, content=b"a=1&b=2")
-        assert seen["content"] == b"a=1&b=2"
-        assert seen["json"] is None
-        assert res.headers["content-type"] == "text/plain"
+        # ``fail_closed`` is accepted and inert until its call sites go with their ECS branches.
+        assert await rt.is_agentcore_owner("org_1", fail_closed=True) is True
 
 
 class TestAgentCoreTransport:

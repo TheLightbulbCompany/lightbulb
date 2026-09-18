@@ -157,10 +157,18 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
         "core.services.paperclip_agent_lifecycle._ws_gateway_url",
         lambda env: f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws",
     )
-    # No container row -> the pre-migration ECS default (openclaw_gateway), same as today.
+    # No container row -> the pre-migration ECS default (openclaw_gateway) for the ADAPTER
+    # TYPE selection specifically -- unrelated to (and unaffected by) runtime_transport's
+    # host_for, which is pinned to AgentCore fleet-wide (deletion PR-1), so the post-create
+    # wiring below still goes through the Hermes profile write. Stub it out so the request
+    # completes instead of rolling back on a real S3/Paperclip call.
     monkeypatch.setattr(
         "core.repositories.container_repo.get_by_owner_id",
         AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "core.services.hermes_provisioning.write_profile_for_agent",
+        AsyncMock(),
     )
     count_agents = AsyncMock(return_value=11)
     monkeypatch.setattr(
@@ -277,6 +285,11 @@ def test_create_agent_response_redacts_device_private_key(client, monkeypatch):
         lambda env: f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws",
     )
     monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+    # host_for is pinned to AgentCore fleet-wide (deletion PR-1) regardless of the
+    # (missing) container row above, so the post-create wiring goes through the
+    # Hermes profile write rather than container pairing. Stub it out so the
+    # request completes instead of rolling back on a real S3/Paperclip call.
+    monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", AsyncMock())
 
     r = client.post(
         "/api/v1/teams/agents",

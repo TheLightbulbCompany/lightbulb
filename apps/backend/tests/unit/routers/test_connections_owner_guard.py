@@ -76,6 +76,7 @@ async def test_the_guard_is_taken_after_the_token_exchange_never_around_it(async
         mock_apply.apply_connection = AsyncMock(return_value="user@example.com")
         mock_repo.put_status = AsyncMock()
         mock_accounts.add_account = AsyncMock()
+        mock_accounts.list_assignments = AsyncMock(return_value={})
         response = await async_client.get(
             "/api/v1/oauth/google/callback?code=abc&state=st1",
             follow_redirects=False,

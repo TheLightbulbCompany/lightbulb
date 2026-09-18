@@ -58,6 +58,10 @@ async def assign_account(email: str, body: AssignBody, auth: AuthContext = Depen
     await google_accounts_repo.set_assignment(owner_id, body.agent_id, email)
     # Project the new binding (IDENTITY.md on ECS, GOG_ACCOUNT on AgentCore) so the
     # agent acts as the right account on its next run, without a reprovision.
+    # NOTE the ordering: the seeder raises (→ 503) when it cannot read which runtime this
+    # owner is on, and by then the row above is stored. That is deliberate — the row is the
+    # binding's truth, the projection is derived from it, and the owner's retry re-projects.
+    # The window is a binding the UI lists that the agent has not received yet.
     await seed_agent_google_identity(owner_id, body.agent_id)
     return {"assignments": await google_accounts_repo.list_assignments(owner_id)}
 

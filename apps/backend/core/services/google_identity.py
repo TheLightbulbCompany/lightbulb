@@ -143,6 +143,12 @@ async def seed_agent_google_identity(
     # migration never deletes the EFS tree — so guessing "ECS" on a throttled read writes an
     # IDENTITY.md block no Hermes agent reads and reports success. Raising instead lands in the
     # assign door's 503 (and is swallowed by the disconnect path's best-effort wrapper).
+    #
+    # Accepted cost of that swallow: where the old fail-open guess would have REMOVED an ECS
+    # owner's block, a throttled read now leaves it stale. Bounded — the block names an account
+    # whose keyring entry is already gone, so `gog -a <email>` fails loudly rather than acting as
+    # another identity, and the next assign/disconnect (or connections.py's
+    # `_reseed_surviving_google_assignments`) rewrites it.
     if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
         email = await google_accounts_repo.get_assignment(owner_id, agent_id)
         await hermes_cli.set_profile_cli_env(owner_id, agent_id, {"GOG_ACCOUNT": email})

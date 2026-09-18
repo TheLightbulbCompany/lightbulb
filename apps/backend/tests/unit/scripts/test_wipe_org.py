@@ -294,6 +294,7 @@ async def test_execute_ecs_org_calls_every_step_once(wipe_mocks):
     wipe_mocks.archive_member.assert_awaited_once_with(MEMBER)
     wipe_mocks.delete_paperclip_user.assert_awaited_once()
     assert wipe_mocks.delete_paperclip_user.await_args.kwargs["paperclip_user_id"] == f"pc_{MEMBER}"
+    assert wipe_mocks.delete_paperclip_user.await_args.kwargs["email"] == f"{MEMBER}@example.com"
     wipe_mocks.user_repo.delete.assert_awaited_once_with(MEMBER)
     wipe_mocks.delete_company.assert_awaited_once_with(COMPANY)
     wipe_mocks.ecs.delete_user_service.assert_awaited_once_with(ORG, delete_hermes_profiles=True)
@@ -374,6 +375,20 @@ async def test_missing_paperclip_row_skips_the_company_step(wipe_mocks):
     wipe_mocks.delete_paperclip_user.assert_not_called()
     # The org itself still goes.
     wipe_mocks.clerk_admin.delete_organization.assert_awaited_once_with(ORG)
+
+
+@pytest.mark.asyncio
+async def test_better_auth_delete_falls_back_to_the_clerk_email(wipe_mocks):
+    """A pre-backfill row carries paperclip_email="", and passing that through
+    silently disarms delete_paperclip_user's own bootstrap-admin guard."""
+    inv = _inventory(
+        paperclip_rows=[_paperclip_row(paperclip_email="")],
+        members=[{"user_id": MEMBER, "email": "live@clerk.example"}],
+    )
+
+    await mod.wipe_org(inv, execute=True, delete_clerk_users=False)
+
+    assert wipe_mocks.delete_paperclip_user.await_args.kwargs["email"] == "live@clerk.example"
 
 
 @pytest.mark.asyncio

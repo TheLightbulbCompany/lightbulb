@@ -151,6 +151,20 @@ class _Inventory:
     def paperclip_row_for(self, user_id: str) -> dict | None:
         return next((r for r in self.paperclip_rows if r.get("user_id") == user_id), None)
 
+    def email_for(self, user_id: str) -> str:
+        """The member's address, Better Auth's copy first, Clerk's as fallback.
+
+        Better Auth's ``user.email`` is written once at sign-up and never
+        updated, so it is the one that matches the Aurora row — but rows
+        written before ``paperclip_email`` existed carry "", and feeding that
+        to ``delete_paperclip_user`` silently disarms ITS bootstrap-admin
+        guard (the second line of defence behind ``check_refusals``).
+        """
+        row = self.paperclip_row_for(user_id) or {}
+        if row.get("paperclip_email"):
+            return row["paperclip_email"]
+        return next((m.get("email") or "" for m in self.members if m.get("user_id") == user_id), "")
+
     @property
     def company_id(self) -> str:
         """The org's Paperclip company. Empty when the org has no rows (the
@@ -280,7 +294,9 @@ async def wipe_org(inv: _Inventory, *, execute: bool, delete_clerk_users: bool) 
                 if row
                 else f"user_id={user_id}: no paperclip-companies row"
             ),
-            fn=lambda user_id=user_id, row=row: _delete_better_auth_user(user_id, row or {}, env),
+            fn=lambda user_id=user_id, row=row: _delete_better_auth_user(
+                user_id, row or {}, inv.email_for(user_id), env
+            ),
         )
         await _do(
             steps,
@@ -590,13 +606,11 @@ async def _archive_member(user_id: str) -> str:
     return f"membership archived for {user_id}"
 
 
-async def _delete_better_auth_user(user_id: str, row: dict, env: str) -> str:
+async def _delete_better_auth_user(user_id: str, row: dict, email: str, env: str) -> str:
     paperclip_user_id = row["paperclip_user_id"]
-    await delete_paperclip_user(
-        paperclip_user_id=paperclip_user_id,
-        email=row.get("paperclip_email") or "",
-        env=env,
-    )
+    # ``email`` is only ever read by delete_paperclip_user's own bootstrap-admin
+    # refusal — it matches by primary key, not by address.
+    await delete_paperclip_user(paperclip_user_id=paperclip_user_id, email=email, env=env)
     return f"{user_id}: paperclip_user_id={paperclip_user_id} deleted"
 
 

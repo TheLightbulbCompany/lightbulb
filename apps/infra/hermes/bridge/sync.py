@@ -493,8 +493,18 @@ def _download_object(key: str, dest: Path) -> None:
     _s3().download_file(S3_BUCKET, f"{S3_PREFIX}/{key}", str(dest))
 
 
-def _upload_object(src: Path, key: str) -> None:
-    _s3().upload_file(str(src), S3_BUCKET, f"{S3_PREFIX}/{key}")
+def _upload_object(src: Path, key: str, *, if_match: str) -> str:
+    """Conditionally replace a small root object and return its new ETag."""
+    response = _s3().put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_PREFIX}/{key}",
+        Body=src.read_bytes(),
+        IfMatch=if_match,
+    )
+    etag = response.get("ETag")
+    if not etag:
+        raise RuntimeError(f"S3 replaced {key} without returning an ETag")
+    return etag
 
 
 def _root_auth_revision() -> str | None:
@@ -505,6 +515,14 @@ def _root_auth_revision() -> str | None:
         key = f"{S3_PREFIX}/auth.revision"
         return _s3().get_object(Bucket=S3_BUCKET, Key=key)["Body"].read().decode().strip()
     except Exception:  # noqa: BLE001 -- a transient S3 blip must not tear down a warm profile
+        return None
+
+
+def _root_auth_etag() -> str | None:
+    """The actual auth object's ETag — both the change detector and stale-writer fence."""
+    try:
+        return _s3().head_object(Bucket=S3_BUCKET, Key=f"{S3_PREFIX}/auth.json")["ETag"]
+    except Exception:  # noqa: BLE001 -- absent/unreadable is handled like an unreadable revision
         return None
 
 
@@ -520,6 +538,9 @@ def _local_auth_hash() -> str | None:
 #: process flag, which could never see a grant hermes_profiles.stage_codex_auth staged after
 #: this microVM's first turn.
 _ROOT_AUTH_REVISION: str | None = None
+#: The ETag of the exact auth.json restored/saved locally. The revision marker wakes older images;
+#: this value fences the actual object and catches marker-write reordering.
+_ROOT_AUTH_ETAG: str | None = None
 #: The sha256 of the local auth.json as of the last restore/save -- lets save_root_auth tell
 #: "Hermes rotated the token this turn" apart from "nothing touched it".
 _ROOT_AUTH_HASH: str | None = None
@@ -532,30 +553,31 @@ _ROOT_AUTH_ABSENT = ""
 
 
 def restore_root_auth() -> None:
-    """Pull ``<owner>/hermes/auth.json`` into the root home when the backend's
-    ``auth.revision`` marker has moved since our last restore — per-turn, the same shape as
-    ``ensure_profile``'s hot-patch re-pull (Task 13a).
+    """Pull ``<owner>/hermes/auth.json`` into the root home when either the compatibility
+    ``auth.revision`` marker or the auth object's own ETag has moved since our last restore.
+    The ETag is also retained as ``save_root_auth``'s conditional stale-writer fence.
 
-    NEW minor (fix round 2 continuation): almost every owner never connects ChatGPT OAuth, so
-    ``auth.revision`` never exists. Recording the sentinel ``_ROOT_AUTH_ABSENT`` after the first
-    check (instead of leaving ``_ROOT_AUTH_REVISION`` at ``None``) lets the guard below
-    short-circuit on turn 2 onward instead of attempting a doomed download forever; a revision
-    that later appears (the owner's first-ever ChatGPT connect) still differs from the sentinel
-    and triggers the download. One ``get_object`` of ``auth.revision`` per turn remains
-    (accepted cost, same as a profile's own ``.revision`` poll) — only the download attempt is
-    what gets skipped.
+    Almost every owner never connects ChatGPT OAuth, so ``auth.revision`` never exists. Recording
+    the sentinel ``_ROOT_AUTH_ABSENT`` after the first check (instead of leaving
+    ``_ROOT_AUTH_REVISION`` at ``None``) lets an unchanged missing object short-circuit on later
+    turns. A marker or auth object that later appears still differs from the recorded state and
+    triggers the download.
     """
-    global _ROOT_AUTH_REVISION, _ROOT_AUTH_HASH
+    global _ROOT_AUTH_REVISION, _ROOT_AUTH_ETAG, _ROOT_AUTH_HASH
     if not S3_BUCKET:
         return
     revision = _root_auth_revision()
-    if _ROOT_AUTH_REVISION is not None and (revision is None or revision == _ROOT_AUTH_REVISION):
+    etag = _root_auth_etag()
+    marker_unchanged = revision is None or revision == _ROOT_AUTH_REVISION
+    object_unchanged = etag is None or etag == _ROOT_AUTH_ETAG
+    if _ROOT_AUTH_REVISION is not None and marker_unchanged and object_unchanged:
         return
     try:
         _download_object("auth.json", HOME / "auth.json")
     except Exception as exc:  # noqa: BLE001 -- no root auth.json yet (never connected) is not an error
         log.debug("restore_root_auth: no root auth.json to restore: %s", exc)
     _ROOT_AUTH_REVISION = revision if revision is not None else _ROOT_AUTH_ABSENT
+    _ROOT_AUTH_ETAG = etag
     _ROOT_AUTH_HASH = _local_auth_hash()
 
 
@@ -570,25 +592,30 @@ def save_root_auth() -> None:
     warning-level log; only the caller's own best-effort try/except (``turn.py``, same pattern
     as ``save_profile``) is left for a genuine S3 failure.
 
-    # ponytail: read-then-write race — a stage_codex_auth landing between the revision check
-    # below and the upload can still be clobbered by this upload. S3 PutObject ``IfMatch``
-    # (conditional write, keyed on the object's ETag) is the real fix; skipped because the
-    # lost write here is a ChatGPT refresh token and the next login/refresh re-stages it.
+    The save verifies the revision and actual auth-object ETag observed at restore, then sends that
+    ETag as S3 ``PutObject.IfMatch``. A disconnect or reconnect that lands after the checks wins:
+    S3 rejects this warm writer rather than letting it resurrect or overwrite the grant.
     """
-    global _ROOT_AUTH_REVISION, _ROOT_AUTH_HASH
+    global _ROOT_AUTH_REVISION, _ROOT_AUTH_ETAG, _ROOT_AUTH_HASH
     if not S3_BUCKET:
         return
     local_hash = _local_auth_hash()
     if local_hash is None or local_hash == _ROOT_AUTH_HASH:
         return  # no local auth.json, or this turn never touched it
     current_revision = _root_auth_revision()
-    if _ROOT_AUTH_REVISION is not None and current_revision != _ROOT_AUTH_REVISION:
-        log.info("save_root_auth: a newer grant was staged mid-turn — skipping upload")
+    current_etag = _root_auth_etag()
+    if (
+        not _ROOT_AUTH_ETAG
+        or current_etag != _ROOT_AUTH_ETAG
+        or (_ROOT_AUTH_REVISION is not None and current_revision != _ROOT_AUTH_REVISION)
+    ):
+        log.info("save_root_auth: root auth changed mid-turn — skipping upload")
         return
-    _upload_object(HOME / "auth.json", "auth.json")
+    new_etag = _upload_object(HOME / "auth.json", "auth.json", if_match=_ROOT_AUTH_ETAG)
     new_revision = uuid.uuid4().hex
     _s3().put_object(Bucket=S3_BUCKET, Key=f"{S3_PREFIX}/auth.revision", Body=new_revision.encode())
     _ROOT_AUTH_REVISION = new_revision
+    _ROOT_AUTH_ETAG = new_etag
     _ROOT_AUTH_HASH = local_hash
 
 

@@ -34,6 +34,7 @@ from core.services.paperclip_adapter_config import (
     OPENCLAW_GATEWAY_TYPE,
     adapter_type_for,
     build_http_adapter_config,
+    desired_agent_adapter_fields,
     synthesize_openclaw_adapter,
 )
 from core.services.paperclip_meta import PaperclipMeta, resolve_create_agent_fields
@@ -110,12 +111,11 @@ async def repoint_agent_adapter(
     still wrong. **Raises** on any failure: a half-re-pointed workspace looks healthy, which is
     the entire defect this closes.
 
-    ``gateway_token``: the owner's container gateway token, required only when re-pointing BACK to
-    ``openclaw_gateway`` (rollback). A freshly synthesized gateway adapter carries the service JWT
-    as ``authToken`` and an unregistered device, neither of which the live gateway accepts — so the
-    per-agent bind + ``paired.json`` merge (``ensure_operator_device_paired``, the same seam agent
-    create uses) runs right after the patch. Omitting it leaves the adapter unusable until the next
-    provision, so callers on the ECS leg must pass it.
+    ``gateway_token`` is required when re-pointing back to ``openclaw_gateway``. The first
+    authoritative patch carries the current gateway token and per-agent routing fields, while
+    retaining an existing stable device PEM and timeout fields on a same-type repair. The existing
+    ``ensure_operator_device_paired`` seam still updates ``paired.json`` after that patch, and the
+    relay's NOT_PAIRED path remains the live self-heal if the best-effort pre-pair cannot land.
     """
     from core.services.paperclip_openclaw_pairing import ensure_operator_device_paired
 
@@ -123,15 +123,46 @@ async def repoint_agent_adapter(
     if not agent_id:
         raise ValueError(f"repoint_agent_adapter: agent row for owner={owner_id} has no id")
     target_type = await adapter_type_for(owner_id, runtime_host=runtime_host)
-    if agent.get("adapterType") == target_type:
-        return False
-    _, adapter_config = await resolve_agent_adapter(
-        owner_id, agent_label=agent_id, gateway_user_id=owner_id, runtime_host=runtime_host
-    )
-    if target_type == HTTP_ADAPTER_TYPE and (adapter_config.get("headers") or {}).get("Authorization") == "Bearer ":
-        # build_http_adapter_config accepts an empty hook token and would mint an adapter whose
-        # every run 401s at `/internal/paperclip/runs/{owner}` -- exactly the silent shape above.
-        raise RuntimeError(f"repoint_agent_adapter: owner={owner_id} has no hook_token to authorize the http adapter")
+    current_type = agent.get("adapterType")
+    current_config = agent.get("adapterConfig") or {}
+
+    if target_type == OPENCLAW_GATEWAY_TYPE:
+        if not gateway_token:
+            raise RuntimeError(f"repoint_agent_adapter: owner={owner_id} has no gateway_token for ECS rollback")
+        desired = desired_agent_adapter_fields(agent_id=agent_id, gateway_token=gateway_token)
+        complete = (
+            current_type == target_type
+            and all(current_config.get(k) for k in ("url", "devicePrivateKeyPem", "sessionKeyStrategy", "sessionKey"))
+            and all(current_config.get(k) == v for k, v in desired.items())
+        )
+        if complete:
+            return False
+        # Same-type retry keeps every persisted field (including the stable device PEM and both
+        # timeout spellings). A type change starts from the canonical gateway shape. Required bind
+        # fields are merged BEFORE the one authoritative PATCH, so its failure raises and retrying
+        # the partial row converges without depending on ensure_operator_device_paired's
+        # deliberately best-effort follow-up.
+        preserved = current_config if current_type == target_type else {}
+        adapter_config = synthesize_openclaw_adapter(
+            gateway_url=_ws_gateway_url(settings.ENVIRONMENT or ""),
+            service_token=service_token.mint(owner_id),
+            user_id=owner_id,
+            device_private_key_pem=preserved.get("devicePrivateKeyPem"),
+            agent_id=agent_id,
+        )
+        adapter_config = {**adapter_config, **preserved, **desired}
+    else:
+        if current_type == target_type:
+            return False
+        _, adapter_config = await resolve_agent_adapter(
+            owner_id, agent_label=agent_id, gateway_user_id=owner_id, runtime_host=runtime_host
+        )
+        if (adapter_config.get("headers") or {}).get("Authorization") == "Bearer ":
+            # build_http_adapter_config accepts an empty hook token and would mint an adapter whose
+            # every run 401s at `/internal/paperclip/runs/{owner}` -- exactly the silent shape above.
+            raise RuntimeError(
+                f"repoint_agent_adapter: owner={owner_id} has no hook_token to authorize the http adapter"
+            )
     async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
         admin = PaperclipAdminClient(http_client=http)
         cookie = await get_admin_session_cookie(http)

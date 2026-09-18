@@ -641,6 +641,40 @@ async def test_change_provider_clears_oauth_when_leaving_chatgpt(
 
 
 @pytest.mark.asyncio
+async def test_change_provider_keeps_chatgpt_choice_and_oauth_row_when_agentcore_revoke_fails(
+    async_client,
+    cold_reprovision,
+):
+    """A failed authoritative AgentCore unstage must leave the old provider and its token row
+    intact so the same switch can retry instead of skipping cleanup as an already-finished move."""
+    chatgpt_account = {
+        "owner_id": "user_test_123",
+        "owner_type": "personal",
+        "stripe_subscription_id": "sub_x",
+        "subscription_status": "active",
+        "provider_choice": "chatgpt_oauth",
+    }
+    with (
+        patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=chatgpt_account)),
+        patch("core.repositories.billing_repo.set_provider_choice", new=AsyncMock()) as mock_set,
+        patch("core.services.oauth_service.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
+        patch(
+            "core.services.container_auth.revoke_provider_auth_in_container",
+            new=AsyncMock(side_effect=RuntimeError("s3 down")),
+        ),
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/provider",
+            json={"provider_choice": "bedrock_claude"},
+        )
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["code"] == "oauth_revoke_failed"
+    mock_set.assert_not_awaited()
+    mock_revoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_change_provider_clears_byo_key_when_leaving_byo(
     async_client,
     cold_reprovision,

@@ -750,6 +750,34 @@ def _s3_get(bucket: str, key: str) -> str | None:
         raise
 
 
+def _s3_get_versioned(bucket: str, key: str) -> tuple[str | None, str | None]:
+    """Object text plus its quoted S3 ETag; ``(None, None)`` only for a genuine miss."""
+    import botocore.exceptions
+
+    try:
+        response = _shared_s3_client().get_object(Bucket=bucket, Key=key)
+    except botocore.exceptions.ClientError as exc:
+        code = (exc.response or {}).get("Error", {}).get("Code")
+        if code in ("NoSuchKey", "404"):
+            return None, None
+        raise
+    etag = response.get("ETag")
+    if not etag:
+        raise RuntimeError(f"S3 returned {key} without an ETag; refusing an unfenced write")
+    return response["Body"].read().decode(), etag
+
+
+def _s3_put_conditionally(bucket: str, key: str, body: str, etag: str | None) -> None:
+    condition = {"IfMatch": etag} if etag else {"IfNoneMatch": "*"}
+    _shared_s3_client().put_object(Bucket=bucket, Key=key, Body=body.encode(), **condition)
+
+
+def _is_precondition_failure(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    code = (response or {}).get("Error", {}).get("Code") if isinstance(response, dict) else None
+    return code in ("PreconditionFailed", "412", "ConditionalRequestConflict", "409")
+
+
 def read_profile_config(owner_id: str, agent_id: str, *, required: bool = False) -> dict:
     """``config.get`` — reads ``config.yaml`` alone. NEVER ``.env``: that file holds secret
     values (M4-R1), and this is the one path a settings-read RPC can reach.
@@ -1222,6 +1250,35 @@ def root_home_prefix(owner_id: str) -> str:
     return f"{owner_id}/hermes/"
 
 
+def _mutate_root_auth(owner_id: str, mutate) -> bool:
+    """Conditionally read-modify-write root ``auth.json`` without clobbering a warm rotator."""
+    import json as _json
+
+    bucket = settings.OWNER_STATE_BUCKET
+    if not bucket:
+        raise RuntimeError("OWNER_STATE_BUCKET is not configured; refusing to report an auth write")
+    prefix = root_home_prefix(owner_id)
+    key = f"{prefix}auth.json"
+    for _attempt in range(3):
+        existing, etag = _s3_get_versioned(bucket, key)
+        blob = _json.loads(existing) if existing else {}
+        if not isinstance(blob, dict):
+            raise ValueError(f"root auth document for {owner_id} is not a JSON object")
+        if not mutate(blob, existing is not None):
+            return False
+        try:
+            _s3_put_conditionally(bucket, key, _json.dumps(blob), etag)
+        except Exception as exc:  # noqa: BLE001 — classify S3's conditional conflict only
+            if _is_precondition_failure(exc):
+                continue
+            raise
+        # Retained while older bridge images still poll this marker. New images fence and detect
+        # changes from auth.json's own ETag, so a marker race cannot resurrect a grant.
+        _s3_put(bucket, f"{prefix}auth.revision", uuid.uuid4().hex)
+        return True
+    raise RuntimeError(f"root auth document for {owner_id} changed during three conditional writes")
+
+
 def stage_codex_auth(owner_id: str, tokens: dict) -> None:
     """Write the owner's ChatGPT grant into the ROOT ``auth.json``, once per connect — not into
     any per-profile ``config.yaml``/``.env``.
@@ -1236,35 +1293,28 @@ def stage_codex_auth(owner_id: str, tokens: dict) -> None:
     ``credentials/oauth.json`` + clear-auth-sentinel + boot ``doctor --fix`` choreography
     entirely for an AgentCore row.
 
-    C3 (fix round 1 continuation, M4-R44) + minor 6: read-modify-write, not an unconditional
-    overwrite — an existing ``auth.json`` can hold OTHER providers' state, and clobbering the
-    whole document would silently drop it. ``<owner>/hermes/auth.revision`` is written LAST,
-    always, for the same reason a profile's own ``.revision`` is: the bridge's
-    ``restore_root_auth`` (per-turn revision compare, same shape as ``ensure_profile``) must
-    never see a revision bump before ``auth.json`` itself has landed.
+    The write is a conditional read-modify-write against ``auth.json``'s ETag, so another
+    provider and a concurrent refresh/reconnect survive rather than being clobbered. The
+    compatibility ``auth.revision`` marker is written last for bridge images that still poll it;
+    current images also fence warm write-through with the auth object's own ETag.
     """
-    import json as _json
     from datetime import datetime, timezone
 
-    if not settings.OWNER_STATE_BUCKET:
-        return
-    prefix = root_home_prefix(owner_id)
-    existing = _s3_get(settings.OWNER_STATE_BUCKET, f"{prefix}auth.json")
-    blob = _json.loads(existing) if existing else {}
-    if not isinstance(blob, dict):
-        blob = {}
-    providers = blob.get("providers")
-    providers = dict(providers) if isinstance(providers, dict) else {}
     payload = {k: v for k, v in tokens.items() if k in ("access_token", "refresh_token", "id_token") and v}
-    providers["openai-codex"] = {
-        "tokens": payload,
-        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "auth_mode": "chatgpt",
-    }
-    blob["providers"] = providers
-    blob["active_provider"] = "openai-codex"
-    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}auth.json", _json.dumps(blob))
-    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}auth.revision", uuid.uuid4().hex)
+
+    def _stage(blob: dict, _exists: bool) -> bool:
+        providers = blob.get("providers")
+        providers = dict(providers) if isinstance(providers, dict) else {}
+        providers["openai-codex"] = {
+            "tokens": payload,
+            "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "auth_mode": "chatgpt",
+        }
+        blob["providers"] = providers
+        blob["active_provider"] = "openai-codex"
+        return True
+
+    _mutate_root_auth(owner_id, _stage)
 
 
 def unstage_codex_auth(owner_id: str) -> bool:
@@ -1277,33 +1327,23 @@ def unstage_codex_auth(owner_id: str) -> bool:
     billing to, the account the owner had just revoked. A credential revoke that silently no-ops
     is the one failure in that audit that is not merely a broken feature.
 
-    Same read-modify-write posture as ``stage_codex_auth``: only the ``openai-codex`` entry is
-    dropped, any other provider's state in the document survives, and ``auth.revision`` is
-    written LAST so the bridge's ``restore_root_auth`` never sees a bump before the file it
-    describes has landed. Returns True when a grant was actually removed (False when there was
-    none, or no bucket is configured). Sync — call via ``run_in_thread``.
+    Same conditional read-modify-write posture as ``stage_codex_auth``: only the
+    ``openai-codex`` entry is dropped, any other provider's state survives, and the compatibility
+    ``auth.revision`` marker is written last. Returns True when a grant was actually removed and
+    False when no grant exists. Missing authoritative storage or a failed write raises so callers
+    cannot report a false successful disconnect. Sync — call via ``run_in_thread``.
     """
-    import json as _json
 
-    if not settings.OWNER_STATE_BUCKET:
-        return False
-    prefix = root_home_prefix(owner_id)
-    existing = _s3_get(settings.OWNER_STATE_BUCKET, f"{prefix}auth.json")
-    if not existing:
-        return False
-    try:
-        blob = _json.loads(existing)
-    except ValueError:
-        blob = None
-    if not isinstance(blob, dict):
-        return False
-    providers = blob.get("providers")
-    providers = dict(providers) if isinstance(providers, dict) else {}
-    if providers.pop("openai-codex", None) is None:
-        return False
-    blob["providers"] = providers
-    if blob.get("active_provider") == "openai-codex":
-        blob.pop("active_provider", None)
-    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}auth.json", _json.dumps(blob))
-    _s3_put(settings.OWNER_STATE_BUCKET, f"{prefix}auth.revision", uuid.uuid4().hex)
-    return True
+    def _unstage(blob: dict, exists: bool) -> bool:
+        if not exists:
+            return False
+        providers = blob.get("providers")
+        providers = dict(providers) if isinstance(providers, dict) else {}
+        if providers.pop("openai-codex", None) is None:
+            return False
+        blob["providers"] = providers
+        if blob.get("active_provider") == "openai-codex":
+            blob.pop("active_provider", None)
+        return True
+
+    return _mutate_root_auth(owner_id, _unstage)

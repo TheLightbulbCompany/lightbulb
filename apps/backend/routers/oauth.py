@@ -363,26 +363,30 @@ async def disconnect(ctx: AuthContext = Depends(get_current_user)):
     if ctx.is_org_context:
         await _require_org_oauth_owner(ctx)
     owner_id = resolve_owner_id(ctx)
+    # AgentCore's root auth.json is the live credential, so revoke it BEFORE deleting the DDB
+    # token row that gives this request retry ownership. The helper preserves ECS's best-effort
+    # live logout, but raises when it cannot authoritatively classify/clean an AgentCore owner.
+    try:
+        await revoke_provider_auth_in_container(owner_id)
+    except Exception as e:
+        logger.exception("authoritative ChatGPT revoke failed for owner %s", owner_id)
+        raise HTTPException(
+            status_code=502,
+            detail="Could not remove the ChatGPT credential — try disconnecting again.",
+        ) from e
     # The owner gate above guarantees the caller IS the recorded connector in
     # org context, so revoking on ctx.user_id revokes the tokens that back the
     # container. One ChatGPT account ↔ one container, so this fully revokes for
     # both personal and org owners.
     await revoke_user_oauth(user_id=ctx.user_id)
-    # Also remove the staged auth-profiles.json from EFS — without this the
-    # container keeps the tokens for the rest of its lifetime even after we
-    # revoke the row. The EFS workspace is keyed on the CONTAINER owner
-    # (org_id for orgs, user_id for personal), not the connecting user.
+    # Also remove the staged auth-profiles.json from EFS — without this an ECS
+    # container can keep the seed. AgentCore already completed its authoritative
+    # root-auth revoke above.
     try:
         await delete_auth_profile_store(user_id=owner_id)
     except Exception:
-        # Best-effort: the row deletion above is the authoritative signal.
-        # EFS unlink failures shouldn't 5xx the disconnect.
+        # Best-effort on ECS: the OAuth row + live logout are already handled.
         pass
-    # On 6.6 the credential the container actually uses lives in its per-agent
-    # SQLite store (imported from the now-deleted oauth.json). Tell the running
-    # gateway to drop it via models.authLogout so disconnect revokes the live
-    # token immediately — best-effort, a no-op if the container is cold.
-    await revoke_provider_auth_in_container(owner_id)
     # The coding-harness grant leaves with the main connection: clearing
     # provider_choice below hides the harness management card, so a surviving
     # #harness row + auth.json would be a live credential with no UI to

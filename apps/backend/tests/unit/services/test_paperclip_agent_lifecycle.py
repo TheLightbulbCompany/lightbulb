@@ -135,6 +135,7 @@ def _wire_repoint(monkeypatch, *, hook_token="hook-tok"):
     monkeypatch.setattr(lifecycle.httpx, "AsyncClient", lambda **_kwargs: _Client())
     monkeypatch.setattr(lifecycle, "PaperclipAdminClient", lambda http_client: admin)
     monkeypatch.setattr(lifecycle, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
+    monkeypatch.setattr(lifecycle.service_token, "mint", lambda owner_id: "svc-jwt")
     monkeypatch.setattr(lifecycle.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": hook_token}))
     return admin
 
@@ -194,6 +195,83 @@ async def test_repoint_back_to_gateway_binds_the_operator_device(monkeypatch):
 
     assert await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="ecs", gateway_token="gw") is True
 
-    assert admin.patch_agent.await_args.kwargs["body"]["adapterType"] == lifecycle.OPENCLAW_GATEWAY_TYPE
+    body = admin.patch_agent.await_args.kwargs["body"]
+    assert body["adapterType"] == lifecycle.OPENCLAW_GATEWAY_TYPE
+    assert body["adapterConfig"]["authToken"] == "gw"
+    assert body["adapterConfig"]["agentId"] == "agent-1"
+    assert body["adapterConfig"]["claimedApiKeyPath"].endswith("workspace-agent-1/paperclip-claimed-api-key.json")
     paired.assert_awaited_once()
     assert paired.await_args.kwargs["gateway_token"] == "gw"
+    assert paired.await_args.kwargs["paperclip_agent"]["adapterConfig"] == body["adapterConfig"]
+
+
+@pytest.mark.asyncio
+async def test_repoint_back_to_gateway_requires_the_gateway_token_before_patching(monkeypatch):
+    admin = _wire_repoint(monkeypatch)
+    agent = {"id": "agent-1", "adapterType": lifecycle.HTTP_ADAPTER_TYPE}
+
+    with pytest.raises(RuntimeError, match="gateway_token"):
+        await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="ecs")
+
+    admin.patch_agent.assert_not_awaited()
+
+
+def _partial_gateway_adapter():
+    return {
+        "url": "ws://localhost:8000?token=svc-jwt&clientId=paperclip-operator",
+        "authToken": "svc-jwt",
+        "sessionKeyStrategy": "issue",
+        "sessionKey": "paperclip:org_1",
+        "devicePrivateKeyPem": "stable-existing-pem",
+        "timeoutSec": 600,
+        "timeoutMs": 600_000,
+        "waitTimeoutMs": 600_000,
+    }
+
+
+@pytest.mark.asyncio
+async def test_repoint_repairs_a_partially_bound_same_type_gateway_adapter(monkeypatch):
+    """A failed old bind leaves adapterType correct but authToken/agentId wrong. Retry must repair
+    that row, preserve its stable device and timeout fields, and not skip on type alone."""
+    admin = _wire_repoint(monkeypatch)
+    paired = AsyncMock()
+    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", paired)
+    agent = {
+        "id": "agent-1",
+        "adapterType": lifecycle.OPENCLAW_GATEWAY_TYPE,
+        "adapterConfig": _partial_gateway_adapter(),
+    }
+
+    assert await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="ecs", gateway_token="gw") is True
+
+    config = admin.patch_agent.await_args.kwargs["body"]["adapterConfig"]
+    assert config["authToken"] == "gw"
+    assert config["agentId"] == "agent-1"
+    assert config["devicePrivateKeyPem"] == "stable-existing-pem"
+    assert config["timeoutSec"] == 600
+    assert config["timeoutMs"] == 600_000
+    assert config["waitTimeoutMs"] == 600_000
+    paired.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_repoint_required_bind_failure_is_observable_and_the_same_retry_converges(monkeypatch):
+    """The first authoritative patch is the required bind. If it fails, report failure; retry the
+    same partial row rather than skipping it because adapterType already says gateway."""
+    admin = _wire_repoint(monkeypatch)
+    admin.patch_agent.side_effect = [RuntimeError("bind failed"), {}]
+    paired = AsyncMock()
+    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", paired)
+    agent = {
+        "id": "agent-1",
+        "adapterType": lifecycle.OPENCLAW_GATEWAY_TYPE,
+        "adapterConfig": _partial_gateway_adapter(),
+    }
+
+    with pytest.raises(RuntimeError, match="bind failed"):
+        await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="ecs", gateway_token="gw")
+    paired.assert_not_awaited()
+
+    assert await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="ecs", gateway_token="gw") is True
+    assert admin.patch_agent.await_count == 2
+    paired.assert_awaited_once()

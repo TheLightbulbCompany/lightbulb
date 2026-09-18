@@ -741,6 +741,22 @@ async def change_provider(
     # owners with zero balance can still pick Bedrock + see the structured
     # gate UI prompting them to top up.
 
+    # AgentCore root auth is the live ChatGPT credential. Revoke it before the provider-choice
+    # commit: if S3/classification fails, leaving the old choice + OAuth row intact is what makes
+    # the same request retry cleanup instead of skipping it as an already-completed switch. The
+    # helper keeps the ECS live-gateway logout best-effort.
+    if current_choice == "chatgpt_oauth" and provider_choice != "chatgpt_oauth":
+        from core.services.container_auth import revoke_provider_auth_in_container
+
+        try:
+            await revoke_provider_auth_in_container(owner_id)
+        except Exception as exc:
+            raise ChangeProviderError(
+                "oauth_revoke_failed",
+                "Could not remove the ChatGPT credential. Try changing provider again.",
+                status_code=502,
+            ) from exc
+
     # Commit the new provider state. Done BEFORE side-effect cleanup so a
     # crash mid-cleanup leaves the owner in a coherent state (new provider
     # + a bit of stale OAuth/BYOK data, which the next sweep can reclaim).
@@ -824,14 +840,6 @@ async def change_provider(
                     "change_provider: harness revoke_user_oauth failed for connector=%s",
                     recorded_connector or clerk_user_id,
                 )
-        # On 6.6 the deleted EFS seed isn't what the running container reads —
-        # the credential it imported lives in its SQLite store. Tell the live
-        # gateway to drop it via models.authLogout so switch-away revokes the
-        # token now (best-effort; no-op when the container is cold).
-        from core.services.container_auth import revoke_provider_auth_in_container
-
-        await revoke_provider_auth_in_container(owner_id)
-
     if current_choice == "byo_key" and provider_choice != "byo_key" and current_byo in ("openai", "anthropic"):
         from core.services.key_service import KeyService
 

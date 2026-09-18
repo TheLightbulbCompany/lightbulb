@@ -22,6 +22,7 @@ import asyncio
 import logging
 
 from core.containers import get_ecs_manager
+from core.repositories import container_repo
 from core.services import container_rpc, runtime_transport
 
 logger = logging.getLogger(__name__)
@@ -41,11 +42,9 @@ async def revoke_provider_auth_in_container(owner_id: str, *, provider: str = "o
     container via ``models.authLogout``, so disconnect / switch-away revokes the
     live token immediately without a restart.
 
-    Returns ``True`` if the RPC succeeded, ``False`` otherwise. NEVER raises —
-    when no container is running (cold) there is no live store to clear and the
-    EFS seed-file delete is the authoritative cleanup; a transient RPC failure
-    (or a pre-4.5 row with no paired operator device) is logged and self-heals
-    on the next reprovision.
+    ECS is best-effort: ``True`` if the live RPC succeeded, ``False`` when no live store could be
+    cleared. AgentCore is authoritative: a successful no-grant retry returns ``True`` and any
+    container-row/S3/configuration failure raises so the caller keeps retry ownership.
 
     On an AgentCore workspace there is no live gateway auth store and no
     ``models.authLogout`` on the bridge — the grant is a file, staged into the
@@ -54,23 +53,19 @@ async def revoke_provider_auth_in_container(owner_id: str, *, provider: str = "o
     best-effort (task-14 row 3: without it a disconnect reported success while
     the agents kept using the revoked account).
     """
-    if await runtime_transport.is_agentcore_owner(owner_id):
+    container_row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    if runtime_transport.host_for(container_row or {}) == "agentcore":
         from core.dynamodb import run_in_thread
         from core.services.hermes_profiles import unstage_codex_auth
 
-        try:
-            removed = await run_in_thread(unstage_codex_auth, owner_id)
-        except Exception:  # noqa: BLE001 — never-raises contract: the whole disconnect chain
-            # after this point (harness cleanup, clear_provider_choice) is best-effort, so a
-            # transient S3 failure must not half-finish it. ERROR, not a warning: unlike the ECS
-            # leg below there is no reprovision that self-heals this, and the grant is still live.
-            logger.exception("revoke_provider_auth: could not unstage the AgentCore grant for %s", owner_id)
-            return False
+        removed = await run_in_thread(unstage_codex_auth, owner_id)
         logger.info(
-            "revoke_provider_auth: unstaged the AgentCore ChatGPT grant",
+            "revoke_provider_auth: AgentCore ChatGPT grant is absent",
             extra={"owner_id": owner_id, "provider": provider, "removed": removed},
         )
-        return removed
+        # An already-absent grant is a successful idempotent retry. S3/config/read failures raise
+        # above; unlike the ECS leg, there is no reprovision fallback for authoritative root auth.
+        return True
 
     try:
         container, ip = await get_ecs_manager().resolve_running_container(owner_id)

@@ -49,6 +49,9 @@ interface HealthAgent {
 
 interface HealthPayload {
   ok?: boolean;
+  // The Hermes bridge's health payload carries `ready`, not `ok` (`apps/infra/hermes/bridge/server.py::_health`) —
+  // see `isOnline` below, which reads both the same way `container_recover._health_verdict` does.
+  ready?: boolean;
   ts?: number;
   durationMs?: number;
   channels?: Record<string, unknown>;
@@ -256,7 +259,9 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
   }
 
   const health = rawHealth ? extractHealth(rawHealth) : ({} as HealthPayload);
-  const isOnline = health.ok === true;
+  // ECS answers `{ok}`; the Hermes bridge answers `{ready}` and carries no `ok` at all — accept
+  // either so a healthy AgentCore workspace doesn't render "Offline" (see the HealthPayload note).
+  const isOnline = health.ok === true || health.ready === true;
   const sessionCount = healthCount(health.sessions);
   const agentCount = healthCount(health.agents);
   // Normalize the skills.status response shape — same trick SkillsTab uses.

@@ -45,7 +45,13 @@ export const ADMIN_ONLY_PANELS = new Set(["usage", "members"]);
 // M6-R50): dropped from the nav on a confirmed AgentCore workspace. The panel
 // components themselves also self-gate (defense in depth against a stale
 // deep link), so this is only about not OFFERING a dead end.
-export const HIDDEN_ON_AGENTCORE_PANELS = new Set(["dreams", "channel-status"]);
+//
+// `channels` is the WIRING row (`ChannelsPanel`/`MyChannelsSection`) — distinct
+// from `channel-status`, the read-only ENGINE ROOM row. Channel wiring is
+// itself named in `useHiddenOnAgentCore`'s doc comment as one of the surfaces
+// with no Hermes equivalent; it was missing from this set (H3), so the row
+// stayed in the nav and mounting it woke a parked microVM to render nothing.
+export const HIDDEN_ON_AGENTCORE_PANELS = new Set(["dreams", "channel-status", "channels"]);
 
 /** Drops `HIDDEN_ON_AGENTCORE_PANELS` items (and any section left empty by
  *  that) when `hidden` is true — never while the host is merely unknown, so

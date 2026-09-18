@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { CheckCircle2, AlertCircle } from "lucide-react";
+import { useHiddenOnAgentCore } from "@lightbulb/shared";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -27,8 +28,15 @@ export function MyChannelsSection() {
 function MyChannelsSectionInner() {
   const api = useApi();
   const { isSubscribed } = useBilling();
+  // H3/M6-R50: channel wiring has no Hermes equivalent (see useHiddenOnAgentCore's doc
+  // comment). Self-gate here too — defense in depth against a stale `?panel=channels`
+  // deep link once the nav row is hidden — so mounting this section on a confirmed
+  // AgentCore workspace never wakes the container to probe for bots that can't exist.
+  const visibility = useHiddenOnAgentCore();
   // bot_username is now populated by the backend via channels.status probe
-  const { channelLinks: data, error, isLoading, refresh: mutate } = useChannelLinks(true);
+  const { channelLinks: data, error, isLoading, refresh: mutate } = useChannelLinks(
+    visibility === "shown",
+  );
   const [wizard, setWizard] = useState<{ provider: Provider; agentId: string } | null>(null);
   const [unlinkTarget, setUnlinkTarget] = useState<{ provider: Provider; agentId: string } | null>(null);
   const [unlinking, setUnlinking] = useState(false);
@@ -44,6 +52,14 @@ function MyChannelsSectionInner() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [wizard, unlinkTarget]);
+
+  if (visibility === "hidden") {
+    return (
+      <div className="p-4 text-sm text-[var(--midnight-muted)]">
+        Channels isn&apos;t available on this runtime.
+      </div>
+    );
+  }
 
   if (error) {
     return (

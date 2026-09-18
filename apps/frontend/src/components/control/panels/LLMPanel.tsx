@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { KeyRound, Loader2 } from "lucide-react";
+import { AlertCircle, KeyRound, Loader2 } from "lucide-react";
 import { useApi } from "@/lib/api";
 import { externalLinkClick } from "@/lib/externalAuth";
 import { notifyApiError } from "@/lib/notify";
@@ -13,6 +13,7 @@ import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { CreditsSection } from "./CreditsSection";
 import { ModelRoutingCard } from "./ModelRoutingCard";
 import { OpenAIIcon, AnthropicIcon } from "@/components/chat/ProviderIcons";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   ChangeProviderModal,
@@ -492,7 +493,11 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   // branched: the Hermes bridge reports the same names `llm-auth-status.ts`
   // already matches (`bedrock`, `anthropic`, `openai-api`, `openai-codex`).
   const runtimeHost = useRuntimeHost();
-  const { data: authStatus, mutate: revalidateAuthStatus } = useRuntimeRpc<{
+  const {
+    data: authStatus,
+    error: authStatusError,
+    mutate: revalidateAuthStatus,
+  } = useRuntimeRpc<{
     ts: number;
     providers: AuthStatusProvider[];
   }>(runtimeHost ? "models.authStatus" : null);
@@ -555,6 +560,24 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
           Refresh status
         </button>
       </div>
+
+      {/* H4: models.authStatus failing silently rendered as a neutral dot
+          indistinguishable from "still loading" — surface it so a broken
+          credential reads as an error, not a spinner that never resolves. */}
+      {authStatusError && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cream border border-err">
+          <AlertCircle size={16} className="text-err shrink-0" />
+          <span className="text-xs text-err">Couldn&apos;t check provider status.</span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto h-6 text-xs"
+            onClick={() => void revalidateAuthStatus()}
+          >
+            Retry
+          </Button>
+        </div>
+      )}
 
       {user.provider_choice === "chatgpt_oauth" && (
         <>

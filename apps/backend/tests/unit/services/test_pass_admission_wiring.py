@@ -12,11 +12,6 @@ async def test_worker_runs_no_pass_body_when_admission_refuses(monkeypatch):
     monkeypatch.setattr(update_service.container_repo, "try_claim_pass", AsyncMock(return_value=False))
     for fn in ("_paperclip_provision_retry_pass", "_paperclip_purge_pass", "_rollup_pass"):
         monkeypatch.setattr(update_service, fn, AsyncMock(side_effect=lambda _f=fn: ran.append(_f)))
-    monkeypatch.setattr(
-        update_service.update_repo,
-        "get_due_scheduled",
-        AsyncMock(side_effect=AssertionError("scanned while not admitted")),
-    )
     task = asyncio.create_task(update_service.run_scheduled_worker())
     await asyncio.sleep(0)
     update_service.request_worker_stop()
@@ -28,7 +23,6 @@ async def test_worker_runs_no_pass_body_when_admission_refuses(monkeypatch):
 async def test_worker_runs_each_pass_once_when_admitted(monkeypatch):
     ran = []
     monkeypatch.setattr(update_service.container_repo, "try_claim_pass", AsyncMock(return_value=True))
-    monkeypatch.setattr(update_service.update_repo, "get_due_scheduled", AsyncMock(return_value=[]))
     for fn in ("_paperclip_provision_retry_pass", "_paperclip_purge_pass", "_rollup_pass"):
         monkeypatch.setattr(update_service, fn, AsyncMock(side_effect=lambda _f=fn: ran.append(_f)))
     task = asyncio.create_task(update_service.run_scheduled_worker())

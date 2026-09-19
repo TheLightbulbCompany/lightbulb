@@ -23,6 +23,10 @@ RETIRED = {
     "sessions_spawn": "(dropped — no ACP harness on Hermes)",
     "/app/skills/": "/opt/hermes-skills/",
     "openclaw backup create": "(dropped)",
+    "openclaw/invite-prompt": "(retired onboarding workflow)",
+    "always-on container": "(AgentCore wakes on demand)",
+    "2 vCPU / 8 GB": "(retired ECS sizing)",
+    "dedicated container": "dedicated AWS Bedrock AgentCore runtime",
 }
 
 # Paperclip's `--status todo` is a STATUS value, never renamed (see the brief's own

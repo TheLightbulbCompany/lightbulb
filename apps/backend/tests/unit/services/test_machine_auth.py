@@ -1,7 +1,4 @@
-"""Tests for machine_auth: the in-process port of the WS authorizer Lambda's
-two verifiers (device JWTs for desktop nodes, Paperclip service tokens for
-operators), used by the gateway relay's upgrade handshake.
-"""
+"""Device authentication and unsupported-client rejection for the node relay."""
 
 import base64
 import time
@@ -64,23 +61,7 @@ async def test_device_token_rejections(token, client_id):
         assert await machine_auth.verify_upgrade(token(), client_id) is None
 
 
-@pytest.mark.asyncio
-async def test_service_token_yields_an_operator_identity():
-    with patch(
-        "core.services.machine_auth.service_token.verify", return_value={"kind": "paperclip_service", "sub": "org_1"}
-    ):
-        ident = await machine_auth.verify_upgrade("svc", "paperclip-operator")
-        assert ident is not None and (ident.kind, ident.owner_id, ident.user_id, ident.org_id, ident.device_id) == (
-            "operator",
-            "org_1",
-            "org_1",
-            "",
-            None,
-        )
-        assert await machine_auth.verify_upgrade("svc", "node-host") is None
-
-
-# --- Amendments (ruling D5): fail-closed userId, leeway, RuntimeError from service_token ---
+# --- Fail-closed userId and clock-skew leeway ---
 
 
 @pytest.mark.asyncio
@@ -104,19 +85,7 @@ async def test_device_token_honors_clock_skew_leeway():
     assert ident is not None and ident.kind == "node"
 
 
-@pytest.mark.asyncio
-async def test_operator_token_signing_key_unset_fails_closed():
-    """service_token._signing_key() raises a bare RuntimeError when
-    PAPERCLIP_SERVICE_TOKEN_KEY is unset; _operator must catch it too, not
-    let it escape past the route."""
-    with patch(
-        "core.services.machine_auth.service_token.verify",
-        side_effect=RuntimeError("PAPERCLIP_SERVICE_TOKEN_KEY env var not set"),
-    ):
-        assert await machine_auth.verify_upgrade("svc", "paperclip-operator") is None
-
-
-# --- Task 1 review follow-up: forged signature, malformed key, expired beyond leeway, operator kind/sub ---
+# --- Forged signatures, malformed keys, and expired tokens ---
 
 
 @pytest.mark.asyncio
@@ -159,34 +128,15 @@ async def test_device_token_expired_beyond_leeway_rejected():
 
 
 @pytest.mark.asyncio
-async def test_operator_token_wrong_kind_or_missing_sub_rejected():
-    """service_token.verify raises jwt.InvalidTokenError for a wrong `kind`
-    claim and for a missing `sub` claim; _operator must reject both."""
-    with patch(
-        "core.services.machine_auth.service_token.verify",
-        side_effect=jwt.InvalidTokenError("Wrong kind claim: 'some_other_kind'"),
-    ):
-        assert await machine_auth.verify_upgrade("svc", "paperclip-operator") is None
-    with patch(
-        "core.services.machine_auth.service_token.verify",
-        side_effect=jwt.InvalidTokenError("Missing sub claim"),
-    ):
-        assert await machine_auth.verify_upgrade("svc", "paperclip-operator") is None
-
-
-@pytest.mark.asyncio
-async def test_operator_identity_rejects_a_claims_dict_with_no_sub():
-    """Defense in depth below service_token.verify's own "Missing sub claim"
-    guard: if verify() ever returns a dict with no `sub` (or an empty one),
-    _operator must fail CLOSED (None -> caller reports 1008) instead of
-    KeyError-ing (which the caller would report as 1011)."""
-    with patch(
-        "core.services.machine_auth.service_token.verify",
-        return_value={"kind": "paperclip_service"},
-    ):
-        assert await machine_auth.verify_upgrade("svc", "paperclip-operator") is None
-    with patch(
-        "core.services.machine_auth.service_token.verify",
-        return_value={"kind": "paperclip_service", "sub": ""},
+async def test_operator_upgrade_is_refused_before_any_verification():
+    with (
+        patch(
+            "core.services.service_token.verify",
+            side_effect=AssertionError("retired operator verifier must not run"),
+        ),
+        patch(
+            "core.services.machine_auth.container_repo.get_by_owner_id",
+            side_effect=AssertionError("operator must not read device state"),
+        ),
     ):
         assert await machine_auth.verify_upgrade("svc", "paperclip-operator") is None

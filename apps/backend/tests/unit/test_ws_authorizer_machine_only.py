@@ -38,9 +38,8 @@ def test_valid_clerk_browser_jwt_is_denied_without_jwks_lookup():
 
 
 def test_signed_paperclip_service_token_is_now_denied():
-    """Paperclip operators moved to the raw WS relay (routers/gateway_relay.py)
-    and verify their own service tokens via core/services/machine_auth.py — the
-    API Gateway Lambda authorizer no longer accepts this credential kind at all."""
+    """Paperclip uses the HTTP facade. Neither the API Gateway authorizer
+    nor the raw desktop-node WS relay accepts its service tokens."""
     assert not hasattr(authz, "_try_service_token")
     assert not hasattr(authz, "PAPERCLIP_SERVICE_TOKEN_KEY")
     token = jwt.encode(

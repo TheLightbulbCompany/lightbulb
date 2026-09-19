@@ -2018,19 +2018,6 @@ async def idle_stop_claim_current(owner_id: str, claim: str) -> bool:
     return bool(row and row.get("status") == "running" and row.get("idle_stop_claim") == claim)
 
 
-async def set_hook_token(owner_id: str, token: str) -> dict | None:
-    """Persist a freshly generated OpenClaw hook token onto the containers row.
-
-    Sets ``hook_token`` and ``hook_token_rotated_at`` together so the rotation
-    timestamp always tracks the current token. Returns the updated row, or
-    None if the row does not exist.
-    """
-    return await update_fields(
-        owner_id,
-        {"hook_token": token, "hook_token_rotated_at": utc_now_iso()},
-    )
-
-
 async def update_error(owner_id: str, error: str) -> dict | None:
     """Record the last error for a container."""
     return await update_fields(

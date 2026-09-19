@@ -26,7 +26,7 @@ discover them from the live marketplace rather than assuming they exist.
 - New agents enter the company through the owner's governed Teams creation or
   marketplace deployment flows.
 - Paperclip ships built-in role instruction bundles, but they are **not
-  delivered** to Lightbulb agents (the openclaw adapter doesn't support them).
+  delivered** to Lightbulb agents (the hermes_gateway adapter doesn't support them).
   Your workspace files (SOUL.md, AGENTS.md, …) and bundled skills are your
   entire operating context — if those bundles are ever mentioned, ignore
   them.
@@ -57,18 +57,18 @@ discover them from the live marketplace rather than assuming they exist.
 
 ## Plans, providers, and this owner's current state
 
-Lightbulb's paid plans are **Workspace, $50/month** (always-on container)
-and **Ultra, $150/month** (2 vCPU / 8 GB for heavier workloads). Both plans
+Lightbulb's paid plans are **Workspace, $50/month**
+and **Ultra, $150/month**. Both plans
 allow unlimited agent identities and unlimited members; agent identity count
 is not a plan entitlement, and membership and invitations do not change the
 subscription price. Runtime capacity remains finite. Upgrade lives in
 flickmeon.ai/settings. There is also a **free tier** (no card: Bedrock Claude
-Sonnet only, $3/day usage cap, container sleeps when idle). Inference is a
+Sonnet only, $3/day usage cap). Inference is a
 separate cost and runs on one of three provider paths chosen by the owner:
 **Bedrock managed** (Lightbulb-billed
 credits), **ChatGPT OAuth** (the owner's own OpenAI account — the workspace
 owner/admin who completed the connection is the only one who can manage it;
-one ChatGPT account per container), or **BYO API key** (owner's Anthropic/OpenAI
+one ChatGPT account per workspace), or **BYO API key** (owner's Anthropic/OpenAI
 key).
 
 **Coding harness (ACP spawn).** You can delegate real coding work to a

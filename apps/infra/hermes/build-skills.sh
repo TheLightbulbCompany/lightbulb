@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Build the Hermes image's bundled skills tree from the ONE source tree.
+# Build the Hermes image's bundled skills tree from `skills-src` + `skills-overlay`.
 #
-# The bundled skills are `apps/infra/openclaw/skills` with a handful of tokens swapped for
-# Hermes's spelling, plus a small overlay for the few files whose CONTENT genuinely differs
-# (Hermes has no ACP coding harness, no `openclaw backup create`, no Shopify plugin routes).
-# Before this script the whole 6.4k-line tree was a second checked-in copy, and it had already
-# drifted: `references/follow-ups.md` and the Shopify guidance reached only the OpenClaw side.
+# `skills-src/` is the source of truth for the two agent-facing skills (`lightbulb`,
+# `paperclip`). It moved here from apps/infra/openclaw/skills when the OpenClaw extended
+# image was deleted; this image is now its only consumer. `skills-overlay/` holds the few
+# files whose CONTENT differs from the source for a reason a token swap cannot express
+# (no ACP coding harness, no `openclaw backup create`).
 #
-# Run by .github/workflows/build-hermes-image.yml before `docker build` (the Dockerfile's build
-# context is apps/infra/hermes, so it cannot reach the OpenClaw tree itself) and by
-# apps/backend/tests/unit/services/test_hermes_skill_tool_names.py, which asserts on the RESULT
-# -- so the swap list below is the single place it is written down.
+# The generated tree is NOT checked in -- a second copy is exactly the duplicate this
+# replaced, and it had already drifted before the derivation existed.
+#
+# Run by .github/workflows/build-hermes-image.yml before `docker build` (the Dockerfile
+# COPYs the generated `skills/`, which is gitignored) and by
+# apps/backend/tests/unit/services/test_hermes_skill_tool_names.py, which asserts on the
+# RESULT -- so the swap list below is the single place it is written down.
 #
 # Usage: build-skills.sh [DEST]   (default: apps/infra/hermes/skills, which is gitignored)
 set -euo pipefail
@@ -20,14 +23,12 @@ dest=${1:-$here/skills}
 
 rm -rf "$dest"
 mkdir -p "$dest"
-cp -R "$here/../openclaw/skills/." "$dest/"
+cp -R "$here/skills-src/." "$dest/"
 
-# Two references the Hermes build does NOT ship, matching what it shipped before this script:
-#  - shopify/ drives lightbulb-channel plugin routes that exist only in the OpenClaw image.
-#  - lightbulb/references/follow-ups.md is routed from the OpenClaw SKILL.md only; the Hermes
-#    SKILL.md (skills-overlay/) has no routing row for it, so shipping it is dead weight.
-# Re-enabling either is now a line here plus a routing row, not a 97-line second copy.
-rm -rf "$dest/shopify" "$dest/lightbulb/references/follow-ups.md"
+# One reference the image does NOT ship: the Hermes SKILL.md (skills-overlay/) has no
+# routing row for `lightbulb/references/follow-ups.md`, so shipping it is dead weight.
+# Re-enabling it is this line plus a routing row.
+rm -rf "$dest/lightbulb/references/follow-ups.md"
 
 # MAINTENANCE.md is engineer-facing (it documents THIS build, among other things) and
 # nothing in the image reads it -- Hermes discovers skills by SKILL.md front matter.

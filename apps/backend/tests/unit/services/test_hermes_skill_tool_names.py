@@ -1,7 +1,7 @@
 """The Hermes image's bundled skills are BUILT, not checked in: apps/infra/hermes/
-build-skills.sh derives them from apps/infra/openclaw/skills plus a small overlay. So this
-suite runs that script and asserts on its OUTPUT -- the same artefact the image bakes --
-rather than on a second copy of the tree in the repo.
+build-skills.sh derives them from apps/infra/hermes/skills-src plus a small overlay. So
+this suite runs that script and asserts on its OUTPUT -- the same artefact the image bakes
+-- rather than on a second copy of the tree in the repo.
 """
 
 import subprocess
@@ -49,10 +49,8 @@ def _texts(skills: Path):
 def test_the_build_produces_the_hermes_image_tree(skills):
     assert (skills / "lightbulb/SKILL.md").exists()
     assert (skills / "paperclip/SKILL.md").exists()
-    # The three things the Hermes build deliberately does not ship: the Shopify recipe
-    # (OpenClaw-only plugin routes), the follow-ups reference (no routing row in the
-    # Hermes SKILL.md), and the engineer-facing MAINTENANCE.md files.
-    assert not (skills / "shopify").exists()
+    # The two things the build deliberately does not ship: the follow-ups reference (no
+    # routing row in the Hermes SKILL.md) and the engineer-facing MAINTENANCE.md files.
     assert not (skills / "lightbulb/references/follow-ups.md").exists()
     assert not list(skills.rglob("MAINTENANCE.md"))
 
@@ -78,7 +76,7 @@ def test_our_own_plugin_tool_names_are_still_referenced(skills):
     """
     assert "lightbulb_local_sessions" in "\n".join(_texts(skills).values())
 
-    anchors = (REPO / "apps/infra/openclaw/skills/lightbulb/MAINTENANCE.md").read_text()
+    anchors = (REPO / "apps/infra/hermes/skills-src/lightbulb/MAINTENANCE.md").read_text()
     assert "send_room_message" in anchors
     assert "hire_suggestion" in anchors
 
@@ -89,10 +87,10 @@ def test_the_paperclip_helper_path_points_at_the_baked_skills_dir(skills):
 
 
 def test_the_overlay_only_holds_files_the_source_tree_also_has(skills):
-    """An overlay file with no counterpart in apps/infra/openclaw/skills is a file that
-    silently stopped tracking its source -- the drift this build exists to prevent."""
+    """An overlay file with no counterpart in skills-src is a file that silently stopped
+    tracking its source -- the drift this build exists to prevent."""
     overlay = REPO / "apps/infra/hermes/skills-overlay"
-    source = REPO / "apps/infra/openclaw/skills"
+    source = REPO / "apps/infra/hermes/skills-src"
     missing = [
         str(path.relative_to(overlay))
         for path in overlay.rglob("*")

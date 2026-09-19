@@ -315,14 +315,32 @@ describe("ContainerStack — prod", () => {
     template.resourceCountIs("AWS::ECS::TaskDefinition", 0);
   });
 
-  test("EFS filesystem is DESTROYed in prod — the flip must ship while it is still declared (PR-6b deletes it)", () => {
-    template.hasResource("AWS::EFS::FileSystem", {
-      DeletionPolicy: "Delete",
-      UpdateReplacePolicy: "Delete",
-    });
+  test("declares none of the retired per-user resources", () => {
+    // Same invariant as the dev case, asserted separately because prod is where
+    // the RemovalPolicy asymmetry lives: ENV_CONFIG gives prod RETAIN, so the
+    // live prod template carries DeletionPolicy: Retain on the filesystem.
+    //
+    // ⚠️ REMOVING A RESOURCE DOES NOT OVERRIDE THAT. CloudFormation reads
+    // DeletionPolicy from the DEPLOYED template when a resource is absent from
+    // the new one, so this stack's prod update ORPHANS fs-07640461cc0f09b14
+    // rather than deleting it (`cdk diff` renders it `orphan`, against `destroy`
+    // in dev). Flipping it has to happen in a deploy where the filesystem is
+    // still declared — i.e. #2784/#2785, not here. See the PR body's Rollout.
+    template.resourceCountIs("AWS::EFS::FileSystem", 0);
+    template.resourceCountIs("AWS::EC2::SecurityGroup", 1);
+    template.resourceCountIs("AWS::ServiceDiscovery::Service", 0);
+    const roleNames = Object.values(template.findResources("AWS::IAM::Role")).map(
+      (r: any) => r.Properties?.RoleName,
+    );
+    expect(roleNames).not.toContain("lightbulb-prod-openclaw-task");
+    expect(roleNames).not.toContain("lightbulb-prod-openclaw-task-execution");
   });
 
   test("state bucket is RETAINed in prod (never auto-deleted)", () => {
+    // The other half of the asymmetry: ENV_CONFIG's RETAIN still governs the
+    // replicas bucket and MUST keep doing so — every Hermes profile lives in
+    // it. A fix for the filesystem's DeletionPolicy that goes through
+    // ENV_CONFIG would take this with it.
     template.hasResource("AWS::S3::Bucket", {
       Properties: Match.objectLike({ BucketName: "lightbulb-prod-openclaw-replicas" }),
       DeletionPolicy: "Retain",

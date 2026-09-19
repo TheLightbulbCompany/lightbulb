@@ -410,7 +410,9 @@ def _aip_name(owner_id: str, tier: str) -> str:
 
 async def ensure_owner_aips(owner_id: str, *, tiers: list[str] | None = None) -> dict[str, str]:
     """Idempotently create the per-owner AIPs for `tiers` (one per tier);
-    return {tier: aip_arn}. Persists to the containers row + reverse table.
+    return only the requested {tier: aip_arn}. Keep the complete minted inventory
+    in the containers row for teardown and later paid upgrades. Reclassify ALL
+    reverse rows so previously over-provisioned trial owners are repaired.
 
     `tiers=None` (the default) mints all 3 tiers (opus/sonnet/haiku) — today's
     paid-owner behavior, unchanged in call shape or effect. `tiers=["sonnet"]`
@@ -446,7 +448,7 @@ async def ensure_owner_aips(owner_id: str, *, tiers: list[str] | None = None) ->
         table = _aip_owners_table()
         for tier, arn in existing.items():
             await _put_reverse_row(table, arn=arn, owner_id=owner_id, tier=tier, plan=plan)
-        return existing
+        return {tier: existing[tier] for tier in target_tiers}
 
     client = _bedrock_client()
     account_id = await _caller_account_id()
@@ -500,7 +502,7 @@ async def ensure_owner_aips(owner_id: str, *, tiers: list[str] | None = None) ->
             arns[tier] = adopted
 
     await persist_owner_aips(owner_id, arns, plan=plan)
-    return arns
+    return {tier: arns[tier] for tier in target_tiers}
 
 
 async def _find_existing_aip_arn(client, name: str) -> str | None:

@@ -13,30 +13,29 @@ from scripts.audit_paperclip_adapter_types import (
 )
 
 
-def test_only_openclaw_gateway_is_safe():
+def test_only_hermes_gateway_is_safe():
     # Matches the deployed fence's single-type allowlist.
-    assert not is_dangerous("openclaw_gateway")
+    assert not is_dangerous("hermes_gateway")
 
 
 @pytest.mark.parametrize(
     "adapter",
-    ["process", "http", "claude_local", "codex_local", "cursor", "hermes_gateway", None],
+    ["process", "http", "claude_local", "codex_local", "cursor", "openclaw_gateway", None],
 )
-def test_host_exec_hermes_and_null_adapters_are_dangerous(adapter):
-    # hermes_gateway is dangerous HERE: the fence rejects it and a pre-fence Hermes
-    # config could carry an attacker gateway URL.
+def test_host_exec_retired_and_null_adapters_are_dangerous(adapter):
+    # Retired adapters are no longer deployed; host-executing types remain denied.
     assert is_dangerous(adapter)
 
 
 def test_classify_agents_flags_only_dangerous_and_is_remediable():
     rows = [
-        {"id": "a1", "company_id": "c1", "name": "Friday", "adapter_type": "openclaw_gateway"},
+        {"id": "a1", "company_id": "c1", "name": "Friday", "adapter_type": "hermes_gateway"},
         {"id": "a2", "company_id": "c1", "name": "evil", "adapter_type": "process"},
-        {"id": "a3", "company_id": "c2", "name": "hermes", "adapter_type": "hermes_gateway"},
+        {"id": "a3", "company_id": "c2", "name": "hermes", "adapter_type": "openclaw_gateway"},
         {"id": "a4", "company_id": "c2", "name": "shell", "adapter_type": None},
     ]
     found = classify_agents(rows)
-    assert {f.row_id for f in found} == {"a2", "a3", "a4"}  # hermes now flagged too
+    assert {f.row_id for f in found} == {"a2", "a3", "a4"}  # retired gateway is flagged too
     assert all(f.remediable for f in found)  # wakeup can't be blocked -> we quarantine
 
 
@@ -71,7 +70,7 @@ def test_classify_approvals_only_pending_hire_with_dangerous_payload():
     rows = [
         _hire("p1", None),  # null adapter, create branch -> flag
         _hire("p2", "process", status="revision_requested"),  # flag
-        _hire("p3", "openclaw_gateway"),  # safe adapter -> ignore
+        _hire("p3", "hermes_gateway"),  # safe adapter -> ignore
         _hire("p4", "process", status="approved"),  # wrong status -> ignore
         {"id": "p5", "company_id": "c1", "type": "budget_increase", "status": "pending", "adapter_type": None},
         _hire("p6", None, agent_id="ag_1", agent_id_type="string"),  # activate branch -> ignore

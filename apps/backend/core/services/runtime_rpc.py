@@ -700,7 +700,12 @@ async def _owner_model_inputs(owner_id: str) -> tuple[str, str | None, dict[str,
 
     provider_choice, byo_provider = await resolve_provider_choice(owner_id)
     container_row = await container_repo.get_by_owner_id(owner_id) or {}
-    return provider_choice, byo_provider, container_row.get("bedrock_aip_arns") or {}
+    aip_arns = container_row.get("bedrock_aip_arns") or {}
+    if provider_choice == "bedrock_trial":
+        # Keep the full inventory for teardown/paid reuse, but never offer a
+        # migrated trial owner premium tiers its gate bearer cannot invoke.
+        aip_arns = {tier: arn for tier, arn in aip_arns.items() if tier == "sonnet"}
+    return provider_choice, byo_provider, aip_arns
 
 
 async def agentcore_disabled_skill_names(owner_id: str) -> list[str]:

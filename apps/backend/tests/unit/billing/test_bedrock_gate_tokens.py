@@ -1331,3 +1331,29 @@ class TestAgentCoreDrain:
 
         with pytest.raises(RuntimeError):
             await mod._presentable_gate_token_hashes("org_a")
+
+
+@pytest.mark.asyncio
+async def test_reconcile_tiers_updates_all_live_generations_without_rotating_or_undenying(gate_tables):
+    client = gate_tables
+    _put_container_row(client, "org_abc", bedrock_gate_token_hash="current", superseded=["old", "gone", "foreign"])
+    for token_hash in ["current", "old"]:
+        _put_token_row(client, token_hash)
+    _put_token_row(client, "foreign", owner_id="org_other")
+    client.update_item(
+        TableName="test-gate-tokens",
+        Key={"token_hash": {"S": "old"}},
+        UpdateExpression="SET denied = :d",
+        ExpressionAttributeValues={":d": {"BOOL": True}},
+    )
+    sonnet = {"sonnet": _AIPS["sonnet"]}
+    for _ in range(2):
+        await mod.reconcile_gate_token_tiers("org_abc", sonnet)
+    for token_hash in ["current", "old"]:
+        assert _token_row(client, token_hash)["aip_tiers"]["M"] == {_AIPS["sonnet"]: {"S": "sonnet"}}
+    assert _token_row(client, "old")["denied"]["BOOL"] is True
+    assert not _token_row(client, "gone")
+    assert "aip_tiers" not in _token_row(client, "foreign")
+    await mod.reconcile_gate_token_tiers("org_abc", _AIPS)
+    assert len(_token_row(client, "old")["aip_tiers"]["M"]) == 3
+    assert _container_row(client)["bedrock_gate_token_hash"]["S"] == "current"

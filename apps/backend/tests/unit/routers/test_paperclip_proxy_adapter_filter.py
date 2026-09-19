@@ -45,7 +45,7 @@ def _blocked(method: str, path: str, body: bytes = b"") -> bool:
 # ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize("adapter", ["process", "http", "claude_local", "codex_local", "hermes_gateway"])
+@pytest.mark.parametrize("adapter", ["process", "http", "claude_local", "codex_local", "openclaw_gateway"])
 def test_create_agent_with_non_gateway_adapter_is_blocked(adapter):
     body = json.dumps({"name": "x", "adapterType": adapter}).encode()
     assert _blocked("POST", "api/companies/c1/agents", body)
@@ -64,12 +64,12 @@ def test_agent_hire_with_non_gateway_adapter_is_blocked():
 
 def test_direct_create_agent_with_gateway_adapter_is_blocked():
     """Creation is Isol8-owned even when the adapter itself is safe."""
-    body = json.dumps({"name": "x", "adapterType": "openclaw_gateway"}).encode()
+    body = json.dumps({"name": "x", "adapterType": "hermes_gateway"}).encode()
     assert _blocked("POST", "api/companies/c1/agents", body)
 
 
 def test_direct_agent_hire_with_gateway_adapter_is_blocked():
-    body = json.dumps({"adapterType": "openclaw_gateway"}).encode()
+    body = json.dumps({"adapterType": "hermes_gateway"}).encode()
     assert _blocked("POST", "api/companies/c1/agent-hires", body)
 
 
@@ -120,7 +120,7 @@ def test_company_scoped_adapter_route_blocked_for_non_gateway_type():
 
 
 def test_company_scoped_adapter_route_allowed_for_gateway_type():
-    assert not _blocked("GET", "api/companies/c1/adapters/openclaw_gateway/models")
+    assert not _blocked("GET", "api/companies/c1/adapters/hermes_gateway/models")
 
 
 def test_leading_slash_is_tolerated():
@@ -191,7 +191,7 @@ def test_approval_hire_missing_nested_adapter_is_blocked():
 
 
 def test_approval_hire_with_nested_gateway_adapter_is_blocked():
-    body = json.dumps({"type": "hire_agent", "payload": {"adapterType": "openclaw_gateway"}}).encode()
+    body = json.dumps({"type": "hire_agent", "payload": {"adapterType": "hermes_gateway"}}).encode()
     assert _blocked("POST", "api/companies/c1/approvals", body)
 
 
@@ -217,7 +217,7 @@ def test_invite_accept_agent_non_gateway_is_blocked():
 
 
 def test_invite_accept_agent_gateway_is_allowed():
-    body = json.dumps({"requestType": "agent", "adapterType": "openclaw_gateway"}).encode()
+    body = json.dumps({"requestType": "agent", "adapterType": "hermes_gateway"}).encode()
     assert not _blocked("POST", "api/invites/tok/accept", body)
 
 
@@ -267,7 +267,7 @@ def test_compressed_request_body_is_rejected():
 @pytest.mark.parametrize("encoding", [None, "", "identity"])
 def test_uncompressed_encodings_pass(encoding):
     # A normal (unencoded) update to an existing gateway agent still passes.
-    body = json.dumps({"adapterType": "openclaw_gateway"}).encode()
+    body = json.dumps({"adapterType": "hermes_gateway"}).encode()
     _assert_paperclip_request_allowed("PATCH", "api/agents/a1", body, content_encoding=encoding)
 
 
@@ -284,7 +284,7 @@ def test_resubmit_payload_without_adapter_is_blocked():
 
 
 def test_resubmit_payload_gateway_is_blocked():
-    body = json.dumps({"payload": {"adapterType": "openclaw_gateway"}}).encode()
+    body = json.dumps({"payload": {"adapterType": "hermes_gateway"}}).encode()
     assert _blocked("POST", "api/approvals/ap1/resubmit", body)
 
 
@@ -344,7 +344,7 @@ def test_info_disclosure_routes_are_blocked(method, path):
 
 def test_allowlist_is_gateway_only():
     # Guard against an accidental widening of the allowlist.
-    assert _ALLOWED_ADAPTER_TYPES == frozenset({"openclaw_gateway"})
+    assert _ALLOWED_ADAPTER_TYPES == frozenset({"hermes_gateway"})
 
 
 # ---------------------------------------------------------------

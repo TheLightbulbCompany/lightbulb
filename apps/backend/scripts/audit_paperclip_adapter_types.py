@@ -14,7 +14,7 @@ on that stored value:
 This is the §3.6 data-cleanup the audit doc pairs with the filter: the RCE is not
 fully closed for pre-existing data until this reports clean.
 
-Isol8 only ever seeds/hires ``openclaw_gateway`` agents, so a dangerous row is
+Lightbulb seeds/hires ``hermes_gateway`` agents, so a dangerous row is
 either corruption or an attacker's plant. Neutralizing by only rewriting
 ``adapter_type`` is NOT enough — a stale ``http`` row keeps an attacker-controlled
 ``adapter_config.url`` that a gateway adapter would then dial from the host. So we
@@ -83,13 +83,9 @@ import boto3
 ACCOUNT_ID = "877352799272"
 REGION = "us-east-1"
 
-# Match the deployed proxy fence (#1673) EXACTLY: it allows only openclaw_gateway.
-# hermes_gateway is host-safe in principle, but the fence rejects it (Isol8 is
-# OpenClaw-only) and a PRE-fence Hermes row could carry an attacker-controlled
-# gateway URL the fence would never have accepted — so it is dangerous here too.
-# §3.6 covers every non-OpenClaw row; keep this in lockstep with the fence.
-SAFE_ADAPTER_TYPES = frozenset({"openclaw_gateway"})
-_SAFE_SQL = "('openclaw_gateway')"
+# Keep the audit aligned with the deployed Hermes-only proxy fence.
+SAFE_ADAPTER_TYPES = frozenset({"hermes_gateway"})
+_SAFE_SQL = "('hermes_gateway')"
 
 
 def is_dangerous(adapter_type: str | None) -> bool:
@@ -261,7 +257,7 @@ def _quarantine(client, db_arn, secret_arn, finding: Finding) -> None:
             client,
             db_arn,
             secret_arn,
-            "UPDATE agents SET status = 'terminated', adapter_type = 'openclaw_gateway', "
+            "UPDATE agents SET status = 'terminated', adapter_type = 'hermes_gateway', "
             "adapter_config = '{}'::jsonb, runtime_config = '{}'::jsonb WHERE id = :id",
             uid,
         )

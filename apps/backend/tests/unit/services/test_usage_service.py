@@ -425,3 +425,53 @@ async def test_get_usage_summary_returns_zeros_for_empty(dynamodb_tables):
     assert summary["total_spend"] == 0
     assert summary["request_count"] == 0
     assert summary["lifetime_spend"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tier", ["opus", "sonnet", "haiku"])
+@pytest.mark.parametrize("raw_cost", [None, 123456])
+async def test_hermes_aip_usage_prices_owned_tier_and_preserves_attribution(dynamodb_tables, tier, raw_cost):
+    from unittest.mock import AsyncMock
+    from core.billing.bedrock_aip import TIER_TO_FM
+    from core.billing.bedrock_pricing import cost_microcents
+    from core.repositories import usage_repo
+    from core.services.usage_service import _current_period, record_usage
+
+    arn = "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/profile1"
+    with patch("core.billing.bedrock_aip.read_owner_aips", AsyncMock(return_value={tier: arn})):
+        await record_usage(
+            "org_aip",
+            "user_a",
+            arn,
+            1000,
+            500,
+            200,
+            100,
+            raw_cost_microcents=raw_cost,
+            room_turn=True,
+            event_kind="room_event",
+        )
+    expected = raw_cost or cost_microcents(
+        model_id=TIER_TO_FM[tier], input_tokens=1000, output_tokens=500, cache_read_tokens=200, cache_write_tokens=100
+    )
+    period = _current_period()
+    for key in [period, "lifetime", f"member:user_a:{period}", f"room:room_event:{period}"]:
+        row = await usage_repo.get_period_usage("org_aip", key)
+        assert row["total_spend_microdollars"] == expected
+        assert row["total_cache_read_tokens"] == 200
+
+
+@pytest.mark.asyncio
+async def test_unknown_aip_pages_without_borrowing_another_owners_tier(dynamodb_tables):
+    from unittest.mock import AsyncMock
+    from core.services.usage_service import record_usage, _current_period
+    from core.repositories import usage_repo
+
+    arn = "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/foreign"
+    with (
+        patch("core.billing.bedrock_aip.read_owner_aips", AsyncMock(return_value={})),
+        patch("core.services.usage_service.put_metric") as metric,
+    ):
+        await record_usage("org_aip", "user_a", arn, 1000, 500, 0, 0)
+    metric.assert_called_with("billing.pricing.missing_model")
+    assert (await usage_repo.get_period_usage("org_aip", _current_period()))["total_spend_microdollars"] == 0

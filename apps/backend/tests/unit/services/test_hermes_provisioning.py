@@ -317,6 +317,11 @@ def _patch_owner_aws(monkeypatch, *, hook_token=None, gateway_token=None, existi
     import core.billing.bedrock_aip as bedrock_aip_mod
     import core.billing.bedrock_gate_tokens as bedrock_gate_tokens_mod
 
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
+    )
+    monkeypatch.setattr(bedrock_gate_tokens_mod, "reconcile_gate_token_tiers", AsyncMock(), raising=False)
     monkeypatch.setattr(bedrock_aip_mod, "ensure_owner_aips", AsyncMock(return_value={"sonnet": "arn:aip:sonnet"}))
     monkeypatch.setattr(
         bedrock_aip_mod,
@@ -1539,3 +1544,57 @@ def test_create_runtime_gives_up_after_the_bound(monkeypatch):
     with pytest.raises(_ValidationException):
         hermes_provisioning._create_runtime({"agentRuntimeName": "x"})
     assert client.calls == hermes_provisioning._ROLE_PROPAGATION_ATTEMPTS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider,tiers", [("bedrock_trial", ["sonnet"]), ("bedrock_claude", None)])
+@pytest.mark.parametrize("prepare", [True, False])
+async def test_hermes_aips_follow_authoritative_provider_and_reconcile_live_tokens(
+    monkeypatch, provider, tiers, prepare
+):
+    from core.billing import bedrock_aip, bedrock_gate_tokens
+
+    _patch_owner_aws(monkeypatch, existing_row={})
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "subscription_status": "trial_local" if provider == "bedrock_trial" else "active",
+                "provider_choice": "bedrock_claude",
+            }
+        ),
+    )
+    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", AsyncMock())
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", AsyncMock())
+    if prepare:
+        await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim")
+    else:
+        await hermes_provisioning._load_role_and_aips("org_a")
+    bedrock_aip.ensure_owner_aips.assert_awaited_once_with("org_a", tiers=tiers)
+    bedrock_gate_tokens.reconcile_gate_token_tiers.assert_awaited_once_with("org_a", {"sonnet": "arn:aip:sonnet"})
+
+
+@pytest.mark.asyncio
+async def test_reconcile_uses_committed_paid_billing_instead_of_stale_trial(monkeypatch):
+    from core.billing import bedrock_aip, bedrock_gate_tokens
+    from core.repositories import billing_repo
+
+    async def billing_read(owner_id, *, consistent_read=False):
+        return {
+            "subscription_status": "active" if consistent_read else "trial_local",
+            "provider_choice": "bedrock_claude",
+        }
+
+    read = AsyncMock(side_effect=billing_read)
+    monkeypatch.setattr(billing_repo, "get_by_owner_id", read)
+    arns = {"sonnet": "arn:sonnet", "opus": "arn:opus", "haiku": "arn:haiku"}
+
+    async def ensure(owner_id, *, tiers=None):
+        return {tier: arn for tier, arn in arns.items() if tiers is None or tier in tiers}
+
+    monkeypatch.setattr(bedrock_aip, "ensure_owner_aips", ensure)
+    reconcile = AsyncMock()
+    monkeypatch.setattr(bedrock_gate_tokens, "reconcile_gate_token_tiers", reconcile)
+    assert await hermes_provisioning.reconcile_hermes_aips("org_paid") == arns
+    read.assert_awaited_once_with("org_paid", consistent_read=True)
+    reconcile.assert_awaited_once_with("org_paid", arns)

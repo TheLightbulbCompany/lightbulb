@@ -548,7 +548,7 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
 
     import secrets as _secrets
 
-    from core.billing.bedrock_aip import _owner_role_name, ensure_owner_aips, ensure_owner_bedrock_role
+    from core.billing.bedrock_aip import _owner_role_name, ensure_owner_bedrock_role
     from core.billing.bedrock_gate_tokens import mint_gate_token
 
     hook_token_reused = bool(row.get("hook_token"))
@@ -556,7 +556,7 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
     hook_token = row.get("hook_token") or _secrets.token_urlsafe(32)
     gateway_token = row.get("gateway_token") or _secrets.token_urlsafe(32)
 
-    aip_arns = await ensure_owner_aips(owner_id)
+    aip_arns = await reconcile_hermes_aips(owner_id)
     role_arn = await ensure_owner_bedrock_role(owner_id, aip_arns)
     await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), role_arn.split(":")[4])
     bedrock_bearer = await mint_gate_token(owner_id, aip_arns)
@@ -728,6 +728,26 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     return "updated" if idle else "updated-session-busy"
 
 
+async def reconcile_hermes_aips(owner_id: str) -> dict[str, str]:
+    """Repair AIP classification and all bearer tier fences from billing truth.
+
+    Safe to repeat for existing runtimes: no bearer rotation, profile rewrite,
+    session stop, or resource deletion. Returns the allowed profile model map.
+    """
+    from core.billing.bedrock_aip import ensure_owner_aips
+    from core.billing.bedrock_gate_tokens import reconcile_gate_token_tiers
+    from core.repositories import billing_repo
+    from core.services.container_provision import BEDROCK_TRIAL_CHOICE, provider_choice_from_row
+
+    # This read rewrites authorization and meter classification: a stale trial
+    # row after checkout would narrow a paying workspace back to Sonnet.
+    billing = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+    provider, _ = provider_choice_from_row(billing)
+    aip_arns = await ensure_owner_aips(owner_id, tiers=["sonnet"] if provider == BEDROCK_TRIAL_CHOICE else None)
+    await reconcile_gate_token_tiers(owner_id, aip_arns)
+    return aip_arns
+
+
 async def _load_role_and_aips(owner_id: str) -> tuple[str, dict[str, str]]:
     """Idempotently re-derive ``(role_arn, aip_arns)`` — both are stable and deterministic per
     owner (``ensure_owner_aips``/``ensure_owner_bedrock_role`` only ever create-or-reuse), so
@@ -735,9 +755,9 @@ async def _load_role_and_aips(owner_id: str) -> tuple[str, dict[str, str]]:
     without re-minting anything sensitive (the gate bearer / boot secret are NOT re-derived here —
     only ``prepare_hermes_workspace`` mints those).
     """
-    from core.billing.bedrock_aip import ensure_owner_aips, ensure_owner_bedrock_role
+    from core.billing.bedrock_aip import ensure_owner_bedrock_role
 
-    aip_arns = await ensure_owner_aips(owner_id)
+    aip_arns = await reconcile_hermes_aips(owner_id)
     role_arn = await ensure_owner_bedrock_role(owner_id, aip_arns)
     return role_arn, aip_arns
 

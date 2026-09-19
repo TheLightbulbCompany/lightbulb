@@ -142,3 +142,13 @@ async def test_config_patch_refuses_a_raw_model_block(monkeypatch):
         await rpc._expand_agentcore_config_patch("org_a", {"model": {"default": "arn:aws:bedrock:us-east-1::not-mine"}})
     assert exc_info.value.error.details["upstreamCode"] == "UNSUPPORTED_ON_AGENTCORE"
     assert exc_info.value.error.details["fields"] == ["model"]
+
+
+@pytest.mark.asyncio
+async def test_migrated_trial_inventory_does_not_expose_paid_tiers(monkeypatch):
+    _wire_owner(monkeypatch, provider_choice="bedrock_trial")
+    out = await _models_list()
+    assert [model["id"] for model in out["models"]] == ["arn:aip:sonnet"]
+    assert out["defaultId"] == "arn:aip:sonnet"
+    with pytest.raises(ApiProblem):
+        await rpc._validated_model_id("org_a", "arn:aip:opus", method="agents.update")

@@ -88,16 +88,45 @@ def test_the_budget_stays_under_the_gateways_body_cap():
     assert turn.OUTBOUND_MEDIA_MAX_BYTES * 4 / 3 < 10_000_000
 
 
-def test_bytes_that_do_not_match_the_extension_are_left_in_the_text(tmp_path):
+@pytest.mark.parametrize(
+    "name,data",
+    [
+        ("creds.png", b'{"token": "not a png"}'),  # nothing like the type it claims
+        ("half.png", b"\x89PNGstill not one"),  # the right four bytes, the wrong eight
+        ("sound.webp", b"RIFF\x00\x00\x00\x00WAVEfmt "),  # RIFF, but a WAV: no WEBP at offset 8
+        ("short.webp", b"RIFF"),  # RIFF and nothing after it
+        ("odd.gif", b"GIF8zzzzz"),  # GIF8, but neither 87a nor 89a
+    ],
+)
+def test_bytes_that_do_not_match_the_extension_are_left_in_the_text(tmp_path, name, data):
     """The backend re-checks the signature and rejects the WHOLE request on a mismatch, which
-    would take every other attachment in the reply down with it."""
-    fake = _shot(tmp_path, "creds.png", b'{"token": "not a png"}')
+    would take every other attachment in the reply down with it -- so this sniff is the
+    backend's `_ATTACHMENT_SIGNATURES`, byte for byte. Anything looser here only moves the
+    rejection to the one place that costs the whole reply."""
+    fake = _shot(tmp_path, name, data)
     real = _shot(tmp_path, "real.png")
 
     text, attachments = turn.extract_media(f"MEDIA:{fake}\nMEDIA:{real}", tmp_path)
 
     assert _names(attachments) == ["real.png"]
     assert text == f"MEDIA:{fake}"
+
+
+@pytest.mark.parametrize(
+    "name,data",
+    [
+        ("real.gif", b"GIF89a" + b"\x00" * 10),
+        ("old.gif", b"GIF87a" + b"\x00" * 10),
+        ("real.webp", b"RIFF\x00\x00\x00\x00WEBPVP8 "),
+        ("real.pdf", b"%PDF-1.7\ncontent"),
+        ("real.jpg", b"\xff\xd8\xff\xe0 jfif"),
+    ],
+)
+def test_every_accepted_type_still_goes_up(tmp_path, name, data):
+    """The other half of the tightened sniff: a genuine file of each type is not over-rejected."""
+    path = _shot(tmp_path, name, data)
+    text, attachments = turn.extract_media(f"MEDIA:{path}", tmp_path)
+    assert _names(attachments) == [name] and text == ""
 
 
 def test_a_missing_media_path_is_ignored(tmp_path):

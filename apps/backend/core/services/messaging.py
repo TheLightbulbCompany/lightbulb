@@ -64,6 +64,8 @@ ATTACHMENT_MAX_BYTES_BY_TYPE = {
     "application/zip": ZIP_MAX_BYTES,
 }
 ATTACHMENT_MAX_BYTES = max(ATTACHMENT_MAX_BYTES_BY_TYPE.values())
+# Base64 is exactly 4 characters per 3 bytes: the ENCODED ceiling for that largest cap.
+ATTACHMENT_MAX_BASE64_CHARS = -(-ATTACHMENT_MAX_BYTES // 3) * 4
 ATTACHMENT_MAX_COUNT = 4
 ROOM_NAME_MAX_CHARS = 200
 ROOM_TOPIC_MAX_CHARS = 250
@@ -414,12 +416,12 @@ class InlineAttachment(ContractModel):
 
     file_name: str = Field(min_length=1, max_length=256)
     content_type: str = Field(min_length=1, max_length=128)
-    # The bound is on the ENCODED string and fires BEFORE the decode, so nothing unbounded is
+    # The bound is in ENCODED characters and fires BEFORE the decode, so nothing unbounded is
     # ever decoded -- the list's own ``max_length`` runs after item validation, and the gateway
     # in front of this route is not a bound to depend on. Same reason the human upload route
     # reads to an explicit ceiling rather than to EOF (routers/messaging.py). The real
     # per-content-type cap still fires in :func:`store_attachment`.
-    data_base64: Base64Bytes = Field(max_length=ATTACHMENT_MAX_BYTES)
+    data_base64: Base64Bytes = Field(max_length=ATTACHMENT_MAX_BASE64_CHARS)
 
 
 class AgentMessageRequest(ContractModel):

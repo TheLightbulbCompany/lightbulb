@@ -358,8 +358,12 @@ MEDIA_CONTENT_TYPES = {
 # The suffix says what a file CLAIMS to be; these say what it is. The backend re-checks the
 # same signatures and rejects the WHOLE request on a mismatch, so a `creds.png` holding JSON
 # would take a real screenshot down with it -- sniff here, where the line can simply stay text.
-MEDIA_SIGNATURES = {"image/png": b"\x89PNG", "image/jpeg": b"\xff\xd8\xff",
-                    "image/webp": b"RIFF", "image/gif": b"GIF8", "application/pdf": b"%PDF-"}
+# Copied byte for byte from the backend's `_ATTACHMENT_SIGNATURES` (messaging.py), webp's
+# offset-8 clause included: anything LOOSER here just moves the rejection to the one place
+# that costs the whole reply.
+MEDIA_SIGNATURES = {"image/png": (b"\x89PNG\r\n\x1a\n",), "image/jpeg": (b"\xff\xd8\xff",),
+                    "image/webp": (b"RIFF",), "image/gif": (b"GIF87a", b"GIF89a"),
+                    "application/pdf": (b"%PDF-",)}
 # Base64 is x4/3 and API Gateway caps the reply body at 10 MB, so THIS is the real outbound
 # ceiling -- smaller than the 20 MiB the storage layer accepts for a PDF. Over it the POST
 # 413s and every attachment in that reply is dropped, the 200 KB screenshot beside the PDF
@@ -403,7 +407,10 @@ def _attachable(line: str, root: Path, budget: int) -> dict | None:
     except (OSError, ValueError) as exc:  # ValueError: an embedded null byte -- nothing to read
         log.warning("media dropped (unreadable): %s: %s", path, exc)
         return None
-    if not data.startswith(MEDIA_SIGNATURES[content_type]):
+    valid = data.startswith(MEDIA_SIGNATURES[content_type])
+    if content_type == "image/webp":  # the extra clause validate_attachment_bytes carries
+        valid = valid and len(data) >= 12 and data[8:12] == b"WEBP"
+    if not valid:
         log.warning("media dropped (sniff): %s", path)
         return None
     return {"fileName": resolved.name, "contentType": content_type,

@@ -178,6 +178,16 @@ const nextConfig: NextConfig = {
     // vercel.json fire AFTER Next routing for the same reason. Putting
     // them in beforeFiles routes the request to the backend proxy
     // before Next sees it.
+    const localDevApiProxy =
+      process.env.NODE_ENV === "development" && process.env.LOCAL_DEV_API_PROXY === "1"
+        ? [
+            {
+              source: "/api/v1/:path*",
+              destination: `https://api-dev.${ROOT_DOMAIN}/api/v1/:path*`,
+            },
+          ]
+        : [];
+
     return {
       beforeFiles: (
         [
@@ -190,6 +200,7 @@ const nextConfig: NextConfig = {
         destination: `${api}/__paperclip_proxy__/:path*`,
       })),
       afterFiles: [
+        ...localDevApiProxy,
         {
           source: "/ingest/static/:path*",
           destination: "https://us-assets.i.posthog.com/static/:path*",

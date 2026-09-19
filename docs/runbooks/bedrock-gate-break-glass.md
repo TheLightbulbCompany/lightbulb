@@ -1,8 +1,9 @@
 # bedrock-gate — break-glass & operations runbook
 
-The bedrock-gate is the **standard and only** Bedrock inference path: owner task
-roles carry **no `bedrock:Invoke`** (the fence), containers authenticate to the
-gate with per-owner bearer tokens, and the gate pre-flight-checks the budget
+The bedrock-gate is the **standard and only** Bedrock inference path: owner
+roles carry **no `bedrock:Invoke`** (the fence), a workspace's AgentCore runtime
+authenticates to the gate with a per-owner bearer token read from its boot
+secret, and the gate pre-flight-checks the budget
 before forwarding each call. **Fail-closed is a deliberate choice**: if the gate
 hard-fails, Bedrock inference fails with it (requests error; nothing corrupts,
 nothing overspends). A budget door that fails open is not a door. This runbook
@@ -16,11 +17,13 @@ Both steps are required (config AND IAM):
 ```bash
 # Step 1 — flip the fleet to direct mode (SSM forbids empty strings; the
 # literal value "direct" is the break-glass sentinel bedrock_gate_url.py reads):
-aws ssm put-parameter --name /isol8/prod/bedrock-gate-url \
+aws ssm put-parameter --name /lightbulb/prod/bedrock-gate-url \
     --value direct --overwrite --profile isol8-admin
 
 # Step 2 — re-grant direct invoke on every Bedrock owner role and reprovision
-# (re-renders openclaw.json baseUrl + strips the bearer env). Dry-run first:
+# (re-renders the owner's Hermes profiles + boot secret in direct mode; the
+# endpoint the runtime reads is baked into its AgentCore env, so the reprovision
+# is what actually moves it). Dry-run first:
 cd apps/backend
 uv run python -m scripts.bedrock_gate_break_glass --env prod
 uv run python -m scripts.bedrock_gate_break_glass --env prod --apply
@@ -28,11 +31,15 @@ uv run python -m scripts.bedrock_gate_break_glass --env prod --apply
 
 During direct mode the async meter remains the enforcement (invocation-log
 counter -> kill), exactly the pre-gateway architecture — spend stays bounded.
+⚠️ Direct mode is the ONE mode where the meter's IAM revoke still bites: with
+the gate in the path, `bedrock:Invoke` is denied anyway and the deny-flag on the
+bearer is the whole kill (the meter's `desiredCount=0` leg has no per-user ECS
+service to stop).
 
 **REVERT (gate healthy again):**
 
 ```bash
-aws ssm put-parameter --name /isol8/prod/bedrock-gate-url \
+aws ssm put-parameter --name /lightbulb/prod/bedrock-gate-url \
     --value <the GateUrlProd CfnOutput / Function URL> --overwrite --profile isol8-admin
 uv run python -m scripts.bedrock_gate_break_glass --env prod --revert --apply
 ```
@@ -45,17 +52,17 @@ it works even when the platform itself is sick.)
 
 ## 2. Health: what to watch
 
-- **Gate alarms** (`Isol8/BedrockGate`, per-env): `gate.error` and
+- **Gate alarms** (`LightbulbAI/BedrockGate`, per-env): `gate.error` and
   `gate.hold_release_failed` PAGE; Lambda `Errors`/`Throttles` warn.
-- **Reconciliation**: `meter.reconciled_gateway_miss` (namespace `Isol8`,
-  dims service=`isol8-bedrock-meter`, env) counts invocations the gate failed
+- **Reconciliation**: `meter.reconciled_gateway_miss` (namespace `LightbulbAI`,
+  dims service=`lightbulb-bedrock-meter`, env) counts invocations the gate failed
   to settle (client aborts are legitimate contributors; a sustained rate means
   a gate accounting bug):
 
 ```bash
-aws cloudwatch get-metric-statistics --namespace Isol8 \
+aws cloudwatch get-metric-statistics --namespace LightbulbAI \
   --metric-name meter.reconciled_gateway_miss \
-  --dimensions Name=service,Value=isol8-bedrock-meter Name=env,Value=prod \
+  --dimensions Name=service,Value=lightbulb-bedrock-meter Name=env,Value=prod \
   --start-time $(date -u -v-24H +%FT%TZ) --end-time $(date -u +%FT%TZ) \
   --period 86400 --statistics Sum --profile isol8-admin
 ```
@@ -64,7 +71,7 @@ aws cloudwatch get-metric-statistics --namespace Isol8 \
   the daily restore path clears it automatically (`maybe_restore_trial_bedrock`
   -> `deny_gate_token(owner, False)`); manual clear:
   `restore_owner_bedrock(owner_id)` from a backend shell, or flip `denied` on
-  the owner's row in `isol8-{env}-bedrock-gate-tokens` (key = the containers
+  the owner's row in `lightbulb-{env}-bedrock-gate-tokens` (key = the containers
   row's `bedrock_gate_token_hash`).
 
 ## 3. Invariants (do not regress)
@@ -81,12 +88,11 @@ aws cloudwatch get-metric-statistics --namespace Isol8 \
   Claude records entirely and blinds the meter); bodies are bounded by 3-day
   log retention + DLQ redaction.
 
-## 4. acpx / Claude Code image bumps
+## 4. Byte-identical passthrough is load-bearing
 
-The ACP harness routes through the gate via `ANTHROPIC_BEDROCK_BASE_URL` +
-`CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` + `ANTHROPIC_AUTH_TOKEN` — verified against
-the Claude Code **2.1.156** binary. The CLI version floats with acpx bumps:
-after any extended-image acpx upgrade, re-verify those env vars still bind and
-that the gate's **byte-identical eventstream passthrough (including
-content-type)** still satisfies Claude Code (it hard-fails as
-`Truncated event message received` if a proxy reframes).
+The gate forwards the eventstream **verbatim, content-type included**. A client
+that reframes or re-chunks hard-fails with `Truncated event message received`,
+so any change to the forwarding path has to preserve the bytes, not just the
+JSON. (The acpx / Claude Code harness this section used to cover is gone with
+the extended OpenClaw image — a Hermes profile advertises no coding harness, so
+`build_profile_config` writes no ACP block.)

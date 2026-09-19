@@ -2,8 +2,8 @@
 
 What to do when a page fires at 3am. One entry per page-severity alarm.
 
-Pages go to the `isol8-{env}-alerts-page` SNS topic → `admin@isol8.co`.
-Warn-tier alarms go to `isol8-{env}-alerts-warn` → same mailbox.
+Pages go to the `lightbulb-{env}-alerts-page` SNS topic → `admin@isol8.co`.
+Warn-tier alarms go to `lightbulb-{env}-alerts-warn` → same mailbox.
 
 **If you got paged but see nothing wrong, check that alerting is alive
 before assuming it was a blip.** These topics ran with zero subscribers for
@@ -11,7 +11,7 @@ weeks once already:
 
 ```bash
 aws sns list-subscriptions-by-topic \
-  --topic-arn arn:aws:sns:us-east-1:877352799272:isol8-prod-alerts-page
+  --topic-arn arn:aws:sns:us-east-1:877352799272:lightbulb-prod-alerts-page
 ```
 
 A subscription is only real when `SubscriptionArn` is **not** the literal
@@ -25,34 +25,35 @@ export AWS_PROFILE=isol8-admin        # aws sso login --profile isol8-admin
 
 # What is currently broken
 aws cloudwatch describe-alarms --state-value ALARM \
-  --alarm-name-prefix isol8-prod- --region us-east-1 \
+  --alarm-name-prefix lightbulb-prod- --region us-east-1 \
   --query "MetricAlarms[].[AlarmName,StateUpdatedTimestamp]" --output text
 
 # Backend logs (single log group for the FastAPI service)
-aws logs tail /ecs/isol8-prod --since 30m --region us-east-1
+aws logs tail /ecs/lightbulb-prod --since 30m --region us-east-1
 ```
 
-Dashboard: CloudWatch → Dashboards → `isol8-prod-orr`. Chat success rate and
+Dashboard: CloudWatch → Dashboards → `lightbulb-prod-orr`. Chat success rate and
 p99 are the two SLO widgets at the top; if both are healthy, customers are
 probably fine and the page is infrastructure-only.
 
-Cluster is `isol8-prod-container-ClusterEB0386A7-Uc0EwgAC9DcQ`. Per-user
-containers are ECS services named `openclaw-{user_id}-{hash}`.
+The ECS cluster carries the **platform** only — the backend service, the SFN
+provisioner task and Paperclip. There are no per-user ECS services: each
+workspace is an AWS Bedrock **AgentCore runtime** named
+`lb_prod_<sanitised owner>_<12 hex>`, and you inspect one with
+`aws bedrock-agentcore-control get-agent-runtime`, not `describe-services`.
+Discover the cluster arn rather than pasting one — the suffix changes on stack
+recreation:
+
+```bash
+aws ecs list-clusters --query 'clusterArns[?contains(@,`lightbulb-prod-container`)]' --output text
+```
 
 ---
 
-## P1 — container-error-state
-
-A per-user OpenClaw container is stuck or erroring.
-
-Blast radius is one customer, not the fleet, so this is rarely a
-wake-up-and-fix. Find the owner from the backend logs, then check their
-service. Most stuck containers clear with a reprovision — see the
-`prod-org-reprovision` skill, which preserves billing, Clerk org and
-marketplace rows. Do **not** hand-edit the container; the platform owns it.
-
-If several fire at once it is not a per-user problem — look at P12, W39 and
-the EFS alarms instead.
+> **P1 (container-error-state) and P3 (workspace-path-traversal) no longer
+> exist.** Both emitters lived in the deleted `core/containers/` package and
+> both alarms were removed with it. The surviving path-traversal trip-wire is
+> **P11**, below.
 
 ## P2 — stripe-webhook-sig-fail
 
@@ -61,29 +62,22 @@ Stripe webhook signature verification failed.
 Two causes, very different urgency. Either the signing secret drifted (a
 rotated key in the Stripe dashboard that never made it to Secrets Manager)
 or someone is posting forged webhooks. Compare the endpoint's signing secret
-in the Stripe dashboard against `isol8/prod/stripe_webhook_secret`. If they
+in the Stripe dashboard against `lightbulb/prod/stripe_webhook_secret`. If they
 match, the traffic is hostile and the correct response is to look at source
 IPs, not to touch the secret.
 
 Signature failures mean the events were **rejected**, so nothing was
 mis-billed. The risk is missed events, not bad ones.
 
-## P3 — workspace-path-traversal
-
-A path-traversal attempt against the per-user workspace was blocked.
-
-The attempt failed — this is a security signal, not an outage. It fires on
-event, so a single datapoint is a single attempt. Identify the actor in the
-backend logs and decide whether to suspend the account. Escalate if the same
-owner appears repeatedly.
-
 ## P4 — update-fleet-patch-invoked
 
-Somebody invoked a fleet-wide config patch (`PATCH /container/config`).
-
-This is an audit trail, not a failure. If it was you, dismiss it. If it was
-not you, treat it as a compromised admin credential: this endpoint rewrites
-`openclaw.json` across every container.
+⚠️ **This alarm is silent and cannot fire.** Its only emitter was the
+fleet-wide `PATCH /container/config` endpoint, which was deleted with the
+`openclaw.json` config rail — a microVM has no config file to rewrite. The
+alarm itself is still declared in `observability-stack.ts` and should be
+removed; until it is, do not read its silence as coverage. There is no
+fleet-wide config door to audit any more: an agent's config is its S3 Hermes
+profile, written per owner.
 
 ## P5 — debug-endpoint-prod-hit
 
@@ -132,7 +126,7 @@ rollout caused it, ECS may already be recovering. Confirm running task count
 and health:
 
 ```bash
-aws ecs describe-services --cluster isol8-prod-container-ClusterEB0386A7-Uc0EwgAC9DcQ \
+aws ecs describe-services --cluster "$CLUSTER" \
   --services <backend-service> --region us-east-1 \
   --query "services[0].{running:runningCount,desired:desiredCount,deployments:deployments[].status}"
 ```
@@ -142,14 +136,19 @@ aws ecs describe-services --cluster isol8-prod-container-ClusterEB0386A7-Uc0EwgA
 WebSocket API 5xx rate above 5%. Chat is broken even if the REST API is fine.
 
 The WS path is longer than the REST path — API Gateway → Lambda authorizer →
-VPC Link → NLB → ALB → FastAPI → per-user container. P9 healthy plus P10
+VPC Link V2 → ALB → FastAPI (there is no NLB). Only the desktop local-session
+relay is left on this door. P9 healthy plus P10
 firing points at the authorizer or the VPC Link, not the backend. Check the
 Lambda authorizer's error and throttle alarms (W33/W34).
 
 ## P11 — marketplace-path-traversal
 
-Path traversal blocked during a marketplace agent export. Same posture as P3:
-blocked, security signal, identify the seller account.
+Path traversal blocked during a marketplace agent export — a bad agent id OR
+a bad seller id, both halves of the profile key (`agent_export._refuse_bad_id`).
+Blocked, so it is a security signal rather than an outage: identify the seller
+account and escalate if the same one appears repeatedly. **This is now the
+platform's only path-traversal page** — its EFS-side sibling (P3) went with
+`core/containers/workspace.py`.
 
 ## P12 — backend-liveness
 
@@ -173,14 +172,23 @@ existing customers and fatal to new ones.
 
 ```bash
 aws stepfunctions list-executions --region us-east-1 \
-  --state-machine-arn arn:aws:states:us-east-1:877352799272:stateMachine:isol8-prod-provision \
+  --state-machine-arn arn:aws:states:us-east-1:877352799272:stateMachine:lightbulb-prod-provision \
   --status-filter FAILED --max-items 5
 ```
 
-Read the failed execution's history to find the failing state. Common causes
-are EFS access-point creation limits and Fargate Spot capacity droughts —
-`ecs_manager` falls back to on-demand on a zero-placement timeout, so a Spot
-drought should self-heal; a hard failure usually will not.
+Read the failed execution's history to find the failing state. On AgentCore
+the common causes are:
+
+- **`CreateAgentRuntime` role validation** — `ensure_agentcore_trust` updates
+  the owner role's trust policy seconds before the create and IAM propagates
+  slowly, so AgentCore rejects a freshly-trusted role. The runner retries this
+  ONE `ValidationException` up to 12 times at 5 s; exhausting that is a real
+  failure.
+- **`CREATE_FAILED`/`UPDATE_FAILED`** — terminal. AWS will never accept an
+  `UpdateAgentRuntime` against it, so the runner deletes the dead runtime and
+  clears the row's ARN rather than leaving a retry stuck reusing it forever.
+- **A missing `AGENTCORE_HERMES_IMAGE`** — provisioning refuses rather than
+  guessing an image. Check the pin flip actually deployed.
 
 ---
 
@@ -189,7 +197,9 @@ drought should self-heal; a hard failure usually will not.
 `W39-fargate-task-stopped` used to fire on every deploy (it compared exit
 codes before stop reasons, and a rolling deploy SIGTERMs the container to
 exit 143). That is fixed — it now discriminates on ECS `stopCode`. If it
-starts firing per-deploy again, that regression is back.
+starts firing per-deploy again, that regression is back. It watches the
+PLATFORM cluster (backend, provisioner, Paperclip); a per-workspace agent
+crash does not reach it, because a microVM is not an ECS task.
 
 The monthly budget is deliberately set to a tight $1,500 launch tripwire,
 below the historical peak. It is expected to trip as spend grows; raise the

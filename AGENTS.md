@@ -126,10 +126,13 @@ accept-both shims that existed only to bridge them:
 
 (The `isol8-backend` operator-device `displayName` row is gone outright: `core/crypto/operator_device.py` went with the OpenClaw gateway — there is no per-agent operator device to name.)
 
-**NOT yet renamed — the same class, still open (audited 2026-09-08).** These were
-missed by the 2026-08-31 pass and are NOT residue; each needs a coordinated deploy
-or an accept-both shim, so do NOT sweep them. Full audit + per-item recipes:
-`docs/superpowers/plans/2026-09-08-isol8-runtime-identifier-gap.md`.
+**NOT yet renamed — the same class, still open (audited 2026-09-08, re-verified
+2026-09-19).** These were missed by the 2026-08-31 pass and are NOT residue; each
+needs a coordinated deploy or an accept-both shim, so do NOT sweep them. The
+2026-09-08 audit plan that carried the per-item recipes is deleted: two thirds of
+its rows named the OpenClaw image, `container-stack.ts`'s per-user task or an EFS
+sidecar, and the one live bug it found (`ops/alarms.py`'s `_SEVERITY_RE`, which
+matched `^isol8-`) is fixed. The reasons below are what survived it.
 
 | identifier | why it can't be swept |
 |---|---|

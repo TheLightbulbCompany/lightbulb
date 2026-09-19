@@ -65,7 +65,6 @@ async def test_names_only_never_a_value_and_rejected_survives():
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"subscription_status": "active"})),
         patch.object(mod, "_lookup_email_address", AsyncMock(return_value=None)),
         patch("core.repositories.provisioning_workflow_repo.list_for_owner", AsyncMock(return_value=rows)),
-        patch.object(mod.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True)),
         patch("core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "agent-ceo"}])),
         patch("core.services.hermes_profiles.write_facts_to_profiles") as write_facts,
     ):
@@ -104,7 +103,6 @@ async def test_writer_reads_the_workflow_table_once_and_keeps_the_newest_per_pai
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"subscription_status": "active"})),
         patch.object(mod, "_lookup_email_address", AsyncMock(return_value=None)),
         patch("core.repositories.provisioning_workflow_repo.list_for_owner", AsyncMock(return_value=rows)) as listed,
-        patch.object(mod.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True)),
         patch("core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "agent-ceo"}])),
         patch("core.services.hermes_profiles.write_facts_to_profiles") as write_facts,
     ):
@@ -126,7 +124,6 @@ async def test_a_failed_workflow_read_never_blocks_the_facts_write():
             "core.repositories.provisioning_workflow_repo.list_for_owner",
             AsyncMock(side_effect=RuntimeError("ddb down")),
         ),
-        patch.object(mod.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True)),
         patch("core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "agent-ceo"}])),
         patch("core.services.hermes_profiles.write_facts_to_profiles") as write_facts,
     ):

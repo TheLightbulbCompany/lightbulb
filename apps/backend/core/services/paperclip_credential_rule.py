@@ -33,7 +33,7 @@ PAPERCLIP_CREDENTIAL_RULE = """
 directly:
 
 ```
-/app/skills/paperclip/scripts/paperclip-api.sh raw GET "/api/agents/me/inbox-lite"
+/opt/hermes-skills/paperclip/scripts/paperclip-api.sh raw GET "/api/agents/me/inbox-lite"
 ```
 
 **Never type the `Authorization` header yourself — the script sends it.** Your
@@ -68,3 +68,18 @@ PAPERCLIP_CREDENTIAL_PROHIBITION = "Never read, print, echo or `cat` your API ke
 # Enabling it WITHOUT the rule is harmless (credentials simply arrive twice).
 # The rule without this is the broken direction, so when in doubt, patch this.
 PAPERCLIP_CREDS_PLUGIN_PATCH: dict = {"entries": {"paperclip-exec-creds": {"enabled": True}}}
+
+
+# Exact pre-Hermes platform example, retained only for the scoped migration repair.
+# Do not broaden this into a curl/secret allowlist: Hermes must keep scanning context.
+LEGACY_EXAMPLE = "\n".join(
+    [
+        "```",
+        'curl -sS -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/..."',
+        "```",
+    ]
+)
+CREDENTIAL_REFERENCE = (
+    "Use the bundled paperclip skill and its "
+    "`/opt/hermes-skills/paperclip/scripts/paperclip-api.sh` wrapper for authenticated requests."
+)

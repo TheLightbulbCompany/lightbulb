@@ -9,9 +9,9 @@ This tree is the source of the Hermes image's bundled skills, and its only
 consumer: `apps/infra/hermes/build-skills.sh` copies it, swaps a handful of
 tokens (`/app/skills/` -> `/opt/hermes-skills/`, `exec` -> `terminal`,
 `~/.openclaw/lightbulb-facts.json` -> `$HERMES_HOME/lightbulb-facts.json`,
-`skill_workshop` -> `skills`), drops `references/follow-ups.md`, and overlays
-`apps/infra/hermes/skills-overlay/` for the few files whose content genuinely
-differs there (no ACP coding harness). An overlaid file is the one the image
+`skill_workshop` -> `skills`), drops the engineer-facing MAINTENANCE.md files, and
+overlays `apps/infra/hermes/skills-overlay/` for the few files whose content
+genuinely differs there (no ACP coding harness). An overlaid file is the one the image
 actually ships, so an edit here that names a tool, a path, or a capability
 must land in the overlay too. Hermes tool names are anchored to its
 `CONFIGURABLE_TOOLSETS`
@@ -101,6 +101,6 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       `reportsTo`; never fall back to a literal agent name. Fresh Lightbulb
       workspaces no longer guarantee named Friday/Atlas identities.
   11. Monitors-for-promises sentence (references/monitors.md, first paragraph after
-      the H1): ties a chat promise that waits on an external thing to a monitor and
-      points at the lightbulb skill's references/follow-ups.md. Lightbulb-local;
-      upstream's monitors.md has no chat concept. Re-apply on re-vendor.
+      the H1): ties a chat promise that waits on an external thing to a monitor.
+      Lightbulb-local; upstream's monitors.md has no chat concept. Re-apply on
+      re-vendor.

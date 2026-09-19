@@ -78,19 +78,6 @@ published). Key rules:
 
 ## Importing an existing setup (the same publish wizard)
 
-- **"Can I bring the OpenClaw setup I already run on my laptop?"** → Yes: run
-  `openclaw backup create` there, then on flickmeon.ai open the marketplace publish
-  wizard → "Import from an OpenClaw backup" and upload the `.tar.gz` (up to 2 GB).
-  A plain tarball of the state dir (`cd ~/.openclaw && tar -czf ~/setup.tgz openclaw.json workspace* skills cron` —
-  the glob picks up per-agent `workspace-<id>` dirs too)
-  or of a single agent workspace is accepted too — the importer detects all three shapes.
-  The owner picks which agents, skills, MCP servers (secrets stripped — they
-  re-enter them), memory logs, cron jobs and plugins come along, and can opt in
-  to conversation history (auth tokens stripped; applies when the workspace
-  next starts on an updated platform image).
-  Channels, credentials, the browser profile and global state never import.
-  Plugins with dependencies need
-  `openclaw plugins install <name@version>` run here in the container — offer to run it once the owner confirms.
 - **"Can I bring my local Claude Code context?"** → Yes: run
   `cd ~ && tar czf claude-code.tar.gz .claude/CLAUDE.md .claude/projects/*/memory .claude/skills`
   (include whichever exist) and upload it through the same import

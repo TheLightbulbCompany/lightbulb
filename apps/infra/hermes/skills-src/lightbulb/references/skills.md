@@ -55,6 +55,8 @@ machine you run on.
 ## Telling the owner
 
 The owner's own view is the **Skills tab** (Control Panel, flickmeon.ai/chat):
-it lists what is installed, what each skill needs, and lets them enable or
-disable one. Skill *Proposals* — the ones you author yourself from repeated
-corrections — are a different tab; see `references/marketplace.md`.
+it lists what is installed and lets them enable or disable one. It shows no
+per-skill requirements, because Hermes has no dependency manifest — a skill is a
+`SKILL.md`, and whatever it shells out to is the image's business, so nothing is
+ever "missing" there. Skill *Proposals* — the ones you author yourself from
+repeated corrections — are a different tab; see `references/marketplace.md`.

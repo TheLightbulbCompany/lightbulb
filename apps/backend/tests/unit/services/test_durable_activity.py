@@ -1,4 +1,11 @@
-"""Trial scale-to-zero must never stop a container with an open ledger run."""
+"""The trial-idle sweep: what must VETO it, and what it records.
+
+There is nothing to stop any more -- AWS parks an idle microVM on its own idle timeout and an
+AgentCore runtime has no desired count to scale -- so the observable outcome is the metric, which
+is the durable record of "this workspace went idle" that ``wake_policy`` and the growth dashboards
+read. The vetoes below still matter exactly as much: emitting idle for a workspace mid-run reports
+a wrong number to both.
+"""
 
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -14,9 +21,8 @@ ROW = {"owner_id": "user_1", "status": "running", "last_interactive_at": 0}
 def _patches(*, has_open_runs: bool, row: dict = ROW):
     connections = MagicMock()
     connections.has_live_operator_connection = AsyncMock(return_value=False)
-    ecs = MagicMock()
-    ecs.stop_user_service = AsyncMock()
-    return ecs, [
+    metric = MagicMock()
+    return metric, [
         patch.object(durable_activity.container_repo, "get_by_status", AsyncMock(return_value=[row])),
         patch.object(durable_activity.container_repo, "get_by_owner_id", AsyncMock(return_value=row)),
         patch.object(durable_activity.container_repo, "try_claim_idle_stop", AsyncMock(return_value="claim-1")),
@@ -28,15 +34,14 @@ def _patches(*, has_open_runs: bool, row: dict = ROW):
         ),
         patch.object(durable_activity.messaging_repo, "has_open_runs", AsyncMock(return_value=has_open_runs)),
         patch.object(durable_activity, "ConnectionService", MagicMock(return_value=connections)),
-        patch.object(durable_activity, "get_ecs_manager", MagicMock(return_value=ecs)),
-        patch.object(durable_activity, "put_metric", MagicMock()),
+        patch.object(durable_activity, "put_metric", metric),
     ]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("has_open_runs,stopped", [(True, False), (False, True)])
-async def test_an_open_ledger_run_vetoes_the_idle_stop(has_open_runs, stopped):
-    ecs, patches = _patches(has_open_runs=has_open_runs)
+async def test_an_open_ledger_run_vetoes_the_idle_verdict(has_open_runs, stopped):
+    metric, patches = _patches(has_open_runs=has_open_runs)
     for p in patches:
         p.start()
     try:
@@ -45,9 +50,9 @@ async def test_an_open_ledger_run_vetoes_the_idle_stop(has_open_runs, stopped):
         for p in patches:
             p.stop()
     if stopped:
-        ecs.stop_user_service.assert_awaited_once_with("user_1", reason="trial_idle")
+        metric.assert_called_once_with("gateway.trial_scale_to_zero", dimensions={"trigger": "durable_activity"})
     else:
-        ecs.stop_user_service.assert_not_awaited()
+        metric.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -72,7 +77,7 @@ async def test_no_last_interactive_at_falls_back_to_created_at_not_a_churning_up
         "created_at": ancient.isoformat(),  # well outside the window
         "updated_at": datetime.now(timezone.utc).isoformat(),  # churns; must be ignored
     }
-    ecs, patches = _patches(has_open_runs=False, row=row)
+    metric, patches = _patches(has_open_runs=False, row=row)
     for p in patches:
         p.start()
     try:
@@ -80,7 +85,7 @@ async def test_no_last_interactive_at_falls_back_to_created_at_not_a_churning_up
     finally:
         for p in patches:
             p.stop()
-    ecs.stop_user_service.assert_awaited_once_with("user_1", reason="trial_idle")
+    metric.assert_called_once_with("gateway.trial_scale_to_zero", dimensions={"trigger": "durable_activity"})
 
 
 @pytest.mark.asyncio
@@ -108,7 +113,7 @@ async def test_decimal_last_interactive_at_is_read_over_a_fresh_updated_at(secon
         # so a broken fallback to this field would always read as "active".
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    ecs, patches = _patches(has_open_runs=False, row=row)
+    metric, patches = _patches(has_open_runs=False, row=row)
     for p in patches:
         p.start()
     try:
@@ -117,6 +122,6 @@ async def test_decimal_last_interactive_at_is_read_over_a_fresh_updated_at(secon
         for p in patches:
             p.stop()
     if stopped:
-        ecs.stop_user_service.assert_awaited_once_with("user_1", reason="trial_idle")
+        metric.assert_called_once_with("gateway.trial_scale_to_zero", dimensions={"trigger": "durable_activity"})
     else:
-        ecs.stop_user_service.assert_not_awaited()
+        metric.assert_not_called()

@@ -163,9 +163,11 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
             media_type="application/json",
         )
 
-    # 5. Resolve the owner's runtime row
-    resolved_container = await container_repo.get_by_owner_id(owner_id)
-    if not resolved_container or not resolved_container.get("agentcore_runtime_arn"):
+    # 5. The row read at step 2 IS the runtime address -- one read, not two. It used to resolve
+    #    a live task IP through Cloud Map, which genuinely needed a second call; an AgentCore
+    #    runtime is addressed by the ARN already on the row, and reading it again would only
+    #    create a window where auth passed on one row and the forward used another.
+    if not container.get("agentcore_runtime_arn"):
         return Response(
             status_code=503,
             headers={"Retry-After": "30"},
@@ -188,9 +190,7 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
 
     path = f"/hooks/{hook_path}" + (f"?{query}" if query else "")
     try:
-        upstream = await runtime_transport.request(
-            resolved_container, path, content=body, headers=headers, timeout_s=30.0
-        )
+        upstream = await runtime_transport.request(container, path, content=body, headers=headers, timeout_s=30.0)
         upstream_status = upstream.status_code
         upstream_body = upstream.text.encode("utf-8")
         upstream_headers = {

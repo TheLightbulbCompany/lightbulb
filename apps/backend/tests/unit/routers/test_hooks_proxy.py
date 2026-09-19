@@ -79,13 +79,13 @@ def test_unknown_owner_returns_404(client):
 
 
 def test_trial_local_owner_returns_402(client, fake_container):
-    """A trial owner's hook token is real (every container mints one), but
-    webhooks are a paid always-on feature — the proxy must refuse with the
-    structured 402 before any rate-limit or container-resolution work."""
+    """A trial owner's hook token is real (every workspace mints one), but webhooks are a paid
+    always-on feature — the proxy must refuse with the structured 402 before any rate-limit or
+    forwarding work, so a trial's webhooks never start a run."""
     with (
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
         _mock_billing("trial_local"),
-        patch("routers.hooks_proxy.ecs_manager.resolve_running_container", new=AsyncMock()) as resolve,
+        patch("routers.hooks_proxy.runtime_transport.request", new=AsyncMock()) as forward,
     ):
         r = client.post(
             "/api/v1/hooks/u/u_1/wake",
@@ -96,7 +96,7 @@ def test_trial_local_owner_returns_402(client, fake_container):
     detail = r.json()["detail"]
     assert detail["blocked"] is True
     assert detail["code"] == "always_on_requires_subscription"
-    resolve.assert_not_awaited()
+    forward.assert_not_awaited()
 
 
 def test_missing_billing_row_returns_402(client, fake_container):
@@ -115,15 +115,17 @@ def test_missing_billing_row_returns_402(client, fake_container):
 
 
 def test_active_owner_passes_entitlement_gate(client, fake_container):
-    """An active (paid) owner sails through the 402 gate to container-IP
-    resolution — no-IP 503 here proves the request got past entitlement."""
+    """An active (paid) owner sails through the 402 gate. The 503 here is the no-runtime refusal
+    below it, which proves the request got past entitlement -- ``fake_container`` carries no
+    ``agentcore_runtime_arn``.
+
+    It also pins the read count: the row fetched for auth IS the runtime address, so a second read
+    would only create a window where auth passed on one row and the forward used another."""
     with (
-        patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
-        _mock_billing("active"),
         patch(
-            "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(fake_container, None)),
-        ) as resolve,
+            "routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)
+        ) as read_row,
+        _mock_billing("active"),
     ):
         r = client.post(
             "/api/v1/hooks/u/u_1/wake",
@@ -131,18 +133,15 @@ def test_active_owner_passes_entitlement_gate(client, fake_container):
             json={},
         )
     assert r.status_code == 503
-    resolve.assert_awaited_once()
+    read_row.assert_awaited_once_with("u_1")
 
 
-def test_no_running_task_returns_503(client, fake_container):
-    """When EcsManager.resolve_running_container returns no IP, 503 + Retry-After."""
+def test_a_workspace_with_no_runtime_returns_503(client, fake_container):
+    """Mid-provision, not broken: 503 + Retry-After so the webhook sender retries rather than
+    treating it as a permanent failure."""
     with (
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
         _mock_billing("active"),
-        patch(
-            "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(fake_container, None)),
-        ),
     ):
         r = client.post(
             "/api/v1/hooks/u/u_1/wake",
@@ -176,8 +175,8 @@ def test_successful_forward_passes_body_and_writes_audit(client, fake_container)
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=agentcore_container)),
         _mock_billing("active"),
         patch(
-            "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(agentcore_container, runtime_transport.AGENTCORE_ADDRESS)),
+            "routers.hooks_proxy.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=agentcore_container),
         ),
         patch("routers.hooks_proxy.runtime_transport.request", fake_request),
     ):
@@ -238,8 +237,8 @@ def test_query_string_is_forwarded_verbatim(client, fake_container):
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=agentcore_container)),
         _mock_billing("active"),
         patch(
-            "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(agentcore_container, runtime_transport.AGENTCORE_ADDRESS)),
+            "routers.hooks_proxy.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=agentcore_container),
         ),
         patch("routers.hooks_proxy.runtime_transport.request", fake_request),
     ):
@@ -313,8 +312,8 @@ def test_agentcore_row_forwards_through_the_runtime_transport_seam(client, fake_
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=agentcore_container)),
         _mock_billing("active"),
         patch(
-            "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(agentcore_container, runtime_transport.AGENTCORE_ADDRESS)),
+            "routers.hooks_proxy.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=agentcore_container),
         ),
         patch("routers.hooks_proxy._client_factory", _boom_client_factory),
         patch("routers.hooks_proxy.runtime_transport.request", fake_request),
@@ -350,8 +349,8 @@ def test_rate_limiter_returns_429_after_60_per_minute(client, fake_container):
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=agentcore_container)),
         _mock_billing("active"),
         patch(
-            "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(agentcore_container, runtime_transport.AGENTCORE_ADDRESS)),
+            "routers.hooks_proxy.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=agentcore_container),
         ),
         patch("routers.hooks_proxy.runtime_transport.request", fake_request),
     ):

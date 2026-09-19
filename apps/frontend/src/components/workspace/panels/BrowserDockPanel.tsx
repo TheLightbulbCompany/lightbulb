@@ -16,9 +16,9 @@
 // This panel never starts a session or offers take-control: taking control
 // destroys the agent's automation session (aws/bedrock-agentcore-sdk-python#518).
 
-import { Suspense, lazy, useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useRuntimeHost } from "@lightbulb/shared";
-import { useApi } from "@/lib/api";
+import { ApiError, useApi } from "@/lib/api";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 
 const BrowserLiveView = lazy(() =>
@@ -61,15 +61,37 @@ export function BrowserDockPanel(): React.ReactElement | null {
 
   const [view, setView] = useState<LiveViewResponse | null>(null);
 
+  const knownSession = useRef(false);
   const ready = host === "agentcore";
 
   useEffect(() => {
     if (!ready) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
+    let timeout: ReturnType<typeof setTimeout>;
+    let request: AbortController;
     const load = async () => {
-      const body = await api.get("/browser/live-view").catch(() => INACTIVE) as LiveViewResponse;
+      request = new AbortController();
+      timeout = setTimeout(() => request.abort(), 10_000);
+      let body: LiveViewResponse;
+      try {
+        body = await api.get("/browser/live-view", { signal: request.signal }) as LiveViewResponse;
+      } catch (error) {
+        if (cancelled) return;
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+          knownSession.current = false;
+          setView(INACTIVE);
+          return;
+        }
+        setView((previous) => previous ?? INACTIVE);
+        // A failed discovery request is not evidence that a known session ended.
+        if (runActive || knownSession.current) timer = setTimeout(load, POLL_WHILE_RUNNING_MS);
+        return;
+      } finally {
+        clearTimeout(timeout);
+      }
       if (cancelled) return;
+      knownSession.current = body.active && !!body.url;
       setView((previous) => {
         // Signatures change on every poll. Keep the connection for this session
         // until refresh is due; a different URL path means a different session.
@@ -83,7 +105,12 @@ export function BrowserDockPanel(): React.ReactElement | null {
       }
     };
     void load();
-    return () => { cancelled = true; clearTimeout(timer); };
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      clearTimeout(timeout);
+      request?.abort();
+    };
   }, [ready, api, runActive]);
 
   if (!ready) return null;

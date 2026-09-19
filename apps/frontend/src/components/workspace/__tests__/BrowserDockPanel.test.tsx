@@ -14,7 +14,10 @@ vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => state.host }));
 // Identity-stable, like the real `useApi()` (a `useMemo` over the Clerk token
 // getter) — a fresh object per render would re-fire the panel's mount fetch.
 const apiClient = { get };
-vi.mock("@/lib/api", () => ({ useApi: () => apiClient }));
+vi.mock("@/lib/api", () => ({
+  ApiError: class extends Error { constructor(public status: number) { super(); } },
+  useApi: () => apiClient,
+}));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   useMessagingWorkspaceOptional: () => ({ roomProps: { runs: state.runs }, directoryProps: { participants: state.participants } }),
 }));
@@ -35,6 +38,7 @@ vi.mock("bedrock-agentcore/browser/live-view", () => ({
   },
 }));
 
+import { ApiError } from "@/lib/api";
 import { BrowserDockPanel } from "../panels/BrowserDockPanel";
 
 // RTL's waitFor/findBy* only detect JEST fake timers (`typeof jest !== 'undefined'`
@@ -68,7 +72,7 @@ describe("BrowserDockPanel", () => {
     const view = render(<BrowserDockPanel />);
     await flush(15_000);
     expect(get).toHaveBeenCalledTimes(4); // mount + 3
-    expect(get).toHaveBeenCalledWith("/browser/live-view");
+    expect(get).toHaveBeenCalledWith("/browser/live-view", expect.objectContaining({ signal: expect.any(AbortSignal) }));
 
     state.runs = [];
     view.rerender(<BrowserDockPanel />);
@@ -141,6 +145,41 @@ describe("BrowserDockPanel", () => {
     get.mockResolvedValue({ active: false });
     await flush(5_000);
     expect(screen.getByText(/no browser session running/i)).toBeInTheDocument();
+    await flush(30_000);
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a transient failure for a known session without losing the viewer", async () => {
+    get.mockResolvedValueOnce({ active: true, url: "https://browser.test/sessions/one/live-view" })
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({ active: true, url: "https://browser.test/sessions/two/live-view" });
+    render(<BrowserDockPanel />);
+    await flush(5_000);
+    expect(screen.getByTestId("dcv-live-view")).toBeInTheDocument();
+    await flush(5_000);
+    expect(get).toHaveBeenCalledTimes(3);
+    expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-signed-url", "https://browser.test/sessions/two/live-view");
+  });
+
+  it("bounds a hung request and aborts the next one on unmount", async () => {
+    state.runs = RUNNING;
+    get.mockImplementation((_path, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("aborted")));
+    }));
+    const panel = render(<BrowserDockPanel />);
+    await flush(15_000);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(get.mock.calls[0][1].signal.aborted).toBe(true);
+    panel.unmount();
+    expect(get.mock.calls[1][1].signal.aborted).toBe(true);
+  });
+
+  it("clears the viewer and stops polling when access is revoked", async () => {
+    get.mockResolvedValueOnce({ active: true, url: "https://browser.test/sessions/one/live-view" })
+      .mockRejectedValue(new ApiError(403, {}));
+    render(<BrowserDockPanel />);
+    await flush(5_000);
+    expect(screen.queryByTestId("dcv-live-view")).toBeNull();
     await flush(30_000);
     expect(get).toHaveBeenCalledTimes(2);
   });

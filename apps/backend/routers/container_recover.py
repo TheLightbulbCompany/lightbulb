@@ -177,6 +177,15 @@ async def container_recover(
     # workspace it raised and fell straight through to this same escalation. Calling it was
     # one guaranteed-failing invoke (and, against a parked microVM, one cold start) buying a
     # log line.
+    # The SAME trial predicate the stopped/error branch applies. A reprovision re-mints the
+    # owner's gate bearer, which is exactly what the meter's backstop kill DENIED to stop a
+    # capped trial -- so without this gate an unhealthy running row is the one door a capped owner
+    # could reprovision their way back through. (It used to be covered by the running/no-IP branch
+    # that resolved a live task IP; there is no task IP to miss now, so the check moves here.)
+    trial_gate = provision_gate.gate_for_trial_reason(await trial_cap.trial_block_reason(owner_id), _owner_role(auth))
+    if trial_gate is not None:
+        raise HTTPException(status_code=402, detail=trial_gate.to_payload())
+
     logger.warning("Owner %s: gateway unhealthy, reprovisioning", owner_id)
     # Status flip first: `update_error` writes only the last_error fields, and the dispatch's
     # claim (try_claim_provision) admits only missing/error/stopped/stale rows -- a "running"

@@ -12,17 +12,14 @@ class TestContainerRecover:
     """Test POST /api/v1/container/recover."""
 
     @pytest.fixture
-    def mock_ecs_manager(self):
-        with patch("routers.container_recover.get_ecs_manager") as mock_getter:
-            manager = AsyncMock()
-            mock_getter.return_value = manager
-            yield manager
-
-    @pytest.fixture
     def mock_container_repo(self):
+        """The row IS the state now: an invoke wakes a parked microVM, so there is no task IP to
+        discover and no "running but unreachable" shape to detect up front. Tests set
+        ``get_by_owner_id`` to the row under test."""
         with patch("routers.container_recover.container_repo") as mock_repo:
             mock_repo.update_error = AsyncMock(return_value=None)
             mock_repo.update_status = AsyncMock(return_value=None)
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
             yield mock_repo
 
     @pytest.fixture
@@ -55,11 +52,10 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_stopped_container_reprovisions(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """Stopped container should trigger full re-provision."""
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
-        mock_ecs_manager.get_service_status = AsyncMock(
+        mock_container_repo.get_by_owner_id = AsyncMock(
             return_value={
                 "owner_id": "user_test_123",
                 "status": "stopped",
@@ -76,11 +72,10 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_error_container_reprovisions(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """Error container should trigger full re-provision."""
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
-        mock_ecs_manager.get_service_status = AsyncMock(
+        mock_container_repo.get_by_owner_id = AsyncMock(
             return_value={
                 "owner_id": "user_test_123",
                 "status": "error",
@@ -96,35 +91,16 @@ class TestContainerRecover:
         assert data["state"] == "CONTAINER_DOWN"
         mock_dispatch_provision.assert_called_once_with("org_test_456")
 
-    # --- GATEWAY_DOWN: restart gateway ---
-
-    @pytest.mark.asyncio
-    async def test_recover_gateway_down_restarts(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
-    ):
-        """Running container with unresponsive gateway should restart gateway."""
-        container = {
-            "owner_id": "user_test_123",
-            "gateway_token": "test-token",
-            "status": "running",
-        }
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
-        # Gateway health check fails, but update.run succeeds
-        mock_call_gateway_rpc.side_effect = [
-            ConnectionRefusedError(),  # health check fails
-            {},  # update.run succeeds
-        ]
-
-        response = await async_client.post("/api/v1/container/recover")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["action"] == "gateway_restart"
-        assert data["state"] == "GATEWAY_DOWN_DEAD"
-        mock_dispatch_provision.assert_not_called()
+    # --- GATEWAY_DOWN: reprovision ---
+    #
+    # There is no in-place restart step any more. It was an ``update.run`` RPC into the OpenClaw
+    # gateway, and the Hermes bridge serves no such method -- so on every migrated workspace it
+    # raised and fell straight through to this same escalation. Calling it was one
+    # guaranteed-failing invoke (and, against a parked microVM, one cold start) buying a log line.
 
     @pytest.mark.asyncio
     async def test_recover_gateway_down_escalates_to_reprovision(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """If gateway restart fails, escalate to reprovision."""
         container = {
@@ -132,7 +108,7 @@ class TestContainerRecover:
             "gateway_token": "test-token",
             "status": "running",
         }
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
+        mock_container_repo.get_by_owner_id = AsyncMock(return_value=container)
         # Both health check and restart fail
         mock_call_gateway_rpc.side_effect = ConnectionRefusedError()
 
@@ -149,18 +125,17 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_running_but_no_ip_flips_to_error_then_reprovisions(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
-        """A "running" row whose task is gone (no IP) must be flipped to
-        "error" before the dispatch, or the dispatch's claim stands down
-        against the running status and /recover answers "reprovision" while
-        starting nothing."""
+        """The row must be flipped to "error" before the dispatch, or the dispatch's claim (which
+        admits only missing/error/stopped/stale rows) stands down against the running status and
+        /recover answers "reprovision" while starting nothing."""
         container = {
             "owner_id": "user_test_123",
             "gateway_token": "test-token",
             "status": "running",
         }
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, None))
+        mock_container_repo.get_by_owner_id = AsyncMock(return_value=container)
 
         response = await async_client.post("/api/v1/container/recover")
         assert response.status_code == 200
@@ -173,7 +148,7 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_healthy_returns_none(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """Healthy system should return action=none."""
         container = {
@@ -181,7 +156,7 @@ class TestContainerRecover:
             "gateway_token": "test-token",
             "status": "running",
         }
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
+        mock_container_repo.get_by_owner_id = AsyncMock(return_value=container)
         mock_call_gateway_rpc.return_value = {"ok": True}  # health check passes
 
         response = await async_client.post("/api/v1/container/recover")
@@ -193,14 +168,14 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_reads_the_hermes_bridge_ready_payload_as_healthy(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """Task-14 row 6 / task-15 item 3: the bridge answers ``ready``, not ``ok``. Reading only
         ``ok`` made every HEALTHY AgentCore workspace fall through to ``update.run`` (absent on
         the bridge), get ``status="error"`` written on its row and a full reprovision dispatched
         — while still answering 200."""
         container = {"owner_id": "user_test_123", "gateway_token": "test-token", "status": "running"}
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "agentcore"))
+        mock_container_repo.get_by_owner_id = AsyncMock(return_value=container)
         mock_call_gateway_rpc.return_value = {"ready": True, "runtime": "hermes", "uptimeS": 12, "busy": False}
 
         response = await async_client.post("/api/v1/container/recover")
@@ -212,13 +187,13 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_refuses_an_unrecognised_health_payload(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """A runtime that ANSWERED, in a shape carrying neither ``ok`` nor ``ready``, must not be
         assumed broken: "assume the worst" is what turned this door into a landmine. Refuse
         loudly and write nothing."""
         container = {"owner_id": "user_test_123", "gateway_token": "test-token", "status": "running"}
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
+        mock_container_repo.get_by_owner_id = AsyncMock(return_value=container)
         mock_call_gateway_rpc.return_value = {"runtime": "something-new"}
 
         response = await async_client.post("/api/v1/container/recover")
@@ -231,11 +206,10 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_no_container_returns_404(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """No container at all should return 404."""
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
-        mock_ecs_manager.get_service_status = AsyncMock(return_value=None)
+        mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
 
         response = await async_client.post("/api/v1/container/recover")
         assert response.status_code == 404
@@ -252,12 +226,11 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_refuses_to_wake_an_over_cap_trial_owner(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """The free-tier cap is what scaled this container to zero. /recover must
         not be the way around it — same 402 limit card as the other two doors."""
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
-        mock_ecs_manager.get_service_status = AsyncMock(
+        mock_container_repo.get_by_owner_id = AsyncMock(
             return_value={"owner_id": "user_test_123", "status": "stopped", "substatus": None}
         )
 
@@ -273,7 +246,7 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_refuses_to_wake_an_expired_trial_owner_under_the_cap(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """The OTHER half of the trial predicate. This door used to check only the
         daily cap, so an owner whose trial window had ENDED but who was under
@@ -281,8 +254,7 @@ class TestContainerRecover:
         with force=True and therefore skips start_user_service's own check —
         and woke a container that was out of runway. Fresh Bedrock spend on a
         dead trial."""
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
-        mock_ecs_manager.get_service_status = AsyncMock(
+        mock_container_repo.get_by_owner_id = AsyncMock(
             return_value={"owner_id": "user_test_123", "status": "stopped", "substatus": None}
         )
 
@@ -298,17 +270,18 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_refuses_a_capped_owners_zombie_running_row(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
-        """The cap kill's ECS stop transiently leaves a "running" row whose
-        task is gone — exactly the running/no-IP shape. That branch
-        reprovisions (a force=True start), so without its own gate it was the
-        one door a capped trial owner could wake the box through."""
-        mock_ecs_manager.resolve_running_container = AsyncMock(
-            return_value=(
-                {"owner_id": "user_test_123", "status": "running", "bedrock_revoked": True},
-                None,
-            )
+        """A capped owner's row still reads "running" -- the backstop kill DENIES the gate bearer
+        rather than stopping anything. If its runtime is unhealthy, the escalation below
+        reprovisions, and a reprovision RE-MINTS that bearer: this endpoint would be the one door
+        a capped owner could reprovision their way back through the cap.
+
+        The gate used to be reached via the running/no-IP branch (a live task IP that Cloud Map
+        could fail to resolve); there is no task IP to miss now, so the check sits on the
+        escalation itself."""
+        mock_container_repo.get_by_owner_id = AsyncMock(
+            return_value={"owner_id": "user_test_123", "status": "running", "bedrock_revoked": True}
         )
 
         with patch(
@@ -323,15 +296,14 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_stands_down_while_a_conversion_is_draining(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """A trial->paid conversion has scaled the container to zero and is
         blocked in its drain wait. A reprovision dispatched from here would land a
         second task on the EFS-WAL SQLite. Note substatus is None: the conversion's
         own stop_user_service already clobbered the "converting" label, so only the
         conversion_started_at timestamp holds this off."""
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
-        mock_ecs_manager.get_service_status = AsyncMock(
+        mock_container_repo.get_by_owner_id = AsyncMock(
             return_value={
                 "owner_id": "user_test_123",
                 "status": "stopped",
@@ -350,7 +322,7 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_stands_down_on_a_running_row_mid_conversion(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """The conversion drain is not instantaneous: reprovision_for_user scales
         the service to zero while the container ROW still reads "running", so a
@@ -364,18 +336,15 @@ class TestContainerRecover:
         customer who had JUST paid, and dispatched a provision competing with the
         conversion's own. Reproduces the prod incident of 2026-08-06.
         """
-        mock_ecs_manager.resolve_running_container = AsyncMock(
-            return_value=(
-                {
-                    "owner_id": "user_test_123",
-                    "status": "running",
-                    "substatus": None,
-                    "gateway_token": "tok",
-                    "conversion_pending": True,
-                    "conversion_started_at": datetime.now(timezone.utc).isoformat(),
-                },
-                "10.0.0.5",
-            )
+        mock_container_repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_test_123",
+                "status": "running",
+                "substatus": None,
+                "gateway_token": "tok",
+                "conversion_pending": True,
+                "conversion_started_at": datetime.now(timezone.utc).isoformat(),
+            }
         )
         # Gateway is down (it was drained) and the restart RPC fails — exactly the
         # path that used to write the error.
@@ -393,13 +362,12 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_stands_down_on_a_running_row_with_no_ip_mid_conversion(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
-        """Same window, one step earlier: the task is already gone so Cloud Map
-        resolves no IP. The no-IP branch also wrote status="error" over the
-        conversion's row before the guard was hoisted."""
-        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
-        mock_ecs_manager.get_service_status = AsyncMock(
+        """Same window, one step earlier: the row still reads "running" and the runtime answers
+        nothing, so without the hoisted guard the escalation below wrote status="error" over the
+        conversion's row."""
+        mock_container_repo.get_by_owner_id = AsyncMock(
             return_value={
                 "owner_id": "user_test_123",
                 "status": "running",
@@ -419,24 +387,21 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_stands_down_on_an_active_provision_lease(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """A provisioning row whose lease heartbeat is fresh is OWNED by a live
         SFN run — recover must not probe its half-booted gateway, write
         status="error" over it, or dispatch a competitor (the 2026-08-10
         conversion incident: four recover stomps during one provision)."""
         mock_container_repo.is_provision_claim_stale = lambda c: False
-        mock_ecs_manager.resolve_running_container = AsyncMock(
-            return_value=(
-                {
-                    "owner_id": "user_test_123",
-                    "status": "provisioning",
-                    "substatus": "task_running",
-                    "provision_claim_id": "claim-1",
-                    "gateway_token": "tok",
-                },
-                "10.0.1.5",
-            )
+        mock_container_repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_test_123",
+                "status": "provisioning",
+                "substatus": "task_running",
+                "provision_claim_id": "claim-1",
+                "gateway_token": "tok",
+            }
         )
 
         response = await async_client.post("/api/v1/container/recover")
@@ -450,22 +415,19 @@ class TestContainerRecover:
 
     @pytest.mark.asyncio
     async def test_recover_proceeds_on_a_stale_provision_lease(
-        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """A stale lease means the runner died — recover stays a recovery
         path for wedged provisions and falls through to its normal branches."""
         mock_container_repo.is_provision_claim_stale = lambda c: True
-        mock_ecs_manager.resolve_running_container = AsyncMock(
-            return_value=(
-                {
-                    "owner_id": "user_test_123",
-                    "status": "provisioning",
-                    "substatus": "claimed",
-                    "provision_claim_id": "claim-1",
-                    "gateway_token": "tok",
-                },
-                "10.0.1.5",
-            )
+        mock_container_repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_test_123",
+                "status": "provisioning",
+                "substatus": "claimed",
+                "provision_claim_id": "claim-1",
+                "gateway_token": "tok",
+            }
         )
 
         response = await async_client.post("/api/v1/container/recover")

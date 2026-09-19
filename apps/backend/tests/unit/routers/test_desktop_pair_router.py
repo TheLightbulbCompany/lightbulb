@@ -31,7 +31,7 @@ def desktop_client(desktop_auth_ctx):
         return desktop_auth_ctx
 
     app.dependency_overrides[get_current_user] = _override
-    with patch("routers.desktop_pair._workspace_adapter", return_value=MagicMock()), TestClient(app) as c:
+    with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
 
@@ -45,16 +45,10 @@ def test_post_desktop_pair_returns_pair_result(desktop_client):
         commands_mac=("system.notify", "device.info"),
         commands_cli=("system.run", "browser.proxy"),
     )
-    with (
-        patch(
-            "routers.desktop_pair.pair_desktop_devices",
-            AsyncMock(return_value=fake_result),
-        ) as pair,
-        patch(
-            "routers.desktop_pair.push_desktop_pairing_live",
-            AsyncMock(return_value=True),
-        ) as push,
-    ):
+    with patch(
+        "routers.desktop_pair.pair_desktop_devices",
+        AsyncMock(return_value=fake_result),
+    ) as pair:
         response = desktop_client.post(
             "/api/v1/desktop/pair",
             headers={"Authorization": "Bearer test"},
@@ -89,45 +83,21 @@ def test_post_desktop_pair_returns_pair_result(desktop_client):
     assert permissions.shell is True
     assert permissions.browser is True
     assert permissions.files is False
-    # The live push into the running container's trust store fires after a
-    # successful pair, with both freshly derived device ids.
-    push.assert_awaited_once_with(
-        owner_id="org_test",
-        device_ids={"dev_mac_hash", "dev_cli_hash"},
-    )
 
 
-def test_post_desktop_pair_succeeds_when_live_push_fails(desktop_client):
-    """The live RPC push is best-effort: a failure (even an unexpected raise)
-    must never fail the pair request — the boot import is the fallback."""
-    fake_result = MagicMock(
-        gateway_url="wss://ws-dev.flickmeon.ai",
-        gateway_token="tok_xyz",
-        device_id_mac="dev_mac_hash",
-        device_id_cli="dev_cli_hash",
-        commands_mac=(),
-        commands_cli=(),
-    )
-    with (
-        patch(
-            "routers.desktop_pair.pair_desktop_devices",
-            AsyncMock(return_value=fake_result),
-        ),
-        patch(
-            "routers.desktop_pair.push_desktop_pairing_live",
-            AsyncMock(side_effect=RuntimeError("gateway exploded")),
-        ),
-    ):
-        response = desktop_client.post(
-            "/api/v1/desktop/pair",
-            headers={"Authorization": "Bearer test"},
-            json={
-                "tauriMacPubKey": "-----BEGIN PUBLIC KEY-----\nABC\n-----END PUBLIC KEY-----\n",
-                "cliPubKey": "-----BEGIN PUBLIC KEY-----\nDEF\n-----END PUBLIC KEY-----\n",
-            },
-        )
+def test_post_desktop_pair_pushes_nothing_into_a_runtime(desktop_client):
+    """The trust record IS the containers row every reader already consults (``machine_auth`` at
+    the WS upgrade, ``declared_commands_for`` at connect), so a pair takes effect on the device's
+    very next connect with nothing to propagate.
 
-    assert response.status_code == 200, response.text
+    It used to also RPC the running container's own trust store, because the gateway read a
+    file the boot import was add-only against -- so a pair that missed the live push did not
+    take effect until the next boot, and a revoke never evicted at all.
+    """
+    from routers import desktop_pair
+
+    assert not hasattr(desktop_pair, "push_desktop_pairing_live")
+    assert not hasattr(desktop_pair, "push_desktop_revoke_live")
 
 
 def test_post_desktop_pair_rejects_missing_pubkey(desktop_client):
@@ -155,16 +125,7 @@ def test_post_desktop_pair_returns_400_on_value_error(desktop_client):
 
 
 def test_delete_device_204(desktop_client):
-    with (
-        patch(
-            "routers.desktop_pair.revoke_desktop_device",
-            AsyncMock(return_value=True),
-        ) as revoke,
-        patch(
-            "routers.desktop_pair.push_desktop_revoke_live",
-            AsyncMock(return_value=True),
-        ) as evict,
-    ):
+    with patch("routers.desktop_pair.revoke_desktop_device", AsyncMock(return_value=True)) as revoke:
         response = desktop_client.delete(
             "/api/v1/desktop/devices/dev_abc",
             headers={"Authorization": "Bearer test"},
@@ -173,24 +134,9 @@ def test_delete_device_204(desktop_client):
     revoke.assert_awaited_once()
     kwargs = revoke.await_args.kwargs
     assert kwargs["device_id"] == "dev_abc"
-    # The live trust-store eviction fires too — the boot import is add-only,
-    # so the JSON removal alone never evicts the device from the gateway.
-    evict.assert_awaited_once_with(owner_id="org_test", device_id="dev_abc")
-
-
-def test_delete_device_204_when_live_eviction_fails(desktop_client):
-    with (
-        patch(
-            "routers.desktop_pair.revoke_desktop_device",
-            AsyncMock(return_value=True),
-        ),
-        patch(
-            "routers.desktop_pair.push_desktop_revoke_live",
-            AsyncMock(side_effect=RuntimeError("gateway exploded")),
-        ),
-    ):
-        response = desktop_client.delete(
-            "/api/v1/desktop/devices/dev_abc",
-            headers={"Authorization": "Bearer test"},
-        )
-    assert response.status_code == 204
+    assert kwargs["owner_id"] == "org_test"
+    # A revoke force-closes the device's live socket by DELETING its presence rows: the relay
+    # pins a device's socket to whichever backend instance accepted it, so there is no
+    # in-process map to pop -- the relay's own 60s refresh notices the row is gone and closes
+    # 1008.
+    assert callable(kwargs["force_close_device"])

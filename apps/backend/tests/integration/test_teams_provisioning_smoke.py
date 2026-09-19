@@ -47,26 +47,11 @@ os.environ.setdefault(
 )
 
 from core.auth import AuthContext, get_current_user  # noqa: E402
-from core.config import apex_domain, settings as _settings, url_host  # noqa: E402
 from core.encryption import encrypt  # noqa: E402
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo  # noqa: E402
 from core.services.paperclip_admin_client import PaperclipAdminClient  # noqa: E402
 
-# The adapter allowlist derives from settings.GATEWAY_RELAY_URL (the machine
-# relay, sub-project D task 5) -- NOT WS_GATEWAY_URL, which is the retired
-# API-Gateway door the synthesized adapter no longer points at. Derive the
-# fixture host from the same place so it cannot drift out of the allowlist.
-GW_APEX = apex_domain(url_host(_settings.GATEWAY_RELAY_URL))
-
 PAPERCLIP_COMPANIES_TABLE = "paperclip-companies"
-
-# Allowlist regex from ``paperclip_adapter_config.py`` — must match the
-# url synthesized by the BFF or the test (correctly) fails.
-# Mirrors build_gateway_url_re(); derives the apex so it cannot drift from the
-# real allowlist when the product domain moves.
-_GATEWAY_URL_RE = re.compile(
-    rf"\A(?:wss://bv(?:-[a-z]+)?\.{re.escape(GW_APEX)}/api/v1/gateway/ws|ws://localhost:[0-9]+)\Z"
-)
 
 
 @pytest.fixture

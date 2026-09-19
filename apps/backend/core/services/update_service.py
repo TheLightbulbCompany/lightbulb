@@ -1,4 +1,4 @@
-"""Update service -- image-update queue + scheduled worker.
+"""Update service -- pending-update applier + scheduled worker.
 
 The scheduled worker also runs two Paperclip-related passes (T13):
 
@@ -28,7 +28,6 @@ from datetime import datetime, timedelta, timezone
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, update_repo
 from core import openclaw_version
-from core.dynamodb import utc_now_iso
 from core.services.catalog_slice import REMOVED_AGENT_ENTRY_KEYS
 from core.services import config_schema, runtime_transport
 from core.services.config_patcher import patch_openclaw_config, strip_removed_agent_keys
@@ -86,128 +85,6 @@ def request_worker_stop() -> None:
         _worker_stop.set()
 
 
-async def queue_image_update(owner_id: str, new_image: str, description: str | None = None) -> dict:
-    """Queue a container image update for a single owner."""
-    desc = description or f"Image update to {new_image}"
-    item = await update_repo.create(
-        owner_id=owner_id,
-        update_type="image_update",
-        description=desc,
-        changes={"new_image": new_image},
-    )
-    logger.info("Queued image update for owner=%s image=%s", owner_id, new_image)
-    return item
-
-
-async def queue_fleet_image_update(new_image: str, description: str | None = None) -> tuple[int, int]:
-    """Queue an image update for every ECS-hosted owner in the billing-accounts table.
-
-    Scans the billing-accounts DynamoDB table and creates one pending update per
-    ECS owner. An AgentCore owner is skipped (not queued, not counted as
-    failed): a Hermes image bump is not an ECS task-definition change -- the
-    runtime's image moves with hermes-version.json + provisioning's own drift
-    branch, never a queued `image_update` row applied via `_apply_claimed_update`'s
-    ECS-only resize path (row #14).
-
-    Returns (queued, skipped_agentcore).
-    """
-    from core.dynamodb import get_table, run_in_thread
-
-    table = get_table("billing-accounts")
-    count = 0
-    skipped_agentcore = 0
-    last_key = None
-
-    while True:
-        scan_kwargs: dict = {}
-        if last_key:
-            scan_kwargs["ExclusiveStartKey"] = last_key
-
-        response = await run_in_thread(table.scan, **scan_kwargs)
-        items = response.get("Items", [])
-
-        for item in items:
-            owner_id = item.get("owner_id")
-            if not owner_id:
-                continue
-            if await runtime_transport.is_agentcore_owner(owner_id):
-                skipped_agentcore += 1
-                continue
-            await queue_image_update(owner_id, new_image, description)
-            count += 1
-
-        last_key = response.get("LastEvaluatedKey")
-        if not last_key:
-            break
-
-    logger.info(
-        "Queued fleet image update for %d owners (%d agentcore skipped), image=%s",
-        count,
-        skipped_agentcore,
-        new_image,
-    )
-    return count, skipped_agentcore
-
-
-async def queue_fleet_task_definition_refresh(description: str | None = None) -> tuple[int, int]:
-    """Schedule a durable, sequential base-clone refresh for every owner.
-
-    The update worker processes due rows one at a time. Each apply waits for
-    the owner's ECS service to become stable, so this is a bounded fleet roll
-    rather than a burst of detached deployments. Existing task-definition
-    updates are skipped to preserve the per-owner single-roll invariant.
-    """
-
-    rows = await container_repo.scan_all()
-    scheduled_at = utc_now_iso()
-    queued = skipped = 0
-    for row in rows:
-        item = await queue_task_definition_refresh_for_owner(row, description=description, scheduled_at=scheduled_at)
-        if item is None:
-            skipped += 1
-        else:
-            queued += 1
-
-    logger.info("Scheduled task-definition refresh for %d owners (%d skipped)", queued, skipped)
-    return queued, skipped
-
-
-async def queue_task_definition_refresh_for_owner(
-    row: dict,
-    *,
-    description: str | None = None,
-    scheduled_at: str | None = None,
-) -> dict | None:
-    """Queue one owner's base-clone refresh row, or None when ineligible.
-
-    Ineligible means the container row is incomplete, mid-provision, or an
-    update carrying any task-definition-rolling change is already in flight
-    (the per-owner single-roll invariant). Callers: the fleet queue above and
-    the single-owner ``POST /container/updates`` path.
-    """
-    owner_id = row.get("owner_id")
-    status = row.get("status")
-    complete = all(row.get(field) for field in ("owner_id", "service_name", "access_point_id", "task_definition_arn"))
-    unclaimed_error = (
-        status == "error" and not row.get("provision_claim_id") and not row.get("provision_execution_name")
-    )
-    if not complete or (status not in {"running", "stopped"} and not unclaimed_error) or row.get("needs_provision"):
-        return None
-    in_flight = await update_repo.get_in_flight(owner_id)
-    if any(
-        isinstance(update.get("changes"), dict) and any(key in update["changes"] for key in TASKDEF_ROLL_CHANGE_KEYS)
-        for update in in_flight
-    ):
-        return None
-    return await update_repo.create(
-        owner_id=owner_id,
-        update_type=TASK_DEFINITION_REFRESH_KIND,
-        description=description or "Refresh task definition for config-lock recovery",
-        changes={TASK_DEFINITION_REFRESH_CHANGE: True},
-        scheduled_at=scheduled_at or utc_now_iso(),
-    )
-
-
 # Keys upstream removed from the strict OpenClaw schema that an older
 # on-disk openclaw.json may still carry. A container rolled to a newer
 # image reuses its existing EFS config, and a removed key the new image's
@@ -238,8 +115,8 @@ async def migrate_removed_config_keys(owner_id: str) -> None:
 # Top-level subtrees that runtime writers CO-OWN with the config generator:
 # the generator emits the subtree's skeleton, but other writers add entries
 # inside it after provision that the generator does not know about —
-# channel pairing accounts/allowFrom (channel_link_service), marketplace
-# skill entries/allowBundled (deploy's skills_patch), deployed-agent MCP
+# channel pairing accounts/allowFrom (ecs_manager._provision_channel_accounts),
+# marketplace skill entries/allowBundled (deploy's skills_patch), deployed-agent MCP
 # servers (catalog deploy slice). Only these subtrees get the recursive
 # "preserve what the regen omits" treatment. Everywhere else a fresh render
 # WINS WHOLESALE: recursing into arbitrary generator-owned dicts would

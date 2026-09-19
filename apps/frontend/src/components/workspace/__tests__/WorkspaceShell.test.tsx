@@ -6,7 +6,7 @@ import { WorkspaceShell } from "../WorkspaceShell";
 
 const state = vi.hoisted(() => ({
   phase: "selecting", selectProps: vi.fn(), organization: null as { id: string } | null,
-  activePanelId: "chat:__default__", chatReady: true,
+  openPanelIds: [] as string[], activePanelId: "chat:__default__", chatReady: true,
 }));
 vi.mock("@/hooks/useOnboardingGate", () => ({ useOnboardingGate: () => state.phase }));
 vi.mock("@clerk/nextjs", () => ({
@@ -21,13 +21,13 @@ vi.mock("@/hooks/useAgents", () => ({ useAgents: () => {
 } }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => null }));
 vi.mock("../workspaceController", () => ({
-  useWorkspaceState: () => ({ activePanelId: state.activePanelId }),
+  useWorkspaceState: () => ({ activePanelId: state.activePanelId, openPanelIds: state.openPanelIds }),
   refreshWorkspaceSnapshot: vi.fn(),
   getWorkspaceSnapshot: () => ({ ready: false }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
-  MessagingWorkspaceProvider: ({ children, subscribeToRoom }: { children: ReactNode; subscribeToRoom: boolean }) => (
-    <section aria-label="Messaging owner" data-subscribed={subscribeToRoom}>{children}</section>
+  MessagingWorkspaceProvider: ({ children, subscribeToRoom, observeRuns }: { children: ReactNode; subscribeToRoom: boolean; observeRuns?: boolean }) => (
+    <section aria-label="Messaging owner" data-subscribed={subscribeToRoom} data-observe-runs={observeRuns}>{children}</section>
   ),
 }));
 vi.mock("../WorkspaceSidebar", () => ({
@@ -57,6 +57,7 @@ vi.mock("@/components/chat/shell/useUserSyncOnce", () => ({ useUserSyncOnce: () 
 vi.mock("@/components/chat/shell/useCheckoutReturn", () => ({ useCheckoutReturn: () => ({ showSubscriptionSuccess: true }) }));
 vi.mock("@/components/chat/shell/useChatReady", () => ({ useChatReady: () => ({ chatReady: state.chatReady }) }));
 beforeEach(() => {
+  state.openPanelIds = [];
   state.phase = "selecting";
   state.organization = null;
   state.activePanelId = "chat:__default__";
@@ -100,4 +101,15 @@ it("preserves checkout confirmation, readiness and the recovery stepper", () => 
   expect(screen.getByRole("button", { name: "Recover" })).toHaveAttribute("data-ready", "false");
   fireEvent.click(screen.getByRole("button", { name: "Recover" }));
   expect(screen.getByTestId("stepper")).toHaveAttribute("data-trigger", "recovery");
+});
+
+it("keeps observing room runs while Browser is open without marking the room visible", () => {
+  state.phase = "ready";
+  state.organization = { id: "org_1" };
+  state.activePanelId = "browser";
+  state.openPanelIds = ["chat:__default__", "browser"];
+  render(<WorkspaceShell />);
+  const owner = screen.getByRole("region", { name: "Messaging owner" });
+  expect(owner).toHaveAttribute("data-observe-runs", "true");
+  expect(owner).toHaveAttribute("data-subscribed", "false");
 });

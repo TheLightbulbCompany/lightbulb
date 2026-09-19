@@ -295,6 +295,9 @@ subscription, Clerk org, and marketplace rows — moved to the
 
 ### Manual dev testing accounts
 
+For a local frontend using real dev endpoints and Clerk ticket sign-in, see
+[`docs/runbooks/local-dev-browser-verification.md`](docs/runbooks/local-dev-browser-verification.md).
+
 The E2E journey test no longer uses a fixed account — it mints a random
 `isol8-e2e-<rand>@mailsac.com` per run and deletes it in `cleanupUser`
 (`apps/frontend/tests/e2e/fixtures/user.ts`), so there is no reserved address

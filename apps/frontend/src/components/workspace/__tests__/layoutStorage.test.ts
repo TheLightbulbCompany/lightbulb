@@ -147,19 +147,20 @@ describe("layoutStorage", () => {
     expect(readLayout("u-session")).toEqual(clean);
   });
 
-  // `browser` shipped in the DEFAULT mission-control layout, so nearly every
-  // returning desktop user has one in their saved blob. Its surface is gone, and
-  // so are Brain and the dreams/sessions/channels control panels — leaving them
-  // to the generic path restores a dead "Browser" tab, an "Unknown panel: brain",
-  // or three tabs silently rendering Overview. They are DROPPED, like session:.
+  // Brain and the dreams/sessions/channels control panels lost their surface
+  // with the OpenClaw runtime — leaving them to the generic path restores an
+  // "Unknown panel: brain" or three tabs silently rendering Overview. They are
+  // DROPPED, like session:. `browser` is NOT in that set: #2779 dropped the
+  // container VNC panel, and the AgentCore live view took the same id back, so
+  // a saved layout holding one must RESTORE it (asserted below).
   it("drops every panel whose surface was deleted with the OpenClaw runtime", () => {
-    const retired = ["browser", "teams-brain", "control:dreams", "control:sessions", "control:channels"];
+    const retired = ["teams-brain", "control:dreams", "control:sessions", "control:channels"];
     const dirty: SerializedDockview = {
       grid: {
         root: {
           type: "branch",
           data: [
-            { type: "leaf", data: { id: "group-retired", views: retired, activeView: "browser" } },
+            { type: "leaf", data: { id: "group-retired", views: retired, activeView: "teams-brain" } },
             { type: "leaf", data: { id: "group-messages", views: [MESSAGES_PANEL_ID], activeView: MESSAGES_PANEL_ID } },
           ],
         },
@@ -168,7 +169,6 @@ describe("layoutStorage", () => {
         orientation: "HORIZONTAL" as SerializedDockview["grid"]["orientation"],
       },
       panels: {
-        browser: { id: "browser", contentComponent: "browser", title: "Browser", params: {} },
         "teams-brain": { id: "teams-brain", contentComponent: "teams", title: "Brain", params: { teamsKey: "brain" } },
         "control:dreams": { id: "control:dreams", contentComponent: "control", title: "Dreams", params: { controlKey: "dreams" } },
         "control:sessions": { id: "control:sessions", contentComponent: "control", title: "Sessions", params: { controlKey: "sessions" } },
@@ -191,6 +191,19 @@ describe("layoutStorage", () => {
 
     writeLayout("u-retired", dirty);
     expect(readLayout("u-retired")).toEqual(clean);
+  });
+
+  // The regression the line above guards against: `browser` was in
+  // RETIRED_PANEL_IDS while the panel did not exist. Re-adding the panel kind
+  // without removing it there would silently delete the AgentCore live view
+  // from every restored layout.
+  it("restores a persisted browser panel, with its title re-derived", () => {
+    const dirty = minimalLayout({
+      browser: { id: "browser", contentComponent: "browser", title: "Stale title", params: {} },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels.browser?.contentComponent).toBe("browser");
+    expect(clean.panels.browser?.title).toBe("Browser");
   });
 
   it("sanitizer strips persist-only params (initialTab) so a nav intent can't restore forever", () => {

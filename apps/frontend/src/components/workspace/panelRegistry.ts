@@ -3,7 +3,7 @@
 // components map all derive from this file — nothing else may invent a
 // panel id or component name.
 
-export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "missing";
+export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "missing";
 
 export interface PanelDescriptor {
   panelId: string;
@@ -176,6 +176,7 @@ export const PANEL_COMPONENT_KEYS: ReadonlySet<string> = new Set([
   "teams",
   "control",
   "file-viewer",
+  "browser",
   "missing",
 ]);
 
@@ -236,6 +237,13 @@ export function describePanel(
     // focused later — and a layout restore re-mounts with the same binding.
     if (params.agent) p.agent = params.agent;
     return { panelId: "file-viewer", component: "file-viewer", title: "Files", params: p };
+  }
+
+  if (key === "browser") {
+    // Singleton, no params: an owner has ONE AgentCore Browser profile, and the
+    // panel watches whichever session is live on it — so a second open focuses
+    // the existing panel rather than double-viewing the same stream.
+    return { panelId: "browser", component: "browser", title: "Browser", params: {} };
   }
 
   if (key === "agent-inspector") {

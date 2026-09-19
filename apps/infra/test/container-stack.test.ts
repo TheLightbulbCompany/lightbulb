@@ -299,6 +299,13 @@ describe("ContainerStack — prod", () => {
     template.resourceCountIs("AWS::ECS::TaskDefinition", 0);
   });
 
+  test("EFS filesystem is DESTROYed in prod — the flip must ship while it is still declared (PR-6b deletes it)", () => {
+    template.hasResource("AWS::EFS::FileSystem", {
+      DeletionPolicy: "Delete",
+      UpdateReplacePolicy: "Delete",
+    });
+  });
+
   test("state bucket is RETAINed in prod (never auto-deleted)", () => {
     template.hasResource("AWS::S3::Bucket", {
       Properties: Match.objectLike({ BucketName: "lightbulb-prod-openclaw-replicas" }),

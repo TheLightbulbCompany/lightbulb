@@ -169,7 +169,12 @@ export class ContainerStack extends cdk.Stack {
       lifecyclePolicy: efs.LifecyclePolicy.AFTER_30_DAYS,
       performanceMode: efs.PerformanceMode.GENERAL_PURPOSE,
       throughputMode: efs.ThroughputMode.BURSTING,
-      removalPolicy: config.removalPolicy,
+      // NOT config.removalPolicy: ENV_CONFIG's prod RETAIN still governs the
+      // replicas bucket and must. This filesystem is deleted in PR-6b, and a
+      // removal only destroys what the DEPLOYED template marks Delete — so the
+      // flip has to ship in this deploy, while the resource is still declared.
+      // The prod recovery point in AWS Backup is the hedge.
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // Container (Fargate task) security group

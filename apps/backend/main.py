@@ -765,6 +765,10 @@ app.include_router(orgs.router, prefix="/api/v1/orgs", tags=["orgs"])
 # Container lifecycle management (GET /status, POST /retry)
 app.include_router(container.router, prefix="/api/v1/container", tags=["container"])
 
+# AgentCore Browser live view (GET /browser/live-view) -- lives in routers/container.py but
+# mounts on its own prefix, since the panel's URL is /api/v1/browser/live-view.
+app.include_router(container.browser_router, prefix="/api/v1/browser", tags=["browser"])
+
 # Workspace file uploads (POST /files)
 app.include_router(container_files.router, prefix="/api/v1/container", tags=["container"])
 

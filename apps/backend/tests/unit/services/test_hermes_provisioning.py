@@ -39,6 +39,19 @@ async def _explode(*args, **kwargs):
     raise AssertionError(f"should not have been called: args={args!r} kwargs={kwargs!r}")
 
 
+@pytest.fixture(autouse=True)
+def _no_browser_profile(monkeypatch):
+    """Every provision test in this module is about the RUNTIME, not the browser. Stub the
+    profile resolver so none of them reaches a live AgentCore control-plane client; the
+    threading itself is asserted in
+    ``test_provision_threads_the_browser_profile_into_the_runtime_request``."""
+
+    async def _none(owner_id):
+        return ""
+
+    monkeypatch.setattr(hermes_provisioning.browser_sessions, "ensure_browser_profile", _none)
+
+
 def _no_runtime_found_by_name(monkeypatch):
     """Every fresh-create test needs the C1 name-lookup mocked -- it runs unconditionally
     whenever the row has no ARN yet, and the real function makes a live AWS call."""
@@ -108,6 +121,39 @@ def test_the_runtime_env_never_carries_the_nous_guest_launch_gate(monkeypatch):
     assert "HERMES_GUEST_ONBOARDING" not in env
     assert "OPENROUTER_API_KEY" not in env
     assert "DEEPINFRA_API_KEY" not in env
+
+
+def _env(**extra):
+    return hermes_provisioning.build_hermes_runtime_env(
+        owner_id="org_a",
+        api_base="https://api-dev.flickmeon.ai",
+        bucket="lightbulb-dev-openclaw-replicas",
+        boot_secret_id="lightbulb/dev/hermes/org_a/boot",
+        gate_endpoint="https://gate.example/invoke",
+        sonnet_aip_arn="arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/abc",
+        **extra,
+    )
+
+
+def test_runtime_env_enables_the_browser_only_with_a_profile(monkeypatch):
+    monkeypatch.setattr(hermes_provisioning.settings, "AWS_REGION", "us-east-1", raising=False)
+    env = _env(browser_profile_id="org_x-ab12cd34ef")
+    assert env["AGENT_BROWSER_PROVIDER"] == "agentcore"
+    assert env["AGENTCORE_REGION"] == "us-east-1"
+    assert env["AGENTCORE_BROWSER_ID"] == "aws.browser.v1"
+    assert env["AGENTCORE_PROFILE_ID"] == "org_x-ab12cd34ef"
+    assert env["AGENTCORE_SESSION_TIMEOUT"] == "900"
+    # The gate: Hermes advertises browser_* only when this names an existing file
+    # (a bare os.path.isfile, never a Chromium check). The image bakes a zero-byte
+    # sentinel there.
+    assert env["AGENT_BROWSER_EXECUTABLE_PATH"] == "/opt/lightbulb/no-local-browser"
+
+
+def test_runtime_env_omits_every_browser_var_without_a_profile():
+    """The design's "disabled" contract: the gate variable travels WITH the profile id, one
+    `if`, not two. No profile => no gate variable => Hermes does not advertise browser_* at
+    all -- silence, rather than a tool that fails on every call."""
+    assert not [k for k in _env() if k.startswith(("AGENTCORE_", "AGENT_BROWSER_"))]
 
 
 # --- I5: _wait_for_runtime_ready ------------------------------------------------------------
@@ -382,6 +428,68 @@ async def test_provision_writes_the_row_fields_every_existing_seam_reads(monkeyp
     # hook_token/gateway_token are prepare_hermes_workspace's job now -- not repeated here.
     assert "hook_token" not in updated
     assert "gateway_token" not in updated
+
+
+@pytest.mark.asyncio
+async def test_provision_threads_the_browser_profile_into_the_runtime_request(monkeypatch):
+    """The profile is resolved BEFORE the request is built -- its id is what turns the six
+    AgentCore Browser variables on, and CreateAgentRuntime is the only place they land."""
+    created = {}
+    monkeypatch.setattr(
+        hermes_provisioning.browser_sessions,
+        "ensure_browser_profile",
+        _noop_async_returns("org_a-ab12cd34ef"),
+    )
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: created.update(req) or "arn:rt")
+    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_load_role_and_aips",
+        _noop_async_returns(
+            ("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "arn:aip:sonnet"})
+        ),
+    )
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
+    _configure_hermes_settings(monkeypatch)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _noop_async)
+    _no_runtime_found_by_name(monkeypatch)
+
+    await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
+
+    assert created["environmentVariables"]["AGENTCORE_PROFILE_ID"] == "org_a-ab12cd34ef"
+    assert created["environmentVariables"]["AGENT_BROWSER_PROVIDER"] == "agentcore"
+
+
+@pytest.mark.asyncio
+async def test_provision_still_builds_a_usable_request_when_the_profile_resolve_fails(monkeypatch):
+    """The whole point of ensure_browser_profile's never-raise contract: AWS refusing the
+    profile must cost the workspace its browser tools, not its provision. Asserted at the
+    COMPOSITION level -- a refactor that made "" throw would still pass the two unit tests
+    on the env builder."""
+    created = {}
+    # The autouse _no_browser_profile fixture already answers "" here; this test is what
+    # pins the consequence.
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: created.update(req) or "arn:rt")
+    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_load_role_and_aips",
+        _noop_async_returns(
+            ("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "arn:aip:sonnet"})
+        ),
+    )
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
+    _configure_hermes_settings(monkeypatch)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _noop_async)
+    _no_runtime_found_by_name(monkeypatch)
+
+    await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
+
+    env = created["environmentVariables"]
+    assert env["ISOL8_OWNER_ID"] == "org_a"  # the request is complete, not half-built
+    assert not [k for k in env if k.startswith(("AGENTCORE_", "AGENT_BROWSER_"))]
 
 
 @pytest.mark.asyncio

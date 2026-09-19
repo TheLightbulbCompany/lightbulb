@@ -205,6 +205,9 @@ class TestDeleteOwnerBedrockRole:
         fake.list_attached_role_policies.return_value = {
             "AttachedPolicies": [{"PolicyArn": "arn:aws:iam::877352799272:policy/base"}]
         }
+        fake.list_role_policies.return_value = {
+            "PolicyNames": ["owner-bedrock", "owner-litestream-s3", "owner-browser"]
+        }
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
         monkeypatch.setattr(
@@ -218,10 +221,12 @@ class TestDeleteOwnerBedrockRole:
 
         await mod.delete_owner_bedrock_role("org_abc")
 
-        # BOTH inline policies are deleted before the detach: IAM refuses
+        # EVERY inline policy IAM reports is deleted before the detach: IAM refuses
         # DeleteRole while any inline policy remains, and O6 owners carry
-        # owner-litestream-s3 alongside owner-bedrock.
+        # owner-litestream-s3 (and, on AgentCore Browser, owner-browser)
+        # alongside owner-bedrock.
         assert calls == [
+            "delete_role_policy",
             "delete_role_policy",
             "delete_role_policy",
             "detach_role_policy",
@@ -230,6 +235,7 @@ class TestDeleteOwnerBedrockRole:
         assert [c.kwargs["PolicyName"] for c in fake.delete_role_policy.call_args_list] == [
             "owner-bedrock",
             "owner-litestream-s3",
+            "owner-browser",
         ]
         assert all(
             c.kwargs["RoleName"] == "lightbulb-dev-owner-bedrock-org_abc"
@@ -249,6 +255,7 @@ class TestDeleteOwnerBedrockRole:
         fake.list_attached_role_policies.return_value = {
             "AttachedPolicies": [{"PolicyArn": "arn:aws:iam::877352799272:policy/base"}]
         }
+        fake.list_role_policies.return_value = {"PolicyNames": ["owner-bedrock"]}
         monkeypatch.setattr(mod, "_iam_client", lambda: fake)
         monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
         monkeypatch.setattr(
@@ -267,6 +274,9 @@ class TestDeleteOwnerBedrockRole:
         fake.list_attached_role_policies.return_value = {
             "AttachedPolicies": [{"PolicyArn": "arn:aws:iam::877352799272:policy/base"}]
         }
+        fake.list_role_policies.return_value = {
+            "PolicyNames": ["owner-bedrock", "owner-litestream-s3", "owner-browser"]
+        }
         fake.delete_role_policy.side_effect = _no_such_entity("DeleteRolePolicy")
         fake.detach_role_policy.side_effect = _no_such_entity("DetachRolePolicy")
         fake.delete_role.side_effect = _no_such_entity("DeleteRole")
@@ -278,9 +288,28 @@ class TestDeleteOwnerBedrockRole:
 
         await mod.delete_owner_bedrock_role("org_abc")  # must not raise
 
-        assert fake.delete_role_policy.call_count == 2  # owner-bedrock + owner-litestream-s3
+        assert fake.delete_role_policy.call_count == 3  # owner-bedrock + owner-litestream-s3 + owner-browser
         fake.detach_role_policy.assert_called_once()
         fake.delete_role.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_an_already_deleted_role_enumerates_to_nothing(self, aip_tables, monkeypatch):
+        """The enumeration is the FIRST call now, so a re-run after a partial wipe hits
+        NoSuchEntity there rather than on a delete — and the docstring's "safe to re-run"
+        promise depends on that reading as an empty list, not as a raise."""
+        import core.billing.bedrock_aip as mod
+
+        fake = MagicMock()
+        fake.list_role_policies.side_effect = _no_such_entity("ListRolePolicies")
+        fake.list_attached_role_policies.return_value = {"AttachedPolicies": []}
+        fake.delete_role.side_effect = _no_such_entity("DeleteRole")
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+
+        await mod.delete_owner_bedrock_role("org_abc")  # must not raise
+
+        fake.delete_role_policy.assert_not_called()
+        fake.delete_role.assert_called_once()  # the rest of the teardown still runs
 
     @pytest.mark.asyncio
     async def test_reraises_unexpected_client_error_from_delete_role_policy(self, aip_tables, monkeypatch):
@@ -288,6 +317,7 @@ class TestDeleteOwnerBedrockRole:
 
         fake = MagicMock()
         fake.list_attached_role_policies.return_value = {"AttachedPolicies": []}
+        fake.list_role_policies.return_value = {"PolicyNames": ["owner-bedrock"]}
         fake.delete_role_policy.side_effect = ClientError(
             {"Error": {"Code": "AccessDenied", "Message": "nope"}}, "DeleteRolePolicy"
         )
@@ -321,17 +351,21 @@ def reaper(monkeypatch):
     """Stub the three primitives + the fence read, so these assert on intent."""
     import core.billing.bedrock_aip as mod
     import core.billing.bedrock_gate_tokens as tokens
+    from core.services import browser_sessions
 
     calls = MagicMock(
         aips=AsyncMock(return_value=["arn:aws:bedrock:us-east-1:1:application-inference-profile/abc"]),
         role=AsyncMock(return_value=None),
         gate=AsyncMock(return_value=2),
         container_get=AsyncMock(return_value=None),
+        browser=AsyncMock(return_value=1),
     )
     monkeypatch.setattr(mod, "delete_owner_aips", calls.aips)
     monkeypatch.setattr(mod, "delete_owner_bedrock_role", calls.role)
     monkeypatch.setattr(tokens, "delete_gate_token_rows", calls.gate)
     monkeypatch.setattr(mod.container_repo, "get_by_owner_id", calls.container_get)
+    # Imported inside the reap, so the patch has to land on the SOURCE module.
+    monkeypatch.setattr(browser_sessions, "delete_browser_profiles", calls.browser)
     return calls
 
 
@@ -351,6 +385,21 @@ class TestReapOwnerBedrockResources:
         reaper.aips.assert_awaited_once()
         reaper.role.assert_awaited_once_with("org_abc")
         assert "gate-token" in detail and "AIP" in detail and "IAM role" in detail
+        # The AgentCore Browser profile holds the workspace's cookies and local storage, so
+        # leaving it behind after a wipe is a data-deletion gap, not just a quota leak.
+        reaper.browser.assert_awaited_once_with("org_abc")
+        assert "browser profile" in detail
+
+    @pytest.mark.asyncio
+    async def test_a_failing_browser_profile_delete_never_fails_the_reap(self, reaper):
+        """The browser leg is best-effort by design: whatever makes it return 0 -- a
+        throttle, a Conflict on an already-DELETING profile, an AccessDenied -- the rest of
+        the teardown must still run and still report its own result."""
+        reaper.browser.return_value = 0
+
+        detail = await _reap(ROW)
+
+        assert "IAM role" in detail and "browser profile" not in detail
 
     @pytest.mark.asyncio
     async def test_reaps_the_role_even_when_the_row_never_named_it(self, reaper):
@@ -377,6 +426,7 @@ class TestReapOwnerBedrockResources:
         reaper.gate.assert_not_awaited()
         reaper.aips.assert_not_awaited()
         reaper.role.assert_not_awaited()
+        reaper.browser.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_the_fence_read_is_strongly_consistent(self, reaper):

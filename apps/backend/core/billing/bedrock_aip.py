@@ -130,6 +130,73 @@ def build_owner_litestream_s3_policy(owner_id: str, bucket: str) -> dict:
     }
 
 
+#: AWS's built-in managed browser. Its ARN sits under the literal ``aws`` pseudo-account
+#: (research 01 §5, from a live AccessDenied), not ours — see the resources below.
+BUILTIN_BROWSER_ID = "aws.browser.v1"
+
+
+async def ensure_owner_browser_policy(owner_id: str, profile_id: str) -> None:
+    """Per-owner AgentCore Browser grant, inline on the owner's runtime role.
+
+    Its OWN ``PolicyName`` for the same reason ``owner-litestream-s3`` has one: the
+    break-glass script swaps the ``owner-bedrock`` document wholesale, and folding
+    anything else in would strip it mid-incident.
+
+    Two statements. The first is the built-in browser, whose ARN lives under the literal
+    ``aws`` pseudo-account; the second is **this workspace's own profile**, and it repeats
+    ``StartBrowserSession`` deliberately — a start carrying ``profileConfiguration``
+    authorizes against the PROFILE ARN as well as the browser ARN (a live 403 named it).
+
+    Deliberately absent: ``ListBrowserSessions`` (the fence that stops a rogue runtime
+    learning another tenant's session ids — only the backend discovers sessions) and every
+    control-plane action (a runtime minting profiles would eat the 100/account quota).
+
+    A no-op for an empty ``profile_id``: ``browser_sessions.ensure_browser_profile``
+    returns ``""`` when AWS refused, and an unscoped grant must not be written in its place.
+    """
+    from core.dynamodb import run_in_thread
+
+    if not profile_id:
+        return
+    region = settings.AWS_REGION
+    account_id = await _caller_account_id()
+    doc = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "AgentCoreBrowserSessions",
+                "Effect": "Allow",
+                "Action": [
+                    "bedrock-agentcore:StartBrowserSession",
+                    "bedrock-agentcore:GetBrowserSession",
+                    "bedrock-agentcore:StopBrowserSession",
+                    "bedrock-agentcore:ConnectBrowserAutomationStream",
+                ],
+                # ONLY the built-in browser. `{account}:browser/*` is the ARN shape for a
+                # CUSTOM browser, which we never create; it is also outside the CDK
+                # permissions boundary, so granting it authorizes nothing and merely reads
+                # as though the boundary covered it.
+                "Resource": f"arn:aws:bedrock-agentcore:{region}:aws:browser/{BUILTIN_BROWSER_ID}",
+            },
+            {
+                "Sid": "AgentCoreBrowserOwnProfile",
+                "Effect": "Allow",
+                "Action": [
+                    "bedrock-agentcore:StartBrowserSession",
+                    "bedrock-agentcore:SaveBrowserSessionProfile",
+                ],
+                "Resource": f"arn:aws:bedrock-agentcore:{region}:{account_id}:browser-profile/{profile_id}",
+            },
+        ],
+    }
+    await run_in_thread(
+        _iam_client().put_role_policy,
+        RoleName=_owner_role_name(owner_id),
+        PolicyName="owner-browser",
+        PolicyDocument=json.dumps(doc),
+    )
+
+
 def build_owner_bedrock_policy(
     *,
     owner_id: str,
@@ -794,10 +861,19 @@ async def delete_owner_bedrock_role(owner_id: str) -> None:
     client = _iam_client()
     role_name = _owner_role_name(owner_id)
 
-    # BOTH inline policies must go: IAM refuses DeleteRole while any inline
-    # policy remains, so leaving owner-litestream-s3 behind would make the
-    # account-wipe bedrock_role step fail for every local-sqlite owner and leak the role.
-    for policy_name in ("owner-bedrock", "owner-litestream-s3"):
+    # ENUMERATE, never name. IAM refuses DeleteRole while ANY inline policy
+    # remains, so a policy this list forgot leaks the role silently — and this
+    # list had already been bolted onto twice (owner-litestream-s3, then
+    # owner-browser). Same reasoning, and the same fix, as the managed-policy
+    # detach below: "Enumerating removes the class."
+    try:
+        inline = await run_in_thread(client.list_role_policies, RoleName=role_name)
+        policy_names = inline.get("PolicyNames", [])
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "NoSuchEntity":
+            raise
+        policy_names = []
+    for policy_name in policy_names:
         try:
             await run_in_thread(
                 client.delete_role_policy,
@@ -873,8 +949,8 @@ async def reap_owner_bedrock_resources(owner_id: str, row_image: dict | None) ->
     gate_hashes = owner_gate_token_hashes(row)
 
     # A ChatGPT-OAuth or BYOK owner never had any of this. IAM write TPS is low,
-    # and four no-op calls for every cancelling owner is enough to throttle IAM
-    # account-wide during a bulk-churn event and stall legitimate provisioning.
+    # and a handful of no-op calls for every cancelling owner is enough to throttle
+    # IAM account-wide during a bulk-churn event and stall legitimate provisioning.
     # No evidence on the row means nothing was ever minted: skip without
     # touching AWS at all.
     if not (aip_arns or gate_hashes or row.get("bedrock_role_arn")):
@@ -933,6 +1009,18 @@ async def reap_owner_bedrock_resources(owner_id: str, row_image: dict | None) ->
         failure = failure or e
         put_metric("bedrock.reap", dimensions={"outcome": "failed", "resource": "role"})
         logger.exception("bedrock reap: IAM role failed for owner %s", owner_id)
+
+    # The AgentCore Browser profile. Deterministic name (== owner_id), same as the role, so
+    # it needs nothing from the row image. It holds the workspace's COOKIES and local
+    # storage, which makes leaving it behind a data-deletion gap rather than a quota one.
+    # Never contributes to `failure`: a wipe must not fail on the browser leg, whatever
+    # the reason. The task role's DeleteBrowserProfile grant is #2794 (merged), so a
+    # failure here is a real one and logs as such.
+    from core.services.browser_sessions import delete_browser_profiles
+
+    deleted_profiles = await delete_browser_profiles(owner_id)
+    if deleted_profiles:
+        done.append(f"{deleted_profiles} browser profile(s)")
 
     if failure is not None:
         raise failure

@@ -961,6 +961,10 @@ async def test_delete_owner_role_removes_both_inline_policies(aip_tables, monkey
     import core.billing.bedrock_aip as mod
 
     fake = MagicMock()
+    # ENUMERATED, not named: whatever IAM reports is what gets deleted, so a future inline
+    # policy can never leak the role by being missing from a hardcoded tuple.
+    attached = ["owner-bedrock", "owner-litestream-s3", "owner-browser", "owner-something-new"]
+    fake.list_role_policies.return_value = {"PolicyNames": attached}
     monkeypatch.setattr(mod, "_iam_client", lambda: fake)
     monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
     monkeypatch.setattr(mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "", raising=False)
@@ -968,5 +972,61 @@ async def test_delete_owner_role_removes_both_inline_policies(aip_tables, monkey
     await mod.delete_owner_bedrock_role("org_abc")
 
     deleted = {c.kwargs["PolicyName"] for c in fake.delete_role_policy.call_args_list}
-    assert deleted == {"owner-bedrock", "owner-litestream-s3"}
+    assert deleted == set(attached)
     fake.delete_role.assert_called_once()
+
+
+class TestOwnerBrowserPolicy:
+    """The per-owner AgentCore Browser grant: its own inline PolicyName, scoped to the ONE
+    profile this workspace owns."""
+
+    def _put(self, monkeypatch) -> MagicMock:
+        import core.billing.bedrock_aip as mod
+
+        fake = MagicMock()
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod, "_caller_account_id", AsyncMock(return_value="877352799272"))
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(mod.settings, "AWS_REGION", "us-east-1", raising=False)
+        return fake
+
+    @pytest.mark.asyncio
+    async def test_owner_browser_policy_names_only_this_workspaces_profile(self, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        fake = self._put(monkeypatch)
+
+        await mod.ensure_owner_browser_policy("org_x", "org_x-ab12cd34ef")
+
+        kw = fake.put_role_policy.call_args.kwargs
+        assert kw["RoleName"] == "lightbulb-dev-owner-bedrock-org_x"
+        # A SEPARATE PolicyName, for the same reason owner-litestream-s3 is separate: the
+        # break-glass script swaps "owner-bedrock" wholesale.
+        assert kw["PolicyName"] == "owner-browser"
+        raw = kw["PolicyDocument"]
+        doc = json.loads(raw)
+        assert "browser-profile/org_x-ab12cd34ef" in raw and "browser-profile/*" not in raw
+        # The built-in browser lives under the literal `aws` pseudo-account.
+        assert ":aws:browser/aws.browser.v1" in raw
+        # NOT `{account}:browser/*` -- that is the CUSTOM-browser ARN shape, which we never
+        # create and the CDK permissions boundary does not cover, so it would authorize
+        # nothing while reading as though it did.
+        assert "877352799272:browser/*" not in raw
+        # Live 403 (Task 1): a start carrying profileConfiguration authorizes against the
+        # PROFILE arn as well as the browser arn.
+        profile_stmt = next(st for st in doc["Statement"] if "browser-profile/" in json.dumps(st["Resource"]))
+        assert "bedrock-agentcore:StartBrowserSession" in profile_stmt["Action"]
+        assert "bedrock-agentcore:SaveBrowserSessionProfile" in profile_stmt["Action"]
+        # No ListBrowserSessions: it is the fence that stops one runtime learning another
+        # tenant's session ids. No control-plane action: profiles are a 100/account quota.
+        assert "ListBrowserSessions" not in raw and "CreateBrowserProfile" not in raw
+
+    @pytest.mark.asyncio
+    async def test_owner_browser_policy_writes_nothing_without_a_profile(self, monkeypatch):
+        """ensure_browser_profile returns "" when AWS refused; an unscoped grant must not
+        be written in its place."""
+        import core.billing.bedrock_aip as mod
+
+        fake = self._put(monkeypatch)
+        await mod.ensure_owner_browser_policy("org_x", "")
+        fake.put_role_policy.assert_not_called()

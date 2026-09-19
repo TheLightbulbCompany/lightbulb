@@ -26,7 +26,19 @@ def _wire(monkeypatch, *, current_image, row=ROW):
     monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: current_image)
     monkeypatch.setattr(hermes_provisioning, "_load_role_and_aips", _roles)
     calls = []
-    monkeypatch.setattr(hermes_provisioning, "build_runtime_request_for_owner", lambda o, r, a: {"req": o})
+    # The roll is how an already-provisioned workspace gets its first Browser profile, so
+    # the request it builds carries the id ensure_browser_profile just resolved -- echoed
+    # into the fake request so the drift test can assert on it.
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "build_runtime_request_for_owner",
+        lambda o, r, a, *, browser_profile_id="": {"req": o, "profile": browser_profile_id},
+    )
+
+    async def _ensure_profile(owner_id):
+        return f"{owner_id}-ab12cd34ef"
+
+    monkeypatch.setattr(hermes_provisioning.browser_sessions, "ensure_browser_profile", _ensure_profile)
     monkeypatch.setattr(
         hermes_provisioning, "_update_runtime_image", lambda arn, req: calls.append(("update", arn, req))
     )
@@ -50,7 +62,7 @@ async def test_roll_updates_waits_and_stops_the_session_on_drift(monkeypatch):
     calls = _wire(monkeypatch, current_image="acct.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:h-old")
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
     assert [c[0] for c in calls] == ["update", "ready", "health", "stop"]
-    assert calls[0] == ("update", "arn:rt", {"req": "org_a"})
+    assert calls[0] == ("update", "arn:rt", {"req": "org_a", "profile": "org_a-ab12cd34ef"})
     assert calls[3][1] == "arn:rt" and calls[3][2].startswith("lb-org_a-")
 
 

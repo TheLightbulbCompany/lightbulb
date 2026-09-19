@@ -9,8 +9,8 @@ reverse table, then splits:
            identical to the pre-cap Lambda: no dedup row, no counter, no kill.
   trial -> price the record LOCALLY, ADD the microcents to
            billing-accounts.trial_daily_spend_microcents.{UTC date}, and at
-           $3/day revoke the owner's Bedrock IAM policy AND stop their ECS
-           service. NEVER ingested (a trial owner has no Metronome contract).
+           $3/day deny the owner's bedrock-gate token AND revoke their Bedrock
+           IAM policy. NEVER ingested (a trial owner has no Metronome contract).
 
 ALL billable counts are read from the TOP LEVEL of the record
 (`input.inputTokenCount` / `output.outputTokenCount` /
@@ -26,8 +26,8 @@ transaction-id-less record is NEVER ingested.
 The DynamoDB paths (the dedup guard and the guarded two-step counter) are
 exercised against a REAL DynamoDB engine (moto), not a hand mock: the counter
 is a nested-map ADD that DynamoDB rejects if written naively, so a mock would
-happily pass code that fails in production. IAM and ECS are stubbed — the
-assertions are on the exact calls, which is the whole contract.
+happily pass code that fails in production. IAM is stubbed — the assertions
+are on the exact calls, which is the whole contract.
 
 The rate-card/CAP_MICROCENTS lockstep tests below exist because the gate/
 meter/backend copies are forced by process boundaries (the gate has no
@@ -67,7 +67,6 @@ BILLING_TABLE = "isol8-dev-billing-accounts"
 CONTAINERS_TABLE = "isol8-dev-containers"
 DEDUP_TABLE = "isol8-dev-bedrock-invocation-dedup"
 GATE_TOKENS_TABLE = "isol8-dev-bedrock-gate-tokens"
-CLUSTER_ARN = "arn:aws:ecs:us-east-1:877352799272:cluster/isol8-dev-container-ClusterEB0386A7-L9MzqPCGDupk"
 
 # A record signed by the per-env GATEWAY role (lightbulb-dev-bedrock-gate) rather
 # than the per-owner role — the marker _is_gateway_identity keys on.
@@ -114,7 +113,6 @@ def lambda_env(monkeypatch):
     monkeypatch.setenv("BILLING_TABLE", BILLING_TABLE)
     monkeypatch.setenv("CONTAINERS_TABLE", CONTAINERS_TABLE)
     monkeypatch.setenv("GATE_TOKENS_TABLE", GATE_TOKENS_TABLE)
-    monkeypatch.setenv("ECS_CLUSTER_PREFIX", "isol8-dev-container-")
     monkeypatch.setenv("DLQ_URL", "https://sqs.test.local/dlq")
     monkeypatch.setenv("METER_ENV", "dev")
     # moto refuses to run without credentials + a region.
@@ -141,7 +139,7 @@ def _aws_world(
     *, owner="org_abc", starting_spend=None, billing_row=True, container_row=True, gate_token_hash=None
 ):
     """A real (moto) DynamoDB with the four tables the counter + kill path touch,
-    plus stubbed IAM/ECS clients. Yields (ddb, iam, ecs).
+    plus a stubbed IAM client. Yields (ddb, iam).
 
     The counter is a nested-map ADD guarded by a conditional map init — a hand
     mock would accept the naive single-expression form DynamoDB rejects, so
@@ -188,10 +186,9 @@ def _aws_world(
                 },
             )
 
-        iam, ecs = MagicMock(), MagicMock()
-        ecs.list_clusters.return_value = {"clusterArns": [CLUSTER_ARN]}
-        with patch.object(index, "_iam", return_value=iam), patch.object(index, "_ecs", return_value=ecs):
-            yield ddb, iam, ecs
+        iam = MagicMock()
+        with patch.object(index, "_iam", return_value=iam):
+            yield ddb, iam
 
 
 def _daily_spend(ddb, owner="org_abc"):
@@ -920,7 +917,7 @@ def test_trial_record_adds_priced_spend_to_todays_key_and_never_ingests():
     ingested = []
 
     with (
-        _aws_world() as (ddb, iam, ecs),
+        _aws_world() as (ddb, iam),
         _stub_resolver(tier="sonnet", plan="trial"),
         patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
     ):
@@ -934,7 +931,6 @@ def test_trial_record_adds_priced_spend_to_todays_key_and_never_ingests():
     assert spend == {_utc_today(): SONNET_PRICE_MICROCENTS}
     # Far under the cap: nothing is killed.
     iam.delete_role_policy.assert_not_called()
-    ecs.update_service.assert_not_called()
 
 
 def test_trial_counter_accumulates_across_records():
@@ -945,7 +941,7 @@ def test_trial_counter_accumulates_across_records():
     second = _load("inline_record.json")
     second["requestId"] = "second-record-id"
 
-    with _aws_world() as (ddb, _iam, _ecs), _stub_resolver(tier="sonnet", plan="trial"):
+    with _aws_world() as (ddb, _iam), _stub_resolver(tier="sonnet", plan="trial"):
         index.handler(_awslogs_event(first, second), None)
         spend = _daily_spend(ddb)
 
@@ -957,7 +953,7 @@ def test_trial_counter_initializes_map_on_a_row_that_has_none():
     conditional map-init step is what makes the nested-path SET legal."""
     import index
 
-    with _aws_world(starting_spend=None) as (ddb, _iam, _ecs):
+    with _aws_world(starting_spend=None) as (ddb, _iam):
         assert _daily_spend(ddb) == {}
         total = index._add_daily_spend("org_abc", _utc_today(), 500)
         assert _daily_spend(ddb) == {_utc_today(): 500}
@@ -1001,7 +997,7 @@ def test_unpriceable_tier_dlqs_and_never_counts():
     dlqd, metrics = [], []
 
     with (
-        _aws_world() as (ddb, _iam, _ecs),
+        _aws_world() as (ddb, _iam),
         _stub_resolver(tier="mystery", plan="trial"),
         patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
@@ -1029,7 +1025,7 @@ def test_same_request_id_delivered_twice_counts_once():
     metrics = []
 
     with (
-        _aws_world() as (ddb, _iam, _ecs),
+        _aws_world() as (ddb, _iam),
         _stub_resolver(tier="sonnet", plan="trial"),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
     ):
@@ -1067,7 +1063,7 @@ def test_replay_of_a_paid_record_still_ingests_both_times():
 def test_claim_request_is_first_write_wins():
     import index
 
-    with _aws_world() as (ddb, _iam, _ecs):
+    with _aws_world() as (ddb, _iam):
         assert index._claim_request("req-1") is True
         assert index._claim_request("req-1") is False
         assert index._claim_request("req-2") is True
@@ -1093,7 +1089,7 @@ def test_paid_record_ingests_and_touches_no_counter():
     ingested = []
 
     with (
-        _aws_world() as (ddb, iam, ecs),
+        _aws_world() as (ddb, iam),
         _stub_resolver(plan="paid"),
         patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
     ):
@@ -1105,12 +1101,11 @@ def test_paid_record_ingests_and_touches_no_counter():
     assert spend == {}
     assert dedup_rows == 0
     iam.delete_role_policy.assert_not_called()
-    ecs.update_service.assert_not_called()
 
 
 def test_paid_owner_crossing_three_dollars_is_untouched():
     """The cap is a TRIAL construct. A paid owner is billed through Metronome
-    and must never be revoked, stopped, or counted — no matter the spend."""
+    and must never be revoked, denied, or counted — no matter the spend."""
     import index
 
     record = _load("inline_record.json")
@@ -1118,7 +1113,7 @@ def test_paid_owner_crossing_three_dollars_is_untouched():
     ingested = []
 
     with (
-        _aws_world(starting_spend=2_999_999) as (ddb, iam, ecs),
+        _aws_world(starting_spend=2_999_999) as (ddb, iam),
         _stub_resolver(plan="paid"),
         patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
     ):
@@ -1131,24 +1126,24 @@ def test_paid_owner_crossing_three_dollars_is_untouched():
     assert spend == {_utc_today(): 2_999_999}
     assert dedup_rows == 0
     iam.delete_role_policy.assert_not_called()
-    ecs.update_service.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# THE KILL. The container holds its own AWS credentials and calls Bedrock
-# directly, so revoking the per-owner IAM policy + stopping the ECS service is
-# the ONLY thing that provably stops a free owner's spend.
+# THE KILL. Denying the owner's bedrock-gate token is what provably stops a
+# free owner's spend; the IAM revoke rides alongside it for break-glass direct
+# mode. (The third step, desiredCount=0 on the owner's ECS service, went with
+# the per-user containers.)
 # ---------------------------------------------------------------------------
 
 
-def test_crossing_the_cap_revokes_iam_and_stops_ecs_exactly_once():
+def test_crossing_the_cap_revokes_iam_exactly_once():
     import index
 
     record = _load("inline_record.json")  # 121,275 microcents on sonnet
     under = index.CAP_MICROCENTS - 1_000  # one record takes us over
 
     with (
-        _aws_world(starting_spend=under) as (ddb, iam, ecs),
+        _aws_world(starting_spend=under) as (ddb, iam),
         _stub_resolver(tier="sonnet", plan="trial"),
     ):
         index.handler(_awslogs_event(record), None)
@@ -1160,11 +1155,6 @@ def test_crossing_the_cap_revokes_iam_and_stops_ecs_exactly_once():
     iam.delete_role_policy.assert_called_once_with(
         RoleName="lightbulb-dev-owner-bedrock-org_abc",
         PolicyName="owner-bedrock",
-    )
-    ecs.update_service.assert_called_once_with(
-        cluster=CLUSTER_ARN,
-        service=index._service_name("org_abc"),
-        desiredCount=0,
     )
     # The stamp is the whole downstream contract, not just the flag:
     # bedrock_revoked drives the daily restore; status="stopped" is what the
@@ -1184,7 +1174,7 @@ def test_staying_under_the_cap_kills_nothing():
     record = _load("inline_record.json")
 
     with (
-        _aws_world(starting_spend=1_000) as (ddb, iam, ecs),
+        _aws_world(starting_spend=1_000) as (ddb, iam),
         _stub_resolver(tier="sonnet", plan="trial"),
     ):
         index.handler(_awslogs_event(record), None)
@@ -1193,7 +1183,6 @@ def test_staying_under_the_cap_kills_nothing():
 
     assert spend == {_utc_today(): 1_000 + SONNET_PRICE_MICROCENTS}
     iam.delete_role_policy.assert_not_called()
-    ecs.update_service.assert_not_called()
     assert "bedrock_revoked" not in container
 
 
@@ -1214,13 +1203,12 @@ def test_every_over_cap_record_re_asserts_the_kill():
     trailing["requestId"] = "trailing-record-id"
 
     with (
-        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000) as (_ddb, iam, ecs),
+        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000) as (_ddb, iam),
         _stub_resolver(tier="sonnet", plan="trial"),
     ):
         index.handler(_awslogs_event(crossing, trailing), None)
 
     assert iam.delete_role_policy.call_count == 2
-    assert ecs.update_service.call_count == 2
 
 
 def test_a_transient_kill_failure_on_the_crossing_is_retried_by_the_next_record():
@@ -1236,7 +1224,7 @@ def test_a_transient_kill_failure_on_the_crossing_is_retried_by_the_next_record(
     trailing["requestId"] = "trailing-record-id"
 
     with (
-        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000) as (_ddb, iam, ecs),
+        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000) as (_ddb, iam),
         _stub_resolver(tier="sonnet", plan="trial"),
     ):
         # Transient failure on the crossing record only; the retry succeeds.
@@ -1249,61 +1237,37 @@ def test_a_transient_kill_failure_on_the_crossing_is_retried_by_the_next_record(
     # The revoke was attempted twice and SUCCEEDED on the retry — the owner is
     # actually cut off, not merely alarmed about.
     assert iam.delete_role_policy.call_count == 2
-    assert ecs.update_service.call_count == 2
 
 
-def test_kill_is_independent_iam_failure_still_stops_ecs():
-    """A revoke failure must NOT skip the ECS stop — coupling them would let one
-    transient IAM error leave a runaway container invoking Bedrock."""
+def test_kill_is_independent_iam_failure_still_denies_and_stamps():
+    """A revoke failure must NOT skip the gate-token deny — coupling them would
+    let one transient IAM error leave a runaway workspace invoking Bedrock."""
     import index
 
-    stopped, stamped, denied, metrics = [], [], [], []
+    stamped, denied, metrics = [], [], []
 
     with (
         patch.object(index, "_revoke_owner_iam", side_effect=RuntimeError("iam 503")),
-        patch.object(index, "_stop_owner_service", side_effect=lambda o: stopped.append(o)),
         patch.object(index, "_deny_gate_token", side_effect=lambda o: denied.append(o)),
         patch.object(index, "_stamp_bedrock_revoked", side_effect=lambda o: stamped.append(o)),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
     ):
         index._kill_owner_bedrock("org_abc")  # must not raise
 
-    assert stopped == ["org_abc"]
     assert denied == ["org_abc"]
     assert stamped == ["org_abc"]
     assert "meter.kill_iam_error" in metrics
 
 
-def test_kill_is_independent_ecs_failure_still_revokes_and_stamps():
+def test_kill_is_independent_deny_token_failure_still_revokes_and_stamps():
+    """A deny-flag failure must NOT skip the IAM/stamp steps — the deny step is
+    an INDEPENDENT kill action, not a precondition for the others."""
     import index
 
-    revoked, stamped, denied, metrics = [], [], [], []
+    revoked, stamped, metrics = [], [], []
 
     with (
         patch.object(index, "_revoke_owner_iam", side_effect=lambda o: revoked.append(o)),
-        patch.object(index, "_stop_owner_service", side_effect=RuntimeError("ecs 503")),
-        patch.object(index, "_deny_gate_token", side_effect=lambda o: denied.append(o)),
-        patch.object(index, "_stamp_bedrock_revoked", side_effect=lambda o: stamped.append(o)),
-        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
-    ):
-        index._kill_owner_bedrock("org_abc")
-
-    assert revoked == ["org_abc"]
-    assert denied == ["org_abc"]
-    assert stamped == ["org_abc"]
-    assert "meter.kill_ecs_error" in metrics
-
-
-def test_kill_is_independent_deny_token_failure_still_revokes_stops_stamps():
-    """A deny-flag failure must NOT skip the IAM/ECS/stamp steps — the deny step
-    is a THIRD independent kill action, not a precondition for the others."""
-    import index
-
-    revoked, stopped, stamped, metrics = [], [], [], []
-
-    with (
-        patch.object(index, "_revoke_owner_iam", side_effect=lambda o: revoked.append(o)),
-        patch.object(index, "_stop_owner_service", side_effect=lambda o: stopped.append(o)),
         patch.object(index, "_deny_gate_token", side_effect=RuntimeError("ddb 503")),
         patch.object(index, "_stamp_bedrock_revoked", side_effect=lambda o: stamped.append(o)),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
@@ -1311,7 +1275,6 @@ def test_kill_is_independent_deny_token_failure_still_revokes_stops_stamps():
         index._kill_owner_bedrock("org_abc")
 
     assert revoked == ["org_abc"]
-    assert stopped == ["org_abc"]
     assert stamped == ["org_abc"]
     assert "meter.kill_deny_token_error" in metrics
 
@@ -1325,13 +1288,12 @@ def test_kill_failure_never_fails_the_batch():
     dlqd, metrics = [], []
 
     with (
-        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000) as (ddb, iam, ecs),
+        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000) as (ddb, iam),
         _stub_resolver(tier="sonnet", plan="trial"),
         patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
     ):
         iam.delete_role_policy.side_effect = RuntimeError("iam down")
-        ecs.update_service.side_effect = RuntimeError("ecs down")
         result = index.handler(_awslogs_event(record), None)
         spend = _daily_spend(ddb)
 
@@ -1339,7 +1301,6 @@ def test_kill_failure_never_fails_the_batch():
     assert dlqd == []
     assert spend == {_utc_today(): index.CAP_MICROCENTS - 1_000 + SONNET_PRICE_MICROCENTS}
     assert "meter.kill_iam_error" in metrics
-    assert "meter.kill_ecs_error" in metrics
 
 
 def test_revoke_is_idempotent_a_missing_policy_is_already_revoked():
@@ -1364,75 +1325,6 @@ def test_revoke_surfaces_a_real_iam_error():
         index._revoke_owner_iam("org_abc")
 
 
-@pytest.mark.parametrize("code", ["ServiceNotFoundException", "ServiceNotActiveException"])
-def test_stop_is_idempotent_a_stopped_service_is_already_stopped(code):
-    import index
-
-    ecs = MagicMock()
-    ecs.list_clusters.return_value = {"clusterArns": [CLUSTER_ARN]}
-    ecs.update_service.side_effect = ClientError({"Error": {"Code": code, "Message": "gone"}}, "UpdateService")
-    with patch.object(index, "_ecs", return_value=ecs):
-        index._stop_owner_service("org_abc")  # must not raise
-
-
-def test_stop_surfaces_a_real_ecs_error():
-    import index
-
-    ecs = MagicMock()
-    ecs.list_clusters.return_value = {"clusterArns": [CLUSTER_ARN]}
-    ecs.update_service.side_effect = ClientError(
-        {"Error": {"Code": "InvalidParameterException", "Message": "nope"}}, "UpdateService"
-    )
-    with patch.object(index, "_ecs", return_value=ecs), pytest.raises(ClientError):
-        index._stop_owner_service("org_abc")
-
-
-def test_cluster_is_resolved_by_prefix_and_cached():
-    """The cluster's physical name is CFN-generated (renaming it would REPLACE
-    it and destroy every per-user service), and this account-scoped stack cannot
-    hold a cross-stage ref to the dev cluster — so it is resolved at runtime by
-    prefix, once per container."""
-    import index
-
-    ecs = MagicMock()
-    ecs.list_clusters.return_value = {
-        "clusterArns": [
-            "arn:aws:ecs:us-east-1:877352799272:cluster/goosetown-dev-shared",
-            CLUSTER_ARN,
-            "arn:aws:ecs:us-east-1:877352799272:cluster/isol8-prod-container-ClusterEB0386A7-Uc0EwgAC9DcQ",
-        ]
-    }
-    with patch.object(index, "_ecs", return_value=ecs):
-        assert index._cluster_arn() == CLUSTER_ARN
-        assert index._cluster_arn() == CLUSTER_ARN
-
-    assert ecs.list_clusters.call_count == 1
-
-
-def test_service_name_matches_the_backend_derivation():
-    """Mirrors ecs_manager._service_name — the backend's own stop path derives
-    the name this way, so a mismatch here would UpdateService a service that
-    does not exist and the kill's instant half would silently no-op."""
-    import hashlib
-
-    import index
-
-    owner = "org_2abcDEF"
-    expected = f"openclaw-{owner}-{hashlib.sha256(owner.encode()).hexdigest()[:12]}"
-    assert index._service_name(owner) == expected
-
-
-# ---------------------------------------------------------------------------
-# GATEWAY AUDITOR. Once an owner is cut over to the bedrock-gate, the gateway
-# claims + debits each invocation synchronously; the meter is the AUDITOR that
-# backstops anything the gateway missed (crash / client-abort / lost usage
-# event), deduped on the shared per-requestId claim. A trial record the meter
-# CLAIMS (gateway did NOT claim first) that was gateway-SIGNED is a reconciled
-# gateway miss — made visible via meter.reconciled_gateway_miss. A direct
-# owner-role record is a non-gatewayed owner the meter always counts — no miss.
-# ---------------------------------------------------------------------------
-
-
 def test_gateway_signed_trial_record_counts_and_emits_reconciled_gateway_miss():
     """A gateway-signed record reaching the meter's claim means the gateway
     missed its own synchronous debit — the meter backstops the count AND emits
@@ -1444,7 +1336,7 @@ def test_gateway_signed_trial_record_counts_and_emits_reconciled_gateway_miss():
     metrics = []
 
     with (
-        _aws_world() as (ddb, _iam, _ecs),
+        _aws_world() as (ddb, _iam),
         _stub_resolver(tier="sonnet", plan="trial"),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
     ):
@@ -1470,7 +1362,7 @@ def test_gateway_signed_record_already_claimed_by_gateway_skips_without_reconcil
     metrics = []
 
     with (
-        _aws_world() as (ddb, _iam, _ecs),
+        _aws_world() as (ddb, _iam),
         _stub_resolver(tier="sonnet", plan="trial"),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
     ):
@@ -1508,7 +1400,7 @@ def test_owner_role_trial_record_counts_without_reconcile_metric():
     metrics = []
 
     with (
-        _aws_world() as (ddb, _iam, _ecs),
+        _aws_world() as (ddb, _iam),
         _stub_resolver(tier="sonnet", plan="trial"),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
     ):
@@ -1529,7 +1421,7 @@ def test_kill_denies_the_gate_token_row():
     token_hash = "hash-of-owners-bearer-token"
 
     with (
-        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000, gate_token_hash=token_hash) as (ddb, _iam, _ecs),
+        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000, gate_token_hash=token_hash) as (ddb, _iam),
         _stub_resolver(tier="sonnet", plan="trial"),
     ):
         index.handler(_awslogs_event(record), None)
@@ -1541,14 +1433,14 @@ def test_kill_denies_the_gate_token_row():
 def test_kill_without_gate_token_hash_is_a_noop_and_other_steps_still_run():
     """An owner never cut over to the gateway has no bedrock_gate_token_hash on
     the containers row — the deny step is a clean no-op (NOT an error), and the
-    IAM revoke / ECS stop / revoked stamp still complete."""
+    IAM revoke and the revoked stamp still complete."""
     import index
 
     record = _load("inline_record.json")
     metrics = []
 
     with (
-        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000) as (ddb, iam, ecs),
+        _aws_world(starting_spend=index.CAP_MICROCENTS - 1_000) as (ddb, iam),
         _stub_resolver(tier="sonnet", plan="trial"),
         patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
     ):
@@ -1558,7 +1450,6 @@ def test_kill_without_gate_token_hash_is_a_noop_and_other_steps_still_run():
 
     # The other kill steps still ran.
     iam.delete_role_policy.assert_called_once()
-    ecs.update_service.assert_called_once()
     assert container["bedrock_revoked"]["BOOL"] is True
     # The no-op deny neither errored nor wrote a phantom gate-token row.
     assert "meter.kill_deny_token_error" not in metrics
@@ -1568,9 +1459,9 @@ def test_kill_without_gate_token_hash_is_a_noop_and_other_steps_still_run():
 def test_deny_gate_token_also_denies_the_superseded_rows():
     """The backstop kill must reach the token the container is ACTUALLY using.
 
-    Backend-side, a gate-token row now survives until neither the owner's ECS
-    service task definition nor any unstopped task can present it — so when a
-    rotation's redeploy never lands, the container keeps invoking with the
+    Backend-side, a gate-token row survives until nothing the owner runs can
+    present it — so when a rotation's redeploy never lands, the runtime keeps
+    invoking with the
     SUPERSEDED token while the rotation pointer names the undelivered new one.
     Denying only the pointer would leave a capped trial owner invoking Bedrock
     past the cap indefinitely, which is the runaway this kill exists to stop."""
@@ -1580,7 +1471,7 @@ def test_deny_gate_token_also_denies_the_superseded_rows():
     live = "hash-the-container-is-actually-presenting"
     ghost = "hash-whose-row-already-expired"
 
-    with _aws_world(gate_token_hash=pointer) as (ddb, _iam, _ecs):
+    with _aws_world(gate_token_hash=pointer) as (ddb, _iam):
         ddb.update_item(
             TableName=CONTAINERS_TABLE,
             Key={"owner_id": {"S": "org_abc"}},
@@ -1613,7 +1504,7 @@ def test_deny_gate_token_boto_core_error_on_first_hash_still_tries_the_rest():
     pointer = "hash-of-the-undelivered-new-token"
     live = "hash-the-container-is-actually-presenting"
 
-    with _aws_world(gate_token_hash=pointer) as (ddb, _iam, _ecs):
+    with _aws_world(gate_token_hash=pointer) as (ddb, _iam):
         ddb.update_item(
             TableName=CONTAINERS_TABLE,
             Key={"owner_id": {"S": "org_abc"}},
@@ -1654,7 +1545,7 @@ def test_deny_gate_token_noop_when_containers_row_missing():
     hash and no-ops, never raising and never writing a gate-token row."""
     import index
 
-    with _aws_world(container_row=False) as (ddb, _iam, _ecs):
+    with _aws_world(container_row=False) as (ddb, _iam):
         index._deny_gate_token("org_abc")  # must not raise
         gate_rows = ddb.scan(TableName=GATE_TOKENS_TABLE)["Count"]
 

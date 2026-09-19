@@ -31,11 +31,12 @@ PRIMARY per-request enforcement. This Lambda is the AWS-sourced auditor behind
 it — it sees EVERY invocation (gateway-signed AND any break-glass direct
 traffic), reconciles what the gate missed (aborted/crashed streams) via the
 shared requestId dedup, and fires the backstop kill if the counter crosses the
-cap anyway: deny the owner's gate token AND set desiredCount=0 (instant stop
-for already-admitted streams). The historical IAM-revoke step is retained —
-harmless/idempotent now that the fence policy carries no invoke, and it still
-bites during break-glass direct mode. All kill steps fire INDEPENDENTLY and
-are idempotent. This mirrors ecs_manager.kill_owner_bedrock.
+cap anyway: deny the owner's gate token. The historical IAM-revoke step is
+retained — harmless/idempotent now that the fence policy carries no invoke, and
+it still bites during break-glass direct mode. (The third step, desiredCount=0
+on the owner's ECS service, went with the per-user containers: every workspace
+is an AgentCore runtime and no such service exists.) All kill steps fire
+INDEPENDENTLY and are idempotent.
 
 REPLAY SAFETY. Metronome's transaction_id dedup is what makes the paid path
 replay-safe; a DynamoDB counter increment has NO such dedup, so a CW-Logs batch
@@ -62,7 +63,6 @@ instance. The instances differ ONLY in env vars (never code conditionals):
   - CONTAINERS_TABLE             : isol8-{env}-containers
   - GATE_TOKENS_TABLE            : isol8-{env}-bedrock-gate-tokens (deny-flag
                                    kill switch for gateway-path owners)
-  - ECS_CLUSTER_PREFIX           : isol8-{env}-container-  (cluster discovery)
   - DLQ_URL                      : that instance's own SQS DLQ
   - METER_ENV                    : the env dimension on emitted metrics, AND
                                    the env segment of the per-owner IAM role
@@ -101,7 +101,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -182,14 +181,11 @@ TIER_TO_FM = {
 }
 
 # Cold-start caches: the Metronome bearer token, the boto3 clients and the
-# resolved ECS cluster ARN are fetched/built once per Lambda container and
-# reused across invocations.
+# fetched/built once per Lambda container and reused across invocations.
 _METRONOME_TOKEN = None
 _DDB = None
 _SQS = None
 _IAM = None
-_ECS = None
-_CLUSTER_ARN = None
 
 
 class UnknownTierError(Exception):
@@ -220,13 +216,6 @@ def _iam():
     if _IAM is None:
         _IAM = boto3.client("iam")
     return _IAM
-
-
-def _ecs():
-    global _ECS
-    if _ECS is None:
-        _ECS = boto3.client("ecs")
-    return _ECS
 
 
 def _metronome_token():
@@ -645,51 +634,10 @@ def _add_daily_spend(owner_id, date_key, delta_microcents):
 
 
 def _owner_role_name(owner_id):
-    """The per-owner ECS task role. Mirrors bedrock_aip._owner_role_name — the
+    """The per-owner Bedrock role. Mirrors bedrock_aip._owner_role_name — the
     CDK scopes iam:DeleteRolePolicy to exactly this 'lightbulb-{env}-owner-bedrock-*'
     prefix."""
     return f"lightbulb-{os.environ['METER_ENV']}-owner-bedrock-{owner_id}"
-
-
-def _service_name(owner_id):
-    """The owner's ECS service name. Mirrors ecs_manager._service_name — the
-    backend's own stop path DERIVES this name the same way rather than reading
-    the containers row, so deriving it here needs no DynamoDB read and cannot
-    disagree with the service that actually exists."""
-    uid_hash = hashlib.sha256(owner_id.encode()).hexdigest()[:12]
-    safe_uid = re.sub(r"[^a-zA-Z0-9_-]", "", owner_id)[:40]
-    return f"openclaw-{safe_uid}-{uid_hash}"
-
-
-def _cluster_arn():
-    """The env's ECS cluster ARN, discovered once per container and cached.
-
-    The cluster is created by each env's container stack with a CFN-generated
-    physical name (isol8-{env}-container-Cluster<hash>-<random>) — renaming it
-    would REPLACE it and destroy every per-user service, so the name cannot be
-    made deterministic. This account-scoped stack (instantiated in the prod
-    stage, holding BOTH env instances) also cannot hold a cross-stage object
-    ref to the dev cluster. So the name is resolved at runtime by prefix, from
-    an env var, keeping the "instances differ only in env vars" rule intact.
-    """
-    global _CLUSTER_ARN
-    if _CLUSTER_ARN is None:
-        prefix = os.environ["ECS_CLUSTER_PREFIX"]
-        matches = []
-        token = None
-        while True:
-            kwargs = {"nextToken": token} if token else {}
-            page = _ecs().list_clusters(**kwargs)
-            matches += [arn for arn in page.get("clusterArns", []) if arn.split("/")[-1].startswith(prefix)]
-            token = page.get("nextToken")
-            if not token:
-                break
-        if not matches:
-            raise RuntimeError(f"no ECS cluster with prefix {prefix!r}")
-        if len(matches) > 1:
-            logger.warning("meter: %d clusters match prefix %s, using %s", len(matches), prefix, matches[0])
-        _CLUSTER_ARN = matches[0]
-    return _CLUSTER_ARN
 
 
 def _revoke_owner_iam(owner_id):
@@ -698,7 +646,7 @@ def _revoke_owner_iam(owner_id):
 
     Eventually consistent (~5-15s of IAM propagation), so it is fired FIRST to
     start that clock — but it does NOT kill an already-admitted streaming call,
-    which is why it is paired with the ECS stop.
+    which is why it is paired with the gate-token deny.
     """
     try:
         _iam().delete_role_policy(
@@ -710,26 +658,12 @@ def _revoke_owner_iam(owner_id):
             raise
 
 
-def _stop_owner_service(owner_id):
-    """Scale the owner's ECS service to 0 — the guaranteed instant stop.
-    Idempotent: a missing or inactive service is already stopped."""
-    try:
-        _ecs().update_service(
-            cluster=_cluster_arn(),
-            service=_service_name(owner_id),
-            desiredCount=0,
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] not in ("ServiceNotFoundException", "ServiceNotActiveException"):
-            raise
-
-
 def _stamp_bedrock_revoked(owner_id):
     """Mark the containers row so the backend can see the revoke — the daily
     restore reads this flag to re-attach the policy when the day rolls over.
 
     Also flips the row to status="stopped" / substatus="trial_daily_cap",
-    mirroring what the backend's own stop path writes after an ECS stop.
+    mirroring what the backend's own stop path writes.
     Every downstream surface keys on status: the status poll's retryable
     branch renders the 402 daily-limit card (with the Upgrade CTA) off
     "stopped", and the day-rollover auto-restart fires only on "stopped". A
@@ -766,7 +700,7 @@ def _deny_gate_token(owner_id):
     cuts off a cut-over owner whose direct owner-role Invoke has been dropped,
     which the iam_revoke step no longer covers. During the transition an owner
     may still hold owner-role Invoke too, so this runs INDEPENDENTLY alongside
-    (never instead of) iam_revoke + ecs_stop.
+    (never instead of) iam_revoke.
 
     TWO pointers, not one, and both are load-bearing:
 
@@ -828,10 +762,10 @@ def _kill_owner_bedrock(owner_id, *, crossed=True):
     call is harmless. Every failure emits its own alarmed metric: an un-executed
     kill is real money, so it must page rather than fail the batch (raising here
     would fail records that are already counted, and CW Logs would retry them
-    into the dedup guard for nothing). The three enforcement steps cover both
-    invoke paths — iam_revoke + ecs_stop stop the direct owner-role path, and
-    deny_token stops the gateway path (a cut-over owner whose owner-role Invoke
-    was dropped) — so an owner on either path, or mid-transition on both, is cut.
+    into the dedup guard for nothing). The two enforcement steps cover both
+    invoke paths — iam_revoke stops the direct owner-role path, and deny_token
+    stops the gateway path (which is the only path a workspace has since the
+    move to AgentCore) — so an owner on either, or on both, is cut.
 
     ``crossed`` is False when this is a RETRY on a later over-cap record rather
     than the threshold-crossing one (see _meter_trial_spend). The retry runs the
@@ -845,7 +779,6 @@ def _kill_owner_bedrock(owner_id, *, crossed=True):
     # stays independently patchable/testable.
     steps = (
         ("iam_revoke", _revoke_owner_iam, "meter.kill_iam_error"),
-        ("ecs_stop", _stop_owner_service, "meter.kill_ecs_error"),
         ("deny_token", _deny_gate_token, "meter.kill_deny_token_error"),
         ("revoked_stamp", _stamp_bedrock_revoked, "meter.kill_stamp_error"),
     )
@@ -945,13 +878,13 @@ def _meter_trial_spend(parsed):
     # one. This looks redundant and is not: _kill_owner_bedrock NEVER RAISES —
     # it swallows each step's failure so one transient IAM error cannot fail a
     # batch of already-counted records — so a crossing-only kill has NO RETRY.
-    # If IAM or ECS blips on that single record, every later record also has
+    # If IAM or DynamoDB blips on that single record, every later record has
     # `total - microcents >= CAP`, the crossing test is false forever, and the
     # owner keeps invoking Bedrock until a human reads the alarm. That is the
     # one failure this whole module exists to prevent.
     #
-    # Retrying is safe and self-limiting: all three steps are idempotent and
-    # swallow their own already-done errors (NoSuchEntity / ServiceNotFound), so
+    # Retrying is safe and self-limiting: every step is idempotent and
+    # swallows its own already-done error (NoSuchEntity, a re-set deny flag), so
     # a redundant kill raises nothing and emits no failure metric. And once the
     # kill lands the container stops invoking, so the retries stop on their own
     # — only the records already in flight at the crossing land afterwards.

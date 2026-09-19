@@ -420,9 +420,8 @@ def _download_s3_profile(prefix: str, dest: Path) -> set[str]:
 
     s3 = boto3.client("s3")
     # Fix round 1, item 4: OWNER_STATE_BUCKET is the profile writer's single
-    # source of truth for this bucket (hermes_profiles.upload_profile) -- it
-    # falls back to LITESTREAM_BUCKET when unset, so reading it here can never
-    # disagree with what the writer used.
+    # source of truth for this bucket (hermes_profiles.upload_profile), so reading it here
+    # can never disagree with what the writer used.
     bucket = settings.OWNER_STATE_BUCKET
     key_prefix = f"{prefix}/"
     repo_dirs: set[str] = set()
@@ -787,9 +786,8 @@ def export_agent_from_efs(
             desktop app). Nothing on the deploy side can "install" it.
         paths: Workspace-relative files/dirs to ship instead of the whole
             workspace (see ``_build_tarball``).
-        container: The seller's container row, used only to decide EFS vs S3
-            via ``runtime_transport.host_for`` (see ``_resolve_agent_location``).
-            ``None`` (every existing caller, today) means EFS -- unchanged.
+        container: Accepted for the caller's convenience and unused -- every export reads
+            the agent's S3 profile (see ``_resolve_agent_location``).
 
     Raises:
         InvalidAgentIdError: agent_id failed format / path-traversal check.
@@ -976,9 +974,8 @@ def export_built_agent_from_staging(
             plays in ``export_agent_from_efs``).
         staging_agent_id: The ``workspace-{token}/`` dir name Atlas built into.
         selected_mcps / selected_skills: forwarded to extract_agent_slice; None (Atlas) keeps the {agent, plugins, tools} shape.
-        container: The owner's container row, used only to decide EFS vs S3 via
-            ``runtime_transport.host_for`` (see ``_resolve_agent_location``).
-            ``None`` (every existing caller, today) means EFS -- unchanged.
+        container: Accepted for the caller's convenience and unused -- every export reads
+            the agent's S3 profile (see ``_resolve_agent_location``).
 
     Raises:
         InvalidAgentIdError: staging_agent_id failed format / path-traversal check.
@@ -1173,9 +1170,8 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str, container: dict | No
     include) doesn't affect the scan result, so the frontend can cache
     this once and reuse across Bundle/Review steps.
 
-    ``container`` decides EFS vs S3 via ``runtime_transport.host_for`` (see
-    ``_resolve_agent_location``); ``None`` (every existing caller, today)
-    means EFS — unchanged.
+    ``container`` is accepted and unused — every export reads the agent's S3 profile (see
+    ``_resolve_agent_location``).
 
     Raises the same errors as ``export_agent_from_efs``:
     InvalidAgentIdError / AgentNotFoundError / AgentNotInConfigError.

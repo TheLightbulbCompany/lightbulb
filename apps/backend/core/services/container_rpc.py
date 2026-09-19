@@ -19,8 +19,6 @@ from core.services import runtime_transport
 from core.repositories import container_repo
 from core.services.messaging import ApiProblem
 
-#: Only ``routers.gateway_relay`` still imports this; it goes with that router's ECS leg.
-GATEWAY_PORT = 18789
 RPC_PATH = "/plugins/lightbulb-channel/rpc"
 
 
@@ -28,23 +26,21 @@ def _unavailable() -> ApiProblem:
     return ApiProblem("RUNTIME_UNAVAILABLE", "The runtime is temporarily unavailable.", retryable=True, retry_after=3)
 
 
-async def running_container(owner_id: str, *, wake: bool = True) -> tuple[dict, str]:
-    """The owner's runtime row plus the AgentCore address sentinel; raises retryable when there
-    is no row to address.
+async def running_container(owner_id: str) -> dict:
+    """The owner's addressable runtime row; raises retryable when there is none.
 
-    ``wake`` is inert -- AgentCore starts the microVM on invoke, so there is no stopped service
-    to scale up and nothing a read-only caller can accidentally start. The kwarg stays so the
-    ``wake=False`` call sites do not churn here.
+    There is no wake step and no address to resolve: AgentCore starts the microVM on the
+    invoke itself, so a read-only caller cannot accidentally start anything and a parked
+    runtime answers the invoke that wakes it.
 
     Status is deliberately NOT gated: a row is addressable as soon as it carries its gateway
-    token, and a parked runtime answers the invoke that wakes it. ``runtime_transport.request``
-    is the one place that insists on ``agentcore_runtime_arn`` -- a row without one fails there
-    as the same ``ApiProblem``.
+    token. ``runtime_transport.request`` is the one place that insists on
+    ``agentcore_runtime_arn`` -- a row without one fails there as the same ``ApiProblem``.
     """
     container = await container_repo.get_by_owner_id(owner_id)
     token = (container or {}).get("gateway_token")
     if container and isinstance(token, str) and token:
-        return container, runtime_transport.AGENTCORE_ADDRESS
+        return container
     raise _unavailable()
 
 
@@ -54,16 +50,15 @@ async def call(
     params: dict | None = None,
     *,
     timeout_s: float = 30.0,
-    wake: bool = True,
-    target: tuple[dict, str] | None = None,
+    target: dict | None = None,
 ) -> Any:
-    """``target``, when given, is an already-resolved ``(container, address)`` pair (e.g. from
-    a prior ``running_container`` call) -- skips resolution so a caller making many calls for
-    one owner pays one DynamoDB read, not one per call."""
+    """``target``, when given, is an already-resolved runtime row (e.g. from a prior
+    ``running_container`` call) -- skips resolution so a caller making many calls for one owner
+    pays one DynamoDB read, not one per call."""
     started = time.perf_counter()
     outcome = "unavailable"
     try:
-        container, _address = target if target is not None else await running_container(owner_id, wake=wake)
+        container = target if target is not None else await running_container(owner_id)
         # F4 (predeploy review, M6-R37): a parked workspace holds an invoke through the microVM
         # start + gateway boot (54-57s measured) -- a caller's shorter default (30s in
         # runtime_rpc, 10s/5s/2s in narrower probes) fails on the first call to a cold workspace

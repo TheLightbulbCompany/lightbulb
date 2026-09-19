@@ -23,11 +23,10 @@ Forward = raw body byte-identical, Content-Type preserved, X-Slack-Request-
 Timestamp preserved, X-Slack-Signature RE-SIGNED with the owner's hook_token
 (the container's Bolt receiver verifies against OPENCLAW_HOOK_TOKEN — the
 app-wide signing secret never leaves this process). No Authorization header:
-the plugin route is auth:"plugin". Never resolve_running_container here — its
-5 s TCP probe eats Slack's whole 3 s budget.
+the plugin route is auth:"plugin".
 
-The no-IP 503 is the single deliberate exception to "per-owner failures never
-5xx": Slack's retry IS the recovery for a container mid-roll, and one owner's
+The no-runtime 503 is the single deliberate exception to "per-owner failures never
+5xx": Slack's retry IS the recovery for a workspace mid-roll, and one owner's
 503s cannot approach the app-wide 95 %/60 min threshold.
 
 Dedup is recorded only once we are about to forward; a 503 leaves no row so

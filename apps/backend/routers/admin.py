@@ -475,7 +475,7 @@ async def _admin_agent_rpc(*, user_id: str, agent_id: str, method: str) -> dict:
     """One gateway RPC for an admin-initiated per-agent action, keyed on the owner."""
     owner_id, _ = await resolve_admin_owner_id(user_id)
     try:
-        return await container_rpc.call(owner_id, method, {"agent_id": agent_id}, wake=False)
+        return await container_rpc.call(owner_id, method, {"agent_id": agent_id})
     except ApiProblem as exc:
         raise HTTPException(status_code=409, detail="container_not_running") from exc
 

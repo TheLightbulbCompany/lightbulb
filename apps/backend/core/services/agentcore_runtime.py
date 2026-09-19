@@ -267,7 +267,7 @@ async def ensure_runtime(owner_id: str) -> dict:
     await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), account_id)
     gate_bearer = await mint_gate_token(owner_id, aip_arns)
 
-    # Same resolver ecs_manager uses for the ACP harness env -- token and URL travel together.
+    # Token and URL travel together -- same resolver every other harness env uses.
     from core.billing.bedrock_gate_url import gate_url as _resolve_gate_url
 
     resolved_gate_url = _resolve_gate_url()
@@ -276,7 +276,7 @@ async def ensure_runtime(owner_id: str) -> dict:
         owner_id=owner_id,
         api_base=settings.PUBLIC_API_BASE,
         hook_token=hook_token,
-        litestream_bucket=settings.LITESTREAM_BUCKET,
+        litestream_bucket=settings.OWNER_STATE_BUCKET,
         gate_bearer=gate_bearer,
         gate_url=resolved_gate_url,
         sonnet_aip_arn=aip_arns["sonnet"],

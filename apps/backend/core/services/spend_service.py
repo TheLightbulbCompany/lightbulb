@@ -207,7 +207,7 @@ async def _oauth_quota_payload(owner_id: str) -> dict | None:
     falls back to tokens_only. OpenClaw caches upstream 60s; no cache here.
     """
     try:
-        result = await container_rpc.call(owner_id, "models.authStatus", {}, timeout_s=5.0, wake=False)
+        result = await container_rpc.call(owner_id, "models.authStatus", {}, timeout_s=5.0)
         for provider in (result or {}).get("providers") or []:
             if provider.get("provider") not in _OAUTH_PROVIDER_IDS:
                 continue

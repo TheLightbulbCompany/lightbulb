@@ -270,16 +270,13 @@ async def deploy_tarball_to_profile(*, owner_id: str, agent_id: str, tar_bytes: 
     which calls this function only after both of those exist, so this is
     purely "place the artifact's content files" (fix round 1, M6-R9).
 
-    ``container`` is unused today (every write targets the S3 profile
-    unconditionally) but is accepted so the caller doesn't need a second
-    branch on ``runtime_transport.host_for`` — it names the contract this
-    function is only ever called under.
+    ``container`` is unused — every write targets the S3 profile. It is accepted so the
+    caller does not have to drop an argument it already has in hand.
     """
 
     def _write() -> None:
         # Fix round 1, item 4: OWNER_STATE_BUCKET is the profile writer's
-        # (hermes_profiles.upload_profile) single source of truth for this
-        # bucket -- it falls back to LITESTREAM_BUCKET when unset.
+        # (hermes_profiles.upload_profile) single source of truth for this bucket.
         bucket = settings.OWNER_STATE_BUCKET
         s3 = _s3_client()
         prefix = f"{owner_id}/hermes/{agent_id}"

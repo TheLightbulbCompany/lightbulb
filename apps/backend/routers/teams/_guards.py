@@ -32,10 +32,8 @@ async def require_always_on_entitlement(owner_id: str, message: str | None = Non
     trigger with no check at all.
 
     Gating CREATION (not just the manual ``/run`` dispatch) is the point. A
-    trial container scales to zero when the tab closes, and NO Paperclip or
-    operator dispatch path calls ``start_user_service`` —
-    ``resolve_running_container`` simply returns ``(None, None)`` for a stopped
-    container. So a routine a trial owner schedules for 3am does not "run inside
+    trial container is parked when the tab closes, and no Paperclip or operator dispatch
+    path wakes it. So a routine a trial owner schedules for 3am does not "run inside
     the $3/day cap": it does not run AT ALL, silently, every night. Letting them
     build that is worse than refusing it. This is a broken-affordance fix, not a
     paywall move — spend was already fenced by the meter Lambda's daily cap.

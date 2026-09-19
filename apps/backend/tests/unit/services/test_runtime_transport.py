@@ -28,25 +28,27 @@ class TestSessionId:
         assert a != b
 
 
-class TestHostSelection:
-    """There is one runtime. ``host_for`` is a constant that ignores its argument, and
-    ``is_agentcore_owner`` performs no read at all -- a row that cannot be classified no longer
-    exists, so neither can answer "ecs"."""
+class TestNoTransportSelection:
+    """There is one runtime, so this module offers NO way to ask which one an owner is on.
+    The classification helpers (``host_for``, ``is_agentcore_owner``) and the address sentinel
+    they fed (``AGENTCORE_ADDRESS``, ``GATEWAY_PORT``) are deleted: anything reintroducing them
+    is reintroducing a branch with one live side."""
 
-    def test_every_row_is_agentcore(self):
-        assert rt.host_for({}) == "agentcore"
-        assert rt.host_for({"runtime_host": "ecs"}) == "agentcore"
-        assert rt.host_for({"runtime_host": "wat"}) == "agentcore"
+    def test_the_module_exposes_no_classifier(self):
+        for gone in ("host_for", "is_agentcore_owner", "AGENTCORE_ADDRESS", "GATEWAY_PORT"):
+            assert not hasattr(rt, gone), gone
 
     @pytest.mark.asyncio
-    async def test_is_agentcore_owner_never_reads_the_table(self, monkeypatch):
+    async def test_a_request_addresses_the_row_and_reads_nothing(self, monkeypatch):
+        """Addressing is the row's own ``agentcore_runtime_arn`` -- a request never looks an
+        owner up, so a caller that already holds the row pays for no second read."""
+
         async def _boom(owner_id, **kw):
-            raise AssertionError("is_agentcore_owner must not read containers any more")
+            raise AssertionError("runtime_transport must not read the containers table")
 
         monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _boom)
-        assert await rt.is_agentcore_owner("org_1") is True
-        # ``fail_closed`` is accepted and inert until its call sites go with their ECS branches.
-        assert await rt.is_agentcore_owner("org_1", fail_closed=True) is True
+        with pytest.raises(ValueError, match="agentcore_runtime_arn"):
+            await rt.request({"owner_id": "org_1"}, "/health")
 
 
 class TestAgentCoreTransport:

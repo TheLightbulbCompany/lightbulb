@@ -459,7 +459,7 @@ async def execute_sync(
     if method == "agents.create":
         from core.services.hermes_provisioning import HermesProfileError
 
-        container, _ip = await container_rpc.running_container(owner_id)
+        container = await container_rpc.running_container(owner_id)
         try:
             return await _create_agent(owner_id, user_id, _sanitize_agent_create(params), container)
         except HermesProfileError as exc:

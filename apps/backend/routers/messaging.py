@@ -491,7 +491,7 @@ async def _resolved_run(auth: AuthContext, run_id: str) -> tuple[str, dict]:
 async def _run_control(owner_id: str, run_id: str, action: str, payload: dict) -> int | None:
     """202 accepted, 404 not active, None when the owner has no addressable runtime."""
     try:
-        container, _address = await container_rpc.running_container(owner_id, wake=False)
+        container = await container_rpc.running_container(owner_id)
     except ApiProblem:
         return None
     response = await runtime_transport.request(

@@ -228,7 +228,6 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "stripe.api.latency": [["op"]],
   "stripe.webhook.received": [["event_type"]],
   "stripe.webhook.sig_fail": [[]],
-  "update.fleet_patch.invoked": [[]],
   "update.scheduled_worker.error": [[]],
   "update.scheduled_worker.heartbeat": [[]],
   "webhook.clerk.sig_fail": [[]],

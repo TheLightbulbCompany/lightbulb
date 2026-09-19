@@ -157,13 +157,6 @@ export class LightbulbStage extends cdk.Stage {
       stackName: `lightbulb-${env}-container`,
       environment: env,
       vpc: network.vpc,
-      kmsKeyArn: auth.kmsKey.keyArn,
-      // Pass secret NAME (not ISecret) — same cross-stack pattern as the
-      // service-stack secretNames, so ContainerStack imports it via
-      // fromSecretNameV2 without triggering a KMS auto-grant cycle.
-      gogKeyringPasswordSecretName: auth.gogKeyringPassword.secretName,
-      cloudflareWarpEnrollmentSecretName:
-        auth.cloudflareWarpEnrollment.secretName,
     });
 
     // ApiStack deploys BEFORE ServiceStack (no circular dependency)

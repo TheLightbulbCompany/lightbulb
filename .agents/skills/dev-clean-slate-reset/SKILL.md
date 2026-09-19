@@ -1,20 +1,21 @@
 ---
 name: dev-clean-slate-reset
-description: Full wipe of Isol8 dev state (ECS containers, EFS, DynamoDB, Paperclip Aurora, Stripe, Clerk) for fresh end-to-end testing. Use when the user asks to reset dev, wipe dev state, or clean-slate a dev account.
+description: Full wipe of Lightbulb dev state (AgentCore runtimes, S3 Hermes profiles, DynamoDB, Paperclip Aurora, Stripe, Clerk) for fresh end-to-end testing. Use when the user asks to reset dev, wipe dev state, or clean-slate a dev account.
 ---
 
 # Clean-Slate Dev Reset
 
-Full wipe of dev state for fresh testing. Requires AWS SSO (`aws sso login --profile isol8-admin`).
+Full wipe of dev state for fresh testing. Requires AWS SSO
+(`aws sso login --profile isol8-admin`).
 
 ## This applies to PROD too — substitute the env and follow every step
 
 There is no separate prod procedure. When wiping prod, use these same steps
 with `dev` → `prod` throughout, and **do not improvise a shorter list**.
 
-**Step 4 (Paperclip Aurora) is the one that gets dropped, and dropping it
+**Step 3 (Paperclip Aurora) is the one that gets dropped, and dropping it
 breaks the very thing a wipe is for.** Paperclip lives in Aurora, not
-DynamoDB, so clearing DDB + Clerk + ECS + EFS + Stripe looks complete and
+DynamoDB, so clearing DDB + Clerk + the runtime + Stripe looks complete and
 is not. The leftover Better Auth user then blocks re-signup on that email:
 `provision_org` gets a **422 duplicate-email**, writes the company row as
 `status=failed` with an empty `company_id`, and every downstream Teams
@@ -22,9 +23,9 @@ surface degrades. Symptoms are indirect and do not mention Paperclip —
 the onboarding funnel shows *"Couldn't save that just yet. Retry"* and
 retrying never succeeds.
 
-Verified live on 2026-07-26: a prod wipe that skipped step 4 left
-`admin@isol8.co` in Better Auth, and the next signup's org could not create
-its Paperclip company at all.
+Verified live on 2026-07-26: a prod wipe that skipped it left `admin@isol8.co`
+in Better Auth, and the next signup's org could not create its Paperclip
+company at all.
 
 **Do NOT protect `admin@isol8.co` when deleting Better Auth users.** Only
 `admin+paperclip@isol8.co` holds `instance_admin` — confirmed against
@@ -40,76 +41,97 @@ is FK-blocked across ~155 tables. Leftover company shells are harmless
 (a fresh signup mints a new company), so delete the `"user"` rows and leave
 the shells.
 
-**Note on ECS cluster name:** The cluster ARN suffix changes on stack
-recreation (e.g. `isol8-dev-container-ClusterEB0386A7-L9MzqPCGDupk` as of
-2026-05-09). The hardcoded names in the commands below may be stale —
-always discover dynamically:
-```bash
-CLUSTER=$(aws ecs list-clusters --profile isol8-admin --region us-east-1 \
-  --query 'clusterArns[?contains(@,`isol8-dev-container`)]' --output text)
-SERVICE=$(aws ecs list-services --cluster "$CLUSTER" --profile isol8-admin \
-  --region us-east-1 --query 'serviceArns[?contains(@,`isol8-dev-service`)]' \
-  --output text | awk -F/ '{print $NF}')
+---
+
+## 1. Prefer the backend's own door
+
+`DELETE /api/v1/debug/user-data` (403 outside dev/local/test) is the whole of
+step 2 below plus the DDB rows, run by the code that owns the teardown seam.
+It is what the e2e harness calls at the end of each run, and it is the only
+caller besides `account_wipe` that passes `delete_profiles=True`. Per signed-in
+user, from the browser console on a dev page:
+
+```javascript
+await fetch('https://api-dev.flickmeon.ai/api/v1/debug/user-data', {method:'DELETE', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
 ```
 
-**1b. Delete Litestream S3 replicas (O6 local-sqlite layout only):** once dev
-runs `storage: "local-sqlite"` (openclaw-version.json), each owner's hot
-SQLite replicates to `s3://lightbulb-dev-openclaw-replicas/{owner_id}/…` and the
-container boot script RESTORES whatever survives there — skipping this step
-resurrects the pre-wipe sessions/auth rows on the next provision. (The
-backend's own wipe paths — `DELETE /debug/provision`, account_wipe — already
-do this via `core/services/litestream_replicas.py`; this manual step is for
-console-driven wipes.)
+Everything below is the console-driven equivalent, for owners whose Clerk
+session you do not have.
+
+## 2. Tear down each workspace's AgentCore runtime
+
+`hermes_provisioning.teardown_hermes_runtime` is the sequence; by hand it is
+four best-effort calls per owner, each idempotent. **Order matters for the
+first two:** a warm session caches the bearer it read at cold start, so
+stopping the session before deleting the runtime is what stops it presenting a
+now-dead credential until AWS reaps it.
 
 ```bash
-aws s3 rm "s3://lightbulb-dev-openclaw-replicas/<owner_id>/" --recursive --profile isol8-admin
+export AWS_PROFILE=isol8-admin AWS_REGION=us-east-1
+OWNER=org_xxx
+BUCKET=lightbulb-dev-openclaw-replicas   # OWNER_STATE_BUCKET; name is a scar, not a second bucket
+
+# a) the runtime ARN + the live bearer generation live on the containers row
+ARN=$(aws dynamodb get-item --table-name lightbulb-dev-containers \
+  --key "{\"owner_id\":{\"S\":\"$OWNER\"}}" \
+  --output text --query 'Item.agentcore_runtime_arn.S')
+
+# b) stop the warm session, THEN delete the runtime
+# session id == runtime_transport.session_id_for: "lb-<owner>-<sha256(owner)[:16]>",
+# right-padded with "0" to AgentCore's 33-char floor.
+SID=$(python3 -c 'import sys,hashlib
+o=sys.argv[1]; c=f"lb-{o}-{hashlib.sha256(o.encode()).hexdigest()[:16]}"
+print(c if len(c)>=33 else c.ljust(33,"0"))' "$OWNER")
+aws bedrock-agentcore stop-runtime-session --agent-runtime-arn "$ARN" \
+  --runtime-session-id "$SID" || true
+aws bedrock-agentcore-control delete-agent-runtime --agent-runtime-id "${ARN##*/}"
+
+# c) the ONE boot secret (hook token, gateway token, Bedrock bearer)
+aws secretsmanager delete-secret --secret-id "lightbulb/dev/hermes/$OWNER/boot" \
+  --force-delete-without-recovery
+
+# d) EVERY Hermes profile + the root auth.json. THIS is the owner's content on
+#    this transport — there is no EFS tree and no access point to delete.
+aws s3 rm "s3://$BUCKET/$OWNER/hermes/" --recursive
 ```
 
-**1. Delete ECS containers:** User deletes their OpenClaw ECS services + EFS access points manually from the AWS console (or via `DELETE /debug/provision` per user above). Programmatically:
-```bash
-# Per-user openclaw service + matching EFS access point
-SERVICE=openclaw-<user_id>-<hash>
-aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --desired-count 0 \
-  --profile isol8-admin --region us-east-1
-aws ecs delete-service --cluster "$CLUSTER" --service "$SERVICE" --force \
-  --profile isol8-admin --region us-east-1
-# EFS access point name pattern: isol8-<user_id>
-AP=$(aws efs describe-access-points --file-system-id <openclaw-efs-fs-id> \
-  --profile isol8-admin --region us-east-1 \
-  --query 'AccessPoints[?contains(Name||``,`<user_id>`)].AccessPointId' --output text)
-aws efs delete-access-point --access-point-id "$AP" --profile isol8-admin --region us-east-1
-```
+Enumerate the runtimes you have not accounted for with
+`aws bedrock-agentcore-control list-agent-runtimes` — dev runtime names are
+`lb_dev_<sanitised owner>_<12 hex>` (`agentcore_runtime.runtime_name_for`).
 
-**2. Wipe EFS user workspaces** (via ECS exec on the backend task):
-```bash
-# Find the backend task
-TASK=$(aws ecs list-tasks --cluster isol8-dev-container-ClusterEB0386A7-Cjwm2mIlW4Aw \
-  --service-name isol8-dev-service-ServiceD69D759B-Va1bdS6qTw9Y \
-  --profile isol8-admin --region us-east-1 \
-  --query 'taskArns[0]' --output text | awk -F'/' '{print $NF}')
+> The session id above is derived from the owner id ON PURPOSE. AgentCore
+> creates a new microVM per distinct `runtimeSessionId`, so a second id means
+> two gateways writing one S3 prefix — reproduced 2026-09-16, it corrupts the
+> replica set silently and every later restore hangs with no error. Do not
+> invent one.
 
-# List then wipe all user dirs
-aws ecs execute-command --cluster isol8-dev-container-ClusterEB0386A7-Cjwm2mIlW4Aw \
-  --task $TASK --container backend --interactive \
-  --command "/bin/sh -c 'ls /mnt/efs/users/ && rm -rf /mnt/efs/users/* && ls -la /mnt/efs/users/'" \
-  --profile isol8-admin --region us-east-1
-```
+`delete_workspace_runtime` also reaps the owner's Bedrock footprint (gate-token
+rows, application inference profiles, the per-owner IAM role) off the deleted
+row's `ALL_OLD` image, because that row was the only handle on it. Doing this
+by hand means also clearing `lightbulb-dev-bedrock-gate-tokens` and the
+owner's AIPs — which is a good reason to use step 1 instead.
 
-**3. Wipe DynamoDB tables** (all 8 isol8-dev-* tables):
+## 3. Wipe the DynamoDB tables
+
+Names are `lightbulb-{env}-*` (58 tables in the account; `database-stack.ts` is
+the list). The per-user ones a reset cares about are `containers`, `users`,
+`billing-accounts`, `paperclip-companies`, `usage-counters`, `pending-updates`,
+`channel-links`, `api-keys`, `ws-connections`, `messaging`, `integrations`,
+`oauth-tokens`, `bedrock-gate-tokens`.
+
 ```bash
-for t in isol8-dev-api-keys isol8-dev-billing-accounts isol8-dev-channel-links \
-         isol8-dev-containers isol8-dev-pending-updates isol8-dev-usage-counters \
-         isol8-dev-users isol8-dev-ws-connections; do
-  keys=$(aws dynamodb describe-table --table-name "$t" --profile isol8-admin \
-    --region us-east-1 --query 'Table.KeySchema[].AttributeName' --output text)
+for t in lightbulb-dev-containers lightbulb-dev-users lightbulb-dev-billing-accounts \
+         lightbulb-dev-paperclip-companies lightbulb-dev-usage-counters \
+         lightbulb-dev-pending-updates lightbulb-dev-channel-links \
+         lightbulb-dev-api-keys lightbulb-dev-ws-connections lightbulb-dev-bedrock-gate-tokens; do
+  keys=$(aws dynamodb describe-table --table-name "$t" \
+    --query 'Table.KeySchema[].AttributeName' --output text)
   count=0
   while read -r line; do
     [ -z "$line" ] && continue
-    aws dynamodb delete-item --table-name "$t" --key "$line" \
-      --profile isol8-admin --region us-east-1 >/dev/null 2>&1
+    aws dynamodb delete-item --table-name "$t" --key "$line" >/dev/null 2>&1
     count=$((count+1))
-  done < <(aws dynamodb scan --table-name "$t" --profile isol8-admin \
-    --region us-east-1 --output json 2>/dev/null | python3 -c "
+  done < <(aws dynamodb scan --table-name "$t" --output json 2>/dev/null | python3 -c "
 import json, sys
 keys = '$keys'.split()
 d = json.load(sys.stdin)
@@ -120,28 +142,28 @@ for item in d.get('Items', []):
 done
 ```
 
-**4. Wipe Paperclip company + user (Aurora — use RDS Query Editor):**
+## 4. Wipe Paperclip company + user (Aurora — RDS Data API)
 
-Paperclip data does NOT live in DynamoDB; it's in a per-env Aurora cluster
-(`isol8-dev-paperclip-db`). Wiping DDB does NOT touch Paperclip — orphan
-companies + users will linger. **An orphan user blocks re-signup with the
-same email** because Better Auth's `sign_up_user` is not idempotent (see
-`paperclip_provisioning.py:144-150`). So this step is required for a true
-clean slate.
+Paperclip data does NOT live in DynamoDB; it is in a per-env Aurora cluster
+(`lightbulb-dev-paperclip-db`). An orphan user blocks re-signup with the same
+email because Better Auth's `sign_up_user` is not idempotent (see
+`paperclip_provisioning.py`). Two stages, because Paperclip exposes a
+company-delete API but NO user-delete API (Better Auth's `admin()` plugin is
+not enabled — verified in `auth/better-auth.ts`).
 
-Two-stage cleanup because Paperclip exposes a company-delete API but NO
-user-delete API (Better Auth's `admin()` plugin is not enabled — verified
-in `auth/better-auth.ts`).
+**4a. Delete the company via the Paperclip admin API.** Run it from the backend
+task, which already holds the admin session. `CLUSTER` is the platform ECS
+cluster — the backend still runs on Fargate; only the per-user containers are
+gone.
 
-**4a. Delete the company via Paperclip admin API** (from the backend):
 ```bash
-# Find the company_id by listing — these calls go through the
-# already-authenticated PaperclipAdminClient inside the backend container.
-TASK=$(aws ecs list-tasks --cluster "$CLUSTER" --service-name "$SERVICE" \
-  --profile isol8-admin --region us-east-1 --query 'taskArns[0]' --output text \
-  | awk -F/ '{print $NF}')
+CLUSTER=$(aws ecs list-clusters --output text --query 'clusterArns' \
+  | tr '\t' '\n' | grep lightbulb-dev-container)
+SERVICE=$(aws ecs list-services --cluster "$CLUSTER" --output text --query 'serviceArns' \
+  | tr '\t' '\n' | grep lightbulb-dev-service)
+TASK=$(aws ecs list-tasks --cluster "$CLUSTER" --service-name "${SERVICE##*/}" \
+  --query 'taskArns[0]' --output text | awk -F/ '{print $NF}')
 
-# List companies + users (script uses the existing admin session)
 aws ecs execute-command --cluster "$CLUSTER" --task "$TASK" --container backend \
   --interactive --command "/bin/sh -c 'cd /app && uv run python -c \"
 import asyncio, httpx
@@ -156,64 +178,59 @@ async def main():
             print(p, len(r))
             for x in r: print(\\\" \\\", x.get(\\\"id\\\"), x.get(\\\"name\\\") or x.get(\\\"email\\\"))
 asyncio.run(main())
-\"'" --profile isol8-admin --region us-east-1
+\"'"
 ```
 
-Then call `DELETE /api/companies/{company_id}` similarly (admin client has
-`delete_company`). Cascades to agents/threads/etc.
+Then call `DELETE /api/companies/{company_id}` the same way (the admin client
+has `delete_company`). Cascades to agents/threads/etc.
 
-**4b. Delete the orphan user(s) via RDS Data API** (the fastest path):
-
-There is NO Paperclip API for user deletion. Direct SQL is the only option.
-**Don't try to ECS-exec a `psql` task or override the migrate task def** —
-both shell-quoting paths failed silently in 2026-05 testing.
-
-The Aurora cluster has **Data API enabled** (`HttpEndpointEnabled=true`), so
-`aws rds-data execute-statement` works from the CLI without any network
-plumbing. This is faster than the RDS console Query Editor and scriptable
-into the rest of the cleanup:
+**4b. Delete the orphan user(s) via the RDS Data API.** There is NO Paperclip
+API for user deletion; direct SQL is the only option. **Don't try to ECS-exec a
+`psql` task or override the migrate task def** — both shell-quoting paths
+failed silently in 2026-05 testing. The cluster has Data API enabled
+(`HttpEndpointEnabled=true`), so this works from the CLI with no network
+plumbing:
 
 ```bash
-# Find the credentials secret ARN (dev shown — replace with prod when needed)
-SECRET=$(aws secretsmanager list-secrets --profile isol8-admin --region us-east-1 \
-  --query "SecretList[?contains(Name,\`isol8-dev-paperclip-db-credentials\`)].ARN" \
-  --output text)
-CLUSTER=arn:aws:rds:us-east-1:877352799272:cluster:isol8-dev-paperclip-db
+SECRET=$(aws secretsmanager list-secrets \
+  --query "SecretList[?contains(Name,\`lightbulb-dev-paperclip-db-credentials\`)].ARN" --output text)
+DB=arn:aws:rds:us-east-1:877352799272:cluster:lightbulb-dev-paperclip-db
 
-# List remaining users
-aws rds-data execute-statement \
-  --resource-arn "$CLUSTER" --secret-arn "$SECRET" --database paperclip \
-  --sql 'SELECT id, email FROM "user" ORDER BY email' \
-  --profile isol8-admin --region us-east-1
+aws rds-data execute-statement --resource-arn "$DB" --secret-arn "$SECRET" \
+  --database paperclip --sql 'SELECT id, email FROM "user" ORDER BY email'
 
-# Delete one or more orphan users. ``account`` and ``session`` cascade
-# automatically (``onDelete: cascade`` per
-# ``paperclip/packages/db/src/schema/auth.ts``).
-aws rds-data execute-statement \
-  --resource-arn "$CLUSTER" --secret-arn "$SECRET" --database paperclip \
-  --sql "DELETE FROM \"user\" WHERE id IN ('<orphan_user_id_1>','<orphan_user_id_2>')" \
-  --profile isol8-admin --region us-east-1
+aws rds-data execute-statement --resource-arn "$DB" --secret-arn "$SECRET" \
+  --database paperclip \
+  --sql "DELETE FROM \"user\" WHERE id IN ('<orphan_user_id_1>','<orphan_user_id_2>')"
 ```
 
-**Bootstrap admin to PRESERVE:**
-- Dev: `admin@isol8.co` (Better Auth user id from `secrets/admin-id`)
-- Prod: `admin+paperclip@isol8.co`
+`account` and `session` cascade automatically (`onDelete: cascade` per
+`paperclip/packages/db/src/schema/auth.ts`).
 
-Deleting the bootstrap user breaks the backend's
-`PaperclipAdminClient` — `get_admin_session_cookie` can't authenticate
-without it. Cross-check the SELECT before issuing the DELETE.
+**Bootstrap admin to PRESERVE:** dev `admin@isol8.co`, prod
+`admin+paperclip@isol8.co`. Cross-check the SELECT before issuing the DELETE.
 
-The RDS console Query Editor (which also uses the Data API under the hood)
-remains a valid fallback if you prefer a GUI.
+**Why neither CloudShell `psql` nor ECS-exec `psql`:** the Aurora cluster sits
+in a private subnet with no internet gateway, so CloudShell cannot reach it,
+and the migrate task's shell-quoting through ECS exec silently swallows the
+SQL. Data API uses HTTPS to a dedicated endpoint and bypasses both. The RDS
+console Query Editor (same API underneath) is a valid GUI fallback.
 
-**Why neither CloudShell `psql` nor ECS-exec `psql`:** the Aurora cluster
-sits in a private subnet with no internet gateway; CloudShell can't reach
-it directly, and the migrate task's shell-quoting through ECS exec
-silently swallows the SQL. Data API uses HTTPS to a dedicated endpoint and
-bypasses both.
+## 5. Stripe
 
-**5. Clean up Stripe:** Delete orphan test customers manually from the [Stripe dashboard](https://dashboard.stripe.com/test/customers) (dev uses test mode keys).
+Delete orphan test customers from the
+[Stripe dashboard](https://dashboard.stripe.com/test/customers) (dev uses
+test-mode keys).
 
-**6. Clean up Clerk:** Delete test users/orgs from the [Clerk dashboard](https://dashboard.clerk.com) if needed.
+## 6. Clerk
 
-After all six steps, re-provision starts fresh: new Clerk sign-up → onboarding → container provision → single Stripe customer + fresh Paperclip company.
+Delete test users/orgs from the [Clerk dashboard](https://dashboard.clerk.com)
+if needed. Note prod's org member cap is 20 (Clerk plan max); dev is 0
+(unlimited).
+
+---
+
+After all six steps a fresh Clerk sign-up re-provisions from empty: onboarding
+→ `ensure_user_ready` → `provision_runner` → a new Paperclip company + starter
+roster → new Hermes profiles in S3 → a new AgentCore runtime → a single Stripe
+customer.

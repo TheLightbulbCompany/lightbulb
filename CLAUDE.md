@@ -4,20 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Lightbulb (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and work with them in a **Slack-like messaging workspace** — rooms, channels and DMs shared by AI employees and humans, driven by Clerk-authenticated HTTP commands with AWS AppSync Events for live delivery and DynamoDB as the canonical ordered store (see "Messaging"). The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for new subscription and marketplace purchases, and a configured Apple server-notification/verifier path retained only for historical Apple subscription lifecycle reconciliation. EFS provides per-user agent workspaces, and a per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) powers the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
+Lightbulb (`flickmeon.ai`) is an AI agent platform powered by **Hermes** (`nousresearch/hermes-agent`, pinned by digest in `hermes-version.json`). Users subscribe, get a per-workspace **AWS Bedrock AgentCore runtime** running our Hermes image, and work with them in a **Slack-like messaging workspace** — rooms, channels and DMs shared by AI employees and humans, driven by Clerk-authenticated HTTP commands with AWS AppSync Events for live delivery and DynamoDB as the canonical ordered store (see "Messaging"). The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for new subscription and marketplace purchases, and a configured Apple server-notification/verifier path retained only for historical Apple subscription lifecycle reconciliation. **S3 holds every per-owner agent workspace** — one Hermes profile per agent under `<owner>/hermes/<agent>/` in `OWNER_STATE_BUCKET`; there is no shared filesystem. A per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) powers the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
 
 Every freshly provisioned workspace gets a six-agent Paperclip starter roster: **CEO**, **Engineering**, **Finance**, **Growth**, **Analytics**, and **Customer Operations**. `paperclip_provisioning.provision_org` records their role-keyed UUIDs in `starter_agent_ids`; CEO is the initial root and the specialists report to it. Names are user-editable, so policy follows those UUIDs and roles rather than a display name. This applies only to fresh workspaces — existing/founder rosters are not migrated. **Friday** and **Atlas** are portable curated marketplace packages, not automatic seeds. The roster is Lightbulb-native: it has no GStack or ACP dependency.
 
-The OpenClaw container image we run is an **extended image** built from our **OpenClaw fork** (`ghcr.io/thelightbulbcompany/agent`, a **Debian**-based image — NOT Alpine) with additional Linux skill binaries and baked plugins: the externalized upstream Slack/Discord/Bedrock plugins plus four in-repo plugins (`apps/infra/openclaw/plugins/{aws-exec-profile,lightbulb-channel,lightbulb-marketplace,paperclip-exec-creds}` — `lightbulb-channel` is the messaging ingress/outbound seam, see "Messaging"). Its Dockerfile lives at `apps/infra/openclaw/` and is published to ECR `lightbulb/openclaw-extended` by `.github/workflows/build-openclaw-image.yml`. The pinned base + per-env extended tags are tracked in `openclaw-version.json` at the repo root, where the fields mean distinct things:
-- `upstream` — the fork base the Dockerfile `FROM`s (e.g. `ghcr.io/thelightbulbcompany/agent:2026.7.2-isol8.4`). A **private** GHCR package, pulled only by the authenticated build workflow. Keep it in lockstep with the Dockerfile `FROM` line.
-- `image`/`tag`/`full` — the **legacy public** upstream image (`ghcr.io/openclaw/openclaw`), kept only as the bootstrap/unknown-env fallback in `container-stack.ts` (pulled by per-user ECS tasks with **no** registry credentials, so it must stay anonymously pullable). `tag` also feeds the `OPENCLAW_UPSTREAM_VERSION` env fallback.
-- `extendedImage` + per-env `dev.tag`/`prod.tag` — the ECR extended image actually deployed; `dev.tag`/`prod.tag` are the per-environment promotion gate (flip dev, validate, then prod). They drive `meta.lastTouchedVersion` via `deployed_upstream_version()`.
+The agent image we run is `lightbulb/hermes-agent-arm64` in ECR, built from `apps/infra/hermes/Dockerfile` by `.github/workflows/build-hermes-image.yml`. It is **linux/arm64 only** (AgentCore runtimes are arm64) and `FROM`s `nousresearch/hermes-agent` **by digest** — upstream publishes no numbered tags, so a `:0.21.3` pin would 404. On top of the base it bakes: an `anthropic>=1.0` upgrade (the bundled 0.87 predates `AnthropicBedrock`'s bearer mode, which is how the bedrock-gate is reached — the build asserts the signature rather than trusting the resolve), the Linux skill binaries and the four CLI-connector binaries the credential materializers project for — `gog`, the AWS CLI, `gh` and `xurl`, each with its own in-build smoke test (Instagram's "CLI" is curl + jq, already present), the `lightbulb` plugin (`apps/infra/hermes/plugins/`), the managed config overlay, the generated skills tree, and the **bridge** (`apps/infra/hermes/bridge/`, the image's `CMD`) — the ingress/RPC/run-lifecycle seam that replaced the baked `lightbulb-channel` OpenClaw plugin. Pins live in `hermes-version.json` at the repo root: `base` is the digest the Dockerfile `FROM`s, and per-env `dev.tag`/`prod.tag` are the promotion gate (flip dev, validate, then prod). **The workflow never writes those fields** — it pushes one uniquely-tagged candidate (`h-<YYYY.M.D>-<sha7>`) and a human lands a PR flipping the tag. A pin flip is also not a rollout: running runtimes stay on their old image until `scripts/roll_hermes_runtimes.py` moves them.
 
-Bundled agent-facing skills live at `apps/infra/openclaw/skills/` — **one tree, both images**: `apps/infra/hermes/build-skills.sh` derives the Hermes image's `/opt/hermes-skills` from it (a handful of token swaps, `shopify/` and `references/follow-ups.md` dropped, plus `apps/infra/hermes/skills-overlay/` for the ~5 files whose content genuinely differs there). `apps/infra/hermes/skills/` is GENERATED and gitignored — never commit it. The tree holds (`paperclip`, `lightbulb`, and the single-file `shopify` — the Shopify CLI connect-and-query recipe; its Connections row is `acquisition: container_login`, which runs that same CLI login inside the container via a `lightbulb-channel` plugin route, never a pasted token). The first two are **split**: a thin `SKILL.md` (routing table + non-negotiables) plus `references/*.md` the agent reads on demand — every agent pays for `SKILL.md` on every load, so new detail belongs in a reference, not inline. The `lightbulb` skill owns platform facts; the `paperclip` skill owns team coordination. When user-facing surfaces, marketplace/billing flows, or Paperclip seeding change, update the relevant skill (each skill's sibling `MAINTENANCE.md` lists every anchor **and the reference file that now carries it**; it is a sibling and not a header comment because an HTML comment inside `SKILL.md` is invisible when rendered but still costs the whole fleet tokens on every load). Per-owner dynamic state (plan/provider) is NOT in the skill; it lives in `~/.openclaw/lightbulb-facts.json`, written by `core/services/owner_facts.py`.
+Bundled agent-facing skills live at `apps/infra/hermes/skills-src/` (`lightbulb`, `paperclip`). `apps/infra/hermes/build-skills.sh` derives the image's `/opt/hermes-skills` from that tree plus `skills-overlay/` (the few files whose content differs for a reason a token swap cannot express); `apps/infra/hermes/skills/` is GENERATED and gitignored — never commit it, a second checked-in copy is exactly the duplicate the derivation replaced and it had already drifted once. Both skills are **split**: a thin `SKILL.md` (routing table + non-negotiables) plus `references/*.md` the agent reads on demand — every agent pays for `SKILL.md` on every load, so new detail belongs in a reference, not inline. The `lightbulb` skill owns platform facts; the `paperclip` skill owns team coordination. When user-facing surfaces, marketplace/billing flows, or Paperclip seeding change, update the relevant skill (each skill's sibling `MAINTENANCE.md` lists every anchor **and the reference file that now carries it**; it is a sibling and not a header comment because an HTML comment inside `SKILL.md` is invisible when rendered but still costs the whole fleet tokens on every load — and `build-skills.sh` deletes `MAINTENANCE.md` from the image outright, since Hermes discovers skills by `SKILL.md` front matter). Per-owner dynamic state (plan/provider) is NOT in the skill; it lives in `$HERMES_HOME/lightbulb-facts.json`, written by `core/services/owner_facts.py`.
 
-This repo does not vendor OpenClaw source. The base image is built from the **Isol8 fork `TheLightbulbCompany/agent`** (a GitHub fork of [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)). The fork's `main` tracks upstream — it was realigned to `openclaw/openclaw:main`, so `git pull upstream main` merges cleanly. Our patches do **not** live on `main`; they sit on `isol8/*` branches plus `v<version>-isol8.<n>` tags, which the fork's `docker-release.yml` builds and publishes to GHCR `ghcr.io/thelightbulbcompany/agent` (the carried patch set is enumerated in `openclaw-version.json`'s `notes`). The writable fork workspace is checked out at **`~/dev/agent-fork`** (origin = `TheLightbulbCompany/agent`, upstream = `openclaw/openclaw`). A stale second clone at `~/Desktop/agent` is pending delete — it sits on iCloud-synced Desktop and git operations hang there; do not use it. Treat fork checkouts as outside this repo — do not commit them into it.
-
-Each user gets their own isolated OpenClaw container; the backend calls the container's baked lightbulb-channel plugin over HTTP for RPC and readiness, and the container reports run lifecycle and usage back over hook-token routes. Those events reach browsers through AppSync, never over a browser socket.
+Each workspace gets its own AgentCore runtime; the backend reaches it with `InvokeAgentRuntime` carrying a `{path, method, headers, body}` envelope that the bridge unwraps (`core/services/runtime_transport.py` → `container_rpc.py`), and the bridge reports run lifecycle and usage back over hook-token routes. Those events reach browsers through AppSync, never over a browser socket. **There is no backend-initiated socket and no address to resolve** — AgentCore starts the microVM on the invoke itself, so a read-only probe cannot accidentally start anything and a parked runtime answers the invoke that wakes it.
 
 ## Rebrand — Isol8 → Lightbulb (SHIPPED; residue documented below)
 
@@ -57,8 +52,9 @@ every one of these:**
   2026-08-31: DynamoDB prefix is `lightbulb-{env}-*` (58 tables, e.g.
   `lightbulb-prod-billing-accounts`; 0 tables remain on `isol8-*`), Secrets
   Manager is `lightbulb/{env}/*` (271 secrets; 0 remain under `isol8/`), SSM is
-  `/lightbulb/{env}/*`, ECR repos are `lightbulb/openclaw-extended` and
-  `lightbulb/paperclip-extended` (no `isol8/*` repo exists), Cloud Map
+  `/lightbulb/{env}/*`, ECR repos are `lightbulb/hermes-agent-arm64`,
+  `lightbulb/paperclip-extended` and the now-unreferenced
+  `lightbulb/openclaw-extended` (no `isol8/*` repo exists), Cloud Map
   namespaces are `lightbulb-{env}.local`, and the deploy concurrency group is
   `lightbulb-deploy`. The rename WAS performed deliberately — see
   `apps/backend/scripts/migrate_secret_prefix.py` (`OLD_PREFIX = "isol8/"`;
@@ -85,7 +81,10 @@ every one of these:**
   The IAP **product** id deliberately stays `company.thelightbulb.mobile.plan.monthly`
   — no product exists in ASC yet, so that one is free to carry the new brand.
 - **`-isol8.N` image tags** and the `isol8/*` fork branches in
-  `openclaw-version.json` / `paperclip-version.json` — they are rollback refs.
+  `paperclip-version.json` — they are rollback refs. (The OpenClaw half of this
+  bullet went with `openclaw-version.json`; the images left in
+  `lightbulb/openclaw-extended` are the only rollback history that runtime has,
+  and no stack imports the repo any more.)
 - **Historical issue/PR references** (`Isol8AI/isol8#2053`, `isol8 #2016`) — quote
   verbatim, always; GitHub web URLs redirect.
 - **`BOOTSTRAP_EMAILS`** — renaming it silently disarms the guard that stops an
@@ -93,9 +92,6 @@ every one of these:**
   provisioning outage.
 - **`isol8` stays reserved** in the slug and handle allowlists, so nobody can claim
   the retired brand.
-- **The EFS lock sidecars `.isol8-guard` / `.isol8-protocol`** — renaming them is a
-  once-only migration across every EFS volume with a fatal failure mode and zero
-  benefit (see "Config Patching Notes").
 - **The internal dispatch header `X-Isol8-Public-Host`** — API Gateway parameter
   mapping (`api-stack.ts`) sets it from `$context.domainName`; `main.py`'s
   `HostDispatcherMiddleware` and `routers/paperclip_proxy.py` read it to route
@@ -114,42 +110,50 @@ accept-both shims that existed only to bridge them:
 
 | was | now | lives in |
 |---|---|---|
-| `isol8-connector` | `lightbulb-connector` | `bedrock_aip.CONNECTOR_ROLE_NAME`, `aws-connector.yaml` `RoleName`, `service-stack.ts` iam:GetRole + sts:AssumeRole resources, the baked `aws-exec-profile` plugin |
-| `isol8-creds.mjs` | `lightbulb-creds.mjs` | `aws_cli.HELPER_FILENAME` (on EFS at `.aws/`) |
-| `isol8-facts.json` | `lightbulb-facts.json` | `owner_facts.FACTS_FILENAME`; read by the bundled `lightbulb` skill and the local-sqlite boot script |
-| `isol8-email:` | `lightbulb-email:` | `agent_mail_thread._PREFIX` — **must stay covered by `hooks.allowedSessionKeyPrefixes`** |
+| `isol8-connector` | `lightbulb-connector` | `bedrock_aip.CONNECTOR_ROLE_NAME`, `aws-connector.yaml` `RoleName`, `service-stack.ts` iam:GetRole + sts:AssumeRole resources |
+| `isol8-creds.mjs` | `lightbulb-creds.mjs` | `aws_cli.HELPER_FILENAME`, projected into each profile at `$HOME/.aws/` |
+| `isol8-facts.json` | `lightbulb-facts.json` | `owner_facts.FACTS_FILENAME`, mirrored by `hermes_profiles.FACTS_FILENAME` (a backend-owned profile file — the two constants MUST match); read by the bundled `lightbulb` skill |
+| `isol8-email:` | `lightbulb-email:` | `agent_mail_thread._PREFIX`. ⚠️ Its docstring still says the prefix "must stay covered by `hooks.allowedSessionKeyPrefixes`" — that allowlist lived in `openclaw.json` and has **no Hermes equivalent**, so the bound it described is gone, not merely renamed |
 | `isol8-agent-create:v1` | `lightbulb-agent-create:v1` | `paperclip_agent_idempotency._KEY_PREFIX` |
 | `isol8-x` | `lightbulb-x` | `xurl_cli._XURL_APP_NAME` (app key inside the owner's `~/.xurl`) |
 | `isol8-mcp-server` | `lightbulb-mcp-server` | the Paperclip agent API-key display name |
-| `isol8-backend` (operator device) | `lightbulb-backend` | `operator_device.build_paired_operator_entry` `displayName` |
 | `isol8-<owner>` STS session name | `lightbulb-<owner>` | `routers/connections.py` `RoleSessionName` |
 
-**NOT yet renamed — the same class, still open (audited 2026-09-08).** These were
-missed by the 2026-08-31 pass and are NOT residue; each needs a coordinated deploy
-or an accept-both shim, so do NOT sweep them. Full audit + per-item recipes:
-`docs/superpowers/plans/2026-09-08-isol8-runtime-identifier-gap.md`.
+(The `isol8-backend` operator-device `displayName` row is gone outright: `core/crypto/operator_device.py` went with the OpenClaw gateway — there is no per-agent operator device to name.)
+
+**NOT yet renamed — the same class, still open (audited 2026-09-08, re-verified
+2026-09-19).** These were missed by the 2026-08-31 pass and are NOT residue; each
+needs a coordinated deploy or an accept-both shim, so do NOT sweep them. The
+2026-09-08 audit plan that carried the per-item recipes is deleted: two thirds of
+its rows named the OpenClaw image, `container-stack.ts`'s per-user task or an EFS
+sidecar, and the one live bug it found (`ops/alarms.py`'s `_SEVERITY_RE`, which
+matched `^isol8-`) is fixed. The reasons below are what survived it.
 
 | identifier | why it can't be swept |
 |---|---|
 | `X-Isol8-Public-Host` | API GW (`api-stack.ts`) and the backend are separate stacks in one pipeline run, and the backend rolls at `maxHealthyPercent: 200`; a hard swap misroutes every `company[-env]` request during the roll. Precedent shim: `require_ws_internal_caller` in `routers/websocket_chat.py`. |
-| the `ISOL8_*` container env vars + the baked `/usr/local/bin/isol8-*.sh`, `/etc/isol8-litestream.yml`, `/opt/isol8/` paths | three-sided (image, task def, AND per-owner Atlas seed files already on EFS). `container-stack.ts` hard-`exit 1`s when the boot-script path is missing, so a CDK deploy landing before the image fails EVERY container boot. |
+| the `ISOL8_*` runtime env vars (`ISOL8_OWNER_ID`, `ISOL8_API_URL`) | **still live, for a different reason than the table used to give.** They are set by `hermes_provisioning.build_hermes_runtime_env` into `CreateAgentRuntime`'s `environmentVariables`, read by the bridge (`apps/infra/hermes/bridge/__init__.py`) and by the bundled skills' own scripts. A rename is a coordinated backend change plus a **roll of every runtime** (`scripts/roll_hermes_runtimes.py`) plus a skills rebuild — env vars are baked into the runtime spec, so a live runtime keeps the old names until it is rolled. |
 | `isol8_paperclip` | live session cookie — a hard swap logs every active session out |
-| `isol8.hire_suggestion` | emitted by the baked `lightbulb-marketplace` plugin, consumed by `parseHireSuggestion`, which returns null on mismatch → the HireCard silently degrades fleet-wide during a reroll |
+| `isol8.hire_suggestion` | `HIRE_KIND` in the baked Hermes `lightbulb` plugin (`apps/infra/hermes/plugins/lightbulb/__init__.py`), consumed by `parseHireSuggestion`, which returns null on mismatch → the HireCard silently degrades fleet-wide during a reroll. **This one survived the runtime deletion intact — do not "finish" it.** |
 | `isol8.notifications`, `PAPERCLIP_ISOL8_NOTIFY_*` | lives in the Paperclip FORK image, not this repo |
-| `.isol8-seed-fingerprint`, `.openclaw/isol8-setup-seed.json` | EFS-resident per owner — same once-only-migration shape as the protected `.isol8-guard` |
+
+Two rows are gone rather than still open: the baked `/usr/local/bin/isol8-*.sh`
+/ `/etc/isol8-litestream.yml` / `/opt/isol8/` paths died with the OpenClaw
+image, and `.isol8-seed-fingerprint` / `.openclaw/isol8-setup-seed.json` died
+with EFS. Nothing carries those names any more.
 
 **Never rename these** — the name correctly describes protected residue, or the
-value is stored data: `_ISOL8_PATCH_RE` (parses the `-isol8.N` rollback tag),
+value is stored data:
 `ISOL8_SYSTEM_SELLER_ID`'s value `"__isol8__"` (written to marketplace rows),
 `ISOL8_CURATOR_EMAIL` (human-gated mail), and the `"isol8 top-up …"` descriptions in
 `metronome_funding.py` — those are part of an idempotent Metronome request body, so
 changing the string 409s a retried top-up on the money path.
 
-Three of these have a state-on-EFS or state-in-someone-else's-account tail:
-`lightbulb-connector` needs the quick-create stack relaunched **and** a rebuilt
-extended image (the baked plugin injects the profile by name); the facts file's
-old inode is deleted on every write so nothing can read frozen facts; the mail
-prefix is inert until the container's `openclaw.json` allowlist is rewritten.
+One of these still has a state-in-someone-else's-account tail:
+`lightbulb-connector` names a role in the **owner's** AWS account, so a rename
+needs their quick-create stack relaunched — `aws_cfn.py` mints the template and
+`bedrock_aip` assumes the role by name. The EFS-shaped tails the rest of this
+paragraph used to carry are gone with the filesystem.
 
 **CloudWatch metric namespaces** were renamed (owner decision 2026-08-27):
 `Isol8*` → `LightbulbAI*`, and the metric `service` dimension `isol8-backend` →
@@ -241,15 +245,18 @@ Backend: `cd apps/backend && uv run pytest tests/ -v`
 Frontend unit: `cd apps/frontend && pnpm test`
 Frontend E2E: `cd apps/frontend && pnpm run test:e2e`
 
-### Container Re-provisioning (Dev)
+### Workspace Re-provisioning (Dev)
 
-When you change `openclaw.json` config, existing containers keep the old config on EFS. Re-provision:
+An agent's config is its Hermes profile in S3 (`config.yaml` / `.env` / `SOUL.md`
+under `<owner>/hermes/<agent>/`). A running microVM has already restored that
+profile, so a config change needs the profile rewritten **and** the warm session
+stopped — which is exactly what `PATCH` does:
 
 ```javascript
 // Browser console (any Lightbulb page with Clerk loaded):
-// PATCH -- wholesale-rewrites openclaw.json via write_user_configs + redeploys (preserves container).
-// Seeds agents.list from the owner's LIVE Paperclip roster, so it CAN wire existing agent ids;
-// it cannot CREATE the Paperclip company or agents (see Provisioning Flow).
+// PATCH -- rewrites every roster profile from the container row's own AIP ARNs, then
+// StopRuntimeSession so the NEXT invoke cold-restores instead of a warm microVM serving
+// what it cached. It cannot CREATE the Paperclip company or agents (see Provisioning Flow).
 await fetch('https://api-dev.flickmeon.ai/api/v1/debug/provision', {method:'PATCH', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
 
 // Full reprovision -- DELETE then POST
@@ -257,19 +264,29 @@ await fetch('https://api-dev.flickmeon.ai/api/v1/debug/provision', {method:'DELE
 await fetch('https://api-dev.flickmeon.ai/api/v1/debug/provision', {method:'POST', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
 ```
 
+`DELETE /debug/provision` deliberately does **not** pass `delete_profiles` — it is
+a routine reprovision door, and destroying a workspace's memory / skills /
+`SOUL.md` / `auth.json` is `DELETE /debug/user-data`'s job (M6-R42). Exactly two
+callers ever pass `delete_profiles=True`: that endpoint and `account_wipe`.
+`POST` runs the **same** funnel production uses (SFN watchdog +
+`scripts/provision_runner.py`), not a hand-rolled sequence, because the DELETE
+destroyed the owner's Bedrock AIPs along with the row that named them and only
+the runner re-mints them.
+
 Debug endpoints return 403 in production.
 
 ### Clean-Slate Dev Reset
 
-Full dev wipe (ECS, EFS, DynamoDB, Paperclip Aurora, Stripe, Clerk) moved to the
-`dev-clean-slate-reset` skill (`.claude/skills/dev-clean-slate-reset/SKILL.md`).
+Full dev wipe (AgentCore runtimes, S3 profiles, DynamoDB, Paperclip Aurora,
+Stripe, Clerk) moved to the `dev-clean-slate-reset` skill
+(`.agents/skills/dev-clean-slate-reset/SKILL.md`).
 Requires AWS SSO (`aws sso login --profile isol8-admin`).
 
 ### Prod Org Reprovision
 
-Wipe an owner's container runtime + Paperclip side while preserving billing,
+Wipe an owner's workspace runtime + Paperclip side while preserving billing,
 subscription, Clerk org, and marketplace rows — moved to the
-`prod-org-reprovision` skill (`.claude/skills/prod-org-reprovision/SKILL.md`).
+`prod-org-reprovision` skill (`.agents/skills/prod-org-reprovision/SKILL.md`).
 
 ### Manual dev testing accounts
 
@@ -387,7 +404,7 @@ gh run view <run-id> --repo TheLightbulbCompany/lightbulb --json status,jobs
   misses it). Prod frontend and backend ship together on the dispatch; merging to main
   changes nothing a customer sees. Verify by curling the live site for a string from the
   merged diff, not by reading this table.
-- **Backend:** `deploy.yml` (the CDK pipeline) builds the Docker image and deploys the ECS Fargate service. `backend.yml` is **PR lint + test only** — its header says so; it deploys nothing.
+- **Backend:** `deploy.yml` (the CDK pipeline) builds the Docker image and deploys the ECS Fargate service — the **platform** backend, which still runs on ECS. Per-workspace agents do not. `backend.yml` is **PR lint + test only** — its header says so; it deploys nothing.
 - **Infrastructure (CDK):** GitHub Actions (`deploy.yml`) → `cdk synth` → `cdk deploy` per environment
 
 **DEV DEPLOYS ON MERGE; PROD IS PROMOTED ON DEMAND.** Every prod job in `deploy.yml`
@@ -508,15 +525,16 @@ deploy job. `npx cdk synth` does **NOT** require Docker when a local toolchain i
 Lambdas (`bedrock-gate`, ws-authorizer) run a host-side `local.tryBundle` (`npm ci` /
 `pip3 install`) and only fall back to a Docker bundling image when node/npm or python3/pip3
 is missing; the backend `DockerImageAsset` hashes its build context and defers `docker build`
-to the publish step, not synth. So any machine — **or an OpenClaw container** (git/gh/node/npm/
-python3-pip/uv are all baked into `apps/infra/openclaw/Dockerfile`, so an agent like Forge can
-regenerate + commit `deploy.yml` for infra PRs) — synths with no daemon. **OrbStack**
+to the publish step, not synth. So any machine carrying node/npm and python3/pip3 synths with
+no daemon. (This used to add "or an OpenClaw container"; the Hermes image bakes git/gh/uv but
+its npm toolchain has not been re-verified for a `cdk synth`, so do not assume an agent can
+regenerate `deploy.yml` from inside its own runtime without checking.) **OrbStack**
 (`open -a OrbStack`) is only the fallback if that local toolchain is absent, or if the
 `api-stack.ts` `__pycache__` EISDIR footgun silently demotes the Python authorizer synth to
 Docker. (The `infra-ci.yml` drift-guard comment still claims "Docker is required … no
 supported way to skip bundling" — that is overstated; the repo's own `local.tryBundle` is the
 skip.)
-- **Extended OpenClaw image:** GitHub Actions (`build-openclaw-image.yml`) → build on Dockerfile/`openclaw-version.json` changes → push to ECR `lightbulb/openclaw-extended`. Promotion is MANUAL — the workflow never writes the version pins; a human lands a PR flipping `dev.tag`/`prod.tag`.
+- **Hermes agent image:** GitHub Actions (`build-hermes-image.yml`) → build on any `apps/infra/hermes/**` change (that one path covers the image AND its skills source) → push `h-<YYYY.M.D>-<sha7>` to ECR `lightbulb/hermes-agent-arm64`. Promotion is MANUAL in **two** steps, and skipping the second is the classic mistake: a human lands a PR flipping `hermes-version.json`'s `dev.tag`/`prod.tag`, and then a human runs `apps/backend/scripts/roll_hermes_runtimes.py` — a pin flip only changes what a NEW runtime is created with. See "Runtime rollout".
 - **Desktop app:** GitHub Actions (`desktop-build.yml`) → signed DMG via Tauri. Standalone workflow (NOT part of `deploy.yml`), path-filtered on `apps/desktop/**`, runs on a **self-hosted macOS runner** (`runs-on: [self-hosted, macos-desktop]`). Version is `0.4.${{ github.run_number }}`.
 - **Mobile app:** `mobile-ci.yml` (PR lint/typecheck/jest + `expo export` Metro gate, self-hosted mac), `mobile-release.yml` (`eas build --local` + `eas submit` to TestFlight, on `mobile-v*` tags), `mobile-ota.yml` (`eas update --channel production` on merge to main). See the "Mobile App" section.
 - **E2E journey test:** GitHub Actions (`e2e-dev.yml`) runs the Playwright journey test against dev **on-demand only** (not on every deploy); keep regularly-needed coverage hermetic/per-PR
@@ -538,8 +556,10 @@ the fork bulk (5×) buries this repo in every ranking. Keep it single-repo.
   docs. Don't delete it: with cache warm, a full rebuild costs ~0 tokens and ~2 minutes.
 - Structural hubs by degree (verified 2026-08-19, orientation only): backend `AuthContext` /
   `get_current_user`, `run_in_thread()`, `PaperclipAdminClient`, `TeamsContext`,
-  `GatewayConnection`, `put_metric()`; frontend `components/teams/shared/types.ts`,
-  `useTeamsApi()`, `cn()`.
+  `put_metric()`; frontend `components/teams/shared/types.ts`, `useTeamsApi()`, `cn()`.
+  ⚠️ **The graph predates the Hermes deletion chain and has not been rebuilt** — one
+  hub it used to list (`GatewayConnection`) no longer exists, and roughly a hundred
+  backend files went with it. Run `/graphify . --update` before trusting a ranking.
 
 ---
 
@@ -552,22 +572,26 @@ Chat:      Client --> https://api-{env}.flickmeon.ai/api/v1/messaging/* (Clerk H
              --> FastAPI --> lightbulb-{env}-messaging (DynamoDB; canonical, `seq`-ordered)
              --> DDB Stream --> messaging-projector λ --> AppSync Events  --> browser/mobile (live)
                            \-> EventBridge Pipe --> openclaw-work.fifo --> openclaw_work
-                                --> Cloud Map DiscoverInstances --> per-user OpenClaw container
-                                    (lightbulb-channel plugin ingress; native replies POST back)
+                                --> runtime_transport.request (InvokeAgentRuntime, session id
+                                    derived from the owner id) --> the workspace's AgentCore runtime
+                                    --> bridge ingress; native replies POST back over the hook token
 
 REST:      Client --> https://api-{env}.flickmeon.ai (API Gateway HTTP API) --> VPC Link V2 --> ALB --> FastAPI
-Machines:  Tauri node hosts / local sessions / Paperclip operators --> wss://ws-{env}.flickmeon.ai (API GW v2 WS;
+Machines:  Tauri node hosts / local sessions --> wss://ws-{env}.flickmeon.ai (API GW v2 WS;
              machine-only authorizer, connectionId map in lightbulb-{env}-ws-connections)
-Browser:   Client --> wss://bv-{env}.flickmeon.ai (CloudFront VpcOrigin — raw WS the HTTP API can't carry)
-             --> ALB browser-view listener (path-capped /api/v1/browser-view/*) --> routers/browser_view.py
-                                                    |
-                                        EFS /mnt/efs/users/{user_id}/  (openclaw.json, workspace-{agent_id}/, skills, media, logs)
-                                          +-- state/, agents/{agent_uuid}/  = task-local NVMe volumes nested in the EFS
-                                              mount; SQLite (sessions, transcripts, memory) restored from S3 at boot,
-                                              replicated by litestream. NOT on EFS -- see local-sqlite/ boot script.
+Raw WS:    Desktop node hosts --> wss://bv-{env}.flickmeon.ai (CloudFront VpcOrigin — raw WS the
+             HTTP API can't carry) --> ALB listener (path-capped /api/v1/gateway/* ONLY)
+             --> routers/gateway_relay.py (terminates the node protocol in-process)
+
+Owner state: s3://$OWNER_STATE_BUCKET/<owner>/hermes/<agent>/  — one complete $HERMES_HOME per
+             agent (config.yaml, .env, SOUL.md, skills, memory, .revision). The bridge restores it
+             once per process and saves it back at the END of each turn. No EFS, no shared mount.
 ```
 
 There is **no NLB and no VPC Link V1** — that architecture was replaced; see "WebSocket Architecture".
+The `bv-` door's path cap is `/api/v1/gateway/*` alone: the browser-view route it was
+originally built and named for is gone, but the door survives (a rename would replace the
+CloudFront distribution, so the `BrowserView*` construct ids stay).
 
 ### Production Infrastructure
 
@@ -578,7 +602,7 @@ entries at the root:
 - `paperclip/` — **GITIGNORED**, a read-only clone of *vanilla* upstream
   (`paperclipai/paperclip`). Reference only. **NOT what we deploy** — see the
   fork note under AWS CDK Stacks.
-- `openclaw-version.json` / `paperclip-version.json` — the image pins. Both
+- `hermes-version.json` / `paperclip-version.json` — the image pins. Both
   carry a `notes` field explaining what each field means and what may not be
   changed without breaking the fleet. Read it before bumping.
 - `stripe-app/` — the Lightbulb **Stripe App** (restricted-API-key auth), the
@@ -602,7 +626,7 @@ entries at the root:
 
 ## Backend (FastAPI + DynamoDB)
 
-**Entry point:** `main.py` -- FastAPI app. The lifespan handler's real startup work is `_resume_wake_resize_transitions`, a one-time trial-idle reconcile sweep, and the running-gauges loop, which emits `gateway.running.count` from the containers table (`startup_containers()` is a no-op — ECS services are always-on); shutdown is a `/health`-gated bounded ~20s graceful drain with `handoff_inflight_provisions` and no longer closes a pool. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].flickmeon.ai` (via the `X-Isol8-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
+**Entry point:** `main.py` -- FastAPI app. The lifespan handler's real startup work is the trial-idle sweeper and the running-gauges loop, which emits `gateway.running.count` from the containers table (the P12 backend-liveness canary expects a steady stream, so it is not optional); shutdown is a `/health`-gated bounded ~20s graceful drain with `handoff_inflight_provisions` and closes no pool — the backend holds no per-owner connection state. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].flickmeon.ai` (via the `X-Isol8-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
 
 No SQLAlchemy, no ORM — DynamoDB items are plain dicts accessed via repositories.
 
@@ -616,12 +640,12 @@ No SQLAlchemy, no ORM — DynamoDB items are plain dicts accessed via repositori
 Flat modules: `config.py` (Pydantic settings), `auth.py` (Clerk JWT via PyJWT;
 `get_current_user` → `AuthContext`, JWKS cache w/ 5-minute TTL + 15-min
 max-stale fail-closed), `dynamodb.py`, `encryption.py` (Fernet),
-`constants.py` (`SYSTEM_ACTOR_ID = "__system__"`), `openclaw_version.py`,
-`secrets_manager.py`.
+`constants.py` (`SYSTEM_ACTOR_ID = "__system__"`), `secrets_manager.py`.
 
 Subpackages: `billing/` (Bedrock AIPs, pricing, gate URL — see the Billing
-section), `containers/`, `gateway/`, `repositories/`, `services/`, `crypto/`,
-`middleware/`, `observability/`.
+section), `repositories/`, `services/`, `crypto/`, `middleware/`,
+`observability/`. (`containers/` is gone; `gateway/` is an empty `__init__.py`
+whose contents moved to `routers/gateway_relay.py` + `core/services/`.)
 
 ### Repositories (`core/repositories/`)
 
@@ -674,31 +698,39 @@ v1 and runs on the **API-key path**: the owner pastes a restricted key
 (`POST /company/stripe/api-key`, Read on Charges/Customers/Products/Prices/
 Balance/Account; test-mode keys bind too and the card says "Test mode" —
 Stripe's app reviewers may only use test accounts), it lives ONLY in Secrets Manager (`company_stripe` provider;
-never `openclaw.json`, `env.vars`, or EFS), and the billing row carries
+never in a Hermes profile's `config.yaml` or `.env`), and the billing row carries
 `source: "api_key"`. `company_stripe_reads._addressing` is the one resolver:
 `connected/created` rows → platform key + `stripe_account` header; `api_key`
 rows → their key, no header. The agent's own Stripe tools are a THIRD grant
-(the OAuth MCP in the container) and must never be consolidated with the key.
+(the OAuth MCP projected into the agent's profile) and must never be consolidated with the key.
 `stripe-app/` (repo root) is the Stripe App (restricted-API-key auth) that mints
 a key with exactly those six permissions for an owner to paste — see its README.
 
-### Container Orchestration (`core/containers/`)
+### Workspace Runtime (Hermes on AgentCore)
+
+`core/containers/` is gone — there is no ECS lifecycle, no `openclaw.json`
+generator and no EFS file I/O. What replaced it:
+
+| Where | Purpose |
+|------|---------|
+| `core/services/hermes_provisioning.py` | The AgentCore lifecycle. `prepare_hermes_workspace` mints the hook/gateway tokens + gate bearer into ONE Secrets Manager boot secret; `provision_hermes_runtime` creates the runtime; `roll_runtime_image` re-specs it onto a new image; `teardown_hermes_runtime` / `delete_workspace_runtime` is **THE teardown seam** every caller shares. `build_hermes_runtime_request` sets `lifecycleConfiguration` to a **4 h idle / 8 h max** session and carries **no `filesystemConfigurations`** — profiles are S3. The one retry it does is IAM trust propagation (`ensure_agentcore_trust` runs seconds before `CreateAgentRuntime`, and AgentCore rejects a freshly-trusted role for up to a minute). |
+| `core/services/hermes_profiles.py` | The per-profile config writer. A Hermes profile IS a complete `$HERMES_HOME`, merged over `DEFAULT_CONFIG` **alone** with no inheritance from a root home — so every generated file must be complete. Secrets never land in `config.yaml` (it carries `${VAR}` references; the per-profile `.env` is the store), and the non-negotiables an agent could edit out of its own config live in the managed overlay, which wins at the leaf after env expansion. |
+| `core/services/agentcore_runtime.py` | The AWS-shaped primitives the above compose: `runtime_name_for`, the boot secret (`LIGHTBULB_SECRET_ID`), `ensure_agentcore_trust`, and the `IDLE_TIMEOUT_S`/`MAX_LIFETIME_S` constants. |
+| `core/services/runtime_transport.py` | **One way to reach a workspace, and only one.** `InvokeAgentRuntime` carries a `{path, method, headers, body}` envelope the bridge unwraps. `containers.runtime_host` is not consulted — there is nothing to classify. The session id is derived from the OWNER id on purpose: AgentCore creates a new microVM per distinct `runtimeSessionId`, and two live sessions for one workspace means two writers on one S3 prefix, which corrupts the replica set **silently** (reproduced 2026-09-16 — divergent histories, every later restore hangs with no error). |
+| `core/services/container_rpc.py` | One request per gateway RPC to `/plugins/lightbulb-channel/rpc`. `running_container` returns the row; there is **no wake step and no address to resolve** (AgentCore starts the microVM on the invoke), so a read-only probe cannot start anything by accident. |
+| `core/services/credentials/hermes_cli.py` | `project` — the ONE dispatch that materializes connector credentials into a profile. A materializer reached any other way raises rather than writing a credential nothing reads. |
+| `apps/infra/hermes/bridge/` | The container half: `/invocations` → the lightbulb-channel ingress + RPC paths and Paperclip's native run lifecycle. Restores the profile from S3 once per process, runs the turn, **saves the profile back at the END of the turn** — which is why a roll waits for an idle session (stopping mid-turn loses everything that turn wrote). |
+| `hermes-version.json` | The pins. See "Runtime rollout". |
+| `scripts/roll_hermes_runtimes.py` | Moves live runtimes onto the pinned image. Sequential, ~10.5 min worst case **per busy owner**. |
+| `scripts/reapply_hermes_skills_dirs.py` | Re-projects the bundled skills into existing profiles. |
+
+### Machine relay (`routers/gateway_relay.py`)
 
 | File | Purpose |
 |------|---------|
-| `__init__.py` | Singletons: `get_ecs_manager()`, `get_workspace()`. No pool singleton and no startup/shutdown hooks — the backend holds no per-owner connection state to create or tear down. |
-| `ecs_manager.py` | Per-user ECS Fargate lifecycle. Container IP discovery is **Cloud Map** `DiscoverInstances` (`discover_ip`), **not** `describe_tasks`: every per-user service registers into ONE shared Cloud Map service via `serviceRegistries`, and the lookup is scoped to a tenant by filtering the `ECS_SERVICE_NAME` attribute. `HealthStatus="HEALTHY_OR_ELSE_ALL"` because the shared service has no `HealthCheckCustomConfig`, so ECS-registered instances report `UNKNOWN`. **Never cache a container IP across reconnects** — the service is long-lived but the task IP is ephemeral (changes on every deploy / OOM / health-restart / reprovision); a cached dead IP caused a prod outage where the pool showed "connected" and every RPC timed out. Per-user EFS access points. Service naming: `openclaw-{user_id}-{hash}`. |
-| `config.py` | `write_openclaw_config()`: generates `openclaw.json` with Bedrock provider and memory plugin. |
-| `workspace.py` | EFS file I/O at `/mnt/efs/users/{user_id}/`. |
-
-### Gateway (`core/gateway/`)
-
-| File | Purpose |
-|------|---------|
-| `routers/gateway_relay.py` | Raw WebSocket relay on the `bv-` door for machine clients (desktop node hosts, Paperclip operators) — one backend task pipes both sockets for the connection's life; the OpenClaw handshake and the NOT_PAIRED self-heal are its only two frame hooks. Replaces the deleted `operator_rpc.py`/`node_connection.py`. |
+| `routers/gateway_relay.py` | Raw WebSocket door on `bv-` for a desktop node host. **A door, not a pipe:** the BACKEND is the gateway for the workspace — `_serve_node_protocol` terminates the node protocol in-process (challenge, signed `connect`, `hello-ok`, frame pumping). There is no second socket, and a Paperclip operator token is **refused outright** rather than accepted and hung: an AgentCore runtime serves no WebSocket, and the operator's adapter is Paperclip's native `hermes_gateway` over the authenticated HTTP facade. |
 | `core/services/machine_auth.py` | In-process port of the `websocket-authorizer` Lambda's device-JWT and Paperclip-service-token verifiers — the relay's upgrade auth. |
-| `core/services/relay_hooks.py` | Per-connection side effects the relay handler calls: node deny-list edges, the operator wake/chat-gate check, the NOT_PAIRED self-heal, trial disarm. |
-| `core/services/container_rpc.py` | One HTTP POST per RPC to the plugin's `/plugins/lightbulb-channel/rpc`, `wake=False` for read-only probes. Replaces the deleted `GatewayConnectionPool` as the backend's sole way to reach a container. |
+| `core/services/relay_hooks.py` | One live-event invalidation (`publish_node_invalidation`) plus two one-line aliases (`on_node_ready`/`on_node_closed`) that both call it. Its four OpenClaw-shaped edges (operator wake gate, expired-trial self-disarm, the approval RPC into a container gateway, the first-node/last-node `tools.deny` patch) are asserted **ABSENT** by its tests, not merely unreached — each called into the container gateway or deep-merged `openclaw.json`. |
 
 ### Services (`core/services/`)
 
@@ -726,31 +758,44 @@ you cannot guess from the filename:
 - `provision_dispatch.py` — `dispatch_provision`, the single provisioning
   funnel. A fresh claim starts the SFN watchdog execution FIRST, then runs
   attempt 0 as a backend child process for speed. The machine watches the
-  row (watch loop in `service-stack.ts`) and takes the ECS leg over on
-  error or after its tick backstop — custody never depends on a client poll.
-- `paperclip_provisioning.py` — owns `provision_org`, which creates the generic six-agent starter roster for fresh workspaces and preserves legacy/founder rosters.
-- `config_patcher.py` — EFS-safe JSON deep-merge. `openclaw.json` writers take
-  the persistent `.isol8-guard` and select the lock protocol recorded in
-  `.isol8-protocol` (constants + `O_EXCL` acquire live in `efs_file_lock.py`);
-  backend-only files use NFS-compatible `fcntl.lockf` (not `flock`).
+  row (watch loop in `service-stack.ts`) and takes over by running
+  `provision_runner.py` as an ECS task on the **platform** cluster on error or
+  after its tick backstop — custody never depends on a client poll. (That ECS
+  RunTask is the one place provisioning still touches ECS; the thing it
+  provisions is an AgentCore runtime.)
+- `paperclip_provisioning.py` — owns `provision_org`, which creates the generic six-agent starter roster for fresh workspaces and preserves legacy/founder rosters. Every agent it seeds carries Paperclip's native `hermes_gateway` adapter pointed at the hook-token-authenticated backend facade; the device-paired `openclaw_gateway` shape is gone (no ws relay to dial, no operator device to mint). An agent row still on `openclaw_gateway` fails its routines, issue runs and Teams Run/Retry **silently** while room chat keeps working — `repoint_agent_adapter` is kept with zero callers precisely because it is the only repair path for that.
+- `owner_lifecycle.py` — the single-writer fence on the path that writes an
+  owner's credentials (the OAuth connect-vs-disconnect race). It is a DynamoDB
+  conditional-write lease, **not** a file lock: the `fcntl` lock it used to take
+  under the EFS mount fenced anything only because every backend task mounted
+  the same filesystem, and on an ephemeral rootfs it succeeds independently in
+  each of the 2-4 tasks, silently. Fails CLOSED.
 - `clerk_admin.py` — Clerk REST wrapper for the admin surface. New Clerk calls
   **should** go through here, but two predate it and still hit `api.clerk.com`
   inline via httpx: `routers/billing.py` and `routers/desktop_auth.py`. A
   fleet-wide change to how we call Clerk has to touch all three.
 - `key_service.py` — BYO LLM keys. Stored **solely in AWS Secrets Manager**
-  (`lightbulb/{env}/user-keys/{user}/{provider}`), referenced by the ECS task def;
-  no DynamoDB copy is kept.
+  (`lightbulb/{env}/user-keys/{user}/{provider}`); no DynamoDB copy is kept.
+  AgentCore has no task-definition `secrets:` mechanism, so the plaintext is
+  read back at provision time (`read_byo_key`) and written into the profile,
+  rather than referenced by ARN the way the ECS task def did.
 - `catalog_service.deploy_from_artifact` — the consumption-side entry point for
-  marketplace deploys.
-- `agent_export.py` — seller-agent → tarball snapshotter. It tars
-  `workspace-{id}/` (the seller's actual content) and **never** `agents/{id}/`
-  (OpenClaw runtime state — `sessions/` logs, `agent/` auth tokens). Runtime
-  state is excluded *by which root it points at*, not by a filter list; the
-  filters only drop dotfiles and junk dirs. See `_resolve_agent_dir`'s docstring.
+  marketplace deploys; `_install_agentcore_deploy` is the half that writes the
+  buyer's profile.
+- `agent_export.py` — seller-agent → tarball snapshotter. It downloads the
+  seller's **Hermes profile** from S3 and tars that; the marketplace slice is
+  projected from the PROFILE's own `openclaw.json`, not from a per-user one.
+  A Hermes-native profile (`config.yaml` + `.env`, no `openclaw.json`) cannot
+  publish, and the refusal says so — which keeps the whole credential-leak gate
+  and safety-scan suite exercising live code instead of a door that always
+  raised. `_refuse_bad_id` emits `marketplace.path_traversal_attempt` on every
+  id refusal (agent id **and** seller id, the other half of the profile key):
+  that metric is the marketplace's last path-traversal trip-wire and page-tier
+  alarm P11 sits on it, so do not sweep it as emitter-less.
 
 ### Routers (`routers/`) — all mounted under `/api/v1`
 
-~44 flat modules plus the `routers/teams/` subpackage (the Teams Inbox BFF —
+~50 flat modules plus the `routers/teams/` subpackage (the Teams Inbox BFF —
 agents, approvals, feed, feedback, inbox, interactions, issues, runs, search,
 settings, tree_control, work; composes the `paperclip_*` services). `ls` both
 for the current set.
@@ -799,14 +844,13 @@ that will mislead you otherwise:
 
 - **`/chat`** is the whole app. Both branches mount `LiveEventsProvider` and
   render the messaging workspace: desktop the **dockable workspace shell**
-  (`components/workspace/` — chat, teams, control, file-viewer, and browser
-  panels, where the `chat` panel is `panels/ChatPanel.tsx` → `MessagingConversation`);
+  (`components/workspace/` — chat, teams, control and file-viewer panels, where
+  the `chat` panel is `panels/ChatPanel.tsx` → `MessagingConversation`);
   mobile `ChatLayout` via `MobileChatShell`, wrapping `MessagingWorkspace`. Teams
   and control are in-shell panels, **not routes** — the legacy `/teams/*` URL tree
-  was removed and 404s. The **browser** panel is a singleton live view of the
-  container's Chrome (one Xvfb display per container); its WS deliberately
-  targets `bv[-env].flickmeon.ai` (CloudFront) because the API Gateway HTTP API
-  cannot pass WebSocket upgrades (`workspace/panels/browserViewUrl.ts`).
+  was removed and 404s. There is no browser panel: `PanelKind` is
+  `chat | teams | control | file-viewer | missing`, and the live-view WS it used
+  to open is gone along with `routers/browser_view.py`.
 - **`/admin`** only resolves on allowed admin hosts (`admin.flickmeon.ai`,
   `admin.dev.flickmeon.ai`, `admin.localhost:3000`; overridable via
   `NEXT_PUBLIC_ADMIN_HOSTS`) and 404s everywhere else. Allowlist lives in
@@ -819,7 +863,7 @@ touching. The load-bearing structure:
 
 - `components/workspace/` — the dockable desktop shell: `panelRegistry.ts` /
   `panelComponents.ts` map panel keys → components (`PanelKind = chat | teams |
-  control | file-viewer | browser`); `workspaceController.ts` +
+  control | file-viewer | missing`); `workspaceController.ts` +
   `layoutStorage.ts` own layout state. Start here for anything "where does X
   render on desktop".
 - `components/messaging/` — **the live chat surface**: `MessagingWorkspace`
@@ -858,7 +902,8 @@ this environment's AppSync HTTP + realtime endpoints, region, and the caller's
 opaque user-channel key; `useLiveEvents` subscribes with a Clerk token minted
 from the `lightbulb-appsync` JWT template. There is no `NEXT_PUBLIC_WS_URL` any
 more: `wss://ws[-env].flickmeon.ai` is reached only by the desktop host
-(`LIGHTBULB_WS_URL`), and `bv[-env]` stays the browser-view raw-WS door.
+(`LIGHTBULB_WS_URL`), and `bv[-env]` is now the machine-relay raw-WS door only
+(it keeps its browser-view construct ids — see "WebSocket Architecture").
 
 ### Middleware
 
@@ -885,8 +930,9 @@ Browser/mobile --HTTP (Clerk)--> routers/messaging.py --> lightbulb-{env}-messag
         /ws/<workspaceId>/rooms/<roomId>/<deliveryKey>                     |
         /ws/<workspaceId>/users/<opaqueUserKey>           core/services/openclaw_work.py
                                    |                                       |
-                  browser/mobile (subscribe-only)      POST /plugins/lightbulb-channel/inbound/<agentId>
-                                                        on the per-owner container (gateway auth)
+                  browser/mobile (subscribe-only)      InvokeAgentRuntime ->the owner's runtime
+                                                       POST /plugins/lightbulb-channel/inbound/<agentId>
+                                                        on the bridge (gateway-token auth)
                                                                            |
                                             native reply --> POST /api/v1/internal/messaging/
                                                              agent-messages/<ownerId> (hook token)
@@ -902,8 +948,8 @@ put the `IDEMP` receipt, put one `WORK#MESSAGE` row per dispatch target.
 
 **Command path.** `routers/messaging.py` under `/api/v1/messaging/*`, all Clerk
 bearer tokens; `core/services/messaging.py` is the single policy seam over
-`messaging_repo`. The browser never supplies an owner id, author id, OpenClaw
-session key, container address, fanout list, or publish credential — the backend
+`messaging_repo`. The browser never supplies an owner id, author id, agent
+session key, runtime address, fanout list, or publish credential — the backend
 derives all of them. Retries are safe because the durable `IDEMP` row, not
 DynamoDB's short-lived transaction token, is the receipt. Public JSON is camelCase.
 
@@ -930,9 +976,13 @@ enforced server-side**: mute is client-side on every other surface, so
 
 `core/services/openclaw_work.py` drains the work queue as a **wake
 signal only** — it re-reads canonical messages through `throughSeq`, rechecks
-membership, wakes the owner's container, and calls the baked `lightbulb-channel`
-plugin's gateway-authenticated private ingress once per targeted message, keyed
-by the canonical `messageId`. The FIFO `MessageGroupId` is per room+agent, so
+membership, and invokes the owner's runtime once per targeted message, keyed by
+the canonical `messageId`, hitting the bridge's gateway-authenticated private
+ingress. There is no separate wake call: AgentCore starts the microVM on the
+invoke itself, which is why the caller's budget is 90 s
+(`runtime_transport.AGENTCORE_INGRESS_TIMEOUT_S`) — a cold workspace measured
+54-57 s end to end, so a shorter budget fails every first call and only succeeds
+on the retry. The FIFO `MessageGroupId` is per room+agent, so
 agents run concurrently while one agent's room stays serialized. Native replies
 come back over HTTP (`POST /api/v1/internal/messaging/agent-messages/{ownerId}`,
 hook token) through the same canonical writer humans use. Execution is
@@ -940,15 +990,16 @@ at-least-once, not exactly-once.
 
 **Room turns are asynchronous (spec `2026-09-12-async-turn-contract-design.md`).** The
 consumer POSTs the ingress body with a `run` contract and gets `202 accepted` in
-milliseconds; the container runs the turn, publishes the run frames itself to
+milliseconds; the runtime runs the turn, publishes the run frames itself to
 `/ws/<workspaceId>/rooms/…` with its task role, and reports `run.started` /
 `run.heartbeat` / `run.ended {outcome, usage}` to
 `POST /api/v1/internal/messaging/runs/{ownerId}/events` (hook token). The ledger row
 `OWNER#<owner>/RUN#<runId>` is the only run state; a one-minute sweeper closes runs that
 never started (120 s) or stopped heartbeating (90 s) with an `error` + `run_ended` pair.
-Abort and steer are HTTP calls to `/plugins/lightbulb-channel/runs/{runId}/{abort|steer}`.
-Control RPCs, readiness (`health`) and abort/steer are HTTP calls into the plugin;
-non-room usage arrives on `POST /internal/messaging/usage/{ownerId}`.
+Abort and steer are `/plugins/lightbulb-channel/runs/{runId}/{abort|steer}`.
+Control RPCs, readiness (`health`) and abort/steer all ride the same
+`InvokeAgentRuntime` envelope into the bridge; non-room usage arrives on
+`POST /internal/messaging/usage/{ownerId}`.
 
 **Listen modes.** Every agent member carries `active` / `mentions` / `observe`
 (humans carry none). `select_dispatch_targets` is the one place that reads them:
@@ -962,7 +1013,7 @@ from the CEO: on a PAID workspace the CEO is `active` and the specialists
 is a paid feature** — `listening_available` (the `has_always_on_entitlement`
 predicate) gates the seed, `create_room`/`upsert_member` on non-DM rooms (403
 `PLAN_REQUIRED`), and the work consumer, which drops a `room_event` for a
-non-paid owner before waking the container. DMs are exempt: every DM message
+non-paid owner before invoking the runtime. DMs are exempt: every DM message
 is addressed, so the mode is inert there, and the web client creates DMs with
 `active`. The UI shows the option as "Listening (paid plan)" and renders a
 stored `active` on a free-tier room as Mentions.
@@ -980,24 +1031,28 @@ commands are HTTP and human delivery is AppSync (see "Messaging"). "Remove
 WebSockets" never meant every protocol that happens to use one — these remain,
 because events are not a substitute for them:
 
-1. **Machine relay (local-session only):** API Gateway v2 WebSocket API; `$connect`/`$disconnect`/`$default` are **Lambda integrations** (`apps/infra/lambda/ws-*`). `ws-message` POSTs the payload to `http://{ALB}/api/v1/ws/message` inside the VPC, which `routers/websocket_chat.py` serves **for the desktop local-session relay only** (`clientId=lightbulb-local-sessions`, enrollment-gated). Tauri node hosts and Paperclip operators moved off this door onto the raw WS relay (item 5) and no longer traverse API Gateway at all.
+1. **Machine relay (local-session only):** API Gateway v2 WebSocket API; `$connect`/`$disconnect`/`$default` are **Lambda integrations** (`apps/infra/lambda/ws-*`). `ws-message` POSTs the payload to `http://{ALB}/api/v1/ws/message` inside the VPC, which `routers/websocket_chat.py` serves **for the desktop local-session relay only** (`clientId=lightbulb-local-sessions`, enrollment-gated). Tauri node hosts moved off this door onto the raw WS relay (item 5) and no longer traverse API Gateway at all; Paperclip operators left WebSockets entirely for the HTTP facade.
 2. The `websocket-authorizer` Lambda accepts exactly **one** credential kind — paired-device JWTs (EdDSA, `kind=device`) — and **deliberately refuses Clerk browser sessions**. Paperclip service tokens are no longer accepted here either: operators verify their own (still HS256) service tokens on the raw WS relay instead, via `core/services/machine_auth.py`. `ws-connect` narrows further, refusing any device token whose `clientId` isn't `lightbulb-local-sessions`. DynamoDB `lightbulb-{env}-ws-connections` maps connectionId → owner; no `chat`/`native_human` rows exist.
 3. Backend `/ws/*` endpoints require the `x-lightbulb-ws-internal` shared-secret header, so forged callers arriving over the public HTTP API are rejected. Relay replies go out over the Management API (HTTPS POST to `@connections/{id}`) — the only traffic left on this path is the local-session relay.
-4. **Backend → container:** `core/services/container_rpc.py`, one HTTP request per RPC to the container plugin — no backend-initiated socket remains; the operator-device pairing probe (`perform_signed_connect`) was deleted with `core/gateway/operator_rpc.py`.
-5. **Raw WS door:** `wss://bv[-env].flickmeon.ai` is a CloudFront distribution with a **VpcOrigin** to the ALB's browser-view listener, forwarding two path-capped routes: the browser live-view panel's unbuffered WS (`/api/v1/browser-view/*`; the Clerk JWT rides the `Sec-WebSocket-Protocol` offer) and the **machine gateway relay** (`/api/v1/gateway/*`, `routers/gateway_relay.py`) — desktop node hosts and Paperclip operators dial this door directly with a device or service token as a `token`/`clientId` query pair; one backend task pipes both the client and upstream-container sockets for the connection's life, with only a TTL presence row (`ConnectionService`) surviving in DynamoDB.
+4. **Backend → workspace:** `core/services/runtime_transport.py` → `container_rpc.py`, one `InvokeAgentRuntime` per RPC — no backend-initiated socket remains anywhere, and there is no address to cache or invalidate.
+5. **Raw WS door:** `wss://bv[-env].flickmeon.ai` is a CloudFront distribution with a **VpcOrigin** to the ALB's browser-view listener, now forwarding exactly ONE path-capped route: the **machine gateway relay** (`/api/v1/gateway/*`, `routers/gateway_relay.py`). A desktop node host dials it directly with a device token as a `token`/`clientId` query pair and the backend terminates the node protocol in-process, with only a TTL presence row (`ConnectionService`) in DynamoDB. The browser live-view route it shares a name with is gone; the cap lives on the **ALB listener**, not on CloudFront — a CloudFront VPC origin sits behind an AWS-managed security group that only exists after the first deploy, so the ALB ingress admits the whole VPC CIDR and anything in-VPC can reach :8081 directly.
 6. REST rides the API Gateway HTTP API → VPC Link **V2** → ALB, including the `company[-env]` host dispatch (`X-Isol8-Public-Host` parameter mapping → `HostDispatcherMiddleware`). (The old VPC Link V1 → NLB chain is GONE.)
 
 ⚠️ AppSync has **no application disconnect callback**, and an open subscription is
-not proof that compute is needed — so container park/wake is driven by durable
-timestamps and the trial-idle sweep, never by UI connectivity.
+not proof that compute is needed — so park/wake is driven by durable timestamps
+and the trial-idle sweep, never by UI connectivity. On AgentCore there is also
+nothing to read: AWS parks an idle microVM invisibly and the row stays
+`status="running"` forever, so `wake_policy` is elapsed time since
+`last_interactive_at` against `IDLE_TIMEOUT_S` and is a **report, not a gate** —
+no scaled-to-zero service is left for a passive read to start by accident.
 
 ---
 
 ## Provisioning Flow
 
-A first-time user moves from "just signed up" to "ready to chat" through one canonical path. Understanding it matters because **Paperclip wiring is only set up at provision time** — there is no PATCH that retrofits a missing Paperclip company onto a pre-existing container.
+A first-time user moves from "just signed up" to "ready to chat" through one canonical path. Understanding it matters because **Paperclip wiring is only set up at provision time** — there is no PATCH that retrofits a missing Paperclip company onto a pre-existing workspace.
 
-**The path is workspace-only. Personal workspaces no longer exist in the data, and every provisioning door refuses them.** A few `owner_type` fallbacks that default to `"personal"` are still live (`update_service` falls back to `"personal"` for container rows without `owner_type`, and `config.py` maps it to `nodes.browser.mode: "auto"`), so do not delete them as dead code without deciding the org browser mode. Every owner is a Clerk org: the September 2026 personal cohort was purged or migrated onto workspaces (PRs #2624, #2625, #2627), and the personal legs of `_reconcile_owner_seed`, `_ensure_paperclip_for_owner`, `arm_nightly_ceo`, `provision_runner` step 0 and the provision gate went with it. The fence stays: `resolve_owner_id` raises 409 `workspace_required` for any caller with no org claim on every product API (since `96143cea9`), `ensure_workspace_trial_default` 403s a `user_`-prefixed id from any caller, `ensure_user_ready` returns on its first statement for a non-org caller, `evaluate_provision_gate` answers a non-org owner id with a `workspace_required` gate before reading billing, and `provision_runner` step 0 refuses a non-org owner with exit 10 — so no door can mint a `trial_local` row, a container or a Paperclip company for someone who signed up alone.
+**The path is workspace-only. Personal workspaces no longer exist in the data, and every provisioning door refuses them.** The last `owner_type` defaults to `"personal"` sit on billing (`billing_repo`/`billing_service`) and `owner_facts`, not on any provisioning door. Every owner is a Clerk org: the September 2026 personal cohort was purged or migrated onto workspaces (PRs #2624, #2625, #2627), and the personal legs of `_reconcile_owner_seed`, `_ensure_paperclip_for_owner`, `arm_nightly_ceo`, `provision_runner` step 0 and the provision gate went with it. The fence stays: `resolve_owner_id` raises 409 `workspace_required` for any caller with no org claim on every product API (since `96143cea9`), `ensure_workspace_trial_default` 403s a `user_`-prefixed id from any caller, `ensure_user_ready` returns on its first statement for a non-org caller, `evaluate_provision_gate` answers a non-org owner id with a `workspace_required` gate before reading billing, and `provision_runner` step 0 refuses a non-org owner with exit 10 — so no door can mint a `trial_local` row, a container or a Paperclip company for someone who signed up alone.
 
 ```
 Clerk sign-up  ->  workspace (Clerk org) created or joined
@@ -1009,6 +1064,11 @@ Clerk sign-up  ->  workspace (Clerk org) created or joined
                   2. evaluate_provision_gate — subscription/credits/OAuth pre-checks
                   3. asyncio.create_task(dispatch_provision(owner_id))
                        └─ SFN watchdog started FIRST; attempt 0 = scripts/provision_runner.py
+                            -1. hermes_provisioning.prepare_hermes_workspace — mint hook/gateway
+                                tokens + the Bedrock gate bearer into ONE Secrets Manager boot
+                                secret, and persist the tokens onto the row BEFORE step 0, so the
+                                native adapter's apiKey bakes in a real token (M4-R33). No-op once
+                                the row carries an agentcore_runtime_arn.
                             0. _seed_owner_paperclip (single-flight under try_claim_provision;
                                org-only — a non-org owner exits 10 before anything is seeded)
                                  └─ paperclip_provisioning.provision_org
@@ -1016,12 +1076,15 @@ Clerk sign-up  ->  workspace (Clerk org) created or joined
                                       ├─ create Paperclip company; bootstrap-admin invite/accept/approve
                                       ├─ write PaperclipCompany DDB row (status="active")
                                       ├─ seed CEO, Engineering, Finance, Growth, Analytics,
-                                      │  and Customer Operations with adapter_type="openclaw_gateway"
+                                      │  and Customer Operations with adapter_type="hermes_gateway"
                                       └─ persist their stable role-keyed UUIDs in starter_agent_ids
-                            1. ecs_manager.provision_user_container
-                                 ├─ per-user EFS access point + ECS service
-                                 └─ write_user_configs → write_openclaw_config(paperclip_agents=[…])
-                                       └─ openclaw.json on EFS lists the live Paperclip roster in agents.list[]
+                            1. hermes_provisioning.provision_hermes_runtime
+                                 ├─ ensure the owner's Bedrock AIPs + role, ensure AgentCore trust
+                                 ├─ write_profiles — one complete $HERMES_HOME per roster agent to
+                                 │  s3://$OWNER_STATE_BUCKET/<owner>/hermes/<agent>/
+                                 └─ CreateAgentRuntime (VPC mode, 4h idle / 8h max, no filesystem)
+                                       └─ bounded poll to READY; a CREATE_FAILED runtime is deleted
+                                          and its ARN cleared, never reused
                             0b. arm_nightly_ceo — seeds the CEO's "Nightly CEO progress" routine for
                                 EVERY live owner: paid, OR an unexpired trial_local (see
                                 should_arm_nightly_ceo — only an EXPIRED trial is left unarmed);
@@ -1033,22 +1096,26 @@ Clerk sign-up  ->  workspace (Clerk org) created or joined
 Key invariants:
 
 - **`ensure_user_ready` is the canonical readiness entry point** — dispatched from `GET /container/status` polls, plus the Teams reconcile path and the Paperclip-proxy handshake. Clerk webhooks never CREATE a company — that stays gated behind readiness — but `organizationMembership.created` performs the idempotent Paperclip JOIN inline (`_ensure_paperclip_for_member`), so a member who never polls is still added to Teams.
-- **Paperclip URL is NOT in `openclaw.json`** — the Paperclip↔OpenClaw binding is on the Paperclip seed-agent's `adapterConfig.url`. The container connects to Paperclip via the agent's adapter at runtime; the container's own config only knows the agent IDs and workspace paths.
+- **The Paperclip binding is on the Paperclip side, not in the profile** — each seeded agent's `hermes_gateway` `adapterConfig` points at `/api/v1/internal/paperclip/hermes/{owner}` with the owner's hook token as `apiKey`. That token is a **snapshot** (Paperclip persists it as a managed company secret), so rotating an owner's `hook_token` requires `repoint_agent_adapter`. An EMPTY hook token raises at WIRING time rather than minting a config, because the adapter would otherwise 401 on every run and Paperclip reports that per-run, not as a broken agent.
 - **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success.
 - **Fresh-provision Paperclip seeding is single-flight inside the executor** (`provision_runner.py` step 0) — deliberately, to kill the duplicate-company race a poll-thread seed allowed.
 - **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with the CEO in `active` mode (paid workspaces only — a free trial seeds every agent on `mentions`) and the five specialists in `mentions` mode. Reconciliation never restores a removed member or resets a user's choice. Room owners/admins can set each agent's per-room mode to `active` (paid plans only), `mentions`, or `observe`; ordinary members see the mode but cannot change it.
 - **The first normal human message remains a normal dispatch.** Stored room modes choose its targets; a post-send capture then uses that first message once to create the initial goal/project and stage `BRIEF.md`. It does not force the CEO as the sole responder.
 
-### Legacy containers (pre-Paperclip provisioning)
+### Owners missing Paperclip state
 
-Owners whose container was provisioned **before** Paperclip integration shipped have a container row but no `PaperclipCompany` row, and an `openclaw.json` that lists no agents. They get 409s from `/teams` and have no Paperclip roster to chat with.
+An owner with a containers row but no `PaperclipCompany` row gets 409s from
+`/teams` and has no roster to chat with. The fix is a **full reprovision** —
+`DELETE /api/v1/debug/provision` then `POST /api/v1/debug/provision` — so the
+next poll runs `ensure_user_ready` against an empty slate. (The one-shot
+`backfill_paperclip_for_legacy_users.py` that swept the original pre-Paperclip
+cohort has run and been deleted; recover it from git history only if a new
+cohort appears.)
 
-Two fixes:
-
-1. **Full reprovision** — `DELETE /api/v1/debug/provision` then `POST /api/v1/debug/provision`. The new poll cycle invokes `ensure_user_ready` against an empty slate.
-2. **Backfill script** — a one-shot `backfill_paperclip_for_legacy_users.py` (already run against prod, since deleted) paginated the `containers` table, found owners with no Paperclip row, and called `provision_org` for each. Recover it from git history only if a new legacy cohort appears.
-
-**`PATCH /debug/provision` cannot CREATE Paperclip state.** It wholesale-rewrites `openclaw.json` via `write_user_configs`, seeding `agents.list` from the owner's LIVE Paperclip roster — so it can wire existing agent IDs into config, but it cannot create a Paperclip company, sign up a Paperclip user, or seed agents. Config repair ≠ provisioning.
+**`PATCH /debug/provision` cannot CREATE Paperclip state.** It rewrites every
+roster profile from the container row's own AIP ARNs and stops the warm session
+— so it repairs an agent's *config*, but it cannot create a Paperclip company,
+sign up a Paperclip user, or seed agents. Config repair ≠ provisioning.
 
 ---
 
@@ -1068,89 +1135,79 @@ Workspace billing is seat-free: `STRIPE_WORKSPACE_PRICE_ID` and
 
 **Apple IAP no longer accepts new purchases or restores.** The authenticated `POST /billing/apple/link` endpoint is a 410 tombstone that returns before verifier or repository work; there is no Apple/mobile checkout route. Keep `POST /webhooks/apple-iap`, StoreKit 2 JWS verification against pinned Apple root certificates, the configured Apple identifiers, `billing_repo` Apple fields, GSI `apple-original-transaction-index`, entitlement teardown, and cancellation/expiration mapping until App Store Connect proves there are zero active, grace-period, billing-retry, or refunded-but-unexpired subscriptions. The mobile app retains `expo-iap` only to open Apple's subscription-management UI for a hypothetical historical subscriber; it has no SKU, purchase, restore, or link action. `POST /billing/checkout` is the only subscription purchase API.
 
-Containers default to a 1 vCPU / 4 GB box launched on **Fargate Spot** (~70% cheaper than on-demand; `ecs_manager` falls back to on-demand when Spot capacity is unavailable — at service create and via a zero-placement timeout in the provisioning poller). The old *plan*-tier size ladder is gone, but size is not uniform: `_size_for_owner` returns `ULTRA_CPU`/`ULTRA_MEMORY_MIB` (2 vCPU / 8 GB) for **either** an `ultra_pro` plan **or** a live agent count over `COMPANY_STANDARD_PLAN_MAX_AGENTS` (10) — the latter is a RELIABILITY floor, not a billing signal, added after an 11-agent prod owner crash-looped on boot 2026-08-14 (24 SQLite DBs restoring concurrently starved the single vCPU; `database is locked` is what SQLite reports when a starved process exhausts its busy timeout). Sizing is derived at every provision/reprovision, so a hand-set size not backed by plan-or-agent-count is silently undone. Paid containers stay always-on while the subscription is active. Checkout bills the first month immediately through `POST /billing/checkout` for a workspace plan; the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
+**There is no per-owner compute size any more.** `CreateAgentRuntime` takes no cpu/memory field — the microVM spec is AgentCore's, not ours — so `_size_for_owner`, the `ULTRA_CPU`/`COMPANY_STANDARD_PLAN_MAX_AGENTS` reliability floor and the Fargate-Spot fallback are all gone with the ECS runtime, and a plan no longer buys a bigger box. What a plan still buys: always-on listening, the premium model tier reserved for the CEO (`hermes_profiles.premium_model_ref`), and the paid Bedrock credit path. Checkout bills the first month immediately through `POST /billing/checkout` for a workspace plan; the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
 
 ### Free tier (no card) — `trial_local`
 
-A first-time **workspace** (Clerk org) with no billing row gets a `trial_local` row and a container **provisioned exactly like a paid Bedrock one, except with a SINGLE per-owner application-inference profile (the `sonnet` tier)**. The AIP is the attribution + pricing unit; model pinning is enforced by the **bedrock-gate** (a request may only name an AIP in the owner's own token row). `bedrock_trial` is a **config-path mode**, never a stored `provider_choice`. Only a workspace can start a trial — `ensure_workspace_trial_default` 403s a `user_`-prefixed id, and no personal billing rows remain.
+A first-time **workspace** (Clerk org) with no billing row gets a `trial_local` row and a workspace **provisioned exactly like a paid Bedrock one, except with a SINGLE per-owner application-inference profile (the `sonnet` tier)**. The AIP is the attribution + pricing unit; model pinning is enforced by the **bedrock-gate** (a request may only name an AIP in the owner's own token row). `bedrock_trial` is a **config-path mode**, never a stored `provider_choice`. Only a workspace can start a trial — `ensure_workspace_trial_default` 403s a `user_`-prefixed id, and no personal billing rows remain.
 
 The trial is bounded on TWO axes: a **$3.00/day spend cap** and a **3-day trial window** (`trial_end` stamped locally at signup; expiry → permanent `TRIAL_EXPIRED`). Daily spend resets on UTC day rollover (`provision_gate.maybe_restore_trial_bedrock`). There is deliberately **no cap-only check primitive** — a cap-only check once woke EXPIRED trials, so every door must call the full predicate (`trial_block_reason` / `reason_for_account`, cap AND expiry).
 
-**The enforcement model — read this before changing anything here.** Every Bedrock inference call flows through the **bedrock-gate** (`apps/infra/lambda/bedrock-gate/`, a streaming Lambda fronting bedrock-runtime). Containers authenticate to it with per-owner bearer tokens (`AWS_BEARER_TOKEN_BEDROCK`; hash-stored in `lightbulb-{env}-bedrock-gate-tokens`); **owner task roles carry NO `bedrock:Invoke`** (`build_owner_bedrock_policy` is a deny-only fence), so the `exec: full` shell path AccessDenies — the gate is the only door. The gate discovers its own URL via SSM (`/lightbulb/{env}/bedrock-gate-url`, read by `core/billing/bedrock_gate_url.py`; the literal value `direct` is the fleet break-glass mode, paired with `scripts/bedrock_gate_break_glass.py` which re-grants direct IAM — see `docs/runbooks/bedrock-gate-break-glass.md`).
+**The enforcement model — read this before changing anything here.** Every Bedrock inference call flows through the **bedrock-gate** (`apps/infra/lambda/bedrock-gate/`, a streaming Lambda fronting bedrock-runtime). A workspace runtime authenticates to it with a per-owner bearer token (minted into the boot secret, hash-stored in `lightbulb-{env}-bedrock-gate-tokens`); **owner roles carry NO `bedrock:Invoke`** (`build_owner_bedrock_policy` is a deny-only fence), so the agent's own shell AccessDenies — the gate is the only door. The runtime is pointed at it by env: `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` **and** `ANTHROPIC_BEDROCK_BASE_URL` both carry the gate URL, deliberately — the two docs disagree about which path Hermes takes and setting only one would silently pick a side; pointing either at the real bedrock-runtime endpoint AccessDenies fleet-wide. The gate discovers its own URL via SSM (`/lightbulb/{env}/bedrock-gate-url`, read by `core/billing/bedrock_gate_url.py`; the literal value `direct` is the fleet break-glass mode, paired with `scripts/bedrock_gate_break_glass.py` which re-grants direct IAM — see `docs/runbooks/bedrock-gate-break-glass.md`).
 
 - **The valve (primary)** is the gate's pre-flight **reservation**: admit only if `spent + holds + ~$0.30 estimate < $3.00`, place the hold, forward verbatim (byte-identical eventstream — load-bearing for Claude Code), settle Bedrock's own reported usage on completion. Over budget → 429 before a single token is generated. Overshoot is bounded by in-flight requests (cents), so the cap is a TRUE **$3.00/day** — no enforce-early margin. **Lockstep constants — NEVER move one alone:** `CAP_MICROCENTS` has three copies (`trial_cap.py`, meter `index.py`, gate stack env) and `RESERVE_ESTIMATE_MICROCENTS` (300_000) has two (`trial_cap.py`, gate stack env); every door predicting admission must subtract the reserve or a dead zone opens.
-- **The auditor + backstop** is the invocation-log **meter Lambda** (`apps/infra/lambda/bedrock-usage-meter/`). It sees EVERY call from AWS's own records — including aborted/crashed streams the gate cannot settle and any break-glass direct traffic — and reconciles via the shared `requestId` dedup table (gate = cashier writes first; meter counts only what the gate missed, emitting `meter.reconciled_gateway_miss`). It remains the **sole Metronome writer** (paid billing never touches the gate). If the counter crosses the cap anyway it fires the backstop kill: deny the gate token + `desiredCount=0` (+ the now-vestigial IAM revoke, which still bites in break-glass direct mode).
-- **The gates** (`gate_chat`, the Teams guards, `ecs_manager.start_user_service`) are read-only checks on that counter. **They are UX** — the limit card instead of a failed run. The historical "no pre-send reserve" rule applies to the BACKEND (off the inference path, where a reserve is unenforceable guesswork — one existed, caused a 15-defect review, and was deleted); the gate's reservation is different in kind: it lives on the only path in/out and settles against its own atomic counter.
-- **The container config bounds** (`agents.defaults.timeoutSeconds`, `runRetries.max`, `subagents.maxConcurrent`, `tools.loopDetection`) shrink the blast radius of a runaway loop. They are **insurance, not the fence**. Note `timeoutSeconds` defaults to **48 HOURS** upstream and the agentic loop has no step/tool-call/token cap at all.
+- **The auditor + backstop** is the invocation-log **meter Lambda** (`apps/infra/lambda/bedrock-usage-meter/`). It sees EVERY call from AWS's own records — including aborted/crashed streams the gate cannot settle and any break-glass direct traffic — and reconciles via the shared `requestId` dedup table (gate = cashier writes first; meter counts only what the gate missed, emitting `meter.reconciled_gateway_miss`). It remains the **sole Metronome writer** (paid billing never touches the gate). If the counter crosses the cap anyway it fires the backstop kill. ⚠️ **On AgentCore that kill is the gate-token DENY alone.** The meter still calls `update_service(desiredCount=0)` and still revokes IAM, but there is no per-user ECS service left to stop and the owner role never had `bedrock:Invoke` — so a capped owner's row keeps reading `running` and the ONLY thing that actually stops inference is the denied bearer. Two consequences that bit already: a warm microVM caches the bearer it read at cold start, and a reprovision RE-MINTS it, which is why `/container/recover`'s escalation carries the full trial predicate.
+- **The gates** (`gate_chat`, the Teams guards, `routers/container.py`'s status/recover paths) are read-only checks on that counter. **They are UX** — the limit card instead of a failed run. The historical "no pre-send reserve" rule applies to the BACKEND (off the inference path, where a reserve is unenforceable guesswork — one existed, caused a 15-defect review, and was deleted); the gate's reservation is different in kind: it lives on the only path in/out and settles against its own atomic counter.
+- **The runtime's own bounds** are now the AgentCore session lifecycle: 4 h idle, **8 h max lifetime** (AWS's hard ceiling), and the backend rolls sessions at a quiet point before it. That is a wall-clock ceiling on a runaway loop, not a token one — Hermes's agentic loop still has no step/tool-call/token cap, so this is **insurance, not the fence**. The `openclaw.json` bounds this bullet used to list (`agents.defaults.timeoutSeconds` and friends) have no Hermes equivalent.
 
-Trial containers scale to zero when idle and wake on the next `/container/status` poll (gated on the full trial predicate). The frontend stops that poll when a tab has been open/idle a while — a fresh user interaction (click) is what resumes polling and triggers the wake, so a long-open tab shows "Agents asleep" until someone clicks. Trial owners are never ingested to Metronome — they have no Stripe customer, and Metronome is a ledger, not a valve (its threshold alerts poll on a ≥3-minute tick and it never blocks usage); paid credit balances are gated per-request by the gate against the `metronome-fast-gate` row.
+A parked trial workspace is woken by the **invoke**, not by a poll: AWS parks the microVM after `IDLE_TIMEOUT_S` and starts it again on the next `InvokeAgentRuntime`, so every gated door is a door onto an invoke rather than a `desiredCount` change. The row still reads `running` throughout (nothing observable changes), which is why `wake_policy` infers parking from `last_interactive_at` and treats its own answer as a report. Trial owners are never ingested to Metronome — they have no Stripe customer, and Metronome is a ledger, not a valve (its threshold alerts poll on a ≥3-minute tick and it never blocks usage); paid credit balances are gated per-request by the gate against the `metronome-fast-gate` row.
 
-**Load-bearing constraints (verified 2026-07-15/16; do not re-litigate without new facts):** OpenClaw sends **no `maxTokens`** on the adaptive path — a small injected cap silently truncates thinking, so the gate clamps only ABOVE model-max (128K Sonnet/Opus, tamper ceiling). Bedrock invocation-log **text delivery cannot be disabled** without blinding the meter entirely (the modality flags gate whole records; bodies — which have leaked plaintext Paperclip keys/JWTs — are bounded by 3-day log retention + DLQ redaction instead). A streaming Lambda **cannot be a fence by itself** (not reliably notified of client aborts; can't guarantee its own final write) — which is why the meter backstop + deny-flag kill stay, per the staff-review + AWS-docs research in `docs/superpowers/specs/2026-07-15-bedrock-gate-design.md`.
+**Load-bearing constraints (verified 2026-07-15/16; do not re-litigate without new facts):** the agent sends **no `maxTokens`** on the adaptive path — a small injected cap silently truncates thinking, so the gate clamps only ABOVE model-max (128K Sonnet/Opus, tamper ceiling). Bedrock invocation-log **text delivery cannot be disabled** without blinding the meter entirely (the modality flags gate whole records; bodies — which have leaked plaintext Paperclip keys/JWTs — are bounded by 3-day log retention + DLQ redaction instead). A streaming Lambda **cannot be a fence by itself** (not reliably notified of client aborts; can't guarantee its own final write) — which is why the meter backstop + deny-flag kill stay, per the staff-review + AWS-docs research in `docs/superpowers/specs/2026-07-15-bedrock-gate-design.md`.
 
 ### Paid provider paths
 
 Three provider paths the user / org chooses between (stored on the per-owner `billing_accounts` record, not per-user):
 1. **Bedrock managed** (`bedrock_claude`) — platform-billed Bedrock inference, draws from per-owner Bedrock credits.
-2. **ChatGPT OAuth** (`chatgpt_oauth`) — available to every workspace (see `routers/oauth.py` module docstring; the org admin who completes the device-code flow is the recorded `oauth_connector_user_id`, and only they can manage/re-select it — one ChatGPT account ↔ one container); user signs in to their own OpenAI account.
-3. **BYO API key** (`byo_key`) — owner provides their own Anthropic / OpenAI key, stored **in AWS Secrets Manager** (`lightbulb/{env}/user-keys/{user}/{provider}`, referenced by the task def; no DynamoDB copy — `key_service.py`). Note: `ENCRYPTION_KEY`/Fernet no longer protects BYOK; it protects ChatGPT OAuth tokens + Paperclip credentials.
+2. **ChatGPT OAuth** (`chatgpt_oauth`) — available to every workspace (see `routers/oauth.py` module docstring; the org admin who completes the device-code flow is the recorded `oauth_connector_user_id`, and only they can manage/re-select it — one ChatGPT account ↔ one workspace); user signs in to their own OpenAI account.
+3. **BYO API key** (`byo_key`) — owner provides their own Anthropic / OpenAI key, stored **in AWS Secrets Manager** (`lightbulb/{env}/user-keys/{user}/{provider}`; no DynamoDB copy — `key_service.py`) and read back into the profile at provision time. Note: `ENCRYPTION_KEY`/Fernet no longer protects BYOK; it protects ChatGPT OAuth tokens + Paperclip credentials.
 
 The provision gate (`core/services/provision_gate.py`) blocks chat when subscription is not active, OAuth tokens are missing, or Bedrock credits are exhausted. The frontend renders a structured "blocked" state instead of an indefinite spinner.
 
 ### Usage Flow
 
-1. A room run's `run.ended` callback, or the plugin's `agent_end` hook for every other run, carries the session's token counts
+1. A room run's `run.ended` callback carries the session's token counts; every other run reports on `POST /internal/messaging/usage/{ownerId}` (the OpenClaw `agent_end` hook that used to cover the second case has no Hermes equivalent)
 2. `record_usage()` writes DynamoDB atomic counters (owner + per-member) — **analytics only**; billing flows through Metronome, whose sole writer is the meter Lambda
 3. Chat gating is `gate_chat` (provision gate) + `trial_block_reason` (trial cap/expiry) + the Metronome fast-gate for paid credits — there is no `check_budget()` and no Stripe Meters usage reporting
 
-### Container Update System
+### Runtime rollout
 
-- **Track 1 (silent):** Config patches via EFS deep merge + OpenClaw file watcher (chokidar polling). Deep merge preserves OpenClaw's runtime additions (`meta`, `commands`, `identity`).
-- **Track 2 (notification):** Image/resize updates queued in DynamoDB, user picks when via banner.
-- **Admin endpoints:** `PATCH /container/config/{owner_id}`, `PATCH /container/config` (fleet)
+There is no config-patch track and no update banner. A workspace's config IS its
+S3 profile, and its code IS the runtime's pinned image — two different levers
+with two different blast radii.
 
-### Config Patching Notes
+- **Config** — write the profile (`hermes_profiles.write_agent_profile` /
+  `write_profiles`) and bump `.revision`. The bridge restores the profile once
+  per process and compares, so the `.revision` bump delivers to the next cold
+  start on its own — but only to that: a change that must land on an
+  ALREADY-WARM microVM needs the session stopped too, which is what
+  `PATCH /debug/provision` does. Either way nothing has to be restarted, and
+  the old "restart could not be started" failure mode is gone.
+- **Code** — flip `hermes-version.json`'s `dev.tag`, deploy, validate, flip
+  `prod.tag`, then **run `apps/backend/scripts/roll_hermes_runtimes.py`**. A pin
+  flip alone changes only what a NEW runtime is created with; every existing
+  runtime keeps its image until it is rolled. Verify with
+  `aws bedrock-agentcore-control get-agent-runtime` and read the
+  `containerUri` — never from the pin file.
+- **A roll waits for an idle session** (`ROLL_IDLE_WAIT_S`, 10 min) before
+  stopping one. The bridge uploads a turn's filesystem writes to S3 only at the
+  END of the turn, so stopping mid-turn loses everything that turn wrote — an
+  in-progress clone, an uncommitted `git add`, a test run's output. Now that the
+  agent's shell runs inside the microVM, that is real work. The loop is
+  sequential, so the real ceiling is ~10.5 min **per busy owner**.
+- **`reapply_hermes_skills_dirs.py`** re-projects the bundled skills into
+  existing profiles; it is the profile-side twin of a skills rebuild, and a new
+  image alone does not move them into a profile that already has a copy.
 
-- `CHOKIDAR_USEPOLLING=true` env var required for EFS NFS compatibility
-- **ChatGPT OAuth re-import is a boot-only path on OpenClaw 9.3+.** The shared
-  auth store lives in the state DB (`config_machine_state` → `authProfiles.store`),
-  not `agents/main`, and `oauth.json` is imported only by boot `doctor --fix`
-  (which needs `OPENCLAW_SERVICE_REPAIR_POLICY=external`). Doctor keeps an
-  existing profile unless it is malformed, so a genuine new login only lands
-  when the clear-auth sentinel wipes the store first — the boot script clears
-  BOTH the legacy per-agent row and the relocated one. A reprovision re-stages
-  but never clears, because the container's rotated token is fresher than the
-  backend's seed.
-- `OPENCLAW_SERVICE_REPAIR_POLICY=external` (container task env, `container-stack.ts`)
-  tells doctor that litestream owns the gateway process, so it skips its native
-  service-ownership inspection. Without it, boot `doctor --fix` aborts with
-  "Gateway service ownership or shutdown could not be verified" before running the
-  `credentials/oauth.json` migration that OpenClaw ≥9.3 made doctor-only — and every
-  ChatGPT-OAuth connect then leaves the container throwing `requires legacy credential
-  migration` on every turn.
-- `openclaw.json.lock` starts as the backend's legacy persistent `fcntl`
-  sidecar. Boot recovery takes the persistent `.isol8-guard`, publishes a
-  resumable `.isol8-protocol` transition, removes the legacy inode, and then
-  backend hot patches use OpenClaw's ephemeral `O_EXCL` protocol (constants
-  live in `core/services/efs_file_lock.py`). Never unlink the sidecar outside
-  boot recovery while holding that guard. After the transition, boot recovery
-  also removes an ephemeral sidecar abandoned by a crashed backend or the
-  stopped prior OpenClaw task.
-- Backend-only EFS files use `fcntl.lockf()` (not `flock()` -- incompatible
-  with NFS).
-- `chown` to UID 1000 after write (OpenClaw runs as node)
-- `env.vars` is re-asserted at every provision from Secrets Manager by
-  `provisioning_landing.build_provisioned_env` — same class as the
-  `integration_mcp_servers` merge. A reprovision overwrites openclaw.json
-  wholesale, so anything not re-injected there is simply dropped. Channel bot
-  accounts (`channels.*.accounts`) and their route bindings are the third
-  carried-forward block (`ecs_manager._provision_channel_accounts`) — the
-  platform Slack app relies on it.
+The EFS-era machinery this section used to describe is all gone: no
+`CHOKIDAR_USEPOLLING` file watcher, no `openclaw.json` deep merge, no
+`.isol8-guard`/`.isol8-protocol` lock protocol, no `chown` to uid 1000, no
+`env.vars` re-assertion, and no admin `PATCH /container/config`.
 
 ---
 
 ## Marketplace
 
-Sellers publish custom OpenClaw agents; buyers discover them and deploy a copy into their own container. Publishing and provisioning are **decoupled** — artifacts in S3 are immutable + versioned, so an old container deploying an old listing is safe.
+Sellers publish custom agents; buyers discover them and deploy a copy into their own workspace. Publishing and provisioning are **decoupled** — artifacts in S3 are immutable + versioned, so an old workspace deploying an old listing is safe.
 
 ### Status state machine
 
@@ -1166,10 +1223,11 @@ Sellers publish custom OpenClaw agents; buyers discover them and deploy a copy i
 
 ```
 POST /api/v1/marketplace/listings                       (create draft row in DDB)
-POST /listings/{id}/artifact-from-agent                 (snapshot EFS agent → S3)
-   └─ agent_export.export_agent_from_efs
-        ├─ _resolve_agent_dir — resolves workspace-{id}/, NEVER agents/{id}/
-        │                       (that root is OpenClaw runtime state, not seller content)
+POST /listings/{id}/artifact-from-agent                 (download the seller's profile → S3)
+   └─ agent_export.export_agent_from_efs        (name is a scar; it reads S3)
+        ├─ _resolve_agent_location / _download_s3_profile — the seller's own Hermes
+        │     profile under <seller>/hermes/<agent>/; _refuse_bad_id emits
+        │     marketplace.path_traversal_attempt on a bad agent OR seller id
         ├─ _build_tarball   — filters .git, __pycache__, node_modules, .DS_Store, dotfiles
         ├─ _scan_tarball_for_safety_flags → marketplace_safety.scan (credential / PII patterns)
         ├─ extract_agent_slice              — agent + plugins + selected MCPs/skills + cron jobs,
@@ -1178,11 +1236,13 @@ POST /listings/{id}/artifact-from-agent                 (snapshot EFS agent → 
               s3://$MARKETPLACE_ARTIFACTS_BUCKET/listings/{id}/v{n}/
                 ├─ workspace.tar.gz    (deterministic; mtimes zeroed)
                 ├─ manifest.json       (file count, safety flags, agent_id)
-                └─ openclaw-slice.json (slice to be deep-merged into buyer's openclaw.json)
+                └─ openclaw-slice.json (the slice, projected from the PROFILE's own
+                                        openclaw.json — a Hermes-native profile with
+                                        none cannot publish, and the refusal says so)
 POST /listings/{id}/submit                              (draft → review)
 ```
 
-`.projects/` and `.stripe` are named in `_SKIP_DIR_NAMES` as a **backstop for workspaces dirtied by the retired Stripe-CLI path**. The Stripe Projects rail is backend-owned and writes nothing to EFS except `env.vars` in `openclaw.json`, so there is nothing on it for an export to leak — the exclusion is structural, and the named entries only cover leftovers and hand-copied debris.
+`.projects/` and `.stripe` are named in `_SKIP_DIR_NAMES` as a **backstop for workspaces dirtied by the retired Stripe-CLI path**. The Stripe Projects rail is backend-owned and writes nothing into a profile, so there is nothing on it for an export to leak — the exclusion is structural, and the named entries only cover leftovers and hand-copied debris.
 
 **Founder-seeded Friday is unpublishable** — the `FRIDAY_PUBLISH_ERROR_MSG` guard in `agent_export.py` blocks exporting an owner's Friday workspace, which would leak owner-keyed content. The portable Friday and Atlas marketplace packages instead live under `apps/backend/marketplace/curated-agents/` and are ingested by `scripts/ingest_curated_agents.py`.
 
@@ -1208,12 +1268,26 @@ POST /marketplace/listings/{listing_id}/deploy
    ├─ entitlement check (free listing or owns purchase row)
    ├─ fetch workspace.tar.gz + openclaw-slice.json from S3
    └─ catalog_service.deploy_from_artifact
-        ├─ generate new agent_id (agent_<uuid>)
-        ├─ untar into EFS at workspace-{new_agent_id}/
-        ├─ deep-merge slice into buyer's openclaw.json
-        ├─ remap cron job IDs + agent references
-        └─ requirements detection → `needs_config_patch` in the deploy preview
+        ├─ credential gate FIRST — every provider the agent hard-depends on must be
+        │    connected, so a blocked deploy leaves no partial state
+        ├─ strip the tarball's boot vectors (BOOT.md, openclaw.plugin.json, a
+        │    package.json declaring openclaw.extensions) before the bytes reach a profile
+        └─ _install_agentcore_deploy — mint the Paperclip agent, write the buyer's
+             profile (config.yaml/.env/SOUL.md), upload the stripped tarball's content
 ```
+
+**KNOWN GAP — the install RECORD is gone, not the agent's identity.** The
+`already_installed` branch read a `.template` sidecar on the buyer's EFS
+workspace cross-checked against `openclaw.json`'s `agents.list`, and the profile
+transport writes no equivalent. So the "already installed" skip and the
+sidebar's installed-templates filter are **inert**, and a retry after a lost
+response re-runs the profile write onto the same agent. It does NOT mint a
+second one: `catalog_service` builds a STABLE
+`build_agent_create_idempotency_key(operation="marketplace-deploy-agentcore",
+intent={slug, listingId})` that `PaperclipAdminClient` sends as
+`Idempotency-Key`, so Paperclip replays the same agent. The overlapping-deploy
+fence is separate and unaffected (`try_claim_owner_deploy` is a real lock). A
+profile-side install record is remap work, not deletion work.
 
 **Agent-driven hires ride an approval rail:** `GET /marketplace/u/{owner_id}/recommend` (container-authed) files a pending `hire_agent` approval via `marketplace_hire.create_hire_approval`; the owner approving it in Teams triggers `marketplace_hire.deploy_for_approval`.
 
@@ -1229,22 +1303,24 @@ POST /marketplace/listings/{listing_id}/deploy
 
 **`apps/backend/core/config.py` is the source of truth** — the `Settings` class
 lists the variables and their defaults. (Beware: quite a few modules also read
-`os.getenv` directly outside `Settings` — the `OPENCLAW_*` version overrides,
-`workspace.py`, `billing_service.py`, `provision_dispatch.py`, and others.)
+`os.getenv` directly outside `Settings` — `billing_service.py`,
+`provision_dispatch.py`, and others.)
 Only the ones with a non-obvious constraint are worth writing down here:
 
 | Variable | Constraint |
 |----------|-----------|
 | `ENCRYPTION_KEY` | Fernet key protecting ChatGPT OAuth tokens + Paperclip credentials (NOT BYOK — those live in Secrets Manager). Rotating it orphans every stored token. |
-| `CLOUD_MAP_SERVICE_ARN` | Registration target — the shared Cloud Map service every per-user ECS service attaches to via `serviceRegistries`. |
-| `CLOUD_MAP_NAMESPACE_NAME` + `CLOUD_MAP_SERVICE_NAME` | Discovery side — `DiscoverInstances` takes *names*, not the ARN, so both are needed on top of the ARN. Unset ⇒ `discover_ip` returns None and every container looks unreachable. |
+| `AGENTCORE_HERMES_IMAGE` | The image a workspace's runtime runs, set by CDK from `hermes-version.json`'s per-env tag. Empty ⇒ `provision_hermes_runtime` **refuses** rather than guessing an image. |
+| `OWNER_STATE_BUCKET` | EVERY per-owner file: the Hermes profiles, the SQLite replicas, marketplace install payloads, room attachments. One bucket, one per-owner `<owner>/*` IAM grant. Empty ⇒ writers refuse rather than guess. Note the bucket's physical name is still `lightbulb-{env}-openclaw-replicas` — a naming scar, not a second bucket. |
+| `ECS_SUBNETS` + `ECS_SECURITY_GROUP_ID` | **Naming scars, not ECS leftovers — do not "clean up".** They are `CreateAgentRuntime`'s `networkConfiguration.networkModeConfig`, read on both the fresh provision and `roll_runtime_image`. Removing them does not fail loudly; it hands every NEW or rolled runtime an empty VPC config. A `service-stack` test pins both onto the backend task definition. |
+| `OPENCLAW_WORK_QUEUE_URL` | The FIFO wake queue (`lightbulb-{env}-openclaw-work.fifo`). Another name that outlived its namesake — the prefix is a name, not a dependency. Empty disables the in-process worker (tests, local dev without AWS). |
 | `STRIPE_WORKSPACE_PRICE_ID` | One recurring Workspace Price. Its display amount is `WORKSPACE_PRICE_USD`, returned by `/billing/account`. |
 | `STRIPE_ULTRA_PRICE_ID` | One recurring Ultra Price. Its display amount is `ULTRA_PRICE_USD`, returned by `/billing/account`. |
 | `MARKETPLACE_LISTINGS_TABLE` | Must be set — there is NO disable gate; marketplace routers mount unconditionally and an empty value means runtime errors, not a designed off-switch. |
 | `AGENT_EMAIL_DOMAIN` | Empty disables agent-email minting entirely. Derived per-env in `lightbulb-stage.ts` from `PLATFORM_MAIL_DOMAIN` — the **mail** domain, never the product domain: prod gets the apex, dev gets it `dev.`-prefixed. Agent addresses are `{agent}@{slug}.{AGENT_EMAIL_DOMAIN}`: `{agent}@{slug}.thelightbulb.company` in prod, `…@{slug}.dev.thelightbulb.company` in dev. `flickmeon.ai` carries no mail at all. |
 | `CORS_ORIGINS` | Comma-separated. Note the API Gateway HTTP API handles CORS preflight at the gateway on the REST path — its allow/expose headers must match FastAPI's. |
 
-Everything ECS/EFS/WS/table-name-shaped is set by CDK — don't hand-set them.
+Everything runtime/WS/table-name-shaped is set by CDK — don't hand-set them.
 
 ### Frontend (.env.local)
 
@@ -1272,8 +1348,8 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 | `network-stack.ts` | VPC (public/private subnets, NAT), ALB, security groups. (No NLB — the old WS chain is gone.) |
 | `auth-stack.ts` | Secrets Manager secrets (Clerk, Stripe, encryption keys) + KMS key |
 | `database-stack.ts` | The core DynamoDB tables (`lightbulb-{env}-{suffix}`) **and the Paperclip Aurora Serverless v2 cluster** (Postgres, 0–4 ACU, Data API). Four tables live elsewhere: `ws-connections` AND `messaging` (api-stack), `bedrock-gate-tokens` (gate stack), `bedrock-invocation-dedup` (meter stack). |
-| `container-stack.ts` | ECS cluster for per-user OpenClaw containers, EFS filesystem, Cloud Map namespace + the one shared Cloud Map service all per-user services register into, container task-definition scaffolding |
-| `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, target-group wiring, DynamoDB/secrets IAM, the SFN provision watchdog, and the marketplace artifacts S3 bucket. **Autoscaled 2-4 on CPU** (`desiredCount: 2`, `scaleOnCpuUtilization` targeting 60%) — sub-project D moved the machine WebSocket relays' remaining per-connection state (node/operator sockets, RPC waiters) out of process and onto DynamoDB (TTL presence rows, claim leases), so a second+ instance shares load instead of fighting an in-process map. Rolling deploys run at `maxHealthyPercent: 200`, so N is transiently one generation higher on every deploy — which is why the provisioning/bootstrap claim-leases exist. |
+| `container-stack.ts` | Despite the name, no per-user container lives here any more. It holds the **platform** ECS cluster (the backend Fargate service and the SFN provisioner's `EcsRunTask`), the Cloud Map namespace (kept — `paperclip-stack.ts` registers into it and derives `PAPERCLIP_INTERNAL_URL` from it; only the per-user *Service* was retired), the owner-state replicas bucket, the per-owner Bedrock base policy + permissions boundary (that per-owner role **is** each workspace's AgentCore execution role), the Hermes ECR grants, the ECS task-state event trail, and `ContainerSecurityGroup` — which is NOT a leftover: it is the SG every live AgentCore runtime ENI carries, threaded to the backend as `ECS_SECURITY_GROUP_ID`. ⚠️ **Eight `exportValue` pins over six resources** sit at the bottom of the stack for exactly one deploy — CloudFormation refuses to drop an `Output` whose `Export` a consumer template still imports, and the container stack deploys before `-service`/`-observability`. **PR-6b deletes five of the six** (EFS filesystem ×2 pins, `EfsSecurityGroup`, the per-user Cloud Map service ×2 pins, and the two per-user ECS roles); the sixth, the Cloud Map **namespace** ARN, stays with the namespace itself. |
+| `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, target-group wiring, DynamoDB/secrets IAM, the AgentCore runtime/workload-identity + Hermes boot-secret + Hermes-profiles grants, the SFN provision watchdog, and the marketplace artifacts S3 bucket. It mounts no filesystem. `LitestreamReplicaLifecycle` is KEPT under its old name and is load-bearing: `s3:ListBucket` is a BUCKET-scoped action, so the object-level `*/hermes/*` grant cannot cover it, and every profile read, write and delete paginates `list_objects_v2` on that bucket. **Autoscaled 2-4 on CPU** (`desiredCount: 2`, `scaleOnCpuUtilization` targeting 60%) — sub-project D moved the machine WebSocket relays' remaining per-connection state (node/operator sockets, RPC waiters) out of process and onto DynamoDB (TTL presence rows, claim leases), so a second+ instance shares load instead of fighting an in-process map. Rolling deploys run at `maxHealthyPercent: 200`, so N is transiently one generation higher on every deploy — which is why the provisioning/bootstrap claim-leases exist. |
 | `api-stack.ts` | Both front doors: the HTTP API (REST) with VPC Link **V2** → ALB + custom-domain host dispatch (`X-Isol8-Public-Host`) + Route53 records, AND the WebSocket API with **Lambda integrations** (`ws-connect`/`ws-disconnect`/`ws-message`), the machine-only Lambda authorizer, the `ws-connections` table, and the `bv-` CloudFront VpcOrigin distribution for raw WS. **Also the whole messaging plane** (it grew here, not in `database-stack.ts`): the `messaging` table + stream, the AppSync **Event API** with its `rooms`/`users` channel namespaces and OIDC-subscribe/IAM-publish split, the `messaging-projector` Lambda, and `openclaw-work.fifo` + the EventBridge Pipe that feeds it. |
 | `bedrock-gate-stack.ts` | The streaming Lambda fronting bedrock-runtime — the enforcement fence for all Bedrock inference (+ the gate-tokens table). See the Billing section. |
 | `bedrock-meter-stack.ts` | Invocation-log meter Lambda — the auditor + backstop kill, and the sole Metronome writer (+ the invocation-dedup table). |
@@ -1282,9 +1358,15 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 | `dns-stack.ts` | HostedZone lookup + ONE wildcard ACM cert for the environment's root domain (`*.flickmeon.ai`; it is a cross-stack CFN Export, so a replacement cert is created alongside and consumers migrated, never edited in place). Route53 records live with their consumers (mostly api-stack). |
 | `observability-stack.ts` | CloudWatch dashboards, alarms, log retention |
 
-`apps/infra/openclaw/` is a sibling directory (not a stack) containing the extended OpenClaw Dockerfile + README. Built by `.github/workflows/build-openclaw-image.yml` and pushed to ECR `lightbulb/openclaw-extended`. The tag we run is pinned in `openclaw-version.json`.
+`apps/infra/hermes/` is a sibling directory (not a stack) holding the whole
+container half: the `Dockerfile`, the `bridge/` (the image's `CMD`), the
+`plugins/lightbulb/` toolset, `managed/` (the config overlay that wins at the
+leaf), `skills-src/` + `skills-overlay/` + `build-skills.sh`, and its own
+`tests/`. Built by `.github/workflows/build-hermes-image.yml` and pushed to ECR
+`lightbulb/hermes-agent-arm64`; the tag we run is pinned in
+`hermes-version.json`.
 
-**Paperclip is a fork too — verify against the fork, not the in-repo clone.** Like OpenClaw, Paperclip has a vanilla-vs-fork split. The gitignored in-repo `paperclip/` clone tracks **vanilla upstream** (`paperclipai/paperclip`) and is a *read-only reference only*. What we actually deploy is the **Isol8 fork `TheLightbulbCompany/paperclip`**, checked out at **`~/dev/paperclip-fork`**. Releases are cut from **tags** (`v2026.813-isol8.<n>`, built from branch `isol8/2026.813-circuit-breaker`; current pin v2026.813-isol8.6); rollback refs are `isol8/2026.8-circuit-breaker` + tag `v2026.8-isol8.6`. The fork carries ~15 patches in **real source** (circuit breaker, agent-delete FK sweep, webhook auth hardening, self-healing gateway runs, `PAPERCLIP_SKIP_BUILTIN_AGENTS`, …) — `paperclip-version.json`'s `notes` field is the authoritative enumeration. Its own CI builds `ghcr.io/thelightbulbcompany/paperclip` (private GHCR, pinned by **digest** in `paperclip-version.json`), which `apps/infra/paperclip-extended/Dockerfile` re-tags into ECR `lightbulb/paperclip-extended` (via `.github/workflows/build-paperclip-image.yml`) so per-tenant ECS tasks can pull it with execution-role creds. **When you need to confirm what the deployed Paperclip BFF actually returns (route projections, run/liveness fields, watchdog logic), grep `~/dev/paperclip-fork`, not the vanilla `paperclip/` clone** — they can diverge. Treat both as outside this repo — do not commit either into it.
+**Paperclip is a fork — verify against the fork, not the in-repo clone.** The gitignored in-repo `paperclip/` clone tracks **vanilla upstream** (`paperclipai/paperclip`) and is a *read-only reference only*. What we actually deploy is the **Isol8 fork `TheLightbulbCompany/paperclip`**, checked out at **`~/dev/paperclip-fork`**. Releases are cut from **tags** (`v2026.813-isol8.<n>`, built from branch `isol8/2026.813-circuit-breaker`; current pin v2026.813-isol8.6); rollback refs are `isol8/2026.8-circuit-breaker` + tag `v2026.8-isol8.6`. The fork carries ~15 patches in **real source** (circuit breaker, agent-delete FK sweep, webhook auth hardening, self-healing gateway runs, `PAPERCLIP_SKIP_BUILTIN_AGENTS`, …) — `paperclip-version.json`'s `notes` field is the authoritative enumeration. Its own CI builds `ghcr.io/thelightbulbcompany/paperclip` (private GHCR, pinned by **digest** in `paperclip-version.json`), which `apps/infra/paperclip-extended/Dockerfile` re-tags into ECR `lightbulb/paperclip-extended` (via `.github/workflows/build-paperclip-image.yml`) so per-tenant ECS tasks can pull it with execution-role creds. **When you need to confirm what the deployed Paperclip BFF actually returns (route projections, run/liveness fields, watchdog logic), grep `~/dev/paperclip-fork`, not the vanilla `paperclip/` clone** — they can diverge. Treat both as outside this repo — do not commit either into it.
 
 ---
 
@@ -1307,7 +1389,7 @@ Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (s
 Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`): Expo SDK 57 / React Native 0.86, expo-router file-based routing. Scheme `flickmeon`, `applinks:flickmeon.ai`; the **bundle id is `co.isol8.mobile` and is staying** (decided 2026-09-07 — see the Rebrand section; it is bound to App Store record 6788944100 and a rename strands the app). Expo project: owner `thelightbulbcompany`, slug `isol8-mobile` (unrenameable — see the Rebrand section), projectId unchanged; per-device storage keys are `lightbulb.*`.
 
 - **Reuses the web protocol via `@lightbulb/shared`** — the same `createMessagingClient`/`createRuntimeClient` HTTP clients and the same `AppSyncEventsClient`/`useLiveEvents` live transport (mounted by `src/providers/live-events.tsx`, the mobile twin of the web `LiveEventsProvider`), with platform specifics in `src/lib/adapter.ts` (`PlatformAdapter`). Env via `EXPO_PUBLIC_API_URL` / `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`, baked per `eas.json` profile (dev → api-dev.flickmeon.ai, production → api.flickmeon.ai).
-- Routes: `(auth)/sign-in`; `(app)/chat`, `agent/[agentId]` (a room conversation over the messaging client, NOT a gateway socket), `settings`, `teams/*`, and a control tree mirroring the web panels (overview, agents, channels, integrations, llm, marketplace, sessions, skills, usage).
+- Routes: `(auth)/sign-in`; `(app)/(tabs)/{home,dms,activity,more}`, `agent/[agentId]` and `room/*` (room conversations over the messaging client, NOT a gateway socket), `sessions`, `settings`, `teams/*`, and a control tree mirroring the web panels (overview, agents + agent-detail, integrations, llm, marketplace, skills, usage). `ls apps/mobile/src/app` for the current set.
 - Auth: Clerk Expo + `expo-apple-authentication`, token cache in `expo-secure-store`.
 - Push: `PushRegistration.tsx` gets an Expo push token → `POST /devices {token, platform, deviceId}`; unregister `DELETE /devices/{deviceId}`.
 - **Apple subscriptions:** no new StoreKit purchase/restore/link surface or SKU. Personal/no-workspace billing gates open `flickmeon.ai/onboarding` so the user creates or selects the billed workspace first; subscription purchase then uses the web app's sole `POST /billing/checkout` route. `expo-iap` remains only for `deepLinkToSubscriptions` so a hypothetical historical Apple subscriber can manage cancellation.

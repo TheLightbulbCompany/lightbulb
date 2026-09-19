@@ -4,6 +4,19 @@ import * as kms from "aws-cdk-lib/aws-kms";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { ContainerStack } from "../lib/stacks/container-stack";
 
+/**
+ * What is left of this stack after the Hermes-on-AgentCore migration: the
+ * platform ECS cluster, the Cloud Map namespace Paperclip registers into, the
+ * per-owner Bedrock base policy + permissions boundary (which double as every
+ * workspace's AgentCore Runtime execution role), the per-owner state bucket
+ * every Hermes profile lives in, and the CI image-builder role.
+ *
+ * The per-user OpenClaw task definition, its log group and the ECS
+ * task-state-change rule are gone. The EFS filesystem, both security groups,
+ * the two per-user ECS roles and the per-user Cloud Map service are still here
+ * for exactly one deploy — see the export-pin block at the bottom of
+ * container-stack.ts — and go in the follow-up PR.
+ */
 function buildStack(environment: "dev" | "prod"): Template {
   const app = new cdk.App();
   const env = { account: "877352799272", region: "us-east-1" };
@@ -21,162 +34,13 @@ function buildStack(environment: "dev" | "prod"): Template {
   return Template.fromStack(containerStack);
 }
 
-function openclawStartupCommand(template: Template, env: "dev" | "prod"): string {
-  const resources = Object.values(template.findResources("AWS::ECS::TaskDefinition")) as Array<{
-    Properties?: {
-      Family?: string;
-      ContainerDefinitions?: Array<{ Name?: string; Command?: string[] }>;
-    };
-  }>;
-  const taskDef = resources.find((resource) => resource.Properties?.Family === `lightbulb-${env}-openclaw`);
-  const container = taskDef?.Properties?.ContainerDefinitions?.find(({ Name }) => Name === "openclaw");
-  expect(container?.Command?.slice(0, 2)).toEqual(["sh", "-c"]);
-  return container?.Command?.[2] ?? "";
-}
-
-function openclawContainerEnv(
-  template: Template,
-  env: "dev" | "prod",
-): Array<{ Name?: string; Value?: string }> {
-  const resources = Object.values(template.findResources("AWS::ECS::TaskDefinition")) as Array<{
-    Properties?: {
-      Family?: string;
-      ContainerDefinitions?: Array<{
-        Name?: string;
-        Environment?: Array<{ Name?: string; Value?: string }>;
-      }>;
-    };
-  }>;
-  const taskDef = resources.find((resource) => resource.Properties?.Family === `lightbulb-${env}-openclaw`);
-  return taskDef?.Properties?.ContainerDefinitions?.find(({ Name }) => Name === "openclaw")?.Environment ?? [];
-}
-
-// The local-sqlite layout is unconditional — no per-env `storage` gate — so
-// both envs are asserted against the same shape. Extracted rather than
-// duplicated so a future divergence has to be written deliberately.
-
-// The boot guard is the ONLY thing between "tag built before the boot chain
-// existed" and a container that fails on a bare `not found`. Synth cannot
-// inspect image contents, so this diagnostic + `exit 1` is the whole safety
-// net; it must stay ordered immediately before the exec that needs it.
-// doctor + gateway now live inside the boot script (which runs them as a
-// litestream-supervised child), not in this command.
-function expectBootChainGuard(template: Template, env: "dev" | "prod"): void {
-  template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-    Family: `lightbulb-${env}-openclaw`,
-    ContainerDefinitions: Match.arrayWith([
-      Match.objectLike({
-        Name: "openclaw",
-        Command: [
-          "sh",
-          "-c",
-          Match.stringLikeRegexp(
-            // `\\|` escapes the regex alternation so we match a literal `|`.
-            "\\[ -x /usr/local/bin/isol8-local-sqlite-boot\\.sh \\] \\|\\| \\{ echo .*FATAL.*"
-            + "exit 1; \\}; "
-            + ".*exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot\\.sh$",
-          ),
-        ],
-      }),
-    ]),
-  });
-}
-
-// The two pieces the boot script cannot supply itself: the replica bucket name
-// (LITESTREAM_S3_BUCKET) and the nested ephemeral volumes that give WAL back.
-// Mount ORDER is load-bearing — ECS mounts in literal mountPoints[] order, so
-// the EFS mount must precede the nested ephemeral mounts or EFS covers them and
-// every commit silently goes back to NFS.
-// The display block ships AHEAD of the headful config flip, so the property
-// that makes it safe to deploy is that it does NOTHING yet — hence asserting
-// the inertness, not merely the presence.
-//
-// Asserted per-environment ON PURPOSE, with `displaySet` a parameter rather
-// than a constant: the environments are pinned separately so one can be rolled
-// back without the other. DISPLAY reaching an environment whose
-// openclaw-version.json tag predates the Xvfb apt layer is a fleet-wide boot
-// failure, so each env asserts its own value rather than inheriting a shared one.
-function expectDisplayGate(
-  template: Template,
-  env: "dev" | "prod",
-  { displaySet }: { displaySet: boolean },
-): void {
-  const command = openclawStartupCommand(template, env);
-  const guard = command.indexOf('[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvnc ]');
-  const start = command.indexOf('[ -z "$DISPLAY" ] || { Xvnc "$DISPLAY"');
-  const wm = command.indexOf("matchbox-window-manager -use_titlebar no");
-  const websockify = command.indexOf("websockify --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900");
-  const boot = command.indexOf("exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh");
-
-  // The guard must precede the launch it protects, and everything must precede
-  // the exec that replaces this shell — nothing can be appended after that.
-  // The WM must come after the X server line: X clients do not retry a missing
-  // socket, which is also why the command wraps it in a wait-for-socket loop.
-  expect(guard).toBeGreaterThanOrEqual(0);
-  expect(start).toBeGreaterThan(guard);
-  expect(wm).toBeGreaterThan(start);
-  expect(command).toContain("while [ ! -S /tmp/.X11-unix/X1 ]");
-  expect(websockify).toBeGreaterThan(wm);
-  expect(websockify).toBeLessThan(boot);
-
-  // The CDP-screencast socat bridge (18801 -> 18800) was removed with the
-  // screencast live-view — it must never reappear in the boot command.
-  expect(command).not.toContain("socat TCP4-LISTEN:18801");
-  expect(command).not.toContain("18801");
-
-  // Xvnc must be resizable-by-client and loopback-only: SecurityTypes None is
-  // safe ONLY together with -localhost (the relay is the auth fence), so pin
-  // them as a pair — losing -localhost while keeping None would expose an
-  // unauthenticated VNC server to the VPC.
-  expect(command).toContain("-localhost -SecurityTypes None -rfbport 5900");
-
-  // x11vnc is GONE from the boot path — Xvnc replaced it precisely because a
-  // resident x11vnc degrades over days (it polls a foreign display; Xvnc IS
-  // the display and only encodes while a viewer is attached). It reappearing
-  // means someone resurrected the old chain.
-  expect(command).not.toContain("x11vnc");
-  expect(command).not.toContain("socat TCP-LISTEN:5900");
-  expect(command).not.toContain("Xvfb");
-
-  expect(openclawContainerEnv(template, env).some(({ Name }) => Name === "DISPLAY")).toBe(displaySet);
-}
-
-function expectLocalSqliteLayout(template: Template, env: "dev" | "prod"): void {
-  template.hasResourceProperties("AWS::S3::Bucket", {
-    BucketName: `lightbulb-${env}-openclaw-replicas`,
-  });
-  template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-    Family: `lightbulb-${env}-openclaw`,
-    ContainerDefinitions: Match.arrayWith([
-      Match.objectLike({
-        Name: "openclaw",
-        Environment: Match.arrayWith([
-          { Name: "LITESTREAM_S3_BUCKET", Value: `lightbulb-${env}-openclaw-replicas` },
-        ]),
-        MountPoints: [
-          Match.objectLike({ ContainerPath: "/home/node/.openclaw", SourceVolume: "openclaw-workspace" }),
-          Match.objectLike({ ContainerPath: "/home/node/.openclaw/state", SourceVolume: "openclaw-state" }),
-          Match.objectLike({ ContainerPath: "/home/node/.openclaw/agents", SourceVolume: "openclaw-agents" }),
-        ],
-      }),
-    ]),
-  });
-
-  // Volume DECLARATION order is incidental (unlike mountPoints order above),
-  // so match by name. The workspace volume must carry an efsVolumeConfiguration
-  // — that is what makes the backend's per-user clone rewrite its
-  // accessPointId; the hot pair must carry none, or they stop being local disk.
-  const taskDef = Object.values(
-    template.findResources("AWS::ECS::TaskDefinition"),
-  )[0] as { Properties: { Volumes: { Name: string; EFSVolumeConfiguration?: unknown }[] } };
-  const byName = Object.fromEntries(taskDef.Properties.Volumes.map((v) => [v.Name, v]));
-  expect(byName["openclaw-workspace"].EFSVolumeConfiguration).toBeDefined();
-  expect(byName["openclaw-state"]).toEqual({ Name: "openclaw-state" });
-  expect(byName["openclaw-agents"]).toEqual({ Name: "openclaw-agents" });
-  // The second EFS view is retired: it existed only so the one-time EFS->local
-  // migration could rename the pre-cutover databases out from under a nested
-  // mountpoint. Assert it stays gone.
-  expect(byName["openclaw-workspace-raw"]).toBeUndefined();
+function managedPolicy(template: Template, name: string): any {
+  const policies = template.findResources("AWS::IAM::ManagedPolicy");
+  const policy = Object.values(policies).find(
+    (p: any) => p.Properties.ManagedPolicyName === name,
+  );
+  expect(policy, `missing managed policy ${name}`).toBeDefined();
+  return policy;
 }
 
 describe("ContainerStack — dev", () => {
@@ -185,76 +49,46 @@ describe("ContainerStack — dev", () => {
     template = buildStack("dev");
   });
 
-  test("execution role GetSecretValue is scoped to the four injected secrets, never '*'", () => {
-    // The per-user task defs inject exactly four secret families (BYOK
-    // user-keys, the platform Slack app's per-workspace bot tokens under
-    // integrations/*, the gog keyring password, the Cloudflare WARP
-    // enrollment); a wildcard here would let a leaked execution-role
-    // credential read every secret in the account. Searched across both
-    // policy types so CDK repacking can't silently invalidate the assertion.
-    const found = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].some((type) =>
-      Object.values(template.findResources(type)).some((r) =>
-        ((r.Properties?.PolicyDocument?.Statement ?? []) as Array<Record<string, unknown>>).some(
-          (s) => {
-            if (s.Sid !== "PerUserTaskSecrets") return false;
-            const resources = s.Resource as unknown[];
-            return (
-              s.Action === "secretsmanager:GetSecretValue" &&
-              Array.isArray(resources) &&
-              resources.length === 4 &&
-              resources.some(
-                (res) => typeof res === "string" && res.includes(":secret:lightbulb/dev/user-keys/*"),
-              ) &&
-              resources.some(
-                (res) =>
-                  typeof res === "string" && res.includes(":secret:lightbulb/dev/gog-keyring-password"),
-              ) &&
-              resources.some(
-                (res) =>
-                  typeof res === "string" &&
-                  res.includes(":secret:lightbulb/dev/cloudflare-warp-enrollment"),
-              )
-            );
-          },
-        ),
-      ),
-    );
-    expect(found).toBe(true);
+  test("owns the platform ECS cluster the backend and the provisioner run on", () => {
+    template.hasResourceProperties("AWS::ECS::Cluster", {
+      ClusterName: "lightbulb-dev-container",
+    });
   });
 
-  test("execution role GetSecretValue also covers the Slack integrations secret prefix", () => {
-    // Item 1 of the final-review fix wave: SLACK_BOT_TOKEN_{TEAM} rides the
-    // task-def as secrets: under lightbulb/{env}/integrations/{owner}/slack/{team}.
-    // Without this grant the ECS agent gets ResourceInitializationError and the
-    // owner's container never starts once a Slack workspace is installed.
-    const found = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].some((type) =>
-      Object.values(template.findResources(type)).some((r) =>
-        ((r.Properties?.PolicyDocument?.Statement ?? []) as Array<Record<string, unknown>>).some(
-          (s) => {
-            if (s.Sid !== "PerUserTaskSecrets") return false;
-            const resources = s.Resource as unknown[];
-            return (
-              Array.isArray(resources) &&
-              resources.some((res) => typeof res === "string" && /integrations\/\*$/.test(res))
-            );
-          },
-        ),
-      ),
-    );
-    expect(found).toBe(true);
+  test("defines no task definition — nothing per-user runs on ECS any more", () => {
+    template.resourceCountIs("AWS::ECS::TaskDefinition", 0);
   });
 
-  test("does NOT create the extended OpenClaw ECR repo (referenced by name, account-scoped)", () => {
-    // Both dev and prod now use `ecr.Repository.fromRepositoryName(...)` —
-    // the repo is managed as existing AWS state outside any stack to avoid
-    // the "RETAIN orphan blocks recreate" trap. See container-stack.ts
-    // (around the OpenclawExtendedRepo declaration) for the rationale.
-    // Lifecycle, immutability, and scan-on-push settings live on the repo
-    // itself in AWS, not in CDK.
+  test("keeps the Cloud Map namespace PaperclipStack registers into", () => {
+    // paperclip-stack derives PAPERCLIP_INTERNAL_URL from this namespace name
+    // and registers `paperclip.<namespace>` through cloudMapOptions. Deleting
+    // it takes the Teams Inbox down; only the per-user SERVICE goes.
+    template.hasResourceProperties("AWS::ServiceDiscovery::PrivateDnsNamespace", {
+      Name: "lightbulb-dev.local",
+    });
+  });
+
+  test("keeps the ECS task-state-change trail for the platform cluster", () => {
+    // Scoped to the CLUSTER, not to the retired per-user services: the backend
+    // service, the provisioner task and the Paperclip service still run there,
+    // and ECS drops stoppedReason after ~1h. This log group is the only durable
+    // record of why one of them stopped.
+    template.hasResourceProperties("AWS::Events::Rule", {
+      Name: "lightbulb-dev-ecs-task-state-change",
+    });
+    template.hasResourceProperties("AWS::Logs::LogGroup", {
+      LogGroupName: "/lightbulb/dev/ecs-task-events",
+      RetentionInDays: 90,
+    });
+  });
+
+  test("does NOT create the ECR repos (referenced by name, account-scoped)", () => {
+    // The image repos are managed as existing AWS state outside any stack, to
+    // avoid the "RETAIN orphan blocks recreate" trap.
     template.resourceCountIs("AWS::ECR::Repository", 0);
   });
 
-  test("creates the openclaw-image-builder OIDC role for CI image pushes", () => {
+  test("creates the image-builder OIDC role for CI image pushes", () => {
     template.hasResourceProperties("AWS::IAM::Role", {
       RoleName: "lightbulb-openclaw-image-builder",
       AssumeRolePolicyDocument: Match.objectLike({
@@ -263,16 +97,11 @@ describe("ContainerStack — dev", () => {
             Action: "sts:AssumeRoleWithWebIdentity",
             Condition: Match.objectLike({
               StringLike: Match.absent(),
-              StringEquals: {
+              StringEquals: Match.objectLike({
                 "token.actions.githubusercontent.com:sub":
                   "repo:TheLightbulbCompany@253404738/lightbulb@1182791203:ref:refs/heads/main",
                 "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-                "token.actions.githubusercontent.com:workflow": [
-                  "build-openclaw-image",
-                  "build-paperclip-image",
-                  "build-hermes-image",
-                ],
-              },
+              }),
             }),
           }),
         ]),
@@ -280,7 +109,7 @@ describe("ContainerStack — dev", () => {
     });
   });
 
-  test("builder role has ECR auth + push permissions on the openclaw-extended repo", () => {
+  test("builder role has ECR auth + push permissions", () => {
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
@@ -294,455 +123,20 @@ describe("ContainerStack — dev", () => {
     });
   });
 
-  test("builder role can prove the imported OpenClaw repository is immutable", () => {
-    template.hasResourceProperties("AWS::IAM::Policy", {
-      PolicyDocument: Match.objectLike({
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Action: "ecr:DescribeRepositories",
-            Effect: "Allow",
-          }),
-        ]),
-      }),
+  test("creates the per-owner state bucket every Hermes profile lives in", () => {
+    // Named for litestream, which is a scar: `<owner>/hermes/<agent>/...` is
+    // what it holds now. Renaming it strands every profile.
+    template.hasResourceProperties("AWS::S3::Bucket", {
+      BucketName: "lightbulb-dev-openclaw-replicas",
     });
   });
 
-  test("openclaw container has a /healthz healthcheck on port 18789", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "lightbulb-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          HealthCheck: {
-            Command: [
-              "CMD-SHELL",
-              Match.stringLikeRegexp(
-                "fetch\\('http://127\\.0\\.0\\.1:18789/healthz'\\)",
-              ),
-            ],
-            Interval: 30,
-            Timeout: 10,
-            Retries: 6,
-            // 300 is the ECS maximum for startPeriod (values >300 are rejected).
-            StartPeriod: 300,
-          },
-        }),
-      ]),
-    });
-  });
-
-  test("openclaw container enables Fargate init process for zombie reaping", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "lightbulb-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          LinuxParameters: Match.objectLike({
-            InitProcessEnabled: true,
-          }),
-        }),
-      ]),
-    });
-  });
-
-  test("openclaw container migrates legacy /home/node/.openclaw/browser and symlinks it to ephemeral storage", () => {
-    const command = openclawStartupCommand(template, "dev");
-    const recovery = command.indexOf("python3 -c");
-    const migration = command.indexOf("[ -e /home/node/.openclaw/browser ]");
-    const move = command.indexOf("mv /home/node/.openclaw/browser /home/node/.openclaw/browser.efs-archive-");
-    const mkdir = command.indexOf("install -d -o 1000 -g 1000 /tmp/openclaw-browser || exit 1");
-    const symlink = command.indexOf("ln -sfn /tmp/openclaw-browser /home/node/.openclaw/browser || exit 1");
-    const boot = command.indexOf("exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh");
-
-    expect([recovery, migration, move, mkdir, symlink, boot].every((index) => index >= 0)).toBe(true);
-    expect(recovery).toBeLessThan(migration);
-    expect(migration).toBeLessThan(move);
-    expect(move).toBeLessThan(mkdir);
-    expect(mkdir).toBeLessThan(symlink);
-    expect(symlink).toBeLessThan(boot);
-  });
-
-  test("openclaw container sets DISPLAY so the live-view display starts", () => {
-    expectDisplayGate(template, "dev", { displaySet: true });
-    expect(
-      openclawContainerEnv(template, "dev").find(({ Name }) => Name === "DISPLAY")?.Value,
-    ).toBe(":1");
-  });
-
-  test("openclaw container declares external gateway supervision for doctor", () => {
-    // litestream supervises the gateway, so doctor's native-service ownership
-    // inspection throws and aborts boot `doctor --fix` before it can run the
-    // credentials/oauth.json migration OpenClaw >= 9.3 made doctor-only. Drop
-    // this and every ChatGPT-OAuth connect wedges the container on
-    // "requires legacy credential migration" for every turn.
-    for (const env of ["dev", "prod"] as const) {
-      expect(
-        openclawContainerEnv(buildStack(env), env).find(
-          ({ Name }) => Name === "OPENCLAW_SERVICE_REPAIR_POLICY",
-        )?.Value,
-      ).toBe("external");
-    }
-  });
-
-  test("openclaw container performs a guarded one-time protocol transition", () => {
-    const command = openclawStartupCommand(template, "dev");
-    expect(command).toMatch(/^if \[ "\$\{ISOL8_CONFIG_LOCK_PROTOCOL:-\}" = "guard-v1" \]; then/);
-    expect(command).toContain('guard_path = lock_path + ".isol8-guard"');
-    expect(command).toContain('protocol_path = lock_path + ".isol8-protocol"');
-    expect(command).toContain("acquire_until(guard_fd, deadline");
-    expect(command).toContain("fcntl.LOCK_EX | fcntl.LOCK_NB");
-    expect(command).toContain("current.st_ino == opened.st_ino");
-    expect(command).toContain("write_protocol(migrating_protocol)");
-    expect(command).toContain("write_protocol(ephemeral_protocol)");
-    expect(command).toContain("recovered abandoned ephemeral openclaw.json.lock");
-    expect(command).toContain("|| exit 1; else echo '[boot] config lock recovery skipped");
-    expect(command).not.toContain("rm -f /home/node/.openclaw/openclaw.json.lock");
-  });
-
-  test("openclaw container guards the local-sqlite boot chain before exec-ing it", () => {
-    expectBootChainGuard(template, "dev");
-  });
-
-  test("openclaw container gets the litestream replica bucket + nested local-sqlite mounts", () => {
-    expectLocalSqliteLayout(template, "dev");
-  });
-
-  test("openclaw container startup never references the retired workspaces/ layout", () => {
-    // Agent workspaces live at upstream's per-agent convention
-    // (~/.openclaw/workspace-<agentId>). The old ~/.openclaw/workspaces/
-    // layout is retired — upstream doctor deletes that exact dir as
-    // removed-plugin state, so no boot step may create, move, or reference
-    // it (there is deliberately no migration: pre-incident data there was
-    // wiped or belongs to accounts that get reprovisioned).
-    const tj = template.toJSON();
-    let checked = 0;
-    for (const r of Object.values(tj.Resources as Record<string, any>)) {
-      if (r.Type !== "AWS::ECS::TaskDefinition") continue;
-      for (const cd of r.Properties.ContainerDefinitions ?? []) {
-        const cmd = (cd.Command ?? []).join(" ");
-        expect(cmd).not.toContain(".openclaw/workspaces");
-        checked += 1;
-      }
-    }
-    expect(checked).toBeGreaterThan(0);
-  });
-
-  test("openclaw container sets XDG_CONFIG_HOME + XDG_DATA_HOME + GOG_KEYRING_BACKEND for the gog file keyring", () => {
-    // XDG_DATA_HOME is the load-bearing one: gog stores its file keyring under
-    // the data home (verified: setting XDG_DATA_HOME=/x puts the keyring at
-    // /x/gogcli/keyring), NOT the config home. Both must point at the EFS mount
-    // or the OAuth tokens land on the ephemeral overlay fs and are wiped on
-    // every task restart.
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "lightbulb-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          Environment: Match.arrayWith([
-            {
-              Name: "XDG_CONFIG_HOME",
-              Value: "/home/node/.openclaw/.config",
-            },
-            {
-              Name: "XDG_DATA_HOME",
-              Value: "/home/node/.openclaw/.local/share",
-            },
-            { Name: "GOG_KEYRING_BACKEND", Value: "file" },
-          ]),
-        }),
-      ]),
-    });
-  });
-
-  test("XDG_CONFIG_HOME and the EFS mount stay together (gog's keyring)", () => {
-    // gog reads its config from XDG_CONFIG_HOME and stores the file keyring
-    // under XDG_DATA_HOME; container-stack.ts's own comment says BOTH must be
-    // on EFS or a task replacement loses the owner's Google OAuth tokens.
-    // Nothing else pins that, so this assertion stays even though the Stripe
-    // CLI it was originally written for is gone.
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "lightbulb-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          Environment: Match.arrayWith([{ Name: "XDG_CONFIG_HOME", Value: "/home/node/.openclaw/.config" }]),
-          MountPoints: Match.arrayWith([
-            Match.objectLike({ ContainerPath: "/home/node/.openclaw", SourceVolume: "openclaw-workspace" }),
-          ]),
-        }),
-      ]),
-    });
-  });
-
-  test("openclaw keeps the npm download cache on EFS but redirects the npx + uv extract storms to local /tmp", () => {
-    // MCP servers spawn as npx/uvx children that inherit only HOME (not the
-    // container env), so caches are relocated by symlinking the default
-    // $HOME-relative paths. The per-run EXTRACT (npx `_npx`, uv cache) is a
-    // metadata-heavy small-file unpack; on the EFS/NFS mount it stalls in
-    // D-state and overruns the MCP connect timeout, so it must land on local
-    // ephemeral /tmp. npm splits (keep `_cacache` on EFS so restarts don't
-    // re-download, redirect only `_npx` → /tmp); uv cannot split (a cache
-    // spread across filesystems hits a cross-device rename) so its whole
-    // cache goes to /tmp.
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "lightbulb-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          Command: [
-            "sh",
-            "-c",
-            Match.stringLikeRegexp(
-              // npm cache root stays on EFS (persists the `_cacache` tarballs)…
-              ".*ln -sfn /home/node/\\.openclaw/\\.cache/npm /home/node/\\.npm.*" +
-                // …but the npx extract dir is redirected to local /tmp…
-                "ln -sfn /tmp/openclaw-npx /home/node/\\.openclaw/\\.cache/npm/_npx.*" +
-                // …and the whole uv cache goes to local /tmp.
-                "ln -sfn /tmp/openclaw-uv /home/node/\\.cache/uv.*",
-            ),
-          ],
-        }),
-      ]),
-    });
-  });
-
-  test("openclaw bridges $HOME/.xurl to the EFS state dir so the X CLI can see its materialized token", () => {
-    // xurl resolves its token store as `$HOME/.xurl` and honours ONLY $HOME —
-    // no XDG, no XURL_HOME — so unlike gh/gog (XDG_CONFIG_HOME) and the aws CLI
-    // (AWS_CONFIG_FILE) it cannot be pointed at EFS by env. The backend
-    // materializes the store to owner_efs_root/.xurl, which surfaces in the
-    // container as /home/node/.openclaw/.xurl. Without this symlink xurl reads
-    // an absent /home/node/.xurl and every X call silently runs unauthenticated
-    // — the connection shows "connected" while nothing works.
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "lightbulb-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          Command: [
-            "sh",
-            "-c",
-            Match.stringLikeRegexp(".*ln -sfn /home/node/\\.openclaw/\\.xurl /home/node/\\.xurl.*"),
-          ],
-        }),
-      ]),
-    });
-  });
-
-  test("openclaw migrates a legacy real `_npx` dir aside with `mv`, never a boot-path `rm -rf`", () => {
-    // A legacy `_npx` on EFS can be tens of thousands of files; an `rm -rf` of
-    // it on the gateway-boot path is a synchronous NFS unlink storm that could
-    // overrun the health-check start period. The migration must `mv` it aside
-    // (an O(1) same-filesystem rename), exactly like the chromium/npm guards.
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "lightbulb-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          Command: Match.arrayWith([
-            Match.stringLikeRegexp(
-              "mv /home/node/\\.openclaw/\\.cache/npm/_npx /home/node/\\.openclaw/\\.cache/npm/_npx\\.efs-archive-",
-            ),
-          ]),
-        }),
-      ]),
-    });
-  });
-
-  test("openclaw startup never `rm -rf`s the `_npx` extract dir on the boot path", () => {
-    // Standalone guard so a future refactor can't swap the `mv`-aside
-    // migration for a recursive delete and silently re-introduce the
-    // boot-path NFS unlink storm.
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "lightbulb-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          Command: Match.not(
-            Match.arrayWith([Match.stringLikeRegexp("rm -rf[^;]*_npx")]),
-          ),
-        }),
-      ]),
-    });
-  });
-
-  test("openclaw container injects GOG_KEYRING_PASSWORD from the shared secret", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "lightbulb-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          Secrets: Match.arrayWith([
-            Match.objectLike({
-              Name: "GOG_KEYRING_PASSWORD",
-              // fromSecretNameV2 renders the ValueFrom as a Fn::Join that
-              // builds the secret ARN from the partition/region/account and
-              // the secret name. Assert the secret name appears in that join.
-              ValueFrom: Match.objectLike({
-                "Fn::Join": Match.arrayWith([
-                  Match.arrayWith([
-                    Match.stringLikeRegexp("lightbulb/dev/gog-keyring-password"),
-                  ]),
-                ]),
-              }),
-            }),
-          ]),
-        }),
-      ]),
-    });
-  });
-
-  test("openclaw container injects CLOUDFLARE_WARP_ENROLLMENT from the shared secret", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "lightbulb-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          Secrets: Match.arrayWith([
-            Match.objectLike({
-              Name: "CLOUDFLARE_WARP_ENROLLMENT",
-              ValueFrom: Match.objectLike({
-                "Fn::Join": Match.arrayWith([
-                  Match.arrayWith([
-                    Match.stringLikeRegexp("lightbulb/dev/cloudflare-warp-enrollment"),
-                  ]),
-                ]),
-              }),
-            }),
-          ]),
-        }),
-      ]),
-    });
-  });
-
-  test("warp boot runs in the background and never fails the boot", () => {
-    // Two properties, both load-bearing and both easy to lose in a refactor:
-    //
-    // 1. Backgrounded. The script waits up to ~60s for the tunnel so it can
-    //    log the outcome; run in the foreground that becomes 60s of cold-start
-    //    on every task, for a log line nothing reads.
-    // 2. Guarded, non-fatal. The local-sqlite guard immediately below it is
-    //    `|| { echo FATAL; exit 1; }` because a missing boot chain loses owner
-    //    data. This one costs a CAPTCHA-avoidance nicety, so a tag pinned
-    //    before layer 9c existed must still boot.
-    const command = openclawStartupCommand(template, "dev");
-    expect(command).toContain(
-      "[ ! -x /usr/local/bin/isol8-warp-boot.sh ] || { /usr/local/bin/isol8-warp-boot.sh & }",
-    );
-    expect(command).not.toContain("isol8-warp-boot.sh; exit 1");
-    // Ordered before the exec that replaces this shell, or it never runs.
-    expect(command.indexOf("isol8-warp-boot.sh")).toBeLessThan(
-      command.indexOf("exec setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/isol8-local-sqlite-boot.sh"),
-    );
-  });
-
-  test("openclaw container chowns the ephemeral volumes before dropping to uid 1000", () => {
-    // The gateway runs as uid 1000 so OpenClaw 8.1's
-    // ensurePrivateSqliteCoordinatorDirectory sees state it owns: every EFS
-    // access point squashes to 1000, so a root process reads its own fresh
-    // directories back as "another user" and refuses to boot.
-    //
-    // But /home/node/.openclaw/{state,agents} are ECS ephemeral volumes, NOT
-    // EFS — no squash applies and Docker materialises them root:root, so they
-    // must be chowned while we are still root. If the drop ever moves ahead of
-    // the chown, the container cannot write its own SQLite and every boot dies
-    // on EACCES. That ordering is the whole point of this step; assert it.
-    const command = openclawStartupCommand(template, "dev");
-    const drop = command.indexOf("exec setpriv --reuid=1000 --regid=1000 --init-groups");
-    const chown = command.indexOf(
-      "chown 1000:1000 /home/node/.openclaw/state /home/node/.openclaw/agents",
-    );
-
-    expect(chown).toBeGreaterThanOrEqual(0);
-    expect(drop).toBeGreaterThan(chown);
-
-    // Paths on the container's own writable layer must be created as 1000
-    // outright rather than created root-owned and repaired. If one of these
-    // regresses to `mkdir -p`, the gateway silently loses write access to it
-    // (Chrome's user-data-dir, the npx extract tree, the uv cache) — a failure
-    // that surfaces as a broken tool, not a failed boot.
-    for (const path of ["/tmp/openclaw-browser", "/tmp/openclaw-npx", "/tmp/openclaw-uv", "/home/node/.cache"]) {
-      expect(command).not.toContain(`mkdir -p ${path}`);
-      expect(command).toMatch(
-        new RegExp(`install -d -o 1000 -g 1000 [^;]*${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
-      );
-    }
-
-    // EFS paths keep plain mkdir — the access point squashes them to 1000, and
-    // `install -o` would be a no-op at best there.
-    expect(command).toContain("mkdir -p /home/node/.openclaw/.cache/npm");
-
-    // And no blind repair sweep of /home/node. The image owns its own home
-    // directory (a maxdepth-1 `chown node:node` ends
-    // apps/infra/openclaw/Dockerfile); the only entries this command leaves
-    // root-owned are the symlinks it plants itself, whose ownership never
-    // gates access — resolution reads the target's mode, and replacing a link
-    // needs write on node-owned /home/node. If this line comes back, the image
-    // fix stopped being trusted; fix the Dockerfile instead.
-    expect(command).not.toContain("-maxdepth 1 -uid 0");
-
-    // Everything root needs to do must precede the drop: setpriv execs, so
-    // nothing appended after it ever runs.
-    expect(command.indexOf("isol8-warp-boot.sh")).toBeLessThan(drop);
-    expect(command.indexOf("websockify")).toBeLessThan(drop);
-    expect(command.endsWith("/usr/local/bin/isol8-local-sqlite-boot.sh")).toBe(true);
-  });
-
-  test("per-user execution role can kms:Decrypt the CMK to inject the gog secret", () => {
-    // GOG_KEYRING_PASSWORD is encrypted with AuthStack's CMK; without an
-    // explicit kms:Decrypt the ECS agent cannot inject it and every per-user
-    // container launch fails at secret injection. GetSecretValue is not enough.
-    template.hasResourceProperties("AWS::IAM::Policy", {
-      PolicyDocument: Match.objectLike({
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Sid: "KmsDecryptForSecrets",
-            Action: "kms:Decrypt",
-          }),
-        ]),
-      }),
-    });
-  });
-
-  test("openclaw container startup no longer runs `clawhub install markdown-converter`", () => {
-    // Standalone assertion (independent of the symlink ordering) so
-    // future refactors of the command can't accidentally re-introduce
-    // the markdown-converter install.
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "lightbulb-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          Command: Match.not(
-            Match.arrayWith([Match.stringLikeRegexp("clawhub install markdown-converter")]),
-          ),
-        }),
-      ]),
-    });
-  });
-
-  test("shared task role no longer carries the broad bedrock:* on Resource '*'", () => {
-    // The per-owner role supersedes it; the base task-def must have NO Bedrock
-    // access so every bedrock container is forced onto a per-owner role.
-    const policies = template.findResources("AWS::IAM::Policy");
-    const offending = Object.values(policies).filter((p: any) =>
-      (p.Properties.PolicyDocument.Statement as any[]).some(
-        (s) =>
-          s.Resource === "*" &&
-          JSON.stringify(s.Action).includes("bedrock:InvokeModel"),
-      ),
-    );
-    expect(offending).toHaveLength(0);
-  });
-
-  test("creates the OwnerBedrockBasePolicy managed policy (EFS/logs/ssm)", () => {
+  test("creates the OwnerBedrockBasePolicy managed policy", () => {
     template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       ManagedPolicyName: "lightbulb-dev-owner-bedrock-base",
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
-          Match.objectLike({
-            Action: Match.arrayWith(["elasticfilesystem:ClientMount"]),
-          }),
+          Match.objectLike({ Sid: "HermesSecretsRead" }),
         ]),
       }),
     });
@@ -761,16 +155,47 @@ describe("ContainerStack — dev", () => {
     });
   });
 
+  test("the execution role can pull the Hermes bridge image, and only that image", () => {
+    // The per-owner role IS the AgentCore runtime's execution role, so it pulls
+    // the image itself. The retired openclaw-gateway-arm64 grant is gone from
+    // both the base policy and the boundary.
+    for (const [name, sid] of [
+      ["lightbulb-dev-owner-bedrock-base", "AgentCoreEcrPull"],
+      ["lightbulb-dev-owner-bedrock-boundary", "BoundaryHermesEcrPull"],
+    ]) {
+      const statements = managedPolicy(template, name).Properties.PolicyDocument
+        .Statement as any[];
+      const pull = statements.find((s) => s.Sid === sid);
+      expect(pull, `missing ${sid} on ${name}`).toBeDefined();
+      const resources = JSON.stringify(pull.Resource);
+      expect(resources).toContain("repository/lightbulb/hermes-agent-arm64");
+      expect(resources).not.toContain("openclaw-gateway-arm64");
+    }
+  });
+
+  test("neither the base policy nor the boundary grants EFS any more", () => {
+    for (const name of [
+      "lightbulb-dev-owner-bedrock-base",
+      "lightbulb-dev-owner-bedrock-boundary",
+    ]) {
+      const statements = managedPolicy(template, name).Properties.PolicyDocument
+        .Statement as any[];
+      expect(JSON.stringify(statements)).not.toContain("elasticfilesystem:");
+    }
+  });
+
   test("owner base policy and boundary both allow publishing to the ws namespace", () => {
-    const policies = Object.values(template.findResources("AWS::IAM::ManagedPolicy")) as any[];
     for (const [name, sid] of [
       ["lightbulb-dev-owner-bedrock-base", "AppSyncWsPublish"],
       ["lightbulb-dev-owner-bedrock-boundary", "BoundaryAppSyncWsPublish"],
     ]) {
-      const policy = policies.find((p) => p.Properties.ManagedPolicyName === name);
-      const statement = (policy.Properties.PolicyDocument.Statement as any[]).find((s) => s.Sid === sid);
+      const statements = managedPolicy(template, name).Properties.PolicyDocument
+        .Statement as any[];
+      const statement = statements.find((s) => s.Sid === sid);
       expect(statement.Action).toBe("appsync:EventPublish");
-      expect(JSON.stringify(statement.Resource)).toContain("apis/*/channelNamespace/ws");
+      expect(JSON.stringify(statement.Resource)).toContain(
+        "apis/*/channelNamespace/ws",
+      );
     }
   });
 
@@ -790,65 +215,51 @@ describe("ContainerStack — dev", () => {
     );
     expect(expectedFmArns).toHaveLength(9);
 
-    const policies = template.findResources("AWS::IAM::ManagedPolicy");
-    const boundary = Object.values(policies).find(
-      (p: any) => p.Properties.ManagedPolicyName === "lightbulb-dev-owner-bedrock-boundary",
-    ) as any;
-    expect(boundary).toBeDefined();
-
-    const invokeStatement = (boundary.Properties.PolicyDocument.Statement as any[]).find(
-      (s) => JSON.stringify(s.Action).includes("bedrock:InvokeModel"),
-    );
+    const boundary = managedPolicy(template, "lightbulb-dev-owner-bedrock-boundary");
+    const invokeStatement = (
+      boundary.Properties.PolicyDocument.Statement as any[]
+    ).find((s) => JSON.stringify(s.Action).includes("bedrock:InvokeModel"));
     expect(invokeStatement).toBeDefined();
 
     const resources: string[] = invokeStatement.Resource;
     for (const arn of expectedFmArns) {
       expect(resources).toContain(arn);
     }
-    // The AIP wildcard must also be present (the profile ARNs are runtime-minted).
     expect(
       resources.some((r) => r.includes("application-inference-profile/*")),
     ).toBe(true);
   });
 
-  test("every AgentCore* Sid in the base policy has a BoundaryAgentCore* twin with the same actions", () => {
+  test("every AgentCore* Sid in the base policy has a boundary twin with the same actions", () => {
     // #2688 added AgentCoreEcrPull/EcrToken/WorkloadToken to the base policy only, so the
     // boundary silently made them no-ops (effective perms = base ∩ boundary). This guards the
-    // invariant that broke: every AgentCore* grant in the base must also be in the boundary.
-    const policies = template.findResources("AWS::IAM::ManagedPolicy");
-    const base = Object.values(policies).find(
-      (p: any) => p.Properties.ManagedPolicyName === "lightbulb-dev-owner-bedrock-base",
-    ) as any;
-    const boundary = Object.values(policies).find(
-      (p: any) => p.Properties.ManagedPolicyName === "lightbulb-dev-owner-bedrock-boundary",
-    ) as any;
-    expect(base).toBeDefined();
-    expect(boundary).toBeDefined();
-
-    const baseStatements = base.Properties.PolicyDocument.Statement as any[];
+    // invariant that broke. AgentCoreEcrPull's twin is BoundaryHermesEcrPull: the boundary
+    // names the one image a runtime pulls, so it is matched by ACTION, not by Sid suffix.
+    const base = managedPolicy(template, "lightbulb-dev-owner-bedrock-base");
+    const boundary = managedPolicy(template, "lightbulb-dev-owner-bedrock-boundary");
     const boundaryStatements = boundary.Properties.PolicyDocument.Statement as any[];
-    const agentCoreBaseStatements = baseStatements.filter((s) => typeof s.Sid === "string" && s.Sid.startsWith("AgentCore"));
+    const agentCoreBaseStatements = (
+      base.Properties.PolicyDocument.Statement as any[]
+    ).filter((s) => typeof s.Sid === "string" && s.Sid.startsWith("AgentCore"));
     expect(agentCoreBaseStatements.length).toBeGreaterThan(0);
 
     for (const baseStatement of agentCoreBaseStatements) {
-      const twinSid = `Boundary${baseStatement.Sid}`;
-      const twin = boundaryStatements.find((s) => s.Sid === twinSid);
-      expect(twin, `missing boundary twin ${twinSid}`).toBeDefined();
-      expect(twin.Action).toEqual(baseStatement.Action);
+      const twin = boundaryStatements.find(
+        (s) =>
+          JSON.stringify(s.Action) === JSON.stringify(baseStatement.Action) &&
+          typeof s.Sid === "string" &&
+          s.Sid.startsWith("Boundary"),
+      );
+      expect(twin, `no boundary twin for ${baseStatement.Sid}`).toBeDefined();
     }
   });
 
   test("boundary denies assume-into-our-account unconditionally and grants no sts:AssumeRole", () => {
-    // The per-owner container role has no AWS-rail job anymore: the backend
-    // vends connector credentials itself. The Deny must be unconditional
-    // (no founder carve-out) and the broad AssumeRole ceiling must be gone.
-    const policies = template.findResources("AWS::IAM::ManagedPolicy");
-    const boundary = Object.values(policies).find(
-      (p: any) => p.Properties.ManagedPolicyName === "lightbulb-dev-owner-bedrock-boundary",
-    ) as any;
-    expect(boundary).toBeDefined();
-
-    const stmts = boundary.Properties.PolicyDocument.Statement as any[];
+    // The per-owner role has no AWS-rail job: the backend vends connector
+    // credentials itself. The Deny must be unconditional (no founder carve-out)
+    // and the broad AssumeRole ceiling must be gone.
+    const stmts = managedPolicy(template, "lightbulb-dev-owner-bedrock-boundary")
+      .Properties.PolicyDocument.Statement as any[];
     const deny = stmts.find((s) => s.Effect === "Deny");
     expect(deny).toBeDefined();
     expect(JSON.stringify(deny.Action)).toContain("sts:AssumeRole");
@@ -859,6 +270,31 @@ describe("ContainerStack — dev", () => {
     );
     expect(allowAssume).toBeUndefined();
   });
+
+  test("keeps the nine orphaned exports published for the consumer-removal deploy", () => {
+    // CloudFormation refuses to delete an Export another stack still imports,
+    // and the pipeline deploys this stack BEFORE -service and -observability.
+    // These pins are what lets the consumer removal ship on its own; the
+    // follow-up PR deletes them together with the resources they name.
+    const exports = Object.values(
+      (template.toJSON() as any).Outputs ?? {},
+    ).flatMap((o: any) => (o.Export ? [o.Export.Name] : []));
+    expect(exports.length).toBeGreaterThanOrEqual(9);
+    for (const fragment of [
+      "FileSystem",
+      "EfsSecurityGroup",
+      "ContainerSecurityGroup",
+      "TaskRole",
+      "TaskExecutionRole",
+      "ContainerService",
+      "Namespace",
+    ]) {
+      expect(
+        exports.some((name) => name.includes(fragment)),
+        `no export left for ${fragment}`,
+      ).toBe(true);
+    }
+  });
 });
 
 describe("ContainerStack — prod", () => {
@@ -867,29 +303,15 @@ describe("ContainerStack — prod", () => {
     template = buildStack("prod");
   });
 
-  test("does NOT create the ECR repo (referenced by name from dev)", () => {
+  test("does NOT create the ECR repos (referenced by name from dev)", () => {
     template.resourceCountIs("AWS::ECR::Repository", 0);
   });
 
-  // Prod is the whole point of removing the `storage` gate: it used to synth
-  // the EFS layout, and these two now pin that it gets the identical
-  // local-sqlite shape dev does.
-  test("openclaw container guards the local-sqlite boot chain before exec-ing it", () => {
-    expectBootChainGuard(template, "prod");
+  test("defines no task definition", () => {
+    template.resourceCountIs("AWS::ECS::TaskDefinition", 0);
   });
 
-  test("openclaw container sets DISPLAY so the live-view display starts", () => {
-    expectDisplayGate(template, "prod", { displaySet: true });
-    expect(
-      openclawContainerEnv(template, "prod").find(({ Name }) => Name === "DISPLAY")?.Value,
-    ).toBe(":1");
-  });
-
-  test("openclaw container gets the litestream replica bucket + nested local-sqlite mounts", () => {
-    expectLocalSqliteLayout(template, "prod");
-  });
-
-  test("replica bucket is RETAINed in prod (never auto-deleted)", () => {
+  test("state bucket is RETAINed in prod (never auto-deleted)", () => {
     template.hasResource("AWS::S3::Bucket", {
       Properties: Match.objectLike({ BucketName: "lightbulb-prod-openclaw-replicas" }),
       DeletionPolicy: "Retain",
@@ -898,8 +320,6 @@ describe("ContainerStack — prod", () => {
   });
 
   test("does NOT create the image-builder role (single account-wide role)", () => {
-    // No role with name lightbulb-openclaw-image-builder — verify by checking
-    // no IAM::Role with that exact RoleName exists.
     const roles = template.findResources("AWS::IAM::Role");
     const builderRoles = Object.values(roles).filter(
       (r: unknown) =>

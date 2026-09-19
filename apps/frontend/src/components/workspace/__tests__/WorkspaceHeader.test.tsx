@@ -6,6 +6,14 @@ const setPaletteOpen = vi.fn();
 const openPanel = vi.fn();
 const activateMessagesPanel = vi.fn();
 let activePanelId = "teams-dashboard";
+const shared = vi.hoisted(() => ({ runtimeHost: undefined as "agentcore" | undefined }));
+
+// Partial mock: WorkspaceHeader reads only `useRuntimeHost` from the barrel, but
+// the rest of this module graph pulls plenty else out of it.
+vi.mock("@lightbulb/shared", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  useRuntimeHost: () => shared.runtimeHost,
+}));
 
 vi.mock("@/components/teams/command-palette/CommandPaletteProvider", () => ({
   useCommandPalette: () => ({ open: false, setOpen: setPaletteOpen, toggle: vi.fn() }),
@@ -66,6 +74,22 @@ describe("WorkspaceHeader", () => {
       "Connections",
     ]);
   });
+  // Inverted gate: the AgentCore Browser live view is offered only once the
+  // runtime host is KNOWN, so an unresolved status body hides it rather than
+  // offering a panel that can only render its empty state.
+  it("offers Browser only on an AgentCore workspace", () => {
+    shared.runtimeHost = undefined;
+    const bare = render(<WorkspaceHeader />);
+    expect(screen.queryByRole("button", { name: "Browser" })).toBeNull();
+    bare.unmount();
+
+    shared.runtimeHost = "agentcore";
+    render(<WorkspaceHeader />);
+    fireEvent.click(screen.getByRole("button", { name: "Browser" }));
+    expect(openPanel).toHaveBeenCalledWith("browser", {}, { pushUrl: true });
+    shared.runtimeHost = undefined;
+  });
+
   it("shows active team runs on Activity without covering workspace content", () => {
     act(() => trackTeamRunActivity("teams.heartbeat.run.queued", { runId: "run-1" }));
     render(<WorkspaceHeader />);

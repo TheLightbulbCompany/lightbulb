@@ -53,6 +53,13 @@ class TestDeleteUserData:
     """Test DELETE /api/v1/debug/user-data — atomic per-owner teardown."""
 
     @pytest.fixture(autouse=True)
+    def runtime_teardown(self):
+        """``delete_workspace_runtime`` is a real AgentCore + S3 teardown -- stub it for every
+        test here and hand the mock to the ones that assert on it."""
+        with patch("routers.debug.delete_workspace_runtime", new_callable=AsyncMock) as mock:
+            yield mock
+
+    @pytest.fixture(autouse=True)
     def _mock_integrations_teardown(self):
         # Phase 2 added an integrations sweep (per-provider Secrets Manager
         # credentials + the secret-free status rows) to the teardown. Stub it so
@@ -84,10 +91,8 @@ class TestDeleteUserData:
     @patch("routers.debug.channel_link_repo")
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
-    @patch("routers.debug.get_ecs_manager")
     async def test_full_teardown_returns_summary(
         self,
-        mock_ecs_mgr,
         mock_conn_svc,
         mock_user_repo,
         mock_chan_repo,
@@ -97,13 +102,12 @@ class TestDeleteUserData:
         mock_container_repo,
         mock_paperclip_repo_cls,
         async_client,
+        runtime_teardown,
     ):
         """Endpoint returns deleted summary and calls each subsystem teardown."""
         mock_container = {
             "owner_id": "user_test_123",
-            "service_name": "openclaw-user_test_123-abc",
-            "access_point_id": "fsap-abc",
-            "task_definition_arn": "arn:aws:ecs:...:task-definition/foo:5",
+            "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/x",
         }
         mock_container_repo.get_by_owner_id = AsyncMock(return_value=mock_container)
         mock_container_repo.delete = AsyncMock()
@@ -115,11 +119,6 @@ class TestDeleteUserData:
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=3)
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
         mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
-
-        ecs_mgr = MagicMock()
-        ecs_mgr.delete_user_service = AsyncMock()
-        ecs_mgr._deregister_task_definition = MagicMock()
-        mock_ecs_mgr.return_value = ecs_mgr
 
         res = await async_client.delete("/api/v1/debug/user-data")
 
@@ -148,7 +147,10 @@ class TestDeleteUserData:
         # brief.
         assert "paperclip-companies:pending-brief" in body["deleted"]["ddb"]
 
-        ecs_mgr.delete_user_service.assert_called_once_with("org_test_456", delete_hermes_profiles=True)
+        # ``delete_profiles=True`` is this endpoint's answer to the EFS ``rm -rf`` it replaces:
+        # the owner's S3 profile prefix IS their workspace content, and the e2e harness's
+        # empty-slate contract breaks silently if the next provision restores it.
+        runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True)
         mock_user_repo.delete.assert_called_once_with("user_test_123")
         mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("user_test_123")
         mock_paperclip_repo_cls.return_value.delete_pending_brief.assert_called_once_with("org_test_456")
@@ -162,14 +164,12 @@ class TestDeleteUserData:
     @patch("routers.debug.channel_link_repo")
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
-    @patch("routers.debug.get_ecs_manager")
     @patch("routers.debug.integration_secret_store")
     @patch("routers.debug.integrations_repo")
     async def test_wipe_skips_secret_delete_for_hash_namespaced_rows(
         self,
         mock_integrations_repo,
         mock_secret_store,
-        mock_ecs_mgr,
         mock_conn_svc,
         mock_user_repo,
         mock_chan_repo,
@@ -204,9 +204,6 @@ class TestDeleteUserData:
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
         mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
-        ecs_mgr = MagicMock()
-        ecs_mgr.delete_user_service = AsyncMock()
-        mock_ecs_mgr.return_value = ecs_mgr
         with patch("core.services.key_service.KeyService") as key_service_cls:
             key_service_cls.return_value.delete_key = AsyncMock(return_value=True)
             res = await async_client.delete("/api/v1/debug/user-data")
@@ -235,10 +232,8 @@ class TestDeleteUserData:
     @patch("routers.debug.channel_link_repo")
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
-    @patch("routers.debug.get_ecs_manager")
     async def test_org_context_uses_user_id_for_user_scoped_tables(
         self,
-        mock_ecs_mgr,
         mock_conn_svc,
         mock_user_repo,
         mock_chan_repo,
@@ -266,10 +261,6 @@ class TestDeleteUserData:
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
         mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
-
-        ecs_mgr = MagicMock()
-        ecs_mgr.delete_user_service = AsyncMock()
-        mock_ecs_mgr.return_value = ecs_mgr
 
         app.dependency_overrides[get_current_user] = mock_org_admin_user
         try:
@@ -299,10 +290,8 @@ class TestDeleteUserData:
     @patch("routers.debug.channel_link_repo")
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
-    @patch("routers.debug.get_ecs_manager")
     async def test_returns_500_when_destructive_step_fails(
         self,
-        mock_ecs_mgr,
         mock_conn_svc,
         mock_user_repo,
         mock_chan_repo,
@@ -312,14 +301,15 @@ class TestDeleteUserData:
         mock_container_repo,
         mock_paperclip_repo_cls,
         async_client,
+        runtime_teardown,
     ):
-        """If ECS or EFS teardown raises, every other step still runs but the
-        endpoint surfaces 500 with the failure list — silently 200-ing while
-        leaking ECS services is the original bug this guards against."""
+        """If the runtime teardown raises, every other step still runs but the endpoint surfaces
+        500 with the failure list — silently 200-ing while leaking a runtime is the original bug
+        this guards against."""
+        runtime_teardown.side_effect = RuntimeError("DeleteAgentRuntime throttled")
         mock_container = {
             "owner_id": "user_test_123",
-            "service_name": "openclaw-user_test_123-abc",
-            "task_definition_arn": "arn:aws:ecs:...:task-definition/foo:5",
+            "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/x",
         }
         mock_container_repo.get_by_owner_id = AsyncMock(return_value=mock_container)
         mock_container_repo.delete = AsyncMock()
@@ -332,25 +322,19 @@ class TestDeleteUserData:
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
         mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
-        # ECS teardown blows up — every other step should still run.
-        ecs_mgr = MagicMock()
-        ecs_mgr.delete_user_service = AsyncMock(side_effect=RuntimeError("ECS throttled"))
-        ecs_mgr._deregister_task_definition = MagicMock()
-        mock_ecs_mgr.return_value = ecs_mgr
-
         res = await async_client.delete("/api/v1/debug/user-data")
 
         assert res.status_code == 500
         body = res.json()["detail"]
         # Every other DDB step still ran despite the ECS failure...
         mock_user_repo.delete.assert_called_once_with("user_test_123")
-        # ...EXCEPT the containers row, which is preserved when ECS failed
-        # so retries still have access_point_id + task_definition_arn to
-        # clean up the orphaned resources.
+        # ...EXCEPT the containers row, which is preserved when the teardown failed: it still
+        # holds the runtime ARN and gate-token hash the next retry needs, so wiping it turns a
+        # transient error into an unrecoverable leak.
         mock_container_repo.delete.assert_not_called()
         assert "containers" not in body["deleted"]["ddb"]
-        # The failure list surfaces the ECS error so the caller knows what leaked.
-        assert any("ecs" in f.lower() for f in body["failures"])
+        # The failure list names what leaked.
+        assert any("DeleteAgentRuntime throttled" in f for f in body["failures"])
         assert body["deleted"]["runtime"] is False  # the teardown step did NOT complete
 
     @pytest.mark.asyncio
@@ -362,10 +346,8 @@ class TestDeleteUserData:
     @patch("routers.debug.channel_link_repo")
     @patch("routers.debug.user_repo")
     @patch("routers.debug.connection_service")
-    @patch("routers.debug.get_ecs_manager")
     async def test_attempts_runtime_teardown_when_ddb_row_already_gone(
         self,
-        mock_ecs_mgr,
         mock_conn_svc,
         mock_user_repo,
         mock_chan_repo,
@@ -375,6 +357,7 @@ class TestDeleteUserData:
         mock_container_repo,
         mock_paperclip_repo_cls,
         async_client,
+        runtime_teardown,
     ):
         """Regression: a previous partial run that failed at teardown but succeeded at
         the DDB sweep would leave the row gone and the runtime orphaned. The next retry
@@ -392,18 +375,13 @@ class TestDeleteUserData:
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
         mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
-        # Service still exists in ECS even though DDB row is gone.
-        ecs_mgr = MagicMock()
-        ecs_mgr._service_name = MagicMock(return_value="openclaw-user_test_123-abc")
-        ecs_mgr._service_exists = MagicMock(return_value={"status": "ACTIVE"})
-        ecs_mgr.delete_user_service = AsyncMock()
-        mock_ecs_mgr.return_value = ecs_mgr
-
         res = await async_client.delete("/api/v1/debug/user-data")
 
         assert res.status_code == 200
         # Critical: teardown WAS attempted despite no container row.
-        ecs_mgr.delete_user_service.assert_called_once_with("org_test_456", delete_hermes_profiles=True)
+        # Critical: teardown WAS attempted despite no container row, and with delete_profiles --
+        # this and ``account_wipe`` are the only two terminal callers that pass it (M6-R42).
+        runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True)
         assert res.json()["deleted"]["runtime"] is True
 
     @pytest.mark.asyncio
@@ -631,29 +609,6 @@ class TestDdbRows:
     # below.
 
 
-class TestAgentCoreProvision:
-    """POST /api/v1/debug/agentcore/provision — one-way for the whole workspace (it rotates
-    the gate bearer), so it carries the same org-admin gate as the other org-scoped
-    mutations here, on top of the non-production fence."""
-
-    @pytest.mark.asyncio
-    async def test_org_member_non_admin_is_rejected(self, app, mock_org_member_user):
-        from httpx import ASGITransport, AsyncClient
-
-        from core.auth import get_current_user
-
-        app.dependency_overrides[get_current_user] = mock_org_member_user
-        try:
-            with patch("core.services.agentcore_runtime.ensure_runtime", new_callable=AsyncMock) as ensure:
-                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                    res = await client.post("/api/v1/debug/agentcore/provision")
-        finally:
-            app.dependency_overrides.clear()
-
-        assert res.status_code == 403
-        ensure.assert_not_called()
-
-
 class TestAgentCoreDebugRoutes:
     """/debug/provision: POST runs the canonical provision funnel, DELETE tears the
     runtime down, PATCH rewrites the roster profiles and stops the session."""
@@ -702,34 +657,26 @@ class TestAgentCoreDebugRoutes:
 
     @pytest.mark.asyncio
     async def test_delete_provision_tears_the_runtime_down(self, async_client):
-        repo = MagicMock()
-        repo.get_by_owner_id = AsyncMock(return_value=self._agentcore_row())
-        ecs = MagicMock()
-        ecs.delete_user_service = AsyncMock()
-        with (
-            patch("routers.debug.container_repo", repo),
-            patch("routers.debug.get_ecs_manager", return_value=ecs),
-        ):
+        teardown = AsyncMock()
+        with patch("routers.debug.delete_workspace_runtime", teardown):
             res = await async_client.delete("/api/v1/debug/provision")
         assert res.status_code == 200
         assert res.json() == {"status": "removed"}
-        ecs.delete_user_service.assert_awaited_once_with("org_test_456")
+        # M6-R42: the routine reprovision door NEVER passes delete_profiles -- destroying a
+        # workspace's memory/skills/SOUL.md is /debug/user-data's job, and this route is what a
+        # dev hits repeatedly.
+        teardown.assert_awaited_once_with("org_test_456")
 
     @pytest.mark.asyncio
-    async def test_delete_provision_still_idempotent_for_a_missing_row(self, async_client):
-        """No row at all (owner never provisioned) must still reach the idempotent
-        teardown -- ``delete_user_service`` treats "already gone" as success."""
-        repo = MagicMock()
-        repo.get_by_owner_id = AsyncMock(return_value=None)
-        ecs = MagicMock()
-        ecs.delete_user_service = AsyncMock()
-        with (
-            patch("routers.debug.container_repo", repo),
-            patch("routers.debug.get_ecs_manager", return_value=ecs),
+    async def test_delete_provision_surfaces_a_teardown_failure_as_a_503(self, async_client):
+        """A dev whose teardown half-ran needs to know. Reporting "removed" would send them
+        straight into a POST that re-provisions on top of a runtime still being deleted."""
+        with patch(
+            "routers.debug.delete_workspace_runtime", AsyncMock(side_effect=RuntimeError("DeleteAgentRuntime failed"))
         ):
             res = await async_client.delete("/api/v1/debug/provision")
-        assert res.status_code == 200
-        ecs.delete_user_service.assert_awaited_once()
+        assert res.status_code == 503
+        assert "DeleteAgentRuntime failed" in res.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_patch_provision_rewrites_profiles_and_stops_the_session(self, async_client):
@@ -741,7 +688,7 @@ class TestAgentCoreDebugRoutes:
         with (
             patch("routers.debug.container_repo", repo),
             patch("core.services.hermes_provisioning.write_profiles", write_profiles),
-            patch("scripts.migrate_workspace_to_hermes._stop_runtime_session", stop_session),
+            patch("core.services.hermes_provisioning._stop_runtime_session", stop_session),
         ):
             res = await async_client.patch("/api/v1/debug/provision")
         assert res.status_code == 200, res.text
@@ -760,7 +707,7 @@ class TestAgentCoreDebugRoutes:
             patch("routers.debug.container_repo", repo),
             patch("core.services.hermes_provisioning.write_profiles", AsyncMock()),
             patch(
-                "scripts.migrate_workspace_to_hermes._stop_runtime_session",
+                "core.services.hermes_provisioning._stop_runtime_session",
                 MagicMock(side_effect=RuntimeError("unknown session")),
             ),
         ):

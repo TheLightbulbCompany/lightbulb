@@ -328,10 +328,25 @@ async def _register_built_agent(
         # The orphan to remove is the Paperclip row: any S3 profile objects a failed install
         # wrote are overwritten by the next attempt, and no install record is keyed on them
         # (see catalog_service's module docstring).
-        try:
-            await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
-        except Exception:
-            logger.exception("register_built_agent: rollback failed for agent %s", new_agent_id)
+        #
+        # EXCEPT on a timeout, where the row is what makes the half-install disposable. A
+        # TimeoutError means "no answer yet", not "failed": the profile write may still be
+        # landing, and the Paperclip agent may already exist and work. Deleting only the row then
+        # leaves a live profile with no row for the owner to see or delete it by, and nothing
+        # that would ever clean it up -- keeping it makes that an ordinary agent in Teams.
+        if isinstance(exc, TimeoutError):
+            logger.warning(
+                "register_built_agent: timed out for owner=%s staging=%s — KEEPING paperclip agent %s so the "
+                "half-install stays ownable",
+                owner_id,
+                payload.staging_agent_id,
+                new_agent_id,
+            )
+        else:
+            try:
+                await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
+            except Exception:
+                logger.exception("register_built_agent: rollback failed for agent %s", new_agent_id)
         if isinstance(exc, HTTPException):
             raise
         # Carry the failure class + message in the detail. The caller is the

@@ -126,7 +126,7 @@ async def redeploy_container(
     runtime_arn = container.get("agentcore_runtime_arn")
     if runtime_arn:
         from core.dynamodb import run_in_thread
-        from scripts.migrate_workspace_to_hermes import _stop_runtime_session
+        from core.services.hermes_provisioning import _stop_runtime_session
 
         try:
             await run_in_thread(_stop_runtime_session, runtime_arn, runtime_transport.session_id_for(owner_id))
@@ -390,25 +390,3 @@ async def ddb_rows(
             "ws-connections": ws_conns,
         }
     }
-
-
-@router.post(
-    "/agentcore/provision",
-    summary="Move the caller's workspace onto an AgentCore runtime (dev only)",
-    description=(
-        "Creates a per-workspace AgentCore runtime, re-trusts the owner's Bedrock role for it, "
-        "and flips the container row to runtime_host=agentcore. One-way: it rotates the gate "
-        "bearer, so the ECS task stops reaching Bedrock. Non-production only."
-    ),
-    operation_id="debug_agentcore_provision",
-    dependencies=[Depends(require_non_production)],
-    responses={403: {"description": "Not available outside dev/local/test (or unset)"}},
-)
-async def agentcore_provision(auth: AuthContext = Depends(get_current_user)):
-    from core.services.agentcore_runtime import ensure_runtime
-
-    # One-way for the whole workspace (rotates the gate bearer): admins only, like the
-    # other org-scoped mutations in this file.
-    if auth.is_org_context:
-        require_org_admin(auth)
-    return await ensure_runtime(resolve_owner_id(auth))

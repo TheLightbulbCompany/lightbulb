@@ -1,28 +1,12 @@
 import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
-import * as fs from "fs";
 import * as kms from "aws-cdk-lib/aws-kms";
-import * as path from "path";
-import {
-  BROWSER_EGRESS_PROXY_PORT,
-  ContainerStack,
-} from "../lib/stacks/container-stack";
+import { ContainerStack } from "../lib/stacks/container-stack";
 import { ROOT_DOMAIN } from "../lib/domains";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
 import { ServiceStack } from "../lib/stacks/service-stack";
-
-const OPENCLAW_VERSION = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "..", "..", "..", "openclaw-version.json"), "utf8"),
-) as {
-  forkTag: string;
-  forkCommit: string;
-  baseImageDigest: string;
-  gatewayBuildId: string;
-  dev: { tag: string; artifactDigest: string; runtimeManifestDigest: string };
-  prod: { tag: string; artifactDigest: string; runtimeManifestDigest: string };
-};
 
 /**
  * Builds a real ServiceStack wired to real upstream stacks (Network, Database,
@@ -84,13 +68,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     container: {
       cluster: container.cluster,
       cloudMapNamespace: container.cloudMapNamespace,
-      cloudMapService: container.cloudMapService,
-      efsFileSystem: container.efsFileSystem,
-      efsSecurityGroup: container.efsSecurityGroup,
       containerSecurityGroup: container.containerSecurityGroup,
-      taskExecutionRole: container.taskExecutionRole,
-      taskRole: container.taskRole,
-      openclawTaskDef: container.openclawTaskDef,
       ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
       ownerBedrockBoundary: container.ownerBedrockBoundary,
     },
@@ -123,32 +101,35 @@ const SERVICE_TEMPLATE_DEV = buildServiceStack("dev");
 describe("ServiceStack — clean handoff / rolling deploy", () => {
   const template = SERVICE_TEMPLATE_DEV;
 
-  test.each(["dev", "prod"] as const)(
-    "injects the %s current OpenClaw release identity into backend tasks",
-    (environment) => {
-      const selected = OPENCLAW_VERSION[environment];
-      const environmentValues = [
-        ["OPENCLAW_FORK_TAG", OPENCLAW_VERSION.forkTag],
-        ["OPENCLAW_FORK_COMMIT", OPENCLAW_VERSION.forkCommit],
-        ["OPENCLAW_BASE_IMAGE_DIGEST", OPENCLAW_VERSION.baseImageDigest],
-        ["OPENCLAW_GATEWAY_BUILD_ID", OPENCLAW_VERSION.gatewayBuildId],
-        ["OPENCLAW_EXTENDED_ARTIFACT_DIGEST", selected.artifactDigest],
-        ["OPENCLAW_RUNTIME_MANIFEST_DIGEST", selected.runtimeManifestDigest],
-      ].map(([Name, Value]) => Match.objectLike({ Name, Value }));
-
-      (environment === "dev" ? template : buildServiceStack(environment)).hasResourceProperties(
-        "AWS::ECS::TaskDefinition",
-        {
-          ContainerDefinitions: Match.arrayWith([
-            Match.objectLike({
-              Name: "backend",
-              Environment: Match.arrayWith(environmentValues),
-            }),
+  test("keeps the AgentCore runtime's VPC placement wired to the backend", () => {
+    // ECS_SUBNETS + ECS_SECURITY_GROUP_ID are ECS-era NAMES but a LIVE Hermes
+    // dependency: hermes_provisioning.build_runtime_request_for_owner reads both
+    // into CreateAgentRuntime's networkConfiguration.networkModeConfig, on the
+    // fresh provision AND on roll_runtime_image. Dropping either does not fail
+    // loudly -- it hands the next runtime an empty VPC config, so pin them here.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "backend",
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "ECS_SUBNETS" }),
+            Match.objectLike({ Name: "ECS_SECURITY_GROUP_ID" }),
           ]),
-        },
-      );
-    },
-  );
+        }),
+      ]),
+    });
+  });
+
+  test("injects no OpenClaw image identity — nothing runs that image", () => {
+    const rendered = JSON.stringify(template.findResources("AWS::ECS::TaskDefinition"));
+    expect(rendered).not.toContain("OPENCLAW_UPSTREAM_VERSION");
+    expect(rendered).not.toContain("OPENCLAW_EXTENDED_ARTIFACT_DIGEST");
+    expect(rendered).not.toContain("AGENTCORE_GATEWAY_IMAGE");
+    expect(rendered).not.toContain("EFS_MOUNT_PATH");
+    expect(rendered).not.toContain("CLOUD_MAP_SERVICE_ARN");
+    // The dispatch bus keeps its name; it is not an image reference.
+    expect(rendered).toContain("OPENCLAW_WORK_QUEUE_URL");
+  });
 
   test("does not wire the retired platform-ops owner or token into backend tasks", () => {
     const taskDefinitions = template.findResources("AWS::ECS::TaskDefinition");
@@ -164,8 +145,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
       ...template.findResources("AWS::IAM::ManagedPolicy"),
     };
     const rendered = JSON.stringify(policies);
-    expect(rendered).toContain("ecs:DescribeServices");
-    expect(rendered).toContain("ecs:ListServices");
     expect(rendered).toContain("cloudformation:DescribeStacks");
     expect(rendered).toContain("cloudformation:ListStacks");
     expect(rendered).toContain("cloudwatch:DescribeAlarms");
@@ -356,12 +335,12 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend role can pass per-owner bedrock roles to ECS and to AgentCore Runtime", () => {
+  test("backend role can pass per-owner bedrock roles to AgentCore Runtime, and only there", () => {
     // The owner-bedrock prefix ARN is built from ${this.account}; in this
     // concrete-account synth CDK renders it as a literal string (it becomes an
     // Fn::Join only when the account is an unresolved token). The PassRole
-    // statement is PassedToService-conditioned to exactly the two services the
-    // same per-owner role serves during the migration -- never a wildcard.
+    // statement is PassedToService-conditioned to the one service that receives
+    // the role -- never a wildcard, and no longer ecs-tasks.
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
@@ -369,12 +348,11 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
             Action: "iam:PassRole",
             Condition: Match.objectLike({
               StringEquals: Match.objectLike({
-                "iam:PassedToService": ["ecs-tasks.amazonaws.com", "bedrock-agentcore.amazonaws.com"],
+                "iam:PassedToService": ["bedrock-agentcore.amazonaws.com"],
               }),
             }),
-            Resource: Match.arrayWith([
-              "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-*",
-            ]),
+            // One ARN left, so CDK renders Resource as a bare string, not an array.
+            Resource: "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-*",
           }),
         ]),
       }),
@@ -981,40 +959,6 @@ describe("ServiceStack — Metronome per-env wiring", () => {
   });
 });
 
-describe("ServiceStack — browser egress proxy knob", () => {
-  // The backend decides whether Chrome gets a PAC; the container decides what
-  // port WARP listens on. They are set in two different stacks, so the only
-  // thing stopping a drift is that both read one exported constant. Flipping
-  // this knob on by typing a port number instead points Chrome at a port
-  // nothing listens on — and that fails SILENTLY, because the PAC's
-  // "; DIRECT" tail quietly falls back to the NAT IP. Hence the assert.
-  test.each(["dev", "prod"] as const)(
-    "%s sets BROWSER_EGRESS_PROXY_PORT to off or to the container's actual port",
-    (envName) => {
-      const template =
-        envName === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack(envName);
-      const taskDefs = Object.values(
-        template.findResources("AWS::ECS::TaskDefinition"),
-      ) as Array<{
-        Properties?: {
-          ContainerDefinitions?: Array<{
-            Environment?: Array<{ Name?: string; Value?: string }>;
-          }>;
-        };
-      }>;
-      const values = taskDefs
-        .flatMap((t) => t.Properties?.ContainerDefinitions ?? [])
-        .flatMap((c) => c.Environment ?? [])
-        .filter((e) => e.Name === "BROWSER_EGRESS_PROXY_PORT")
-        .map((e) => e.Value);
-      expect(values.length).toBeGreaterThan(0);
-      for (const value of values) {
-        expect(["0", String(BROWSER_EGRESS_PROXY_PORT)]).toContain(value);
-      }
-    },
-  );
-});
-
 describe("ServiceStack — agent-mail outbound wiring", () => {
   const template = SERVICE_TEMPLATE_DEV;
 
@@ -1203,21 +1147,21 @@ describe("ServiceStack — messaging environment and least privilege", () => {
     });
   });
 
-  test("AGENTCORE_GATEWAY_IMAGE is set for dev and EMPTY for prod (the IaC-layer fence)", () => {
-    // ensure_runtime refuses when this is empty, so an empty prod value is what stops any
-    // prod workspace from being moved before the image is promoted deliberately.
+  test("AGENTCORE_HERMES_IMAGE is the only runtime image env the backend gets", () => {
+    // provision_hermes_runtime refuses when this is empty, so an empty value is what
+    // stops a workspace being provisioned before the image is promoted deliberately.
     const envOf = (t: Template): Record<string, string> => {
       const defs = t.findResources("AWS::ECS::TaskDefinition");
       const backend = Object.values(defs).find((d: any) =>
-        JSON.stringify(d).includes("AGENTCORE_GATEWAY_IMAGE"),
+        JSON.stringify(d).includes("AGENTCORE_HERMES_IMAGE"),
       ) as any;
       const container = backend.Properties.ContainerDefinitions[0];
       return Object.fromEntries((container.Environment ?? []).map((e: any) => [e.Name, e.Value]));
     };
-    expect(envOf(SERVICE_TEMPLATE_DEV).AGENTCORE_GATEWAY_IMAGE).toMatch(
-      /^877352799272\.dkr\.ecr\.us-east-1\.amazonaws\.com\/lightbulb\/openclaw-gateway-arm64:/,
+    expect(envOf(SERVICE_TEMPLATE_DEV).AGENTCORE_HERMES_IMAGE).toMatch(
+      /^877352799272\.dkr\.ecr\.us-east-1\.amazonaws\.com\/lightbulb\/hermes-agent-arm64:/,
     );
-    expect(envOf(buildServiceStack("prod")).AGENTCORE_GATEWAY_IMAGE).toBe("");
+    expect(envOf(SERVICE_TEMPLATE_DEV).AGENTCORE_GATEWAY_IMAGE).toBeUndefined();
   });
 });
 

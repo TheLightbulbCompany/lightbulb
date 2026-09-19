@@ -6,7 +6,6 @@ import { LightbulbStage } from "../lib/lightbulb-stage";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
-import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as rds from "aws-cdk-lib/aws-rds";
@@ -46,7 +45,6 @@ function buildTemplate(envName: "dev" | "prod"): Template {
 
     const cluster = new ecs.Cluster(supportStack, "Cluster", { vpc });
 
-    const efsFs = new efs.FileSystem(supportStack, "Efs", { vpc });
 
     const taskDef = new ecs.FargateTaskDefinition(
       supportStack,
@@ -111,7 +109,6 @@ function buildTemplate(envName: "dev" | "prod"): Template {
       targetGroup: tg,
       wsApiId: "test-ws-api-id",
       cluster,
-      efsFileSystem: efsFs,
       databaseTables: {
         usersTable: `${tablePrefix(envName)}users`,
         containersTable: `${tablePrefix(envName)}containers`,
@@ -348,10 +345,9 @@ describe("ObservabilityStack", () => {
   // rules are PROD-GATED (see ObservabilityStack.createAccountHardening) —
   // account-wide findings, so dev doesn't get a duplicate copy of them.
   test("creates EventBridge rules for security findings (dev, no account-wide rules)", () => {
-    // ECS TaskStopped (W39) + ECS TaskRunning (W59 multi-task detector) +
-    // Aurora failover/failure (W61b) + the hourly alert-subscription monitor.
-    // GuardDuty + Access Analyzer are prod-only.
-    template.resourceCountIs("AWS::Events::Rule", 4);
+    // ECS TaskStopped (W39) + Aurora failover/failure (W61b) + the hourly
+    // alert-subscription monitor. GuardDuty + Access Analyzer are prod-only.
+    template.resourceCountIs("AWS::Events::Rule", 3);
   });
 
   // The $1,500 account-wide Budget is PROD-GATED (see createCostAlarms) —
@@ -411,10 +407,21 @@ describe("ObservabilityStack", () => {
     }
   });
 
-  test("page-tier alarm P1 exists with correct name", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-dev-P1-container-error-state",
-    });
+  test("no alarm is left bound to a per-user ECS/EFS metric", () => {
+    // Every emitter under core/containers/ went with the runtime, so an alarm
+    // on one of these could never fire again.
+    const rendered = JSON.stringify(template.findResources("AWS::CloudWatch::Alarm"));
+    for (const dead of [
+      "container.error_state",
+      "container.efs.access_point",
+      "container.task_def.register",
+      "container.lifecycle.latency",
+      "workspace.file.write.error",
+      "workspace.path_traversal.attempt",
+      "AWS/EFS",
+    ]) {
+      expect(rendered, `alarm still bound to ${dead}`).not.toContain(dead);
+    }
   });
 
   // P15 exists because its exact absence let a 30-minute single-owner outage
@@ -647,23 +654,6 @@ describe("ObservabilityStack", () => {
         (b) => b.service === "messaging-projector",
       ),
     ).toHaveLength(1);
-  });
-
-  // Of the three alarms issue #1486 found dead, only W2
-  // (container.lifecycle.latency) remains bound to this env+service-only
-  // rollup — pin the binding so a future "let me add a dimension to this
-  // alarm" quietly kills it again. W8 (gateway.rpc.error) and W10
-  // (chat.error) are both gone: W10 left this set when it was rescoped to
-  // source=webchat, and both W8 and W10 were then deleted outright with the
-  // gateway connection pool (Task 10, stateless-backend).
-  test("W2 watches the env+service rollup, with no extra dimensions", () => {
-    const rollupOnly = isol8MetricBindings(template).filter(
-      (b) => b.metricName === "container.lifecycle.latency",
-    );
-    expect(rollupOnly).toHaveLength(1);
-    for (const b of rollupOnly) {
-      expect(b.extraDims).toEqual([]);
-    }
   });
 
   // The LightbulbAI dimension-contract test above cannot catch this: it only
@@ -951,9 +941,9 @@ describe("ObservabilityStack — prod-only paths", () => {
   // $1,500 Budget) are PROD-GATED — dev and prod share one AWS account, so
   // these render exactly once, on the prod stack.
   test("prod creates EventBridge rules for security findings", () => {
-    // ECS TaskStopped (W39) + ECS TaskRunning (W59) + Aurora failover (W61b)
-    // + the alert-subscription monitor + GuardDuty + Access Analyzer.
-    template.resourceCountIs("AWS::Events::Rule", 6);
+    // ECS TaskStopped (W39) + Aurora failover (W61b) + the alert-subscription
+    // monitor + GuardDuty + Access Analyzer.
+    template.resourceCountIs("AWS::Events::Rule", 5);
   });
 
   test("prod creates the account-wide AWS Budget", () => {

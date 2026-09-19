@@ -6,7 +6,6 @@ import * as cloudwatch_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { DockerImageAsset, Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as ecs from "aws-cdk-lib/aws-ecs";
-import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
@@ -28,31 +27,6 @@ import {
 } from "../table-names";
 import { Construct } from "constructs";
 import { LEGACY_MAIL_DOMAIN, PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
-import { BROWSER_EGRESS_PROXY_PORT } from "./container-stack";
-
-// openclaw-version.json is the single source of truth for the pinned OpenClaw
-// version + per-env extended-image tags. The backend image's Docker build
-// context is apps/backend/, so the file (at the repo root) can't be COPY-d into
-// the image; instead we read it here at synth time and inject the values as
-// container env vars, which core/openclaw_version.py reads at runtime. Mirrors
-// the read in container-stack.ts — bump openclaw-version.json only.
-interface OpenClawVersionConfig {
-  tag: string;
-  forkTag: string;
-  forkCommit: string;
-  baseImageDigest: string;
-  gatewayBuildId: string;
-  dev: { tag: string; artifactDigest: string; runtimeManifestDigest: string };
-  prod: { tag: string; artifactDigest: string; runtimeManifestDigest: string };
-  [key: string]: unknown;
-}
-
-const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
-  fs.readFileSync(
-    path.join(__dirname, "..", "..", "..", "..", "openclaw-version.json"),
-    "utf8",
-  ),
-);
 
 // hermes-version.json is the per-env promotion tag for the Hermes bridge image (M4-R34),
 // same pattern as openclaw-version.json's dev.tag/prod.tag: build-hermes-image.yml pushes a
@@ -156,13 +130,16 @@ export interface ServiceStackProps extends cdk.StackProps {
   container: {
     cluster: ecs.ICluster;
     cloudMapNamespace: servicediscovery.IPrivateDnsNamespace;
-    cloudMapService: servicediscovery.IService;
-    efsFileSystem: efs.IFileSystem;
-    efsSecurityGroup: ec2.ISecurityGroup;
+    /**
+     * The VPC security group every workspace's AgentCore runtime ENI carries.
+     * Named for the retired per-user ECS task it was created for, but it is
+     * LIVE on the Hermes path: `hermes_provisioning.build_runtime_request_for_owner`
+     * puts it (and the private subnets below) into `CreateAgentRuntime`'s
+     * `networkConfiguration.networkModeConfig`, so an empty value means every
+     * new or rolled runtime gets no VPC config. Renaming it is a separate
+     * coordinated change, not part of the deletion program.
+     */
     containerSecurityGroup: ec2.ISecurityGroup;
-    taskExecutionRole: iam.IRole;
-    taskRole: iam.IRole;
-    openclawTaskDef: ecs.ITaskDefinition;
     // Per-owner Bedrock enforcement (Plan 2): the backend reads these ARNs to
     // condition iam:CreateRole on the boundary and to attach the base policy to
     // every minted per-owner role. Live construct refs (same CDK stage), NOT
@@ -333,29 +310,6 @@ export class ServiceStack extends cdk.Stack {
       "Peer backend task forwarding (node invoke)",
     );
 
-    // Cross-stack security group ingress rules.
-    // We use CfnSecurityGroupIngress to avoid circular dependencies between stacks.
-
-    // Allow service to mount EFS (port 2049)
-    new ec2.CfnSecurityGroupIngress(this, "EfsFromServiceIngress", {
-      groupId: props.container.efsSecurityGroup.securityGroupId,
-      ipProtocol: "tcp",
-      fromPort: 2049,
-      toPort: 2049,
-      sourceSecurityGroupId: serviceSg.securityGroupId,
-      description: "Allow NFS from Fargate service",
-    });
-
-    // Allow service to manage Fargate containers (all TCP)
-    new ec2.CfnSecurityGroupIngress(this, "ContainerFromServiceIngress", {
-      groupId: props.container.containerSecurityGroup.securityGroupId,
-      ipProtocol: "tcp",
-      fromPort: 0,
-      toPort: 65535,
-      sourceSecurityGroupId: serviceSg.securityGroupId,
-      description: "Allow all TCP from Fargate service for container management",
-    });
-
     // -------------------------------------------------------------------------
     // IAM Task Role
     // -------------------------------------------------------------------------
@@ -405,12 +359,13 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // Replica lifecycle: the backend owns the S3 replica prefix's lifecycle —
-    // wipe/reprovision and agent-delete flows must prefix-delete
-    // s3://lightbulb-{env}-openclaw-replicas/{owner}/..., or the next boot's
-    // restore resurrects pre-wipe state (sessions, device trust, auth rows
-    // with live OAuth tokens). List+Delete only across the bucket — the
-    // backend's sole READ is the statement below.
+    // Bucket-level LIST on the per-owner state bucket. Hermes needs it: every
+    // profile read/write/delete path (hermes_profiles, hermes_provisioning)
+    // paginates list_objects_v2 under <owner>/hermes/, and ListBucket is a
+    // BUCKET-scoped action, so it cannot be folded into HermesProfilesRW's
+    // object-level prefix grant below. The sid keeps its litestream name: the
+    // bucket is `lightbulb-{env}-openclaw-replicas`, a naming scar that must
+    // not be renamed (every profile lives under it).
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "LitestreamReplicaLifecycle",
@@ -418,86 +373,21 @@ export class ServiceStack extends cdk.Stack {
         resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas`],
       }),
     );
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "LitestreamReplicaDelete",
-        actions: ["s3:DeleteObject"],
-        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*`],
-      }),
-    );
-    // The one read path: the OAuth seed harvest litestream-restores the
-    // DEFAULT agent's auth-store DB right before the prefix delete, to copy
-    // the rotated ChatGPT refresh token back to DynamoDB
-    // (oauth_service.harvest_rotated_oauth_seed) — without it, every
-    // wipe-and-reprovision re-stages a spent seed. Scoped to that single
-    // database's key shape (<owner>/agents/main/agent/openclaw-agent.sqlite/
-    // <level>/<txid>.ltx), so the backend cannot read session/state DBs or
-    // any non-default agent's replica. It still spans owners: the shared
-    // backend role serves every tenant, the same floor as the delete grant
-    // and the DynamoDB grants — per-tenant narrowing would need per-tenant
-    // roles, which this service does not have.
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "LitestreamReplicaAuthDbRead",
-        actions: ["s3:GetObject"],
-        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/agents/main/agent/openclaw-agent.sqlite/*`],
-      }),
-    );
-
-    // ECS management (per-user Fargate tasks)
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "EcsManagement",
-        actions: [
-          "ecs:CreateService",
-          "ecs:UpdateService",
-          "ecs:DeleteService",
-          "ecs:DescribeServices",
-          "ecs:DescribeTasks",
-          "ecs:ListServices",
-          "ecs:ListTasks",
-          "ecs:ExecuteCommand",
-        ],
-        resources: ["*"],
-        conditions: {
-          ArnEquals: {
-            "ecs:cluster": props.container.cluster.clusterArn,
-          },
-        },
-      }),
-    );
-
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "EcsTaskDefinition",
-        actions: [
-          "ecs:RegisterTaskDefinition",
-          "ecs:DeregisterTaskDefinition",
-          "ecs:DescribeTaskDefinition",
-        ],
-        resources: ["*"],
-      }),
-    );
-
-    // IAM PassRole for ECS task roles (shared execution + task roles AND the
-    // per-owner Bedrock roles the backend mints at provision time). Without
-    // the owner-bedrock-* prefix, RegisterTaskDefinition/CreateService with a
-    // per-owner taskRoleArn fails AccessDenied on PassRole.
+    // IAM PassRole for the per-owner Bedrock roles the backend mints at provision
+    // time — each one doubles as its workspace's AgentCore Runtime EXECUTION role,
+    // and CreateAgentRuntime fails AccessDenied on PassRole without this.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "IamPassRole",
         actions: ["iam:PassRole"],
         resources: [
-          props.container.taskExecutionRole.roleArn,
-          props.container.taskRole.roleArn,
           `arn:aws:iam::${this.account}:role/lightbulb-${env}-owner-bedrock-*`,
         ],
         conditions: {
           StringEquals: {
-            // The same per-owner role is passed to ECS today and to AgentCore Runtime
-            // (as the runtime's execution role) during the migration. Both, not a
-            // wildcard: a role passable to any service is a privilege-escalation lane.
-            "iam:PassedToService": ["ecs-tasks.amazonaws.com", "bedrock-agentcore.amazonaws.com"],
+            // The one service that may receive it, not a wildcard: a role passable
+            // to any service is a privilege-escalation lane.
+            "iam:PassedToService": ["bedrock-agentcore.amazonaws.com"],
           },
         },
       }),
@@ -1119,32 +1009,6 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // Cloud Map (service discovery) — constrained to namespace + service
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "CloudMapAccess",
-        actions: [
-          "servicediscovery:RegisterInstance",
-          "servicediscovery:DeregisterInstance",
-          "servicediscovery:GetNamespace",
-          "servicediscovery:GetService",
-          "servicediscovery:ListInstances",
-        ],
-        resources: [
-          props.container.cloudMapNamespace.namespaceArn,
-          props.container.cloudMapService.serviceArn,
-        ],
-      }),
-    );
-    // DiscoverInstances is not resource-scoped — it requires "*"
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "CloudMapDiscover",
-        actions: ["servicediscovery:DiscoverInstances"],
-        resources: ["*"],
-      }),
-    );
-
     // KMS (use string ARN to avoid cross-stack dependency)
     //
     // kms:Encrypt is required so the provision flow can seal per-container
@@ -1210,34 +1074,6 @@ export class ServiceStack extends cdk.Stack {
       ],
       roles: [this.taskRole],
     });
-
-    // EFS access points management
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "EfsAccessPoints",
-        actions: [
-          "elasticfilesystem:ClientMount",
-          "elasticfilesystem:ClientWrite",
-          "elasticfilesystem:CreateAccessPoint",
-          "elasticfilesystem:DescribeAccessPoints",
-          "elasticfilesystem:TagResource",
-        ],
-        resources: [props.container.efsFileSystem.fileSystemArn],
-      }),
-    );
-
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "EfsDeleteAccessPoints",
-        actions: [
-          "elasticfilesystem:DeleteAccessPoint",
-          "elasticfilesystem:TagResource",
-        ],
-        resources: [
-          `arn:aws:elasticfilesystem:*:${this.account}:access-point/*`,
-        ],
-      }),
-    );
 
     // S3 (OpenClaw config bucket)
     // Per-user path scoping via IAM policy variables (${aws:userid}) is not
@@ -1445,11 +1281,8 @@ export class ServiceStack extends cdk.Stack {
     const privateSubnetIds = props.vpc
       .selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS })
       .subnetIds.join(",");
-    const currentOpenClawVersion = env.startsWith("prod")
-      ? OPENCLAW_VERSION.prod
-      : OPENCLAW_VERSION.dev;
-    // Minor (predeploy review housekeeping): matches the OpenClaw line above -- env.startsWith,
-    // not ===, so this stays correct if a prod-prefixed variant is ever introduced.
+    // env.startsWith, not ===, so this stays correct if a prod-prefixed variant is ever
+    // introduced.
     const currentHermesTag = env.startsWith("prod") ? HERMES_VERSION.prod.tag : HERMES_VERSION.dev.tag;
 
     // Backend container environment + secrets, declared as consts (rather
@@ -1460,34 +1293,10 @@ export class ServiceStack extends cdk.Stack {
     const backendContainerEnvironment: Record<string, string> = {
       ENVIRONMENT: env,
       AWS_REGION: "us-east-1",
-      // OpenClaw image versions — injected from openclaw-version.json (the
-      // single source of truth) so the backend never hand-mirrors them.
-      // Read at runtime by core/openclaw_version.py.
-      OPENCLAW_UPSTREAM_VERSION: OPENCLAW_VERSION.tag,
-      OPENCLAW_DEV_TAG: OPENCLAW_VERSION.dev.tag,
-      OPENCLAW_PROD_TAG: OPENCLAW_VERSION.prod.tag,
-      OPENCLAW_FORK_TAG: OPENCLAW_VERSION.forkTag,
-      OPENCLAW_FORK_COMMIT: OPENCLAW_VERSION.forkCommit,
-      OPENCLAW_BASE_IMAGE_DIGEST: OPENCLAW_VERSION.baseImageDigest,
-      OPENCLAW_GATEWAY_BUILD_ID: OPENCLAW_VERSION.gatewayBuildId,
-      OPENCLAW_EXTENDED_ARTIFACT_DIGEST: currentOpenClawVersion.artifactDigest,
-      OPENCLAW_RUNTIME_MANIFEST_DIGEST: currentOpenClawVersion.runtimeManifestDigest,
-      // The per-owner state bucket. Named for what it holds, not for the tool
-      // that first used it: OpenClaw's litestream replicas AND (under
-      // <owner>/hermes/) the Hermes profile set both live here, inside the
-      // same per-owner <owner>/* IAM grant. No second bucket. LITESTREAM_BUCKET
-      // rides alongside it during the transition (M4-R6) so a CDK deploy and a
-      // backend roll can land in either order — drop the old name once the
-      // backend only reads OWNER_STATE_BUCKET.
+      // The per-owner state bucket — every Hermes profile lives under
+      // <owner>/hermes/. The name is a naming scar from litestream and must NOT be
+      // changed: a rename strands every profile.
       OWNER_STATE_BUCKET: `lightbulb-${env}-openclaw-replicas`,
-      LITESTREAM_BUCKET: `lightbulb-${env}-openclaw-replicas`,
-      // The gateway-only arm64 image a workspace's AgentCore runtime runs. DEV ONLY for
-      // now: empty in prod makes ensure_runtime refuse, so nothing can move a prod
-      // workspace until the image is promoted deliberately.
-      AGENTCORE_GATEWAY_IMAGE:
-        env === "dev"
-          ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/openclaw-gateway-arm64:gw-v7`
-          : "",
       // The Hermes bridge image a workspace's AgentCore runtime runs. Per-env promotion
       // tag from hermes-version.json#dev.tag/#prod.tag (M4-R34). Empty tag (prod today)
       // makes provision_hermes_runtime refuse, so nothing moves a prod workspace until a
@@ -1495,8 +1304,6 @@ export class ServiceStack extends cdk.Stack {
       AGENTCORE_HERMES_IMAGE: currentHermesTag
         ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/hermes-agent-arm64:${currentHermesTag}`
         : "",
-      // Flipped to "true" per environment only when the milestone's dev proof has landed.
-      HERMES_RUNTIME: "false",
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       GATEWAY_RELAY_URL: props.gatewayRelayUrl,
@@ -1534,11 +1341,6 @@ export class ServiceStack extends cdk.Stack {
           ? `https://${rootDomain},https://www.${rootDomain},https://admin.${rootDomain},https://company.${rootDomain}`
           : `https://dev.${rootDomain},https://admin.dev.${rootDomain},https://dev.company.${rootDomain},http://localhost:3000`,
       CLERK_AZP_MODE: "audit",
-      // Per-container secrets CMK — used by core/crypto/kms_secrets.py to
-      // encrypt operator device seeds + gateway tokens at rest. Reuses the
-      // same CMK as the BYOK Fernet layer since the blast radius is the same
-      // (any principal with kms:Decrypt on this key can read any of them).
-      CONTAINER_SECRETS_KMS_KEY_ID: props.kmsKeyArn,
       // Stripe flat-fee Price ID is environment-specific: prod is created in
       // Stripe live mode, dev in test mode, and they MUST NOT cross-pollinate
       // (a test-mode Price would silently create test subscriptions in prod).
@@ -1610,19 +1412,16 @@ export class ServiceStack extends cdk.Stack {
       // these, so a missing or wrong directory disables the feature rather than
       // weakening it.
       APPLE_IAP_ROOT_CERTS_DIR: "/app/certs/apple",
-      EFS_MOUNT_PATH: "/mnt/efs/users",
-      EFS_FILE_SYSTEM_ID: props.container.efsFileSystem.fileSystemId,
-      ECS_CLUSTER_ARN: props.container.cluster.clusterArn,
-      // ECS_TASK_DEFINITION is intentionally not set. Backend reads the
-      // latest CDK base revision live via describe_task_definition(family)
-      // — the base family is uncontaminated because per-user clones go to
-      // a separate `<base>-user` family.
+      // The VPC placement of every workspace's AgentCore runtime. Both names are
+      // ECS-era scars, and both are LIVE:
+      // `hermes_provisioning.build_runtime_request_for_owner` reads them into
+      // `CreateAgentRuntime`'s `networkConfiguration.networkModeConfig` on the fresh
+      // provision AND on `roll_runtime_image`. Dropping either one does not fail loudly —
+      // it hands the next runtime an empty VPC config. A rename is a coordinated
+      // backend+CDK change of its own.
       ECS_SUBNETS: privateSubnetIds,
       ECS_SECURITY_GROUP_ID:
         props.container.containerSecurityGroup.securityGroupId,
-      CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
-      CLOUD_MAP_NAMESPACE_NAME: props.container.cloudMapNamespace.namespaceName,
-      CLOUD_MAP_SERVICE_NAME: props.container.cloudMapService.serviceName,
       DYNAMODB_TABLE_PREFIX: tablePrefix(env),
       OAUTH_TOKENS_TABLE: tableName(env, "oauth-tokens"),
       // Metronome lifecycle + gating settings. Metronome is the ONLY
@@ -1677,16 +1476,6 @@ export class ServiceStack extends cdk.Stack {
       // wholesale without a code revert if prod ever misbehaves. The
       // stop_reason stamping and chat-send server wake are live regardless.
       TRIAL_WAKE_GATE_ENABLED: "true",
-      // Browser egress via the container's Cloudflare WARP local proxy.
-      // ON in both envs. "0" = off: write_openclaw_config emits no proxy flag
-      // and no browser.ssrfPolicy (the two travel together — see
-      // _browser_egress_args) and Chrome egresses on the AWS NAT IP. The
-      // container half (Dockerfile layer 9c + Step C4b boot script) is inert
-      // without the cloudflare-warp-enrollment secret, and with WARP down the
-      // PAC falls back to DIRECT, so flip order is harmless. Existing
-      // containers pick a change up only on reprovision / Regenerate config —
-      // or a PATCH .../config deep-merge.
-      BROWSER_EGRESS_PROXY_PORT: String(BROWSER_EGRESS_PROXY_PORT),
       // Marketplace DDB tables + S3 artifacts bucket. Backend reads these
       // env vars via core.config.settings; empty defaults keep the app
       // booting in non-marketplace contexts (unit tests, smoke tests).
@@ -1938,20 +1727,11 @@ export class ServiceStack extends cdk.Stack {
       taskRole: this.taskRole,
       executionRole: taskExecutionRole,
     });
-    provisionerTaskDef.addVolume({
-      name: "efs-users",
-      efsVolumeConfiguration: {
-        fileSystemId: props.container.efsFileSystem.fileSystemId,
-        transitEncryption: "ENABLED",
-        authorizationConfig: { iam: "ENABLED" },
-      },
-    });
     const provisionerContainer = provisionerTaskDef.addContainer("provisioner", {
       image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
-      // Run as root, exactly like the backend container: provisioning writes
-      // EFS user directories and chowns them to UID 1000 (workspace.py), and
-      // the image's default USER appuser cannot. Dropping this silently
-      // breaks every EFS write the runner performs.
+      // Run as root, exactly like the backend container. Kept in lockstep with it
+      // deliberately: the two share one image, env and role so the provisioner runs
+      // with identical capability, and dropping root from one alone would break that.
       user: "0:0",
       environment: backendContainerEnvironment,
       secrets: backendContainerSecrets,
@@ -1960,18 +1740,13 @@ export class ServiceStack extends cdk.Stack {
       // state machine ($.command).
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: "provisioner", logGroup }),
     });
-    provisionerContainer.addMountPoints({
-      containerPath: "/mnt/efs",
-      sourceVolume: "efs-users",
-      readOnly: false,
-    });
 
     const runProvisioner = new tasks.EcsRunTask(this, "RunProvisioner", {
       integrationPattern: sfn.IntegrationPattern.RUN_JOB,
       cluster: props.container.cluster,
       taskDefinition: provisionerTaskDef,
       launchTarget: new tasks.EcsFargateLaunchTarget({
-        platformVersion: ecs.FargatePlatformVersion.VERSION1_4, // EFS requires >= 1.4
+        platformVersion: ecs.FargatePlatformVersion.VERSION1_4,
       }),
       subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       securityGroups: [serviceSg],
@@ -2442,20 +2217,11 @@ export class ServiceStack extends cdk.Stack {
       executionRole: taskExecutionRole,
     });
 
-    // EFS Volume
-    taskDef.addVolume({
-      name: "efs-users",
-      efsVolumeConfiguration: {
-        fileSystemId: props.container.efsFileSystem.fileSystemId,
-        transitEncryption: "ENABLED",
-        authorizationConfig: { iam: "ENABLED" },
-      },
-    });
-
     // Container definition
-    const container = taskDef.addContainer("backend", {
+    taskDef.addContainer("backend", {
       image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
-      // Run as root — backend writes to EFS user directories
+      // Run as root. The image's default USER is appuser; flipping the backend to it
+      // is a runtime-user change, not a deletion, so it stays out of this PR.
       user: "0:0",
       portMappings: [{ containerPort: 8000 }],
       environment: {
@@ -2482,13 +2248,6 @@ export class ServiceStack extends cdk.Stack {
       // (25s) < this stopTimeout (30s), so the app + uvicorn drain in-flight work
       // before ECS hard-kills the task.
       stopTimeout: cdk.Duration.seconds(30),
-    });
-
-    // EFS mount point
-    container.addMountPoints({
-      containerPath: "/mnt/efs",
-      sourceVolume: "efs-users",
-      readOnly: false,
     });
 
     // -------------------------------------------------------------------------

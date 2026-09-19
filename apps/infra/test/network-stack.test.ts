@@ -44,7 +44,7 @@ describe("NetworkStack — browser-view listener", () => {
   // machine gateway relay). These assertions ARE that cap — if one fails,
   // in-VPC callers (per-user containers included) just gained reach into
   // more of FastAPI than those two Clerk/device/service-authenticated routes.
-  test("8081 listener defaults to 404 and forwards ONLY the relay paths", () => {
+  test("8081 listener defaults to 404 and forwards ONLY the machine relay path", () => {
     template.hasResourceProperties("AWS::ElasticLoadBalancingV2::Listener", {
       Port: 8081,
       Protocol: "HTTP",
@@ -59,7 +59,7 @@ describe("NetworkStack — browser-view listener", () => {
       Conditions: [
         Match.objectLike({
           Field: "path-pattern",
-          PathPatternConfig: { Values: ["/api/v1/browser-view/*", "/api/v1/gateway/*"] },
+          PathPatternConfig: { Values: ["/api/v1/gateway/*"] },
         }),
       ],
       Actions: [Match.objectLike({ Type: "forward" })],

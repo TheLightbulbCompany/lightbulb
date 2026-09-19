@@ -222,13 +222,8 @@ export class LightbulbStage extends cdk.Stage {
       container: {
         cluster: container.cluster,
         cloudMapNamespace: container.cloudMapNamespace,
-        cloudMapService: container.cloudMapService,
-        efsFileSystem: container.efsFileSystem,
-        efsSecurityGroup: container.efsSecurityGroup,
+        // Live on the Hermes path: the AgentCore runtime ENI's security group.
         containerSecurityGroup: container.containerSecurityGroup,
-        taskExecutionRole: container.taskExecutionRole,
-        taskRole: container.taskRole,
-        openclawTaskDef: container.openclawTaskDef,
         ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
         ownerBedrockBoundary: container.ownerBedrockBoundary,
       },
@@ -322,7 +317,6 @@ export class LightbulbStage extends cdk.Stage {
         targetGroup: network.targetGroupV2,
         wsApiId: api.wsApiId,
         cluster: container.cluster,
-        efsFileSystem: container.efsFileSystem,
         databaseTables: {
           usersTable: tableName(env, "users"),
           containersTable: tableName(env, "containers"),

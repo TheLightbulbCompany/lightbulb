@@ -17,7 +17,6 @@ async def test_worker_runs_no_pass_body_when_admission_refuses(monkeypatch):
         "get_due_scheduled",
         AsyncMock(side_effect=AssertionError("scanned while not admitted")),
     )
-    monkeypatch.setattr(update_service, "_recover_stale_task_definition_refreshes", AsyncMock())
     task = asyncio.create_task(update_service.run_scheduled_worker())
     await asyncio.sleep(0)
     update_service.request_worker_stop()
@@ -32,7 +31,6 @@ async def test_worker_runs_each_pass_once_when_admitted(monkeypatch):
     monkeypatch.setattr(update_service.update_repo, "get_due_scheduled", AsyncMock(return_value=[]))
     for fn in ("_paperclip_provision_retry_pass", "_paperclip_purge_pass", "_rollup_pass"):
         monkeypatch.setattr(update_service, fn, AsyncMock(side_effect=lambda _f=fn: ran.append(_f)))
-    monkeypatch.setattr(update_service, "_recover_stale_task_definition_refreshes", AsyncMock())
     task = asyncio.create_task(update_service.run_scheduled_worker())
     await asyncio.sleep(0)
     update_service.request_worker_stop()
@@ -48,7 +46,6 @@ async def test_purge_and_rollup_ask_for_their_documented_windows(monkeypatch):
         "try_claim_pass",
         AsyncMock(side_effect=lambda name, *, interval_s: claims.append((name, interval_s)) or False),
     )
-    monkeypatch.setattr(update_service, "_recover_stale_task_definition_refreshes", AsyncMock())
     task = asyncio.create_task(update_service.run_scheduled_worker())
     await asyncio.sleep(0)
     update_service.request_worker_stop()

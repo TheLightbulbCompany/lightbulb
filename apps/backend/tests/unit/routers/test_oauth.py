@@ -211,26 +211,22 @@ async def test_disconnect_keeps_oauth_row_and_provider_choice_when_agentcore_rev
 
 
 @pytest.mark.asyncio
-async def test_disconnect_keeps_harness_row_when_unlink_fails(async_client):
-    """Harness cleanup during provider disconnect is FILE first, row second:
-    the file is the live credential, so if the unlink fails the row must
-    survive with it — deleting the row over a surviving auth.json would leave
-    an untracked, still-spawnable credential. The disconnect itself still
-    succeeds (best-effort chain; the provider revoke is the authoritative
-    act)."""
+async def test_disconnect_survives_a_failed_harness_cleanup(async_client):
+    """The harness cleanup is best-effort and the provider revoke above it is the authoritative
+    act, so a fault here must not turn a completed disconnect into an error the owner retries."""
     with (
         patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
-        patch(
-            "routers.oauth.delete_opencode_auth",
-            new=AsyncMock(side_effect=OSError("efs io")),
-        ),
         patch("routers.oauth.revoke_provider_auth_in_container", new=AsyncMock()),
-        patch("routers.oauth.has_active_oauth", new=AsyncMock(return_value=True)),
+        patch("routers.oauth.has_active_oauth", new=AsyncMock(side_effect=RuntimeError("ddb down"))),
+        patch("core.repositories.billing_repo.clear_provider_choice", new=AsyncMock()) as mock_clear,
     ):
         resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
     assert resp.status_code == 200
-    # Only the provider row was revoked — the harness revoke never ran.
+    # The provider row was revoked; the harness revoke never ran.
     mock_revoke.assert_awaited_once_with(user_id="user_test_123")
+    # And provider_choice is still cleared, or the wizard sends the owner back to a provider it
+    # has no credential for.
+    mock_clear.assert_awaited_once_with("org_test_456")
 
 
 @pytest.mark.asyncio
@@ -241,7 +237,6 @@ async def test_disconnect_skips_harness_bound_to_another_workspace(async_client)
     skipped entirely."""
     with (
         patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
-        patch("routers.oauth.delete_opencode_auth", new=AsyncMock()) as mock_delete_oc,
         patch("routers.oauth.revoke_provider_auth_in_container", new=AsyncMock()),
         patch("routers.oauth.has_active_oauth", new=AsyncMock(return_value=False)) as mock_probe,
     ):
@@ -251,45 +246,41 @@ async def test_disconnect_skips_harness_bound_to_another_workspace(async_client)
         user_id="user_test_123", bound_to="org_test_456", purpose="harness", consistent=True
     )
     mock_revoke.assert_awaited_once_with(user_id="user_test_123")  # provider only
-    mock_delete_oc.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_disconnect_workspace_owner_clears_workspace_store(async_client):
-    """Workspace /disconnect revokes the human's OAuth row, deletes the EFS
-    auth-profiles store keyed on the active workspace, and
-    clears provider_choice on the workspace billing row.
+async def test_disconnect_revokes_the_credential_before_it_drops_the_row(async_client):
+    """The staged root `auth.json` IS the live credential, and the DDB row is this request's
+    retry ownership -- so the revoke runs FIRST. Dropping the row over a surviving credential
+    leaves an untracked grant nobody can disconnect.
 
-    The repo-level guarantee (billing_repo.clear_provider_choice no-op on
-    missing row) is covered separately. This test pins the integration —
-    swapping in a disconnect implementation that forgets the
-    clear_provider_choice call (or mis-keys the EFS delete) would silently
-    regress the dead-end fix.
+    The EFS auth-profiles store and the opencode unlink it also used to clear are gone: there is
+    one credential now, and `revoke_provider_auth_in_container` is the whole authoritative act.
     """
+    order: list[str] = []
     with (
-        patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
-        patch("routers.oauth.delete_auth_profile_store", new=AsyncMock()) as mock_delete,
-        patch("routers.oauth.delete_opencode_auth", new=AsyncMock()) as mock_delete_oc,
-        patch("routers.oauth.has_active_oauth", new=AsyncMock(return_value=True)),
         patch(
-            "core.repositories.billing_repo.clear_provider_choice",
-            new=AsyncMock(),
-        ) as mock_clear,
+            "routers.oauth.revoke_provider_auth_in_container",
+            new=AsyncMock(side_effect=lambda *_a, **_k: order.append("revoke_credential")),
+        ) as mock_logout,
+        patch(
+            "routers.oauth.revoke_user_oauth",
+            new=AsyncMock(side_effect=lambda **kw: order.append(f"revoke_row:{kw.get('purpose', 'provider')}")),
+        ) as mock_revoke,
+        patch("routers.oauth.has_active_oauth", new=AsyncMock(return_value=True)),
+        patch("core.repositories.billing_repo.clear_provider_choice", new=AsyncMock()) as mock_clear,
     ):
         resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
 
     assert resp.status_code == 200
-    # The harness grant leaves with the main connection: clearing
-    # provider_choice hides its management card, so a surviving #harness row
-    # would be a live credential with no UI. Provider row first, then harness.
-    assert mock_revoke.await_count == 2
+    assert order == ["revoke_credential", "revoke_row:provider", "revoke_row:harness"]
+    mock_logout.assert_awaited_once_with("org_test_456")
+    # The harness grant leaves with the main connection: clearing provider_choice hides its
+    # management card, so a surviving harness row would be a live credential with no UI.
     assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_test_123"}
     assert mock_revoke.await_args_list[1].kwargs == {"user_id": "user_test_123", "purpose": "harness"}
-    mock_delete.assert_awaited_once_with(user_id="org_test_456")
-    # Unlink runs twice: before the revoke (primary) and after it (the sweep
-    # that closes the overlapping-provision re-stage window).
-    assert mock_delete_oc.await_count == 2
-    assert all(c.kwargs == {"user_id": "org_test_456"} for c in mock_delete_oc.await_args_list)
+    # Without this the wizard sees provider_choice=chatgpt_oauth on a workspace with no
+    # credential, and the runtime starts but cannot run inference.
     mock_clear.assert_awaited_once_with("org_test_456")
 
 
@@ -718,9 +709,9 @@ class TestDisconnectOrgRules:
 
     @pytest.mark.asyncio
     async def test_disconnect_org_owner_revokes_and_clears(self, async_client, override_auth):
-        """Owner user_test_123 /disconnect revokes their own OAuth tokens,
-        deletes the EFS auth store keyed on the CONTAINER owner (org_id), and
-        clears provider_choice on the org billing row."""
+        """Owner user_test_123 /disconnect revokes their own OAuth token rows, revokes the
+        credential keyed on the WORKSPACE (org_id), and clears provider_choice on the org
+        billing row."""
         override_auth(ORG_OWNER_ADMIN)
         row = {"owner_id": "org_test_456", "oauth_connector_user_id": "user_test_123"}
         with (
@@ -729,7 +720,7 @@ class TestDisconnectOrgRules:
                 new=AsyncMock(return_value=row),
             ),
             patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
-            patch("routers.oauth.delete_auth_profile_store", new=AsyncMock()) as mock_delete,
+            patch("routers.oauth.revoke_provider_auth_in_container", new=AsyncMock()) as mock_delete,
             patch("routers.oauth.has_active_oauth", new=AsyncMock(return_value=True)),
             patch(
                 "core.repositories.billing_repo.clear_provider_choice",
@@ -738,15 +729,15 @@ class TestDisconnectOrgRules:
         ):
             resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
         assert resp.status_code == 200
-        # Both token rows go (provider chain + harness grant), keyed on the
-        # HUMAN connector; the EFS files are keyed on the CONTAINER owner.
+        # Both token rows go (provider chain + harness grant), keyed on the HUMAN connector;
+        # the credential itself is keyed on the WORKSPACE.
         assert mock_revoke.await_count == 2
         assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_test_123"}
         assert mock_revoke.await_args_list[1].kwargs == {
             "user_id": "user_test_123",
             "purpose": "harness",
         }
-        mock_delete.assert_awaited_once_with(user_id="org_test_456")
+        mock_delete.assert_awaited_once_with("org_test_456")
         mock_clear.assert_awaited_once_with("org_test_456")
 
     @pytest.mark.asyncio
@@ -761,7 +752,7 @@ class TestDisconnectOrgRules:
                 new=AsyncMock(return_value=row),
             ),
             patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
-            patch("routers.oauth.delete_auth_profile_store", new=AsyncMock()) as mock_delete,
+            patch("routers.oauth.revoke_provider_auth_in_container", new=AsyncMock()) as mock_delete,
             patch(
                 "core.repositories.billing_repo.clear_provider_choice",
                 new=AsyncMock(),

@@ -300,9 +300,7 @@ async def _run_company_deploy(
             # Adapter is ALWAYS resolved server-side — a PlannedAgent carries no adapter, so
             # nothing package-supplied can reach Paperclip. Through the one shared resolver
             # every Paperclip agent-creation door uses.
-            adapter_type, adapter_config = await resolve_agent_adapter(
-                owner_id, agent_label=planned.name, gateway_user_id=owner_id
-            )
+            adapter_type, adapter_config = await resolve_agent_adapter(owner_id)
             # Deliberately omit agent-create idempotency here. The owner-wide
             # deploy claim serializes whole runs, but nothing REPLAYS a
             # half-finished run per-agent — a failed run rolls back its own

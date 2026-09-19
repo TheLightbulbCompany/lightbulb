@@ -157,22 +157,6 @@ def _repo() -> PaperclipRepo:
     return PaperclipRepo(table_name="paperclip-companies")
 
 
-def _creator_user_id(ctx) -> str:
-    """Return the creator's Clerk user_id (used as the adapterConfig
-    ``sessionKey`` fallback for non-issue runs).
-
-    Tolerates both real ``TeamsContext`` (flat ``user_id`` field) and
-    ``MagicMock`` test fixtures that carry the auth on ``ctx.auth.user_id``
-    — the pairing tests use the latter shape.
-    """
-    auth = getattr(ctx, "auth", None)
-    if auth is not None:
-        uid = getattr(auth, "user_id", None)
-        if isinstance(uid, str):
-            return uid
-    return ctx.user_id
-
-
 def _resolve_owner_id(ctx) -> str:
     """Container owner: org_id when the user is in an org, else user_id.
 
@@ -546,22 +530,11 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
     The agent's S3 Hermes profile is what makes it runnable, so a failure to
     write one is fatal + rolled back (see ``_write_hermes_profile_or_rollback``).
     """
-    creator_user_id = _creator_user_id(ctx)
     owner_id = _resolve_owner_id(ctx)
-    # Mint the service token with owner_id (NOT the creator's user_id).
-    # The OpenClaw container is keyed by owner_id (org_id for org members,
-    # user_id for personal owners). The WS Lambda authorizer puts service
-    # tokens into the connection context with ``orgId=""`` and routes by
-    # the JWT ``sub`` claim — so a token minted with the member's user_id
-    # would route subsequent Paperclip wakes to the member's PERSONAL
-    # owner instead of the org's shared owner, missing the container the
-    # agent was just paired into. We mint fresh here rather than reading
-    # the persisted ``service_token_encrypted`` row so legacy rows with a
-    # member-keyed sub can't poison new agents. Adapter TYPE is the fork's http
-    # adapter, via the one shared resolver every Paperclip agent-creation door uses.
-    adapter_type, adapter_config = await resolve_agent_adapter(
-        owner_id, agent_label=body.name, gateway_user_id=creator_user_id
-    )
+    # The adapter is keyed by OWNER, never by the creating member: the workspace's runtime and
+    # its hook token are the org's, so a member-keyed credential would authenticate the wrong
+    # workspace's facade. One shared resolver, so every Paperclip agent-creation door agrees.
+    adapter_type, adapter_config = await resolve_agent_adapter(owner_id)
     idempotency_key = build_agent_create_idempotency_key(
         operation="teams",
         owner_id=owner_id,

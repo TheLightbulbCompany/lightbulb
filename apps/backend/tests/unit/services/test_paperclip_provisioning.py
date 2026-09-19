@@ -69,13 +69,14 @@ def _build_provision_org_doubles(monkeypatch):
     if hasattr(mod, "get_admin_session_cookie"):
         monkeypatch.setattr(mod, "get_admin_session_cookie", _fake_admin_cookie, raising=False)
 
-    # provision_org's starter-seed loop now picks its adapter type via
-    # paperclip_adapter_config.adapter_type_for, which reads the owner's container row.
-    # A MISSING row (as here -- these doubles never provision one) is the pre-migration ECS
-    # default; a real DynamoDB call is not the point of these tests.
+    # provision_org's starter-seed loop reads the owner's container row for its ``hook_token``
+    # -- the native adapter's ``apiKey``, which build_hermes_gateway_adapter_config refuses to
+    # mint without (M4-R33). ``prepare_hermes_workspace`` writes it before step 0 seeds, so a
+    # row carrying one is what the subject sees in production; a real DynamoDB call is not the
+    # point of these tests.
     from core.repositories import container_repo
 
-    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "hook-seed-test"}))
 
     return admin, repo
 
@@ -150,8 +151,18 @@ async def test_provision_org_mints_service_token_with_owner_id(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_provision_org_with_agentcore_runtime_host_seeds_the_native_hermes_adapter(monkeypatch):
-    """An explicit AgentCore hint seeds the native adapter before the container row exists."""
+async def test_provision_org_seeds_every_starter_on_the_native_hermes_adapter(monkeypatch):
+    """There is one adapter, and its ``apiKey`` is the OWNER's hook token off the container row.
+
+    M4-R33 is what this pins: ``prepare_hermes_workspace`` mints ``hook_token`` onto the row
+    BEFORE step 0 seeds the roster, so this read returns it. Without that ordering the row read
+    returns ``{}`` and every agent bakes an EMPTY bearer — which Paperclip then reports as
+    ``hermes_gateway_auth_failed`` on each individual run rather than as a broken agent.
+
+    The ``runtime_host`` hint this test pair used to exercise is gone: it existed only to pick
+    between the native adapter and the device-paired ECS default before the container row said
+    which host the owner was on.
+    """
     from core.repositories import container_repo
     from core.services.paperclip_provisioning import PaperclipProvisioning
 
@@ -164,40 +175,14 @@ async def test_provision_org_with_agentcore_runtime_host_seeds_the_native_hermes
         owner_id="org_hermes",
         owner_user_id="user_owner",
         owner_email="owner@example.com",
-        runtime_host="agentcore",
     )
 
     adapter_types = {call.kwargs["adapter_type"] for call in admin.create_agent.call_args_list}
     assert adapter_types == {"hermes_gateway"}
-    # Exactly one read (the hook-token lookup), not a second one to decide the
-    # adapter type — the explicit hint is what skips that second read.
-    row_spy.assert_awaited_once_with("org_hermes")
-    # m6: prove the REAL hook_token value (not just that a lookup happened) reaches every
-    # starter agent's adapter config -- this is the exact bug M4-R33 fixes: without
-    # prepare_hermes_workspace minting hook_token onto the row BEFORE this seed runs, the row
-    # read above returns {} and every agent bakes an empty bearer instead.
     api_keys = {call.kwargs["adapter_config"]["apiKey"] for call in admin.create_agent.call_args_list}
     assert api_keys == {"hook-1"}
-
-
-@pytest.mark.asyncio
-async def test_provision_org_with_no_runtime_host_hint_falls_back_to_the_ecs_default(monkeypatch):
-    """No hint (every existing caller, and the reconcile path) preserves the old
-    read-the-row-or-default-ECS behavior — a fresh provision_org call gains no new
-    behavior unless it explicitly opts in with runtime_host."""
-    from core.services.paperclip_provisioning import PaperclipProvisioning
-
-    admin, repo = _build_provision_org_doubles(monkeypatch)
-
-    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    await svc.provision_org(
-        owner_id="org_ecs",
-        owner_user_id="user_owner",
-        owner_email="owner@example.com",
-    )
-
-    adapter_types = {call.kwargs["adapter_type"] for call in admin.create_agent.call_args_list}
-    assert adapter_types == {"openclaw_gateway"}
+    # ONE read for the whole roster, not one per agent.
+    row_spy.assert_awaited_once_with("org_hermes")
 
 
 @pytest.mark.asyncio

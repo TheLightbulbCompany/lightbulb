@@ -39,21 +39,19 @@ logger = logging.getLogger(__name__)
 _TERMINAL_ISSUE_STATUSES = {"done", "cancelled"}
 
 
-async def resolve_agent_adapter(
-    owner_id: str, *, agent_label: str, gateway_user_id: str, runtime_host: str | None = None
-) -> tuple[str, dict]:
+async def resolve_agent_adapter(owner_id: str) -> tuple[str, dict]:
     """Which Paperclip adapter type + config carries an agent this door creates.
 
     Shared by every Paperclip agent-creation call site in the backend (chat-create and
     marketplace-deploy below; also ``core/services/company_deploy_service.py`` and
     ``routers/teams/agents.py``'s ``/agents`` endpoint) so the wiring lives in exactly one
-    place. There is one answer now: Paperclip's native ``hermes_gateway`` adapter through the
+    place. There is one answer: Paperclip's native ``hermes_gateway`` adapter through the
     authenticated backend facade, which needs no operator device pairing.
 
-    ``agent_label``/``gateway_user_id``/``runtime_host`` are accepted and unused -- the native
-    adapter derives the real agent id from Paperclip's signed run context and sends it in
-    ``X-Hermes-Session-Key``, and there is only one host left. They stay in the signature
-    because four call sites pass them and none is wrong to know.
+    It takes ONLY the owner id. The ``agent_label``/``gateway_user_id``/``runtime_host``
+    arguments four call sites used to thread here went with the device-paired adapter: the
+    native one derives the real agent id from Paperclip's signed run context and sends it in
+    ``X-Hermes-Session-Key``, and there is one host.
     """
     container = await container_repo.get_by_owner_id(owner_id)
     return HERMES_GATEWAY_TYPE, build_hermes_gateway_adapter_config(
@@ -61,9 +59,7 @@ async def resolve_agent_adapter(
     )
 
 
-async def repoint_agent_adapter(
-    owner_id: str, agent: dict[str, Any], *, runtime_host: str, gateway_token: str | None = None
-) -> bool:
+async def repoint_agent_adapter(owner_id: str, agent: dict[str, Any]) -> bool:
     """Move ONE **existing** agent's Paperclip adapter onto the native Hermes transport.
 
     ``resolve_agent_adapter`` above picks the adapter at agent-CREATE time and nothing had ever
@@ -73,9 +69,13 @@ async def repoint_agent_adapter(
     fire, issue run and Teams Run/Retry died while room chat -- which rides the WORK bus, not the
     adapter -- kept working. Nothing looked broken.
 
-    Deliberately the SAME resolver a fresh create uses. ``runtime_host``/``gateway_token`` are
-    accepted and unused: the only target left is ``hermes_gateway``, and the migration job still
-    passes both.
+    Deliberately the SAME resolver a fresh create uses.
+
+    ZERO CALLERS TODAY -- the migration job that drove it is deleted, and every prod and dev
+    workspace is migrated. Kept because it is the only repair path for an agent row still
+    carrying ``openclaw_gateway``: that agent's routines, issue runs and Teams Run/Retry all
+    fail silently while room chat (which rides the WORK bus, not the adapter) keeps working, so
+    nothing looks broken. Re-deriving it from scratch mid-incident is the expensive option.
 
     Returns True when a patch landed, False when the agent was already on the target adapter --
     i.e. idempotent, so a re-entered migration tail re-points only what is still wrong.
@@ -90,9 +90,7 @@ async def repoint_agent_adapter(
     # The empty-hook-token guard lives INSIDE build_hermes_gateway_adapter_config, which raises
     # AdapterConfigError before the PATCH: every door onto the native adapter (seed, /teams
     # create, this re-point) gets the same refusal.
-    _, adapter_config = await resolve_agent_adapter(
-        owner_id, agent_label=agent_id, gateway_user_id=owner_id, runtime_host=runtime_host
-    )
+    _, adapter_config = await resolve_agent_adapter(owner_id)
     async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
         admin = PaperclipAdminClient(http_client=http)
         cookie = await get_admin_session_cookie(http)
@@ -433,9 +431,7 @@ async def create_paperclip_for_chat(
         # ``user_id=creator_user_id`` is still correct: that field is the
         # adapterConfig.sessionKey fallback (per-creator manual-wake
         # session key), not the auth principal.
-        adapter_type, adapter_config = await resolve_agent_adapter(
-            owner_id, agent_label=name, gateway_user_id=creator_user_id
-        )
+        adapter_type, adapter_config = await resolve_agent_adapter(owner_id)
         fields = resolve_create_agent_fields(role=role, meta=meta)
         idempotency_key = build_agent_create_idempotency_key(
             operation="chat",
@@ -559,9 +555,7 @@ async def create_paperclip_for_marketplace(
     try:
         admin_client = PaperclipAdminClient(http_client=http)
         admin_cookie = await get_admin_session_cookie(http)
-        adapter_type, adapter_config = await resolve_agent_adapter(
-            owner_id, agent_label=name, gateway_user_id=buyer_user_id
-        )
+        adapter_type, adapter_config = await resolve_agent_adapter(owner_id)
         fields = resolve_create_agent_fields(role=role, meta=meta)
         return await admin_client.create_agent(
             company_id=company_id,

@@ -260,17 +260,8 @@ class PaperclipProvisioning:
         owner_id: str,
         owner_user_id: str,
         owner_email: str,
-        runtime_host: str | None = None,
     ) -> PaperclipCompany:
         """Provision the Paperclip company + Better Auth user for a new owner.
-
-        ``runtime_host``: forwarded verbatim to ``adapter_type_for`` for the
-        starter-seed loop below (M4-R8/M1 Ruling 10). Step 0 seeds Paperclip
-        BEFORE the container row exists — the row's own ``runtime_host`` isn't
-        written until step 1 — so an explicit hint here is the only way a
-        FRESH Hermes/AgentCore provision seeds every starter agent onto the
-        ``http`` adapter instead of the ECS default. ``None`` (every existing
-        caller) preserves the old read-the-row-or-default-ECS behavior.
 
         ``owner_id`` is the container's owner — Clerk's org_id for orgs
         and Clerk's user_id for personal owners. It's the same value

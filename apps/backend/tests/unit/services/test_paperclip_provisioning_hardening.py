@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.crypto.operator_device import device_identity_from_pem
 from core.services.paperclip_admin_client import PaperclipApiError
 from tests.unit.services.test_paperclip_provisioning import _build_provision_org_doubles
 
@@ -47,13 +46,15 @@ async def test_fresh_workspace_creates_the_complete_starter_roster(monkeypatch):
     assert [call.kwargs["idempotency_key"] for call in calls] == [
         f"seed:starter:{item[0]}:v1" for item in EXPECTED_ROSTER
     ]
-    # Each OpenClaw operator needs its own device identity: reusing the same
-    # create-time adapter config makes paired.json reject the duplicate
-    # deviceId during container provisioning.
-    device_ids = [
-        device_identity_from_pem(call.kwargs["adapter_config"]["devicePrivateKeyPem"]).device_id for call in calls
-    ]
-    assert len(device_ids) == len(set(device_ids))
+    # Every seeded agent shares ONE adapter config, and that is correct now: the native
+    # ``hermes_gateway`` facade authenticates by the OWNER's hook token and Paperclip supplies
+    # the agent id per run. The per-agent operator device identity this used to assert (each
+    # needing its own, or paired.json rejected the duplicate deviceId) went with the OpenClaw
+    # gateway -- there is no device to pair.
+    configs = [call.kwargs["adapter_config"] for call in calls]
+    assert {call.kwargs["adapter_type"] for call in calls} == {"hermes_gateway"}
+    assert all(cfg == configs[0] for cfg in configs)
+    assert "devicePrivateKeyPem" not in configs[0]
 
 
 @pytest.mark.asyncio

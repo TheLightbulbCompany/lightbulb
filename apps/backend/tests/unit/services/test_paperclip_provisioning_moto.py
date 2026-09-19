@@ -28,7 +28,6 @@ from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services.paperclip_provisioning import (
     OrgNotProvisionedError,
     PaperclipProvisioning,
-    _ws_gateway_url,
 )
 from core.services.paperclip_admin_client import PaperclipApiError
 
@@ -46,16 +45,18 @@ def _service_token_key(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _ecs_default_container(monkeypatch):
-    """provision_org's starter-seed loop picks its adapter type via
-    paperclip_adapter_config.adapter_type_for, which reads the owner's container row --
-    a DIFFERENT table than this file's moto-backed paperclip-companies fixture, so an
-    unmocked call 404s (ResourceNotFoundException). A MISSING row is the correct
-    pre-migration ECS default (see adapter_type_for's docstring), not a table this
-    provisioning-orchestrator suite needs to model."""
+def _seed_container_row(monkeypatch):
+    """provision_org's starter-seed loop reads the owner's container row for its
+    ``hook_token`` -- that token is the native adapter's ``apiKey``, and
+    ``build_hermes_gateway_adapter_config`` refuses an empty one (M4-R33: an adapter minted
+    without it 401s at the facade on every run). The row lives in a DIFFERENT table than this
+    file's moto-backed paperclip-companies fixture, so it is stubbed rather than modelled.
+
+    ``prepare_hermes_workspace`` writes the token BEFORE step 0 seeds the roster, so a row
+    carrying one is what this suite's subject actually sees in production."""
     from core.repositories import container_repo
 
-    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "hook-seed-test"}))
 
 
 @pytest.fixture(autouse=True)
@@ -160,26 +161,6 @@ def _make_admin_mock() -> MagicMock:
 
 
 # ----------------------------------------------------------------------
-# _ws_gateway_url
-# ----------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("env", ["prod", "production", "dev", "staging"])
-def test_ws_gateway_url_uses_the_configured_gateway(monkeypatch, env):
-    """Any deployed env returns GATEWAY_RELAY_URL verbatim — the raw relay
-    door CDK wired from the api-stack gateway-relay-url output, not a
-    locally rebuilt one."""
-    monkeypatch.setattr("core.config.settings.GATEWAY_RELAY_URL", "wss://bv-dev.isol8.co/api/v1/gateway/ws")
-    assert _ws_gateway_url(env) == "wss://bv-dev.isol8.co/api/v1/gateway/ws"
-    monkeypatch.setattr("core.config.settings.GATEWAY_RELAY_URL", "wss://bv.isol8.co/api/v1/gateway/ws")
-    assert _ws_gateway_url(env) == "wss://bv.isol8.co/api/v1/gateway/ws"
-
-
-def test_ws_gateway_url_empty_falls_back_to_localhost():
-    assert _ws_gateway_url("") == "ws://localhost:8000"
-
-
-# ----------------------------------------------------------------------
 # provision_org
 # ----------------------------------------------------------------------
 
@@ -260,23 +241,21 @@ async def test_provision_org_happy_path(repo, monkeypatch):
 
     agent_kwargs = by_name["CEO"]
     assert agent_kwargs["company_id"] == "co_acme"
-    # Canonical adapter_type is the underscore form ("openclaw_gateway")
-    # — the previous hyphenated value ("openclaw-gateway") was rejected
-    # by Paperclip's assertKnownAdapterType so seed-agent creation
-    # silently fails on every provision.
-    assert agent_kwargs["adapter_type"] == "openclaw_gateway"
+    # ONE adapter: Paperclip's deployed native ``hermes_gateway``, pointed at the
+    # hook-token-authenticated backend facade. The device-paired ``openclaw_gateway`` shape
+    # (a relay ws URL + a minted operator JWT + a "paperclip:" session key) went with the
+    # OpenClaw gateway -- there is no relay to dial and no operator device to mint.
+    assert agent_kwargs["adapter_type"] == "hermes_gateway"
     adapter_cfg = agent_kwargs["adapter_config"]
-    # Derived, not literal: the adapter URL is built from the configured relay
-    # URL, so a literal here would only be a tripwire on the next domain move.
-    assert (
-        adapter_cfg["url"]
-        == f"{_settings.GATEWAY_RELAY_URL}?token={adapter_cfg['authToken']}&clientId=paperclip-operator"
+    # Derived, not literal: the facade URL is built from PUBLIC_API_BASE + the owner id, so a
+    # literal here would only be a tripwire on the next domain move.
+    assert adapter_cfg["apiBaseUrl"] == (
+        f"{_settings.PUBLIC_API_BASE.rstrip('/')}/api/v1/internal/paperclip/hermes/org_acme"
     )
-    # "paperclip:" namespaced so the adapter's agent:<agentId>: prefix cannot
-    # collide with the owner's /chat "General" session key.
-    assert agent_kwargs["adapter_config"]["sessionKey"] == "paperclip:user_owner"
-    assert agent_kwargs["adapter_config"]["sessionKeyStrategy"] == "issue"
-    assert agent_kwargs["adapter_config"]["authToken"]  # JWT minted
+    # The apiKey is the OWNER's hook token off the container row -- the credential the facade
+    # authenticates every seeded run with.
+    assert adapter_cfg["apiKey"] == "hook-seed-test"
+    assert adapter_cfg["sessionKeyStrategy"] == "issue"
     # Agent is owned BY the user (their session) so they can edit it later.
     assert agent_kwargs["session_cookie"] == "owner-session-1"
 

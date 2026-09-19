@@ -69,14 +69,10 @@ EXIT_SUPERSEDED = 20
 logger = logging.getLogger("provision_runner")
 
 
-async def _seed_owner_paperclip(owner_id: str, *, runtime_host: str | None = None) -> int:
+async def _seed_owner_paperclip(owner_id: str) -> int:
     """Step 0: run the OWNER Paperclip seed under the executor's single-flight,
     BEFORE the container work. Returns an exit code from the runner's ABI
     (0 ok / 10 deterministic / 11 transient).
-
-    ``runtime_host``: forwarded to ``_ensure_paperclip_for_org``; ``run()`` always passes
-    ``"agentcore"``, so the starter-seed loop wires the native adapter for every agent BEFORE
-    the containers row exists to read a host from.
 
     WHY here: GET /container/status used to run provision_org (Better-Auth
     signup + company + starter roster) on the poll thread, where load-balanced
@@ -155,10 +151,7 @@ async def _seed_owner_paperclip(owner_id: str, *, runtime_host: str | None = Non
         # the company already exists (an idempotent re-run) this same call
         # falls through to the JOIN path and no-ops on the creator's already
         # -active owner row.
-        ensure_org_kwargs = dict(org_id=owner_id, user_id=creator_user_id, email=owner_email, is_admin=True)
-        if runtime_host is not None:
-            ensure_org_kwargs["runtime_host"] = runtime_host
-        await _ensure_paperclip_for_org(**ensure_org_kwargs)
+        await _ensure_paperclip_for_org(org_id=owner_id, user_id=creator_user_id, email=owner_email, is_admin=True)
         await arm_nightly_ceo(owner_id, trust_cache=False)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         logger.exception("seed step 0 (owner paperclip) failed for owner %s", owner_id)
@@ -214,7 +207,7 @@ async def run(owner_id: str, claim_id: str) -> int:
         # same release_provision_to_error pattern provision_user_container uses
         # for its own failures — so seed success is tied to the execution rather
         # than silently swallowed.
-        seed_exit = await _seed_owner_paperclip(owner_id, runtime_host="agentcore")
+        seed_exit = await _seed_owner_paperclip(owner_id)
         if seed_exit != EXIT_OK:
             try:
                 await container_repo.release_provision_to_error(

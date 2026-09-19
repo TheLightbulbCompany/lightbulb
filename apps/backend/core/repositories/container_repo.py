@@ -365,10 +365,8 @@ async def upsert(owner_id: str, fields: dict) -> dict:
     Still a whole-item put, deliberately — unlike ``update_fields``, which became
     a scoped write. Its callers rely on the REPLACE: a reprovision through
     ``create_user_service`` is meant to clear ``access_point_id``,
-    ``task_definition_arn``, ``last_error``, ``stop_reason``/``parked_at``,
-    ``deploy_claims`` and the rest of the previous incarnation's state. Scoping
-    it would leave, among others, ``stop_reason="trial_idle"`` on a freshly
-    running container, which the wake-suppression predicate keys on.
+    ``last_error``, ``deploy_claims`` and the rest of the previous incarnation's
+    state.
 
     Also preserves everything in ``_UPSERT_PRESERVED_FIELDS`` that the caller
     did not pass, because this put_item REPLACES the whole item and
@@ -1458,13 +1456,7 @@ async def release_stranded_stop_to_error(owner_id: str, *, last_error: str) -> b
     - ``attribute_not_exists(provision_claim_id)`` — a present claim means a
       successor exists; its liveness is Branch A / stale-lease territory,
       not ours.
-    - ``stop_reason <> "trial_idle"`` (or absent) — a deliberately parked
-      trial box keeps its wake-gated semantics; it must never be error-flipped
-      into an unconditional poll retry. (The payment/trial gates on the poll's
-      retry branch make this belt-and-suspenders, but the condition keeps the
-      flip honest at the source.)
-
-    All three clauses evaluate atomically at write time — no read-then-write
+    Both clauses evaluate atomically at write time — no read-then-write
     gap for a racing claim to slip through. Returns True iff the flip landed;
     False when the row moved on (claimed, deleted, restarted) — which is
     exactly the "a successor showed up after all" answer the caller wants.
@@ -1475,16 +1467,12 @@ async def release_stranded_stop_to_error(owner_id: str, *, last_error: str) -> b
             table.update_item,
             Key={"owner_id": owner_id},
             UpdateExpression="SET #s = :err, substatus = :sub, #rt = :true, #le = :lasterr, updated_at = :iso",
-            ConditionExpression=(
-                "#s = :stopped AND attribute_not_exists(provision_claim_id) "
-                "AND (attribute_not_exists(stop_reason) OR stop_reason <> :trial_idle)"
-            ),
+            ConditionExpression="#s = :stopped AND attribute_not_exists(provision_claim_id)",
             ExpressionAttributeNames={"#s": "status", "#rt": "retryable", "#le": "last_error"},
             ExpressionAttributeValues={
                 ":err": "error",
                 ":sub": "provision_failed",
                 ":stopped": "stopped",
-                ":trial_idle": "trial_idle",
                 ":true": True,
                 ":lasterr": str(last_error)[:500],
                 ":iso": utc_now_iso(),
@@ -1803,89 +1791,6 @@ async def swap_gate_token_hash(
             return "conflict", None
         return "conflict", current
     return "written", None
-
-
-async def stamp_stop_reason(owner_id: str, reason: str) -> None:
-    """Scoped write of stop provenance onto an existing row.
-
-    ``stop_reason`` distinguishes a deliberately parked trial box
-    (``"trial_idle"``, which also stamps ``parked_at``) from every other way a
-    row lands on ``status="stopped"`` (admin stop, killswitch, conversion
-    drain). The wake-suppression predicate keys on it, so a crashed or
-    admin-stopped container can never be mistaken for parked and lose its
-    poll-driven self-heal.
-
-    Its own ``update_item`` rather than ``update_fields`` because it needs a
-    conditional REMOVE of ``parked_at`` on the non-trial branch, which a plain
-    field merge cannot express. Condition on the row existing so a concurrent
-    delete never turns the stamp into a ghost row; that miss is swallowed
-    (nothing left to stamp).
-    """
-    table = _get_table()
-    expr = "SET stop_reason = :r, updated_at = :iso"
-    if reason == "trial_idle":
-        expr += ", parked_at = :iso"
-    else:
-        expr += " REMOVE parked_at"
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression=expr,
-            ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeValues={":r": reason, ":iso": utc_now_iso()},
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-
-
-async def record_wake_debit(owner_id: str, date: str) -> int:
-    """Atomically count a legacy (un-flagged) poll wake of a parked row for
-    the given UTC ``date`` and return the new day count.
-
-    Two scoped ``update_item`` steps (ensure the parent map, then increment the
-    day key via ``SET ... if_not_exists(...) + :one``) — the same shape as the
-    bedrock-gate ledger's ``reserved_microcents``/``spent`` nested-map
-    accounting. Not ``update_fields``, which merges values the CALLER computed
-    and so could not make this read-modify-write atomic. The increment is a
-    nested SET, NOT ``ADD``: DynamoDB's ADD action
-    only targets top-level Number/Set attributes, so ``ADD wake_debits.#d``
-    would raise ValidationException and fail the debit open. Both steps
-    condition on the row existing; a missing row returns 0 debits (nothing to
-    bound).
-    """
-    table = _get_table()
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET wake_debits = if_not_exists(wake_debits, :empty)",
-            ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeValues={":empty": {}},
-        )
-        result = await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            # SET ... if_not_exists(...) + :one — NOT `ADD wake_debits.#d`.
-            # DynamoDB's ADD only targets top-level Number/Set attributes; on a
-            # nested map path it raises ValidationException, which would fail the
-            # whole debit open (legacy_wake_allowed swallows the error and
-            # returns True) — silently disabling the budget. The parent map is
-            # guaranteed present by the ensure step above, so the nested SET is
-            # safe. Mirrors the bedrock-gate ledger's reserved_microcents form.
-            UpdateExpression="SET wake_debits.#d = if_not_exists(wake_debits.#d, :zero) + :one, updated_at = :iso",
-            ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeNames={"#d": date},
-            ExpressionAttributeValues={":one": 1, ":zero": 0, ":iso": utc_now_iso()},
-            ReturnValues="UPDATED_NEW",
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return 0
-        raise
-    day = (result.get("Attributes") or {}).get("wake_debits", {}).get(date, 0)
-    return int(day)
 
 
 async def upsert_paired_devices(owner_id: str, entries: dict) -> None:

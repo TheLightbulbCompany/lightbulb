@@ -85,26 +85,22 @@ async def _compute(
 
 
 class TestResolveRuntimePhase:
-    """Pure (container, gateway_connected) -> runtime_phase mapping —
-    the ONLY input to chat availability (INV-6)."""
+    """Pure container-status -> runtime_phase mapping — the ONLY input to chat
+    availability (INV-6)."""
 
     @pytest.mark.parametrize("status", ["provisioning", "stopped", "error", None, ""])
     def test_anything_not_running_is_provisioning(self, status):
         container = {"status": status} if status is not None else {}
-        assert readiness_state.resolve_runtime_phase(container, True) == "provisioning"
-        assert readiness_state.resolve_runtime_phase(container, False) == "provisioning"
+        assert readiness_state.resolve_runtime_phase(container) == "provisioning"
 
-    # NOTE: `test_running_without_gateway_liveness_is_starting` was deleted. `resolve_runtime_
-    # phase` now reports "ready" for ANY running row unconditionally (`host_for` is pinned to
-    # "agentcore", and an agentcore row is reported ready without a health probe -- see the
-    # function's own docstring) -- there is no "running but not gateway-connected" phase left
-    # to reach "starting" through.
-
-    def test_running_with_gateway_liveness_is_ready(self):
-        assert readiness_state.resolve_runtime_phase({"status": "running"}, True) == "ready"
+    def test_a_running_row_is_ready_without_a_health_probe(self):
+        """AWS parks an idle microVM invisibly and wakes it on invoke, so a probe would
+        answer "asleep", not "not ready" -- and probing would wake the very box the poll
+        exists to leave parked. There is no "starting" phase left to reach."""
+        assert readiness_state.resolve_runtime_phase({"status": "running"}) == "ready"
 
     def test_none_container_is_provisioning(self):
-        assert readiness_state.resolve_runtime_phase(None, True) == "provisioning"
+        assert readiness_state.resolve_runtime_phase(None) == "provisioning"
 
 
 class TestComputeStatusLifecycleScenarios:
@@ -181,21 +177,20 @@ class TestComputeStatusLifecycleScenarios:
         assert contract["chat_available"] is True
 
     @pytest.mark.asyncio
-    async def test_stopped_container_never_awaits_the_gateway_probe(self):
-        """A stopped container is "provisioning" regardless of gateway
-        liveness -- resolve_runtime_phase never even looks at it for a
-        non-running status, so compute_status must not spend an RPC finding
-        out. (onboarding={} passed explicitly to skip the paperclip read
-        entirely -- irrelevant to this scenario.)"""
-        container = {"status": "stopped"}
+    async def test_compute_status_never_probes_the_runtime(self):
+        """No readiness path may RPC the runtime: an invoke is what wakes a parked
+        microVM, and this poll runs every ~3s. (onboarding={} passed explicitly to skip
+        the paperclip read entirely -- irrelevant to this scenario.)"""
         mock_call = AsyncMock(return_value={"ok": True})
         with (
             patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=_account())),
             patch("core.services.container_rpc.call", mock_call),
             patch("core.services.wake_policy.is_parked_trial", new=AsyncMock(return_value=False)),
         ):
-            contract = await readiness_state.compute_status("user_x", container=container, onboarding={})
-        assert contract["runtime_phase"] == "provisioning"
+            stopped = await readiness_state.compute_status("user_x", container={"status": "stopped"}, onboarding={})
+            running = await readiness_state.compute_status("user_x", container={"status": "running"}, onboarding={})
+        assert stopped["runtime_phase"] == "provisioning"
+        assert running["runtime_phase"] == "ready"
         mock_call.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -335,14 +330,6 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
         ):
             contract = await readiness_state.compute_status("user_x", container=container)
         assert contract["chat_available"] is True
-
-
-# NOTE: `test_gateway_liveness_read_failure_defaults_to_not_connected` was deleted. It
-# asserted a probe failure defaults `runtime_phase` to "starting" -- but `compute_status`
-# never probes a running row any more (`host_for` is pinned to "agentcore", and the running +
-# agentcore branch sets `gateway_connected = False` WITHOUT calling `container_rpc.call`, then
-# reports "ready" unconditionally regardless of that value). There is no probe-failure path
-# left to default away from a false "ready".
 
 
 class TestTeamsState:

@@ -249,20 +249,10 @@ class Settings(BaseSettings):
     un-revokes a paid-up owner (see core/services/metronome_gate.py)."""
 
     TRIAL_WAKE_GATE_ENABLED: bool = True
-    """Kill switch for wake-on-intent gating of parked (stop_reason=trial_idle)
-    trial containers. Off = every wake_policy entry point returns ALLOW/no-op,
-    restoring wake-on-read exactly as before; stop_reason stamping and the
-    chat-send server wake stay live either way (harmless, keeps re-enable
-    coherent). Flipping requires a CDK deploy (~15-25 min) — but because the
-    suppress marker is a query param (no CORS surface), a plain backend code
-    revert is equally safe."""
-
-    TRIAL_WAKE_DAILY_BUDGET: int = 6
-    """Max legacy (un-flagged) poll-driven wakes of a parked trial container
-    per UTC day. Bounds already-open tabs running pre-gate frontend bundles —
-    the only lever that reaches them, since a never-reloaded tab keeps its old
-    JS for weeks. Explicit intent (wake verb, chat send, retry) is never
-    budgeted."""
+    """Kill switch for reporting an idle trial workspace as parked. Off = every
+    wake_policy entry point answers "not parked", so no surface renders "Agents
+    asleep". It is a REPORT, not a gate: AgentCore wakes the microVM on the next
+    invoke, so nothing is being held back either way."""
 
     BROWSER_EGRESS_PROXY_PORT: int = 0
     """Loopback port of the container's Cloudflare WARP local proxy, or 0 for

@@ -5,13 +5,7 @@ readiness inputs into one ``StatusContract``:
 
   1. the ``containers`` row              (``core.repositories.container_repo``)
   2. the ``billing-accounts`` row        (``core.repositories.billing_repo``)
-  3. gateway liveness                    (``core.services.container_rpc``, a
-                                           direct ``health`` RPC through the
-                                           container plugin -- readiness store
-                                           R4, the old in-process persistent
-                                           socket it used before, is retired
-                                           and deleted)
-  4. the ``paperclip-companies`` owner row (``core.repositories.paperclip_repo``
+  3. the ``paperclip-companies`` owner row (``core.repositories.paperclip_repo``
                                            -- carries BOTH ``teams_state`` and
                                            the generation-fenced onboarding
                                            fields, so this is ONE physical
@@ -22,7 +16,7 @@ See ``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md``
 ``docs/superpowers/plans/2026-07-24-onboarding-implementation-prompts.md``
 (spec PR-5).
 
-No other module may COMPOSE two or more of the four inputs above to derive
+No other module may COMPOSE two or more of the inputs above to derive
 a phase / status / onboarding-progress verdict -- that is what INV-1
 forbids, and what
 ``tests/unit/services/test_readiness_state_architecture.py`` enforces (a
@@ -35,7 +29,7 @@ composer (a per-request Teams-BFF hot path pulling in three unrelated DDB
 reads it doesn't need would be a real latency regression, not an INV-1 fix).
 
 INV-6: chat availability is decided SOLELY by ``runtime_phase``
-("provisioning" | "starting" | "ready") -- never by ``lifecycle``,
+("provisioning" | "ready") -- never by ``lifecycle``,
 ``funnel``, ``bootstrap``, or ``teams_state``. A degraded/awaiting-brief
 owner (funnel not submitted, or Teams seed failed) whose container is
 warm still gets ``chat_available: True``.
@@ -53,14 +47,13 @@ from core.services.provision_gate import is_subscription_active
 
 logger = logging.getLogger(__name__)
 
-RuntimePhase = Literal["provisioning", "starting", "ready"]
+RuntimePhase = Literal["provisioning", "ready"]
 
 Lifecycle = Literal[
     "needs_signup",
     "provider_selection_required",
     "blocked",
     "provisioning",
-    "starting",
     "parked",
     "error",
     "ready",
@@ -72,13 +65,8 @@ Lifecycle = Literal[
 _NOT_GIVEN: Any = object()
 
 
-def resolve_runtime_phase(container: Optional[dict], gateway_connected: bool) -> RuntimePhase:
-    """Pure ``(container status, gateway liveness) -> runtime phase`` map.
-
-    The liveness input is a plain bool sourced from a direct ``health`` RPC
-    through the container plugin (``_gateway_reachable``, via
-    ``core.services.container_rpc``) -- no in-process persistent socket
-    involved (readiness store R4 is retired).
+def resolve_runtime_phase(container: Optional[dict]) -> RuntimePhase:
+    """Pure ``container status -> runtime phase`` map.
 
     INV-6: this function -- and ONLY this function's output
     (``runtime_phase``) -- decides chat availability. It must never take
@@ -86,42 +74,15 @@ def resolve_runtime_phase(container: Optional[dict], gateway_connected: bool) ->
     ``chat_available`` from anything else.
 
     Returns:
-      - "provisioning"  container row absent, or task not RUNNING yet
-                         (PENDING / STOPPED / error).
-      - "starting"      ECS task RUNNING but the gateway hasn't completed
-                         the OpenClaw handshake + health verification yet.
-      - "ready"         gateway is connected -- OpenClaw is responsive to
-                         RPCs, chat is usable. For a running AgentCore row
-                         this is reported WITHOUT a health RPC: AgentCore
-                         parks an idle microVM invisibly and wakes it on
-                         invoke, so a failed probe means "asleep", not
-                         "starting" -- probing here would show "starting"
-                         forever for an idle workspace.
+      - "provisioning"  container row absent, or the runtime is not provisioned
+                         yet (error / anything but RUNNING).
+      - "ready"         chat is usable. Reported WITHOUT a health probe:
+                         AgentCore parks an idle microVM invisibly and wakes it
+                         on invoke, so a failed probe would mean "asleep", not
+                         "not ready" -- and probing at all would wake the very
+                         box the poll is meant to leave parked.
     """
-    status = (container or {}).get("status")
-    if status != "running":
-        return "provisioning"
-    from core.services.runtime_transport import host_for
-
-    if host_for(container or {}) == "agentcore":
-        return "ready"
-    if gateway_connected:
-        return "ready"
-    return "starting"
-
-
-async def _gateway_reachable(owner_id: str) -> bool:
-    """One ``health`` RPC through the container plugin; any failure reads as not ready."""
-    from core.services import container_rpc
-
-    try:
-        await container_rpc.call(owner_id, "health", timeout_s=2.0, wake=False)
-        return True
-    except Exception as exc:  # noqa: BLE001 — a probe must never break /status
-        # DEBUG, not a stack trace: a booting container failing its probe is
-        # the normal case, not an error.
-        logger.debug("readiness_state: gateway probe failed for owner %s: %s", owner_id, type(exc).__name__)
-        return False
+    return "ready" if (container or {}).get("status") == "running" else "provisioning"
 
 
 def _paperclip_repo():
@@ -182,8 +143,6 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
     in ``packages/shared/src/hooks/statusContract.ts`` -- keep the two in
     lockstep.
     """
-    from core.services.runtime_transport import host_for
-
     if container is _NOT_GIVEN:
         try:
             container = await container_repo.get_by_owner_id(owner_id)
@@ -249,15 +208,8 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
                 lifecycle = "parked"
                 runtime_phase = "provisioning"
             else:
-                # Never probe a running AgentCore row: AgentCore wakes the microVM on ANY
-                # invoke, so a health RPC here would wake a parked box the poll is supposed
-                # to leave alone. resolve_runtime_phase reports "ready" for it unconditionally.
-                if container.get("status") == "running" and host_for(container) != "agentcore":
-                    gateway_connected = await _gateway_reachable(owner_id)
-                else:
-                    gateway_connected = False
-                runtime_phase = resolve_runtime_phase(container, gateway_connected)
-                lifecycle = runtime_phase  # "provisioning" | "starting" | "ready"
+                runtime_phase = resolve_runtime_phase(container)
+                lifecycle = runtime_phase  # "provisioning" | "ready"
 
     chat_available = runtime_phase == "ready"  # INV-6: SOLELY runtime_phase.
 
@@ -287,17 +239,19 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
         "runtime_phase": runtime_phase,
         "chat_available": chat_available,
         "container_status": (container or {}).get("status"),
+        # NOT an ECS-lifecycle leftover, despite the deletion plan's A.4 row: the trial->paid
+        # conversion still writes `substatus="converting"` and the UI renders it, and the
+        # status router synthesizes its own values on top (auto_retry / error_retrying /
+        # ensure_user_ready).
         "container_substatus": (container or {}).get("substatus"),
-        # Which runtime hosts this owner. The capability signal every migrated-workspace
-        # surface branches on (M6 task 10, row 0) -- before this the frontend had NO way to
-        # tell an AgentCore workspace from an ECS one. `host_for` fails closed to "ecs", so a
-        # row with no container (or an unknown value) reads as the pre-migration default.
-        "runtime_host": host_for(container or {}),
+        # Which runtime hosts this owner. A constant now -- kept for one release so a client
+        # released against the migrated contract still finds the field (see the deletion
+        # plan's open question 4); it goes in the follow-up that drops the column.
+        "runtime_host": "agentcore",
         "parked": parked,
         "onboarded": onboarded,
         "last_error": (container or {}).get("last_error"),
         "last_error_at": (container or {}).get("last_error_at"),
-        "service_name": (container or {}).get("service_name"),
         "created_at": (container or {}).get("created_at"),
         "updated_at": (container or {}).get("updated_at"),
         "generations": {

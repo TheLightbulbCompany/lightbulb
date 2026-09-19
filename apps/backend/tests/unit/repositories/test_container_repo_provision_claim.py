@@ -638,7 +638,7 @@ async def test_update_conversion_fields_rejects_non_marker_fields(dynamodb_table
 @pytest.mark.asyncio
 async def test_update_conversion_fields_noops_on_an_absent_row(dynamodb_table):
     """A concurrently deleted row must not be resurrected as a marker-only
-    ghost (mirrors stamp_stop_reason's condition)."""
+    ghost (the same attribute_exists condition every scoped stamp uses)."""
     from core.repositories import container_repo
 
     await container_repo.update_conversion_fields("user_ghost", {"conversion_pending": True})
@@ -693,18 +693,6 @@ async def test_stranded_release_only_targets_stopped_rows(dynamodb_table, status
     dynamodb_table.put_item(Item={"owner_id": "user_other", "status": status})
     assert await container_repo.release_stranded_stop_to_error("user_other", last_error="x") is False
     assert _row(dynamodb_table, "user_other")["status"] == status
-
-
-@pytest.mark.asyncio
-async def test_stranded_release_refuses_a_parked_trial_box(dynamodb_table):
-    """stop_reason="trial_idle" is the deliberately parked trial box — it keeps
-    its wake-gated semantics and must never be error-flipped into an
-    unconditional poll retry."""
-    from core.repositories import container_repo
-
-    dynamodb_table.put_item(Item={"owner_id": "user_parked", "status": "stopped", "stop_reason": "trial_idle"})
-    assert await container_repo.release_stranded_stop_to_error("user_parked", last_error="x") is False
-    assert _row(dynamodb_table, "user_parked")["status"] == "stopped"
 
 
 # ---------------------------------------------------------------------------

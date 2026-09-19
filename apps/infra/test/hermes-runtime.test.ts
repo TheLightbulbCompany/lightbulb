@@ -245,4 +245,25 @@ describe("hermes runtime wiring", () => {
     // Scoped to the hermes/ sub-prefix only: the backend must stay out of the litestream replicas.
     expect(flatten(profiles!.Resource)).toEqual(["arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/hermes/*"]);
   });
+
+  it("the owner boundary permits AgentCore Browser use, and the base policy grants none", () => {
+    const boundary = managedPolicyStatements(dev.containerTemplate, "lightbulb-dev-owner-bedrock-boundary");
+    const stmt = boundary.find((s) => s.Sid === "BoundaryAgentCoreBrowserUse");
+    expect(flatten(stmt?.Action)).toEqual(expect.arrayContaining([
+      "bedrock-agentcore:StartBrowserSession", "bedrock-agentcore:GetBrowserSession",
+      "bedrock-agentcore:StopBrowserSession", "bedrock-agentcore:ConnectBrowserAutomationStream",
+      "bedrock-agentcore:SaveBrowserSessionProfile"]));
+    expect(flatten(stmt?.Action)).not.toContain("bedrock-agentcore:ListBrowserSessions"); // the §2c fence
+    expect(flatten(stmt?.Resource).join(" ")).toContain(":aws:browser/aws.browser.v1");
+    const base = managedPolicyStatements(dev.containerTemplate, "lightbulb-dev-owner-bedrock-base");
+    expect(base.some((s) => /Browser/.test(s.Sid ?? ""))).toBe(false); // the grant is inline, per owner
+  });
+
+  it("grants the backend task role browser profile, session and live-view management", () => {
+    const doc = JSON.stringify(dev.serviceTemplate.findResources("AWS::IAM::Policy"));
+    for (const a of ["CreateBrowserProfile", "GetBrowserProfile", "ListBrowserProfiles",
+                     "GetBrowserSession", "ListBrowserSessions", "ConnectBrowserLiveViewStream"]) {
+      expect(doc).toContain(`bedrock-agentcore:${a}`);
+    }
+  });
 });

@@ -61,4 +61,4 @@ assert os.path.isdir(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/opt/hermes/.pl
     "the base no longer bundles Playwright -- the Dockerfile's rm is now a no-op, re-check ruling R13"
 )
 
-print("browser gate OK")
+print("PASS: browser gate")

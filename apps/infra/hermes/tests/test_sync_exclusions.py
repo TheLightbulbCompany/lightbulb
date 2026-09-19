@@ -67,6 +67,10 @@ def test_agent_written_credentials_never_go_up():
 def test_browser_screenshots_are_not_pushed():
     # ONE glob: is_excluded uses fnmatch, whose * matches "/", so this covers every depth.
     assert sync.is_excluded("cache/screenshots/browser_screenshot_abc.png")
+    # Genuinely nested, not just flat -- the "every depth" claim above, actually exercised.
+    assert sync.is_excluded("cache/screenshots/sub/browser_screenshot_abc.png")
+    # Sibling negative: a similarly-named but different directory must NOT be swept up by the glob.
+    assert sync.is_excluded("cache/other/x.png") is False
 
 
 def test_nested_credential_copies_are_covered_whichever_pr_lands_first():

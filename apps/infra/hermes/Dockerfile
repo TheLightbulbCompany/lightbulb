@@ -85,9 +85,19 @@ RUN npm i -g --allow-scripts=@xdevplatform/xurl @xdevplatform/xurl@1.2.3 && xurl
 # browser-use, kernel, agentcore, or a configured plugin with browser.provider"). The CLI exits
 # non-zero on that error, so the check is wrapped with `|| true` and the grep is what actually gates
 # the build; AGENT_BROWSER_SOCKET_DIR/HOME give the daemon a writable socket dir to fail inside.
+# Review M1 (PR #2792): the failed `open` still forks a DETACHED background daemon that creates a
+# live control-plane socket/pid/config under AGENT_BROWSER_SOCKET_DIR -- Docker only commits the
+# filesystem, not the process, so the daemon dies with the build container but those files do not.
+# `agent-browser close` (same env, so it targets the same socket dir) asks the daemon to shut down
+# cleanly first; the `rm -rf` is the real backstop either way, and the `test !` proves the layer
+# ships no leftover root-owned debris -- the same standard the .playwright guard above holds itself
+# to.
 RUN npm i -g --allow-scripts=agent-browser agent-browser@0.38.1 && agent-browser --version \
  && ( AGENT_BROWSER_PROVIDER=nosuchprovider AGENT_BROWSER_SOCKET_DIR=/tmp/ab-smoke HOME=/tmp \
-      agent-browser --json open about:blank 2>&1 || true ) | grep -q agentcore
+      agent-browser --json open about:blank 2>&1 || true ) | grep -q agentcore \
+ && ( AGENT_BROWSER_SOCKET_DIR=/tmp/ab-smoke HOME=/tmp agent-browser close >/dev/null 2>&1 || true ) \
+ && rm -rf /tmp/ab-smoke \
+ && test ! -d /tmp/ab-smoke
 
 # Hermes advertises browser_* only when _chromium_installed() is true (browser_tool_install.py:227-242):
 # AGENT_BROWSER_EXECUTABLE_PATH is an existing file (a bare os.path.isfile), OR chrome/chromium is on

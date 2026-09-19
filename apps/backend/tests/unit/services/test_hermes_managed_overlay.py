@@ -32,6 +32,15 @@ def test_the_overlay_carries_the_approvals_deny_backstop():
     assert "rm -rf /" in parsed()["approvals"]["deny"]
 
 
+def test_the_overlay_keeps_the_builtin_browser_tools():
+    """Hermes 0.21.3 defaults to Browser-Use-CLI mode whenever uvx is runnable, and our base
+    image ships /usr/local/bin/uvx. That mode is the FIRST branch of check_browser_requirements
+    (browser_tool_install.py:301-303) and returns False, hiding browser_* before the
+    executable-path sentinel is ever consulted -- measured in the dev spike, 2026-09-19.
+    "off" is Hermes's own documented value for "keep the built-in browser_* tools"."""
+    assert parsed()["browser"]["backend"] == "off"
+
+
 def test_the_overlay_pins_nous_guest_off():
     """M4-R38(b): the Nous free tier is the one credential-less lane on Hermes's own vision
     auto-chain (hermes_cli/anon_auth.py::guest_enabled reads nous.guest, default True) --

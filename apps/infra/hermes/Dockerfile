@@ -74,6 +74,62 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # `npm` are both in the Hermes base image already.
 RUN npm i -g --allow-scripts=@xdevplatform/xurl @xdevplatform/xurl@1.2.3 && xurl --help >/dev/null
 
+# agent-browser drives AgentCore Browser through its OWN merged provider (PR #397); the runtime
+# env sets AGENT_BROWSER_PROVIDER=agentcore. Global install so the native arm64 binary is on PATH
+# with no npx/Node at runtime; the release asset arrives in the npm POSTINSTALL, so this must stay
+# outside any --ignore-scripts install (same pattern as the xurl line above). The second command is
+# the one that matters: the provider is feature-gated upstream, and a binary without it fails every
+# browser call at runtime instead of failing the build -- an unknown-provider error whose
+# "Supported:" list names agentcore is the build-time proof it's compiled in (measured live in the
+# dev spike, 2026-09-19: "Unknown provider 'nosuchprovider'. Supported: browserbase, browserless,
+# browser-use, kernel, agentcore, or a configured plugin with browser.provider"). The CLI exits
+# non-zero on that error, so the check is wrapped with `|| true` and the grep is what actually gates
+# the build; AGENT_BROWSER_SOCKET_DIR/HOME give the daemon a writable socket dir to fail inside.
+# Review M1 (PR #2792): the failed `open` still forks a DETACHED background daemon that creates a
+# live control-plane socket/pid/config under AGENT_BROWSER_SOCKET_DIR -- Docker only commits the
+# filesystem, not the process, so the daemon dies with the build container but those files do not.
+# `agent-browser close` (same env, so it targets the same socket dir) asks the daemon to shut down
+# cleanly first; the `rm -rf` is the real backstop either way, and the `test !` proves the layer
+# ships no leftover root-owned debris -- the same standard the .playwright guard above holds itself
+# to.
+RUN npm i -g --allow-scripts=agent-browser agent-browser@0.38.1 && agent-browser --version \
+ && ( AGENT_BROWSER_PROVIDER=nosuchprovider AGENT_BROWSER_SOCKET_DIR=/tmp/ab-smoke HOME=/tmp \
+      agent-browser --json open about:blank 2>&1 || true ) | grep -q agentcore \
+ && ( AGENT_BROWSER_SOCKET_DIR=/tmp/ab-smoke HOME=/tmp agent-browser close >/dev/null 2>&1 || true ) \
+ && rm -rf /tmp/ab-smoke \
+ && test ! -d /tmp/ab-smoke
+
+# Hermes advertises browser_* only when _chromium_installed() is true (browser_tool_install.py:227-242):
+# AGENT_BROWSER_EXECUTABLE_PATH is an existing file (a bare os.path.isfile), OR chrome/chromium is on
+# PATH, OR a Playwright build is cached. The upstream base BUNDLES one -- a 269 MB
+# chromium_headless_shell-1243 under PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright -- so without this
+# rm the gate passes on its own and a workspace with NO browser profile (hence no AGENT_BROWSER_PROVIDER)
+# would browse with a LOCAL headless Chromium in the microVM: no live view, microVM CPU and storage, and
+# a silent departure from "browser means AgentCore Browser". Ruling R13: delete it, so the zero-byte
+# sentinel below is the ONLY way the gate passes and "no profile => no browser tools" holds in the image.
+# Verified 2026-09-19: nothing else in the image needs the bundle. The `playwright` PYTHON package
+# itself is not even installed in the base image (checked live), so every other mention of it --
+# hermes_cli/doctor_live.py's live-browser probe (opt-in `hermes doctor --live`, never called by our
+# bridge), the google_meet plugin's Playwright-driven meet bot, the har-derived-api-client optional
+# skill -- already fails soft on a missing import today, independent of this directory. Only
+# tools/browser_tool_install.py's own directory scan (and agent-browser's own LOCAL-mode discovery,
+# which R13 exists to make unreachable) ever reads it.
+RUN test -d /opt/hermes/.playwright && rm -rf /opt/hermes/.playwright \
+ && test ! -d /opt/hermes/.playwright
+
+# The sentinel. A provider connection never launches a local engine, so it is never exec'd -- and if the
+# provider path ever fails, exec'ing a zero-byte file errors loudly with this path in the message.
+RUN mkdir -p /opt/lightbulb && : > /opt/lightbulb/no-local-browser && test -f /opt/lightbulb/no-local-browser
+
+# The gate, both ways, in TWO processes: _chromium_installed() memoizes per process, so a single-process
+# before/after proves nothing -- it would just return the first call's cached answer. This fails the
+# build if the bundle above ever comes back (e.g. a base image bump) or the sentinel above goes missing.
+RUN python3 -c "import sys; sys.path.insert(0,'/opt/hermes'); \
+from tools.browser_tool_install import _chromium_installed; assert not _chromium_installed()" \
+ && AGENT_BROWSER_EXECUTABLE_PATH=/opt/lightbulb/no-local-browser python3 -c "import sys, os; \
+sys.path.insert(0,'/opt/hermes'); from tools.browser_tool_install import _chromium_installed; \
+assert _chromium_installed()"
+
 COPY bridge /opt/bridge/bridge
 COPY plugins/ /opt/hermes/plugins/
 # Bundled agent-facing skills. NOT checked in: `skills/` is GENERATED into this build

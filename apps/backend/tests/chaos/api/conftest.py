@@ -43,7 +43,9 @@ def _isolate_lifespan_background_workers(monkeypatch):
     import main
     from core.services import durable_activity, openclaw_work, provision_dispatch, run_ledger
 
-    monkeypatch.setattr(main, "_resume_wake_resize_transitions", _no_background_work)
+    # NOTE: `_resume_wake_resize_transitions` used to be stubbed here too. It resumed
+    # interrupted ECS wake/resize transitions and went with that runtime; a stub for a name
+    # that no longer exists errors EVERY case in this directory at setup.
     monkeypatch.setattr(main, "run_scheduled_worker", _no_background_work)
     monkeypatch.setattr(main, "_build_teams_event_broker", _no_background_work)
     monkeypatch.setattr(main, "_running_count_gauge_loop", _no_background_work)

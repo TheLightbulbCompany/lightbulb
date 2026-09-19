@@ -24,12 +24,15 @@ from routers import connections
 
 
 @pytest.fixture(autouse=True)
-def _owner_lifecycle_guard_efs_scratch(tmp_path, monkeypatch):
-    """Disconnect and the OAuth callback now take owner_lifecycle_guard (a real,
-    cross-process EFS file lock) around their write sections -- point it at a
-    scratch dir so every test in this file that reaches either write section
-    doesn't need a real EFS mount."""
-    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+def _owner_lifecycle_lease(monkeypatch):
+    """Disconnect and the OAuth callback take owner_lifecycle_guard around their write sections,
+    and its lease is a conditional DynamoDB write -- admit it here so every test in this file that
+    reaches either write section doesn't need a table. The guard itself is covered by
+    ``tests/unit/services/test_owner_lifecycle.py`` against moto."""
+    from core.repositories import container_repo
+
+    monkeypatch.setattr(container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="lease-token"))
+    monkeypatch.setattr(container_repo, "release_owner_lifecycle_claim", AsyncMock())
 
 
 @pytest.fixture(autouse=True)
@@ -825,14 +828,6 @@ class TestDisconnect:
         # a delete+recreate of the same Secrets Manager name races AWS's async name
         # release on a quick reconnect. start() re-registers (overwrites) on a scope
         # change instead, so the cached client is deliberately left in place.
-        from core.services.credentials.materializers import mcp_oauth
-
-        monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
-
-        async def _fake_delete(owner_id, path):
-            pass
-
-        monkeypatch.setattr(mcp_oauth.config_patcher, "delete_openclaw_config_path", _fake_delete)
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_store.get = AsyncMock(return_value=None)  # actor-refresh: no retained secret
@@ -846,6 +841,29 @@ class TestDisconnect:
     async def test_disconnect_unknown_provider_returns_404(self, async_client):
         response = await async_client.delete("/api/v1/connections/does-not-exist")
         assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_a_retired_provider_still_drops_our_copies(self, mock_repo, mock_store, async_client):
+        """Shopify's registry row went with the container-login rail, but an owner who connected
+        before that still has a Secrets Manager blob and an integrations row. Revocation has to
+        outlive the provider definition -- a credential the UI cannot delete is the worse state."""
+        mock_repo.delete = AsyncMock()
+        mock_store.delete = AsyncMock()
+
+        response = await async_client.delete("/api/v1/connections/shopify")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "disconnected"
+        mock_store.delete.assert_awaited_once_with("org_test_456", "shopify")
+        mock_repo.delete.assert_awaited_once_with("org_test_456", "shopify")
+
+    @pytest.mark.asyncio
+    async def test_the_retired_list_is_not_a_catch_all(self):
+        """The tolerant branch is keyed on an explicit list. If it ever grows to "any unknown
+        provider", a probed or typo'd key stops being a 404 and starts issuing deletes."""
+        assert connections.RETIRED_PROVIDERS == frozenset({"shopify"})
 
     @pytest.mark.asyncio
     @patch("routers.connections.seed_agent_google_identity", new_callable=AsyncMock)

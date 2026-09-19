@@ -778,6 +778,12 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
     await _reseed_surviving_google_assignments(owner_id)
 
 
+#: Providers whose registry row is gone but whose stored credentials may not be. Only these keys
+#: get the tolerant teardown below. ``shopify`` rode `acquisition: container_login`, which logged
+#: the Shopify CLI in INSIDE the owner's container -- deleted with that runtime.
+RETIRED_PROVIDERS = frozenset({"shopify"})
+
+
 @router.delete("/{provider}")
 async def disconnect(provider: str, account: str | None = None, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
@@ -787,11 +793,13 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
     try:
         p = _get_provider_for_teardown(provider)
     except HTTPException:
-        # The provider ROW is gone from the registry (Shopify's `container_login` rail was
-        # deleted with the runtime that ran the CLI inside a container). An owner who
-        # connected before that must still be able to disconnect, so drop our copies
-        # directly. Same reasoning as the availability gate above: revocation must outlive
-        # the provider definition, and a credential the UI cannot delete is the worse state.
+        if provider not in RETIRED_PROVIDERS:
+            raise
+        # The provider ROW is gone from the registry, but owners who connected before it was
+        # deleted still hold our copies -- and revocation must outlive the provider definition
+        # (same reasoning as the availability gate above; a credential the UI cannot delete is
+        # the worse state). Named explicitly rather than "any unknown key", so a typo'd or
+        # probed provider is still a 404.
         await integration_secret_store.delete(owner_id, provider)
         await integrations_repo.delete(owner_id, provider)
         return {"status": "disconnected", "provider": provider}

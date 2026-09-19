@@ -873,7 +873,7 @@ async def test_preview_wipe_calls_no_delete_method(wipe_mocks):
 
 @pytest.mark.asyncio
 async def test_preview_wipe_would_delete_everything_present(wipe_mocks):
-    with patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"):
+    with patch("core.services.account_wipe.settings.OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas"):
         report = await preview_wipe(OWNER_ID)
 
     by_system = {s.system: s for s in report.steps}

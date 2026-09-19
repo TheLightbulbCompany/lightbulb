@@ -51,14 +51,13 @@ def _local_lock(owner_id: str) -> threading.Lock:
         return _locks.setdefault(owner_id, threading.Lock())
 
 
-async def _acquire_lease(owner_id: str) -> str:
-    """Poll for the owner's lease until ``OWNER_LIFECYCLE_TIMEOUT_S``, then give up.
+async def _acquire_lease(owner_id: str, deadline: float) -> str:
+    """Poll for the owner's lease until ``deadline``, then give up.
 
     Polling rather than waiting on a signal because there is nothing to signal on: the holder
-    may be in another task. The interval is coarse on purpose -- the section it fences takes
+    is in another backend task. The interval is coarse on purpose -- the section it fences takes
     seconds, so a tighter poll only buys DynamoDB writes.
     """
-    deadline = asyncio.get_running_loop().time() + OWNER_LIFECYCLE_TIMEOUT_S
     while True:
         token = await container_repo.try_claim_owner_lifecycle(owner_id)
         if token:
@@ -90,20 +89,26 @@ async def owner_lifecycle_guard(owner_id: str) -> AsyncIterator[None]:
         yield
         return
 
+    deadline = asyncio.get_running_loop().time() + OWNER_LIFECYCLE_TIMEOUT_S
     local = _local_lock(owner_id)
+    # The mutex carries the SAME budget as the lease, so the documented bound holds for an
+    # in-process contender too -- an unbounded acquire here would make the timeout a lie for
+    # exactly the two callers most likely to collide (they land on one task more often than not).
     # Shielded so a cancellation between "acquired" and "we hold it" cannot leak the mutex.
-    acquiring = asyncio.create_task(asyncio.to_thread(local.acquire))
+    acquiring = asyncio.create_task(asyncio.to_thread(local.acquire, True, OWNER_LIFECYCLE_TIMEOUT_S))
     try:
-        await asyncio.shield(acquiring)
+        acquired = await asyncio.shield(acquiring)
     except asyncio.CancelledError:
-        await acquiring
-        local.release()
+        if await acquiring:
+            local.release()
         raise
+    if not acquired:
+        raise OwnerLifecycleBusyError(f"timed out waiting for the lifecycle lease: {owner_id}")
 
     lease: str | None = None
     token = None
     try:
-        lease = await _acquire_lease(owner_id)
+        lease = await _acquire_lease(owner_id, deadline)
         token = _held_owner.set((task, owner_id))
         yield
     finally:

@@ -46,7 +46,7 @@ def _common(row=ROW, response=None, member_error=None, member={"id": AGENT_ID}):
         patch(
             "routers.messaging.container_rpc.running_container",
             new_callable=AsyncMock,
-            return_value=(container, "agentcore"),
+            return_value=container,
         ),
         patch(
             "routers.messaging.chat_gate.gate_chat", new_callable=AsyncMock, return_value={"blocked": False}
@@ -140,7 +140,7 @@ async def test_abort_goes_through_the_runtime_transport_seam():
         patch(
             "routers.messaging.container_rpc.running_container",
             new_callable=AsyncMock,
-            return_value=(agentcore_container, "agentcore"),
+            return_value=agentcore_container,
         ),
         patch("routers.messaging.runtime_transport.request", fake_request),
     ):

@@ -189,15 +189,24 @@ def smoke_env(mocked_paperclip_transport):
             ],
         )
 
-        # The agent-create door resolves the owner's adapter type from the containers
-        # row (adapter_type_for reads it and RAISES on a failed read — a missing table
-        # is a failed read, not "no row"). An empty table means "no row" → the ECS
-        # default adapter, which is exactly what this smoke test asserts.
-        resource.create_table(
+        # The agent-create door builds the adapter from the owner's containers row -- and the
+        # shared builder REFUSES an adapter with no hook token (every run would 401 at the
+        # facade, reported per RUN rather than as a broken agent; M4-R33). The row is real
+        # here rather than mocked, because "the wire shape Paperclip is sent" is exactly what
+        # this smoke exists to pin end to end.
+        containers = resource.create_table(
             TableName="containers",
             KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
+        )
+        containers.put_item(
+            Item={
+                "owner_id": "org_smoke_27",
+                "status": "running",
+                "hook_token": "hook-smoke-27",
+                "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/smoke",
+            }
         )
 
         # Build a real admin client wired to the mocked Paperclip transport.
@@ -320,15 +329,10 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
                 "core.services.clerk_admin.get_user",
                 new=AsyncMock(return_value=fake_clerk_user),
             ),
-            # `create_agent`'s post-create branch is gated on `runtime_transport.host_for`,
-            # which is pinned to "agentcore" fleet-wide (deletion PR-1) -- so EVERY owner,
-            # including this smoke's owner with no `containers` row at all, now takes the
-            # Hermes-profile-write branch instead of the old ECS `pair_with_openclaw` one
-            # (which silently no-oped on a missing/unreachable container -- the reason this
-            # smoke never needed to touch that seam before). A genuine end-to-end profile
-            # write needs a billing-accounts table + S3 bucket this smoke doesn't set up,
-            # and isn't this test's point anyway (the wire shape sent to Paperclip's create
-            # endpoint, asserted below, is) -- so it's mocked to a no-op success here.
+            # A genuine end-to-end profile write needs a billing-accounts table + an S3 bucket
+            # this smoke does not set up, and is not this test's point anyway (the wire shape
+            # sent to Paperclip's create endpoint, asserted below, is) -- so it is mocked to a
+            # no-op success here.
             patch(
                 "core.services.hermes_provisioning.write_profile_for_agent",
                 new=AsyncMock(return_value=None),
@@ -370,91 +374,60 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
     upstream_body = json.loads(create_calls[0]["body"].decode())
 
     # 1. adapterType is the canonical underscore form (the production bug).
-    assert upstream_body["adapterType"] == "openclaw_gateway", (
-        f"adapterType must be the underscore form 'openclaw_gateway' "
+    assert upstream_body["adapterType"] == "hermes_gateway", (
+        f"adapterType must be the underscore form 'hermes_gateway' "
         f"(canonical per paperclip/packages/shared/src/constants.ts); "
         f"got {upstream_body.get('adapterType')!r}"
     )
 
-    # 2. The adapterConfig dict carries exactly the canonical fields. The
-    #    timeoutSec/waitTimeoutMs pair bounds the gateway run timeout so a
-    #    long-running agent run isn't abandoned as a soft timeout mid-flight.
+    # 2. The adapterConfig dict carries exactly the canonical fields for Paperclip's NATIVE
+    #    adapter: an owner-scoped callback URL into our backend facade and that workspace's hook
+    #    token, plus the run-timeout / reconnect / poll bounds. No device identity, no relay URL,
+    #    no service JWT -- the device-paired gateway adapter went with the ECS runtime, and with
+    #    it the per-agent ed25519 key it made the operator relay sign the handshake with.
     #
-    #    There is deliberately NO pre-run cap gate here. The free tier is
-    #    enforced at the AWS layer (the Bedrock meter Lambda revokes the owner's
-    #    IAM policy and scales the container to zero at the daily cap), so an
-    #    over-cap owner's container is OFF — a Paperclip run cannot reach it to
-    #    be refused. An adapter-side allowance check would be unreachable code.
+    #    There is deliberately NO pre-run cap gate here. The free tier is enforced at the AWS
+    #    layer (the bedrock-gate refuses over-cap requests before a token is generated), so an
+    #    adapter-side allowance check would be unreachable code.
     adapter_config = upstream_body["adapterConfig"]
     assert set(adapter_config.keys()) == {
-        "url",
-        "authToken",
+        "apiBaseUrl",
+        "apiKey",
         "sessionKeyStrategy",
-        "sessionKey",
-        "devicePrivateKeyPem",
         "timeoutSec",
-        "waitTimeoutMs",
+        "eventReconnectMs",
+        "pollIntervalMs",
     }, f"adapterConfig must have exactly the canonical keys; got {set(adapter_config.keys())}"
-    # devicePrivateKeyPem is the per-agent ed25519 key the operator relay signs
-    # the gateway handshake with — minted at synth time as a PKCS8 PEM.
-    assert adapter_config["devicePrivateKeyPem"].startswith("-----BEGIN PRIVATE KEY-----")
 
-    # 3. URL matches the gateway allowlist (env=dev -> wss://bv-dev.<configured apex>/api/v1/gateway/ws).
-    # The URL carries the auth token in the query string (so the raw WS
-    # relay, routers/gateway_relay.py -> machine_auth.verify_upgrade, which
-    # reads ?token=, accepts the connection).
-    url = adapter_config["url"]
-    base, _, query = url.partition("?")
-    assert _GATEWAY_URL_RE.match(base), f"adapterConfig.url base must match the gateway allowlist; got {base!r}"
-    assert query.startswith("token="), (
-        f"adapterConfig.url must carry the auth token in a token= query param; got {url!r}"
+    # 3. The callback URL is scoped to the OWNER (org_id for org members, user_id otherwise).
+    #    The smoke fixture plants an org-context auth, so a member-keyed URL here would point
+    #    Paperclip's runs at a workspace that is not the one the agent belongs to.
+    assert adapter_config["apiBaseUrl"].endswith("/api/v1/internal/paperclip/hermes/org_smoke_27"), (
+        f"apiBaseUrl must be scoped to the owner; got {adapter_config['apiBaseUrl']!r}"
     )
-    assert query[len("token=") :], "adapterConfig.url token= query param must be non-empty"
 
-    # 4. authToken is a freshly-minted service-token JWT whose ``sub``
-    # claim equals the container's owner_id (org_id for org members,
-    # user_id for personal owners). The BFF must NOT pass through a
-    # persisted ``service_token_encrypted`` — legacy member rows could
-    # carry the wrong ``sub``; the route mints fresh per call. The smoke
-    # fixture plants an org-context auth (org_id="org_smoke_27"), so the
-    # new token must be keyed at the org_id.
-    import jwt as _jwt_lib
+    # 4. apiKey is the WORKSPACE's hook token, never the persisted ``service_token_encrypted``
+    #    the legacy pre-fix behaviour passed through. It is a SNAPSHOT (Paperclip persists it as
+    #    a managed company secret), so rotating the owner's hook token means re-pointing the
+    #    adapter -- see repoint_agent_adapter.
+    assert adapter_config["apiKey"], "apiKey must not be empty"
+    assert adapter_config["apiKey"] == "hook-smoke-27", (
+        "apiKey must be the WORKSPACE's hook token, not the persisted service_token_encrypted"
+    )
 
-    auth_token = adapter_config["authToken"]
-    assert auth_token, "authToken must not be empty"
-    assert auth_token != smoke_service_token_plaintext, (
-        "authToken must be a freshly-minted JWT, not the persisted "
-        "service_token_encrypted (the legacy pre-fix behavior)"
-    )
-    minted_claims = _jwt_lib.decode(
-        auth_token,
-        os.environ["PAPERCLIP_SERVICE_TOKEN_KEY"],
-        algorithms=["HS256"],
-    )
-    assert minted_claims["sub"] == "org_smoke_27", (
-        f"authToken sub must equal owner_id (org_id for org members); got {minted_claims['sub']!r}"
-    )
-    assert minted_claims["kind"] == "paperclip_service"
-
-    # 5. sessionKeyStrategy is "issue" so each Paperclip issue gets its
-    # own OpenClaw session (transcripts don't bleed across unrelated
-    # issues). The sessionKey field is the fallback for manual wakes
-    # without an issueId.
+    # 5. sessionKeyStrategy is "issue" so each Paperclip issue gets its own session
+    #    (transcripts don't bleed across unrelated issues). There is no ``sessionKey`` fallback
+    #    any more: the native adapter derives the real agent id from Paperclip's signed run
+    #    context and sends it in ``X-Hermes-Session-Key``.
     assert adapter_config["sessionKeyStrategy"] == "issue"
 
-    # 6. sessionKey is the per-creator fallback for wakes with no issueId,
-    # namespaced under "paperclip:" so that once agentId is set the adapter's
-    # agent:<agentId>: prefix cannot make it collide with the owner's /chat
-    # "General" key (build_chat_session_key(agent_id, user_id, None)).
-    assert adapter_config["sessionKey"] == f"paperclip:{smoke_user_id}"
-
-    # 7. Defense-in-depth: forbidden fields that earlier audit flagged
-    # as smuggling carriers MUST NOT appear in adapterConfig.
-    forbidden = {"headers", "password", "deviceToken", "token"}
+    # 6. Defense-in-depth: forbidden fields that earlier audit flagged as smuggling carriers
+    #    MUST NOT appear in adapterConfig -- plus the device identity this adapter replaced.
+    forbidden = {"headers", "password", "deviceToken", "token", "authToken", "devicePrivateKeyPem", "url"}
     leaked = forbidden & set(adapter_config.keys())
     assert not leaked, f"forbidden fields leaked into adapterConfig: {leaked}"
 
-    # 8. The whole upstream POST body should also not carry any
+    # 7. The whole upstream POST body should also not carry any
     # client-smuggleable adapter alias keys at the top level beyond
     # adapterType + adapterConfig + the request fields.
     # CreateAgentBody defines: name, role, title, capabilities,

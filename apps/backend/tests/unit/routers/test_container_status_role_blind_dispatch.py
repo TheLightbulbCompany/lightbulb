@@ -5,7 +5,7 @@ running box without a flag: ensure_user_ready reads the container row and
 resolves it to a seed reconcile instead of an executor dispatch (see
 user_provision._provision_or_reconcile)."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -23,7 +23,8 @@ def _org_member_auth() -> AuthContext:
 
 def _running():
     return {
-        "service_name": "svc",
+        "owner_id": "org_xyz",
+        "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1",
         "status": "running",
         "substatus": None,
         "created_at": None,
@@ -35,8 +36,6 @@ def _running():
 
 @pytest.mark.asyncio
 async def test_running_container_dispatches_ensure_user_ready_for_org_admin():
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(return_value=(_running(), "10.0.0.1"))
     calls = {}
 
     def capture_task(coro):
@@ -45,7 +44,7 @@ async def test_running_container_dispatches_ensure_user_ready_for_org_admin():
         coro.close()
 
     with (
-        patch("routers.container.get_ecs_manager", return_value=ecs),
+        patch("routers.container.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=_running()),
         patch("routers.container.resolve_owner_id", return_value="org_xyz"),
         patch("core.services.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}),
         patch("routers.container.asyncio.create_task", side_effect=capture_task),
@@ -63,8 +62,6 @@ async def test_running_container_dispatches_ensure_user_ready_for_org_member():
     ensure_user_ready membership-add for a NON-ADMIN org member too — the
     orphan-member incident family is a member who resolves the org's running
     container fine but never gets the Paperclip member-add."""
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(return_value=(_running(), "10.0.0.1"))
     dispatched: list[str] = []
 
     def capture_task(coro):
@@ -72,7 +69,7 @@ async def test_running_container_dispatches_ensure_user_ready_for_org_member():
         coro.close()
 
     with (
-        patch("routers.container.get_ecs_manager", return_value=ecs),
+        patch("routers.container.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=_running()),
         patch("routers.container.resolve_owner_id", return_value="org_xyz"),
         patch("core.services.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}),
         patch("routers.container.asyncio.create_task", side_effect=capture_task),

@@ -130,19 +130,17 @@ def test_admin_deploy_standard_company_202(mock_get_published, mock_boto, mock_r
     mock_create_task.assert_called_once_with(mock_run.return_value)
 
 
-@patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.asyncio.create_task")
 @patch("routers.marketplace_listings.company_deploy_service.run_company_deploy", new_callable=MagicMock)
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 def test_company_deploy_skips_entitlement_size_reconcile(
-    mock_get_published, mock_boto, mock_run, mock_create_task, mock_get_ecs, admin_client
+    mock_get_published, mock_boto, mock_run, mock_create_task, admin_client
 ):
     """Company agent count never triggers a commercial size gate in deploy."""
     ecs = MagicMock()
     ecs.current_container_size = AsyncMock(return_value=("512", "2048"))
     ecs.resize_user_container = AsyncMock()
-    mock_get_ecs.return_value = ecs
     mock_get_published.return_value = _company_listing(agent_count=15, min_plan="ultra_pro")
     mock_boto.return_value.get_object.return_value = _tar_body(b"COMPANYTAR")
 
@@ -151,7 +149,6 @@ def test_company_deploy_skips_entitlement_size_reconcile(
     assert resp.status_code == 202, resp.text
     assert resp.json() == {"started": True, "agent_count": 15}
     mock_create_task.assert_called_once_with(mock_run.return_value)
-    mock_get_ecs.assert_not_called()
     ecs.current_container_size.assert_not_called()
     ecs.resize_user_container.assert_not_called()
 

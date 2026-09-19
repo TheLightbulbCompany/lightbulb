@@ -113,11 +113,15 @@ def hired_agent_id_of(payload: dict | None) -> str | None:
 
 
 def _has_committed_marketplace_install(*, owner_id: str, agent_id: str) -> bool:
-    """Return whether this Paperclip agent already finished container install."""
-    from core.services.catalog_service import get_catalog_service
+    """Whether this Paperclip agent already finished its install.
 
-    install = get_catalog_service().live_install_for_agent(owner_id, agent_id)
-    return isinstance(install, dict)
+    Always False: the install RECORD was the ``.template`` sidecar on the buyer's EFS
+    workspace, and nothing on the profile transport writes an equivalent yet (see
+    ``catalog_service``'s module docstring -- it was already always False for a migrated
+    workspace before the runtime was deleted). Kept as the named predicate so the
+    "a completed install is terminal" rule below has one place to become true again.
+    """
+    return False
 
 
 async def create_hire_approval(
@@ -353,11 +357,9 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
             )
         return
 
-    from core.containers import get_ecs_manager
     from core.repositories import container_repo, marketplace_repo
     from core.services import marketplace_service
     from core.services.catalog_service import emit_agent_deployed, get_catalog_service
-    from core.services.paperclip_openclaw_pairing import ensure_operator_device_paired
 
     listing = await marketplace_service.get_published_by_id(listing_id=listing_id)
     if not listing or listing.get("status") != "published":
@@ -414,10 +416,8 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
     deploy_cause: BaseException | None = None
     try:
         try:
-            ecs = get_ecs_manager()
-            container, container_ip = await ecs.resolve_running_container(owner_id)
-            if container is None or container_ip is None:
-                raise RuntimeError("container is not running — retry the approval in a moment")
+            if not await container_repo.get_by_owner_id(owner_id):
+                raise RuntimeError("no workspace yet — retry the approval in a moment")
 
             # S3 fetch is blocking boto3 I/O — keep it off the event loop.
             tar_bytes, slice_ = await asyncio.to_thread(_fetch_artifact, listing)
@@ -430,9 +430,6 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
                 new_agent_id=agent_id,
                 listing_id=listing.get("listing_id"),
                 seller_id=listing.get("seller_id"),
-                # Fix round 1, item 1: `container` is already in scope from
-                # resolve_running_container above.
-                container=container,
             )
         except Exception as exc:
             logger.exception(
@@ -461,33 +458,6 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
         except Exception:
             logger.exception("deploy_for_approval: install_count bump failed for listing %s", listing_id)
 
-        # Trust the agent's operator device AFTER the install is committed, and
-        # best-effort like every other create path: the pairing helper needs the
-        # FULL agent record (adapterConfig.devicePrivateKeyPem — Paperclip echoes
-        # it to admin actors), and a pairing hiccup must not roll back a completed
-        # install — the paired.json fallback pairs the device at next container
-        # boot instead. Still under the claim: it talks to the same container.
-        try:
-            import httpx
-
-            from core.config import settings
-            from core.services.paperclip_admin_client import PaperclipAdminClient
-            from core.services.paperclip_admin_session import get_admin_session_cookie
-
-            async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
-                admin = PaperclipAdminClient(http_client=http)
-                cookie = await get_admin_session_cookie(http)
-                full_agent = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
-            await ensure_operator_device_paired(
-                owner_id=owner_id,
-                paperclip_agent=full_agent,
-                gateway_token=container["gateway_token"],
-            )
-        except Exception:  # noqa: BLE001 — pairing must not undo a committed install
-            logger.exception(
-                "deploy_for_approval: device pairing failed for agent=%s (pairs at next container boot)",
-                agent_id,
-            )
     finally:
         await container_repo.release_owner_deploy_claim(
             owner_id, listing_id=listing_id, token=claim_token, cause=deploy_cause
@@ -522,46 +492,13 @@ def _manifest_for(listing: dict) -> dict:
 async def _rollback_agent(*, owner_id: str, agent_id: str, cause: BaseException | None = None) -> None:
     """Best-effort removal; a cleanup failure must not replace the real error.
 
-    Unwinds the container/EFS side FIRST (openclaw.json ``agents.list`` entry +
-    the extracted ``workspace-{id}/`` dir, sidecar included), then the Paperclip
-    row — the same two-sided rollback the buyer-facing deploy does. This path
-    used to delete only the Paperclip row, which on a failed install stranded
-    the workspace and a possible half-created container-side agent with nothing
-    left to see or remove them by.
-
-    ``cause`` carries the failure into ``unwind_partial_deploy``, which skips the
-    unwind on a client-side ``TimeoutError`` (the container may still be
-    mid-write). When it skips, the Paperclip row is kept too, so the half-install
-    stays a visible, deletable agent in Teams instead of a ghost — see that
-    method's docstring. Called with no ``cause`` for the "listing retired between
-    ask and decision" path, where nothing was installed at all.
+    Deletes the Paperclip row. The S3 profile objects a failed install may have written are
+    left in place: a re-run overwrites them, and there is no install record keyed on them that
+    a later hire could resolve to (see ``_has_committed_marketplace_install``). ``cause`` is
+    accepted and unused -- it steered the ECS unwind's skip-on-TimeoutError, which had to keep
+    the Paperclip row alive so a half-written EFS workspace stayed deletable from Teams.
     """
-    from core.services.catalog_service import get_catalog_service
     from core.services.paperclip_agent_lifecycle import delete_paperclip_for_marketplace
-
-    try:
-        unwound = await get_catalog_service().unwind_partial_deploy(
-            owner_id=owner_id, new_agent_id=agent_id, cause=cause
-        )
-    except Exception:
-        # ``unwind_partial_deploy`` is documented never to raise, so this is the
-        # unknown-unknown branch. Treat it like a failed unwind, not a completed
-        # one: the container side may still hold the workspace, the agents.list
-        # entry and the sidecar, and deleting the Paperclip row on top of that is
-        # what manufactures an unreachable ghost. Keeping the row is recoverable
-        # (delete it from Teams); a ghost is not.
-        logger.exception("marketplace_hire: unwind failed for agent %s", agent_id)
-        unwound = False
-
-    if not unwound:
-        logger.warning(
-            "marketplace_hire: keeping paperclip agent %s for owner=%s — container-side install was NOT "
-            "safely unwound (client-side timeout, the sidecar unlink failed, or the unwind itself "
-            "raised), so it stays visible + deletable in Teams",
-            agent_id,
-            owner_id,
-        )
-        return
 
     try:
         await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=agent_id)

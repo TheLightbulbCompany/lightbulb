@@ -12,8 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.auth import AuthContext, get_current_user, get_owner_type, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.containers import get_ecs_manager
-from core.containers.ecs_manager import EcsManagerError
+from core.services.hermes_provisioning import delete_workspace_runtime
 from core.repositories import (
     billing_repo,
     channel_link_repo,
@@ -127,7 +126,7 @@ async def redeploy_container(
     runtime_arn = container.get("agentcore_runtime_arn")
     if runtime_arn:
         from core.dynamodb import run_in_thread
-        from scripts.migrate_workspace_to_hermes import _stop_runtime_session
+        from core.services.hermes_provisioning import _stop_runtime_session
 
         try:
             await run_in_thread(_stop_runtime_session, runtime_arn, runtime_transport.session_id_for(owner_id))
@@ -165,9 +164,11 @@ async def remove_container(
         require_org_admin(auth)
 
     try:
-        await get_ecs_manager().delete_user_service(owner_id)
+        # NOT delete_profiles: this is a routine reprovision door, and destroying a migrated
+        # owner's memory/skills/SOUL.md is /debug/user-data's job, not this one (M6-R42).
+        await delete_workspace_runtime(owner_id)
         return {"status": "removed"}
-    except EcsManagerError as e:
+    except Exception as e:  # noqa: BLE001 — surfaced to the dev caller as a 503
         logger.error("Dev remove failed for owner %s: %s", owner_id, e)
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -217,16 +218,16 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # ---- Runtime teardown ---------------------------------------------------
     # NOT gated on the row's existence — if a previous partial run failed here but
     # successfully wiped the DDB row, every subsequent retry would skip teardown and
-    # orphan the runtime forever. ``delete_user_service`` derives everything it needs
+    # orphan the runtime forever. ``delete_workspace_runtime`` derives everything it needs
     # from owner_id and treats "already gone" as idempotent success.
     #
-    # ``delete_hermes_profiles=True`` is this endpoint's answer to the EFS ``rm -rf``
-    # it replaces: the owner's S3 profile prefix IS their workspace content, and the
-    # e2e harness's empty-slate contract breaks silently if the next provision restores
-    # it. Only a terminal wipe passes True (see ``delete_user_service``'s docstring).
+    # ``delete_profiles=True`` is this endpoint's answer to the EFS ``rm -rf`` it replaces:
+    # the owner's S3 profile prefix IS their workspace content, and the e2e harness's
+    # empty-slate contract breaks silently if the next provision restores it. This and
+    # ``account_wipe`` are the ONLY two terminal callers that pass True (M6-R42).
     runtime_succeeded = False
     try:
-        await get_ecs_manager().delete_user_service(owner_id, delete_hermes_profiles=True)
+        await delete_workspace_runtime(owner_id, delete_profiles=True)
         deleted["runtime"] = True
         runtime_succeeded = True
     except Exception as e:
@@ -389,25 +390,3 @@ async def ddb_rows(
             "ws-connections": ws_conns,
         }
     }
-
-
-@router.post(
-    "/agentcore/provision",
-    summary="Move the caller's workspace onto an AgentCore runtime (dev only)",
-    description=(
-        "Creates a per-workspace AgentCore runtime, re-trusts the owner's Bedrock role for it, "
-        "and flips the container row to runtime_host=agentcore. One-way: it rotates the gate "
-        "bearer, so the ECS task stops reaching Bedrock. Non-production only."
-    ),
-    operation_id="debug_agentcore_provision",
-    dependencies=[Depends(require_non_production)],
-    responses={403: {"description": "Not available outside dev/local/test (or unset)"}},
-)
-async def agentcore_provision(auth: AuthContext = Depends(get_current_user)):
-    from core.services.agentcore_runtime import ensure_runtime
-
-    # One-way for the whole workspace (rotates the gate bearer): admins only, like the
-    # other org-scoped mutations in this file.
-    if auth.is_org_context:
-        require_org_admin(auth)
-    return await ensure_runtime(resolve_owner_id(auth))

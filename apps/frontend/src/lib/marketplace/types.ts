@@ -141,40 +141,29 @@ export interface ListingDetailResponse {
   manifest: ListingManifest | null;
 }
 
+/** What a staged Claude Code import contains.
+ *
+ * The OpenClaw-backup half this used to also describe (`kind`, the agent/plugin/MCP/skill
+ * candidate lists, the file and cron counts) went with that rail — every one of those fields
+ * defaulted to empty on a Claude import, and the dialog branched on `kind` to know which half
+ * was real. One shape now. */
 export interface ImportPreview {
   import_id: string;
-  kind: "backup" | "state-dir" | "workspace" | "claude";
-  agent_id: string;
   name: string;
-  description: string;
-  agents: { id: string; name: string; has_history: boolean; history_bytes: number }[];
-  plugins: { id: string; spec: string; has_dependencies: boolean }[];
-  file_count: number;
-  files: string[];
-  mcp_servers: string[];
-  skills: string[];
-  cron_jobs: number;
-  safety_flags: { pattern: string; severity: "high" | "medium" | "low"; file: string; line: number | null; snippet: string }[];
-  warnings: string[];
-  skipped_big_files: string[];
-  /** Populated only when kind === "claude"; the backup-specific fields above
-   * stay at their defaults on that path. */
-  claude?: {
+  claude: {
     collections: { id: string; label: string; file_count: number }[];
     has_user_memory: boolean;
     skills: string[];
     skipped: Record<string, number>;
-    /** Same shape as the top-level flags; snippet is always "". */
-    safety_flags: ImportPreview["safety_flags"];
-  } | null;
+    /** `snippet` is never echoed back to the client. */
+    safety_flags: { pattern: string; severity: "high" | "medium" | "low"; file: string; line: number | null }[];
+  };
 }
 
+/** Per-item results of an applied import. Nothing is minted — the content lands on an EXISTING
+ * roster agent's profile, and the `.revision` bump IS the delivery (re-pulled on that agent's
+ * next turn), so there is no restart to report. */
 export interface ImportConfirmResult {
-  agents: { source_agent_id: string; agent_id: string | null; name: string; ok: boolean; error?: string | null; warnings: string[] }[];
-  plugins_installed: string[];
-  history_staged: string[];
-  restarting: boolean;
+  claude_items: { item: string; status: "applied" | "skipped_exists" }[];
   warnings: string[];
-  /** Populated only on a claude import (agents stays empty on that path). */
-  claude_items?: { item: string; status: "applied" | "skipped_exists" }[] | null;
 }

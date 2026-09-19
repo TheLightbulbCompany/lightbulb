@@ -1,7 +1,7 @@
 """/admin/health aggregator.
 
 Composes:
-- Container fleet counts grouped by status (LIVE from ECS via ecs_ops).
+- Container fleet counts grouped by status (from the containers index via ops.fleet).
 - Upstream probes for Clerk, Stripe, DDB — each 2s timeout, results
   cached for 30s (CEO P2) so the health page doesn't block on slow
   upstreams every render.
@@ -24,7 +24,7 @@ import httpx
 
 from core.config import settings
 from core.services import cloudwatch_logs
-from core.services.ops import ecs_ops
+from core.services.ops import fleet as fleet_ops
 
 logger = logging.getLogger(__name__)
 
@@ -109,14 +109,14 @@ async def _all_probes() -> dict:
 
 
 async def _fleet_counts() -> dict[str, int]:
-    """Containers by status — LIVE from ECS (was DDB-derived).
+    """Workspaces by status, from the containers index.
 
-    Delegates to ecs_ops.fleet_counts_live() under a 2s latency bound so a hung
-    ECS control plane can't block GET /admin/system/health; get_system_health()'s
+    Delegates to fleet_ops.fleet_counts_live() under a 2s latency bound so a hung
+    scan cannot block GET /admin/system/health; get_system_health()'s
     _safe wrapper degrades a timeout (or any error) to {}, so the admin health
     page always renders.
     """
-    return await asyncio.wait_for(ecs_ops.fleet_counts_live(), timeout=2.0)
+    return await asyncio.wait_for(fleet_ops.fleet_counts_live(), timeout=2.0)
 
 
 def _background_tasks_status() -> dict[str, dict]:

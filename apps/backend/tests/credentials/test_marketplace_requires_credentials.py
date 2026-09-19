@@ -59,6 +59,12 @@ async def test_deploy_blocked_when_required_provider_not_connected(monkeypatch):
         "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[]),
     )
+    # The deploy resolves the runtime row itself now (no ECS manager) -- a row with an
+    # agentcore_runtime_arn is what gets it past the 503 short-circuit to the catalog call.
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "agentcore_runtime_arn": "arn:runtime/x"}),
+    )
     manifest = {"requires": {"credentials": [{"provider": "greenhouse"}]}}
 
     with pytest.raises(MissingCredentialsError) as excinfo:
@@ -87,6 +93,12 @@ async def test_optional_provider_never_blocks(monkeypatch):
         "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[]),
     )
+    # The deploy resolves the runtime row itself now (no ECS manager) -- a row with an
+    # agentcore_runtime_arn is what gets it past the 503 short-circuit to the catalog call.
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "agentcore_runtime_arn": "arn:runtime/x"}),
+    )
     manifest = {"requires": {"credentials": [{"provider": "greenhouse", "optional": True}]}}
 
     await assert_credentials_satisfied("owner_1", manifest, slice_=None)
@@ -112,6 +124,12 @@ async def test_null_or_malformed_requires_does_not_crash(manifest, monkeypatch):
         "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[]),
     )
+    # The deploy resolves the runtime row itself now (no ECS manager) -- a row with an
+    # agentcore_runtime_arn is what gets it past the 503 short-circuit to the catalog call.
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "agentcore_runtime_arn": "arn:runtime/x"}),
+    )
     await assert_credentials_satisfied("owner_1", manifest, slice_=None)
 
 
@@ -125,6 +143,12 @@ async def test_slice_mcp_server_derives_requirement(monkeypatch):
     monkeypatch.setattr(
         "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[]),
+    )
+    # The deploy resolves the runtime row itself now (no ECS manager) -- a row with an
+    # agentcore_runtime_arn is what gets it past the 503 short-circuit to the catalog call.
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "agentcore_runtime_arn": "arn:runtime/x"}),
     )
     slice_ = {"mcp": {"servers": {"stripe": {"command": "stripe-mcp", "env": {"STRIPE_API_KEY": ""}}}}}
 
@@ -140,6 +164,12 @@ async def test_slice_mcp_non_registry_server_not_gated(monkeypatch):
     monkeypatch.setattr(
         "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[]),
+    )
+    # The deploy resolves the runtime row itself now (no ECS manager) -- a row with an
+    # agentcore_runtime_arn is what gets it past the 503 short-circuit to the catalog call.
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "agentcore_runtime_arn": "arn:runtime/x"}),
     )
     slice_ = {"mcp": {"servers": {"my-custom-mcp": {"command": "x"}}}}
 
@@ -202,14 +232,7 @@ def _stub_s3_with_slice(slice_: dict) -> MagicMock:
     return s3
 
 
-def _stub_ecs():
-    mgr = MagicMock()
-    mgr.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-tok"}, "10.0.0.1"))
-    return mgr
-
-
 @patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
-@patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
@@ -219,7 +242,6 @@ def test_deploy_returns_409_and_rolls_back_when_credential_missing(
     mock_get_catalog,
     mock_boto,
     mock_create_pc,
-    mock_get_ecs,
     mock_delete_pc,
     client,
     monkeypatch,
@@ -231,19 +253,23 @@ def test_deploy_returns_409_and_rolls_back_when_credential_missing(
     install side effect, so the agent is the only orphan).
 
     ⚠️ The gate is raised here by a stubbed catalog rather than run end to end:
-    ``deploy_from_artifact`` only calls ``assert_credentials_satisfied`` on its
-    ECS/EFS branch, and with ``runtime_transport.host_for`` pinned to
-    ``agentcore`` every deploy now takes ``_install_agentcore_deploy``, which
-    does not gate. The validator's own coverage is the tests above; the gate's
-    PLACEMENT on the surviving install path is a real gap, not a test one.
+    ``assert_credentials_satisfied`` sat on ``deploy_from_artifact``'s ECS/EFS branch, which
+    is deleted, and the surviving profile install does not gate. The validator's own coverage
+    is the tests above; the gate's PLACEMENT on the surviving install path is a real gap, not
+    a test one.
     """
     mock_get_published.return_value = _published_listing()
     mock_create_pc.return_value = {"id": "agent_orphan_1", "name": "Demo Agent"}
-    mock_get_ecs.return_value = _stub_ecs()
     mock_boto.return_value = _stub_s3_with_slice({"agent": {"name": "Demo Agent"}})
     monkeypatch.setattr(
         "core.repositories.integrations_repo.list_for_owner",
         AsyncMock(return_value=[]),
+    )
+    # The deploy resolves the runtime row itself now (no ECS manager) -- a row with an
+    # agentcore_runtime_arn is what gets it past the 503 short-circuit to the catalog call.
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "agentcore_runtime_arn": "arn:runtime/x"}),
     )
 
     catalog = MagicMock()

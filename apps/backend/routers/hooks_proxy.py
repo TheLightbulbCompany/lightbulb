@@ -40,7 +40,6 @@ import logging
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from core.containers import get_ecs_manager
 from core.repositories import billing_repo, container_repo
 from core.services import runtime_transport
 from core.services.provision_gate import has_always_on_entitlement
@@ -55,10 +54,6 @@ RATE_LIMIT_PER_MINUTE = 60
 # Multi-task fleets get independent buckets (RULING D17: 2-4x ceiling at
 # desiredCount 2-4) — flagged in spec, not v1 work.
 _RATE = RateBucket(RATE_LIMIT_PER_MINUTE)
-
-# Module-level instance so tests can patch
-# ``routers.hooks_proxy.ecs_manager.resolve_running_container``.
-ecs_manager = get_ecs_manager()
 
 
 def _client_factory() -> httpx.AsyncClient:
@@ -168,9 +163,11 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
             media_type="application/json",
         )
 
-    # 5. Resolve the owner's runtime row
-    resolved_container, address = await ecs_manager.resolve_running_container(owner_id)
-    if not address:
+    # 5. The row read at step 2 IS the runtime address -- one read, not two. It used to resolve
+    #    a live task IP through Cloud Map, which genuinely needed a second call; an AgentCore
+    #    runtime is addressed by the ARN already on the row, and reading it again would only
+    #    create a window where auth passed on one row and the forward used another.
+    if not container.get("agentcore_runtime_arn"):
         return Response(
             status_code=503,
             headers={"Retry-After": "30"},
@@ -193,9 +190,7 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
 
     path = f"/hooks/{hook_path}" + (f"?{query}" if query else "")
     try:
-        upstream = await runtime_transport.request(
-            resolved_container, path, content=body, headers=headers, timeout_s=30.0
-        )
+        upstream = await runtime_transport.request(container, path, content=body, headers=headers, timeout_s=30.0)
         upstream_status = upstream.status_code
         upstream_body = upstream.text.encode("utf-8")
         upstream_headers = {

@@ -84,7 +84,9 @@ async def test_scan_all_hides_the_reserved_pass_rows_from_fleet_consumers():
     assert rows == [{"owner_id": "user_1"}]
     kwargs = table.scan.call_args.kwargs
     assert "begins_with" in kwargs["FilterExpression"]
-    assert container_repo.PASS_KEY_PREFIX in kwargs["ExpressionAttributeValues"].values()
+    # ONE prefix covers every reserved row, pass admission included -- see RESERVED_KEY_PREFIX.
+    assert container_repo.RESERVED_KEY_PREFIX in kwargs["ExpressionAttributeValues"].values()
+    assert container_repo.PASS_KEY_PREFIX.startswith(container_repo.RESERVED_KEY_PREFIX)
 
 
 @pytest.mark.asyncio

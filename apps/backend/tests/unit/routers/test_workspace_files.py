@@ -1,8 +1,11 @@
-"""Tests for the workspace-file routes over an agent's S3 Hermes profile."""
+"""Tests for the workspace-file routes over an agent's S3 Hermes profile.
 
-import struct
-import zlib
-from pathlib import Path
+There is nothing else left to serve: the EFS-tree branch of every route went with the ECS
+runtime, so did the fixtures that built a sample tree on disk. What remains is the profile
+branch and the rules it enforces -- which names map onto which Hermes path, which backend-owned
+files are refused, and which secrets are neither listed nor readable.
+"""
+
 from unittest.mock import patch
 
 import pytest
@@ -10,7 +13,6 @@ from fastapi import HTTPException
 
 from core.auth import AuthContext
 from core.config import settings
-from core.containers.workspace import Workspace
 
 USER_ID = "user_test_abc"
 AGENT_ID = "agent-abc-123"
@@ -19,112 +21,6 @@ AGENT_ID = "agent-abc-123"
 def _auth(owner_id: str = USER_ID) -> AuthContext:
     """Build an active workspace context for direct handler calls."""
     return AuthContext(user_id=f"human_{owner_id}", org_id=owner_id, org_role="org:admin")
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_workspace(tmp_path: Path) -> Workspace:
-    """Return a Workspace rooted at tmp_path."""
-    return Workspace(mount_path=str(tmp_path))
-
-
-def _user_root(tmp_path: Path) -> Path:
-    return tmp_path / USER_ID
-
-
-def _minimal_png() -> bytes:
-    """Return a valid 1×1 white PNG as bytes."""
-    # Build raw IDAT data: one filter byte + one RGB pixel (white)
-    raw = b"\x00\xff\xff\xff"
-    compressed = zlib.compress(raw)
-
-    def chunk(name: bytes, data: bytes) -> bytes:
-        length = struct.pack(">I", len(data))
-        crc = struct.pack(">I", zlib.crc32(name + data) & 0xFFFFFFFF)
-        return length + name + data + crc
-
-    png = (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
-        + chunk(b"IDAT", compressed)
-        + chunk(b"IEND", b"")
-    )
-    return png
-
-
-def _minimal_pdf() -> bytes:
-    """Return a tiny syntactically-valid (single blank page) PDF as bytes."""
-    return (
-        b"%PDF-1.4\n"
-        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
-        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 1 1]>>endobj\n"
-        b"trailer<</Root 1 0 R>>\n"
-        b"%%EOF"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _local_environment(monkeypatch):
-    """Force ENVIRONMENT=local so os.chown is skipped on macOS during tests."""
-    monkeypatch.setattr(settings, "ENVIRONMENT", "local")
-
-
-@pytest.fixture()
-def workspace(tmp_path: Path) -> Workspace:
-    """Fresh Workspace using a tmp directory."""
-    return _make_workspace(tmp_path)
-
-
-@pytest.fixture()
-def populated_workspace(tmp_path: Path) -> tuple[Workspace, Path]:
-    """Workspace pre-populated with sample files and dirs.
-
-    Layout under {tmp_path}/{USER_ID}/:
-        agents/
-            my-agent/
-                notes.md   (text)
-                data.bin   (binary, non-image)
-        docs/
-            readme.txt     (text)
-        image.png          (1×1 PNG)
-        doc.pdf            (tiny single-page PDF)
-        script.py          (text)
-        openclaw.json      (visible — paying users see their own config)
-        .hidden_file       (visible — agent-managed dotfiles are no longer hidden)
-        node_modules/      (excluded — build artifact)
-        __pycache__/       (excluded — build artifact)
-    """
-    ws = _make_workspace(tmp_path)
-    root = tmp_path / USER_ID
-
-    # Visible files/dirs
-    (root / "agents" / "my-agent").mkdir(parents=True)
-    (root / "agents" / "my-agent" / "notes.md").write_text("# Notes\nHello!", encoding="utf-8")
-    (root / "agents" / "my-agent" / "data.bin").write_bytes(b"\x00\x01\x02\x03")
-    (root / "docs").mkdir()
-    (root / "docs" / "readme.txt").write_text("Hello world", encoding="utf-8")
-    (root / "image.png").write_bytes(_minimal_png())
-    (root / "doc.pdf").write_bytes(_minimal_pdf())
-    (root / "script.py").write_text('print("hi")\n', encoding="utf-8")
-    (root / "build.lobster").write_text("start -> build -> done\n", encoding="utf-8")
-
-    # Visible-but-was-previously-hidden items
-    (root / "openclaw.json").write_text("{}", encoding="utf-8")
-    (root / ".hidden_file").write_text("secret", encoding="utf-8")
-    # Excluded items (build artifacts only)
-    (root / "node_modules").mkdir()
-    (root / "__pycache__").mkdir()
-
-    return ws, root
 
 
 class TestAgentCoreProfileBranch:

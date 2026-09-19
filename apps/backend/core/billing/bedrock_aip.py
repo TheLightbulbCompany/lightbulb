@@ -592,22 +592,17 @@ async def ensure_owner_bedrock_role(
             PolicyDocument=json.dumps(doc),
         )
 
-    # local-sqlite layout: per-owner Litestream S3 grant. UNCONDITIONAL —
-    # unlike the Bedrock grant above, every provider ships replicas and a
-    # revoked/trial-capped owner keeps durability (skip_bedrock_grant governs
-    # inference, not storage). A SEPARATE PolicyName: the break-glass script
-    # swaps the "owner-bedrock" document wholesale, and folding S3 into it
-    # would strip replication mid-incident. Inert while LITESTREAM_BUCKET is
-    # unset (EFS layout). Existing owners provisioned before the env flipped
-    # are backfilled by scripts/ensure_litestream_s3_policies.py — run it
-    # BEFORE any fleet force-apply onto the local-sqlite boot chain, or litestream (the
-    # boot supervisor) AccessDenies and the task crash-loops.
-    if settings.LITESTREAM_BUCKET:
+    # Per-owner S3 grant on the owner-state bucket. UNCONDITIONAL — unlike the Bedrock grant
+    # above, every owner's runtime reads and replicates its own state and a revoked/trial-capped
+    # owner keeps durability (skip_bedrock_grant governs inference, not storage). A SEPARATE
+    # PolicyName: the break-glass script swaps the "owner-bedrock" document wholesale, and
+    # folding S3 into it would strip replication mid-incident.
+    if settings.OWNER_STATE_BUCKET:
         await run_in_thread(
             client.put_role_policy,
             RoleName=role_name,
             PolicyName="owner-litestream-s3",
-            PolicyDocument=json.dumps(build_owner_litestream_s3_policy(owner_id, settings.LITESTREAM_BUCKET)),
+            PolicyDocument=json.dumps(build_owner_litestream_s3_policy(owner_id, settings.OWNER_STATE_BUCKET)),
         )
 
     await container_repo.update_fields(owner_id, {"bedrock_role_arn": role_arn})
@@ -718,9 +713,9 @@ async def delete_owner_aips(owner_id: str, *, aip_arns: list[str] | None = None)
 
     ``aip_arns``, if provided (not None), is used DIRECTLY instead of
     re-reading the containers row via read_owner_aips. This matters because
-    the wipe orchestrator's `ecs_service` step (which runs before this one)
+    the wipe orchestrator's `runtime` step (which runs before this one)
     deletes the containers row as a side effect of
-    ``ecs_manager.delete_user_service`` — a live re-read at this point would
+    ``hermes_provisioning.delete_workspace_runtime`` — a live re-read at this point would
     see no row and silently no-op, orphaning both the Bedrock inference
     profile and the reverse-table row while still reporting success. Callers
     that already hold the ARNs (e.g. the wipe orchestrator's upfront
@@ -842,7 +837,7 @@ async def reap_owner_bedrock_resources(owner_id: str, row_image: dict | None) ->
     """SHARED CONTRACT (every teardown path): destroy the per-owner Bedrock
     footprint that the containers row was the only handle on.
 
-    Called from ``ecs_manager.delete_user_service`` — the seam EVERY teardown
+    Called from ``hermes_provisioning.delete_workspace_runtime`` — the seam EVERY teardown
     crosses (entitlement cancellation, admin account-wipe, ``DELETE
     /debug/provision``, ``DELETE /debug/user-data``) — so no path can forget it
     and none needs its own copy. It runs immediately after the containers row is

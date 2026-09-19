@@ -10,13 +10,15 @@ reasons:
 2. **The integrations row** — POINTERS only (resource id, name, service,
    status, env var NAMES, dashboard URL) plus ``actor: "projects"``, keyed
    ``projects/{provider}``.
-3. **The container** — ``env.vars.<NAME>`` in openclaw.json, OpenClaw's
-   documented "environment variable overrides merged into runtime process
-   environment". Static env is the right class here: these are provider WRITE
-   tokens scoped to the owner's own resources (spec §3.5). The connected-account
-   Stripe key and anything else with money authority must ride the credential
-   PROXY (``apps/infra/openclaw/plugins/aws-exec-profile``) instead — a named
-   follow-up, deliberately NOT in P0b.
+3. **The agent's runtime env** — ``build_provisioned_env`` re-reads the Secrets Manager
+   copy at every provision and lands it in each roster profile's ``.env``
+   (``hermes_profiles.write_agent_profile``), so a credential provisioned between two
+   provisions reaches the agent on the next one. It used to be ``env.vars.<NAME>`` in
+   ``openclaw.json``; the class is the same, which is what matters here: these are provider
+   WRITE tokens scoped to the owner's own resources (spec §3.5). The connected-account Stripe
+   key and anything else with money authority was meant to ride a credential PROXY instead —
+   that proxy was a baked OpenClaw plugin and is gone with it, so the distinction is currently
+   unenforced (still a named follow-up, still deliberately not in P0b).
 
 **Both storage keys are namespaced** via ``integrations_repo.projects_key`` —
 the ``integrations`` sort key AND the Secrets Manager provider segment. The
@@ -47,63 +49,24 @@ from __future__ import annotations
 import logging
 
 from core.repositories import integrations_repo
-from core.services import config_patcher, runtime_transport
-from core.services.config_patcher import ConfigPatchError
 from core.services.credentials import integration_secret_store
 
 logger = logging.getLogger(__name__)
 
 
 async def land_credentials(*, owner_id: str, resource: dict, env: dict[str, str]) -> None:
-    if await runtime_transport.is_agentcore_owner(owner_id):
-        # The locked RMW below into openclaw.json["env"]["vars"] is a dead write on
-        # AgentCore -- there is no delivery mechanism yet (the profile .env/secret-scope
-        # mechanism, deliberately out of scope here). Refuse the whole landing rather than
-        # silently mark the workflow "active" with a credential nothing can reach.
-        from core.services.provisioning_workflow import WorkflowRefused
+    """Refused: there is no delivery mechanism for a landed credential on this runtime.
 
-        raise WorkflowRefused(
-            "unsupported_on_agentcore", "Provisioning services for this workspace isn't available yet"
-        )
-    provider = resource["provider"]
-    key = integrations_repo.projects_key(provider)
-    # The blob is per-(owner, provider) and a provider can hold several
-    # resources, so MERGE rather than replace — a second `projects add` for the
-    # same provider must not blank the first one's variables. A failing read
-    # propagates deliberately: writing without knowing what is already there
-    # would destroy credentials the provider only ever shows once.
-    #
-    # Merged VERBATIM, with no type filter: the store documents a round-trip of
-    # the exact dict, and a filter here would silently drop any non-string field
-    # a future landing adds.
-    existing = await integration_secret_store.get(owner_id, key) or {}
-    merged = {**existing, **env}
-    await integration_secret_store.put(owner_id, key, merged)
-    # The repo namespaces the sort key itself, so callers pass the bare provider.
-    await integrations_repo.record_provider_resource(owner_id, provider, resource)
-    try:
-        for name, value in sorted(env.items()):
-            # One locked RMW per var, not one write of the whole `env.vars` map:
-            # set_openclaw_config_path REPLACES the leaf, so setting the map would
-            # drop every var landed by another provider.
-            await config_patcher.set_openclaw_config_path(owner_id, ["env", "vars", name], value)
-    except ConfigPatchError:
-        # No openclaw.json yet (container not provisioned). Not an error: the
-        # credential is already durable, and the provision that creates the config
-        # injects it via build_provisioned_env. Same call as
-        # mcp_server.reconcile_integrations makes.
-        logger.info(
-            "provisioning: no container config yet for owner=%s; %s vars land at provision",
-            owner_id,
-            provider,
-        )
-    logger.info(
-        "provisioning: landed %s/%s for owner=%s (%d vars)",
-        provider,
-        resource.get("service"),
-        owner_id,
-        len(env),
-    )
+    It used to write the values into ``openclaw.json["env"]["vars"]`` under the config lock,
+    and the profile ``.env`` / secret-scope equivalent is deliberately out of scope. Refusing
+    the WHOLE landing -- rather than persisting the secret and the pointer and then failing to
+    deliver -- is what keeps the workflow from going "active" over a credential nothing can
+    reach. The Stripe Projects rail is off by default anyway
+    (``STRIPE_PROVISIONING_ENABLED``).
+    """
+    from core.services.provisioning_workflow import WorkflowRefused
+
+    raise WorkflowRefused("unsupported_on_agentcore", "Provisioning services for this workspace isn't available yet")
 
 
 async def revoke_credentials(*, owner_id: str, provider: str, resource_id: str) -> bool:
@@ -147,29 +110,10 @@ async def revoke_credentials(*, owner_id: str, provider: str, resource_id: str) 
                 await integration_secret_store.put(owner_id, secret_key, blob)
             else:
                 await integration_secret_store.delete(owner_id, secret_key)
-        # This is a pure EFS locked-RMW file op -- it never talks to the container, so unlike
-        # the RPC calls elsewhere in the AgentCore rollout there is no "dead write" cost to
-        # avoid here. Always attempt it: a workspace that migrated ECS->AgentCore still has a
-        # real openclaw.json on EFS (migration doesn't delete that tree) and may still hold the
-        # plaintext secret value in it -- skipping this scrub would leave that plaintext
-        # resident indefinitely. The existing ConfigPatchError catch below already no-ops
-        # gracefully for a native AgentCore owner with no openclaw.json at all.
-        try:
-            for key in env_keys:
-                # One locked RMW per var, same reasoning as land_credentials:
-                # a single "delete the whole map" write would drop every var
-                # landed by another provider.
-                await config_patcher.delete_openclaw_config_path(owner_id, ["env", "vars", key])
-        except ConfigPatchError:
-            # No openclaw.json yet (container not provisioned) or the path is
-            # already gone. Not an error: the Secrets Manager copy is already
-            # gone, which is what matters, and the pointer removal below is
-            # still safe to retry.
-            logger.info(
-                "provisioning: no container config yet for owner=%s; %s revoke skips config strip",
-                owner_id,
-                provider,
-            )
+        # No config to scrub: the plaintext copy used to live in the owner's openclaw.json
+        # ``env.vars`` on EFS, and nothing writes an equivalent on this runtime (see
+        # ``land_credentials``, which now refuses). The Secrets Manager copy above is the
+        # only one there is, and it is gone.
 
     await integrations_repo.remove_provider_resource(owner_id, provider, resource_id)
     logger.info("provisioning: revoked %s/%s for owner=%s", provider, resource_id, owner_id)

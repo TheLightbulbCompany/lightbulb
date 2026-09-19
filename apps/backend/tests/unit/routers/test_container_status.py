@@ -195,31 +195,28 @@ async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll()
             BillingMode="PAY_PER_REQUEST",
         )
         table.put_item(Item={"owner_id": "org_x", "owner_type": "org", "subscription_status": "trial_local"})
-        row = {"owner_id": "org_x", "status": "provisioning", "service_name": "svc"}
-        ecs = MagicMock(
-            resolve_running_container=AsyncMock(side_effect=lambda _: (row, "10.0.0.1")),
-            has_live_service=AsyncMock(return_value=True),
-        )
+        row = {"owner_id": "org_x", "status": "provisioning"}
+        _row = row
 
         with (
             patch.object(billing_repo, "_get_table", return_value=table),
-            patch("routers.container.get_ecs_manager", return_value=ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("core.services.container_rpc.call", AsyncMock(return_value={"ok": True})),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
             patch("routers.container.evaluate_provision_gate", AsyncMock(return_value=None)),
         ):
             for status, phase in [("provisioning", "provisioning"), ("error", "provisioning")]:
                 row["status"] = status
-                result = await container_status(_workspace_auth(), wake="0", flow=None)
+                result = await container_status(_workspace_auth(), flow=None)
                 assert result["runtime_phase"] == phase
                 assert "trial_end" not in (await billing_repo.get_by_owner_id("org_x"))
             row["status"] = "running"
             with patch("core.repositories.billing_repo.time.time", return_value=1_000):
-                result = await container_status(_workspace_auth(), wake="0", flow=None)
+                result = await container_status(_workspace_auth(), flow=None)
             assert result["runtime_phase"] == "ready"
             assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 260_200
             with patch("core.repositories.billing_repo.time.time", return_value=9_999):
-                await container_status(_workspace_auth(), wake="0", flow=None)
+                await container_status(_workspace_auth(), flow=None)
             assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 260_200
 
 
@@ -246,14 +243,11 @@ async def test_ready_paid_workspace_does_not_try_to_arm_a_trial():
                 "provider_choice": "chatgpt_oauth",
             }
         )
-        row = {"owner_id": "org_x", "status": "running", "service_name": "svc"}
-        ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(row, "10.0.0.1")),
-            has_live_service=AsyncMock(return_value=True),
-        )
+        row = {"owner_id": "org_x", "status": "running"}
+        _row = row
         with (
             patch.object(billing_repo, "_get_table", return_value=table),
-            patch("routers.container.get_ecs_manager", return_value=ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("core.services.container_rpc.call", AsyncMock(return_value={"ok": True})),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
             patch(
@@ -261,7 +255,7 @@ async def test_ready_paid_workspace_does_not_try_to_arm_a_trial():
                 AsyncMock(side_effect=AssertionError("paid workspaces must not hit the trial armer")),
             ),
         ):
-            result = await container_status(_workspace_auth(), wake="0", flow=None)
+            result = await container_status(_workspace_auth(), flow=None)
 
         assert result["runtime_phase"] == "ready"
         assert result["provider"]["subscription_status"] == "active"
@@ -287,32 +281,23 @@ class TestContainerStatus:
     """Test GET /api/v1/container/status."""
 
     @pytest.mark.asyncio
-    @patch("routers.container.get_ecs_manager")
-    async def test_returns_container_status(self, mock_get_ecs, async_client):
+    @patch("routers.container.container_repo.get_by_owner_id")
+    async def test_returns_container_status(self, mock_get_row, async_client):
         """Should return container metadata for authenticated user."""
-        mock_ecs = AsyncMock()
-        mock_get_ecs.return_value = mock_ecs
-        mock_ecs.resolve_running_container = AsyncMock(
-            return_value=(
-                {
-                    "owner_id": "user_test_123",
-                    "service_name": "openclaw-abc123",
-                    "gateway_token": "secret-token-value",
-                    "status": "running",
-                    "substatus": None,
-                    "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
-                    "access_point_id": "fsap-test123",
-                    "created_at": "2026-01-15T12:00:00+00:00",
-                    "updated_at": "2026-01-15T14:00:00+00:00",
-                },
-                "10.0.1.5",
-            )
-        )
+        mock_get_row.return_value = {
+            "owner_id": "user_test_123",
+            "gateway_token": "secret-token-value",
+            "status": "running",
+            "substatus": None,
+            "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
+            "access_point_id": "fsap-test123",
+            "created_at": "2026-01-15T12:00:00+00:00",
+            "updated_at": "2026-01-15T14:00:00+00:00",
+        }
 
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
         data = response.json()
-        assert data["service_name"] == "openclaw-abc123"
         assert data["container_status"] == "running"
         assert data["container_substatus"] is None
         assert data["region"] == "us-east-1"
@@ -320,27 +305,19 @@ class TestContainerStatus:
         assert "updated_at" in data
 
     @pytest.mark.asyncio
-    @patch("routers.container.get_ecs_manager")
-    async def test_excludes_sensitive_fields(self, mock_get_ecs, async_client):
+    @patch("routers.container.container_repo.get_by_owner_id")
+    async def test_excludes_sensitive_fields(self, mock_get_row, async_client):
         """Should never expose gateway_token, task_arn, or access_point_id."""
-        mock_ecs = AsyncMock()
-        mock_get_ecs.return_value = mock_ecs
-        mock_ecs.resolve_running_container = AsyncMock(
-            return_value=(
-                {
-                    "owner_id": "user_test_123",
-                    "service_name": "openclaw-abc123",
-                    "gateway_token": "secret-token-value",
-                    "status": "running",
-                    "substatus": None,
-                    "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
-                    "access_point_id": "fsap-test123",
-                    "created_at": "2026-01-15T12:00:00+00:00",
-                    "updated_at": "2026-01-15T14:00:00+00:00",
-                },
-                "10.0.1.5",
-            )
-        )
+        mock_get_row.return_value = {
+            "owner_id": "user_test_123",
+            "gateway_token": "secret-token-value",
+            "status": "running",
+            "substatus": None,
+            "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
+            "access_point_id": "fsap-test123",
+            "created_at": "2026-01-15T12:00:00+00:00",
+            "updated_at": "2026-01-15T14:00:00+00:00",
+        }
 
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
@@ -351,29 +328,21 @@ class TestContainerStatus:
         assert "task_definition_arn" not in data
 
     @pytest.mark.asyncio
-    @patch("routers.container.get_ecs_manager")
-    async def test_returns_last_error_fields(self, mock_get_ecs, async_client):
+    @patch("routers.container.container_repo.get_by_owner_id")
+    async def test_returns_last_error_fields(self, mock_get_row, async_client):
         """Should include last_error and last_error_at when present on the container."""
-        mock_ecs = AsyncMock()
-        mock_get_ecs.return_value = mock_ecs
-        mock_ecs.resolve_running_container = AsyncMock(
-            return_value=(
-                {
-                    "owner_id": "user_test_123",
-                    "service_name": "openclaw-abc123",
-                    "gateway_token": "secret-token-value",
-                    "status": "running",
-                    "substatus": None,
-                    "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
-                    "access_point_id": "fsap-test123",
-                    "created_at": "2026-01-15T12:00:00+00:00",
-                    "updated_at": "2026-01-15T14:00:00+00:00",
-                    "last_error": "OutOfMemoryError",
-                    "last_error_at": "2026-01-15T13:00:00+00:00",
-                },
-                "10.0.1.5",
-            )
-        )
+        mock_get_row.return_value = {
+            "owner_id": "user_test_123",
+            "gateway_token": "secret-token-value",
+            "status": "running",
+            "substatus": None,
+            "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
+            "access_point_id": "fsap-test123",
+            "created_at": "2026-01-15T12:00:00+00:00",
+            "updated_at": "2026-01-15T14:00:00+00:00",
+            "last_error": "OutOfMemoryError",
+            "last_error_at": "2026-01-15T13:00:00+00:00",
+        }
 
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
@@ -382,27 +351,19 @@ class TestContainerStatus:
         assert data["last_error_at"] == "2026-01-15T13:00:00+00:00"
 
     @pytest.mark.asyncio
-    @patch("routers.container.get_ecs_manager")
-    async def test_returns_null_last_error_when_absent(self, mock_get_ecs, async_client):
+    @patch("routers.container.container_repo.get_by_owner_id")
+    async def test_returns_null_last_error_when_absent(self, mock_get_row, async_client):
         """Should return null for last_error and last_error_at when not set on the container."""
-        mock_ecs = AsyncMock()
-        mock_get_ecs.return_value = mock_ecs
-        mock_ecs.resolve_running_container = AsyncMock(
-            return_value=(
-                {
-                    "owner_id": "user_test_123",
-                    "service_name": "openclaw-abc123",
-                    "gateway_token": "secret-token-value",
-                    "status": "running",
-                    "substatus": None,
-                    "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
-                    "access_point_id": "fsap-test123",
-                    "created_at": "2026-01-15T12:00:00+00:00",
-                    "updated_at": "2026-01-15T14:00:00+00:00",
-                },
-                "10.0.1.5",
-            )
-        )
+        mock_get_row.return_value = {
+            "owner_id": "user_test_123",
+            "gateway_token": "secret-token-value",
+            "status": "running",
+            "substatus": None,
+            "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
+            "access_point_id": "fsap-test123",
+            "created_at": "2026-01-15T12:00:00+00:00",
+            "updated_at": "2026-01-15T14:00:00+00:00",
+        }
 
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
@@ -414,16 +375,13 @@ class TestContainerStatus:
     @patch("routers.container.asyncio.create_task")
     @patch("routers.container.ensure_user_ready", new_callable=AsyncMock)
     @patch("routers.container.evaluate_provision_gate", new_callable=AsyncMock)
-    @patch("routers.container.get_ecs_manager")
+    @patch("routers.container.container_repo.get_by_owner_id")
     async def test_returns_provisioning_without_container(
-        self, mock_get_ecs, mock_gate, mock_ensure, mock_create_task, async_client
+        self, mock_get_row, mock_gate, mock_ensure, mock_create_task, async_client
     ):
         """No container row + no gate fires (owner) -> dispatch ensure_user_ready
         and return 200 with phase=provisioning. Replaces former 404 contract."""
-        mock_ecs = AsyncMock()
-        mock_get_ecs.return_value = mock_ecs
-        mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
-        mock_ecs.get_service_status = AsyncMock(return_value=None)
+        mock_get_row.return_value = None
         mock_gate.return_value = None  # no gate fires
         mock_create_task.side_effect = lambda c: c.close() or MagicMock()
         response = await async_client.get("/api/v1/container/status")
@@ -464,12 +422,10 @@ class TestContainerStatusGate:
 
         mock_auth = _workspace_auth()
 
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
-        fake_ecs.get_service_status = AsyncMock(return_value=None)
+        _row = None
 
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "routers.container.evaluate_provision_gate",
                 new_callable=AsyncMock,
@@ -492,12 +448,10 @@ class TestContainerStatusGate:
         from routers.container import container_status
 
         captured = []
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
-        fake_ecs.get_service_status = AsyncMock(return_value=None)
+        _row = None
 
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "routers.container.evaluate_provision_gate",
                 new_callable=AsyncMock,
@@ -530,12 +484,10 @@ class TestContainerStatusGate:
         repo.get_onboarding_state = AsyncMock(
             return_value=_onboarding_state_with(funnel_state="complete", onboarding_generation="onb_g")
         )
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
-        fake_ecs.get_service_status = AsyncMock(return_value=None)
+        _row = None
 
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("routers.container.evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
             patch("routers.container.ensure_user_ready", new=AsyncMock()),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
@@ -553,22 +505,15 @@ class TestContainerStatusGate:
 
         mock_auth = _workspace_auth()
 
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(
-            return_value=(
-                {
-                    "service_name": "openclaw-existing",
-                    "status": "running",
-                    "substatus": None,
-                    "created_at": "2026-01-15T12:00:00+00:00",
-                    "updated_at": "2026-01-15T12:00:00+00:00",
-                },
-                "10.0.1.5",
-            )
-        )
+        _row = {
+            "status": "running",
+            "substatus": None,
+            "created_at": "2026-01-15T12:00:00+00:00",
+            "updated_at": "2026-01-15T12:00:00+00:00",
+        }
 
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "routers.container.evaluate_provision_gate",
                 new_callable=AsyncMock,
@@ -584,7 +529,6 @@ class TestContainerStatusGate:
         # Working container path must never call the gate — billing churn
         # (cancel/resubscribe) shouldn't 402 a user with a live container.
         mock_gate.assert_not_called()
-        assert result["service_name"] == "openclaw-existing"
         assert result["container_status"] == "running"
 
     @pytest.mark.asyncio
@@ -600,21 +544,14 @@ class TestContainerStatusGate:
         from core.services import trial_cap
         from routers.container import container_status
 
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(
-            return_value=(
-                {
-                    "service_name": "openclaw-zombie",
-                    "status": "running",
-                    "substatus": "gateway_healthy",
-                    "bedrock_revoked": True,
-                },
-                None,
-            )
-        )
+        _row = {
+            "status": "running",
+            "substatus": "gateway_healthy",
+            "bedrock_revoked": True,
+        }
 
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             # Restore declines (still capped) and leaves the flag set.
             patch("routers.container.maybe_restore_trial_bedrock", new=AsyncMock()),
             patch(
@@ -637,21 +574,14 @@ class TestContainerStatusGate:
         restore path is metronome_gate's, not the trial one)."""
         from routers.container import container_status
 
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(
-            return_value=(
-                {
-                    "service_name": "openclaw-paid",
-                    "status": "running",
-                    "substatus": "gateway_healthy",
-                    "bedrock_revoked": True,
-                },
-                "10.0.1.5",
-            )
-        )
+        _row = {
+            "status": "running",
+            "substatus": "gateway_healthy",
+            "bedrock_revoked": True,
+        }
 
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("routers.container.maybe_restore_trial_bedrock", new=AsyncMock()),
             patch(
                 "core.services.trial_cap.trial_block_reason",
@@ -664,8 +594,6 @@ class TestContainerStatusGate:
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             result = await container_status(auth=_workspace_auth())
-
-        assert result["service_name"] == "openclaw-paid"
         assert result["container_status"] == "running"
 
     @pytest.mark.asyncio
@@ -697,11 +625,9 @@ class TestContainerStatusGate:
             action_admin_only=True,
             owner_role="admin",
         )
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
-        fake_ecs.get_service_status = AsyncMock(return_value=None)
+        _row = None
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "routers.container.evaluate_provision_gate",
                 new_callable=AsyncMock,
@@ -738,12 +664,10 @@ class TestContainerStatusGate:
 
         mock_auth = _workspace_auth()
 
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
-        fake_ecs.get_service_status = AsyncMock(return_value=None)
+        _row = None
 
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "routers.container.evaluate_provision_gate",
                 new_callable=AsyncMock,
@@ -782,19 +706,13 @@ class TestContainerStatusEnsureUserReadyDispatch:
             captured.append(coro.__qualname__)
             coro.close()
 
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(None, None)),
-            get_service_status=AsyncMock(return_value=None),
-        )
+        _row = None
         with (
             patch(
                 "routers.container.evaluate_provision_gate",
                 new=AsyncMock(return_value=None),
             ),
-            patch(
-                "routers.container.get_ecs_manager",
-                return_value=fake_ecs,
-            ),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "routers.container.ensure_user_ready",
                 new=_noop_ensure_user_ready,
@@ -828,13 +746,10 @@ class TestContainerStatusEnsureUserReadyDispatch:
         repo = _paperclip_repo_stub()
         repo.get_onboarding_state = AsyncMock(return_value=onboarding)
 
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(None, None)),
-            get_service_status=AsyncMock(return_value=None),
-        )
+        _row = None
         with (
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
@@ -865,13 +780,10 @@ class TestContainerStatusEnsureUserReadyDispatch:
         repo = _paperclip_repo_stub()
         repo.get_onboarding_state = AsyncMock(return_value=onboarding)
 
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(None, None)),
-            get_service_status=AsyncMock(return_value=None),
-        )
+        _row = None
         with (
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
@@ -894,13 +806,10 @@ class TestContainerStatusEnsureUserReadyDispatch:
             captured.append(coro.__qualname__)
             coro.close()
 
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(None, None)),
-            get_service_status=AsyncMock(return_value=None),
-        )
+        _row = None
         with (
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=_paperclip_repo_stub()),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
@@ -923,16 +832,13 @@ class TestContainerStatusEnsureUserReadyDispatch:
             captured.append(coro.__qualname__)
             coro.close()
 
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(None, None)),
-            get_service_status=AsyncMock(return_value=None),
-        )
+        _row = None
         with (
             patch(
                 "routers.container.evaluate_provision_gate",
                 new=AsyncMock(return_value=None),
             ),
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "routers.container.ensure_user_ready",
                 new=_noop_ensure_user_ready,
@@ -960,13 +866,10 @@ class TestContainerStatusEnsureUserReadyDispatch:
             captured.append(coro.__qualname__)
             coro.close()
 
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(None, None)),
-            get_service_status=AsyncMock(return_value=None),
-        )
+        _row = None
         with (
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "routers.container.ensure_user_ready",
                 new=_noop_ensure_user_ready,
@@ -991,13 +894,10 @@ class TestContainerStatusEnsureUserReadyDispatch:
         from routers.container import container_status
 
         fake_gate = MagicMock(to_payload=lambda: {"blocked": {"code": "x"}})
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(None, None)),
-            get_service_status=AsyncMock(return_value=None),
-        )
+        _row = None
         with (
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=fake_gate)),
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             with pytest.raises(HTTPException) as exc_info:
@@ -1022,7 +922,6 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
         from routers.container import container_status
 
         fake_container = {
-            "service_name": "svc-x",
             "status": "running",
             "substatus": None,
             "created_at": "2026-05-08T00:00:00Z",
@@ -1030,9 +929,7 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
             "last_error": None,
             "last_error_at": None,
         }
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(fake_container, "10.0.0.1")),
-        )
+        _row = fake_container
         captured: list[str] = []
 
         def capture_task(coro):
@@ -1040,7 +937,7 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
             coro.close()
 
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
             patch("core.services.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}),
@@ -1064,7 +961,6 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
         from routers.container import container_status
 
         fake_container = {
-            "service_name": "svc-x",
             "status": "running",
             "substatus": None,
             "created_at": "2026-05-08T00:00:00Z",
@@ -1072,9 +968,7 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
             "last_error": None,
             "last_error_at": None,
         }
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(fake_container, "10.0.0.1")),
-        )
+        _row = fake_container
         captured: list[str] = []
 
         def capture_task(coro):
@@ -1082,7 +976,7 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
             coro.close()
 
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
             patch("core.services.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}),
@@ -1113,17 +1007,6 @@ class TestContainerStatusTrialConversion:
     """
 
     @staticmethod
-    def _ecs(row):
-        """ECS manager stub: a stopped/error row resolves through
-        get_service_status, a running one through resolve_running_container."""
-        running = row.get("status") == "running"
-        return MagicMock(
-            resolve_running_container=AsyncMock(return_value=((row, "10.0.0.1") if running else (None, None))),
-            get_service_status=AsyncMock(return_value=row),
-            has_live_service=AsyncMock(return_value=False),
-        )
-
-    @staticmethod
     def _patches(row, *, subscription_status="active", captured=None, repo=None):
         """Common wiring: gate clear, not over the cap, phase stubbed, and the
         conversion helpers' repos stubbed. ``repo`` is the fake container_repo
@@ -1147,14 +1030,8 @@ class TestContainerStatusTrialConversion:
             repo.is_provision_claim_stale = _real_stale
 
         return (
-            patch("routers.container.get_ecs_manager", return_value=TestContainerStatusTrialConversion._ecs(row)),
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
             patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
-            patch(
-                "core.services.container_rpc.call",
-                new_callable=AsyncMock,
-                side_effect=ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True),
-            ),
             patch("routers.container.container_repo", new=repo),
             patch.object(handlers, "container_repo", new=repo),
             patch.object(
@@ -1182,6 +1059,7 @@ class TestContainerStatusTrialConversion:
             return row
 
         return MagicMock(
+            get_by_owner_id=AsyncMock(side_effect=lambda _owner_id: row),
             update_fields=AsyncMock(side_effect=update_fields),
             update_conversion_fields=AsyncMock(side_effect=update_fields),
             update_status=AsyncMock(side_effect=update_status),
@@ -1195,7 +1073,6 @@ class TestContainerStatusTrialConversion:
         from routers.container import container_status
 
         row = {
-            "service_name": "svc",
             "status": "stopped",
             "substatus": "converting",
             "conversion_pending": True,
@@ -1222,7 +1099,6 @@ class TestContainerStatusTrialConversion:
         from routers.container import container_status
 
         row = {
-            "service_name": "svc",
             "status": "stopped",
             "substatus": None,  # clobbered by stop_user_service
             "conversion_pending": True,
@@ -1243,7 +1119,7 @@ class TestContainerStatusTrialConversion:
         """A stopped workspace initializes its trial before auto-retry gating."""
         from routers.container import container_status
 
-        row = {"service_name": "svc", "status": "stopped", "substatus": None}
+        row = {"status": "stopped", "substatus": None}
         repo = self._repo(row)
         captured: list[str] = []
         initialized = False
@@ -1282,7 +1158,6 @@ class TestContainerStatusTrialConversion:
         from routers.container import container_status
 
         row = {
-            "service_name": "svc",
             "status": "running",  # still the trial box: never got stopped
             "substatus": None,
             "conversion_pending": True,
@@ -1309,7 +1184,6 @@ class TestContainerStatusTrialConversion:
         from routers.container import container_status
 
         row = {
-            "service_name": "svc",
             "status": "running",
             "substatus": None,
             "conversion_pending": True,
@@ -1336,21 +1210,15 @@ class TestContainerStatusTrialBedrockRestore:
     """
 
     @staticmethod
-    def _ecs(row):
-        running = row.get("status") == "running"
-        return MagicMock(
-            resolve_running_container=AsyncMock(return_value=((row, "10.0.0.1") if running else (None, None))),
-            get_service_status=AsyncMock(return_value=row),
-            has_live_service=AsyncMock(return_value=False),
-        )
-
-    @staticmethod
     def _repo(row):
         async def update_status(owner_id, status, substatus=None):
             row.update({"status": status, "substatus": substatus})
             return row
 
-        return MagicMock(update_status=AsyncMock(side_effect=update_status))
+        return MagicMock(
+            get_by_owner_id=AsyncMock(side_effect=lambda _owner_id: row),
+            update_status=AsyncMock(side_effect=update_status),
+        )
 
     @pytest.mark.asyncio
     async def test_revoked_stopped_row_restores_bedrock_then_auto_retries(self):
@@ -1360,7 +1228,7 @@ class TestContainerStatusTrialBedrockRestore:
         bring the container back'."""
         from routers.container import container_status
 
-        row = {"service_name": "svc", "status": "stopped", "substatus": None, "bedrock_revoked": True}
+        row = {"status": "stopped", "substatus": None, "bedrock_revoked": True}
         repo = self._repo(row)
         restore = AsyncMock()
         captured: list[str] = []
@@ -1373,7 +1241,6 @@ class TestContainerStatusTrialBedrockRestore:
             return MagicMock()
 
         with (
-            patch("routers.container.get_ecs_manager", return_value=self._ecs(row)),
             patch("routers.container.container_repo", new=repo),
             patch(
                 "core.services.provision_gate.billing_repo.get_by_owner_id",
@@ -1411,10 +1278,10 @@ class TestContainerStatusTrialBedrockRestore:
         touches billing at all) never fires."""
         from routers.container import container_status
 
-        row = {"service_name": "svc", "status": "running", "substatus": None}
+        row = {"status": "running", "substatus": None}
 
         with (
-            patch("routers.container.get_ecs_manager", return_value=self._ecs(row)),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
             patch(
                 "core.services.provision_gate.billing_repo.get_by_owner_id",
                 new=AsyncMock(return_value=None),
@@ -1435,7 +1302,7 @@ class TestContainerStatusTrialBedrockRestore:
         regardless (bedrock_revoked simply stays set for the next poll)."""
         from routers.container import container_status
 
-        row = {"service_name": "svc", "status": "stopped", "substatus": None, "bedrock_revoked": True}
+        row = {"status": "stopped", "substatus": None, "bedrock_revoked": True}
         repo = self._repo(row)
         captured: list[str] = []
 
@@ -1445,7 +1312,6 @@ class TestContainerStatusTrialBedrockRestore:
             return MagicMock()
 
         with (
-            patch("routers.container.get_ecs_manager", return_value=self._ecs(row)),
             patch("routers.container.container_repo", new=repo),
             patch(
                 "core.services.provision_gate.billing_repo.get_by_owner_id",
@@ -1470,94 +1336,6 @@ class TestContainerStatusTrialBedrockRestore:
         assert result["container_status"] == "provisioning"  # the poll still answers normally
 
 
-class TestContainerProvisionStartGuards:
-    """POST /container/provision vs. the start chokepoint (Task 13).
-
-    /provision restarts a `stopped` container directly — the branch deliberately
-    skips the payment gate ("billing churns; don't 402 someone asking about a
-    container they already have"), which meant it ALSO skipped the free-tier cap
-    and the conversion guard that GET /container/status applies. Two doors, one
-    guarded. Both checks now live in ``ecs_manager.start_user_service``; these
-    tests pin how this router surfaces each refusal.
-    """
-
-    @staticmethod
-    def _ecs(*, refusal: Exception | None = None):
-        return MagicMock(
-            start_user_service=AsyncMock(side_effect=refusal),
-        )
-
-    @staticmethod
-    def _stopped_row():
-        return {"status": "stopped", "service_name": "openclaw-foo"}
-
-    @pytest.mark.asyncio
-    async def test_over_cap_owner_gets_the_same_402_limit_card_as_the_status_path(self):
-        """The whole point: a capped-out trial owner who calls /provision
-        directly gets the identical limit card GET /status returns — not a
-        woken container."""
-        from core.containers.ecs_manager import START_REFUSED_CAP, ContainerStartRefused
-        from core.services.provision_gate import trial_daily_cap_gate
-        from routers.container import container_provision
-
-        ecs = self._ecs(refusal=ContainerStartRefused(START_REFUSED_CAP, "org_x", "over cap"))
-        with (
-            patch(
-                "routers.container.container_repo.get_by_owner_id",
-                new=AsyncMock(return_value=self._stopped_row()),
-            ),
-            patch("routers.container.get_ecs_manager", return_value=ecs),
-        ):
-            with pytest.raises(HTTPException) as exc:
-                await container_provision(_workspace_auth())
-
-        assert exc.value.status_code == 402
-        assert exc.value.detail == trial_daily_cap_gate("admin").to_payload()
-        assert exc.value.detail["blocked"]["code"] == "trial_daily_cap"
-
-    @pytest.mark.asyncio
-    async def test_conversion_in_flight_returns_a_pollable_status_and_starts_nothing(self):
-        """A conversion reprovision is mid-drain. /provision must not dispatch a
-        second one (the EFS-WAL double-writer), and must not hand the caller an
-        error either — the container IS coming back. Return the pollable
-        provisioning shape the caller already understands."""
-        from core.containers.ecs_manager import START_REFUSED_CONVERTING, ContainerStartRefused
-        from routers.container import container_provision
-
-        ecs = self._ecs(refusal=ContainerStartRefused(START_REFUSED_CONVERTING, "org_x", "converting"))
-        with (
-            patch(
-                "routers.container.container_repo.get_by_owner_id",
-                new=AsyncMock(return_value=self._stopped_row()),
-            ),
-            patch("routers.container.get_ecs_manager", return_value=ecs),
-        ):
-            result = await container_provision(_workspace_auth())
-
-        assert result["status"] == "provisioning"
-        assert result["substatus"] == "converting"
-        assert result["already_existed"] is True
-
-    @pytest.mark.asyncio
-    async def test_unrefused_start_still_restarts_the_container(self):
-        """Regression: the ordinary cold start (paid owner, under-cap trial,
-        no conversion) still wakes the container."""
-        from routers.container import container_provision
-
-        ecs = self._ecs()
-        with (
-            patch(
-                "routers.container.container_repo.get_by_owner_id",
-                new=AsyncMock(return_value=self._stopped_row()),
-            ),
-            patch("routers.container.get_ecs_manager", return_value=ecs),
-        ):
-            result = await container_provision(_workspace_auth())
-
-        ecs.start_user_service.assert_awaited_once_with("org_x")
-        assert result["status"] == "provisioning"
-
-
 class TestContainerStatusHonestError:
     """GET /container/status must tell the truth about a FAILED provision
     (Part B). An `error` row is no longer masked as `provisioning`/`auto_retry`:
@@ -1568,18 +1346,8 @@ class TestContainerStatusHonestError:
     stale-lease liveness recovery is untouched.
     """
 
-    @staticmethod
-    def _ecs(row, *, has_live=False):
-        """error/stopped/provisioning rows resolve via get_service_status;
-        resolve_running_container returns (None, None) for a non-running row."""
-        return MagicMock(
-            resolve_running_container=AsyncMock(return_value=(None, None)),
-            get_service_status=AsyncMock(return_value=row),
-            has_live_service=AsyncMock(return_value=has_live),
-        )
-
     @classmethod
-    def _patches(cls, row, *, captured, has_live=False):
+    def _patches(cls, row, *, captured):
         """Gate clear, not capped, phase stubbed, conversion inert. Records
         each create_task dispatch's qualname into `captured`."""
 
@@ -1591,7 +1359,7 @@ class TestContainerStatusHonestError:
             return MagicMock()
 
         return (
-            patch("routers.container.get_ecs_manager", return_value=cls._ecs(row, has_live=has_live)),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
             patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
             patch(
@@ -1609,7 +1377,6 @@ class TestContainerStatusHonestError:
         from routers.container import container_status
 
         row = {
-            "service_name": "svc",
             "status": "error",
             "substatus": "provision_failed",
             "last_error": "ValueError: bad config",
@@ -1634,7 +1401,6 @@ class TestContainerStatusHonestError:
         from routers.container import container_status
 
         row = {
-            "service_name": "svc",
             "status": "error",
             "substatus": "provision_failed",
             "last_error": "EcsManagerError: spot reclaimed",
@@ -1658,7 +1424,7 @@ class TestContainerStatusHonestError:
         self-healing behaviour: auto re-dispatch, reported as error_retrying."""
         from routers.container import container_status
 
-        row = {"service_name": "svc", "status": "error", "substatus": None, "last_error": None}
+        row = {"status": "error", "substatus": None, "last_error": None}
         captured: list[str] = []
         with contextlib.ExitStack() as stack:
             for p in self._patches(row, captured=captured):
@@ -1676,7 +1442,7 @@ class TestContainerStatusHonestError:
         untouched by the error split."""
         from routers.container import container_status
 
-        row = {"service_name": "svc", "status": "stopped", "substatus": None}
+        row = {"status": "stopped", "substatus": None}
         captured: list[str] = []
         with contextlib.ExitStack() as stack:
             for p in self._patches(row, captured=captured):
@@ -1699,14 +1465,13 @@ class TestContainerStatusHonestError:
         from routers.container import container_status
 
         row = {
-            "service_name": "svc",
             "status": "provisioning",
             "substatus": None,
             "provision_claimed_at": int(_time.time()) - PROVISION_CLAIM_STALE_S - 100,
         }
         captured: list[str] = []
         with contextlib.ExitStack() as stack:
-            for p in self._patches(row, captured=captured, has_live=False):
+            for p in self._patches(row, captured=captured):
                 stack.enter_context(p)
             result = await container_status(_workspace_auth())
 
@@ -1739,13 +1504,10 @@ class TestContainerStatusTeamsStatus:
         leak a real background provisioning task."""
         from routers.container import container_status
 
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(
-            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
-        )
+        _row = {"status": "running", "substatus": None}
         failed_repo = _paperclip_repo_stub("failed")
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "core.services.container_rpc.call",
                 new=AsyncMock(return_value={"ok": True}),
@@ -1766,13 +1528,10 @@ class TestContainerStatusTeamsStatus:
         flat duplicate is gone (spec PR-9, CLIENT-HOOK)."""
         from routers.container import container_status
 
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(
-            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
-        )
+        _row = {"status": "running", "substatus": None}
         active_repo = _paperclip_repo_stub("active")
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "core.services.container_rpc.call",
                 new=AsyncMock(return_value={"ok": True}),
@@ -1796,13 +1555,10 @@ class TestContainerStatusTeamsStatus:
             captured.append(coro.__qualname__)
             coro.close()
 
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(
-            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
-        )
+        _row = {"status": "running", "substatus": None}
         failed_repo = _paperclip_repo_stub("failed")
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "core.services.container_rpc.call",
                 new=AsyncMock(return_value={"ok": True}),
@@ -1833,13 +1589,10 @@ class TestContainerStatusTeamsStatus:
             captured.append(coro.__qualname__)
             coro.close()
 
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(
-            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
-        )
+        _row = {"status": "running", "substatus": None}
         active_repo = _paperclip_repo_stub("active")
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "core.services.container_rpc.call",
                 new=AsyncMock(return_value={"ok": True}),
@@ -1864,13 +1617,10 @@ class TestContainerStatusTeamsStatus:
             captured.append(coro.__qualname__)
             coro.close()
 
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(
-            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
-        )
+        _row = {"status": "running", "substatus": None}
         active_repo = _paperclip_repo_stub("active")
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "core.services.container_rpc.call",
                 new=AsyncMock(return_value={"ok": True}),
@@ -1907,13 +1657,10 @@ class TestContainerStatusTeamsStatus:
             captured.append(coro.__qualname__)
             coro.close()
 
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(
-            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
-        )
+        _row = {"status": "running", "substatus": None}
         active_repo = _paperclip_repo_stub("active")
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "core.services.container_rpc.call",
                 new=AsyncMock(return_value={"ok": True}),
@@ -1945,10 +1692,7 @@ class TestContainerStatusTeamsStatus:
         """The hot ready-poll path reads paperclip-companies only once."""
         from routers.container import container_status
 
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(
-            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
-        )
+        _row = {"status": "running", "substatus": None}
         onboarding_state = _onboarding_state_stub("active")
         onboarding_state["onboarding_generation"] = "01G"
         onboarding_state["funnel_state"] = "submitted"
@@ -1958,7 +1702,7 @@ class TestContainerStatusTeamsStatus:
         repo.get = AsyncMock(return_value=SimpleNamespace(status="active"))
         repo.get_onboarding_state = AsyncMock(return_value=onboarding_state)
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch(
                 "core.services.container_rpc.call",
                 new=AsyncMock(return_value={"ok": True}),
@@ -1984,6 +1728,9 @@ def _onboarding_state_with(
     return state
 
 
+_RUNNING_ROW = {"status": "running", "substatus": None}
+
+
 class TestContainerStatusOnboarded:
     """GET /container/status surfaces `onboarded` from the paperclip-companies
     OWNER row's funnel_state (spec PR-4 / ONBOARD-TABLE — supersedes the old
@@ -1993,13 +1740,6 @@ class TestContainerStatusOnboarded:
     row and NOT the containers row. The router no longer resolves it itself
     (INV-1: compute_status is the sole composer)."""
 
-    def _running_ecs(self):
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(
-            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
-        )
-        return fake_ecs
-
     async def _status_with_onboarding(self, onboarding_state: dict) -> dict:
         from routers.container import container_status
 
@@ -2007,7 +1747,7 @@ class TestContainerStatusOnboarded:
         repo.get = AsyncMock(return_value=SimpleNamespace(status="active"))
         repo.get_onboarding_state = AsyncMock(return_value=onboarding_state)
         with (
-            patch("routers.container.get_ecs_manager", return_value=self._running_ecs()),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_RUNNING_ROW)),
             patch("core.services.container_rpc.call", new=AsyncMock(return_value={"ok": True})),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),

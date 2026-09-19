@@ -1,30 +1,17 @@
-"""Wake-on-intent policy for parked trial containers — the single predicate.
+"""Parked-trial policy for an AgentCore workspace — the single predicate.
 
-For an ECS row, PARKED iff ``status="stopped"`` AND ``stop_reason ==
-"trial_idle"`` (stamped only by the trial teardown ladder) AND the owner is
-still ``trial_local`` AND no trial→paid conversion is pending. Parked is the
-ONLY state whose wake the status poll may suppress; every other stopped/error
-shape keeps its poll-driven self-heal exactly as before (crashed boxes,
-killswitch stops, stale provision leases, converting rows).
+AWS parks an idle microVM invisibly and wakes it on the next invoke, so a
+workspace row has no ``stopped`` status to read: it stays ``status="running"``
+forever (report 04 risk 2). The only honest park signal left is elapsed time
+since ``last_interactive_at`` against the runtime's own idle timeout
+(``agentcore_runtime.IDLE_TIMEOUT_S``), gated to trial owners.
 
-For an AgentCore row (``runtime_transport.host_for`` == ``"agentcore"``),
-there is no stopped/stop_reason to read: AWS parks an idle microVM invisibly
-and ``ecs_manager.stop_user_service`` no-ops for this host, so the row stays
-``status="running"`` forever (report 04 risk 2). The only honest signal left
-is elapsed time since ``last_interactive_at`` against the runtime's own idle
-timeout (``agentcore_runtime.IDLE_TIMEOUT_S``) — same trial-only gating,
-different park signal.
-
-Both doors that can wake a container off a passive read — the ``/container/
-status`` auto-retry and the Teams ``resolve_teams_context`` reconcile — MUST
-consult this one module, so they can never disagree about what parked means
-(the asymmetry between those two doors was a verified break in the design
-review). Explicit intent (``POST /container/wake``, chat send, retry buttons)
-never consults the suppress predicate and is never budgeted.
-
-Every public entry point returns ALLOW/no-op when ``TRIAL_WAKE_GATE_ENABLED``
-is off, so the CDK flag (or a plain code revert — the suppress marker is a
-query param, no CORS surface) restores wake-on-read wholesale.
+It is a REPORT, not a gate. There is no scaled-to-zero service left for a
+passive read to start by accident, so nothing here suppresses a wake any more;
+the one remaining consumer that acts on it is ``ensure_user_ready``, which
+declines to dispatch a provision for a workspace that is merely idle. Every
+public entry point returns "not parked" / no-op when ``TRIAL_WAKE_GATE_ENABLED``
+is off, so the CDK flag still restores the pre-gate reporting wholesale.
 """
 
 from __future__ import annotations
@@ -42,10 +29,6 @@ logger = logging.getLogger(__name__)
 # would be pure spam, so emit once per (owner, park episode, door, reason).
 # In-process cache — a restart re-emitting once is fine.
 _suppressed_emitted: dict[str, str] = {}
-
-
-def _utc_today() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 async def _is_trial(owner_id: str, account: Mapping[str, Any] | None) -> bool:
@@ -91,73 +74,26 @@ async def is_parked_trial(
     *,
     account: Mapping[str, Any] | None = None,
 ) -> bool:
-    """The suppress predicate. True ONLY for a healthy, deliberately parked
-    trial box.
+    """The parked predicate. True ONLY for a trial workspace whose microVM AWS has
+    had long enough to park.
 
-    Fails OPEN (returns False → legacy wake behavior) on any uncertainty: flag
-    off, missing row, non-``stopped`` status, missing/foreign ``stop_reason``,
-    a pending conversion (its reprovision owns the row — waking under it is
-    the documented EFS-WAL two-task corruption window), a non-trial owner, a
-    billing read failure, or (AgentCore only) a missing/unparseable
-    ``last_interactive_at``. Self-heal must never depend on this predicate
-    being right.
+    Fails OPEN (returns False) on any uncertainty: flag off, missing row, a
+    non-trial owner, a billing read failure, or a missing/unparseable
+    ``last_interactive_at``. Self-heal must never depend on this predicate being
+    right.
     """
     if not settings.TRIAL_WAKE_GATE_ENABLED:
         return False
     if not container:
         return False
-
-    from core.services.runtime_transport import host_for
-
-    if host_for(container) == "agentcore":
-        if not await _is_trial(owner_id, account):
-            return False
-        last = _last_interactive_epoch(container)
-        if last is None:
-            return False  # fail OPEN: a fresh row must not show "Agents asleep" pre-first-use
-        from core.services.agentcore_runtime import IDLE_TIMEOUT_S
-
-        return (datetime.now(timezone.utc).timestamp() - last) > IDLE_TIMEOUT_S
-
-    if container.get("status") != "stopped":
+    if not await _is_trial(owner_id, account):
         return False
-    if container.get("stop_reason") != "trial_idle":
-        return False
-    if container.get("conversion_pending"):
-        return False
-    return await _is_trial(owner_id, account)
+    last = _last_interactive_epoch(container)
+    if last is None:
+        return False  # fail OPEN: a fresh row must not show "Agents asleep" pre-first-use
+    from core.services.agentcore_runtime import IDLE_TIMEOUT_S
 
-
-async def legacy_wake_allowed(owner_id: str) -> bool:
-    """Debit the legacy poll-wake budget and say whether this wake may proceed.
-
-    Called ONLY when a request with no ``wake`` marker (a pre-gate frontend
-    bundle, or any non-browser poller) is about to wake a PARKED row. Bounds
-    never-reloaded old tabs to ``TRIAL_WAKE_DAILY_BUDGET`` container starts per
-    UTC day. The debit is written first, then judged — an over-budget caller
-    still consumed a debit, which keeps the counter an honest record of
-    attempts.
-    """
-    if not settings.TRIAL_WAKE_GATE_ENABLED:
-        return True
-    from core.repositories import container_repo
-
-    try:
-        count = await container_repo.record_wake_debit(owner_id, _utc_today())
-    except Exception:
-        logger.exception("wake_policy debit failed owner=%s — allowing wake", owner_id)
-        return True
-    return count <= settings.TRIAL_WAKE_DAILY_BUDGET
-
-
-def note_wake_dispatched(*, door: str, intent: str) -> None:
-    """Emit the dispatch metric — call at EVERY door that starts a container
-    (poll, legacy poll, wake endpoint, chat send, teams, recover, provision,
-    retry, admin), so no wake is unattributable."""
-    try:
-        put_metric("container.wake.dispatch", dimensions={"door": door, "intent": intent})
-    except Exception:
-        logger.debug("wake dispatch metric emission failed", exc_info=True)
+    return (datetime.now(timezone.utc).timestamp() - last) > IDLE_TIMEOUT_S
 
 
 def note_wake_suppressed(

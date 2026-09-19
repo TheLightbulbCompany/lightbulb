@@ -94,20 +94,23 @@ async def test_harness_poll_pending(async_client):
 
 
 @pytest.mark.asyncio
-async def test_harness_poll_completed_stages_opencode_auth(async_client, oauth_table, tmp_path, monkeypatch):
-    """Completion writes OpenCode's auth.json to EFS — that write IS the
-    connect (the container config already advertises the harness)."""
-    monkeypatch.setenv("EFS_MOUNT_PATH", str(tmp_path))
+async def test_harness_poll_completes_on_the_row_alone(async_client, oauth_table):
+    """KNOWN DEAD DOOR (M6): the row IS the grant now, and nothing consumes it.
+
+    The staged OpenCode ``auth.json`` that used to make completion real went with the runtime,
+    and a Hermes profile advertises no coding harness at all (``build_profile_config`` writes no
+    ACP block) -- so this was already inert for every migrated workspace before the write was
+    deleted. The row lifecycle stays so the onboarding step the frontend still renders does not
+    404 mid-flow.
+    """
     _seed_active_row(row_key="user_test_123#harness", bound_owner_id="org_test_456")
     done = DevicePollResult(account_id="acc_h", bound_owner_id="org_test_456")
     with patch("routers.oauth.poll_device_code", new=AsyncMock(return_value=done)):
         resp = await async_client.post("/api/v1/oauth/chatgpt/harness/poll")
     assert resp.status_code == 200
     assert resp.json() == {"status": "completed", "account_id": "acc_h"}
-    written = json.loads((tmp_path / "org_test_456" / "opencode-data" / "opencode" / "auth.json").read_text())
-    assert written["openai"]["type"] == "oauth"
-    assert written["openai"]["access"] == "harness_access"
-    assert written["openai"]["refresh"] == "harness_refresh"
+    status = await async_client.get("/api/v1/oauth/chatgpt/harness/status")
+    assert status.json() == {"connected": True, "account_id": "acc_h"}
 
 
 @pytest.mark.asyncio
@@ -148,53 +151,14 @@ async def test_harness_disconnect_skips_row_bound_to_another_workspace(async_cli
 
 
 @pytest.mark.asyncio
-async def test_harness_disconnect_deletes_row_and_efs_file(async_client, oauth_table, tmp_path, monkeypatch):
-    monkeypatch.setenv("EFS_MOUNT_PATH", str(tmp_path))
+async def test_harness_disconnect_deletes_the_row(async_client, oauth_table):
+    """The row IS the grant (see the poll test above), so deleting it is the whole disconnect --
+    there is no staged file left to unlink first."""
     _seed_active_row(row_key="user_test_123#harness", bound_owner_id="org_test_456")
-    auth_path = tmp_path / "org_test_456" / "opencode-data" / "opencode" / "auth.json"
-    auth_path.parent.mkdir(parents=True)
-    auth_path.write_text("{}")
 
     resp = await async_client.post("/api/v1/oauth/chatgpt/harness/disconnect")
     assert resp.status_code == 200
     assert resp.json() == {"status": "disconnected"}
-    assert not auth_path.exists()
-    status = await async_client.get("/api/v1/oauth/chatgpt/harness/status")
-    assert status.json()["connected"] is False
-
-
-@pytest.mark.asyncio
-async def test_harness_disconnect_502_when_unlink_fails_and_row_survives(async_client, oauth_table):
-    """A failed EFS unlink is a failed disconnect: the file IS the credential
-    (config advertises the harness unconditionally), so reporting
-    'disconnected' over a surviving auth.json would leave a live, spawnable
-    credential the UI claims is gone. The row must survive so status stays
-    truthful and the user retries."""
-    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="org_test_456")
-    with patch("routers.oauth.delete_opencode_auth", new=AsyncMock(side_effect=OSError("efs io"))):
-        resp = await async_client.post("/api/v1/oauth/chatgpt/harness/disconnect")
-    assert resp.status_code == 502
-    status = await async_client.get("/api/v1/oauth/chatgpt/harness/status")
-    assert status.json()["connected"] is True
-
-
-@pytest.mark.asyncio
-async def test_harness_poll_staging_failure_revokes_row_and_502s(async_client, oauth_table):
-    """If the EFS staging write fails, completion must NOT be reported: for a
-    running workspace nothing re-writes the file until a future provision
-    event, so 'Connected' would be a lie with every spawn failing. The
-    just-activated row is revoked so a fresh /harness/start works."""
-    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="org_test_456")
-    done = DevicePollResult(account_id="acc_h", bound_owner_id="org_test_456")
-    with (
-        patch("routers.oauth.poll_device_code", new=AsyncMock(return_value=done)),
-        patch(
-            "routers.oauth.pre_stage_opencode_auth",
-            new=AsyncMock(side_effect=OSError("efs full")),
-        ),
-    ):
-        resp = await async_client.post("/api/v1/oauth/chatgpt/harness/poll")
-    assert resp.status_code == 502
     status = await async_client.get("/api/v1/oauth/chatgpt/harness/status")
     assert status.json()["connected"] is False
 

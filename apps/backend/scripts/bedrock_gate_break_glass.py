@@ -18,8 +18,8 @@ This script is the escape hatch. Full procedure — BOTH steps are required — 
 
      For each Bedrock-path owner it PUTS the pre-gateway direct-invoke inline
      policy (``build_owner_bedrock_direct_policy``) on the owner role, then
-     reprovisions so openclaw.json/task env re-render in direct mode (they read
-     the SSM parameter via ``bedrock_gate_url.gate_url``).
+     reprovisions so the owner's agent profiles + boot secret re-render in direct
+     mode (they read the SSM parameter via ``bedrock_gate_url.gate_url``).
 
 REVERT (gate healthy again): put the real URL back into the SSM parameter and
 re-run this script with ``--revert`` — it re-puts the fence policy
@@ -53,8 +53,8 @@ async def main(*, env: str, apply: bool, revert: bool, owner: str | None) -> int
     os.environ["ENVIRONMENT"] = env
 
     from core.billing import bedrock_aip
-    from core.containers import get_ecs_manager
     from core.repositories import billing_repo, container_repo
+    from core.services.provision_dispatch import dispatch_provision
 
     # Resolve targets: one owner, or every Bedrock-path owner with a container.
     if owner:
@@ -89,7 +89,6 @@ async def main(*, env: str, apply: bool, revert: bool, owner: str | None) -> int
         print("DRY RUN — pass --apply to mutate IAM and reprovision")
         return 0
 
-    ecs_manager = get_ecs_manager()
     failures: list[str] = []
     for owner_id, _plan in targets:
         try:
@@ -104,8 +103,8 @@ async def main(*, env: str, apply: bool, revert: bool, owner: str | None) -> int
                 regions=bedrock_aip.aip_fan_out_regions(),
             )
             await bedrock_aip.put_owner_bedrock_policy(owner_id, policy)
-            # Re-render openclaw.json + task env for the current SSM mode.
-            await ecs_manager.reprovision_for_user(owner_id)
+            # Re-render the owner's agent profiles + boot secret for the current SSM mode.
+            await dispatch_provision(owner_id)
             print(f"  OK   {owner_id}")
         except Exception as e:  # noqa: BLE001 — one owner's failure must not abort the fleet
             print(f"  ERR  {owner_id}: {e}")

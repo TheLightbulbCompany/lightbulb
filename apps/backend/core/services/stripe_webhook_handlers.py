@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 #     the stop and the status path stands down while the stamp is live.
 #
 #     The stamp is a TIMESTAMP, not just the substatus, and that is load-
-#     bearing: `ecs_manager.stop_user_service` writes
+#     bearing: a stop writes
 #     `update_status(owner, "stopped")` whose substatus defaults to None, so it
 #     clobbers `substatus="converting"` the instant the drain begins. The
 #     substatus is the human-readable label (and what the UI renders);
@@ -464,18 +464,17 @@ async def run_conversion_reprovision(owner_id: str) -> None:
     re-arm it at once (``rearm_deferred_conversion``).
 
     Release semantics, both paths:
-      - success: substatus cleared AND `conversion_pending` dropped. The
-        container has been scaled to zero, drained, and a fresh provision
-        dispatched; from here the ordinary auto-retry does the right thing
-        (its scale-from-zero branch re-registers the task def and rewrites
-        openclaw.json from the now-paid provider_choice).
+      - success: substatus cleared AND `conversion_pending` dropped. A fresh
+        provision has been dispatched through the ordinary funnel, which
+        re-derives the owner's AIPs and rewrites every agent profile from the
+        now-paid provider_choice. Nothing is stopped or drained first —
+        AgentCore has no task to scale to zero, and the profile rewrite the
+        provision performs is what the next turn reads.
       - failure: substatus cleared — never strand the row in a state nothing
         acts on — but `conversion_pending` DELIBERATELY survives. It is the
         only record that this owner is paying for a trial-shaped container,
         and it is what `maybe_resume_stuck_conversion` re-fires off.
     """
-    from core.containers import get_ecs_manager
-
     missing = await _conversion_prerequisite_gate(owner_id)
     if missing:
         put_metric("billing.trial_conversion.reprovision", dimensions={"outcome": "deferred"})
@@ -506,7 +505,9 @@ async def run_conversion_reprovision(owner_id: str) -> None:
 
     succeeded = False
     try:
-        await get_ecs_manager().reprovision_for_user(owner_id)
+        from core.services.provision_dispatch import dispatch_provision
+
+        await dispatch_provision(owner_id)
         succeeded = True
     except Exception:
         logger.exception("Trial-conversion reprovision failed for owner %s", owner_id)
@@ -805,65 +806,6 @@ def _bridge_subscription_state(
     )
 
 
-async def _apply_ultra_resize(owner_id: str, *, old_plan: str, new_plan: str) -> None:
-    """Resize the owner's container to match a tier TRANSITION.
-
-    No-op unless the tier actually flipped — every ordinary ``.updated`` (renewal,
-    payment-method change) must not bounce the container.
-
-    - Upgrade (→ ultra_pro): grow to the Ultra box.
-    - Downgrade (ultra_pro → standard): shrink to the flat box only when the
-      live roster confirms that doing so is operationally safe. Agent identity
-      count is not a billing entitlement; it remains an independent reliability
-      sizing input. An unavailable count leaves the current task size alone.
-
-    Best-effort: a resize failure must not 500 the webhook back to Stripe.
-    """
-    was_ultra = old_plan == "ultra_pro"
-    now_ultra = new_plan == "ultra_pro"
-    if was_ultra == now_ultra:
-        return  # no tier transition — never resize on a plain .updated
-
-    from core.containers import get_ecs_manager
-    from core.containers.ecs_manager import (
-        PER_USER_CPU,
-        PER_USER_MEMORY_MIB,
-        ULTRA_CPU,
-        ULTRA_MEMORY_MIB,
-        AGENT_RELIABILITY_RESIZE_THRESHOLD,
-    )
-    from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
-
-    try:
-        if now_ultra:
-            await get_ecs_manager().resize_user_container(owner_id, new_cpu=ULTRA_CPU, new_memory=ULTRA_MEMORY_MIB)
-            put_metric("ultra.resize", dimensions={"direction": "up"})
-            return
-
-        agent_count = await count_paperclip_agents_for_owner(owner_id)
-        if agent_count == 0:
-            put_metric("container.reliability_downsize_skipped", dimensions={"reason": "unknown_count"})
-            logger.warning(
-                "Skipping down-resize for owner %s: live agent count is unavailable",
-                owner_id,
-            )
-            return
-        if agent_count > AGENT_RELIABILITY_RESIZE_THRESHOLD:
-            put_metric("container.reliability_downsize_skipped", dimensions={"reason": "live_agent_roster"})
-            logger.info(
-                "Skipping down-resize for owner %s: %d live agents exceed the reliability threshold of %d",
-                owner_id,
-                agent_count,
-                AGENT_RELIABILITY_RESIZE_THRESHOLD,
-            )
-            return
-
-        await get_ecs_manager().resize_user_container(owner_id, new_cpu=PER_USER_CPU, new_memory=PER_USER_MEMORY_MIB)
-        put_metric("ultra.resize", dimensions={"direction": "down"})
-    except Exception:
-        logger.exception("Ultra tier resize failed for owner %s", owner_id)
-
-
 def _workspace_plan_from_subscription_items(event_data: dict[str, Any]) -> str | None:
     """Return the configured Workspace/Ultra plan for one recurring item only.
 
@@ -1079,40 +1021,28 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # anything at all.
         dispatch_company_stripe_request(account["owner_id"])
 
-    old_plan = account.get("plan") or "standard"
     plan_persisted = False
     try:
         await billing_repo.set_plan(account["owner_id"], plan=new_plan, now_iso=utc_now_iso())
         plan_persisted = True
     except Exception:
         logger.exception("Failed to persist plan for owner %s", account["owner_id"])
-    if plan_persisted:
-        await _apply_ultra_resize(account["owner_id"], old_plan=old_plan, new_plan=new_plan)
-
     if old_status == "trial_local" and new_status in ("trialing", "active"):
-        # Trial→paid conversion: the running container is still the locked-down
-        # trial box. We must go through reprovision_for_user, NOT a bare
-        # dispatch_provision: for a RUNNING container provision_user_container
-        # only issues forceNewDeployment (no write_user_configs, no task-def
-        # re-register), so the trial config would survive the conversion.
-        # reprovision_for_user scales to zero + drains first, forcing the
-        # follow-on dispatch_provision down the scale-from-zero branch that
-        # re-registers the task def AND rewrites openclaw.json — genuinely
-        # turning the trial box into a paid one. The status was already
-        # persisted off "trial_local" above, so by the time this runs
-        # resolve_provider_choice reads the stored paid provider_choice. The
-        # reprovision costs the owner a few minutes of container downtime
-        # (drain + image pull) right after paying — unavoidable, since only a
-        # cold roll lifts the trial config.
+        # Trial→paid conversion: the workspace is still on the locked-down trial shape (its
+        # single sonnet AIP, the trial provider block in every agent profile). A provision
+        # re-derives the owner's AIPs and rewrites every profile from the now-paid
+        # provider_choice, which the status persist above already committed — so by the time
+        # this runs, resolve_provider_choice reads the paid value. Nothing is stopped or
+        # drained: there is no task to scale to zero, and the agent reads the rewritten
+        # profile on its next turn.
         # Best-effort: the status persist above already committed, so a raise
         # here would 500 the webhook and Stripe's retry would see
         # old_status != "trial_local" and never re-fire this branch — log and
         # continue instead of dropping the reprovision behind a 500.
         #
         # The stamp is AWAITED here, inside the webhook, before the dispatch:
-        #   - it must land before reprovision_for_user scales to zero, or the
-        #     owner's ~3s /container/status poll auto-retries the "stopped" row
-        #     underneath the drain wait and races two tasks onto the EFS WAL;
+        #   - it must land before the provision, or the owner's ~3s /container/status poll
+        #     can dispatch a second one underneath it;
         #   - `conversion_pending` must be durable even if the fire-and-forget
         #     task below never runs (deploy, crash), because Stripe's retry
         #     will never re-enter this branch. That flag is the only thing that

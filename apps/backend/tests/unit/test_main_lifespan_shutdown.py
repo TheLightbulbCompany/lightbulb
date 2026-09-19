@@ -11,7 +11,6 @@ async def test_lifespan_shutdown_sets_flag_and_is_bounded(monkeypatch):
     shutdown_aware.set_shutting_down(False)
 
     # Stub the heavy startup/shutdown collaborators.
-    monkeypatch.setattr(main, "_resume_wake_resize_transitions", lambda: asyncio.sleep(0))
     # The one-shot `_reconcile_trial_idle_containers` startup call was replaced
     # by the durable `run_trial_idle_sweeper(stop)` background task (imported
     # locally inside `lifespan`), so it's stubbed at its source module instead

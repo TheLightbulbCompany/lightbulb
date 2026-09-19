@@ -129,9 +129,9 @@ async def test_no_addressable_row_still_emits_the_unavailable_metric():
 
 
 @pytest.mark.asyncio
-async def test_status_is_not_a_gate_and_wake_false_still_invokes():
-    """AgentCore wakes the microVM on invoke, so a parked row is addressable and ``wake=False``
-    withholds nothing -- a read-only caller simply invokes."""
+async def test_status_is_not_a_gate_and_a_parked_row_still_invokes():
+    """AgentCore wakes the microVM on the invoke itself, so a parked row is addressable and
+    there is no wake step to withhold -- a read-only caller simply invokes."""
     parked = dict(CONTAINER, status="stopped")
     with (
         _row(parked),
@@ -140,7 +140,7 @@ async def test_status_is_not_a_gate_and_wake_false_still_invokes():
             AsyncMock(return_value=runtime_transport.RuntimeResponse(status_code=200, text='{"ok": true}')),
         ) as request,
     ):
-        await container_rpc.call("owner_1", "health", wake=False)
+        await container_rpc.call("owner_1", "health")
     request.assert_awaited_once()
 
 
@@ -176,4 +176,4 @@ async def test_target_skips_the_row_read_entirely():
             AsyncMock(return_value=runtime_transport.RuntimeResponse(status_code=200, text='{"ok": true}')),
         ),
     ):
-        await container_rpc.call("owner_1", "health", target=(CONTAINER, runtime_transport.AGENTCORE_ADDRESS))
+        await container_rpc.call("owner_1", "health", target=CONTAINER)

@@ -740,7 +740,6 @@ async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypat
             "core.services.billing_service.BillingService.cancel_subscription",
             new=AsyncMock(return_value=None),
         ),
-        patch("core.containers.get_ecs_manager") as mock_ecs,
         patch(
             "core.services.paperclip_provisioning.build_paperclip_provisioning",
             new=AsyncMock(return_value=mock_provisioning),
@@ -753,7 +752,6 @@ async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypat
             new=AsyncMock(return_value={"owner_id": "user_owner", "subscription_status": "canceled"}),
         ),
     ):
-        mock_ecs.return_value.delete_user_service = AsyncMock(return_value=None)
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=b"{}",

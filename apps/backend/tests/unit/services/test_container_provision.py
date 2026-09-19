@@ -11,9 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.containers.config import BEDROCK_TRIAL_CHOICE
-from core.containers.ecs_manager import EcsManager
-from core.services.container_provision import resolve_provider_choice
+from core.services.container_provision import BEDROCK_TRIAL_CHOICE, resolve_provider_choice
 
 
 # ---------------------------------------------------------------------------
@@ -117,42 +115,6 @@ async def test_resolve_provider_choice_no_row_defaults_to_bedrock():
     assert result == ("bedrock_claude", None)
 
 
-async def test_pre_stage_oauth_reads_connector_writes_owner():
-    """The token READ key (connector / workspace owner) is decoupled from
-    the EFS WRITE key (container owner / org_id). For an org, tokens live
-    under the owner's Clerk user_id but the file must land on the org's
-    EFS path — so a single ``user_id`` arg cannot serve both."""
-    mgr = object.__new__(EcsManager)  # no AWS clients needed for this path
-    with (
-        patch(
-            "core.services.oauth_service.get_decrypted_tokens",
-            new=AsyncMock(return_value={"access_token": "a", "refresh_token": "r"}),
-        ) as read,
-        patch(
-            "core.containers.workspace.pre_stage_auth_profile_store",
-            new=AsyncMock(),
-        ) as write,
-        patch(
-            "core.containers.workspace.pre_stage_opencode_auth",
-            new=AsyncMock(),
-        ) as write_harness,
-    ):
-        await EcsManager._pre_stage_oauth_for_user(mgr, "org_1", token_owner_id="user_a")
-    # Two reads off the connector's rows: the provider row, then the harness
-    # (#harness) row for the OpenCode credential self-heal.
-    assert read.await_count == 2
-    provider_read, harness_read = read.await_args_list
-    assert provider_read.kwargs == {"user_id": "user_a", "bound_to": "org_1"}
-    assert harness_read.kwargs == {"user_id": "user_a", "bound_to": "org_1", "purpose": "harness"}
-    write.assert_awaited_once()
-    assert write.call_args.kwargs["user_id"] == "org_1"
-    # Harness write also lands on the CONTAINER owner's EFS path, and never
-    # overwrites a live rotating auth.json.
-    write_harness.assert_awaited_once()
-    assert write_harness.call_args.kwargs["user_id"] == "org_1"
-    assert write_harness.call_args.kwargs["overwrite"] is False
-
-
 # ---------------------------------------------------------------------------
 # container_provision is provider-choice resolution ONLY. Provisioning itself
 # is dispatched by core.services.provision_dispatch.dispatch_provision — the
@@ -161,11 +123,11 @@ async def test_pre_stage_oauth_reads_connector_writes_owner():
 
 
 async def test_container_provision_never_touches_ecs_directly():
-    """Regression guard for the de-flag: this module must not import/call
-    get_ecs_manager or provision_user_container — that work lives entirely
-    in scripts.provision_runner, a separate process the backend never
-    invokes in-process."""
+    """Regression guard: this module resolves a provider choice and emits a metric. It must
+    reach no runtime at all -- provisioning lives entirely in scripts.provision_runner, a
+    separate process the backend never invokes in-process."""
     from core.services import container_provision
 
-    assert not hasattr(container_provision, "get_ecs_manager")
     assert not hasattr(container_provision, "container_repo")
+    for gone in ("get_ecs_manager", "container_rpc", "runtime_transport", "hermes_provisioning"):
+        assert not hasattr(container_provision, gone), gone

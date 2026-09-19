@@ -28,7 +28,9 @@ class _FakeResp:
 
 
 def _patch_efs(monkeypatch, tmp_path):
-    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+    # Materializers only run inside a projection (credentials/hermes_cli.py), so the root is
+    # the ContextVar's, not a settings path. tmp_path/"org_1" keeps every path assertion below.
+    monkeypatch.setattr(gog_cli, "materializer_root", lambda: tmp_path / "org_1")
 
 
 def _patch_keyring_password(monkeypatch):
@@ -367,7 +369,7 @@ def test_remove_with_email_revokes_then_removes_one_account(monkeypatch, tmp_pat
     assert run["argv"] == ["gog", "auth", "remove", "a@x.com", "--no-input", "--force"]
     assert run["check"] is True
 
-    # Same env as write: XDG_CONFIG_HOME + XDG_DATA_HOME under owner_efs_root +
+    # Same env as write: XDG_CONFIG_HOME + XDG_DATA_HOME under the projection root +
     # keyring backend/password. XDG_DATA_HOME is required or gog operates on the
     # wrong (empty) keyring and the per-account remove silently no-ops.
     expected_cfg = str(Path(tmp_path) / "org_1" / ".config")

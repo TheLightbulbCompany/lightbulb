@@ -1,10 +1,10 @@
 """Per-agent Paperclip API key minting + storage.
 
-Each agent in a container calls back into Paperclip with its OWN key. The
-key is staged into the agent's workspace identity file
-(``paperclip-claimed-api-key.json``, written by
-``friday_identity.pre_stage_paperclip_identities``); the agent loads it and
-authenticates the bundled ``paperclip`` skill's ``curl`` calls as ITSELF.
+Each agent calls back into Paperclip with its OWN key. The key rides the agent's Hermes
+profile as ``PAPERCLIP_API_KEY`` in its ``.env`` (``hermes_profiles.write_agent_profile``), and
+the bundled ``paperclip`` skill's ``curl`` calls authenticate as THAT agent. It used to be
+staged into a workspace identity file on EFS (``paperclip-claimed-api-key.json``, written by the
+deleted ``friday_identity``).
 
 Two design points worth knowing:
 

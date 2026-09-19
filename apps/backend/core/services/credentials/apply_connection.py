@@ -7,9 +7,7 @@ import logging
 from typing import Any
 
 from core.dynamodb import run_in_thread
-from core.services import config_patcher, runtime_transport
 from core.services.credentials import registry
-from core.services.credentials.materializers import MATERIALIZERS
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +39,7 @@ class RuntimeUnsupportedError(RuntimeError):
 #: ``_has_env("PARALLEL_API_KEY")``/``_env_value``, ``hermes_cli/tools_config_providers.py``'s own
 #: provider->env-var map), never via a config.yaml field of its own, so ``env_key`` is the whole
 #: credential delivery. ``source`` names which of the provider's OWN ``openclaw_paths`` op sources
-#: (registry.yaml) carries that credential value -- resolved via ``_resolve_source`` like the ECS
+#: (registry.yaml) carries that credential value -- resolved via ``_resolve_source`` like the openclaw.json
 #: branch does, rather than assuming ``credential["token"]`` (fix round 1, minor). ``config_patch``
 #: additionally selects this backend deterministically (``web.backend`` -- "strict, no probe" per
 #: that module's own docstring) instead of leaving Hermes's keyless ring to pick among whichever
@@ -133,9 +131,9 @@ async def clear_hermes_openclaw_paths_projection(owner_id: str, provider_key: st
 async def _apply_connection_agentcore(
     owner_id: str, provider_key: str, p: registry.Provider, credential: dict[str, Any]
 ) -> None:
-    """M6-R24: the AgentCore projection step for a connect/reconnect.
+    """M6-R24: the projection step for a connect/reconnect.
 
-    Never touches EFS. A pure CLI-skill materializer is projected into every Hermes profile by
+    A pure CLI-skill materializer is projected into every Hermes profile by
     ``credentials.hermes_cli`` (which supersedes this branch's original blanket skip -- shell
     commands run in the microVM since #2749, not on the owner's Mac); one whose materializer has
     no projection is still skipped with an INFO log. Every mcp_server/mcp_remote/mcp_stdio
@@ -170,52 +168,30 @@ async def _apply_connection_agentcore(
     from core.services.credentials.mcp_server import reconcile_integrations
 
     try:
-        # agentcore=True: the caller (apply_connection) already resolved this
-        # for this same request -- no second DynamoDB read (M6-R26 fix round
-        # 1, Important 4). pending=provider_key: this provider's `connected`
-        # status row is written by the caller AFTER apply_connection returns
-        # (Critical 1) -- without it, the FIRST connect's profile rewrite
-        # would never see its own new provider.
-        await reconcile_integrations(owner_id, agentcore=True, pending=provider_key)
+        # pending=provider_key: this provider's `connected` status row is written by the
+        # caller AFTER apply_connection returns (M6-R26 fix round 1, Critical 1) -- without
+        # it, the FIRST connect's profile rewrite would never see its own new provider.
+        await reconcile_integrations(owner_id, pending=provider_key)
     except Exception:  # noqa: BLE001 — a connect must never fail because the profile refresh did
-        logger.exception("agentcore: profile refresh failed for owner=%s provider=%s", owner_id, provider_key)
+        logger.exception("hermes: profile refresh failed for owner=%s provider=%s", owner_id, provider_key)
     return None
 
 
 async def apply_connection(owner_id: str, provider_key: str, credential: dict[str, Any]) -> Any:
     """credential is the resolved token payload ({"token": ...} for paste, or
-    {"access_token","refresh_token",...} for OAuth). Async because config_patcher is async.
+    {"access_token","refresh_token",...} for OAuth).
 
     Returns whatever the wiring produced as an identity for the connection — the
     materializer rail surfaces its return (gog_cli returns the connected Google
-    account's email). The config-delivery rails have nothing to surface and
-    return None, which a generic caller can ignore.
+    account's email).
 
-    M6-R24: on an AgentCore owner the projection target is a Hermes profile in
-    S3, not openclaw.json on EFS — see ``_apply_connection_agentcore``."""
+    M6-R24: the projection target is a Hermes profile in S3 — see
+    ``_apply_connection_agentcore``, which is now the only delivery path. The
+    openclaw.json rails (``wiring.openclaw_paths``, the direct
+    ``mcp.servers.<key>`` write) went with the file."""
     p = registry.get_provider(provider_key)
-    w = p.wiring
-    if w.backend_only:
-        # Nothing reaches the container. The credential's only custodian is
+    if p.wiring.backend_only:
+        # Nothing reaches the runtime. The credential's only custodian is
         # Secrets Manager, written by the caller via `_retains_secret`.
         return None
-    if await runtime_transport.is_agentcore_owner(owner_id, fail_closed=True):
-        return await _apply_connection_agentcore(owner_id, provider_key, p, credential)
-    if w.openclaw_paths:
-        for op in w.openclaw_paths:
-            value = _resolve_source(op.source, credential, credential)
-            await config_patcher.set_openclaw_config_path(owner_id, op.path.split("."), value)
-        return None
-    if w.materializer:
-        # Materializers are sync; gog_cli blocks on subprocess + HTTP, so offload to a
-        # thread to avoid stalling the event loop.
-        return await run_in_thread(MATERIALIZERS[w.materializer], owner_id, provider_key, credential)
-    if w.mcp_server:
-        from core.services.credentials.mcp_server import build_mcp_server_block
-
-        block = build_mcp_server_block(provider_key, credential)
-        # Replace the whole server subtree — the integration OWNS mcp.servers.<key>,
-        # so a stale/scrubbed/user value for this key is overwritten.
-        await config_patcher.set_openclaw_config_path(owner_id, ["mcp", "servers", w.mcp_server.key], block)
-        return None
-    raise RuntimeError(f"{provider_key}: registry wiring has no deliverable target")
+    return await _apply_connection_agentcore(owner_id, provider_key, p, credential)

@@ -87,25 +87,32 @@ async def get_by_status(status: str) -> list[dict]:
     return items
 
 
+#: Every non-owner row in this table keys on ``__<what>__#…``. A Clerk owner id is ``org_…``
+#: or ``user_…`` and never starts with ``_``, so ``scan_all`` can exclude all of them with one
+#: ``begins_with`` -- and a reserved row added later is excluded by construction rather than by
+#: remembering to widen a list. ``PASS_KEY_PREFIX`` and ``LIFECYCLE_KEY_PREFIX`` both start here.
+RESERVED_KEY_PREFIX = "__"
+
+
 async def scan_all(*, consistent: bool = False) -> list[dict]:
-    """Return every container row. Paginates via DDB LastEvaluatedKey.
+    """Return every OWNER row. Paginates via DDB LastEvaluatedKey.
 
-    Used by fleet-wide ops tools (ecs_ops, bedrock_gate_break_glass).
-    Not for hot paths -- DDB Scan is expensive at scale.
+    Used by fleet-wide ops tools (the operator console's fleet grid, the break-glass and
+    runtime-roll scripts). Not for hot paths -- DDB Scan is expensive at scale.
 
-    Filters out pass-admission rows (``try_claim_pass``'s reserved
-    ``__pass__#<name>`` keys) so no fleet consumer -- update_service's
-    task-definition-refresh queuing, ecs_ops, the break-glass and
-    litestream-policy scripts -- ever mistakes one for an owner's container.
-    One guard here instead of one per caller.
+    Filters out every RESERVED-KEY row (``RESERVED_KEY_PREFIX``: pass admission, the
+    owner-lifecycle lease) so no fleet consumer ever mistakes one for an owner's workspace --
+    a lease row would otherwise render as a fleet tile and be handed to a roll script. ONE
+    guard here instead of one per caller, and one prefix so a new reserved row is covered by
+    construction rather than by remembering to widen a list.
     """
     table = _get_table()
     items: list[dict] = []
     last_evaluated_key: dict | None = None
     while True:
         kwargs: dict = {"ConsistentRead": True} if consistent else {}
-        kwargs["FilterExpression"] = "NOT begins_with(owner_id, :pass_prefix)"
-        kwargs["ExpressionAttributeValues"] = {":pass_prefix": PASS_KEY_PREFIX}
+        kwargs["FilterExpression"] = "NOT begins_with(owner_id, :reserved_prefix)"
+        kwargs["ExpressionAttributeValues"] = {":reserved_prefix": RESERVED_KEY_PREFIX}
         if last_evaluated_key is not None:
             kwargs["ExclusiveStartKey"] = last_evaluated_key
         response = await run_in_thread(table.scan, **kwargs)
@@ -365,10 +372,8 @@ async def upsert(owner_id: str, fields: dict) -> dict:
     Still a whole-item put, deliberately — unlike ``update_fields``, which became
     a scoped write. Its callers rely on the REPLACE: a reprovision through
     ``create_user_service`` is meant to clear ``access_point_id``,
-    ``task_definition_arn``, ``last_error``, ``stop_reason``/``parked_at``,
-    ``deploy_claims`` and the rest of the previous incarnation's state. Scoping
-    it would leave, among others, ``stop_reason="trial_idle"`` on a freshly
-    running container, which the wake-suppression predicate keys on.
+    ``last_error``, ``deploy_claims`` and the rest of the previous incarnation's
+    state.
 
     Also preserves everything in ``_UPSERT_PRESERVED_FIELDS`` that the caller
     did not pass, because this put_item REPLACES the whole item and
@@ -633,9 +638,7 @@ async def try_claim_daily_system_notice(owner_id: str, *, day: str, kind: str = 
         return True  # fail open — see docstring
 
 
-# Reserved owner_id prefix for pass-admission rows (see try_claim_pass). Never a
-# real owner_id (Clerk ids never contain "#"), so scan_all's filter cannot
-# collide with an owner row.
+# Reserved owner_id prefix for pass-admission rows (see try_claim_pass).
 PASS_KEY_PREFIX = "__pass__#"
 
 
@@ -699,29 +702,101 @@ async def try_claim_pass(name: str, *, interval_s: int, now: int | None = None) 
         return False
 
 
+# How long an owner-lifecycle claim stays exclusive before another caller may take it over.
+# It fences the OAuth connect / disconnect critical section in routers/connections.py: a
+# Secrets-Manager write plus the Hermes profile fan-out, tens of seconds at worst. 120 is a
+# ceiling, not a measurement -- the failure mode of a too-SHORT lease is two writers on one
+# owner's credentials, and of a too-long one is the owner waiting out a 409.
+LIFECYCLE_CLAIM_STALE_S = 120
+
+# Reserved-key row per owner, like PASS_KEY_PREFIX above: the guard must work for an owner who
+# has NO containers row yet (a connect can precede provisioning), so it cannot ride the owner's
+# own row the way the deploy claim does.
+LIFECYCLE_KEY_PREFIX = "__lifecycle__#"
+
+
+async def try_claim_owner_lifecycle(owner_id: str) -> str | None:
+    """Take the owner's exclusive lifecycle lease, or ``None`` if someone else holds it.
+
+    Replaces the EFS file lock ``owner_lifecycle`` used to take: the backend runs 2-4 tasks and
+    its shared mount is gone, so a filesystem lock now succeeds independently in every task and
+    fences nothing. One conditional write is the only thing that still serializes them.
+
+    FAILS CLOSED -- any fault refuses, rather than admitting every task into a section that
+    writes an owner's credentials. A refused connect is a 409 the caller retries; two admitted
+    connects interleave a Secrets-Manager write with a disconnect's teardown.
+
+    Returns a fencing token: a caller that hung past ``LIFECYCLE_CLAIM_STALE_S`` was taken over,
+    and an unconditional release would delete its successor's live claim.
+    """
+    now = int(time.time())
+    token = uuid.uuid4().hex
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": f"{LIFECYCLE_KEY_PREFIX}{owner_id}"},
+            UpdateExpression="SET claimed_at = :now, tok = :tok",
+            ConditionExpression="attribute_not_exists(claimed_at) OR claimed_at < :cutoff",
+            ExpressionAttributeValues={
+                ":now": now,
+                ":tok": token,
+                ":cutoff": now - LIFECYCLE_CLAIM_STALE_S,
+            },
+        )
+        return token
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning("try_claim_owner_lifecycle: DDB fault for owner=%s: %s", owner_id, e)
+        return None
+    except Exception as e:  # noqa: BLE001 -- BotoCoreError carries no Error code; fail closed
+        logger.warning("try_claim_owner_lifecycle: fault for owner=%s: %s", owner_id, e)
+        return None
+
+
+async def release_owner_lifecycle_claim(owner_id: str, *, token: str) -> None:
+    """Drop the owner's lifecycle claim, but only if ``token`` still holds it.
+
+    Never raises: it runs in the guard's ``finally``, where an exception would mask the real
+    error, and a lost release self-expires after ``LIFECYCLE_CLAIM_STALE_S``.
+    """
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": f"{LIFECYCLE_KEY_PREFIX}{owner_id}"},
+            UpdateExpression="REMOVE claimed_at, tok",
+            ConditionExpression="tok = :tok",
+            ExpressionAttributeValues={":tok": token},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning(
+                "release_owner_lifecycle_claim: failed for owner=%s -- claim expires in %ss",
+                owner_id,
+                LIFECYCLE_CLAIM_STALE_S,
+            )
+    except Exception as e:  # noqa: BLE001 -- never raises; see docstring
+        logger.warning("release_owner_lifecycle_claim: fault (%s) for owner=%s", e, owner_id)
+
+
 # How long a marketplace-deploy claim stays exclusive before another deploy may
 # take it over. Was 900 (15m) when the claim was keyed per-listing — sized for
 # a single lease. Now the claim is OWNER-WIDE (see try_claim_owner_deploy), so
 # a wedged claim blocks every hire the owner tries, not just one listing's.
 #
 # **The lease MUST outlive the deploy it fences.** It briefly did not: a 300s
-# lease was sized against a measured ~85s deploy, then the pairing RPC timeout
-# was raised to 90s, putting ``pair_with_openclaw``'s own worst case
-# (``PAIR_WORST_CASE_S`` = 2 attempts x 2 RPCs x 90s ≈ 361s) ABOVE the lease.
-# A lease that expires mid-deploy is worse than no lease: the second hire takes
-# it over and runs concurrently, the first hire's ``finally`` release is
-# correctly no-op'd by the fencing token, and nothing logs the overlap.
+# lease was sized against a measured ~85s deploy, then the gateway pairing RPC
+# timeout was raised to 90s, putting the worst-case pairing above the lease. A
+# lease that expires mid-deploy is worse than no lease: the second hire takes it
+# over and runs concurrently, the first hire's ``finally`` release is correctly
+# no-op'd by the fencing token, and nothing logs the overlap.
 #
-# 720 = PAIR_WORST_CASE_S (~546s: 2 attempts x 2 RPCs x 90s, plus the bounded
-# runtime-snapshot-lag rename retries) + headroom for everything stacked on top
-# of pairing in one deploy: the S3 GET, the tar extract to EFS, the Paperclip
-# mint, ``ensure_operator_device_paired``, routine recreation, integration
-# reconcile and the ACP enable. Kept a literal rather than importing the pairing
-# module (a repository must not import a service that drags in the
-# gateway/websockets);
-# ``tests/unit/repositories/test_container_repo_deploy_claim.py`` asserts the
-# ``DEPLOY_CLAIM_STALE_S > PAIR_WORST_CASE_S`` relationship so the two can never
-# drift apart silently again.
+# 720 is kept at its ECS-era value. The pairing RPCs it was sized against
+# (``pair_with_openclaw``, ~546s worst case) are gone with the OpenClaw gateway,
+# so what the lease now fences is strictly shorter: the S3 artifact GET, the
+# profile write, the Paperclip mint, routine recreation and the integration
+# reconcile. It stays a generous ceiling rather than being re-derived downward —
+# the failure mode of a too-SHORT lease is a concurrent-write incident, and of a
+# too-long one is a wedged claim the owner waits out.
 DEPLOY_CLAIM_STALE_S = 720
 
 # Fixed map key for the owner-wide deploy claim. The listing that triggered a
@@ -1015,21 +1090,15 @@ async def release_owner_deploy_claim(
     be the settling period: nothing else touches this owner's container until
     ``DEPLOY_CLAIM_STALE_S`` (600s) has elapsed since the claim was taken.
 
-    That is a real bound, not a hope. The only step in a deploy that raises a
-    bare ``TimeoutError`` is the pairing RPC pair (``pair_with_openclaw``;
-    every later step — device pairing, integration reconcile, ACP — swallows
-    its own errors, and the Paperclip/httpx calls raise
-    ``httpx.TimeoutException``, which is NOT a builtin ``TimeoutError``).
-    Pairing can burn at most ``PAIR_WORST_CASE_S`` = 361s, and everything ahead
-    of it under the claim (S3 GET, the ~15s-timeout Paperclip mint, the
-    container resolve, the tar extract) is tens of seconds — so the timeout
-    lands around T+400s of a 600s lease, leaving ~200s of quiet before another
-    deploy can take it over. The container-side ``agents.create`` that provoked
-    the timeout measured 39-51s even under 3-way contention, so the settling
-    window is ~4x its worst observed run. The sidecar-plus-``agents.list``
-    cross-check in ``_live_install_of`` is the belt to this brace: if the
-    container did finish that create, the next hire resolves to it as
-    ``already_installed`` rather than minting a duplicate.
+    That is a real bound, not a hope. The step that used to raise a bare
+    ``TimeoutError`` was the gateway pairing RPC pair, which is gone with the
+    OpenClaw runtime; every step a deploy has left swallows its own errors or
+    raises ``httpx.TimeoutException`` (NOT a builtin ``TimeoutError``), and the
+    whole sequence under the claim — the S3 artifact GET, the ~15s-timeout
+    Paperclip mint, the profile write — is tens of seconds against a 720s lease.
+    The sidecar cross-check in ``_live_install_of`` is the belt to this brace: if
+    the deploy did land, the next hire resolves to it as ``already_installed``
+    rather than minting a duplicate.
 
     The condition on the write is the point: a deploy that hung past
     ``DEPLOY_CLAIM_STALE_S`` was taken over, and an unconditional REMOVE here
@@ -1287,10 +1356,9 @@ async def release_provision_to_error(
     so a failed provision self-heals on the next ~3s poll.
 
     SINGLE OWNER of the provision-path ``status="error"`` transition. Every
-    synchronous provision failure funnels here (``provision_user_container``'s
-    except); the scattered pre-emptive ``status="error"`` writes inside
-    ``ecs_manager`` that used to fire first — and no-op this release's
-    ``status = provisioning`` condition, dropping the cause — were removed, and
+    synchronous provision failure funnels here; the scattered pre-emptive
+    ``status="error"`` writes the ECS provisioner used to fire first — which no-op'd this
+    release's ``status = provisioning`` condition, dropping the cause — were removed, and
     ``_update_container`` now rejects a ``status="error"`` field to keep it that
     way. ``_await_running_transition``'s rolloutState=FAILED write now ALSO
     routes through here (when called with a ``claim_id``, i.e. the runner's
@@ -1458,13 +1526,7 @@ async def release_stranded_stop_to_error(owner_id: str, *, last_error: str) -> b
     - ``attribute_not_exists(provision_claim_id)`` — a present claim means a
       successor exists; its liveness is Branch A / stale-lease territory,
       not ours.
-    - ``stop_reason <> "trial_idle"`` (or absent) — a deliberately parked
-      trial box keeps its wake-gated semantics; it must never be error-flipped
-      into an unconditional poll retry. (The payment/trial gates on the poll's
-      retry branch make this belt-and-suspenders, but the condition keeps the
-      flip honest at the source.)
-
-    All three clauses evaluate atomically at write time — no read-then-write
+    Both clauses evaluate atomically at write time — no read-then-write
     gap for a racing claim to slip through. Returns True iff the flip landed;
     False when the row moved on (claimed, deleted, restarted) — which is
     exactly the "a successor showed up after all" answer the caller wants.
@@ -1475,16 +1537,12 @@ async def release_stranded_stop_to_error(owner_id: str, *, last_error: str) -> b
             table.update_item,
             Key={"owner_id": owner_id},
             UpdateExpression="SET #s = :err, substatus = :sub, #rt = :true, #le = :lasterr, updated_at = :iso",
-            ConditionExpression=(
-                "#s = :stopped AND attribute_not_exists(provision_claim_id) "
-                "AND (attribute_not_exists(stop_reason) OR stop_reason <> :trial_idle)"
-            ),
+            ConditionExpression="#s = :stopped AND attribute_not_exists(provision_claim_id)",
             ExpressionAttributeNames={"#s": "status", "#rt": "retryable", "#le": "last_error"},
             ExpressionAttributeValues={
                 ":err": "error",
                 ":sub": "provision_failed",
                 ":stopped": "stopped",
-                ":trial_idle": "trial_idle",
                 ":true": True,
                 ":lasterr": str(last_error)[:500],
                 ":iso": utc_now_iso(),
@@ -1503,9 +1561,8 @@ def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
     ``release_provision_to_error``.
 
     Lives here (not in a service) because it is shared by both callers of that
-    release — ``services.provision_dispatch.dispatch_provision`` (the
-    poll-driven path) and ``containers.ecs_manager.provision_user_container``
-    (the deliberate-reprovision doors) — and this repository already owns the
+    release — ``services.provision_dispatch.dispatch_provision`` (the poll-driven path) and
+    the deliberate-reprovision doors — and this repository already owns the
     error transition + fields, so both can import it without an import cycle.
 
     ``retryable`` answers whether re-running the identical provision could
@@ -1805,97 +1862,14 @@ async def swap_gate_token_hash(
     return "written", None
 
 
-async def stamp_stop_reason(owner_id: str, reason: str) -> None:
-    """Scoped write of stop provenance onto an existing row.
-
-    ``stop_reason`` distinguishes a deliberately parked trial box
-    (``"trial_idle"``, which also stamps ``parked_at``) from every other way a
-    row lands on ``status="stopped"`` (admin stop, killswitch, conversion
-    drain). The wake-suppression predicate keys on it, so a crashed or
-    admin-stopped container can never be mistaken for parked and lose its
-    poll-driven self-heal.
-
-    Its own ``update_item`` rather than ``update_fields`` because it needs a
-    conditional REMOVE of ``parked_at`` on the non-trial branch, which a plain
-    field merge cannot express. Condition on the row existing so a concurrent
-    delete never turns the stamp into a ghost row; that miss is swallowed
-    (nothing left to stamp).
-    """
-    table = _get_table()
-    expr = "SET stop_reason = :r, updated_at = :iso"
-    if reason == "trial_idle":
-        expr += ", parked_at = :iso"
-    else:
-        expr += " REMOVE parked_at"
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression=expr,
-            ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeValues={":r": reason, ":iso": utc_now_iso()},
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-
-
-async def record_wake_debit(owner_id: str, date: str) -> int:
-    """Atomically count a legacy (un-flagged) poll wake of a parked row for
-    the given UTC ``date`` and return the new day count.
-
-    Two scoped ``update_item`` steps (ensure the parent map, then increment the
-    day key via ``SET ... if_not_exists(...) + :one``) — the same shape as the
-    bedrock-gate ledger's ``reserved_microcents``/``spent`` nested-map
-    accounting. Not ``update_fields``, which merges values the CALLER computed
-    and so could not make this read-modify-write atomic. The increment is a
-    nested SET, NOT ``ADD``: DynamoDB's ADD action
-    only targets top-level Number/Set attributes, so ``ADD wake_debits.#d``
-    would raise ValidationException and fail the debit open. Both steps
-    condition on the row existing; a missing row returns 0 debits (nothing to
-    bound).
-    """
-    table = _get_table()
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET wake_debits = if_not_exists(wake_debits, :empty)",
-            ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeValues={":empty": {}},
-        )
-        result = await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            # SET ... if_not_exists(...) + :one — NOT `ADD wake_debits.#d`.
-            # DynamoDB's ADD only targets top-level Number/Set attributes; on a
-            # nested map path it raises ValidationException, which would fail the
-            # whole debit open (legacy_wake_allowed swallows the error and
-            # returns True) — silently disabling the budget. The parent map is
-            # guaranteed present by the ensure step above, so the nested SET is
-            # safe. Mirrors the bedrock-gate ledger's reserved_microcents form.
-            UpdateExpression="SET wake_debits.#d = if_not_exists(wake_debits.#d, :zero) + :one, updated_at = :iso",
-            ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeNames={"#d": date},
-            ExpressionAttributeValues={":one": 1, ":zero": 0, ":iso": utc_now_iso()},
-            ReturnValues="UPDATED_NEW",
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return 0
-        raise
-    day = (result.get("Attributes") or {}).get("wake_debits", {}).get(date, 0)
-    return int(day)
-
-
 async def upsert_paired_devices(owner_id: str, entries: dict) -> None:
     """Project desktop device-pubkey entries onto the owner row's ``paired_devices`` map.
 
     ``entries`` is ``{deviceId: {"publicKey": <b64url-raw>, "userId": <member>,
-    "clientId": <str>}}``. This is the authorizer-reachable projection of the
-    device pubkeys that also live in the container's EFS ``paired.json`` — it
-    gives the WebSocket Lambda authorizer a ``GetItem(containers, owner)`` point
-    lookup for device-key WS-upgrade auth, without a separate table.
+    "clientId": <str>}}``. It is the ONLY record of a paired device (the container's EFS
+    ``paired.json`` went with that runtime) and gives the WebSocket authorizer a
+    ``GetItem(containers, owner)`` point lookup for device-key WS-upgrade auth, with no
+    separate table.
 
     Each device is written with a SCOPED, server-atomic ``UpdateItem`` (touching
     only its one map key) rather than a full-item read-modify-write — so a
@@ -1908,7 +1882,8 @@ async def upsert_paired_devices(owner_id: str, entries: dict) -> None:
     member's PUBLIC key (freely observable) and collide their deviceId. The
     ``ConditionExpression`` only writes when the device is absent OR already owned
     by the SAME member — so one org member can never relabel another's device on
-    the authorizer's trust anchor (mirrors the paired.json guard in desktop_pair.py).
+    the authorizer's trust anchor. This IS the guard now; the EFS ``paired.json`` copy of it
+    went with that rail.
     No-op if the container row doesn't exist.
     """
     table = _get_table()
@@ -2082,57 +2057,3 @@ async def delete(owner_id: str) -> dict | None:
     # ``or None``: DynamoDB omits Attributes when there was no row, but moto
     # returns an empty map — one answer for "there was nothing here" either way.
     return resp.get("Attributes") or None
-
-
-async def stamp_email_cold_wake(owner_id: str) -> None:
-    """Record that an inbound email cold-woke this container.
-
-    Read once by ``agent_mail_reply.send_reply`` to decide whether the agent's
-    outgoing reply should carry the free-tier "I was asleep" footer. The wake
-    and the reply happen in DIFFERENT requests, which is why this has to be
-    persisted rather than passed. Never raises.
-    """
-    table = _get_table()
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET email_cold_wake_at = :t",
-            ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeValues={":t": int(time.time())},
-        )
-    except ClientError as e:
-        logger.warning("stamp_email_cold_wake failed for %s: %s", owner_id, e)
-
-
-async def consume_email_cold_wake(owner_id: str, *, max_age_seconds: int = 3600) -> bool:
-    """True when a RECENT cold-wake stamp existed. Clears it either way.
-
-    ONE conditional write, not read-then-remove: two concurrent callers for
-    the same owner could otherwise both read the stamp as fresh before either
-    cleared it, attaching the "I was asleep" footer to two separate replies.
-    The condition (``attribute_exists(email_cold_wake_at)``) means only one
-    concurrent caller can ever satisfy it; the loser gets
-    ConditionalCheckFailedException and correctly reports False. Clearing
-    unconditionally on both the fresh AND stale path is a side effect of this
-    being the same write that reads the value — a stale stamp must not attach
-    to an unrelated reply days later. Never raises.
-    """
-    table = _get_table()
-    try:
-        resp = await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="REMOVE email_cold_wake_at",
-            ConditionExpression="attribute_exists(owner_id) AND attribute_exists(email_cold_wake_at)",
-            ReturnValues="UPDATED_OLD",
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            logger.warning("consume_email_cold_wake failed for %s: %s", owner_id, e)
-        return False
-
-    stamped = (resp.get("Attributes") or {}).get("email_cold_wake_at")
-    if stamped is None:
-        return False
-    return (int(time.time()) - int(stamped)) < max_age_seconds

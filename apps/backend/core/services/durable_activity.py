@@ -6,7 +6,6 @@ import asyncio
 import time
 from datetime import datetime
 
-from core.containers import get_ecs_manager
 from core.dynamodb import plain
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, messaging_repo
@@ -91,7 +90,10 @@ async def sweep_trial_idle_once(*, now: int | None = None) -> None:
             continue
         if not await container_repo.idle_stop_claim_current(owner_id, claim):
             continue
-        await get_ecs_manager().stop_user_service(owner_id, reason="trial_idle")
+        # Nothing to stop: AWS parks an idle microVM on its own idle timeout, and an
+        # AgentCore runtime has no desired count to scale. The sweep survives as the
+        # claim + the metric -- the record of "this workspace went idle" that
+        # `wake_policy` and the growth dashboards read.
         put_metric("gateway.trial_scale_to_zero", dimensions={"trigger": "durable_activity"})
 
 

@@ -8,7 +8,7 @@ from core.services.credentials.materializers import skill_cli
 
 @pytest.fixture
 def efs(tmp_path, monkeypatch):
-    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+    monkeypatch.setattr(skill_cli, "materializer_root", lambda: tmp_path / "org_1")
     return tmp_path
 
 
@@ -25,41 +25,32 @@ def stub_provider(monkeypatch):
     )
 
 
-def test_write_seeds_skill_and_patches_config(efs, monkeypatch):
-    written = {}
-
-    async def fake_set(owner_id, path, value):
-        written[tuple(path)] = value
-
-    monkeypatch.setattr("core.services.config_patcher.set_openclaw_config_path", fake_set)
-
+def test_write_seeds_the_skill_with_the_pinned_package(efs):
     skill_cli.write("owner_1", "vercel_cli", {"token": "vcp_secret"})
 
-    # (a) config entry enabled + token under apiKey
-    entry = written[("skills", "entries", "vercel")]
-    assert entry == {"enabled": True, "apiKey": "vcp_secret"}
-
-    # (b) SKILL.md seeded onto EFS with the pinned package substituted for {{PKG}}
-    md = (efs / "owner_1" / "skills" / "vercel" / "SKILL.md").read_text()
+    md = (efs / "org_1" / "skills" / "vercel" / "SKILL.md").read_text()
     assert "primaryEnv: VERCEL_TOKEN" in md
     assert "{{PKG}}" not in md  # placeholder replaced
     assert "vercel@54.18.2" in md  # exact pinned package present
 
 
-def test_remove_deletes_entry_and_skill(efs, monkeypatch):
-    deleted = []
+def test_write_no_longer_writes_the_token_anywhere(efs):
+    """The token used to ride ``skills.entries.<key>.apiKey`` in openclaw.json, which is gone
+    with the ECS runtime. Nothing in the seeded tree may carry it now -- a leaked copy on a
+    rail nothing reads would be a credential sitting in S3 for no reason. Delivering it again
+    means the shell-env store (hermes_cli.CLI_ENV_FILE); see the module docstring's KNOWN GAP."""
+    skill_cli.write("owner_1", "vercel_cli", {"token": "vcp_secret"})
 
-    async def fake_del(owner_id, path):
-        deleted.append(tuple(path))
+    for path in (efs / "org_1").rglob("*"):
+        if path.is_file():
+            assert "vcp_secret" not in path.read_text()
 
-    monkeypatch.setattr("core.services.config_patcher.delete_openclaw_config_path", fake_del)
 
-    # seed something to remove
-    skill_dir = efs / "owner_1" / "skills" / "vercel"
+def test_remove_deletes_the_skill_dir(efs):
+    skill_dir = efs / "org_1" / "skills" / "vercel"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("x")
 
     skill_cli.remove("owner_1", "vercel_cli", {})
 
-    assert ("skills", "entries", "vercel") in deleted
     assert not skill_dir.exists()

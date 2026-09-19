@@ -1,20 +1,36 @@
-"""Cross-process serialization for one owner's container lifecycle."""
+"""Cross-process serialization for one owner's credential lifecycle.
+
+The critical section is the OAuth connect / disconnect pair in ``routers/connections.py``: a
+Secrets-Manager write, the integrations row, and the Hermes profile fan-out. Two of those
+interleaving for one owner is how a disconnect's teardown gets undone by a callback still
+finishing its writes.
+
+This used to be an EFS file lock on the backend's shared mount. That mount is gone with the ECS
+runtime, and a filesystem lock without it succeeds independently in each of the 2-4 backend
+tasks -- i.e. fences nothing, silently. The lease is a conditional DynamoDB write instead
+(``container_repo.try_claim_owner_lifecycle``), which is the only thing left that all the tasks
+can see -- and which serializes same-process callers too, so there is no in-process mutex in
+front of it. A second caller on this task pays one ``_POLL_INTERVAL_S`` handoff rather than
+waking the instant the first releases; the alternative was a per-owner ``threading.Lock`` dict
+that nothing ever evicted.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import inspect
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from functools import wraps
-from pathlib import Path
-from typing import AsyncIterator, Awaitable, Callable, ContextManager, ParamSpec, TypeVar, cast
+from typing import AsyncIterator, Awaitable, Callable, ParamSpec, TypeVar, cast
 
-from core.config import settings
-from core.services.efs_file_lock import get_file_lock, openclaw_config_recovery_guard
+from core.repositories import container_repo
 
-_LOCK_DIR = ".lightbulb-owner-lifecycle-locks"
+#: How long a caller waits for the lease before giving up. Same budget the EFS sidecar lock
+#: used, and the callers map it to a retryable 409 rather than a 500.
+OWNER_LIFECYCLE_TIMEOUT_S = 30.0
+_POLL_INTERVAL_S = 0.25
+
 _held_owner: ContextVar[tuple[asyncio.Task[object], str] | None] = ContextVar(
     "held_owner_lifecycle",
     default=None,
@@ -24,49 +40,38 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
-def _paths(owner_id: str) -> tuple[str, str]:
-    if type(owner_id) is not str or not owner_id:
-        raise ValueError("owner_id is required")
-    lock_dir = str(Path(settings.EFS_MOUNT_PATH) / _LOCK_DIR)
-    token = hashlib.sha256(owner_id.encode()).hexdigest()[:32]
-    return lock_dir, str(Path(lock_dir) / f"{token}.lock")
+class OwnerLifecycleBusyError(TimeoutError):
+    """Raised when another caller holds this owner's lifecycle lease."""
 
 
-async def _enter_guard(guard: ContextManager[None]) -> None:
-    """Enter a blocking file guard without leaking it on task cancellation."""
-    entering = asyncio.create_task(asyncio.to_thread(guard.__enter__))
-    try:
-        await asyncio.shield(entering)
-    except asyncio.CancelledError:
-        try:
-            await entering
-        except Exception:
-            pass
-        else:
-            await asyncio.to_thread(guard.__exit__, None, None, None)
-        raise
+async def _acquire_lease(owner_id: str, deadline: float) -> str:
+    """Poll for the owner's lease until ``deadline``, then give up.
 
-
-async def _exit_guard(guard: ContextManager[None]) -> None:
-    """Finish releasing the file guard even if cancellation arrives again."""
-    leaving = asyncio.create_task(asyncio.to_thread(guard.__exit__, None, None, None))
-    try:
-        await asyncio.shield(leaving)
-    except asyncio.CancelledError:
-        await leaving
-        raise
+    Polling rather than waiting on a signal because there is nothing to signal on: the holder
+    is in another backend task. The interval is coarse on purpose -- the section it fences takes
+    seconds, so a tighter poll only buys DynamoDB writes.
+    """
+    while True:
+        token = await container_repo.try_claim_owner_lifecycle(owner_id)
+        if token:
+            return token
+        if asyncio.get_running_loop().time() >= deadline:
+            raise OwnerLifecycleBusyError(f"timed out waiting for the lifecycle lease: {owner_id}")
+        await asyncio.sleep(_POLL_INTERVAL_S)
 
 
 @asynccontextmanager
 async def owner_lifecycle_guard(owner_id: str) -> AsyncIterator[None]:
-    """Serialize owner-scoped ECS and credential mutations across workers.
+    """Serialize owner-scoped credential mutations across backend tasks.
 
-    Calls nested by the same asyncio task may re-enter for the same owner.
-    A child task does not inherit that ownership, even though it inherits the
-    surrounding ContextVar value, so background provision work still waits for
-    its parent's lifecycle operation to finish.
+    Calls nested by the same asyncio task may re-enter for the same owner. A child task does
+    not inherit that ownership, even though it inherits the surrounding ContextVar value, so
+    background work still waits for its parent's operation to finish.
+
+    Raises ``OwnerLifecycleBusyError`` when the lease does not free up in
+    ``OWNER_LIFECYCLE_TIMEOUT_S`` -- nothing has been written at that point, so the caller can
+    answer "busy" and let the owner retry.
     """
-
     task = asyncio.current_task()
     if task is None:
         raise RuntimeError("owner lifecycle guard requires an asyncio task")
@@ -77,32 +82,16 @@ async def owner_lifecycle_guard(owner_id: str) -> AsyncIterator[None]:
         yield
         return
 
-    lock_dir, lock_path = _paths(owner_id)
-    local_lock = get_file_lock(lock_path)
-    acquiring = asyncio.create_task(asyncio.to_thread(local_lock.acquire))
+    deadline = asyncio.get_running_loop().time() + OWNER_LIFECYCLE_TIMEOUT_S
+    lease = await _acquire_lease(owner_id, deadline)
+    token = _held_owner.set((task, owner_id))
     try:
-        await asyncio.shield(acquiring)
-    except asyncio.CancelledError:
-        await acquiring
-        local_lock.release()
-        raise
-
-    guard = openclaw_config_recovery_guard(lock_dir, lock_path)
-    entered = False
-    token = None
-    try:
-        await _enter_guard(guard)
-        entered = True
-        token = _held_owner.set((task, owner_id))
         yield
     finally:
-        if token is not None:
-            _held_owner.reset(token)
-        try:
-            if entered:
-                await _exit_guard(guard)
-        finally:
-            local_lock.release()
+        _held_owner.reset(token)
+        # Shielded: the release is the only thing standing between a cancelled caller and a
+        # lease nobody drops for LIFECYCLE_CLAIM_STALE_S.
+        await asyncio.shield(asyncio.create_task(container_repo.release_owner_lifecycle_claim(owner_id, token=lease)))
 
 
 def serialize_owner_lifecycle(method: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:

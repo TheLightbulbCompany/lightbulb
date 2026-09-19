@@ -346,55 +346,41 @@ class TestAdminMutationOwnerResolution:
     the raw URL path param."""
 
     # -- Container mutations -------------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_container_stop_uses_org_owner_id(self, async_client, admin_env, org_mode):
-        ecs = MagicMock()
-        ecs.stop_user_service = AsyncMock(return_value={"status": "stopped"})
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
-            res = await async_client.post("/api/v1/admin/users/user_123/container/stop")
-        assert res.status_code == 200
-        ecs.stop_user_service.assert_awaited_once_with("org_abc", reason="admin")
-        org_mode.assert_awaited_once_with("user_123")
-
-    @pytest.mark.asyncio
-    async def test_container_stop_personal_mode_uses_user_id(self, async_client, admin_env, personal_mode):
-        """Negative test: personal-mode user (no orgs) → dispatch targets the
-        Clerk user_id unchanged."""
-        ecs = MagicMock()
-        ecs.stop_user_service = AsyncMock(return_value={"status": "stopped"})
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
-            res = await async_client.post("/api/v1/admin/users/user_123/container/stop")
-        assert res.status_code == 200
-        ecs.stop_user_service.assert_awaited_once_with("user_123", reason="admin")
-
-    @pytest.mark.asyncio
-    async def test_container_start_uses_org_owner_id(self, async_client, admin_env, org_mode):
-        ecs = MagicMock()
-        ecs.start_user_service = AsyncMock(return_value={"status": "started"})
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
-            res = await async_client.post("/api/v1/admin/users/user_123/container/start")
-        assert res.status_code == 200
-        # force=True: the audited admin break-glass bypasses the start guards.
-        ecs.start_user_service.assert_awaited_once_with("org_abc", force=True)
+    #
+    # One left: stop / start / resize went with the ECS runtime (a microVM has no desiredCount
+    # and its size is the runtime spec).
 
     @pytest.mark.asyncio
     async def test_container_reprovision_uses_org_owner_id(self, async_client, admin_env, org_mode):
-        ecs = MagicMock()
-        ecs.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioned"})
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
+        """The whole point of this suite: an org member's workspace is keyed on the ORG, so a
+        dispatch on the raw URL path param provisions a workspace that belongs to nobody."""
+        with (
+            patch(
+                "routers.admin.container_repo.get_by_owner_id",
+                new_callable=AsyncMock,
+                return_value={"owner_id": "org_abc"},
+            ),
+            patch("routers.admin.container_repo.takeover_provision", new_callable=AsyncMock) as takeover,
+            patch("routers.admin.dispatch_provision", new_callable=AsyncMock) as dispatch,
+        ):
             res = await async_client.post("/api/v1/admin/users/user_123/container/reprovision")
         assert res.status_code == 200
-        ecs.reprovision_for_user.assert_awaited_once_with("org_abc")
+        assert res.json()["owner_id"] == "org_abc"
+        takeover.assert_awaited_once_with("org_abc")
+        dispatch.assert_awaited_once_with("org_abc")
+        org_mode.assert_awaited_once_with("user_123")
 
     @pytest.mark.asyncio
-    async def test_container_resize_uses_org_owner_id(self, async_client, admin_env, org_mode):
-        ecs = MagicMock()
-        ecs.reapply_standard_sizing = AsyncMock(return_value={"status": "resized"})
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
-            res = await async_client.post("/api/v1/admin/users/user_123/container/resize")
+    async def test_container_reprovision_personal_mode_uses_user_id(self, async_client, admin_env, personal_mode):
+        """Negative test: a caller with no org resolves to the Clerk user_id unchanged."""
+        with (
+            patch("routers.admin.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=None),
+            patch("routers.admin.container_repo.takeover_provision", new_callable=AsyncMock),
+            patch("routers.admin.dispatch_provision", new_callable=AsyncMock) as dispatch,
+        ):
+            res = await async_client.post("/api/v1/admin/users/user_123/container/reprovision")
         assert res.status_code == 200
-        ecs.reapply_standard_sizing.assert_awaited_once_with("org_abc")
+        dispatch.assert_awaited_once_with("user_123")
 
     # -- Billing mutations ---------------------------------------------------
 

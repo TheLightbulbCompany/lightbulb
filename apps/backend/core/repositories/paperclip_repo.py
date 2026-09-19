@@ -489,7 +489,7 @@ class PaperclipRepo:
 
         Owner-row resolution is delegated to ``resolve_owner_row`` -- the
         single canonical "which row is THE owner row" path shared with
-        ``routers/container.py`` and ``core/containers/ecs_manager.py`` -- so
+        ``routers/container.py`` and the provisioning executor -- so
         org vs. personal resolution has exactly one implementation.
 
         A row that doesn't exist yet, or that predates ONBOARD's writers,

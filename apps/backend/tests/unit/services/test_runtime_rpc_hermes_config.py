@@ -9,23 +9,11 @@ send ``config.patch`` as ``{raw: JSON.stringify(patch), baseHash}``), and
 ``packages/shared/src/hooks/useAgents.ts`` (reads ``data.agents``/``data.defaultId``). Every test
 below drives ``execute_sync`` with exactly those params and asserts exactly those response keys --
 not a call recorder.
-
-Note on ``_is_agentcore``: it is ``async def`` (it awaits ``runtime_transport.is_agentcore_owner``,
-which itself awaits a DynamoDB read), so every monkeypatch below replaces it with a real coroutine
-function, never a bare value -- ``await`` on a non-awaitable raises ``TypeError`` regardless of
-what the replacement returns.
 """
 
 import json
 
 from core.services import runtime_rpc
-
-
-def _agentcore(is_agentcore: bool):
-    async def fake(owner_id):
-        return is_agentcore
-
-    return fake
 
 
 def _fake_roster(monkeypatch, rows):
@@ -61,7 +49,6 @@ def _fake_profile_store(monkeypatch, initial: dict):
 async def test_config_get_with_an_agent_id_returns_the_snapshot_shape_useconfigpatch_reads(monkeypatch):
     """``useConfigPatch.ts``'s ``ConfigGetSnapshot`` type is ``{config, hash, valid?}`` --
     ``snapshot?.config``/``snapshot?.hash`` are the two fields every real reader touches."""
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
     monkeypatch.setattr(
         runtime_rpc.hermes_profiles,
         "config_snapshot",
@@ -78,7 +65,6 @@ async def test_config_get_with_an_agent_id_returns_the_snapshot_shape_useconfigp
 async def test_config_get_with_no_agent_id_never_400s_and_serves_a_roster_map(monkeypatch):
     """This is exactly what useConfigPatch.ts/PluginsTab.tsx send -- config.get with NO agentId
     param at all. C1: must never 400; must serve a name-keyed map instead."""
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
 
     async def fake_roster(owner_id):
         return [{"id": "a1", "role": "ceo"}, {"id": "a2", "role": "engineering"}]
@@ -102,7 +88,6 @@ async def test_config_patch_with_no_agent_id_fans_out_to_every_roster_profile_an
     SAME map hash config.get (no agentId) returns. Asserts exactly the three things the brief
     names: (a) visible on every profile via the next config.get, (b) the returned hash equals
     that next config.get's hash, (c) covered by the sibling stale-baseHash test below."""
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
     _fake_roster(monkeypatch, [{"id": "a1", "role": "ceo"}, {"id": "a2", "role": "engineering"}])
     store = _fake_profile_store(
         monkeypatch, {"a1": {"model": {"default": "arn:opu"}}, "a2": {"model": {"default": "arn:son"}}}
@@ -138,7 +123,6 @@ async def test_config_patch_with_no_agent_id_and_a_stale_baseHash_errors_and_wri
 
     from core.services.messaging import ApiProblem
 
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
     _fake_roster(monkeypatch, [{"id": "a1", "role": "ceo"}])
     store = _fake_profile_store(monkeypatch, {"a1": {"model": {"default": "arn:opu"}}})
 
@@ -154,7 +138,6 @@ async def test_config_patch_with_no_agent_id_and_a_stale_baseHash_errors_and_wri
 
 
 async def test_config_patch_with_no_agent_id_and_an_empty_patch_writes_nothing(monkeypatch):
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
     _fake_roster(monkeypatch, [{"id": "a1", "role": "ceo"}])
     store = _fake_profile_store(monkeypatch, {"a1": {"model": {"default": "arn:opu"}}})
 
@@ -175,7 +158,6 @@ async def test_config_patch_with_no_agent_id_and_an_empty_patch_writes_nothing(m
 async def test_config_patch_still_accepts_a_plain_patch_dict_for_non_web_callers(monkeypatch):
     """Back-compat: an internal caller that already sends {"patch": {...}} (no baseHash) keeps
     working -- baseHash is optional-concurrency, not mandatory."""
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
     patched = {}
     monkeypatch.setattr(
         runtime_rpc.hermes_profiles,
@@ -200,7 +182,6 @@ async def test_config_set_on_an_agentcore_row_replaces_wholesale(monkeypatch):
     """M4-R1 extends the brief's config.get/config.patch pair with config.set (full replace,
     not a merge) and agents.list."""
     seen = {}
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
     monkeypatch.setattr(
         runtime_rpc.hermes_profiles,
         "set_profile_config",
@@ -225,7 +206,6 @@ async def test_config_set_still_requires_an_agent_id(monkeypatch):
 
     from core.services.messaging import ApiProblem
 
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
     with pytest.raises(ApiProblem):
         await runtime_rpc.execute_sync(owner_id="org_a", user_id="u1", request_id="r1", method="config.set", params={})
 
@@ -254,7 +234,6 @@ async def test_agents_list_returns_the_defaultId_and_agents_shape_useagents_read
     """packages/shared/src/hooks/useAgents.ts:57 reads ``data.agents``/``data.defaultId`` -- the
     CEO row (or the first roster row with no CEO) is the default."""
     called = {}
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
 
     async def fake_roster(owner_id):
         return [{"id": "a2", "role": "engineering"}, {"id": "a1", "role": "ceo"}]
@@ -285,7 +264,6 @@ async def test_agents_list_survives_a_transient_profile_read_failure(monkeypatch
     """Fix round 1, I3: `_s3_get` re-raises anything that is not a 404, and this is the hottest
     control RPC on the platform. One 503 on one of six profiles must blank one model LABEL, not
     empty the whole agent sidebar."""
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
     _fake_roster(monkeypatch, [{"id": "a1"}, {"id": "a2"}])
     _fake_profile_models(
         monkeypatch, {"a1": RuntimeError("SlowDown"), "a2": "arn:son"}, names={"arn:son": "Claude Sonnet"}
@@ -302,7 +280,6 @@ async def test_agents_list_survives_a_transient_profile_read_failure(monkeypatch
 async def test_agents_list_model_is_the_id_models_list_offers_not_a_tier_word(monkeypatch):
     """The id a row REPORTS must be one ``models.list`` names and ``agents.update`` would ACCEPT
     -- otherwise the picker round-trip 400s on the value it was just handed."""
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
     _fake_roster(monkeypatch, [{"id": "a1", "role": "ceo"}, {"id": "a2", "role": "finance"}, {"id": "a3"}])
     _fake_profile_models(monkeypatch, {"a1": "arn:opu", "a2": "arn:son"})
     out = await runtime_rpc.execute_sync(
@@ -313,7 +290,6 @@ async def test_agents_list_model_is_the_id_models_list_offers_not_a_tier_word(mo
 
 
 async def test_agents_list_defaults_to_the_first_roster_row_when_no_one_is_ceo(monkeypatch):
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(True))
 
     async def fake_roster(owner_id):
         return [{"id": "a3", "role": "engineering"}]
@@ -324,18 +300,3 @@ async def test_agents_list_defaults_to_the_first_roster_row_when_no_one_is_ceo(m
         owner_id="org_a", user_id="u1", request_id="r1", method="agents.list", params={}
     )
     assert out["defaultId"] == "a3"
-
-
-async def test_config_methods_still_forward_for_an_ecs_row(monkeypatch):
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", _agentcore(False))
-    seen = {}
-
-    async def fake_call(owner_id, method, params=None, **k):
-        seen.update(method=method)
-        return {"from": "container"}
-
-    monkeypatch.setattr(runtime_rpc.container_rpc, "call", fake_call)
-    out = await runtime_rpc.execute_sync(
-        owner_id="org_a", user_id="u1", request_id="r1", method="config.get", params={}
-    )
-    assert out == {"from": "container"} and seen["method"] == "config.get"

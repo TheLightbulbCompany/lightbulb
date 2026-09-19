@@ -30,8 +30,7 @@ builder, the SFN watchdog and the long ``wait_for_running`` ECS-boot poll (``Cre
 one synchronous call; the only wait here is the runtime's own short startup to ``READY``).
 
 Fencing (M4-R28): the terminal row write goes through ``container_repo.update_container_leased`` —
-the exact fenced primitive ``ecs_manager.wait_for_running`` uses for its own terminal write — so a
-straggler from a superseded attempt can never clobber a takeover's row; a lost fence raises
+the same fenced primitive every other terminal provision write uses — so a straggler from a superseded attempt can never clobber a takeover's row; a lost fence raises
 ``ProvisionSuperseded`` and writes nothing (``provision_runner.run``'s existing handler for that
 exception, from Task 18, already covers both call sites). No ``generation`` fence: that concept is
 ECS-incarnation-specific (a container recreate mid-provision) and has no Hermes analogue.
@@ -43,7 +42,7 @@ is written via ``agentcore_runtime.write_boot_secret`` and only its NAME travels
 execution role. ``provision_hermes_runtime`` never re-fetches this name from anywhere: it is a pure
 function of ``owner_id`` (``boot_secret_name``), so it is recomputed, not looked up — the only writer
 of the secret's CONTENTS is ``prepare_hermes_workspace``, which MUST have already run for this owner
-(``provision_runner.run`` always calls it first when ``settings.HERMES_RUNTIME`` is on).
+(``provision_runner.run`` always calls it first).
 
 Rotation (M4-R16): this module never rotates an already-provisioned owner's bearer —
 ``prepare_hermes_workspace`` no-ops once the owner already has an ``agentcore_runtime_arn`` (avoids
@@ -82,9 +81,9 @@ from core.services.agentcore_runtime import (
 logger = logging.getLogger(__name__)
 
 #: Bounded poll for AgentCore's OWN startup — CreateAgentRuntime returns immediately, but the
-#: runtime itself takes some seconds to reach READY. This is NOT a substitute for
-#: ecs_manager.wait_for_running's SFN-watched, many-minutes ECS boot wait: it lives entirely
-#: inside the single-shot provision runner's own execution (mirrors the dev spike's own
+#: runtime itself takes some seconds to reach READY. Unlike the SFN-watched, many-minutes ECS
+#: boot wait it replaced, this lives entirely inside the single-shot provision runner's own
+#: execution (mirrors the dev spike's own
 #: 40 x 10s ceiling — a real flip there resolved in well under that window).
 _READY_POLL_ATTEMPTS = 40
 _READY_POLL_INTERVAL_S = 10.0
@@ -369,13 +368,12 @@ def _delete_profile_prefix_objects(owner_id: str) -> None:
 
 async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_profiles: bool) -> None:
     """The AgentCore-side teardown (F5, predeploy review, M6-R38) -- the ONE place that undoes
-    what ``prepare_hermes_workspace``/``provision_hermes_runtime`` created, extracted from
-    ``migrate_workspace_to_hermes.rollback``'s own AgentCore half so every caller that needs to
-    tear an AgentCore workspace down shares it instead of re-deriving the AWS call sequence.
+    what ``prepare_hermes_workspace``/``provision_hermes_runtime`` created, so every caller that
+    needs to tear a workspace down shares it instead of re-deriving the AWS call sequence.
 
     Steps, each best-effort -- an already-gone runtime/secret/hash/prefix must never stop the
-    caller's own teardown (a rollback flipping the row back to ECS, an account wipe deleting the
-    containers row):
+    caller's own teardown (an account wipe deleting the containers row, a reprovision clearing
+    the runtime first):
 
       1. ``StopRuntimeSession`` (M4-R16) -- a warm session caches the bearer it read at
          cold-start; skipping this can leave it presenting a dead credential until AWS reaps it.
@@ -384,10 +382,10 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
       4. Delete the ONE JSON boot secret.
       5. (``delete_profiles`` only) delete every object under ``<owner>/hermes/`` in S3.
 
-    ``delete_profiles=False`` is ``rollback``'s own choice -- S3 profiles are cheap and the next
-    ``migrate()`` attempt overwrites them anyway. ``delete_profiles=True`` is for a caller after
-    which NOTHING will ever provision this owner's Hermes workspace again (an account wipe /
-    ``ecs_manager.delete_user_service`` on an agentcore row) -- otherwise the whole
+    ``delete_profiles=False`` is the default and what a reprovision wants -- S3 profiles are
+    cheap and the next provision overwrites them. ``delete_profiles=True`` is for a caller after
+    which NOTHING will ever provision this owner's workspace again (an account wipe, the debug
+    user-data delete) -- otherwise the whole
     ``<owner>/hermes/`` prefix (every profile, the root ``auth.json``) orphans indefinitely in
     S3 with no row left to even name it.
 
@@ -433,9 +431,63 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
             logger.warning("hermes teardown: could not delete S3 profiles for owner=%s", owner_id, exc_info=True)
 
 
-async def prepare_hermes_workspace(
-    owner_id: str, *, claim_id: str, attempt_token: str | None = None, migrate: bool = False
-) -> None:
+async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = False) -> dict | None:
+    """THE TEARDOWN SEAM. Tear a workspace's runtime down and delete its containers row.
+
+    Every teardown in the system reaches AWS through this function -- entitlement
+    cancellation, the admin account wipe, ``DELETE /debug/provision``,
+    ``DELETE /debug/user-data`` -- which is what makes the Bedrock reap below structural:
+    no caller can forget it, and none needs its own copy.
+
+    Steps:
+      1. ``teardown_hermes_runtime`` -- stop the session, delete the runtime, revoke the
+         gate-token hash, delete the boot secret; delete every object under
+         ``<owner>/hermes/`` only when ``delete_profiles=True``.
+      2. Delete the containers row. UNCONDITIONAL, and after the teardown: the read above
+         is eventually consistent, so gating on it would leave a racing provision's row
+         behind along with everything only it names. The DELETE's ``ALL_OLD`` image is the
+         authoritative answer to "what did this row say when it died".
+      3. Reap the owner's Bedrock footprint (gate-token rows, AIPs, IAM role) off that
+         image -- the row was the only handle on it. Raises on a partial reap rather than
+         reporting success: the runtime is already gone, so a raise honestly means
+         "teardown incomplete, retry me", and every step is idempotent.
+      4. Sweep the owner's ``channel_links`` rows (non-fatal).
+
+    ``delete_profiles`` (M6-R42) defaults to **False** and must stay that way: this
+    function is shared by NON-terminal callers -- ``entitlement_teardown`` (a lapsed or
+    past-due subscription) and ``routers/debug.py``'s ``DELETE /debug/provision`` (a
+    routine reprovision) -- and passing ``True`` from those destroyed a migrated owner's
+    memory / skills / SOUL.md / auth.json. Exactly TWO terminal callers pass ``True``:
+    ``account_wipe`` and ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
+    empty-slate reset; debug is 403 in prod). Do not re-broaden it.
+
+    Returns the containers row as it was at the instant it was deleted, or None when
+    there was none.
+    """
+    container = await container_repo.get_by_owner_id(owner_id)
+    if container:
+        await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=delete_profiles)
+
+    deleted = await container_repo.delete(owner_id)
+
+    from core.billing.bedrock_aip import reap_owner_bedrock_resources
+
+    reaped = await reap_owner_bedrock_resources(owner_id, deleted)
+    logger.info("Bedrock reap for owner %s: %s", owner_id, reaped)
+
+    try:
+        from core.repositories import channel_link_repo
+
+        link_count = await channel_link_repo.sweep_by_owner(owner_id)
+        if link_count:
+            logger.info("Swept %d channel_link rows for deleted workspace (owner=%s)", link_count, owner_id)
+    except Exception:  # noqa: BLE001 — the runtime is already gone; orphan link rows are cheap
+        logger.exception("Failed to sweep channel_link rows for owner %s after teardown", owner_id)
+
+    return deleted
+
+
+async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_token: str | None = None) -> None:
     """M4-R33: mint the owner's hook/gateway tokens + a fresh gate bearer, write the ONE JSON boot
     secret, and persist ``hook_token``/``gateway_token`` onto the row — BEFORE step 0 seeds the
     roster, so the native Hermes adapter's ``apiKey`` bakes in a real token instead of the empty
@@ -448,40 +500,25 @@ async def prepare_hermes_workspace(
     still-unprovisioned owner re-mints (``mint_gate_token`` always rotates), which is safe — nothing
     ever presented the prior one, since the runtime was never created.
 
-    I3/M4-R37 freshness guard: ``settings.HERMES_RUNTIME`` is ONE flag for the whole environment,
-    and ``provision_runner.run`` branches on it alone — so the first dispatch after a flip reaches
-    an owner who is ALREADY a live ECS workspace (a self-heal, a reconcile, any ordinary
-    re-dispatch), not just fresh owners. Minting here for one of those would rotate
-    ``mint_gate_token``'s bearer into a boot secret their live ECS task never reads (their
-    container keeps using its OWN, now-superseded bearer until the liveness predicate expires it)
-    and, downstream, ``provision_hermes_runtime`` would create a SECOND runtime beside their
-    running container. Mirrors ``agentcore_runtime.ensure_runtime``'s own guard
-    (refuses unless ``status == "stopped"``) for the same reason: "two gateways [next to each
-    other] on one access point." Detected via ``service_name`` — the same field
-    ``_container_already_healthy`` uses to mean "an ECS service was actually created for this
-    owner." ``migrate=True`` is the ONE sanctioned bypass, for the M6 cutover job that
-    deliberately crosses an existing ECS owner over: it reuses ``hook_token``/``gateway_token``
-    off the row exactly as the fresh-provision path does (they already exist, minted at ECS
-    provision time) and mints only a fresh bearer, via this same function.
+    I3/M4-R37 freshness guard: a dispatch reaches owners who are ALREADY live (a self-heal, a
+    reconcile, any ordinary re-dispatch), not just fresh ones. Minting for one of those would
+    rotate ``mint_gate_token``'s bearer into a boot secret their RUNNING workspace never reads
+    (it keeps using its OWN, now-superseded bearer until the liveness predicate expires it).
+    The ``agentcore_runtime_arn`` early return above is what that guard is now: a provisioned
+    workspace always carries one. The extra ``service_name`` refusal that stood beside it went
+    with the ECS runtime -- it named a service that no longer exists, and on a legacy row that
+    still carries the field it would have refused a reprovision forever.
 
     ``hook_token``/``gateway_token`` are re-minted only when the row does not already carry one —
-    mirrors ``ecs_manager``'s own "reuse if present" convention (``container.get("hook_token") or
-    secrets.token_urlsafe(32)``) — so a retry never orphans a token some other seam already handed
-    out.
+    the same "reuse if present" convention the ECS provisioner had (``container.get("hook_token")
+    or secrets.token_urlsafe(32)``) — so a retry never orphans a token some other seam already
+    handed out.
 
     Fenced the same way as the terminal write (M4-R28), but NON-terminal: ``release_lease=False``,
     since the provision is not done yet.
     """
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     if row.get("agentcore_runtime_arn"):
-        return
-    if row.get("service_name") and not migrate:
-        logger.info(
-            "prepare_hermes_workspace: owner %s has a live ECS service (service_name=%s) and "
-            "migrate=False -- refusing to mint Hermes credentials for it (I3/M4-R37)",
-            owner_id,
-            row.get("service_name"),
-        )
         return
 
     import secrets as _secrets
@@ -503,11 +540,10 @@ async def prepare_hermes_workspace(
     # m2: the one step that mints three credentials and writes a secret was otherwise invisible
     # in the provision log. Never logs a value -- only which tokens were reused vs freshly minted.
     logger.info(
-        "hermes prepare owner=%s hook_token=%s gateway_token=%s bedrock_bearer=minted migrate=%s",
+        "hermes prepare owner=%s hook_token=%s gateway_token=%s bedrock_bearer=minted",
         owner_id,
         "reused" if hook_token_reused else "minted",
         "reused" if gateway_token_reused else "minted",
-        migrate,
     )
 
     await container_repo.update_container_leased(
@@ -579,9 +615,9 @@ async def _wait_for_idle_session(owner_id: str) -> bool:
     ``httpx.ConnectError`` (a throttle, or a genuine ResourceNotFound) is left on the idle side
     by ruling — the timeout is the one that must not be.
 
-    The probe is an ``InvokeAgentRuntime`` (``wake=False`` cannot suppress it: AgentCore rows
-    resolve to a sentinel address, not a task IP), so on a parked workspace it starts a session
-    -- on the NEW image, since the update has already landed, and the stop tears it back down."""
+    The probe is an ``InvokeAgentRuntime`` and there is no way to suppress the wake, so on a
+    parked workspace it starts a session -- on the NEW image, since the update has already
+    landed, and the stop tears it back down."""
     import httpx
 
     from core.services import container_rpc
@@ -590,7 +626,7 @@ async def _wait_for_idle_session(owner_id: str) -> bool:
     deadline = time.monotonic() + ROLL_IDLE_WAIT_S
     while True:
         try:
-            payload = await container_rpc.call(owner_id, "health", wake=False)
+            payload = await container_rpc.call(owner_id, "health")
         except ApiProblem as exc:
             if not isinstance(exc.__cause__, httpx.TimeoutException):
                 return True  # no reachable runtime: there is no warm session to protect
@@ -618,14 +654,11 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     Returns ``"current"`` (nothing to do), ``"would-update"`` (dry run), ``"updated"``, or
     ``"updated-session-busy"`` -- the runtime IS on the new image but a turn was still running
     at the deadline, so the warm session was left alone and picks the image up when it next
-    starts. Raises ``ValueError`` for a row that is not an AgentCore workspace -- ECS rows roll
-    through the container image pin, not here."""
-    from core.services import runtime_transport
-
+    starts. Raises ``ValueError`` for a row with no provisioned runtime."""
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     arn = row.get("agentcore_runtime_arn")
-    if not arn or runtime_transport.host_for(row) != "agentcore":
-        raise ValueError(f"roll_runtime_image: owner={owner_id} is not an AgentCore workspace")
+    if not arn:
+        raise ValueError(f"roll_runtime_image: owner={owner_id} has no provisioned runtime")
     if not settings.AGENTCORE_HERMES_IMAGE:
         raise RuntimeError("AGENTCORE_HERMES_IMAGE is not configured for this environment")
     current = await run_in_thread(_runtime_image_uri, arn)
@@ -639,7 +672,9 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     idle = await _wait_for_idle_session(owner_id)
     if idle:
         try:
-            await run_in_thread(_stop_runtime_session, arn, runtime_transport.session_id_for(owner_id))
+            from core.services.runtime_transport import session_id_for
+
+            await run_in_thread(_stop_runtime_session, arn, session_id_for(owner_id))
         except Exception as exc:  # noqa: BLE001 -- no warm session is the common case
             logger.info("roll_runtime_image: no live session to stop for owner=%s (%s)", owner_id, type(exc).__name__)
     else:
@@ -917,18 +952,18 @@ async def write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
 
 
 async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: ProfileInputs) -> None:
-    """Fix round 1, Important 2: a freshly provisioned AgentCore workspace never runs
-    ``ecs_manager.write_user_configs`` (the ONLY caller of ``owner_facts.write_owner_facts``
-    today), so it had NO ``lightbulb-facts.json`` at all while the bundled skill tells every
+    """Fix round 1, Important 2: a freshly provisioned workspace never ran the ECS config
+    writer (the only caller ``owner_facts.write_owner_facts`` ever had), so it had NO
+    ``lightbulb-facts.json`` at all while the bundled skill tells every
     agent to read it. Stages the SAME facts file directly into every roster profile instead of
     calling ``write_owner_facts`` itself: at this point in provisioning the row's
     ``runtime_host`` has NOT yet flipped to ``"agentcore"`` (``write_profiles`` runs BEFORE
     ``CreateAgentRuntime`` records the ARN -- N4/M4-R42, above), so ``write_owner_facts``'s own
-    ``is_agentcore_owner`` check would take the wrong (EFS) branch here and write nothing
+    a host check would take the wrong branch here and write nothing
     anyone will ever read.
 
-    Sources plan/provider the same way ``ecs_manager.write_user_configs``'s own
-    ``write_owner_facts`` call does (as ``account_overrides``): this provision's OWN
+    Sources plan/provider the way that writer's own ``write_owner_facts`` call did
+    (as ``account_overrides``): this provision's OWN
     just-resolved ``inputs.provider_choice``/``inputs.byo_provider``, not a re-read that could
     race an in-flight billing write. Email + provisioning-workflow lookups reuse
     ``owner_facts``'s own private helpers so this can never diverge from what the ECS path
@@ -955,32 +990,21 @@ async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: Profil
         logger.exception("hermes profile facts staging failed for owner=%s", owner_id)
 
 
-async def provision_hermes_runtime(
-    owner_id: str, *, claim_id: str, attempt_token: str | None = None, migrate: bool = False
-) -> str:
+async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_token: str | None = None) -> str:
     """Create this workspace's AgentCore runtime and point its container row at it.
 
     REQUIRES ``prepare_hermes_workspace`` to have already run for this owner — it writes the boot
     secret this reads the NAME of (not the contents) and the ``hook_token``/``gateway_token`` this
-    never re-writes. ``provision_runner.run`` always calls it first when ``settings.HERMES_RUNTIME``
-    is on.
+    never re-writes. ``provision_runner.run`` always calls it first.
 
     Fully idempotent: a row with ``agentcore_runtime_arn`` AND ``status="running"`` returns as-is,
     with no AWS call and no row write. A row with the ARN but NOT yet ``running`` (a retry that
     reached the create but not the terminal write) skips straight to the READY poll instead of
     creating again (M4-R35/C1) — see the ARN-recording comment below for why that field exists.
 
-    N1/M4-R39 freshness guard: the SAME ``service_name``/``migrate`` check ``prepare_hermes_workspace``
-    already makes (see its docstring) — this function is the OTHER half of that guard. Without it, a
-    dispatch that reached here for an owner with a live ECS service would still create a runtime and
-    flip the row to ``runtime_host="agentcore"``/``status="running"`` — pointing
-    ``runtime_transport.host_for`` at a runtime whose boot secret was never written (``prepare``
-    already refused to mint it), while the ECS task keeps serving traffic underneath it. Raises
-    ``ValueError`` (not a bare ``RuntimeError``) so ``classify_provision_error`` maps it to
-    deterministic/``EXIT_DETERMINISTIC`` unconditionally, running C2's release-to-error path instead
-    of looping forever. ``migrate=True`` is the sanctioned bypass for the M6 cutover job, which calls
-    both this and ``prepare_hermes_workspace`` with ``migrate=True`` and stops the ECS service itself
-    once this reaches READY — not this module's job.
+    The N1/M4-R39 ``service_name``/``migrate`` refusal that used to sit here went with the ECS
+    runtime (see ``prepare_hermes_workspace``'s docstring): it protected a live ECS task from
+    having a second runtime created beside it, and there are no ECS tasks.
 
     ``claim_id``/``attempt_token`` fence every write here (see module docstring, M4-R28) — the
     caller (``provision_runner.run``) always holds a claim; both are threaded straight from there.
@@ -998,17 +1022,6 @@ async def provision_hermes_runtime(
     arn = row.get("agentcore_runtime_arn")
     if arn and row.get("status") == "running":
         return arn
-    if row.get("service_name") and not migrate:
-        logger.info(
-            "provision_hermes_runtime: owner %s has a live ECS service (service_name=%s) and "
-            "migrate=False -- refusing to create a second runtime for it (N1/M4-R39)",
-            owner_id,
-            row.get("service_name"),
-        )
-        raise ValueError(
-            f"provision_hermes_runtime refused for owner={owner_id}: live ECS service "
-            f"{row.get('service_name')!r} present and migrate=False (N1/M4-R39)"
-        )
 
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
     if not arn:
@@ -1101,8 +1114,8 @@ async def provision_hermes_runtime(
         raise
 
     # `running` from here: AgentCore wakes on invoke, so every "stopped -> start" door must see a
-    # live workspace, and the ECS manager's start/stop chokepoints already no-op for this row.
-    # Fenced write (M4-R28) — mirrors ecs_manager.wait_for_running's terminal transition. A lost
+    # live workspace.
+    # Fenced write (M4-R28) — the same terminal transition every provision write takes. A lost
     # fence raises ProvisionSuperseded here and writes NOTHING (DynamoDB's conditional write is
     # atomic); provision_runner.run's existing handler for that exception covers this call.
     # hook_token/gateway_token are NOT repeated here -- prepare_hermes_workspace already wrote

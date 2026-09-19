@@ -21,7 +21,7 @@ NOTION_URL = "https://mcp.notion.com/mcp"
 @pytest.fixture
 def efs(tmp_path, monkeypatch):
     # Redirect the per-owner EFS root the helper writes under to a temp dir.
-    monkeypatch.setattr(mcporter_vault, "owner_efs_root", lambda owner_id: tmp_path / owner_id)
+    monkeypatch.setattr(mcporter_vault, "materializer_root", lambda: tmp_path / "owner1")
     return tmp_path
 
 

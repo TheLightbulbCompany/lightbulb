@@ -1,7 +1,6 @@
 """Source Bedrock per-token rates from the AWS agreement-offer rate card.
 
-The hardcoded rate table in ``core/billing/bedrock_pricing._RATES`` (mirrored
-by the cost blocks in ``core/containers/config.py``) was wrong in three ways
+The hardcoded rate table in ``core/billing/bedrock_pricing._RATES`` was wrong in three ways
 that went unnoticed for weeks: Opus was ~2.7x too high, Sonnet/Haiku used the
 ``global.`` rates instead of the ``us.`` Regional ones, and one Haiku id was
 not even a valid Bedrock profile. AWS exposes our exact contracted rate card
@@ -52,8 +51,8 @@ Dimension naming reference (from the AWS rate card)::
     USE1_*_Batch                       batch variant (excluded)
     USW2_* / EUC1_* ...                other regions (excluded)
 
-``price`` is USD per **Million** tokens, which is exactly the unit our rate
-table and the config cost blocks use, so no scaling is needed.
+``price`` is USD per **Million** tokens, which is exactly the unit our rate table uses, so no
+scaling is needed.
 """
 
 from __future__ import annotations
@@ -73,15 +72,6 @@ _DIMENSION_SUFFIX: dict[str, str] = {
     "output": "OutputTokenCount",
     "cache_read": "CacheReadInputTokenCount",
     "cache_write": "CacheWrite1hInputTokenCount",
-}
-
-# Mapping of snake_case rate field → the camelCase key used in the config.py
-# cost block, for the --emit literal.
-_COST_BLOCK_KEY: dict[str, str] = {
-    "input": "input",
-    "output": "output",
-    "cache_read": "cacheRead",
-    "cache_write": "cacheWrite",
 }
 
 # The `us.` Regional inference-profile prefix. We run CRIS in us-east-1; the
@@ -335,12 +325,8 @@ def emit_literals(aws_rates: dict[str, dict[str, float]]) -> str:
             lines.append(f'        "{field_name}": {rates[field_name]},')
         lines.append("    },")
     lines.append("}")
-    lines.append("")
-    lines.append("# --- cost blocks for core/containers/config.py catalog ---")
-    for model_id, rates in aws_rates.items():
-        parts = ", ".join(f'"{_COST_BLOCK_KEY[field_name]}": {rates[field_name]}' for field_name in _DIMENSION_SUFFIX)
-        lines.append(f"# {model_id}")
-        lines.append(f'"cost": {{{parts}}},')
+    # The camelCase per-model "cost" blocks this used to also emit went with the openclaw.json
+    # model catalog they were pasted into; a Hermes profile's config.yaml carries no rates.
     return "\n".join(lines)
 
 

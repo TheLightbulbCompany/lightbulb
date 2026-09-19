@@ -301,8 +301,6 @@ async def test_apply_claim_takeover_fences_target_and_terminal_writes(dynamodb_t
     assert claimed is not None
     assert claimed["apply_claim_id"] == "claim-new"
     assert await update_repo.heartbeat_apply("user_1", item["update_id"], "claim-old") is False
-    assert await update_repo.set_apply_target("user_1", item["update_id"], "claim-old", "arn:target-old") is False
-    assert await update_repo.set_apply_target("user_1", item["update_id"], "claim-new", "arn:target") is True
     assert (
         await update_repo.finish_claimed_apply(
             "user_1", item["update_id"], "claim-old", status="failed", failure_reason="late"
@@ -313,7 +311,6 @@ async def test_apply_claim_takeover_fences_target_and_terminal_writes(dynamodb_t
 
     stored = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": item["update_id"]})["Item"]
     assert stored["status"] == "applied"
-    assert stored["target_task_definition_arn"] == "arn:target"
 
 
 @pytest.mark.asyncio
@@ -387,7 +384,6 @@ async def test_mark_applied_from_applying_state(dynamodb_table):
         ("claim_apply", "pending"),
         ("claim_stale_apply", "applying"),
         ("heartbeat_apply", "applying"),
-        ("set_apply_target", "applying"),
         ("finish_claimed_apply_applied", "applying"),
         ("finish_claimed_apply_failed", "applying"),
         ("set_scheduled", "pending"),
@@ -418,8 +414,6 @@ async def test_release_owned_updates_refuse_every_ordinary_mutation(dynamodb_tab
         )
     elif mutation == "heartbeat_apply":
         result = await update_repo.heartbeat_apply(item["owner_id"], item["update_id"], "claim")
-    elif mutation == "set_apply_target":
-        result = await update_repo.set_apply_target(item["owner_id"], item["update_id"], "claim", "arn:winner")
     elif mutation.startswith("finish_claimed_apply"):
         terminal_status = mutation.rsplit("_", 1)[-1]
         result = await update_repo.finish_claimed_apply(

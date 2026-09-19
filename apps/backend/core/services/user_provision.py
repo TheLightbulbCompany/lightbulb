@@ -250,10 +250,9 @@ async def ensure_user_ready(auth: AuthContext) -> None:
         )
         return
 
-    # Paperclip (Teams) seed is a SEPARATE concern from the container (ECS)
-    # dispatch below. A seed/join failure must NOT abort provisioning: the box
-    # still boots and serves chat because ecs_manager falls back to the legacy
-    # `main` agent when no Paperclip company exists. The failure is recorded on
+    # The Paperclip (Teams) seed is a SEPARATE concern from the runtime dispatch below. A
+    # seed/join failure must NOT abort provisioning: the workspace still provisions and serves
+    # chat with no Paperclip roster. The failure is recorded on
     # the paperclip-companies row (by _mark_failed) and surfaced via
     # /container/status; here we only guarantee it never wedges the container.
     # Best-effort — mirrors the ensure_metronome_customer guard above; the next
@@ -335,11 +334,9 @@ async def _provision_or_reconcile(auth: AuthContext, owner_id: str) -> None:
     * **Deliberately parked trial box → NO dispatch, seed HERE.** Both passive
       -read doors (``/container/status``'s auto-retry and the ``/teams``
       reconcile) must consult ``wake_policy`` and never wake a parked trial box
-      — see that module's docstring. ``ensure_user_ready`` is only ever called
-      from those passive doors (explicit intent goes through
-      ``container_wake.request_wake`` / ``request_wake_silent``), so the
-      suppression belongs here, once, instead of being re-derived per caller.
-      Paperclip seeding needs no container, so the seed still runs.
+      — see that module's docstring. ``ensure_user_ready`` is only ever called from those
+      passive doors, so the suppression belongs here, once, instead of being re-derived per
+      caller. Paperclip seeding needs no runtime, so the seed still runs.
 
     The extra containers-row read is the price of making the decision from
     state; ``ensure_user_ready`` always runs off the request path (a background
@@ -517,14 +514,8 @@ async def _ensure_paperclip_for_org(
     user_id: str,
     email: str,
     is_admin: bool,
-    runtime_host: str | None = None,
 ) -> None:
     """Ensure this user has a row in the org's shared Paperclip company.
-
-    ``runtime_host``: forwarded to the create branch's ``_ensure_paperclip_for_owner``
-    only when set (M4-R8) — the join branch never seeds agents, so it has no use for
-    the hint. Omitted rather than passed as ``None`` so ``_reconcile_owner_seed``
-    (which never has one) leaves every downstream call byte-identical.
 
     CALLERS: ``scripts.provision_runner._seed_owner_paperclip`` (step 0 of the
     provisioning executor's runner — the normal path, passing the Clerk org
@@ -593,11 +584,8 @@ async def _ensure_paperclip_for_org(
                     return
 
                 # We won the claim: become the org's company owner-of-record.
-                owner_kwargs = dict(owner_id=org_id, owner_user_id=user_id, owner_email=email)
-                if runtime_host is not None:
-                    owner_kwargs["runtime_host"] = runtime_host
                 try:
-                    await _ensure_paperclip_for_owner(**owner_kwargs)
+                    await _ensure_paperclip_for_owner(owner_id=org_id, owner_user_id=user_id, owner_email=email)
                 except BaseException:
                     # Release the claim so the next poll (this instance or
                     # another) can re-acquire and retry. Fenced on the
@@ -659,7 +647,6 @@ async def _ensure_paperclip_for_owner(
     owner_id: str,
     owner_user_id: str,
     owner_email: str,
-    runtime_host: str | None = None,
 ) -> None:
     """Ensure the org ``owner_id`` has a Paperclip company, created with
     ``owner_user_id`` as its owner-of-record.
@@ -667,10 +654,6 @@ async def _ensure_paperclip_for_owner(
     Idempotent — ``provisioning.provision_org`` short-circuits on an
     existing active row (see ``core/services/paperclip_provisioning.py``
     ``provision_org`` docstring).
-
-    ``runtime_host``: forwarded to ``provision_org`` only when set (M4-R8) —
-    omitted (rather than passed as ``None``) so every existing caller's
-    ``provision_org`` call stays byte-identical.
 
     CALLER: ``_ensure_paperclip_for_org``'s create branch only, after it has
     won the org create claim.
@@ -702,10 +685,9 @@ async def _ensure_paperclip_for_owner(
     try:
         try:
             before = await provisioning.get_company_row(owner_user_id)
-            provision_org_kwargs = dict(owner_id=owner_id, owner_user_id=owner_user_id, owner_email=owner_email)
-            if runtime_host is not None:
-                provision_org_kwargs["runtime_host"] = runtime_host
-            company = await provisioning.provision_org(**provision_org_kwargs)
+            company = await provisioning.provision_org(
+                owner_id=owner_id, owner_user_id=owner_user_id, owner_email=owner_email
+            )
             from core.services.messaging import _STARTER_KEYS, ensure_default_room
 
             before_starters = getattr(before, "starter_agent_ids", None) if before else None

@@ -75,39 +75,6 @@ async def test_direct_provision_initializes_workspace_trial_before_gate():
 
 
 @pytest.mark.asyncio
-async def test_direct_wake_initializes_workspace_trial_before_gate():
-    """A first wake request cannot see the pre-initialization org gate."""
-    from core.services.container_wake import WakeResult
-    from routers import container as container_mod
-
-    initialized = False
-
-    async def initialize(_auth, owner_id):
-        nonlocal initialized
-        assert owner_id == "org_paid"
-        initialized = True
-
-    async def wake(_owner_id, *, reason, is_admin):
-        assert reason == "interaction"
-        assert is_admin is True
-        if initialized:
-            return WakeResult(outcome="already_running")
-        return WakeResult(
-            outcome="blocked",
-            gate_payload={"blocked": {"code": "team_billing_required"}},
-        )
-
-    with (
-        patch.object(container_mod, "ensure_workspace_trial_default", new=initialize),
-        patch.object(container_mod.container_wake, "request_wake", new=wake),
-    ):
-        result = await container_mod.container_wake_endpoint(auth=_auth(), reason="interaction")
-
-    assert initialized is True
-    assert result == {"outcome": "already_running"}
-
-
-@pytest.mark.asyncio
 async def test_direct_retry_initializes_workspace_trial_before_gate():
     """The retry endpoint initializes the workspace before its provision gate."""
     from routers import container as container_mod
@@ -123,22 +90,20 @@ async def test_direct_retry_initializes_workspace_trial_before_gate():
         assert initialized, "retry evaluated its provision gate before initializing the workspace trial"
         assert is_admin is True
 
-    ecs = MagicMock(get_service_status=AsyncMock(return_value={"status": "error"}))
     with (
         patch.object(container_mod, "ensure_workspace_trial_default", new=initialize),
         patch.object(container_mod, "_assert_provision_allowed", new=assert_allowed),
-        patch.object(container_mod, "get_ecs_manager", return_value=ecs),
         patch.object(container_mod, "dispatch_provision", new=AsyncMock()),
         patch.object(
             container_mod.container_repo,
             "get_by_owner_id",
-            new=AsyncMock(return_value={"service_name": "svc"}),
+            new=AsyncMock(return_value={"owner_id": "org_paid", "status": "error"}),
         ),
     ):
         result = await container_mod.container_retry(auth=_auth())
 
     assert initialized is True
-    assert result == {"ok": True, "service_name": "svc"}
+    assert result == {"ok": True}
 
 
 @pytest.mark.asyncio
@@ -348,8 +313,11 @@ async def test_provision_existing_container_skips_payment_gate():
 
 
 @pytest.mark.asyncio
-async def test_provision_stopped_container_initializes_trial_before_start_guard():
-    """A stopped workspace cannot reach the ECS start guard before trial creation."""
+async def test_provision_reports_an_existing_workspace_without_re_provisioning_it():
+    """Idempotent, and deliberately NOT payment-gated: billing state churns (cancel +
+    resubscribe) and a stale 402 would mask the workspace the caller is asking about. There is no
+    cold-start door left either -- AgentCore starts the microVM on the next invoke, so a caller
+    with a row has nothing to ask us to start."""
     from routers import container as container_mod
 
     initialized = False
@@ -359,25 +327,24 @@ async def test_provision_stopped_container_initializes_trial_before_start_guard(
         assert owner_id == "org_paid"
         initialized = True
 
-    async def start(owner_id):
-        assert owner_id == "org_paid"
-        assert initialized, "stopped container reached its start guard before trial initialization"
-
-    manager = MagicMock(start_user_service=AsyncMock(side_effect=start))
+    gate = AsyncMock()
+    dispatch = AsyncMock()
     with (
         patch.object(container_mod, "ensure_workspace_trial_default", new=initialize),
         patch.object(
             container_mod.container_repo,
             "get_by_owner_id",
-            new=AsyncMock(return_value={"status": "stopped", "service_name": "openclaw-existing"}),
+            new=AsyncMock(return_value={"status": "stopped", "owner_id": "org_paid"}),
         ),
-        patch.object(container_mod, "get_ecs_manager", return_value=manager),
+        patch.object(container_mod, "_assert_provision_allowed", gate),
+        patch.object(container_mod, "dispatch_provision", dispatch),
     ):
         result = await container_mod.container_provision(auth=_auth())
 
     assert initialized is True
-    assert result["status"] == "provisioning"
-    assert result["already_existed"] is True
+    assert result == {"status": "stopped", "owner_id": "org_paid", "already_existed": True}
+    gate.assert_not_awaited()
+    dispatch.assert_not_awaited()
 
 
 @pytest.mark.asyncio

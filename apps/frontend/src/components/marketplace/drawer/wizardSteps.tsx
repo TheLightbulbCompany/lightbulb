@@ -117,9 +117,9 @@ export function PickAgentStep({
         step lets you choose which integrations ride along.
       </p>
       <div className="mb-4 flex items-center justify-between rounded-xl border border-[var(--edge)] bg-card px-3 py-2 text-ui">
-        <span className="text-muted-foreground">Already running OpenClaw somewhere else?</span>
+        <span className="text-muted-foreground">Been working in Claude Code?</span>
         <button type="button" onClick={() => setImportOpen(true)} className="rounded-full border border-[var(--edge)] px-3 py-1 font-medium text-[var(--midnight)] hover:bg-[var(--midnight)]/5">
-          Import from an OpenClaw backup
+          Import your Claude Code context
         </button>
       </div>
       <ImportBackupDialog open={importOpen} onOpenChange={setImportOpen} onImported={(id) => { setImportOpen(false); refresh(); onSelect(id); }} />

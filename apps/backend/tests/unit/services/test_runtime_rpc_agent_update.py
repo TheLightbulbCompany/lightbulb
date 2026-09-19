@@ -7,18 +7,6 @@ from core.services.messaging import ApiProblem
 from core.services.paperclip_admin_client import PaperclipApiError
 
 
-def _not_agentcore(monkeypatch):
-    """These tests exercise the ECS (forward-to-container) path -- an AgentCore row's
-    agents.update leg is covered by test_runtime_rpc_agent_update_agentcore.py. `_is_agentcore`
-    is `async def`, so the replacement must be a real coroutine function (an `await` on a bare
-    value raises `TypeError`)."""
-
-    async def fake(owner_id):
-        return False
-
-    monkeypatch.setattr(runtime_rpc, "_is_agentcore", fake)
-
-
 class _Http:
     async def __aenter__(self):
         return self
@@ -56,10 +44,6 @@ async def test_name_and_existing_metadata_share_one_patch(monkeypatch):
     admin.get_agent = AsyncMock(return_value={"id": "a1", "companyId": "company", "role": "general"})
     admin.patch_agent = AsyncMock(return_value={})
     _wire_admin(monkeypatch, admin)
-    monkeypatch.setattr(
-        "core.services.config_patcher.apply_paperclip_meta",
-        AsyncMock(),
-    )
     params = {
         "agentId": "a1",
         "name": "Ada",
@@ -128,13 +112,12 @@ class _CountingName(str):
 
 
 @pytest.mark.asyncio
-async def test_execute_normalizes_agent_name_once_before_both_writes(monkeypatch):
+async def test_execute_normalizes_agent_name_once_before_the_write(monkeypatch):
+    """Once, at the RPC boundary -- and never on the caller's own dict. Normalising per writer
+    is how a rename lands under two different names."""
     _CountingName.strip_calls = 0
-    _not_agentcore(monkeypatch)
     mirror = AsyncMock()
     monkeypatch.setattr(runtime_rpc, "_mirror_agent_update", mirror)
-    call_mock = AsyncMock(return_value={})
-    monkeypatch.setattr(runtime_rpc.container_rpc, "call", call_mock)
     supplied = {"agentId": "a1", "name": _CountingName("  Ada  ")}
 
     await runtime_rpc.execute_sync(
@@ -147,7 +130,6 @@ async def test_execute_normalizes_agent_name_once_before_both_writes(monkeypatch
 
     assert _CountingName.strip_calls == 1
     assert mirror.await_args.args[1]["name"] == "Ada"
-    assert call_mock.await_args.args[2]["name"] == "Ada"
     assert supplied["name"] == "  Ada  "
 
 
@@ -180,7 +162,6 @@ async def test_final_root_ceo_cannot_be_demoted(monkeypatch):
     admin.list_agents = AsyncMock(return_value=[{"id": "a1", "companyId": "company", "role": "ceo", "reportsTo": None}])
     admin.patch_agent = AsyncMock(return_value={})
     _wire_admin(monkeypatch, admin)
-    monkeypatch.setattr("core.services.config_patcher.apply_paperclip_meta", AsyncMock())
 
     with pytest.raises(RuntimeError, match="final root CEO"):
         await runtime_rpc._mirror_agent_update(

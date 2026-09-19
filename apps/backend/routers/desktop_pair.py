@@ -20,18 +20,11 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.containers import get_workspace
-from core.repositories import container_repo
 from core.services.connection_service import ConnectionService
 from core.services.desktop_pair import (
     DesktopPermissionGrant,
-    EfsWorkspaceAdapter,
     pair_desktop_devices,
     revoke_desktop_device,
-)
-from core.services.desktop_pair_live import (
-    push_desktop_pairing_live,
-    push_desktop_revoke_live,
 )
 from core.services import local_sessions
 
@@ -75,10 +68,12 @@ class PairRequest(BaseModel):
 
 class PairResponse(BaseModel):
     gatewayUrl: str
-    # The raw WebSocket gateway relay's door — the node clients dial THIS one
-    # (`bv-` CloudFront/ALB, one backend task pipes both sockets). `gatewayUrl`
-    # above stays on the API Gateway door: the local-session relay still needs
-    # its Management API and reads that field, not this one.
+    # The raw WebSocket gateway relay's door — the node clients dial THIS one (`bv-`
+    # CloudFront/ALB). The backend TERMINATES that socket now (`gateway_relay`'s
+    # `_serve_node_protocol`): it used to pipe frames verbatim to a second socket on the
+    # owner's container, and an AgentCore runtime serves none. `gatewayUrl` above stays on the
+    # API Gateway door: the local-session relay still needs its Management API and reads that
+    # field, not this one.
     relayUrl: str
     gatewayToken: str
     # Container owner (org_id for an org, else the personal user_id). The
@@ -89,15 +84,6 @@ class PairResponse(BaseModel):
     deviceIdCli: str
     commandsMac: list[str]
     commandsCli: list[str]
-
-
-def _workspace_adapter(owner_id: str) -> EfsWorkspaceAdapter:
-    return EfsWorkspaceAdapter(
-        owner_id=owner_id,
-        workspace=get_workspace(),
-        container_repo=container_repo,
-        gateway_ws_url=settings.WS_GATEWAY_URL,
-    )
 
 
 @router.post("/pair", response_model=PairResponse)
@@ -129,25 +115,13 @@ async def post_pair(
                 if body.permissions is not None
                 else None
             ),
-            workspace=_workspace_adapter(owner_id),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Push the pairing into the RUNNING container's live trust store. Since the
-    # OpenClaw 8.x image the gateway only reads the paired.json files at boot
-    # (one-time SQLite import), so without this a pair against a running
-    # container is inert until the next container roll and the desktop loops on
-    # NOT_PAIRED. push_desktop_pairing_live never raises and skips cleanly when
-    # no container is running; the extra try/except is belt-and-braces so no
-    # future bug in the push can fail an already-committed pair.
-    try:
-        await push_desktop_pairing_live(
-            owner_id=owner_id,
-            device_ids={result.device_id_mac, result.device_id_cli},
-        )
-    except Exception:  # noqa: BLE001 — the pair is already committed; live push is best-effort
-        pass
+    # No live push: the trust record IS the containers row every reader already consults
+    # (``machine_auth`` at the WS upgrade, ``declared_commands_for`` at connect), so a pair
+    # takes effect on the device's very next connect with nothing to propagate.
 
     return PairResponse(
         gatewayUrl=result.gateway_url,
@@ -179,14 +153,6 @@ async def delete_device(
 
     await revoke_desktop_device(
         device_id=device_id,
-        workspace=_workspace_adapter(owner_id),
+        owner_id=owner_id,
         force_close_device=_force_close_device,
     )
-    # Evict from the RUNNING gateway's SQLite trust store too. The boot
-    # import is add-only (existing SQLite rows win), so the JSON removal
-    # above alone never evicts the device — not even at the next container
-    # boot. Best-effort; never raises.
-    try:
-        await push_desktop_revoke_live(owner_id=owner_id, device_id=device_id)
-    except Exception:  # noqa: BLE001 — the revoke is already committed; eviction is best-effort
-        pass

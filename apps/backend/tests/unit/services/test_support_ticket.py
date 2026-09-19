@@ -20,7 +20,12 @@ async def test_submit_ticket_enriches_and_sends(monkeypatch):
     with (
         patch(
             "core.services.support_ticket.container_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"status": "running", "service_name": "openclaw-user_123-abc"}),
+            new=AsyncMock(
+                return_value={
+                    "status": "running",
+                    "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1",
+                }
+            ),
         ),
         patch(
             "core.services.support_ticket.billing_repo.get_by_owner_id",
@@ -43,6 +48,11 @@ async def test_submit_ticket_enriches_and_sends(monkeypatch):
     assert "Bug report" in body
     assert "```json" in body
     assert "user_123" in body
+    # The runtime ARN, not the retired ECS service name -- it is the one identifier an operator
+    # pastes straight into ``aws bedrock-agentcore get-agent-runtime`` from the ticket. A field
+    # the row no longer carries would render as null on every ticket, silently.
+    assert "arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1" in body
+    assert "service_name" not in body
     assert "running" in body  # container status
     assert "bedrock_claude" in body  # provider
     assert "380894" in body  # posthog person link

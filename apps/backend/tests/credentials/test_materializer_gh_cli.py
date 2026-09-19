@@ -24,7 +24,9 @@ class _FakeResp:
 
 
 def _patch_efs(monkeypatch, tmp_path):
-    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+    # Materializers only run inside a projection (credentials/hermes_cli.py), so the root is
+    # the ContextVar's, not a settings path. tmp_path/"org_1" keeps every path assertion below.
+    monkeypatch.setattr(gh_cli, "materializer_root", lambda: tmp_path / "org_1")
 
 
 def _hosts_path(tmp_path):

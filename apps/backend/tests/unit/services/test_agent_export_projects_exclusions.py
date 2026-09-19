@@ -85,20 +85,22 @@ def test_projects_and_stripe_stay_named_backstops():
     assert ".stripe" in _SKIP_DIR_NAMES
 
 
-def test_the_provisioning_rail_writes_nothing_under_a_workspace():
-    """The structural proof, now that the rail is backend-owned: the only EFS
-    write on it is `openclaw.json`'s `env.vars`, through config_patcher. No
-    path under `workspace-{id}/` is ever constructed here, so there is nothing
-    for an export to exclude — the named entries above are the backstop, not
-    the fence."""
+def test_the_provisioning_rail_writes_nothing_a_workspace_could_carry():
+    """The structural proof: the rail constructs no per-agent path at all. Its one runtime
+    write was ``openclaw.json``'s ``env.vars``, and that file is gone with the ECS runtime --
+    ``land_credentials`` now REFUSES rather than persisting a credential nothing can deliver
+    (see its docstring). So there is nothing for an export to exclude; the named entries above
+    are the backstop for a hand-copied leftover, not the fence."""
     import inspect
 
     from core.services import provisioning_landing
 
     source = inspect.getsource(provisioning_landing)
     assert "workspace-" not in source
-    assert "owner_efs_root" not in source
-    assert "set_openclaw_config_path" in source
+    assert "materializer_root" not in source
+    # Prose still explains what the rail USED to write; the assertion is on the code.
+    assert "set_openclaw_config_path" not in source
+    assert "WorkflowRefused" in inspect.getsource(provisioning_landing.land_credentials)
 
 
 def test_a_copied_non_dot_vault_is_still_caught(dirty_workspace):

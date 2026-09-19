@@ -27,7 +27,8 @@ worthless. Link members are merely skipped (see ``_check_member``): real
 home-dir tars legitimately carry symlinks, and a skipped link is never
 followed, so skipping is strictly safe.
 
-Staged layout under ``dst``::
+Staged layout under ``dst`` (a scratch tree; the apply half reads it back and uploads the
+result into the target agent's S3 profile)::
 
     claude/
       memory/<collection-id>/<relpath>   projects/<slug>/memory/**/*.md
@@ -45,7 +46,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import tarfile
@@ -55,13 +55,42 @@ from pathlib import Path
 from typing import BinaryIO
 
 from core.services.marketplace_safety import SafetyFlag, scan
-from core.services.openclaw_backup_import import (
-    MAX_MEMBERS,
-    _PERSONA_MARKERS,
-    _UNIVERSAL_SKIP_DIRS,
-    BackupImportError,
-    _check_member,
-)
+
+# Upload + stream bounds. They used to live in ``openclaw_backup_import``, which went with the
+# OpenClaw-backup import rail; this module is the only importer left, so they live here.
+MAX_UPLOAD_BYTES = 2 * 1024**3  # S3 presigned PUT; far above any real ~/.claude
+MAX_MEMBERS = 200_000
+IMPORT_ID_RE = re.compile(r"^import-[0-9a-f]{12}$")
+
+#: A tar carrying one of these at the root is an AGENT workspace, not a Claude home -- see
+#: ``detect_claude_root``, which refuses rather than importing someone's agent as a context.
+_PERSONA_MARKERS = ("AGENTS.md", "SOUL.md", "IDENTITY.md")
+_UNIVERSAL_SKIP_DIRS = frozenset({"node_modules", ".git", "__pycache__"})
+
+
+class BackupImportError(ValueError):
+    """A member-level archive fault; message is user-facing."""
+
+
+def _check_member(member: tarfile.TarInfo, dst_resolved: Path, dst: Path) -> Path | None:
+    """Validate one member; None means SKIP it (never extract).
+
+    Link members are skipped, not fatal: real home-dir tars legitimately carry symlinks, and a
+    skipped link is never followed or extracted, so skipping is strictly safe while hard-failing
+    would reject real-world archives outright. Absolute paths and traversal stay fatal -- those
+    only appear in crafted archives, and a partial extraction of a hostile upload is worthless.
+    """
+    if member.name.startswith("/"):
+        raise BackupImportError(f"archive member has an absolute path: {member.name!r}")
+    target = (dst / member.name).resolve()
+    try:
+        target.relative_to(dst_resolved)
+    except ValueError as exc:
+        raise BackupImportError(f"archive member escapes the extraction directory: {member.name!r}") from exc
+    if member.issym() or member.islnk():
+        return None
+    return target
+
 
 # The backup extractor's 512 MB/2 GB caps are pointless for markdown; these
 # are sized for a real ~/.claude (upstream caps memory discovery at 2000
@@ -272,20 +301,9 @@ USER_MEMORY_BEGIN = "<!-- claude-code-import:begin -->"
 USER_MEMORY_END = "<!-- claude-code-import:end -->"
 
 
-def _chown_1000(path: Path) -> None:
-    """Best-effort 1000:1000 — OpenClaw runs as node inside the container."""
-    try:
-        os.chown(path, 1000, 1000)
-    except OSError:
-        pass
-
-
-def _copy_tree(src: Path, dst: Path) -> None:
-    shutil.copytree(src, dst)
-    _chown_1000(dst)
-    for root, dirs, files in os.walk(dst):
-        for n in (*dirs, *files):
-            _chown_1000(Path(root, n))
+# NOTE: the 1000:1000 chown these writes used to carry went with the ECS runtime. The apply
+# target is a scratch tree the backend owns and then uploads into the agent's S3 profile; no
+# uid ever opens these paths directly.
 
 
 def _merge_user_memory(content: str, user_md: Path) -> None:
@@ -307,7 +325,6 @@ def _merge_user_memory(content: str, user_md: Path) -> None:
     else:
         new = block
     user_md.write_text(new, encoding="utf-8")
-    _chown_1000(user_md)
 
 
 def apply_to_workspace(
@@ -316,7 +333,7 @@ def apply_to_workspace(
     collections: list[str] | None,
     skills: list[str] | None,
 ) -> list[dict]:
-    """Apply a staged claude import to one agent's workspace. ``collections``/
+    """Apply a staged claude import into one agent's profile tree. ``collections``/
     ``skills`` filter by id/name; ``None`` means all; user memory always
     applies when staged. Returns ``[{"item", "status"}]`` rows.
 
@@ -340,9 +357,7 @@ def apply_to_workspace(
         if target.exists():
             shutil.rmtree(target)
         target.parent.mkdir(parents=True, exist_ok=True)
-        for parent in (target.parent, target.parent.parent, target.parent.parent.parent):
-            _chown_1000(parent)
-        _copy_tree(cid_dir, target)
+        shutil.copytree(cid_dir, target)
         results.append({"item": f"memory:{cid_dir.name}", "status": "applied"})
 
     if (src / "CLAUDE.md").is_file():
@@ -360,8 +375,7 @@ def apply_to_workspace(
             results.append({"item": f"skill:{skill_dir.name}", "status": "skipped_exists"})
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
-        _chown_1000(target.parent)
-        _copy_tree(skill_dir, target)
+        shutil.copytree(skill_dir, target)
         results.append({"item": f"skill:{skill_dir.name}", "status": "applied"})
 
     return results

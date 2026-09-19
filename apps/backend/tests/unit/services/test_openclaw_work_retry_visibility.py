@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 
@@ -16,7 +18,6 @@ KEY = "55555555-5555-4555-8555-555555555555"
 
 @pytest.mark.asyncio
 async def test_canonical_ingress_mints_optional_room_grant_after_membership_check(monkeypatch):
-    from unittest.mock import AsyncMock, Mock
     from core.services import local_session_grants
     from core.services import openclaw_work as work
 
@@ -24,8 +25,11 @@ async def test_canonical_ingress_mints_optional_room_grant_after_membership_chec
     event = "22222222-2222-4222-8222-222222222222"
     meta = {"ownerId": "owner_test", "roomId": room, "workspaceId": WS, "deliveryKey": KEY}
     member = {"id": "friday"}
-    manager = Mock(resolve_running_container=AsyncMock(return_value=({"gateway_token": "dummy"}, "127.0.0.1")))
-    monkeypatch.setattr(work, "get_ecs_manager", lambda: manager)
+    monkeypatch.setattr(
+        work.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"gateway_token": "dummy", "agentcore_runtime_arn": "arn:r1"}),
+    )
     monkeypatch.setattr(work.messaging_repo, "list_members", AsyncMock(return_value=[]))
     membership = AsyncMock(return_value=member)
     monkeypatch.setattr(work.messaging_repo, "get_member", membership)
@@ -37,9 +41,9 @@ async def test_canonical_ingress_mints_optional_room_grant_after_membership_chec
     monkeypatch.setattr(worker, "_post", post)
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
     await worker._dispatch_message(meta, member, {"messageId": event}, "user_request")
-    body = post.call_args.args[3]
+    body = post.call_args.args[2]
     assert "invocation" not in body
-    caller = local_session_grants.verify(post.call_args.args[5])
+    caller = local_session_grants.verify(post.call_args.args[4])
     assert (caller.owner_id, caller.room_id, caller.agent_id) == ("owner_test", room, "friday")
     membership.return_value = None
     post.reset_mock()
@@ -48,7 +52,7 @@ async def test_canonical_ingress_mints_optional_room_grant_after_membership_chec
     membership.return_value = member
     monkeypatch.delenv("PAPERCLIP_SERVICE_TOKEN_KEY")
     await worker._dispatch_message(meta, member, {"messageId": event}, "user_request")
-    assert post.call_args.args[5] is None
+    assert post.call_args.args[4] is None
 
 
 class FakeSqs:
@@ -82,7 +86,7 @@ async def test_invocation_header_keeps_canonical_body_and_gateway_authorization_
     captured = {}
 
     async def fake_request(
-        container, path, *, ip=None, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
+        container, path, *, method="POST", json_body=None, content=None, headers=None, timeout_s=30.0
     ):
         captured["json_body"] = json_body
         captured["headers"] = headers
@@ -94,7 +98,6 @@ async def test_invocation_header_keeps_canonical_body_and_gateway_authorization_
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
     await worker._post(
         agentcore_container,
-        runtime_transport.AGENTCORE_ADDRESS,
         "/plugins/lightbulb-channel/inbound/friday",
         body,
         "gateway-dummy",
@@ -140,14 +143,13 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
     hold the FIFO group for 300s — the plugin dedupes by eventId, so retry soon."""
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
 
-    class FakeManager:
-        async def resolve_running_container(self, _owner):
-            return {"gateway_token": "gw"}, "10.0.0.9"
-
-    async def fake_post(_container, _ip, _path, _body, _token, _invocation=None):
+    async def fake_post(_container, _path, _body, _token, _invocation=None):
         raise httpx.ReadTimeout("read timed out")
 
-    monkeypatch.setattr("core.services.openclaw_work.get_ecs_manager", lambda: FakeManager())
+    monkeypatch.setattr(
+        "core.services.openclaw_work.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"gateway_token": "gw", "agentcore_runtime_arn": "arn:r1"}),
+    )
     monkeypatch.setattr(worker, "_post", fake_post)
 
     async def fake_list_members(_room_id):
@@ -196,14 +198,10 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
     ended = []
     metrics = []
 
-    class FakeManager:
-        async def resolve_running_container(self, _owner):
-            return {"gateway_token": "gw"}, "10.0.0.9"
-
     class RefusedResponse:
         status_code = 409
 
-    async def fake_post(_container, _ip, _path, _body, _token, _invocation=None):
+    async def fake_post(_container, _path, _body, _token, _invocation=None):
         return RefusedResponse()
 
     async def fake_list_members(_room_id):
@@ -222,7 +220,10 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
         ended.append((owner_id, run_id, fields))
         return {"runId": run_id}
 
-    monkeypatch.setattr("core.services.openclaw_work.get_ecs_manager", lambda: FakeManager())
+    monkeypatch.setattr(
+        "core.services.openclaw_work.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"gateway_token": "gw", "agentcore_runtime_arn": "arn:r1"}),
+    )
     monkeypatch.setattr("core.services.openclaw_work.messaging_repo.list_members", fake_list_members)
     monkeypatch.setattr("core.services.openclaw_work.messaging_repo.get_member", fake_get_member)
     monkeypatch.setattr("core.services.openclaw_work.build_ingress_body", fake_body)
@@ -306,9 +307,7 @@ async def test_agentcore_ingress_budget_outlasts_a_cold_microvm_start(monkeypatc
     monkeypatch.setattr(work.runtime_transport, "request", seen)
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
     container = {"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x", "owner_id": "o"}
-    res = await worker._post(
-        container, runtime_transport.AGENTCORE_ADDRESS, "/plugins/lightbulb-channel/inbound/a", {"x": 1}, "tok"
-    )
+    res = await worker._post(container, "/plugins/lightbulb-channel/inbound/a", {"x": 1}, "tok")
     assert res.status_code == 202
     kwargs = seen.call_args.kwargs
     assert kwargs["timeout_s"] >= 60.0

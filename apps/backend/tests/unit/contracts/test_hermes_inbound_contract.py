@@ -33,17 +33,11 @@ OWNER, AGENT = "org_1", "agent_ceo"
 HOOK_TOKEN, GATEWAY_TOKEN = "hook-tok-for-a", "gateway-tok-for-a"
 
 
-def _fake_ecs(container, ip):
-    m = AsyncMock()
-    m.resolve_running_container = AsyncMock(return_value=(container, ip))
-    return m
-
-
 def _agentcore_row() -> dict:
     return {
         "hook_token": HOOK_TOKEN,
         "gateway_token": GATEWAY_TOKEN,
-        "runtime_host": "agentcore",
+        "agentcore_runtime_arn": "arn:x",
     }
 
 
@@ -73,7 +67,8 @@ def _patch_capturing_request(monkeypatch, module):
 async def test_agent_mail_with_a_thread_key_is_a_conformant_gateway_authed_ingress(
     monkeypatch,
 ):
-    monkeypatch.setattr(delivery, "get_ecs_manager", lambda: _fake_ecs(_agentcore_row(), "agentcore"))
+    monkeypatch.setattr(delivery.container_repo, "get_by_owner_id", AsyncMock(return_value=_agentcore_row()))
+    monkeypatch.setattr(delivery, "trial_block_reason", AsyncMock(return_value=None))
     captured = _patch_capturing_request(monkeypatch, runtime_transport)
 
     result = await delivery.deliver_to_agent(
@@ -92,7 +87,8 @@ async def test_agent_mail_with_a_thread_key_is_a_conformant_gateway_authed_ingre
 async def test_agent_mail_with_no_thread_key_is_still_a_conformant_ingress(monkeypatch):
     """No derivable Message-ID -> agent_mail_delivery omits sessionKey entirely (I1's other
     half): the bridge must still accept the body, deriving its own session key."""
-    monkeypatch.setattr(delivery, "get_ecs_manager", lambda: _fake_ecs(_agentcore_row(), "agentcore"))
+    monkeypatch.setattr(delivery.container_repo, "get_by_owner_id", AsyncMock(return_value=_agentcore_row()))
+    monkeypatch.setattr(delivery, "trial_block_reason", AsyncMock(return_value=None))
     captured = _patch_capturing_request(monkeypatch, runtime_transport)
 
     result = await delivery.deliver_to_agent(

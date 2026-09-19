@@ -25,7 +25,6 @@ from core.auth import (
     resolve_owner_id,
 )
 from core.config import settings
-from core.containers import get_ecs_manager, get_workspace
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo, marketplace_repo
 from core.services import (
@@ -39,13 +38,11 @@ from core.services import (
     seller_display,
     seller_profile,
 )
-from core.services.agent_roster import roster_entries
 from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.inbound_triggers import automation_requirement
 from core.services.messaging import ApiProblem
 from core.services.hermes_provisioning import HermesProfileError
 from core.services.catalog_service import (
-    CatalogService,
     MissingCredentialsError,
     emit_agent_deployed,
     get_catalog_service,
@@ -58,7 +55,6 @@ from core.services.paperclip_agent_lifecycle import (
 from core.services.paperclip_agent_idempotency import build_agent_create_idempotency_key
 from core.services.paperclip_meta import derive_from_listing, read_from_agent_entry
 from core.services.paperclip_openclaw_pairing import (
-    ensure_operator_device_paired,
     resolve_company_id_for_owner,
 )
 from schemas import marketplace as schemas
@@ -87,23 +83,6 @@ async def _container_for_export_routing(owner_id: str) -> dict | None:
             retryable=True,
             retry_after=3,
         ) from exc
-
-
-def _count_field(field) -> int:
-    """Count items in an agent config field that may be array- or object-shaped.
-
-    Real agent configs (e.g. a published listing's ``openclaw.json`` slice)
-    store ``skills`` and ``channels`` as plain arrays
-    (``"skills": ["foo", "bar"]``). Older / hand-built configs use the
-    object form ``{"list": [...]}``. Both must be supported — the previous
-    ``(field or {}).get("list", [])`` form raised ``AttributeError`` on
-    non-empty arrays because the ``or`` short-circuit doesn't fire.
-    """
-    if isinstance(field, list):
-        return len(field)
-    if isinstance(field, dict):
-        return len(field.get("list", []) or [])
-    return 0
 
 
 async def _recreate_routines_for_buyer(
@@ -560,46 +539,42 @@ async def featured_listings(
 async def my_installed_templates(
     auth: Annotated[AuthContext, Depends(get_current_user)],
 ):
-    """Templates the caller has already deployed into their container.
+    """Templates the caller has already deployed.
 
-    Used by the chat sidebar gallery to filter out rows the user has
-    already hired (so they don't appear as deployable). Backed by EFS
-    sidecar files at ``workspace-{agent_id}/.template`` written by
-    ``catalog_service.deploy_from_artifact`` on every deploy. Replaces
-    the legacy ``GET /catalog/deployed`` endpoint that was tied to the
-    deleted admin-catalog router.
+    Used by the chat sidebar gallery to filter out rows the user has already hired. Always
+    EMPTY: the install record was the ``.template`` sidecar on the buyer's EFS workspace and
+    the profile transport writes no equivalent yet, so every listing renders as deployable.
+    KNOWN GAP (already empty for a migrated workspace before this deletion) -- see
+    ``catalog_service``'s module docstring.
     """
-    catalog_svc = get_catalog_service()
-    return {"installed": catalog_svc.list_deployed_for_user(resolve_owner_id(auth))}
+    resolve_owner_id(auth)
+    return {"installed": []}
 
 
 @router.get("/me/agents-summary")
 async def my_agents_summary(auth: Annotated[AuthContext, Depends(get_current_user)]):
-    """Per-agent skill / channel / cron counts from the caller's
-    workspace ``openclaw.json``.
+    """Per-agent counts for the in-chat marketplace drawer's Publish wizard.
 
-    Drives the in-chat marketplace drawer's Publish wizard pick-card
-    sublines (Step 1) and the bundled-summary line in the review preview
-    (Step 4). Reads EFS directly via the workspace helper — no container
-    interaction required, so it returns instantly even when the caller's
-    container is stopped or scaled to zero.
+    The roster comes from Paperclip (the master record). The three counts are 0: they were read
+    off the owner's ``openclaw.json`` (per-agent ``skills``/``channels`` arrays and
+    ``cron/jobs.json``), and a Hermes profile has none of them -- skills resolve from SHARED
+    ``skills.external_dirs``, channels are M5/LATER, and agent scheduling is pinned off. The
+    keys stay so the wizard's sublines render rather than crash; they just read zero.
     """
+    from core.services.messaging import load_agent_roster
+
     owner_id = resolve_owner_id(auth)
-    workspace = get_workspace()
-    config = workspace.read_openclaw_config(owner_id) or {}
-    agents = (config.get("agents") or {}).get("list", []) or []
-    cron_jobs = workspace.read_cron_jobs(owner_id) or []
     return {
         "agents": [
             {
                 "agent_id": a.get("id"),
-                "name": (a.get("identity") or {}).get("name") or a.get("id"),
-                "skill_count": _count_field(a.get("skills")),
-                "channel_count": _count_field(a.get("channels")),
-                "cron_count": sum(1 for c in cron_jobs if c.get("agent_id") == a.get("id")),
+                "name": a.get("name") or a.get("id"),
+                "skill_count": 0,
+                "channel_count": 0,
+                "cron_count": 0,
             }
-            for a in agents
-            if a.get("id")
+            for a in await load_agent_roster(owner_id)
+            if isinstance(a, dict) and a.get("id")
         ],
     }
 
@@ -687,60 +662,6 @@ def _fetch_company_tar(*, s3_prefix: str, listing_id) -> bytes:
         if error_code == "NoSuchKey":
             raise HTTPException(status_code=500, detail="artifact missing for published listing") from exc
         raise HTTPException(status_code=500, detail="failed to fetch listing artifact") from exc
-
-
-def _live_install_of(
-    catalog: CatalogService, *, owner_id: str, slug: str | None, seller_id: str | None = None
-) -> dict | None:
-    """The owner's still-live install of ``slug`` from ``seller_id``, or None.
-
-    Slugs are NOT unique across sellers, so a slug-only match would tell a
-    buyer holding seller A's free "pulse" that seller B's paid "pulse" is
-    already_installed — and hand them nothing. Sidecars written since the
-    field shipped carry ``seller_id``; those must match. Legacy sidecars
-    without it fall back to the slug-only match. (seller_id, NOT listing_id:
-    republish mints a new listing_id for the same slug, and the slug-level
-    match is deliberate republish idempotency.)
-
-    A ``.template`` sidecar on its own isn't proof the agent exists, so this
-    cross-checks openclaw.json's ``agents.list``, which the deploy file-merges
-    the agent entry into. That covers the case it was written for — a deploy
-    that died before its agent ever registered — and it is what lets the
-    sidecar be written EARLY (with the tarball extract) without a partial
-    install handing back a dead id. It does NOT cover the Teams REST delete
-    (``routers/teams/agents.py``), which removes only the Paperclip row and
-    leaves BOTH the sidecar and the ``agents.list`` entry standing; that agent
-    still reads as installed here. The unwind path closes its own half by
-    unlinking the sidecar first (see ``unwind_partial_deploy``).
-
-    SEQUENTIAL retries only — this is a read, not a lock. Two deploys that
-    OVERLAP can still both see "not installed", since the second can start
-    before the first has extracted anything at all. That is how prod grew
-    "Pulse 2": deploy #2 started 35s before deploy #1 wrote its sidecar, back
-    when the sidecar landed at the END of the deploy (a page reload cleared the
-    drawer's ``isHiring``, which is the only thing stopping a second submit).
-    Overlap is fenced separately, by
-    ``container_repo.try_claim_owner_deploy`` below — this read only has to
-    catch the retry that arrives AFTER the first deploy finished, which is the
-    case the claim has already released.
-
-    Keyed on ``slug`` while the claim is owner-wide (any listing, not just this
-    one), so a republish minting a new listing_id for the same slug still reads
-    as "already installed" across versions here. The claim being owner-wide
-    also closes what used to be a gap: two OVERLAPPING deploys of DIFFERENT
-    listing_ids for the same slug (one tab holding a pre-republish listing
-    page) now contend on the same claim too, not just same-listing retries.
-    """
-    sidecars = [
-        d
-        for d in catalog.list_deployed_for_user(owner_id)
-        if d.get("template_slug") == slug and (d.get("seller_id") is None or d.get("seller_id") == seller_id)
-    ]
-    if not sidecars:
-        return None
-    config = get_workspace().read_openclaw_config(owner_id) or {}
-    registered = {a.get("id") for a in roster_entries(config)}
-    return next((d for d in sidecars if d.get("agent_id") in registered), None)
 
 
 @router.post("/listings/{listing_id}/deploy")
@@ -901,60 +822,24 @@ async def deploy_listing(
     catalog = get_catalog_service()
     owner_id = resolve_owner_id(auth)
 
-    # Idempotency. A deploy can take a minute-plus when the buyer's container
-    # is busy (pair_with_openclaw can eat its full 90s gateway-RPC timeout, then the
-    # retry succeeds) — long enough that the browser can lose the response and
-    # report "Couldn't hire". The buyer then clicks Hire again and mints a
-    # SECOND agent from the same listing: prod grew a "Pulse" and a "Pulse 2"
-    # this way. Resolve the existing install instead of duplicating it, so a
-    # retry after a lost response heals into success. The drawer offers Hire
-    # once per listing (installed cards render "Hired ✓"), so a repeat deploy of
-    # a slug the owner already has is always an accidental retry, never intent.
-    already = _live_install_of(catalog, owner_id=owner_id, slug=listing.get("slug"), seller_id=listing.get("seller_id"))
-    if already:
-        logger.info(
-            "Marketplace deploy: owner=%s already has listing %s as agent %s — returning existing install",
-            owner_id,
-            listing.get("listing_id"),
-            already.get("agent_id"),
-        )
-        # A ``reports_to`` on the retry is intentionally dropped: the agent
-        # already exists with the placement the first deploy gave it, and a
-        # retry is an accidental duplicate of the same intent, not a request to
-        # move it. Re-parenting lives in Teams.
-        return {
-            "slug": listing.get("slug"),
-            "version": already.get("template_version") or listing.get("version", 1),
-            "agent_id": already.get("agent_id"),
-            "agent_uuid": already.get("agent_id"),
-            "name": listing.get("name") or listing.get("slug"),
-            # A legacy sidecar without the canonical listing id is not enough
-            # evidence to claim Marketplace origin. The retry still heals to
-            # the live install, but provenance stays conservatively Custom.
-            "origin": ("Marketplace" if already.get("listing_id") and already.get("seller_id") else "Custom"),
-            **(
-                {
-                    "marketplace": {
-                        "listingId": already.get("listing_id"),
-                        "slug": listing.get("slug"),
-                        "version": already.get("template_version") or listing.get("version", 1),
-                        "seller": already.get("seller_id"),
-                    }
-                }
-                if already.get("listing_id") and already.get("seller_id")
-                else {}
-            ),
-            "skills_added": [],
-            "plugins_enabled": [],
-            # Nothing was installed this call, so there is nothing new to warn
-            # about — the warnings belong to the deploy that actually ran.
-            "warnings": [],
-            # Pending automations are NOT of that kind: they describe the
-            # agent's standing state, not this call's work, and a heal after a
-            # lost response is exactly when the buyer never saw the list.
-            "automations_pending": _pending_automations((listing.get("manifest_json") or {}).get("routines") or []),
-            "already_installed": True,
-        }
+    # KNOWN GAP -- the install RECORD is gone, not the idempotency. The ``already_installed``
+    # branch that used to short-circuit here read a ``.template`` sidecar on the buyer's EFS
+    # workspace, cross-checked against ``openclaw.json``'s ``agents.list``; the profile transport
+    # writes no equivalent, so the branch could only ever resolve to "not installed" and was
+    # deleted rather than left as dead code.
+    #
+    # NO SECOND AGENT IS MINTED by a retry. The Paperclip create below carries a STABLE
+    # idempotency key derived from the intent alone (listingId + reportsTo + version), so a
+    # buyer who clicks Hire again after a lost response resolves to the SAME Paperclip agent,
+    # and the profile write is an overwrite of that agent's own prefix. What a retry does cost
+    # is a second ``catalog_agent_deployed`` funnel event and a second artifact fetch. The
+    # overlapping-deploy fence below (``try_claim_owner_deploy``) is a real lock and is
+    # untouched.
+    #
+    # What IS lost is provenance: ``GET /me/installed-templates`` and the Teams
+    # marketplace-origin sidecar both read that record, so an installed listing renders as
+    # deployable in the sidebar gallery and a hired agent shows no "from the marketplace"
+    # badge. Already true for every post-migration deploy before this deletion.
 
     # Exclusive claim for the whole deploy, OWNER-WIDE (not per-listing). The
     # sidecar read above is a READ, not a lock: two OVERLAPPING deploys can both
@@ -1089,18 +974,15 @@ async def deploy_listing(
         # exception triggers the orphan-Paperclip rollback. That includes
         # container resolution (DDB/ECS can throw transient errors), the
         # 503-on-unreachable-container short-circuit, and the catalog deploy
-        # itself. Without this envelope a transient DDB outage on
-        # ``resolve_running_container`` leaves a phantom Paperclip agent on
-        # every failed deploy.
+        # itself. Without this envelope a transient DDB outage on the row read
+        # leaves a phantom Paperclip agent on every failed deploy.
         try:
-            ecs = get_ecs_manager()
-            container, container_ip = await ecs.resolve_running_container(owner_id)
-            if container is None or container_ip is None:
+            container = await container_repo.get_by_owner_id(owner_id)
+            if not container or not container.get("agentcore_runtime_arn"):
                 raise HTTPException(
                     status_code=503,
-                    detail="container starting — retry in a moment",
+                    detail="workspace still provisioning — retry in a moment",
                 )
-            container_token = container["gateway_token"]
 
             result = await catalog.deploy_from_artifact(
                 owner_id=owner_id,
@@ -1111,25 +993,8 @@ async def deploy_listing(
                 new_agent_id=new_agent_id,
                 listing_id=listing.get("listing_id"),
                 seller_id=listing.get("seller_id"),
-                # Fix round 1, item 1: `container` is already in scope from
-                # resolve_running_container above -- thread it through so an
-                # AgentCore row's deploy reaches the S3-profile branch instead
-                # of assuming EFS.
+                # Already in scope — saves the deploy a second row read.
                 container=container,
-            )
-
-            # Register the deployed agent's operator device into the running
-            # container's paired.json + bind its authToken to the gateway token, so
-            # its first relayed connect isn't rejected NOT_PAIRED. catalog deploy
-            # only RPC-registers the agent (agents.create/update); without this a
-            # marketplace agent — which Paperclip wakes on events and runs through
-            # the operator relay — can't pass the device-auth handshake until the
-            # next reprovision. Mirrors the /teams and /chat create paths.
-            # ``paperclip_agent`` (not the slice) carries adapterConfig.devicePrivateKeyPem.
-            await ensure_operator_device_paired(
-                owner_id=owner_id,
-                paperclip_agent=paperclip_agent,
-                gateway_token=container_token,
             )
 
             # Recreate the listing's captured routines (schedules) on the buyer,
@@ -1152,36 +1017,33 @@ async def deploy_listing(
                 listing.get("listing_id"),
                 new_agent_id,
             )
-            # Unwind the container/EFS side effects (openclaw.json agent entry +
-            # on-EFS dirs) before deleting the Paperclip agent, so a failed Hire
-            # leaves no orphan in the buyer's container — the half-installed
-            # ``name=<uuid>`` ghost the incomplete rollback used to strand.
-            # Self-contained best-effort; never raises. ``unwind_partial_deploy``
-            # itself skips the EFS/openclaw.json edit when ``cause`` is a
-            # TimeoutError — see its docstring for why.
+            # The orphan to remove is the Paperclip row: a failed install's S3 profile objects
+            # are overwritten by the next attempt, and no install record is keyed on them (see
+            # catalog_service's module docstring). Best-effort; the original exception is what
+            # the caller needs to see.
+            #
+            # EXCEPT on a timeout, where the row is what makes the half-install disposable. A
+            # TimeoutError means "no answer yet", not "failed": the runtime may still be
+            # finishing the profile write, and the Paperclip agent may already exist and work.
+            # Deleting only the row then produced an unownable ghost -- a live profile (and,
+            # when the create landed and only the follow-up timed out, a runtime-side agent)
+            # with no row for the owner to see or delete it by, and nothing that would ever
+            # clean it up. Keeping it makes that an ordinary agent in Teams, and the retry
+            # resolves to it instead of minting a duplicate beside it. The owner-wide claim is
+            # held in the same case (see release_owner_deploy_claim's `cause`).
             deploy_cause = exc
-            unwound = await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id, cause=exc)
-            if not unwound:
-                # The container-side install may still be standing (and on a
-                # timeout, still mid-write). Deleting the Paperclip row here
-                # would strip the owner's only handle on it and leave an
-                # unownable ghost that the next Hire duplicates. Keep the row:
-                # the agent shows up in Teams, where the owner can use it or
-                # delete it, and the retry resolves to it via the sidecar +
-                # agents.list cross-check.
+            if isinstance(exc, TimeoutError):
                 logger.warning(
-                    "Marketplace deploy: keeping paperclip agent %s for owner=%s — the container-side install "
-                    "was NOT safely unwound (client-side timeout, or the sidecar unlink failed), so the "
-                    "half-install stays visible in Teams",
-                    new_agent_id,
+                    "Marketplace deploy: timed out for owner=%s listing=%s — KEEPING paperclip agent %s so the "
+                    "half-install stays ownable",
                     owner_id,
+                    listing.get("listing_id"),
+                    new_agent_id,
                 )
             else:
                 try:
                     await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
                 except Exception:
-                    # Roll-back is best-effort; the original exception is what
-                    # the caller needs to see.
                     logger.exception(
                         "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
                         new_agent_id,
@@ -1206,8 +1068,8 @@ async def deploy_listing(
             # error. Discriminated by the typed HermesProfileError, not a
             # bare RuntimeError: a plain RuntimeError also legitimately
             # surfaces from create_paperclip_for_marketplace /
-            # deploy_tarball_to_profile / ensure_operator_device_paired in
-            # this same try block and must keep mapping to the blanket 500
+            # deploy_tarball_to_profile in this same try block and must keep
+            # mapping to the blanket 500
             # below (HermesProfileError subclasses RuntimeError only to keep
             # container_repo.classify_provision_error's treatment of the
             # provisioning-runner path unchanged -- it is not caught here via
@@ -1607,7 +1469,7 @@ async def upload_artifact_from_agent(
     # large workspace can't stall the event loop for every other request.
     try:
         package = await run_in_thread(
-            agent_export.export_agent_from_efs,
+            agent_export.export_agent_from_profile,
             seller_id=owner_id,
             agent_id=resolved_agent_id,
             selected_mcps=selected_mcps,

@@ -20,8 +20,8 @@ waking or dispatching work for a trial owner whose window had EXPIRED but who
 was under today's $3. Every door must answer the whole question. Blocking on
 any of these is UX. The PRIMARY enforcement is the bedrock-gate's synchronous
 pre-flight reservation (admission refused before a token is generated); the
-meter's kill (deny the gate token + ``desiredCount=0`` + the now-vestigial IAM
-revoke) is the ASYNC BACKSTOP if the counter ever crosses the cap anyway. The
+meter's kill (deny the gate token + ``StopRuntimeSession`` + the now-vestigial
+IAM revoke) is the ASYNC BACKSTOP if the counter ever crosses the cap anyway. The
 INVERSE — giving a capped-out trial owner their access back once the day rolls
 over — lives one layer up, in
 ``core.services.provision_gate.maybe_restore_trial_bedrock``, which reads
@@ -96,7 +96,7 @@ async def trial_block_reason(owner_id: str) -> str | None:
     """Why this owner may not have a container running right now, or None.
 
     ONE billing read, and the single source of truth for both the provision
-    gate and ``ecs_manager.start_user_service`` — so the two can never disagree
+    gate and every other door — so they can never disagree
     about whether a trial owner is allowed a container. Without this, an
     EXPIRED trial could be woken through a start path that only checked the cap.
 

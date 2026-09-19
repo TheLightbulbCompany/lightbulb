@@ -36,8 +36,6 @@ Env the relay path needs (`core/config.py` / `connection_service.py` / `machine_
 ```bash
 cd /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend
 export AWS_PROFILE=isol8-admin AWS_REGION=us-east-1
-export EFS_MOUNT_PATH=/tmp/node-loopback-efs   # default /mnt/efs/users doesn't exist locally
-mkdir -p "$EFS_MOUNT_PATH"
 uv run uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -46,7 +44,7 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000
 ### 2. Confirm the org is AgentCore-hosted (terminal 2, same exports)
 
 ```bash
-export AWS_PROFILE=isol8-admin AWS_REGION=us-east-1 EFS_MOUNT_PATH=/tmp/node-loopback-efs
+export AWS_PROFILE=isol8-admin AWS_REGION=us-east-1
 export ORG=org_3JCfoyOVF0AjDYjOnIZz5cK8XJL
 aws dynamodb get-item --table-name lightbulb-dev-containers --profile isol8-admin \
   --key "{\"owner_id\":{\"S\":\"$ORG\"}}" --projection-expression 'runtime_host,hook_token'
@@ -64,14 +62,10 @@ M2-R10: pairing must happen before the proof, or every command is `COMMAND_NOT_A
 cd /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend
 python3 - <<'PY'
 import asyncio, os, time, json
-os.environ.setdefault("EFS_MOUNT_PATH", "/tmp/node-loopback-efs")
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
 import jwt
-from core.containers import get_workspace
-from core.repositories import container_repo
-from core.config import settings
-from core.services.desktop_pair import EfsWorkspaceAdapter, pair_desktop_devices
+from core.services.desktop_pair import pair_desktop_devices
 OWNER, USER = "org_3JCfoyOVF0AjDYjOnIZz5cK8XJL", "user_3JRCqaxTRuc0XkW5OAvUDUXDy8d"
 def gen_pem():
     sk = Ed25519PrivateKey.generate()
@@ -81,9 +75,8 @@ def gen_pem():
 mac_priv, mac_pub = gen_pem()
 cli_priv, cli_pub = gen_pem()
 async def main():
-    adapter = EfsWorkspaceAdapter(owner_id=OWNER, workspace=get_workspace(), container_repo=container_repo, gateway_ws_url=settings.WS_GATEWAY_URL)
     result = await pair_desktop_devices(user_id=USER, owner_id=OWNER, display_name_base="node-loopback-test",
-                                         tauri_mac_pubkey=mac_pub, cli_pubkey=cli_pub, workspace=adapter)
+                                         tauri_mac_pubkey=mac_pub, cli_pubkey=cli_pub)
     now = int(time.time())
     token = jwt.encode({"deviceId": result.device_id_cli, "owner": OWNER, "kind": "device", "iat": now, "exp": now + 290}, cli_priv, algorithm="EdDSA")
     json.dump({"deviceId": result.device_id_cli, "token": token}, open("/tmp/node-loopback-jwt.json", "w"))
@@ -92,7 +85,7 @@ asyncio.run(main())
 PY
 ```
 
-Verify with `cat /tmp/node-loopback-efs/$ORG/nodes/paired.json` (what `declared_commands_for` reads) — the new device should show `system.run` in `commands`. The JWT is valid ~290s; start the CLI (step 5) right after minting. Its key does NOT need to match the CLI's own internally-generated identity: the WS-upgrade JWT (checked once, at accept, against `paired_devices` in DynamoDB) and the in-band `connect` challenge signature (self-certifying) are independent checks.
+Verify with `aws dynamodb get-item --table-name lightbulb-dev-containers --profile isol8-admin --key "{\"owner_id\":{\"S\":\"$ORG\"}}" --projection-expression 'paired_devices'` (the ONE map `declared_commands_for` reads -- the two EFS `paired.json` files it replaced are gone with the gateway that read them) — the new device should show `system.run` in `commands`. The JWT is valid ~290s; start the CLI (step 5) right after minting. Its key does NOT need to match the CLI's own internally-generated identity: the WS-upgrade JWT (checked once, at accept, against `paired_devices` in DynamoDB) and the in-band `connect` challenge signature (self-certifying) are independent checks.
 
 ### 4. Start the loopback bridging proxy
 
@@ -153,7 +146,7 @@ curl -sX POST http://127.0.0.1:8000/api/v1/internal/node/invoke/$ORG \
 - [ ] a `"timeoutMs":2000` invoke of `["bash","-lc","sleep 30"]` returns `payload.timedOut: true` on the raw route (the plugin, `.../lightbulb_node/__init__.py::execute`, is what turns this into `returncode: 124` — that translation is plugin-side, not on this route). **The `timeoutMs` that the node's own `system.run` handler enforces is a `paramsJSON` field, separate from the top-level invoke-body `timeoutMs`** (`core/services/node_broker.py::NodeSession.invoke` has zero grace beyond the top-level value, so it always wins the race and the caller gets a bare `504 NODE_TIMEOUT` — no `payload` at all, and the CLI never kills the child process — unless the node is *also* told its own bound via `paramsJSON`). Give the top-level value real headroom over it, e.g. `-d '{"command":"system.run","paramsJSON":"{\"command\":[\"bash\",\"-lc\",\"sleep 30\"],\"timeoutMs\":2000}","timeoutMs":8000}'`.
 - [ ] an exec-approval prompt on the Mac (if the CLI's local policy asks) is honoured; a denial surfaces in `payload.error`/`error.message`, never a hang to `NODE_TIMEOUT` (exact denial string is upstream's own, not defined in this repo)
 - [ ] `camera.capture` (undeclared by node-host) → **403 COMMAND_NOT_ALLOWED** before it reaches the socket: `curl ... -d '{"command":"camera.capture","paramsJSON":"{}"}'`
-- [ ] **cross-instance forwarding** (M2-R23): third terminal, `PORT=8001 AWS_PROFILE=isol8-admin EFS_MOUNT_PATH=/tmp/node-loopback-efs uv run uvicorn main:app --host 0.0.0.0 --port 8001` (`PORT` env, not just `--port` — `task_address.own_address()` reads `PORT`; `--host 0.0.0.0` on **both** instances, terminal 1 included — see the note under step 1). Point the step-6 curl at `:8001`; it must still return the same payload, forwarded once to `:8000` (which holds the socket) — confirm `:8000`'s own access log shows the forwarded request's source IP is the *other* instance's LAN address, not `127.0.0.1` (uvicorn's default access-log line doesn't include headers, so this is the visible proxy for `X-Lightbulb-Node-Forwarded` from a log line alone), and it never bounces to a third instance
+- [ ] **cross-instance forwarding** (M2-R23): third terminal, `PORT=8001 AWS_PROFILE=isol8-admin uv run uvicorn main:app --host 0.0.0.0 --port 8001` (`PORT` env, not just `--port` — `task_address.own_address()` reads `PORT`; `--host 0.0.0.0` on **both** instances, terminal 1 included — see the note under step 1). Point the step-6 curl at `:8001`; it must still return the same payload, forwarded once to `:8000` (which holds the socket) — confirm `:8000`'s own access log shows the forwarded request's source IP is the *other* instance's LAN address, not `127.0.0.1` (uvicorn's default access-log line doesn't include headers, so this is the visible proxy for `X-Lightbulb-Node-Forwarded` from a log line alone), and it never bounces to a third instance
 
 **Failure map:** `1008` at connect → Task 26's challenge/deadline; `4000` → Task 26's ticker; `INVALID_REQUEST: paramsJSON required` → Task 25's schema; a request that bounces forever → Task 28's single-hop rule (`NODE_FORWARD_HEADER`).
 
@@ -161,16 +154,11 @@ curl -sX POST http://127.0.0.1:8000/api/v1/internal/node/invoke/$ORG \
 
 ```bash
 python3 - <<'PY'
-import asyncio, json, os
-os.environ.setdefault("EFS_MOUNT_PATH", "/tmp/node-loopback-efs")
-from core.containers import get_workspace
-from core.repositories import container_repo
-from core.config import settings
-from core.services.desktop_pair import EfsWorkspaceAdapter, revoke_desktop_device
+import asyncio, json
+from core.services.desktop_pair import revoke_desktop_device
 OWNER = "org_3JCfoyOVF0AjDYjOnIZz5cK8XJL"
 device_id = json.load(open("/tmp/node-loopback-jwt.json"))["deviceId"]
-adapter = EfsWorkspaceAdapter(owner_id=OWNER, workspace=get_workspace(), container_repo=container_repo, gateway_ws_url=settings.WS_GATEWAY_URL)
-asyncio.run(revoke_desktop_device(device_id=device_id, workspace=adapter, force_close_device=lambda d: asyncio.sleep(0, result=True)))
+asyncio.run(revoke_desktop_device(device_id=device_id, owner_id=OWNER, force_close_device=lambda d: asyncio.sleep(0, result=True)))
 PY
 kill %1 %2 2>/dev/null   # the proxy + CLI background jobs
 ```

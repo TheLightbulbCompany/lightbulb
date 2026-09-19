@@ -920,7 +920,7 @@ class TestLitestreamS3Policy:
         monkeypatch.setattr(
             mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "arn:aws:iam::877352799272:policy/base", raising=False
         )
-        monkeypatch.setattr(mod.settings, "LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas", raising=False)
+        monkeypatch.setattr(mod.settings, "OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas", raising=False)
 
         await mod.ensure_owner_bedrock_role("org_abc", {}, skip_bedrock_grant=True)
 
@@ -928,9 +928,13 @@ class TestLitestreamS3Policy:
         kwargs = fake.put_role_policy.call_args.kwargs
         assert kwargs["PolicyName"] == "owner-litestream-s3"
         assert "org_abc/*" in kwargs["PolicyDocument"]
+        # The grant is minted off OWNER_STATE_BUCKET, the one name for the owner-state bucket.
+        # It used to read LITESTREAM_BUCKET; that env var is gone from the task definition, so
+        # a reader still on it would silently mint NO grant and every profile read would 403.
+        assert "lightbulb-dev-openclaw-replicas" in kwargs["PolicyDocument"]
 
     @pytest.mark.asyncio
-    async def test_not_put_when_bucket_unset(self, aip_tables, monkeypatch):
+    async def test_not_put_when_owner_state_bucket_unset(self, aip_tables, monkeypatch):
         import core.billing.bedrock_aip as mod
 
         fake = MagicMock()
@@ -942,7 +946,7 @@ class TestLitestreamS3Policy:
         monkeypatch.setattr(
             mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "arn:aws:iam::877352799272:policy/base", raising=False
         )
-        monkeypatch.setattr(mod.settings, "LITESTREAM_BUCKET", "", raising=False)
+        monkeypatch.setattr(mod.settings, "OWNER_STATE_BUCKET", "", raising=False)
 
         await mod.ensure_owner_bedrock_role("org_abc", {}, skip_bedrock_grant=True)
 

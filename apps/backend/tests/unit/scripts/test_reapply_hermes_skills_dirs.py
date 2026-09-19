@@ -77,21 +77,18 @@ async def test_targets_single_owner_skips_the_fleet_scan():
 
 
 @pytest.mark.asyncio
-async def test_targets_all_filters_to_agentcore_owners_only():
+async def test_targets_all_skips_rows_with_nothing_to_roll():
+    """A row without a runtime ARN has no profiles to reapply skills dirs into, and a row
+    without an owner_id is not a workspace at all (the containers table also holds
+    reserved-key rows). There is no OTHER transport left to filter out."""
     rows = [
-        {"owner_id": "org_agentcore"},
-        {"owner_id": "org_ecs"},
-        {"owner_id": None},  # a row missing owner_id must never surface
+        {"owner_id": "org_live", "agentcore_runtime_arn": "arn:x"},
+        {"owner_id": "org_unprovisioned"},
+        {"agentcore_runtime_arn": "arn:y"},
     ]
-    with (
-        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=rows)),
-        patch(
-            "core.services.runtime_transport.host_for",
-            lambda r: "agentcore" if r.get("owner_id") == "org_agentcore" else "ecs",
-        ),
-    ):
+    with patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=rows)):
         targets = await mod._targets(argparse.Namespace(owner_id=None, all=True))
-    assert targets == ["org_agentcore"]
+    assert targets == ["org_live"]
 
 
 # --------------------------------------------------------------------------- #

@@ -120,16 +120,3 @@ def test_large_company_deploy_does_not_consult_live_agent_count(
     assert response.json() == {"started": True, "agent_count": 15}
     count_agents.assert_not_awaited()
     mock_create_task.assert_called_once()
-
-
-@patch("routers.marketplace_listings._live_install_of")
-@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-def test_already_installed_retry_remains_idempotent(mock_get_published, mock_live, admin_client):
-    mock_get_published.return_value = _single_agent_listing()
-    mock_live.return_value = {"agent_id": "agent-existing", "template_version": 1}
-
-    response = admin_client.post("/api/v1/marketplace/listings/solo/deploy")
-
-    assert response.status_code == 200, response.text
-    assert response.json()["already_installed"] is True
-    assert response.json()["agent_id"] == "agent-existing"

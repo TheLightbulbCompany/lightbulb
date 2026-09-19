@@ -1,10 +1,19 @@
-"""HTTP contract for the claude branch of the import door: detection routing,
-the claude preview shape (snippet-stripped flags), and error cleanup. The
-normalizer itself is covered in tests/unit/services/test_claude_code_import.py."""
+"""HTTP contract for the Claude Code import door: detection routing, the preview shape
+(snippet-stripped flags), the profile apply, and error cleanup.
 
+The normalizer itself is covered in tests/unit/services/test_claude_code_import.py.
+
+WHAT CHANGED WITH THE RUNTIME. The staging used to be an EFS dir the preview wrote and the
+confirm read back; there is no shared mount now, so the UPLOADED OBJECT is the staging and the
+confirm re-streams it (see the router's module docstring). The apply target used to be
+``workspace-{agent}/`` on EFS and is now the agent's S3 Hermes profile. Both are asserted
+below: the object's lifecycle across the two calls, and what lands under the profile prefix.
+The old OpenClaw-backup half of this router is gone, and its ~20 tests with it.
+"""
+
+import io
 import os
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -12,52 +21,146 @@ import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from core.auth import get_current_user  # noqa: E402
-from core.containers import workspace as workspace_module  # noqa: E402
+from core.auth import AuthContext, get_current_user  # noqa: E402
 from routers import marketplace_import  # noqa: E402
-from tests.unit.routers.test_marketplace_import import KEY, OWNER, FakeS3, _auth  # noqa: E402
 from tests.unit.services.test_claude_code_import import CID, CLAUDE_HOME, SLUG, _tar  # noqa: E402
+
+OWNER = "user_owner_1"
+IMPORT_ID = "import-0123456789ab"
+KEY = f"imports/{OWNER}/{IMPORT_ID}.tar.gz"
+AGENT = "agent1"
+
+
+def _auth() -> AuthContext:
+    return AuthContext(user_id="user_importer", email="o@example.com", org_id=OWNER, org_role="org:admin")
+
+
+class FakeS3:
+    """Serves the upload AND stands in for the profile store the apply writes into."""
+
+    def __init__(self, objects: dict[str, bytes]):
+        self.objects = dict(objects)
+        self.deleted: list[str] = []
+        self.presigned: list[dict] = []
+        self.etag = '"etag-1"'  # override in a test to simulate the object changing mid-import
+
+    def generate_presigned_url(self, op, Params, ExpiresIn):
+        self.presigned.append({"op": op, **Params, "ExpiresIn": ExpiresIn})
+        return f"https://s3.example/{Params['Key']}?sig=1"
+
+    def head_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise marketplace_import.ClientError({"Error": {"Code": "404"}}, "HeadObject")
+        return {"ContentLength": len(self.objects[Key]), "ETag": self.etag}
+
+    def get_object(self, Bucket, Key, IfMatch=None):
+        if IfMatch is not None and IfMatch != self.etag:
+            raise marketplace_import.ClientError({"Error": {"Code": "PreconditionFailed"}}, "GetObject")
+        if Key not in self.objects:
+            raise marketplace_import.ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+        return {"Body": io.BytesIO(self.objects[Key])}
+
+    def delete_object(self, Bucket, Key):
+        self.deleted.append(Key)
+        self.objects.pop(Key, None)
+
+
+class FakeProfile:
+    """The one thing the apply half needs from hermes_profiles: fetch the agent's current
+    ``USER.md``/``skills/`` down, and take back what changed."""
+
+    def __init__(self, existing: dict[str, bytes] | None = None):
+        self.stored: dict[str, bytes] = dict(existing or {})
+        self.writes: list[dict[str, bytes]] = []
+
+    def fetch_profile_subtree(self, owner_id, agent_id, prefixes, dest):
+        assert (owner_id, agent_id) == (OWNER, AGENT)
+        for rel, body in self.stored.items():
+            if not any(rel == p or rel.startswith(p) for p in prefixes):
+                continue
+            target = dest / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(body)
+
+    def write_profile_subtree(self, owner_id, agent_id, files, removed):
+        assert (owner_id, agent_id) == (OWNER, AGENT)
+        self.writes.append(dict(files))
+        self.stored.update(files)
 
 
 @pytest.fixture
-def client(tmp_path: Path):
+def client():
     app = FastAPI()
     app.include_router(marketplace_import.router)
     app.dependency_overrides[get_current_user] = _auth
-    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
     s3 = FakeS3({KEY: _tar(CLAUDE_HOME)})
+    profile = FakeProfile()
     with (
-        patch("routers.marketplace_import.get_workspace", return_value=fake_ws),
-        patch("core.services.agent_export.get_workspace", return_value=fake_ws),
         patch("routers.marketplace_import._s3", return_value=s3),
         patch("routers.marketplace_import.settings") as settings,
         patch("routers.marketplace_import.container_repo.get_by_owner_id", new_callable=AsyncMock) as get_row,
+        patch("routers.marketplace_import.hermes_profiles.fetch_profile_subtree", profile.fetch_profile_subtree),
+        patch("routers.marketplace_import.hermes_profiles.write_profile_subtree", profile.write_profile_subtree),
     ):
         settings.MARKETPLACE_ARTIFACTS_BUCKET = "bkt"
-        get_row.return_value = {"owner_id": OWNER, "gateway_token": "gw"}
-        yield TestClient(app), tmp_path / "users" / OWNER, s3
+        get_row.return_value = {"owner_id": OWNER, "agentcore_runtime_arn": "arn:x"}
+        yield TestClient(app), s3, profile
 
 
-def test_import_claude_context_returns_claude_preview(client):
-    c, user_root, s3 = client
+# ---------------------------------------------------------------------------
+# presign
+# ---------------------------------------------------------------------------
+
+
+def test_presign_mints_the_import_id_into_the_key(client):
+    """The confirm addresses the staged object by import id, so the id has to BE the key —
+    otherwise the confirm would need a listing or a server-side copy to find it."""
+    c, s3, _ = client
+    r = c.post("/api/v1/marketplace/import/presign", json={"filename": "ctx.tgz", "size_bytes": 1024})
+    assert r.status_code == 200, r.text
+    key = r.json()["key"]
+    assert marketplace_import._KEY_RE.match(key)
+    owner, import_id = marketplace_import._KEY_RE.match(key).groups()
+    assert owner == OWNER
+    assert marketplace_import._upload_key(owner, import_id) == key
+    assert s3.presigned[0]["op"] == "put_object"
+
+
+def test_presign_refuses_an_oversized_archive(client):
+    c, _, _ = client
+    over = marketplace_import.claude_code_import.MAX_UPLOAD_BYTES + 1
+    r = c.post("/api/v1/marketplace/import/presign", json={"filename": "ctx.tgz", "size_bytes": over})
+    assert r.status_code == 413
+
+
+# ---------------------------------------------------------------------------
+# preview
+# ---------------------------------------------------------------------------
+
+
+def test_import_claude_context_returns_claude_preview_and_keeps_the_object(client):
+    c, s3, _ = client
     r = c.post("/api/v1/marketplace/import", json={"key": KEY})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["import_id"].startswith("import-") and body["kind"] == "claude"
-    assert body["agent_id"] == "" and body["name"] == "Claude Code context"
-    assert body["agents"] == [] and body["plugins"] == []
+    assert body["import_id"] == IMPORT_ID and body["name"] == "Claude Code context"
+    # ONE shape. The OpenClaw-backup half this response used to also carry (`kind`, the
+    # agent/plugin/MCP/skill candidate lists, the file and cron counts) defaulted to empty on
+    # every Claude import, and the client branched on `kind` to know which half was real.
+    assert set(body) == {"import_id", "name", "claude"}
     claude = body["claude"]
     assert [col["file_count"] for col in claude["collections"]] == [2]
     assert claude["skills"] == ["graphify"]
     assert claude["has_user_memory"] is True
     assert claude["skipped"]["credentials"] == 2
-    staging = user_root / f"workspace-{body['import_id']}"
-    assert (staging / "claude").is_dir() and (staging / "import-manifest.json").is_file()
-    assert s3.deleted == [KEY]  # raw upload consumed
+    # THE object is the staging: a preview that deleted it would strand the confirm, which
+    # may land on a different backend task.
+    assert s3.deleted == []
+    assert KEY in s3.objects
 
 
 def test_import_claude_safety_flags_are_snippet_stripped(client):
-    c, _, s3 = client
+    c, s3, _ = client
     s3.objects[KEY] = _tar({**CLAUDE_HOME, f".claude/projects/{SLUG}/memory/leak.md": b"key AKIAIOSFODNN7EXAMPLE\n"})
     r = c.post("/api/v1/marketplace/import", json={"key": KEY})
     assert r.status_code == 200, r.text
@@ -68,161 +171,236 @@ def test_import_claude_safety_flags_are_snippet_stripped(client):
     assert "AKIAIOSFODNN7EXAMPLE" not in r.text
 
 
-def test_import_claude_traversal_400_cleans_up(client):
-    c, user_root, s3 = client
+def test_a_key_for_another_owner_is_refused(client):
+    c, _, _ = client
+    r = c.post("/api/v1/marketplace/import", json={"key": f"imports/user_someone_else/{IMPORT_ID}.tar.gz"})
+    assert r.status_code == 400
+
+
+def test_import_traversal_400_drops_the_object(client):
+    c, s3, _ = client
     s3.objects[KEY] = _tar({**CLAUDE_HOME, ".claude/projects/x/memory/../../../evil.md": b"evil\n"})
     r = c.post("/api/v1/marketplace/import", json={"key": KEY})
     assert r.status_code == 400, r.text
     assert "escapes the extraction directory" in r.json()["detail"]
-    assert s3.deleted == [KEY]  # raw upload consumed even on failure
-    assert not list(user_root.glob("workspace-import-*")) if user_root.exists() else True
+    # A bad archive is dropped NOW rather than waiting on the bucket lifecycle: no retry
+    # reuses it, and it can hold credentials.
+    assert s3.deleted == [KEY]
 
 
-def test_import_corrupt_archive_400_cleans_up(client):
-    # Non-gzip bytes die in the names-only detection pass, before either
-    # extractor runs; the router must still 400, leave no staging behind, and
-    # delete the raw object (it can hold credentials — nothing retries it).
-    c, user_root, s3 = client
+def test_import_corrupt_archive_400_drops_the_object(client):
+    c, s3, _ = client
     s3.objects[KEY] = b"this is not a gzip stream"
     r = c.post("/api/v1/marketplace/import", json={"key": KEY})
     assert r.status_code == 400, r.text
     assert "not a valid .tar.gz" in r.json()["detail"]
     assert s3.deleted == [KEY]
-    assert not list(user_root.glob("workspace-import-*")) if user_root.exists() else True
 
 
-def test_import_names_pass_bounds_declared_bytes(client, monkeypatch):
-    # The names-only pass must refuse an archive whose declared member sizes
-    # cross the extraction cap — MAX_MEMBERS bounds header count, not the
-    # decompressed bytes the stream forces through.
-    c, user_root, s3 = client
-    monkeypatch.setattr(marketplace_import.backup_import, "MAX_EXTRACTED_BYTES", 1)
+def test_a_non_claude_archive_is_refused(client):
+    """The OpenClaw-backup rail this used to fall through to is gone, so an archive that is
+    not a Claude home must be refused with an actionable message, not silently accepted."""
+    c, s3, _ = client
+    s3.objects[KEY] = _tar({"AGENTS.md": b"# an agent workspace\n", "skills/x/SKILL.md": b"# x\n"})
+    r = c.post("/api/v1/marketplace/import", json={"key": KEY})
+    assert r.status_code == 400, r.text
+    assert "Claude Code context" in r.json()["detail"]
+    assert s3.deleted == [KEY]
+
+
+def test_names_pass_bounds_declared_bytes(client, monkeypatch):
+    """MAX_MEMBERS bounds the header count, not the decompressed bytes the detection pass
+    forces through — one member with a huge declared size would otherwise be unbounded."""
+    c, s3, _ = client
+    monkeypatch.setattr(marketplace_import.claude_code_import, "CLAUDE_MAX_TOTAL_BYTES", 1)
     r = c.post("/api/v1/marketplace/import", json={"key": KEY})
     assert r.status_code == 400, r.text
     assert "extraction cap" in r.json()["detail"]
     assert s3.deleted == [KEY]
-    assert not list(user_root.glob("workspace-import-*")) if user_root.exists() else True
 
 
-AGENT = "agent1"
+def test_an_object_changing_between_the_head_and_the_get_is_a_409(client):
+    c, s3, _ = client
+
+    real_get = s3.get_object
+
+    def _changed(Bucket, Key, IfMatch=None):
+        s3.etag = '"etag-2"'  # a re-upload landed
+        return real_get(Bucket, Key, IfMatch=IfMatch)
+
+    s3.get_object = _changed
+    # First GET succeeds (the pin still matches), the second sees the new ETag.
+    r = c.post("/api/v1/marketplace/import", json={"key": KEY})
+    assert r.status_code == 409, r.text
+    # KEPT on purpose: this flow tells the client to re-upload and retry the same key.
+    assert s3.deleted == []
 
 
-def _start(c) -> str:
-    return c.post("/api/v1/marketplace/import", json={"key": KEY}).json()["import_id"]
+# ---------------------------------------------------------------------------
+# confirm
+# ---------------------------------------------------------------------------
 
 
-def _mock_ecs() -> MagicMock:
-    ecs = MagicMock()
-    ecs.force_redeploy_user_service = AsyncMock()
-    return ecs
+def test_confirm_applies_into_the_agents_profile(client):
+    c, s3, profile = client
+    assert c.post("/api/v1/marketplace/import", json={"key": KEY}).status_code == 200
 
+    r = c.post(f"/api/v1/marketplace/import/{IMPORT_ID}/confirm", json={"target_agent_id": AGENT})
 
-def test_confirm_applies_to_target_agent_and_bounces(client):
-    c, user_root, _ = client
-    ws = user_root / f"workspace-{AGENT}"
-    ws.mkdir(parents=True)
-    import_id = _start(c)
-    ecs = _mock_ecs()
-    with patch("routers.marketplace_import.get_ecs_manager", return_value=ecs):
-        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"target_agent_id": AGENT})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["agents"] == [] and body["plugins_installed"] == []
+    # Nothing is minted, so there is no per-agent result list -- and the profile write IS the
+    # delivery (.revision bumped by write_profile_subtree), so there is no restart to report.
+    assert set(body) == {"claude_items", "warnings"}
     assert {i["item"]: i["status"] for i in body["claude_items"]} == {
         f"memory:{CID}": "applied",
         "user-memory": "applied",
         "skill:graphify": "applied",
     }
-    assert body["restarting"] is True
-    # Memory lands in upstream's own migrate-claude namespace.
-    assert (ws / f"memory/imports/claude-code/{CID}/fact.md").read_text() == "a fact\n"
-    assert (ws / "skills/graphify/SKILL.md").exists()
-    user_md = (ws / "USER.md").read_text()
-    assert "claude-code-import:begin" in user_md and "# me" in user_md
-    assert not (user_root / f"workspace-{import_id}").exists()
-    ecs.force_redeploy_user_service.assert_awaited_once_with(OWNER)
+
+    written = {k: v for w in profile.writes for k, v in w.items()}
+    # Memory lands in upstream's own migrate-claude namespace, so a user who ran the local
+    # `openclaw migrate claude` AND this import gets ONE tree, not two.
+    assert written[f"memory/imports/claude-code/{CID}/fact.md"] == b"a fact\n"
+    assert "skills/graphify/SKILL.md" in written
+    assert b"claude-code-import:begin" in written["USER.md"]
+    assert b"# me" in written["USER.md"]
+    # Object consumed, so a second confirm cannot re-apply.
+    assert s3.deleted == [KEY]
+
+
+def test_confirm_merges_into_an_existing_user_md_without_losing_it(client):
+    """USER.md is a platform-managed persona file — the import owns only its marker-fenced
+    block, and the rest of the owner's file has to survive."""
+    c, _, profile = client
+    profile.stored["USER.md"] = b"# Persona\n\nkeep me\n"
+    assert c.post("/api/v1/marketplace/import", json={"key": KEY}).status_code == 200
+
+    r = c.post(f"/api/v1/marketplace/import/{IMPORT_ID}/confirm", json={"target_agent_id": AGENT})
+
+    assert r.status_code == 200, r.text
+    user_md = profile.stored["USER.md"].decode()
+    assert "keep me" in user_md
+    assert marketplace_import.claude_code_import.USER_MEMORY_BEGIN in user_md
+
+
+def test_confirm_never_overwrites_an_existing_skill(client):
+    c, _, profile = client
+    profile.stored["skills/graphify/SKILL.md"] = b"# the owner's own graphify\n"
+    assert c.post("/api/v1/marketplace/import", json={"key": KEY}).status_code == 200
+
+    r = c.post(f"/api/v1/marketplace/import/{IMPORT_ID}/confirm", json={"target_agent_id": AGENT})
+
+    assert r.status_code == 200, r.text
+    items = {i["item"]: i["status"] for i in r.json()["claude_items"]}
+    assert items["skill:graphify"] == "skipped_exists"
+    assert profile.stored["skills/graphify/SKILL.md"] == b"# the owner's own graphify\n"
+
+
+def test_confirm_writes_only_what_changed(client):
+    """The whole fetched subtree is in the scratch tree, so uploading it wholesale would
+    rewrite (and bump .revision over) files the import never touched."""
+    c, _, profile = client
+    profile.stored["skills/untouched/SKILL.md"] = b"# untouched\n"
+    assert c.post("/api/v1/marketplace/import", json={"key": KEY}).status_code == 200
+
+    c.post(f"/api/v1/marketplace/import/{IMPORT_ID}/confirm", json={"target_agent_id": AGENT})
+
+    written = {k: v for w in profile.writes for k, v in w.items()}
+    assert "skills/untouched/SKILL.md" not in written
 
 
 def test_confirm_without_target_agent_400(client):
     c, _, _ = client
-    import_id = _start(c)
-    r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={})
+    assert c.post("/api/v1/marketplace/import", json={"key": KEY}).status_code == 200
+    r = c.post(f"/api/v1/marketplace/import/{IMPORT_ID}/confirm", json={})
     assert r.status_code == 400
     assert "target_agent_id" in r.json()["detail"]
 
 
-def test_confirm_own_import_id_target_400_keeps_staging(client):
-    # Passing the import's own id would resolve to the staging dir itself —
-    # the apply would copy staging onto itself and then rmtree it, a
-    # misleading 200. Must 400 before resolving, staging intact for retry.
-    c, user_root, _ = client
-    import_id = _start(c)
-    r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"target_agent_id": import_id})
+def test_confirm_own_import_id_as_the_target_400_keeps_the_object(client):
+    """An import id is not a roster agent; applying "onto" one would be a 200 that changes
+    nothing any agent reads."""
+    c, s3, _ = client
+    assert c.post("/api/v1/marketplace/import", json={"key": KEY}).status_code == 200
+    r = c.post(f"/api/v1/marketplace/import/{IMPORT_ID}/confirm", json={"target_agent_id": IMPORT_ID})
     assert r.status_code == 400, r.text
     assert "import id" in r.json()["detail"]
-    assert (user_root / f"workspace-{import_id}" / "claude").is_dir()
+    assert s3.deleted == []
 
 
 def test_confirm_invalid_agent_id_400(client):
     # "a" fails the agent-id regex (3-64 chars) — InvalidAgentIdError → 400.
     c, _, _ = client
-    import_id = _start(c)
-    r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"target_agent_id": "a"})
+    assert c.post("/api/v1/marketplace/import", json={"key": KEY}).status_code == 200
+    r = c.post(f"/api/v1/marketplace/import/{IMPORT_ID}/confirm", json={"target_agent_id": "a"})
     assert r.status_code == 400, r.text
 
 
-def test_confirm_nonexistent_agent_404(client):
-    # A regex-valid id that resolves to no workspace dir must 404 — the
-    # resolver returns a clean miss unchanged, so the router's own is_dir
-    # check is what stops a ghost workspace dir being minted on EFS.
-    c, user_root, _ = client
-    import_id = _start(c)
-    r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"target_agent_id": "agent-nope"})
-    assert r.status_code == 404, r.text
-    assert not (user_root / "workspace-agent-nope").exists()
-
-
-def test_confirm_unknown_collection_400_keeps_staging(client):
-    c, user_root, _ = client
-    (user_root / f"workspace-{AGENT}").mkdir(parents=True)
-    import_id = _start(c)
+def test_confirm_unknown_collection_400_before_applying_anything(client):
+    c, s3, profile = client
+    assert c.post("/api/v1/marketplace/import", json={"key": KEY}).status_code == 200
     r = c.post(
-        f"/api/v1/marketplace/import/{import_id}/confirm",
+        f"/api/v1/marketplace/import/{IMPORT_ID}/confirm",
         json={"target_agent_id": AGENT, "claude_collections": ["nope-0000000000"]},
     )
     assert r.status_code == 400, r.text
     assert "nope-0000000000" in r.json()["detail"]
-    # staging kept so a corrected selection can retry
-    assert (user_root / f"workspace-{import_id}" / "claude").is_dir()
+    # Nothing applied and the object kept, so a corrected selection can retry.
+    assert profile.writes == []
+    assert s3.deleted == []
 
 
-def test_confirm_selection_skips_bounce_when_only_user_memory_applies(client):
-    c, user_root, _ = client
-    ws = user_root / f"workspace-{AGENT}"
-    ws.mkdir(parents=True)
-    import_id = _start(c)
-    ecs = _mock_ecs()
-    with patch("routers.marketplace_import.get_ecs_manager", return_value=ecs):
-        r = c.post(
-            f"/api/v1/marketplace/import/{import_id}/confirm",
-            json={"target_agent_id": AGENT, "claude_collections": [], "claude_skills": []},
-        )
+def test_confirm_honours_an_empty_selection(client):
+    c, _, profile = client
+    assert c.post("/api/v1/marketplace/import", json={"key": KEY}).status_code == 200
+    r = c.post(
+        f"/api/v1/marketplace/import/{IMPORT_ID}/confirm",
+        json={"target_agent_id": AGENT, "claude_collections": [], "claude_skills": []},
+    )
     assert r.status_code == 200, r.text
-    body = r.json()
-    assert [i["item"] for i in body["claude_items"]] == ["user-memory"]
-    assert body["restarting"] is False
-    assert not (ws / "memory").exists() and not (ws / "skills").exists()
-    ecs.force_redeploy_user_service.assert_not_awaited()
+    assert [i["item"] for i in r.json()["claude_items"]] == ["user-memory"]
+    written = {k: v for w in profile.writes for k, v in w.items()}
+    assert set(written) == {"USER.md"}
 
 
-def test_confirm_second_confirm_404(client):
-    c, user_root, _ = client
-    (user_root / f"workspace-{AGENT}").mkdir(parents=True)
-    import_id = _start(c)
-    with patch("routers.marketplace_import.get_ecs_manager", return_value=_mock_ecs()):
-        assert (
-            c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"target_agent_id": AGENT}).status_code
-            == 200
-        )
-    r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"target_agent_id": AGENT})
+def test_a_second_confirm_404s(client):
+    c, _, _ = client
+    assert c.post("/api/v1/marketplace/import", json={"key": KEY}).status_code == 200
+    assert c.post(f"/api/v1/marketplace/import/{IMPORT_ID}/confirm", json={"target_agent_id": AGENT}).status_code == 200
+    r = c.post(f"/api/v1/marketplace/import/{IMPORT_ID}/confirm", json={"target_agent_id": AGENT})
     assert r.status_code == 404
+
+
+def test_confirm_before_any_upload_404s(client):
+    c, s3, _ = client
+    s3.objects.clear()
+    r = c.post(f"/api/v1/marketplace/import/{IMPORT_ID}/confirm", json={"target_agent_id": AGENT})
+    assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# discard
+# ---------------------------------------------------------------------------
+
+
+def test_discard_deletes_the_staged_object(client):
+    c, s3, _ = client
+    assert c.post("/api/v1/marketplace/import", json={"key": KEY}).status_code == 200
+    r = c.delete(f"/api/v1/marketplace/import/{IMPORT_ID}")
+    assert r.status_code == 204
+    assert s3.deleted == [KEY]
+
+
+def test_discard_refuses_a_malformed_import_id(client):
+    """The id is interpolated into an S3 key, so it is validated rather than trusted."""
+    c, s3, _ = client
+    r = c.delete("/api/v1/marketplace/import/..%2F..%2Fother-owner")
+    assert r.status_code in (400, 404)
+    assert s3.deleted == []
+
+
+def test_discard_is_idempotent(client):
+    c, _, _ = client
+    assert c.delete(f"/api/v1/marketplace/import/{IMPORT_ID}").status_code == 204
+    assert c.delete(f"/api/v1/marketplace/import/{IMPORT_ID}").status_code == 204

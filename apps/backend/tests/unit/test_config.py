@@ -91,20 +91,11 @@ def test_root_domain_is_the_apex_of_frontend_url():
     assert (prod.frontend_host, prod.root_domain) == ("isol8.co", "isol8.co")
 
 
-def test_owner_state_bucket_falls_back_to_litestream_bucket_when_unset():
-    """M4-R7: another lane renames the CDK env var later; both names must keep working
-    until that rename ships, so an unset OWNER_STATE_BUCKET reads LITESTREAM_BUCKET."""
-    settings = Settings(LITESTREAM_BUCKET="lightbulb-dev-openclaw-replicas")
-    assert settings.OWNER_STATE_BUCKET == "lightbulb-dev-openclaw-replicas"
-
-
-def test_owner_state_bucket_env_var_wins_over_the_litestream_fallback():
-    settings = Settings(
-        LITESTREAM_BUCKET="lightbulb-dev-openclaw-replicas",
-        OWNER_STATE_BUCKET="lightbulb-dev-owner-state",
+def test_owner_state_bucket_reads_its_own_env_var():
+    """ONE name for the owner-state bucket. It used to fall back to ``LITESTREAM_BUCKET``
+    because CDK set only that one; CDK now sets both to the same value, so the alias and its
+    validator are deleted -- and PR-6 drops the CDK line."""
+    assert Settings(OWNER_STATE_BUCKET="lightbulb-dev-openclaw-replicas").OWNER_STATE_BUCKET == (
+        "lightbulb-dev-openclaw-replicas"
     )
-    assert settings.OWNER_STATE_BUCKET == "lightbulb-dev-owner-state"
-
-
-def test_owner_state_bucket_stays_empty_when_both_are_unset():
     assert Settings().OWNER_STATE_BUCKET == ""

@@ -721,7 +721,7 @@ async def change_provider(
         # Scoped to owner_id, NOT clerk_user_id. BYOK secrets are stored
         # per-OWNER: every route in routers/settings_keys.py (list/set/delete)
         # keys them on resolve_owner_id(auth), and the provisioner reads them
-        # back the same way (ecs_manager._build_byo_secrets_for_user). For a
+        # back the same way at provision time. For a
         # personal owner the two ids are identical, which is why this went
         # unnoticed — but for an ORG they diverge (org_... vs user_...), so an
         # org admin who had just saved a key hit a spurious `byo_key_missing`
@@ -788,7 +788,7 @@ async def change_provider(
     # update. The provider switch is the user-visible commit point; orphan
     # secrets/tokens are an operator-sweep concern.
     if current_choice == "chatgpt_oauth" and provider_choice != "chatgpt_oauth":
-        from core.containers.workspace import delete_auth_profile_store
+        from core.services.container_auth import revoke_provider_auth_in_container
         from core.services.oauth_service import revoke_user_oauth
 
         # One ChatGPT account ↔ one container: the owner's token row serves
@@ -806,40 +806,27 @@ async def change_provider(
                 recorded_connector or clerk_user_id,
             )
         try:
-            # EFS auth file is keyed on the CONTAINER OWNER (org_id for
-            # orgs), not the human who connected.
-            await delete_auth_profile_store(user_id=owner_id)
+            # The staged grant is keyed on the WORKSPACE OWNER (org_id for orgs), not the
+            # human who connected.
+            await revoke_provider_auth_in_container(owner_id)
         except Exception:
             logger.exception(
-                "change_provider: delete_auth_profile_store failed for owner=%s",
+                "change_provider: revoke_provider_auth_in_container failed for owner=%s",
                 owner_id,
             )
-        # The coding-harness grant leaves with the provider: after the switch
-        # the new config stops advertising opencode and the management card is
-        # hidden, so a surviving row + auth.json would be an unmanageable live
-        # credential. Switching back later re-offers the grant in the wizard.
-        # FILE first, row second (same order as the disconnect endpoints): the
-        # file is the live credential, so if the unlink fails the row must
-        # survive with it — row-and-file stay consistent and a later
-        # disconnect/wipe can still find and clean the grant.
-        from core.containers.workspace import delete_opencode_auth
+        # The coding-harness grant leaves with the provider: switching back later re-offers it
+        # in the wizard. Only the ROW is dropped now — the on-disk ``opencode`` auth file was
+        # an EFS artifact of the harness (an OpenClaw/ACP concept) and has no counterpart in a
+        # Hermes profile.
         from core.services.oauth_service import PURPOSE_HARNESS
 
         try:
-            await delete_opencode_auth(user_id=owner_id)
+            await revoke_user_oauth(user_id=recorded_connector or clerk_user_id, purpose=PURPOSE_HARNESS)
         except Exception:
             logger.exception(
-                "change_provider: delete_opencode_auth failed for owner=%s — keeping the harness row",
-                owner_id,
+                "change_provider: harness revoke_user_oauth failed for connector=%s",
+                recorded_connector or clerk_user_id,
             )
-        else:
-            try:
-                await revoke_user_oauth(user_id=recorded_connector or clerk_user_id, purpose=PURPOSE_HARNESS)
-            except Exception:
-                logger.exception(
-                    "change_provider: harness revoke_user_oauth failed for connector=%s",
-                    recorded_connector or clerk_user_id,
-                )
     if current_choice == "byo_key" and provider_choice != "byo_key" and current_byo in ("openai", "anthropic"):
         from core.services.key_service import KeyService
 
@@ -852,75 +839,15 @@ async def change_provider(
                 current_byo,
             )
 
-    # Apply the swap to the running container.
+    # Apply the swap. ONE path: re-provision the workspace, which re-derives the owner's
+    # Bedrock AIPs and rewrites every agent profile (config.yaml + .env) from the committed
+    # provider_choice. The agent reads the rewritten profile on its next turn.
     #
-    # Two paths, picked by whether either side of the transition uses BYO:
-    #
-    # - **Cold path** (BYO involved on either side) — re-register the ECS
-    #   task definition and force a new deployment. Required because BYOK
-    #   injects ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` via task-def
-    #   ``secrets: [{valueFrom: <SecretsManagerARN>}]`` resolved at task
-    #   start; ECS does not let you mutate a running task's env vars.
-    #   Ends the user's current chat session.
-    #
-    # - **Hot path** (Bedrock ↔ ChatGPT OAuth only) — Track-1 patch the
-    #   three provider-block subtrees in openclaw.json (handled atomically
-    #   by ``config_patcher.replace_provider_block``) and, for a switch
-    #   *into* chatgpt_oauth, also pre-stage ``auth-profiles.json`` to EFS
-    #   *before* the patch so chokidar's reload reads it in place.
-    #   OpenClaw classifies all three keys as ``kind: "hot"`` in
-    #   ``gateway/config-reload-plan.ts`` (``restart-heartbeat`` +
-    #   ``reload-plugins``), so the gateway swaps providers without
-    #   restarting. No task-def env-var change → no container restart →
-    #   the chat session stays alive.
-    #
-    # On the hot path, if the owner has no ``openclaw.json`` on EFS yet
-    # (legacy / un-provisioned owner), ``replace_provider_block`` raises
-    # ``ConfigPatchError`` and we fall through to the cold path so the
-    # file gets written from scratch by ``provision_user_container``.
-    involves_byo = current_choice == "byo_key" or provider_choice == "byo_key"
-
-    # A switch INTO bedrock_claude must take the COLD path: the per-owner
-    # scoped task role is attached only by a task-def re-register
-    # (provision_user_container, Task 9), which the hot path never does. The
-    # config builder now fails closed on bedrock without aip_arns, so the hot
-    # path cannot synthesize a bedrock provider block anyway.
-    targets_bedrock = provider_choice == "bedrock_claude"
-
-    if not involves_byo and not targets_bedrock:
-        try:
-            await _hot_swap_provider(
-                owner_id=owner_id,
-                clerk_user_id=clerk_user_id,
-                new_provider=provider_choice,
-            )
-            put_metric(
-                "billing.provider.changed",
-                dimensions={
-                    "from": current_choice or "none",
-                    "to": provider_choice,
-                    "path": "hot",
-                },
-            )
-            # The switch turned out task-def-neutral (applied in place, no
-            # restart) — clear the marker set_provider_choice stamped before
-            # the hot/cold split was decided, or the NEXT wake would take a
-            # pointless full provision.
-            from core.repositories import container_repo as _container_repo
-
-            await _container_repo.update_fields(owner_id, {"needs_provision": False})
-            return {
-                "status": "ok",
-                "provider_choice": provider_choice,
-                "byo_provider": next_byo,
-                "restart": False,
-            }
-        except _HotSwapUnavailableError:
-            # Owner has no openclaw.json on EFS yet — fall through to the
-            # cold path. logger inside _hot_swap_provider already recorded
-            # the reason.
-            pass
-
+    # The old hot/cold split is gone with openclaw.json. The "hot" half patched the three
+    # provider-block subtrees in place and relied on the gateway's chokidar reload to swap
+    # providers without restarting; a Hermes profile has no such file and no live reload, and
+    # the provision it fell back to is no longer a task-def re-register + container roll — it
+    # is two S3 writes, so there is nothing left for a second path to save.
     put_metric(
         "billing.provider.changed",
         dimensions={
@@ -930,156 +857,46 @@ async def change_provider(
         },
     )
 
-    # Stop-first (F1). A bare dispatch_provision call's FIRST act is
-    # the single-flight provision claim, whose ConditionExpression admits
-    # only no-row/error/stopped/stale-provisioning — a "running" row is NOT
-    # claimable, so the dispatch loses the claim and stands down silently:
-    # provision_user_container (the only branch that re-registers the task
-    # def + rewrites openclaw.json) is never reached, yet we'd still tell
-    # the caller ``restart: True``. reprovision_for_user fixes this by
-    # scaling the service to 0 and waiting for it to drain BEFORE
-    # dispatching dispatch_provision, so the dispatch lands on the
-    # scale-from-zero branch instead of racing (and losing to) the still-
-    # running row. Mirrors the admin container-reprovision action
-    # (routers/admin.py) — see EcsManager.reprovision_for_user's docstring.
+    # Takeover-then-dispatch. ``dispatch_provision``'s first act is the single-flight
+    # provision claim, whose ConditionExpression does not admit a "running" row — a bare
+    # dispatch would lose the claim and stand down silently while we told the caller
+    # ``restart: True``. ``takeover_provision`` supersedes any in-flight lease (a status-poll
+    # provision that resolved the OLD provider stops at its next leased checkpoint) and leaves
+    # the row's own status alone, so the UI does not flip into the provisioning stepper for a
+    # switch that is really a profile rewrite. It is guarded on the row EXISTING: with no row
+    # there is no lease to fence, and a takeover would CREATE one as "provisioning" with a
+    # fresh lease, which the dispatch's own claim then refuses — breaking the
+    # create-from-scratch path for a never-provisioned owner.
     #
-    # Split across the request boundary: the stop is awaited (one fast ECS
-    # call — fail-loud, and it guarantees the old-provider container is
-    # already draining by the time we answer ``restart: True``), but the
-    # drain-wait + provision dispatch run as a background task —
-    # ``_wait_for_service_drained`` polls for up to 90s, which would hang
-    # the ``/billing/provider`` request past ALB/client timeouts and, if
-    # the handler were cancelled mid-drain, strand the owner stopped with
-    # no provision dispatched. Once the row is "stopped", the sequence is
-    # self-healing: even if this task dies, the next /container/status
-    # poll's wake path wins the claim and applies the committed provider.
-    # (stop_user_service treats a missing ECS service as idempotent
-    # success, so a subscribed-but-never-provisioned owner falls through
-    # to dispatch_provision's create-from-scratch path.)
-    #
-    # Accepted race — a status-poll wake DURING the drain window: the
-    # poll's retryable-state dispatch can claim the stopped row before
-    # the drain-only task's delayed dispatch does. Benign by design: the
-    # single-flight lease admits exactly one executor (the loser stands
-    # down), both executors would apply the SAME committed provider, and
-    # task overlap on EFS is fenced one layer down —
-    # SINGLE_WRITER_DEPLOYMENT_CONFIG (maximumPercent=100) keeps ECS from
-    # starting the new task until the draining one has fully stopped, so
-    # the drain-wait is defense-in-depth, not the single-writer fence.
-    # The same window has always existed on the admin reprovision path.
-    # Load-bearing detail: the task below must NOT re-stop (see
-    # drain_then_dispatch_provision) or it would clobber the poll's claim
-    # and break exactly this guarantee.
-    from core.containers import get_ecs_manager
-
-    manager = get_ecs_manager()
-    stop_issued = False
+    # Nothing is stopped or drained. There is no ECS service to scale to zero and no shared
+    # EFS-WAL SQLite for two tasks to corrupt: the provision rewrites the owner's agent
+    # profiles in S3, and the agent reads them on its next turn.
     try:
-        # Fence FIRST, stop SECOND — the order is load-bearing. A
-        # status-poll wake that claimed BEFORE the provider commit
-        # resolved the OLD provider and would keep passing its leased
-        # checkpoints, finish with the old config, and leave our delayed
-        # dispatch standing down — restart: True with the switch silently
-        # unapplied. takeover_provision supersedes that lease so the
-        # stale run stops at its next checkpoint (the same deliberate-
-        # door fencing conversion, /recover, and admin reprovision use —
-        # the cold provider change is the same class of door). Taking
-        # over BEFORE the stop also closes the ordering race the other
-        # way around: with stop-then-takeover, a poll could claim the
-        # freshly-exposed stopped row in the await gap, the takeover
-        # would preserve its "provisioning" status, and our dispatch
-        # couldn't claim — wedging the row until the stale-lease timeout.
-        # Takeover-first leaves no such gap: a poll can't claim a
-        # still-running row, and once the stop lands our dispatch always
-        # claims the stopped row (stopped is claimable regardless of the
-        # takeover's fresh lease). Guarded on row existence: with NO row
-        # there is no in-flight run to fence, and takeover on an absent
-        # row would CREATE it as provisioning with a fresh lease — which
-        # the dispatch's own claim then refuses, breaking the
-        # create-from-scratch path for never-provisioned owners.
         from core.repositories import container_repo as _container_repo
 
-        # Stop ONLY when a row exists (whose lease we just took over). With no
-        # row there is nothing to stop, and issuing the stop anyway opens a
-        # TOCTOU: a concurrent /container/status poll can win a first-time
-        # provision (creating the row) between this check and the stop, and
-        # stop_user_service's update_status would then stamp that
-        # freshly-claimed row "stopped" — it is conditioned on the row EXISTING,
-        # not on the lease, so being a scoped write does not save it here —
-        # resurrecting the double-provision class this path exists to prevent.
-        # The no-row case falls straight through to the drain-only dispatch,
-        # whose try_claim_provision creates-from-scratch (or stands down behind
-        # the poll's claim) under the single-flight lease.
         if await _container_repo.get_by_owner_id(owner_id) is not None:
             await _container_repo.takeover_provision(owner_id)
-            stop_issued = True
-            await manager.stop_user_service(owner_id, reason="reprovision")
     except Exception as e:
-        # Any stop-path failure, not just the wrapped ECS call
-        # (EcsManagerError): stop_user_service's row writes after the ECS
-        # call (update_status / stamp_stop_reason) propagate raw DDB
-        # exceptions, and skipping the revert for those would leave the
-        # provider row committed with no dispatch and no convergence path
-        # — the exact poisoned-no-op state the revert exists to prevent.
-        # A genuine ECS failure (throttle, cluster outage — not-found is
-        # already idempotent success inside stop_user_service). The new
-        # provider is committed but the container was NOT stopped, so
-        # nothing will converge it: a running row is neither poll-retryable
-        # nor claimable, and a retry of this call would hit the no-op
-        # fast-path above (row already matches the request) and dispatch
-        # nothing. REVERT the commit so the retry re-runs the full switch
-        # instead of silently no-oping. The old provider's credentials may
-        # already be gone (the cleanup block above is fire-and-forget by
-        # design); that fork is user-recoverable — the provision gate /
-        # prerequisite checks drive re-auth — whereas a poisoned no-op is
-        # not. A legacy row with no prior provider_choice can't be written
-        # back (the repo validates the value); its retry-noop exposure
-        # requires that compound (never-chosen provider AND ECS failing)
-        # so it is accepted.
+        # The new provider is committed but nothing will converge it: a retry of this call
+        # would hit the no-op fast path above (the row already matches the request) and
+        # dispatch nothing. REVERT the commit so the retry re-runs the full switch. The old
+        # provider's credentials may already be gone (the cleanup block above is
+        # fire-and-forget by design); that fork is user-recoverable — the provision gate
+        # drives re-auth — whereas a poisoned no-op is not.
         #
-        # Partial-stop shape: a raw (non-EcsManagerError) exception means
-        # the ECS call SUCCEEDED and only the row write after it failed —
-        # the service is scaling to 0 while the row still says "running",
-        # which neither the poll nor a claim can heal. Best-effort
-        # re-stamp "stopped" so the wake path restores the (reverted) old
-        # provider. An EcsManagerError means the stop was NOT applied, so
-        # no stamp (stamping a genuinely-running container would trigger
-        # a pointless restart cycle on a transient ECS throttle). If the
-        # re-stamp also fails (the same DDB that just failed),
-        # convergence still exists via /recover's no-IP branch; a fuller
-        # partial-stop state machine is not worth its weight for a
-        # compound transient.
-        from core.containers.ecs_manager import EcsManagerError
-        from core.repositories import container_repo
-
-        # stop_issued gates the stamp: a failure BEFORE the stop call (the
-        # takeover fence's row read/write) must not mark a genuinely-
-        # running container "stopped" — that would trigger a pointless
-        # poll-wake restart cycle on a transient DDB blip.
-        if stop_issued and not isinstance(e, EcsManagerError):
-            try:
-                await container_repo.update_status(owner_id, "stopped")
-            except Exception:  # noqa: BLE001 — best-effort by design
-                logger.warning("change_provider: best-effort stopped re-stamp failed for %s", owner_id)
-        # Restore the pre-commit provider so a retry re-runs the full switch
-        # instead of hitting the no-op fast path. A LEGACY row carried no
-        # provider_choice (current_choice is None) and the repo rejects a None
-        # write, so restore the resolved legacy default "bedrock_claude" -- the
-        # exact value resolve_provider_choice (container_provision.py) derives
-        # for a None row, i.e. the provider the container was actually running.
-        # This both preserves the effective state AND un-no-ops a
-        # switch-to-non-bedrock retry (row now explicitly bedrock_claude, which
-        # differs from the requested provider). current_byo stays None for a
-        # legacy row.
+        # A LEGACY row carried no provider_choice (current_choice is None) and the repo
+        # rejects a None write, so restore the resolved legacy default "bedrock_claude" --
+        # the exact value resolve_provider_choice derives for a None row, i.e. the provider
+        # the workspace was actually running. This both preserves the effective state AND
+        # un-no-ops a switch-to-non-bedrock retry. current_byo stays None for a legacy row.
         restore_choice = current_choice or "bedrock_claude"
         await billing_repo.set_provider_choice(
             owner_id,
             provider_choice=restore_choice,
             byo_provider=current_byo,
             connector_user_id=recorded_connector if restore_choice == "chatgpt_oauth" else None,
-            # Restoring the provider the container is ACTUALLY running —
-            # the registered task def already matches; marking would cost a
-            # pointless full provision on the next wake.
+            # Restoring the provider the workspace is ACTUALLY running — marking would cost a
+            # pointless full provision on the next poll.
             requires_reprovision=False,
         )
         await write_owner_facts(
@@ -1088,14 +905,13 @@ async def change_provider(
         )
         raise ChangeProviderError(
             "reprovision_stop_failed",
-            "Could not restart the container to apply the new provider. No changes were made — try again.",
+            "Could not reprovision the workspace to apply the new provider. No changes were made — try again.",
             status_code=502,
         ) from e
-    # Drain-only continuation — deliberately NOT reprovision_for_user,
-    # whose leading re-stop would clobber a poll-claimed "provisioning"
-    # row back to "stopped" and let a second executor claim it (see
-    # drain_then_dispatch_provision's docstring).
-    asyncio.create_task(manager.drain_then_dispatch_provision(owner_id))
+
+    from core.services.provision_dispatch import dispatch_provision
+
+    asyncio.create_task(dispatch_provision(owner_id))
 
     return {
         "status": "ok",
@@ -1103,180 +919,3 @@ async def change_provider(
         "byo_provider": next_byo,
         "restart": True,
     }
-
-
-class _HotSwapUnavailableError(Exception):
-    """Internal — signals change_provider to fall back to the cold path."""
-
-
-async def _hot_swap_provider(
-    *,
-    owner_id: str,
-    clerk_user_id: str,
-    new_provider: ProviderChoice,
-) -> None:
-    """Apply a Bedrock ↔ ChatGPT-OAuth provider switch hot, no container restart.
-
-    Step order matters:
-      1. If switching *to* chatgpt_oauth, write ``auth-profiles.json``
-         to EFS FIRST. Once we patch openclaw.json (step 2) chokidar fires
-         a reload and the openai provider initializes — it needs the
-         auth file already in place.
-      2. Atomically swap the three openclaw.json subtrees via
-         ``replace_provider_block``. OpenClaw's reload-plan picks up the
-         change as ``kind: "hot"``.
-
-    Switching *away* from chatgpt_oauth has the symmetric cleanup
-    (``revoke_user_oauth`` + ``delete_auth_profile_store``) but that runs
-    in the caller's side-effect cleanup block earlier — not here — so the
-    stale auth file is already gone before we patch.
-
-    Raises ``_HotSwapUnavailableError`` if the owner has no openclaw.json
-    on EFS yet (legacy / un-provisioned), signaling the caller to fall
-    back to the cold path.
-    """
-    from core.containers.config import (
-        TOOL_SEARCH_MODE,
-        build_acp_config,
-        build_provider_block,
-        cheap_model_ref,
-        derive_enabled_harnesses,
-        heartbeat_model_ref,
-        premium_model_ref,
-        model_policy_block,
-    )
-    from core.services.config_patcher import ConfigPatchError, replace_provider_block
-
-    if new_provider == "chatgpt_oauth":
-        # We already gated on tokens existing in the prerequisite check at
-        # the top of change_provider. Re-read so the file we write reflects
-        # whatever rotation may have happened concurrently.
-        from core.containers.workspace import (
-            clear_default_agent_auth_profile_row,
-            pre_stage_auth_profile_store,
-        )
-        from core.services import oauth_service
-
-        # READ the tokens under the switcher (the new connector): tokens live
-        # keyed on the human who completed the device-code flow, which IS the
-        # clerk_user_id we just recorded as oauth_connector_user_id. Pass
-        # ``bound_to=owner_id`` so we only read a row this connector claimed for
-        # THIS workspace — one ChatGPT account ↔ one container.
-        tokens = await oauth_service.get_decrypted_tokens(user_id=clerk_user_id, bound_to=owner_id)
-        if not tokens:
-            # Lost the tokens between the prerequisite check and now (very
-            # rare — concurrent disconnect). Bail out to the cold path so
-            # the user lands on the oauth_required gate next instead of a
-            # silently misconfigured container.
-            logger.warning(
-                "change_provider hot path: tokens disappeared between gate and pre-stage for user=%s",
-                clerk_user_id,
-            )
-            raise _HotSwapUnavailableError("oauth_tokens_missing")
-        # WRITE the auth file under the CONTAINER OWNER (org_id for orgs): the
-        # EFS workspace + auth-profiles.json are owner-scoped, not keyed on the
-        # human connector. For personal owners owner_id == clerk_user_id.
-        await pre_stage_auth_profile_store(user_id=owner_id, oauth_tokens=tokens)
-        # Staging oauth.json alone is not enough on an ALREADY-RUNNING 6.6
-        # container: its per-agent SQLite auth store imports oauth.json ONLY when
-        # the store row is absent, and a prior session (or authLogout-on-
-        # disconnect) leaves an empty ``{"profiles":{}}`` row that shadows the
-        # import. Delete the default agent's row so the freshly staged credential
-        # re-imports on the next run — without this, a switch/reconnect into
-        # chatgpt_oauth keeps using the old (often spent) token. See
-        # project_openclaw_oauth_auth_model. Best-effort: a fresh container has no
-        # row (no-op) and the EFS file alone still seeds a cold boot. On the local-sqlite
-        # local-SQLite layout the row lives on container-local disk — the clear
-        # returns "restart_required" after writing a boot sentinel, and only a
-        # task replacement applies it, so the swap cannot stay hot: fall back
-        # to the cold path, whose restart contract the frontend already
-        # handles. Switching AWAY stays hot (models.authLogout needs no clear).
-        cleared = await clear_default_agent_auth_profile_row(user_id=owner_id)
-        if cleared == "restart_required":
-            raise _HotSwapUnavailableError("auth_clear_requires_restart")
-
-    providers, default_model, plugin_entries = build_provider_block(
-        provider_choice=new_provider,
-        user_id=clerk_user_id,
-        byo_provider=None,  # hot path never carries byo_key
-    )
-    # The image the owner's container is ACTUALLY running, not the env pin:
-    # `modelPolicy` is an 8.1-only key and `agents.defaults` is strict on 7.2,
-    # so writing it from the pin during a rollback/promotion-lag window would
-    # crash-loop a 7.2 container on its next config reload. Same accessor
-    # write_user_configs uses for the same reason.
-    from core.containers import get_ecs_manager
-
-    deployed_tag = await get_ecs_manager()._deployed_image_tag(owner_id)
-    # The CEO (Friday) runs on the premium tier via a per-agent override; the
-    # hot swap must re-pin (or clear) it so it tracks the new provider. None on
-    # flat-rate paths (chatgpt_oauth), which drops any stale override.
-    ceo_model = premium_model_ref(new_provider, None)
-    # Compaction/memory-flush aux overrides track cheap_model_ref, which is
-    # deliberately None on chatgpt_oauth (Codex native compaction rejects an
-    # OpenClaw-side summarizer override — a pinned mini would make compaction
-    # fail and the session overflow), so the swap CLEARS those slots there.
-    cheap_model = cheap_model_ref(new_provider, None)
-    # The heartbeat/utility lane is different in kind: both are ordinary
-    # completions the OAuth token CAN serve on the Luna tier, so they re-pin
-    # via heartbeat_model_ref (Luna on chatgpt_oauth) instead of being cleared
-    # with the compaction slots. Subagent spawns re-pin to the new standard
-    # tier so children never inherit a stale ref (or Friday's premium pin);
-    # llm-task follows cheap_model (enable-only when None). All four mirror
-    # what build_openclaw_config_dict writes at provision time.
-    heartbeat_model = heartbeat_model_ref(new_provider, None)
-    utility_model = heartbeat_model
-    subagent_model = default_model["primary"]
-    # EVERY provider path pins the keyless default. This used to leave
-    # chatgpt_oauth unpinned so Codex-native hosted search could engage, but
-    # that assumed those owners run OpenClaw's Codex runtime — we never set
-    # `agents.defaults.embeddedHarness.runtime`, so they run the EMBEDDED
-    # runtime, which has no hosted search. Passing None here did not "let
-    # Codex take over", it DELETED a working pin and left the owner with no
-    # web search at all. Mirrors build_openclaw_config_dict.
-    web_search_provider = "parallel-free"
-
-    # The coding-harness set follows the provider (bedrock → claude,
-    # chatgpt_oauth → opencode), so the swap must replace the acp block and
-    # re-seed the acpx entry — the patcher's plugins.entries rebuild would
-    # otherwise drop acpx entirely and leave the old provider's ACP policy.
-    harnesses = derive_enabled_harnesses(new_provider, None)
-    if harnesses:
-        acp_block, acpx_entry = build_acp_config(harnesses)
-    else:
-        # Defensive: no hot-path provider derives empty today. Disable
-        # rather than leave the old policy advertising unauthable spawns.
-        acp_block, acpx_entry = {"enabled": False}, None
-
-    try:
-        await replace_provider_block(
-            owner_id,
-            providers=providers,
-            default_model=default_model,
-            plugin_entries=plugin_entries,
-            ceo_model=ceo_model,
-            model_policy=model_policy_block(new_provider, default_model, deployed_tag=deployed_tag).get("modelPolicy"),
-            cheap_model=cheap_model,
-            heartbeat_model=heartbeat_model,
-            utility_model=utility_model,
-            subagent_model=subagent_model,
-            llm_task_model=cheap_model,
-            web_search_provider=web_search_provider,
-            # Provision-time now writes toolSearch unconditionally, so the swap
-            # must RE-PIN it rather than delete it. Passing None here strips the
-            # key, which would drop a swapped owner straight back to carrying the
-            # full tool catalog — the exact drift the unconditional setting
-            # exists to prevent. Shares the provision-time constant rather than
-            # repeating the literal, so the swap cannot drift to a different
-            # mode than a fresh provision.
-            tool_search_mode=TOOL_SEARCH_MODE,
-            acp_block=acp_block,
-            acpx_entry=acpx_entry,
-        )
-    except ConfigPatchError as e:
-        logger.info(
-            "change_provider hot path: openclaw.json missing for owner=%s (%s) — falling back to cold path",
-            owner_id,
-            e,
-        )
-        raise _HotSwapUnavailableError("config_missing") from e

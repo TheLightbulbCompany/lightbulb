@@ -29,13 +29,11 @@ from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event, schedule_trial_first_agent_response
 from core.dynamodb import run_in_thread
 from core.repositories import billing_repo, container_repo, messaging_repo
-from core.containers import get_workspace
-from core.containers.workspace import WorkspaceError
 from core.services.provision_gate import has_always_on_entitlement
 from core.services.push_service import send_push_to_user
-from core.services import run_analytics
+from core.services import hermes_profiles, run_analytics
 from core.services.session_keys import parse_lightbulb_session_key, parse_session_key
-from core.services.starter_roster import ROLE_KEYS as _STARTER_KEYS
+from core.services.paperclip_provisioning import STARTER_ROLE_KEYS as _STARTER_KEYS
 from core.services.usage_service import record_usage
 
 logger = logging.getLogger(__name__)
@@ -909,8 +907,17 @@ def validate_attachment_bytes(content_type: str, data: bytes) -> str:
     return suffix
 
 
-def attachment_dir(room_id: str) -> str:
-    return f"media/messaging/attachments/{uuid.UUID(room_id)}"
+def attachment_key(owner_id: str, room_id: str, name: str) -> str:
+    """The S3 key for one attachment object, under the owner's Hermes home.
+
+    ``<owner>/hermes/attachments/<roomId>/<name>`` -- a sibling of the per-agent profile
+    prefixes and the root ``auth.json``, so an account wipe's
+    ``teardown_hermes_runtime(delete_profiles=True)`` (which deletes everything under
+    ``<owner>/hermes/``) takes the attachments with it, and the per-owner IAM grant
+    (``<owner>/*``) already covers it. Every path segment is a validated UUID, so there is
+    nothing to escape with.
+    """
+    return f"{hermes_profiles.root_home_prefix(owner_id)}attachments/{uuid.UUID(room_id)}/{name}"
 
 
 def store_attachment(owner_id: str, room_id: str, file_name: str, content_type: str, data: bytes) -> MessageAttachment:
@@ -922,36 +929,28 @@ def store_attachment(owner_id: str, room_id: str, file_name: str, content_type: 
     ).strip()
     safe_name = safe_name.encode("utf-8")[:255].decode("utf-8", "ignore") or f"attachment{suffix}"
     attachment = MessageAttachment(id=attachment_id, file_name=safe_name, content_type=content_type, size=len(data))
-    root = attachment_dir(room_id)
-    workspace = get_workspace()
-    expected_root = workspace.user_path(owner_id).resolve() / root
-    try:
-        workspace._resolve_user_file(owner_id, f"{root}/{attachment_id}{suffix}").relative_to(expected_root)
-        workspace._resolve_user_file(owner_id, f"{root}/{attachment_id}.json").relative_to(expected_root)
-    except (ValueError, WorkspaceError) as exc:
-        raise ValueError("attachment path escapes its room") from exc
-    workspace.write_bytes(owner_id, f"{root}/{attachment_id}{suffix}", data)
-    workspace.write_file(owner_id, f"{root}/{attachment_id}.json", attachment.model_dump_json(by_alias=True))
+    hermes_profiles.put_owner_object(attachment_key(owner_id, room_id, f"{attachment_id}{suffix}"), data)
+    hermes_profiles.put_owner_object(
+        attachment_key(owner_id, room_id, f"{attachment_id}.json"),
+        attachment.model_dump_json(by_alias=True).encode(),
+    )
     return attachment
 
 
 def load_attachment(owner_id: str, room_id: str, attachment_id: str) -> tuple[MessageAttachment, bytes]:
     normalized = str(uuid.UUID(attachment_id))
-    root = attachment_dir(room_id)
-    workspace = get_workspace()
     try:
-        expected_root = workspace.user_path(owner_id).resolve() / root
-        metadata_path = workspace._resolve_user_file(owner_id, f"{root}/{normalized}.json")
-        metadata_path.relative_to(expected_root)
-        metadata = MessageAttachment.model_validate_json(metadata_path.read_text())
+        raw = hermes_profiles.get_owner_object(attachment_key(owner_id, room_id, f"{normalized}.json"))
+        if raw is None:
+            raise ValueError("attachment metadata not found")
+        metadata = MessageAttachment.model_validate_json(raw)
         if str(metadata.id) != normalized:
             raise ValueError("attachment metadata mismatch")
         suffix = _ATTACHMENT_SIGNATURES[metadata.content_type][1]
-        path = workspace._resolve_user_file(owner_id, f"{root}/{normalized}{suffix}")
-        path.relative_to(expected_root)
-        with path.open("rb") as handle:
-            data = handle.read(ATTACHMENT_MAX_BYTES_BY_TYPE[metadata.content_type] + 1)
-    except (WorkspaceError, OSError, ValueError, KeyError) as exc:
+        data = hermes_profiles.get_owner_object(attachment_key(owner_id, room_id, f"{normalized}{suffix}"))
+        if data is None:
+            raise ValueError("attachment bytes not found")
+    except (OSError, ValueError, KeyError) as exc:
         raise ApiProblem("MESSAGE_NOT_FOUND", "Attachment not found.") from exc
     try:
         validate_attachment_bytes(metadata.content_type, data)

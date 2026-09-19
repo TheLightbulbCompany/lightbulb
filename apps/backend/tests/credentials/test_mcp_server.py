@@ -210,116 +210,12 @@ async def test_build_connected_map_skips_orphan_unknown_provider(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reconcile_writes_each_block_per_server(monkeypatch):
+async def test_reconcile_refreshes_every_roster_profile(monkeypatch):
+    """M4-R11: the rewrite goes through hermes_profiles.refresh_integrations for every one of
+    the owner's Paperclip-roster agents. There is no second branch: the openclaw.json rail and
+    its per-server/per-path writes went with the ECS runtime."""
     from core.services.credentials import mcp_server as m
 
-    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
-
-    monkeypatch.setattr(
-        m,
-        "build_connected_integration_servers",
-        AsyncMock(return_value={"stripe": {"command": "npx", "args": [], "env": {"STRIPE_SECRET_KEY": "sk_X"}}}),
-    )
-    # No openclaw_paths providers connected — the reconcile's second pass no-ops.
-    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
-    writes = []
-
-    async def _set(owner, path, value):
-        writes.append((path, value))
-
-    monkeypatch.setattr(m.config_patcher, "set_openclaw_config_path", _set)
-    await m.reconcile_integrations("org_1")
-    # per-server REPLACE of the stripe subtree only — preserves paperclip + user keys
-    assert writes == [
-        (["mcp", "servers", "stripe"], {"command": "npx", "args": [], "env": {"STRIPE_SECRET_KEY": "sk_X"}})
-    ]
-
-
-@pytest.mark.asyncio
-async def test_reconcile_noops_when_config_missing(monkeypatch):
-    from core.services.credentials import mcp_server as m
-
-    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
-
-    monkeypatch.setattr(
-        m,
-        "build_connected_integration_servers",
-        AsyncMock(return_value={"stripe": {"command": "npx", "args": [], "env": {}}}),
-    )
-
-    async def _raise(owner, path, value):
-        raise m.config_patcher.ConfigPatchError("no file")
-
-    monkeypatch.setattr(m.config_patcher, "set_openclaw_config_path", _raise)
-    await m.reconcile_integrations("org_1")  # must not raise
-
-
-@pytest.mark.asyncio
-async def test_reconcile_reapplies_openclaw_paths_provider(monkeypatch):
-    """A connected openclaw_paths provider (parallel) is re-asserted on reconcile:
-    each owned config path is re-written from the retained secret, so the bundled
-    web-search selection + key survive a config overwrite. Uses the real registry
-    entry, so it also pins the parallel YAML wiring."""
-    from core.services.credentials import mcp_server as m
-
-    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
-    monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
-    monkeypatch.setattr(
-        m.integrations_repo,
-        "list_for_owner",
-        AsyncMock(return_value=[{"provider": "parallel", "status": "connected"}]),
-    )
-    monkeypatch.setattr(
-        m.integration_secret_store,
-        "get",
-        AsyncMock(return_value={"token": "par-secret123"}),
-    )
-    writes = []
-
-    async def _set(owner, path, value):
-        writes.append((path, value))
-
-    monkeypatch.setattr(m.config_patcher, "set_openclaw_config_path", _set)
-    await m.reconcile_integrations("org_1")
-    assert writes == [
-        (["tools", "web", "search", "provider"], "parallel-free"),
-        (["tools", "web", "search", "parallel", "apiKey"], "par-secret123"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_reconcile_skips_disconnected_openclaw_paths_provider(monkeypatch):
-    """A disconnected openclaw_paths row is not re-applied (no stale re-write)."""
-    from core.services.credentials import mcp_server as m
-
-    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=False))
-    monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
-    monkeypatch.setattr(
-        m.integrations_repo,
-        "list_for_owner",
-        AsyncMock(return_value=[{"provider": "parallel", "status": "disconnected"}]),
-    )
-    secret_get = AsyncMock(return_value={"token": "par-x"})
-    monkeypatch.setattr(m.integration_secret_store, "get", secret_get)
-    writes = []
-
-    async def _set(owner, path, value):
-        writes.append((path, value))
-
-    monkeypatch.setattr(m.config_patcher, "set_openclaw_config_path", _set)
-    await m.reconcile_integrations("org_1")
-    assert writes == []
-    secret_get.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_reconcile_refreshes_hermes_profiles_for_an_agentcore_owner_instead_of_openclaw_json(monkeypatch):
-    """M4-R11: an AgentCore owner has no openclaw.json and no live gateway socket — the
-    equivalent rewrite goes through hermes_profiles.refresh_integrations for every one of the
-    owner's Paperclip-roster agents, and the ECS/openclaw.json path is never touched."""
-    from core.services.credentials import mcp_server as m
-
-    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
     monkeypatch.setattr(
         "core.services.messaging.load_agent_roster",
         AsyncMock(return_value=[{"id": "a1", "role": "ceo"}, {"id": "a2", "role": "engineering"}]),
@@ -330,14 +226,14 @@ async def test_reconcile_refreshes_hermes_profiles_for_an_agentcore_owner_instea
         called.update(owner_id=owner_id, agent_ids=agent_ids)
 
     monkeypatch.setattr("core.services.hermes_profiles.refresh_integrations", fake_refresh)
-    ecs_calls = []
-    monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
-    monkeypatch.setattr(m.config_patcher, "set_openclaw_config_path", lambda *a: ecs_calls.append(a))
+    build = AsyncMock(return_value={})
+    monkeypatch.setattr(m, "build_connected_integration_servers", build)
 
     await m.reconcile_integrations("org_a")
 
     assert called == {"owner_id": "org_a", "agent_ids": ["a1", "a2"]}
-    assert ecs_calls == []  # the ECS/openclaw.json path is never reached
+    # refresh_integrations rebuilds the connected set itself; reconcile must not also build it.
+    build.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -496,57 +392,35 @@ async def test_reconcile_forwards_pending_to_refresh_integrations(monkeypatch):
 
     monkeypatch.setattr("core.services.hermes_profiles.refresh_integrations", fake_refresh)
 
-    await m.reconcile_integrations("org_1", agentcore=True, pending="stripe")
+    await m.reconcile_integrations("org_1", pending="stripe")
 
     assert calls == [("org_1", ["a1"], "stripe")]
 
 
 # ---------------------------------------------------------------------------
-# M6-R26 fix round 1, Important 3+4: the runtime flag is resolved once per
-# door and threaded down, never re-read inside reconcile_integrations.
+# There is ONE runtime, so reconcile_integrations classifies nothing: no
+# `agentcore` parameter, and no containers read at all.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_reconcile_agentcore_flag_skips_second_read(monkeypatch):
-    """The caller already resolved is_agentcore_owner for this request --
-    reconcile_integrations must not read it again."""
+async def test_reconcile_never_reads_the_containers_table(monkeypatch):
+    """Deletion PR-5 removed the ``agentcore`` parameter that existed only to save a
+    classification read. Nothing may put one back: reconcile owns no transport decision."""
+    import inspect
+
     from core.services.credentials import mcp_server as m
 
-    checked = []
+    assert "agentcore" not in inspect.signature(m.reconcile_integrations).parameters
 
-    async def fake_is_agentcore(owner_id):
-        checked.append(owner_id)
-        return True
+    def _no_reads(*a, **kw):
+        raise AssertionError("reconcile_integrations must not read the containers table")
 
-    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", fake_is_agentcore)
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _no_reads)
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=[]))
     monkeypatch.setattr("core.services.hermes_profiles.refresh_integrations", AsyncMock())
 
-    await m.reconcile_integrations("org_1", agentcore=True)
-
-    assert checked == []
-
-
-@pytest.mark.asyncio
-async def test_reconcile_ecs_flag_skips_second_read_too(monkeypatch):
-    """Same guarantee in the other direction: agentcore=False must not
-    trigger a read either, and must take the ECS branch."""
-    from core.services.credentials import mcp_server as m
-
-    checked = []
-
-    async def fake_is_agentcore(owner_id):
-        checked.append(owner_id)
-        return True  # if this fires, the ECS branch below would wrongly be skipped
-
-    monkeypatch.setattr(m.runtime_transport, "is_agentcore_owner", fake_is_agentcore)
-    monkeypatch.setattr(m, "build_connected_integration_servers", AsyncMock(return_value={}))
-    monkeypatch.setattr(m.integrations_repo, "list_for_owner", AsyncMock(return_value=[]))
-
-    await m.reconcile_integrations("org_1", agentcore=False)
-
-    assert checked == []
+    await m.reconcile_integrations("org_1")
 
 
 # ---------------------------------------------------------------------------

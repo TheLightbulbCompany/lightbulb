@@ -392,11 +392,6 @@ class ConnectionService:
                 return False
             raise
 
-    async def count_relay_nodes(self, owner_id: str) -> int:
-        """Live `node`-typed relay connections for an owner (desktop node
-        hosts), used to edge-trigger the node tool-deny-list patch."""
-        return sum(1 for _connection_id, _user_id, kind in await self.query_by_owner(owner_id) if kind == "node")
-
     async def delete_relay_rows_for_device(self, owner_id: str, device_id: str) -> int:
         """Force-close a revoked device's live relay presence row(s).
 

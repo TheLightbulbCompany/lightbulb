@@ -1,6 +1,6 @@
-"""Tests for file upload endpoint."""
+"""Tests for the agent file-upload endpoint (POST /container/files)."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -9,19 +9,18 @@ from core.auth import get_current_user, AuthContext
 
 
 @pytest.fixture
-def mock_container():
-    container = MagicMock()
-    container.service_name = "openclaw-abc123"
-    container.status = "running"
-    return container
+def profile_writes(monkeypatch):
+    """Capture what would land in the agent's profile."""
+    calls = []
 
+    def _write(owner_id, agent_id, files, removed):
+        calls.append((owner_id, agent_id, files, removed))
 
-@pytest.fixture
-def mock_workspace():
-    ws = MagicMock()
-    ws.ensure_user_dir = MagicMock()
-    ws.write_bytes = MagicMock()
-    return ws
+    monkeypatch.setattr("core.services.hermes_profiles.write_profile_subtree", _write)
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"owner_id": "user_123"})
+    )
+    return calls
 
 
 @pytest.fixture
@@ -37,132 +36,90 @@ def auth_override():
 AGENT_ID = "agent-xyz"
 
 
+async def _upload(app, files):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        return await client.post(f"/api/v1/container/files?agent_id={AGENT_ID}", files=files)
+
+
 @pytest.mark.asyncio
-async def test_upload_single_file(app, auth_override, mock_container, mock_workspace):
-    """Upload a single file writes to workspace."""
+async def test_upload_single_file_lands_in_the_agents_profile_home(app, auth_override, profile_writes):
+    """The object key is profile-relative (`home/uploads/...`); the path handed back is
+    relative to the turn's `$HOME`, which IS that `home/` dir -- otherwise the notice the
+    composer prepends names a path the agent cannot open."""
     app.dependency_overrides[get_current_user] = auth_override
     try:
-        with (
-            patch("routers.container_files.get_ecs_manager") as mock_ecs,
-            patch("routers.container_files.get_workspace", return_value=mock_workspace),
-        ):
-            mock_ecs.return_value.get_service_status = AsyncMock(return_value=mock_container)
+        resp = await _upload(app, [("files", ("test.txt", b"hello world", "text/plain"))])
 
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.post(
-                    f"/api/v1/container/files?agent_id={AGENT_ID}",
-                    files=[("files", ("test.txt", b"hello world", "text/plain"))],
-                )
-
-            assert resp.status_code == 200
-            body = resp.json()
-            assert len(body["uploaded"]) == 1
-            assert body["uploaded"][0]["filename"] == "test.txt"
-            assert body["uploaded"][0]["path"] == f".openclaw/workspace-{AGENT_ID}/uploads/test.txt"
-            assert body["uploaded"][0]["size"] == 11
-
-            mock_workspace.write_bytes.assert_called_once_with(
-                "user_123", f"workspace-{AGENT_ID}/uploads/test.txt", b"hello world"
-            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["uploaded"] == [{"filename": "test.txt", "path": "uploads/test.txt", "size": 11}]
+        assert profile_writes == [("user_123", AGENT_ID, {"home/uploads/test.txt": b"hello world"}, ())]
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.mark.asyncio
-async def test_upload_multiple_files(app, auth_override, mock_container, mock_workspace):
-    """Upload multiple files in one request."""
+async def test_upload_multiple_files_is_one_revision_bump(app, auth_override, profile_writes):
+    """One subtree write for the request: `write_profile_subtree` bumps `.revision` last,
+    and two bumps would make the bridge re-pull twice for one upload."""
     app.dependency_overrides[get_current_user] = auth_override
     try:
-        with (
-            patch("routers.container_files.get_ecs_manager") as mock_ecs,
-            patch("routers.container_files.get_workspace", return_value=mock_workspace),
-        ):
-            mock_ecs.return_value.get_service_status = AsyncMock(return_value=mock_container)
+        resp = await _upload(
+            app,
+            [
+                ("files", ("a.txt", b"aaa", "text/plain")),
+                ("files", ("b.csv", b"1,2,3", "text/csv")),
+            ],
+        )
 
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.post(
-                    f"/api/v1/container/files?agent_id={AGENT_ID}",
-                    files=[
-                        ("files", ("a.txt", b"aaa", "text/plain")),
-                        ("files", ("b.csv", b"1,2,3", "text/csv")),
-                    ],
-                )
-
-            assert resp.status_code == 200
-            body = resp.json()
-            assert len(body["uploaded"]) == 2
-            assert mock_workspace.write_bytes.call_count == 2
+        assert resp.status_code == 200
+        assert len(resp.json()["uploaded"]) == 2
+        assert len(profile_writes) == 1
+        assert set(profile_writes[0][2]) == {"home/uploads/a.txt", "home/uploads/b.csv"}
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.mark.asyncio
-async def test_upload_rejects_oversized_file(app, auth_override, mock_container, mock_workspace):
+async def test_upload_rejects_oversized_file(app, auth_override, profile_writes):
     """Upload rejects files larger than 10MB."""
     app.dependency_overrides[get_current_user] = auth_override
     try:
-        with (
-            patch("routers.container_files.get_ecs_manager") as mock_ecs,
-            patch("routers.container_files.get_workspace", return_value=mock_workspace),
-        ):
-            mock_ecs.return_value.get_service_status = AsyncMock(return_value=mock_container)
+        big_data = b"x" * (10 * 1024 * 1024 + 1)
+        resp = await _upload(app, [("files", ("big.bin", big_data, "application/octet-stream"))])
 
-            big_data = b"x" * (10 * 1024 * 1024 + 1)
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.post(
-                    f"/api/v1/container/files?agent_id={AGENT_ID}",
-                    files=[("files", ("big.bin", big_data, "application/octet-stream"))],
-                )
-
-            assert resp.status_code == 400
-            assert "10MB" in resp.json()["detail"]
+        assert resp.status_code == 400
+        assert "10MB" in resp.json()["detail"]
+        assert profile_writes == []
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.mark.asyncio
-async def test_upload_no_container(app, auth_override, mock_workspace):
-    """Upload returns 404 when user has no container."""
+async def test_upload_no_workspace(app, auth_override, profile_writes, monkeypatch):
+    """404 when the owner has no workspace row at all."""
     app.dependency_overrides[get_current_user] = auth_override
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
     try:
-        with (
-            patch("routers.container_files.get_ecs_manager") as mock_ecs,
-            patch("routers.container_files.get_workspace", return_value=mock_workspace),
-        ):
-            mock_ecs.return_value.get_service_status = AsyncMock(return_value=None)
+        resp = await _upload(app, [("files", ("test.txt", b"hello", "text/plain"))])
 
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.post(
-                    f"/api/v1/container/files?agent_id={AGENT_ID}",
-                    files=[("files", ("test.txt", b"hello", "text/plain"))],
-                )
-
-            assert resp.status_code == 404
+        assert resp.status_code == 404
+        assert profile_writes == []
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.mark.asyncio
-async def test_upload_sanitizes_filename(app, auth_override, mock_container, mock_workspace):
+async def test_upload_sanitizes_filename(app, auth_override, profile_writes):
     """Upload sanitizes filenames with path traversal attempts."""
     app.dependency_overrides[get_current_user] = auth_override
     try:
-        with (
-            patch("routers.container_files.get_ecs_manager") as mock_ecs,
-            patch("routers.container_files.get_workspace", return_value=mock_workspace),
-        ):
-            mock_ecs.return_value.get_service_status = AsyncMock(return_value=mock_container)
+        resp = await _upload(app, [("files", ("../../etc/passwd", b"nope", "text/plain"))])
 
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.post(
-                    f"/api/v1/container/files?agent_id={AGENT_ID}",
-                    files=[("files", ("../../etc/passwd", b"nope", "text/plain"))],
-                )
-
-            assert resp.status_code == 200
-            body = resp.json()
-            assert ".." not in body["uploaded"][0]["filename"]
-            assert "/" not in body["uploaded"][0]["filename"]
+        assert resp.status_code == 200
+        name = resp.json()["uploaded"][0]["filename"]
+        assert ".." not in name and "/" not in name
+        assert list(profile_writes[0][2]) == [f"home/uploads/{name}"]
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 

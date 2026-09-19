@@ -8,10 +8,9 @@ in DDB synchronously (fail-closed). Container + billing actions also
 accept an Idempotency-Key header to short-circuit double clicks.
 
 Read endpoints delegate to admin_service (composition layer).
-Mutation endpoints call the underlying service (ecs_manager,
-billing_service, clerk_admin, container_rpc, config_patcher) directly —
-admin_service intentionally doesn't compose those because each is a
-distinct side-effect.
+Mutation endpoints call the underlying service (hermes_provisioning,
+billing_service, clerk_admin, container_rpc) directly — admin_service
+intentionally doesn't compose those because each is a distinct side-effect.
 """
 
 import logging
@@ -21,11 +20,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, is_org_owner_id, require_platform_admin
-from core.containers import get_ecs_manager
 from core.repositories import (  # noqa: F401 — admin_actions_repo is patch target for tests
     admin_actions_repo,
     container_repo,
-    update_repo,
     user_repo,
 )
 from core.services import (
@@ -49,11 +46,6 @@ from core.services.runtime_rpc import config_patch_roster
 from core.services.webhook_dedup import idempotency
 from core.services.messaging import ApiProblem
 from core.services.provision_dispatch import dispatch_provision
-from core.services.update_service import (
-    TASKDEF_ROLL_CHANGE_KEYS,
-    apply_update,
-    reapply_owner_config,
-)
 from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
@@ -99,32 +91,6 @@ class WipeConfirmRequest(BaseModel):
             "the workspace name (its org id when Clerk has no name), checked server-side."
         ),
     )
-
-
-class QueueImageUpdateRequest(BaseModel):
-    new_image: str = Field(
-        ...,
-        min_length=1,
-        description="ECR image URL to queue (e.g. 877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended:2026.5.12-570e197)",
-    )
-    description: str | None = Field(
-        default=None,
-        description="Human-readable change summary shown to the owner in their update banner",
-    )
-    # NB: deliberately omitting `force_by` — update_repo persists it but the
-    # scheduled worker never reads it. Plumbing it through belongs in a
-    # change that also wires the worker to honor it.
-
-
-def _rolls_task_def(changes: object) -> bool:
-    """True if a pending update's ``changes`` would re-register the ECS task def.
-
-    The force-apply guard treats a row carrying any task-def-rolling key as a
-    conflict regardless of its update_type label (a paperclip_provision retry
-    or a pure config_patch hot-reload carries none and is not a conflict).
-    The key set is owned by update_service.TASKDEF_ROLL_CHANGE_KEYS.
-    """
-    return isinstance(changes, dict) and any(k in changes for k in TASKDEF_ROLL_CHANGE_KEYS)
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +238,8 @@ async def admin_user_cloudwatch_url(
 # ---------------------------------------------------------------------------
 @router.post(
     "/users/{user_id}/container/reprovision",
-    description="Reprovision the container: rewrites openclaw.json and redeploys. "
-    "Channel accounts and MCP servers are preserved across the rewrite. "
-    "Idempotency-Key supported.",
+    description="Reprovision the workspace: re-derives the owner's Bedrock AIPs, rewrites "
+    "every agent profile and re-creates the AgentCore runtime. Idempotency-Key supported.",
 )
 @idempotency()
 @audit_admin_action("container.reprovision")
@@ -287,245 +252,13 @@ async def admin_container_reprovision(
     # not the non-existent ``openclaw-{user_id}-{hash}`` (admin-org-owner-id
     # P1). Audit decorator still captures the URL path param (user_id).
     owner_id, _ = await resolve_admin_owner_id(user_id)
-    ecs = get_ecs_manager()
-    return await ecs.reprovision_for_user(owner_id)
-
-
-@router.post(
-    "/users/{user_id}/container/stop",
-    description="Stop the user's ECS service (scale to 0). Idempotency-Key supported.",
-)
-@idempotency()
-@audit_admin_action("container.stop")
-async def admin_container_stop(
-    user_id: str,
-    request: Request,
-    auth: AuthContext = Depends(require_platform_admin),
-):
-    owner_id, _ = await resolve_admin_owner_id(user_id)
-    ecs = get_ecs_manager()
-    return await ecs.stop_user_service(owner_id, reason="admin")
-
-
-@router.post(
-    "/users/{user_id}/container/start",
-    description="Start the user's ECS service (scale to 1). Idempotency-Key supported.",
-)
-@idempotency()
-@audit_admin_action("container.start")
-async def admin_container_start(
-    user_id: str,
-    request: Request,
-    auth: AuthContext = Depends(require_platform_admin),
-):
-    owner_id, _ = await resolve_admin_owner_id(user_id)
-    ecs = get_ecs_manager()
-    # force: the operator break-glass. start_user_service refuses a customer
-    # start when the free-tier cap is up or a trial->paid conversion owns the
-    # row; an admin start is neither, and it is the ONLY manual lever to bring
-    # back a container whose conversion marker got stranded (a backend deploy
-    # mid-drain leaves substatus="converting" on the row). Platform-admin only
-    # and audited by @audit_admin_action above.
-    return await ecs.start_user_service(owner_id, force=True)
-
-
-@router.post(
-    "/users/{user_id}/container/resize",
-    description=(
-        "Re-apply the owner's canonical task profile. Size is derived by "
-        "ecs_manager._size_for_owner: 2 vCPU / 8 GB for an `ultra_pro` plan OR "
-        "a live agent roster over COMPANY_STANDARD_PLAN_MAX_AGENTS (a "
-        "reliability floor, not an entitlement), otherwise 1 vCPU / 4 GB. "
-        "Recovery action for containers wedged on a stale task def. No body."
-    ),
-)
-@idempotency()
-@audit_admin_action("container.resize")
-async def admin_container_resize(
-    user_id: str,
-    request: Request,
-    auth: AuthContext = Depends(require_platform_admin),
-):
-    owner_id, _ = await resolve_admin_owner_id(user_id)
-    ecs = get_ecs_manager()
-    return await ecs.reapply_standard_sizing(owner_id)
-
-
-@router.get(
-    "/container/available-images",
-    description=(
-        "List recently-pushed openclaw-extended ECR tags (newest first). "
-        "Powers the admin queue-image-update dropdown. Degrades to an empty "
-        "list on ECR errors so the UI can fall back to free-text entry."
-    ),
-)
-async def admin_container_available_images(
-    limit: int = Query(25, ge=1, le=100),
-    auth: AuthContext = Depends(require_platform_admin),
-):
-    images = await admin_service.list_extended_image_tags(limit=limit)
-    return {
-        "images": images,
-        "current_dev_tag": admin_service.CURRENT_DEV_TAG,
-        "current_prod_tag": admin_service.CURRENT_PROD_TAG,
-    }
-
-
-@router.post(
-    "/users/{user_id}/container/queue-image-update",
-    description=(
-        "Queue a Track 2 image update for the user. Resolves user_id to owner_id "
-        "(so org members route to their org's container), then creates the pending "
-        "update. The owner sees a banner in chat and applies via "
-        "POST /api/v1/container/updates/{id}/apply when ready. Non-destructive: "
-        "container keeps running on the old image until accepted. Idempotency-Key "
-        "supported."
-    ),
-)
-@idempotency()
-@audit_admin_action("container.queue_image_update")
-async def admin_container_queue_image_update(
-    user_id: str,
-    body: QueueImageUpdateRequest,
-    request: Request,
-    auth: AuthContext = Depends(require_platform_admin),
-):
-    owner_id, _ = await resolve_admin_owner_id(user_id)
-    description = body.description or f"Image update to {body.new_image}"
-    item = await update_repo.create(
-        owner_id=owner_id,
-        update_type="image_update",
-        description=description,
-        changes={"new_image": body.new_image},
-    )
-    return {"status": "queued", "update": item}
-
-
-@router.post(
-    "/users/{user_id}/container/apply-image-update",
-    description=(
-        "Force-apply a container image update NOW (admin-initiated) instead of "
-        "waiting for the owner to accept the Track-2 banner. Resolves user_id to "
-        "owner_id, creates the pending image_update row, then applies it via the "
-        "SAME apply_update() path the owner banner uses: the container's on-disk "
-        "openclaw.json is reused (removed-schema keys stripped first so the newer "
-        "image's strict schema can't crash-loop the gateway) and the per-user "
-        "task-def is rolled to the new image. Non-destructive — EFS workspace and "
-        "agent state are preserved; the container briefly restarts on the new "
-        "image. Returns 409 if the update could not be applied (a prior update is "
-        "already in progress); the row stays queued for a retry or owner-apply. "
-        "Idempotency-Key supported."
-    ),
-)
-@idempotency()
-@audit_admin_action("container.force_apply_image_update")
-async def admin_container_force_apply_image_update(
-    user_id: str,
-    body: QueueImageUpdateRequest,
-    request: Request,
-    auth: AuthContext = Depends(require_platform_admin),
-):
-    owner_id, _ = await resolve_admin_owner_id(user_id)
-
-    # Per-owner mutual exclusion. apply_update's acquire is keyed per-update_id,
-    # so a fresh row we create always acquires — that alone does NOT stop a second
-    # roll when the owner already has a container update queued (admin queue button
-    # / generic updates API / scheduled worker) or mid-apply (owner banner). Reject
-    # up front so only one task-def roll is normally in flight per owner.
-    #
-    # Conflict is decided by the changes payload, not the update_type label: any row
-    # apply_update would feed to resize_user_container (new_image / new_cpu /
-    # new_memory) re-registers the task-def and would race this force-apply,
-    # last-writer-wins on the resulting image/size. A paperclip_provision retry or a
-    # pure config_patch hot-reload does not touch the task-def, so it is not a
-    # conflict.
-    #
-    # This read-then-create is not fully atomic: two force-applies landing within
-    # the same instant could both observe no conflict. That residual race is
-    # deliberately not locked out here — the per-user ECS service runs
-    # SINGLE_WRITER_DEPLOYMENT_CONFIG (maximumPercent=100 → never two tasks), so
-    # even two concurrent resize_user_container calls can't put two tasks on the
-    # EFS-SQLite state at once; the worst case is a redundant superseded deployment,
-    # not corruption or data loss. A distributed lock would add stuck-lock failure
-    # modes disproportionate to that bounded, admin-only race.
-    in_flight = await update_repo.get_in_flight(owner_id)
-    conflicting = [u for u in in_flight if _rolls_task_def(u.get("changes"))]
-    if conflicting:
-        statuses = ", ".join(sorted({u.get("status", "?") for u in conflicting}))
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Another container update is already in flight for this owner "
-                f"(status: {statuses}). Wait for it to finish, or clear it, before "
-                "force-applying a new image."
-            ),
-        )
-
-    description = body.description or f"Admin force-apply image update to {body.new_image}"
-    item = await update_repo.create(
-        owner_id=owner_id,
-        update_type="image_update",
-        description=description,
-        changes={"new_image": body.new_image},
-        force_by=auth.user_id,
-    )
-    update_id = item["update_id"]
-    applied = await apply_update(owner_id, update_id)
-    if not applied:
-        # No update was in flight (guarded above) and the row we just created was
-        # 'pending', so apply_update's acquire always succeeds here. A False return
-        # therefore means the roll itself raised — apply_update caught it and marked
-        # the row 'failed', so it is NOT a live queued row the owner can retry from
-        # their banner. Surface it as a server-side failure with the EFS-safe note.
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                f"The image roll failed while applying (update_id={update_id}; row "
-                "marked failed). The container's EFS workspace/state is unchanged — "
-                "check the ECS service / container logs before retrying."
-            ),
-        )
-    return {
-        "status": "applied",
-        "owner_id": owner_id,
-        "update_id": update_id,
-        "new_image": body.new_image,
-    }
-
-
-@router.post(
-    "/users/{user_id}/container/reapply-config",
-    description=(
-        "Regenerate the owner's openclaw.json on EFS from the CURRENT config "
-        "generator (the dashboard twin of scripts/reapply_openclaw_config.py). "
-        "Unlike the deep-merge config PATCH — which preserves stale sibling "
-        "keys — this re-renders the full config via the provisioning write "
-        "path, then restores only the runtime-appended subtrees the regen "
-        "drops (channel pairing accounts, route bindings, boot-time "
-        "identity). Config-only and non-destructive: no task restart, EFS "
-        "workspace/agent state untouched. A running container picks the file "
-        "up via OpenClaw's watcher; changes needing a gateway restart to "
-        "activate (e.g. plugin enablement) land on the next image roll — "
-        "pair with 'Apply now' for an immediate restart. Returns 409 for "
-        "legacy rows without a gateway_token (those need a full "
-        "reprovision). Idempotency-Key supported."
-    ),
-)
-@idempotency()
-@audit_admin_action("container.reapply_config")
-async def admin_container_reapply_config(
-    user_id: str,
-    request: Request,
-    auth: AuthContext = Depends(require_platform_admin),
-):
-    owner_id, _ = await resolve_admin_owner_id(user_id)
-    try:
-        result = await reapply_owner_config(owner_id)
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return {"status": "reapplied", **result}
+    # Takeover first: `dispatch_provision`'s claim does not admit a "running" row, so a bare
+    # dispatch would stand down silently. The takeover supersedes any in-flight lease and
+    # leaves the row's own status alone.
+    if await container_repo.get_by_owner_id(owner_id) is not None:
+        await container_repo.takeover_provision(owner_id)
+    await dispatch_provision(owner_id)
+    return {"status": "provisioning", "owner_id": owner_id}
 
 
 # ---------------------------------------------------------------------------
@@ -742,7 +475,7 @@ async def _admin_agent_rpc(*, user_id: str, agent_id: str, method: str) -> dict:
     """One gateway RPC for an admin-initiated per-agent action, keyed on the owner."""
     owner_id, _ = await resolve_admin_owner_id(user_id)
     try:
-        return await container_rpc.call(owner_id, method, {"agent_id": agent_id}, wake=False)
+        return await container_rpc.call(owner_id, method, {"agent_id": agent_id})
     except ApiProblem as exc:
         raise HTTPException(status_code=409, detail="container_not_running") from exc
 

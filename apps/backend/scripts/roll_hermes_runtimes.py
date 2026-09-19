@@ -29,7 +29,6 @@ import logging
 import sys
 
 from core.repositories import container_repo
-from core.services import runtime_transport
 from core.services.hermes_provisioning import roll_runtime_image
 
 logger = logging.getLogger(__name__)
@@ -39,7 +38,8 @@ async def _targets(args: argparse.Namespace) -> list[str]:
     if args.owner_id:
         return [args.owner_id]
     rows = await container_repo.scan_all(consistent=True)
-    return sorted(r["owner_id"] for r in rows if runtime_transport.host_for(r) == "agentcore" and r.get("owner_id"))
+    # A row without a runtime ARN has nothing to roll -- there is no other transport to skip.
+    return sorted(r["owner_id"] for r in rows if r.get("agentcore_runtime_arn") and r.get("owner_id"))
 
 
 async def main(argv: list[str] | None = None) -> int:

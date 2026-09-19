@@ -2,8 +2,8 @@
 
 Every workspace runs on AgentCore, so ``_resolve_agent_location`` always answers
 ``("s3", "<owner>/hermes/<agent_id>")`` and an export reads the seller's Hermes S3
-profile. The seller's ROOT ``openclaw.json`` (the slice source) is still read off
-EFS, which is why the fixtures below build both halves.
+profile — including the ``openclaw.json`` the slice is projected from, which used to be a
+per-USER file on EFS and now lives in the profile like everything else.
 """
 
 import io
@@ -69,18 +69,15 @@ def hermes_profile_s3(tmp_path: Path):
 
 @pytest.fixture
 def fake_efs(tmp_path: Path):
-    """Builds /tmp/<root>/users/<seller>/workspace-<agent-id>/ with sample
-    files and patches get_workspace() to return a Workspace anchored at
-    <root>.
+    """Builds the seller's profile content on disk at
+    ``<tmp_path>/users/<seller>/workspace-<agent-id>/``, which ``hermes_profile_s3``
+    mirrors into a moto bucket and serves through the REAL ``_download_s3_profile``.
 
-    Layout mirrors the real OpenClaw EFS convention:
-      agents/{id}/      → OpenClaw internal state (sessions/, agent/auth)
-      workspace-{id}/  → seller-facing content (persona files, skills,
-                          per-agent openclaw.json) — what gets exported.
-
-    Also writes the seller's per-user openclaw.json with an agents.list[]
-    entry for ``agent_id`` so ``export_agent_from_efs`` can synthesize a
-    real openclaw_slice (matching the admin-catalog publish behavior).
+    ONE ``openclaw.json``, inside the profile. It used to be two files: a per-USER roster on
+    EFS (the slice source) plus a per-agent one in the workspace dir (the manifest's display
+    name). There is no per-user file any more -- ``_read_profile_openclaw_config`` reads the
+    profile's own, so the roster and the identity live in the same object, which is what a
+    migrated seller's profile actually carries.
     """
     seller_id = "user_seller_abc"
     agent_id = "my-agent-001"
@@ -89,10 +86,10 @@ def fake_efs(tmp_path: Path):
     agent_dir = user_root / f"workspace-{agent_id}"
     agent_dir.mkdir(parents=True)
 
-    # Per-user openclaw.json — what the slice extraction reads.
-    (user_root / "openclaw.json").write_text(
+    (agent_dir / "openclaw.json").write_text(
         json.dumps(
             {
+                "identity": {"name": "MyAgent", "vibe": "helpful", "description": "An agent"},
                 "agents": {
                     "list": [
                         {
@@ -112,18 +109,6 @@ def fake_efs(tmp_path: Path):
         ),
         encoding="utf-8",
     )
-
-    # Per-agent openclaw.json — used only by _summarize_openclaw_config for
-    # the manifest's display name + description.
-    (agent_dir / "openclaw.json").write_text(
-        json.dumps(
-            {
-                "identity": {"name": "MyAgent", "vibe": "helpful", "description": "An agent"},
-                "tools": {"foo": {}, "bar": {}},
-            }
-        ),
-        encoding="utf-8",
-    )
     (agent_dir / "README.md").write_text("# Hello\n", encoding="utf-8")
     (agent_dir / "scripts").mkdir()
     (agent_dir / "scripts" / "run.sh").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
@@ -134,13 +119,7 @@ def fake_efs(tmp_path: Path):
     (agent_dir / ".git").mkdir()
     (agent_dir / ".git" / "HEAD").write_bytes(b"junk")
 
-    # Patch get_workspace() to anchor at tmp_path/users (matches the
-    # production EFS_MOUNT_PATH convention which already ends in /users).
-    from core.containers import workspace as workspace_module
-
-    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
-    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
-        yield seller_id, agent_id, agent_dir
+    yield seller_id, agent_id, agent_dir
 
 
 @pytest.fixture
@@ -157,7 +136,7 @@ def _list_tar_names(tar_bytes: bytes) -> list[str]:
 
 def test_export_happy_path(hermes_profile):
     seller_id, agent_id, _ = hermes_profile
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     assert pkg.format == "openclaw"
     assert pkg.manifest["name"] == "MyAgent"
     assert pkg.manifest["agent_id"] == agent_id
@@ -181,7 +160,7 @@ def test_export_manifest_carries_requirements(hermes_profile):
         ),
         encoding="utf-8",
     )
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     keys = {r["key"]: r["disposition"] for r in pkg.manifest["requirements"]}
     assert keys["summarize"] == "included"
     assert keys["slack"] == "connect"
@@ -214,7 +193,7 @@ def test_preview_includes_requirements(hermes_profile):
 
 def test_export_skips_junk_dirs(hermes_profile):
     seller_id, agent_id, _ = hermes_profile
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
     assert not any("__pycache__" in n for n in names)
     assert not any(".git" in n for n in names)
@@ -240,7 +219,7 @@ def test_export_prunes_runtime_scratch_dirs(hermes_profile):
     (agent_dir / "notes").mkdir()
     (agent_dir / "notes" / "kept.md").write_text("keep me", encoding="utf-8")
 
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
 
     for scratch in ("run-evidence", "run-evidence-1a2b", "run-artifacts", "github-cache"):
@@ -265,7 +244,7 @@ def test_export_skips_boot_and_workspace_plugin_files(hermes_profile):
     (nested / "BOOT.md").write_text("nested boot\n", encoding="utf-8")
     (nested / "openclaw.plugin.json").write_text("{}", encoding="utf-8")
 
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
     assert not any(n.rsplit("/", 1)[-1] == "BOOT.md" for n in names), names
     assert not any(n.rsplit("/", 1)[-1] == "openclaw.plugin.json" for n in names), names
@@ -288,7 +267,7 @@ def test_export_skips_uploads_dir(hermes_profile):
     (agent_dir / "uploads" / "stale-bundle.lobster").write_text(
         "curl https://api.perplexity.ai/chat/completions -d @-", encoding="utf-8"
     )
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
     assert not any("uploads/" in n for n in names), names
     # Sanity: legitimate workspace content still ships.
@@ -297,19 +276,19 @@ def test_export_skips_uploads_dir(hermes_profile):
 
 def test_export_requires_acp_defaults_false(hermes_profile):
     seller_id, agent_id, _ = hermes_profile
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     assert pkg.manifest["requires_acp"] is False
 
 
 def test_export_requires_acp_when_declared(hermes_profile):
     seller_id, agent_id, _ = hermes_profile
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, enable_acp=True)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id, enable_acp=True)
     assert pkg.manifest["requires_acp"] is True
 
 
 def test_export_requires_desktop_defaults_false(hermes_profile):
     seller_id, agent_id, _ = hermes_profile
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     assert pkg.manifest["requires_desktop"] is False
 
 
@@ -317,7 +296,7 @@ def test_export_requires_desktop_when_publisher_declares(hermes_profile):
     """'Needs the desktop app' is a publisher-set flag (not scanned) — recorded
     on the manifest for buyer-facing disclosure."""
     seller_id, agent_id, _ = hermes_profile
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, requires_desktop=True)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id, requires_desktop=True)
     assert pkg.manifest["requires_desktop"] is True
 
 
@@ -334,7 +313,7 @@ def test_credential_filter_blocks_txt_pasted_secrets(hermes_profile):
     # Non-credential .txt file still ships.
     (agent_dir / "notes.txt").write_text("# brainstorm", encoding="utf-8")
 
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
 
     for forbidden in ("secret.txt", "credentials.txt", "private-key.txt"):
@@ -364,7 +343,7 @@ def test_credential_filter_blocks_extensionless_aws_credentials(hermes_profile):
     # ``credentials-helper`` CLI shim that's just code.
     (agent_dir / "credentials-helper").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
 
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
 
     # Extensionless credential filenames are blocked.
@@ -390,7 +369,7 @@ def test_credential_filter_word_boundary_does_not_strip_skills(hermes_profile):
     (skills_dir / "secret-santa.md").write_text("# Secret Santa skill", encoding="utf-8")
     (skills_dir / "credentials-helper.ts").write_text("export const x = 1;", encoding="utf-8")
 
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
 
     assert any("skills/secretary.md" in n for n in names), names
@@ -412,7 +391,7 @@ def test_export_skips_dotfiles_anywhere_in_tree(hermes_profile, tmp_path):
     # Hidden file nested inside an otherwise-allowed directory.
     (agent_dir / "scripts" / ".secret").write_text("password=hunter2\n", encoding="utf-8")
 
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
     # None of the dotfile paths show up.
     assert not any(".env" in n.split("/")[-1] for n in names if n != "."), names
@@ -438,7 +417,7 @@ def test_export_skips_backup_and_temp_files(hermes_profile):
     # Sanity: legit filenames that merely contain "backup" (no ".bak") still ship.
     (agent_dir / "backup-notes.md").write_text("kept\n", encoding="utf-8")
 
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
     assert not any(".bak" in n for n in names), names
     assert not any(n.endswith(".tmp") for n in names), names
@@ -449,8 +428,8 @@ def test_export_skips_backup_and_temp_files(hermes_profile):
 
 def test_export_snapshot_is_deterministic(hermes_profile):
     seller_id, agent_id, _ = hermes_profile
-    a = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
-    b = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    a = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
+    b = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     # Identical content → identical bytes (mtimes/uids zeroed).
     assert a.tarball_bytes == b.tarball_bytes
 
@@ -474,7 +453,7 @@ def test_export_skips_credential_shaped_filenames(hermes_profile):
     (agent_dir / "id_rsa").write_text("-----BEGIN PRIVATE KEY-----", encoding="utf-8")
     (agent_dir / "service-account-secrets.yaml").write_text("token: x", encoding="utf-8")
 
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
     for forbidden in (
         "resy-credentials.json",
@@ -495,7 +474,7 @@ def test_export_synthesizes_slice_from_seller_config(hermes_profile):
     buyer-side deploy auto-register the new agent in their openclaw.json.
     """
     seller_id, agent_id, _ = hermes_profile
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
 
     slice_ = pkg.openclaw_slice
     assert slice_, "openclaw_slice must be populated, not empty"
@@ -530,7 +509,7 @@ def test_export_replaces_seller_agent_id_in_mcp_args_with_sentinel(hermes_profil
     seller_id, agent_id, agent_dir = hermes_profile
     # Seller's openclaw.json already has an mcp servers entry — make it
     # carry an args path that points at the seller's workspaces dir.
-    cfg_path = tmp_path / "users" / seller_id / "openclaw.json"
+    cfg_path = tmp_path / "users" / seller_id / f"workspace-{agent_id}" / "openclaw.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     cfg["mcp"] = {
         "servers": {
@@ -543,7 +522,7 @@ def test_export_replaces_seller_agent_id_in_mcp_args_with_sentinel(hermes_profil
     }
     cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
 
-    pkg = agent_export.export_agent_from_efs(
+    pkg = agent_export.export_agent_from_profile(
         seller_id=seller_id,
         agent_id=agent_id,
         selected_mcps=["resy"],
@@ -566,7 +545,7 @@ def test_export_normalizes_legacy_workspaces_layout_in_mcp_args(hermes_profile, 
     sentinel the new form produces, so every artifact ships layout-current.
     """
     seller_id, agent_id, agent_dir = hermes_profile
-    cfg_path = tmp_path / "users" / seller_id / "openclaw.json"
+    cfg_path = tmp_path / "users" / seller_id / f"workspace-{agent_id}" / "openclaw.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     cfg["mcp"] = {
         "servers": {
@@ -579,7 +558,7 @@ def test_export_normalizes_legacy_workspaces_layout_in_mcp_args(hermes_profile, 
     }
     cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
 
-    pkg = agent_export.export_agent_from_efs(
+    pkg = agent_export.export_agent_from_profile(
         seller_id=seller_id,
         agent_id=agent_id,
         selected_mcps=["resy"],
@@ -593,74 +572,46 @@ def test_export_normalizes_legacy_workspaces_layout_in_mcp_args(hermes_profile, 
     assert args[0].endswith("/mcp-resy/index.js"), args[0]
 
 
-def test_export_carries_seller_cron_jobs_targeting_this_agent(hermes_profile, tmp_path):
-    """Cron jobs that target this agent get carried into the slice with
-    runtime fields (id, sessionKey, state, createdAtMs, updatedAtMs)
-    stripped — they're regenerated at deploy time.
-    """
-    seller_id, agent_id, _ = hermes_profile
-    cron_dir = tmp_path / "users" / seller_id / "cron"
-    cron_dir.mkdir()
-    (cron_dir / "jobs.json").write_text(
-        json.dumps(
-            {
-                "jobs": [
-                    {
-                        "id": "stale-uuid-to-strip",
-                        "agentId": agent_id,
-                        "sessionKey": "agent:old:user_seller_abc",
-                        "state": {"nextRunAtMs": 999},
-                        "createdAtMs": 111,
-                        "updatedAtMs": 222,
-                        "name": "morning standup",
-                        "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "UTC"},
-                        "delivery": {"channel": "telegram", "mode": "message"},
-                    },
-                    {
-                        "id": "different-agent-job",
-                        "agentId": "some-other-agent",
-                        "name": "irrelevant",
-                    },
-                ]
-            }
-        ),
+def test_the_slice_never_carries_cron_jobs(hermes_profile, tmp_path):
+    """Agent scheduling is Paperclip routines, carried as ``manifest["routines"]``. The slice's
+    ``cron_jobs`` is unconditionally empty -- an ``openclaw.json``-shaped cron block found
+    anywhere in the seller's tree is NOT a source, so a stale one cannot ride into a buyer's
+    workspace as a live schedule."""
+    seller_id, agent_id, agent_dir = hermes_profile
+    (agent_dir / "cron").mkdir()
+    (agent_dir / "cron" / "jobs.json").write_text(
+        json.dumps({"jobs": [{"id": "stale", "agentId": agent_id, "name": "morning standup"}]}),
         encoding="utf-8",
     )
 
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
-    cron = pkg.openclaw_slice["cron_jobs"]
-    assert len(cron) == 1, "only this agent's cron jobs should ride along"
-    job = cron[0]
-    # Runtime fields stripped; non-runtime fields preserved.
-    for stripped in ("id", "sessionKey", "state", "createdAtMs", "updatedAtMs"):
-        assert stripped not in job, f"{stripped} must be stripped at slice time"
-    assert job.get("name") == "morning standup"
-    assert job.get("agentId") == agent_id
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
+
+    assert pkg.openclaw_slice["cron_jobs"] == []
 
 
 def test_export_missing_user_config_raises(hermes_profile, tmp_path):
-    """If the seller has no per-user openclaw.json, publish must fail with a
+    """If the profile carries no openclaw.json, publish must fail with a
     clear error rather than shipping an empty slice.
     """
     seller_id, agent_id, _ = hermes_profile
-    user_config = tmp_path / "users" / seller_id / "openclaw.json"
+    user_config = tmp_path / "users" / seller_id / f"workspace-{agent_id}" / "openclaw.json"
     user_config.unlink()
-    with pytest.raises(agent_export.AgentNotInConfigError, match="no openclaw.json"):
-        agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    with pytest.raises(agent_export.AgentNotInConfigError, match="this Hermes profile has none"):
+        agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
 
 
 def test_export_agent_not_in_config_raises(hermes_profile, tmp_path):
-    """If the agent dir exists but the agent_id isn't in the seller's
-    openclaw.json agents.list, fail loudly — we can't synthesize a slice
-    without the agent's identity/skills/tools.
-    """
+    """The profile has an openclaw.json but its agents.list does not name this agent: fail
+    loudly — we can't synthesize a slice without the agent's identity/skills/tools."""
     seller_id, _, _ = hermes_profile
-    # Plant a workspace dir for an agent that isn't in the user-level config.
     orphan_dir = tmp_path / "users" / seller_id / "workspace-orphan-agent-99"
     orphan_dir.mkdir()
     (orphan_dir / "README.md").write_text("orphan", encoding="utf-8")
+    (orphan_dir / "openclaw.json").write_text(
+        json.dumps({"agents": {"list": [{"id": "someone-else"}]}}), encoding="utf-8"
+    )
     with pytest.raises(agent_export.AgentNotInConfigError, match="not registered"):
-        agent_export.export_agent_from_efs(seller_id=seller_id, agent_id="orphan-agent-99")
+        agent_export.export_agent_from_profile(seller_id=seller_id, agent_id="orphan-agent-99")
 
 
 # ---------------------------------------------------------------------------
@@ -796,7 +747,7 @@ def test_export_attaches_empty_safety_flags_for_clean_workspace(hermes_profile):
     rely on it without nullity checks.
     """
     seller_id, agent_id, _ = hermes_profile
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     assert pkg.manifest.get("safety_flags") == []
 
 
@@ -806,7 +757,7 @@ def test_export_flags_email_in_persona_file(hermes_profile, tmp_path):
     auto-redact)."""
     seller_id, agent_id, agent_dir = hermes_profile
     (agent_dir / "USER.md").write_text("## Owner\n- Email: alice@example.com\n", encoding="utf-8")
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     flags = pkg.manifest.get("safety_flags", [])
     assert any(f["pattern"] == "email-address" and "USER.md" in f["file"] for f in flags), flags
 
@@ -814,7 +765,7 @@ def test_export_flags_email_in_persona_file(hermes_profile, tmp_path):
 def test_export_flags_aws_key_in_memory_file(hermes_profile, tmp_path):
     seller_id, agent_id, agent_dir = hermes_profile
     (agent_dir / "MEMORY.md").write_text("## Notes\nOld key was AKIAIOSFODNN7EXAMPLE\n", encoding="utf-8")
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     flags = pkg.manifest.get("safety_flags", [])
     assert any(f["pattern"] == "aws-secret-key" and f["severity"] == "high" for f in flags), flags
 
@@ -828,7 +779,7 @@ def test_export_scans_every_shipped_text_file_not_just_persona_and_md(hermes_pro
     (agent_dir / "scripts" / "setup.sh").write_text(
         "#!/bin/sh\nexport TOKEN=xoxb-1234567890-abcdefghijklmnop\n", encoding="utf-8"
     )
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     flags = pkg.manifest.get("safety_flags", [])
     assert any(f["pattern"] == "provider-token" and "setup.sh" in f["file"] for f in flags), flags
 
@@ -840,7 +791,7 @@ def test_export_scan_skips_oversized_and_binary_files(hermes_profile):
     seller_id, agent_id, agent_dir = hermes_profile
     (agent_dir / "big.log").write_text("sk-" + "A1b" * 12 + "\n" + "x" * (1024 * 1024 + 10), encoding="utf-8")
     (agent_dir / "blob.dat").write_bytes(b"\x00\x01sk-" + b"A1b" * 12)
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     flags = pkg.manifest.get("safety_flags", [])
     assert not any(f["file"] in ("big.log", "blob.dat") for f in flags), flags
 
@@ -851,7 +802,7 @@ def test_export_safety_flag_schema(hermes_profile, tmp_path):
     manifest (see the leak test below)."""
     seller_id, agent_id, agent_dir = hermes_profile
     (agent_dir / "USER.md").write_text("alice@example.com\n", encoding="utf-8")
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     flags = pkg.manifest.get("safety_flags", [])
     assert flags, "expected at least one flag"
     f = flags[0]
@@ -868,7 +819,7 @@ def test_export_manifest_never_carries_snippets(hermes_profile):
     seller_id, agent_id, agent_dir = hermes_profile
     (agent_dir / "MEMORY.md").write_text("key AKIAIOSFODNN7EXAMPLE\n", encoding="utf-8")
     (agent_dir / "USER.md").write_text("- Email: alice@example.com\n", encoding="utf-8")
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     flags = pkg.manifest.get("safety_flags", [])
     assert flags, "expected at least one flag"
     assert all("snippet" not in f for f in flags), flags
@@ -884,7 +835,7 @@ def test_export_manifest_never_carries_snippets(hermes_profile):
 def test_enumerate_for_preview_lists_available_mcps(hermes_profile, tmp_path):
     seller_id, agent_id, _ = hermes_profile
     # Add MCPs to the seller's openclaw.json
-    user_config = tmp_path / "users" / seller_id / "openclaw.json"
+    user_config = tmp_path / "users" / seller_id / f"workspace-{agent_id}" / "openclaw.json"
     cfg = json.loads(user_config.read_text())
     cfg["mcp"] = {"servers": {"jira-mcp": {"command": "node"}, "slack-mcp": {"command": "node"}}}
     user_config.write_text(json.dumps(cfg))
@@ -897,7 +848,7 @@ def test_enumerate_for_preview_classifies_each_skill(hermes_profile, tmp_path):
     """available_skills lists the container's global skills.entries (the
     selectable additions); workspace skills auto-ship separately."""
     seller_id, agent_id, agent_dir = hermes_profile
-    user_config = tmp_path / "users" / seller_id / "openclaw.json"
+    user_config = tmp_path / "users" / seller_id / f"workspace-{agent_id}" / "openclaw.json"
     cfg = json.loads(user_config.read_text())
     cfg["skills"] = {"entries": {"jira": {"apiKey": "secret"}}, "allowBundled": ["search"]}
     user_config.write_text(json.dumps(cfg))
@@ -949,17 +900,17 @@ def test_enumerate_for_preview_keeps_snippets(hermes_profile):
 #
 # The published openclaw-slice.json is a separate S3 artifact the tarball
 # safety scan never walks. If a credential survives catalog_slice's scrub,
-# export_agent_from_efs must abort BEFORE building the artifact; preview must
+# export_agent_from_profile must abort BEFORE building the artifact; preview must
 # surface the same finding inline without raising so the seller fixes it first.
 # ---------------------------------------------------------------------------
 
 
-def _plant_leaking_mcp(tmp_path: Path, seller_id: str, *, env_value: str = "sk_live_LEAK"):
-    """Add an mcp server whose env carries a real (unscrubbed) secret to the
-    seller's openclaw.json. We force the leak by patching _scrub_secret_fields
-    to a no-op so we exercise the SAFETY gate, not the scrub itself.
+def _plant_leaking_mcp(tmp_path: Path, seller_id: str, agent_id: str, *, env_value: str = "sk_live_LEAK"):
+    """Add an mcp server whose env carries a real (unscrubbed) secret to the profile's
+    openclaw.json. We force the leak by patching _scrub_secret_fields to a no-op so we
+    exercise the SAFETY gate, not the scrub itself.
     """
-    cfg_path = tmp_path / "users" / seller_id / "openclaw.json"
+    cfg_path = tmp_path / "users" / seller_id / f"workspace-{agent_id}" / "openclaw.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     cfg["mcp"] = {"servers": {"leaky": {"command": "node", "env": {"API_KEY": env_value}}}}
     cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
@@ -967,19 +918,19 @@ def _plant_leaking_mcp(tmp_path: Path, seller_id: str, *, env_value: str = "sk_l
 
 def test_export_raises_when_slice_credential_survives_scrub(hermes_profile, tmp_path):
     """A credential surviving the scrub in the published slice blocks publish:
-    export_agent_from_efs raises CredentialLeakError and no artifact is built.
+    export_agent_from_profile raises CredentialLeakError and no artifact is built.
 
     We neutralize the scrub (no-op) so a non-empty secret reaches the gate —
     this proves the gate catches what a missed/incomplete scrub would let
     through. The raised message names the field PATH but never the secret.
     """
     seller_id, agent_id, _ = hermes_profile
-    _plant_leaking_mcp(tmp_path, seller_id, env_value="sk_live_DO_NOT_LEAK_123")
+    _plant_leaking_mcp(tmp_path, seller_id, agent_id, env_value="sk_live_DO_NOT_LEAK_123")
 
     # Force a scrub miss: scrub becomes identity so the secret survives.
     with patch("core.services.catalog_slice._scrub_secret_fields", side_effect=lambda e: e):
         with pytest.raises(agent_export.CredentialLeakError) as exc_info:
-            agent_export.export_agent_from_efs(
+            agent_export.export_agent_from_profile(
                 seller_id=seller_id,
                 agent_id=agent_id,
                 selected_mcps=["leaky"],
@@ -995,18 +946,18 @@ def test_export_raises_when_slice_credential_survives_scrub(hermes_profile, tmp_
 def test_export_raises_when_arg_credential_present(hermes_profile, tmp_path):
     """A bare credential-shaped token in an MCP server's ``args`` (no secret
     flag, so the real arg scrub leaves it) is caught by the gate end-to-end:
-    export_agent_from_efs raises CredentialLeakError naming the args path,
+    export_agent_from_profile raises CredentialLeakError naming the args path,
     never the secret. Real scrub runs (not patched) — this proves scrub+gate
     compose for the args path.
     """
     seller_id, agent_id, _ = hermes_profile
-    cfg_path = tmp_path / "users" / seller_id / "openclaw.json"
+    cfg_path = tmp_path / "users" / seller_id / f"workspace-{agent_id}" / "openclaw.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     cfg["mcp"] = {"servers": {"leaky": {"command": "npx", "args": ["-y", "sk-ant-DO_NOT_LEAK_0123456789ABCDEFabcdef"]}}}
     cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
 
     with pytest.raises(agent_export.CredentialLeakError) as exc_info:
-        agent_export.export_agent_from_efs(
+        agent_export.export_agent_from_profile(
             seller_id=seller_id,
             agent_id=agent_id,
             selected_mcps=["leaky"],
@@ -1022,10 +973,10 @@ def test_export_clean_slice_does_not_raise(hermes_profile, tmp_path):
     CredentialLeakError. The real scrub blanks env values to "".
     """
     seller_id, agent_id, _ = hermes_profile
-    _plant_leaking_mcp(tmp_path, seller_id, env_value="sk_live_will_be_scrubbed")
+    _plant_leaking_mcp(tmp_path, seller_id, agent_id, env_value="sk_live_will_be_scrubbed")
 
     # No scrub patch → the real _scrub_secret_fields runs and empties the env.
-    pkg = agent_export.export_agent_from_efs(
+    pkg = agent_export.export_agent_from_profile(
         seller_id=seller_id,
         agent_id=agent_id,
         selected_mcps=["leaky"],
@@ -1039,7 +990,7 @@ def test_preview_surfaces_slice_leak_without_raising(hermes_profile, tmp_path):
     inline so the seller fixes it before submit (where export raises).
     """
     seller_id, agent_id, _ = hermes_profile
-    _plant_leaking_mcp(tmp_path, seller_id, env_value="sk_live_PREVIEW_LEAK")
+    _plant_leaking_mcp(tmp_path, seller_id, agent_id, env_value="sk_live_PREVIEW_LEAK")
 
     with patch("core.services.catalog_slice._scrub_secret_fields", side_effect=lambda e: e):
         # Must NOT raise.
@@ -1064,16 +1015,16 @@ def test_preview_workspace_skills_autoship_global_entries_addable(monkeypatch, t
     (agent_dir / "skills" / "researcher" / "SKILL.md").write_text("# researcher", encoding="utf-8")
     (agent_dir / "skills" / "writer" / "SKILL.md").write_text("# writer", encoding="utf-8")
 
-    config = {
-        "agents": {"list": [{"id": "agent_x"}]},
-        "skills": {"entries": {"image-lab": {"enabled": True}}},  # global, addable
-    }
-
-    class _WS:
-        def read_openclaw_config(self, _):
-            return config
-
-    monkeypatch.setattr(agent_export, "get_workspace", lambda: _WS())
+    # The profile's own openclaw.json is the config source now -- there is no per-user file.
+    (agent_dir / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "agents": {"list": [{"id": "agent_x"}]},
+                "skills": {"entries": {"image-lab": {"enabled": True}}},  # global, addable
+            }
+        ),
+        encoding="utf-8",
+    )
 
     out = agent_export.enumerate_for_preview(seller_id="u1", agent_id="agent_x")
     assert sorted(out["auto_ship_skills"]) == ["researcher", "writer"]
@@ -1608,117 +1559,42 @@ async def test_capture_routines_skips_archived():
 
 
 # --------------------------------------------------------------------------- #
-# Legacy slug → workspace-UUID resolution (republish orphan fix)
+# Agent-id resolution. The legacy slug -> workspace-UUID layer is GONE: a Hermes profile
+# prefix IS the canonical agent id, so there are no slugs to forward and
+# ``resolve_workspace_agent_id`` only validates. The tests that pinned ``_resolve_workspace_id``
+# and ``_slugify`` went with them.
 # --------------------------------------------------------------------------- #
-
-
-def _mock_workspace(live_dirs):
-    ws = MagicMock()
-    ws.list_workspace_agent_dirs.return_value = list(live_dirs)
-    return ws
-
-
-def test_slugify():
-    assert agent_export._slugify("Vera") == "vera"
-    assert agent_export._slugify("Pitch + Scout") == "pitch-scout"
-    assert agent_export._slugify("  My Agent!  ") == "my-agent"
-    assert agent_export._slugify("") == ""
-
-
-def test_resolve_workspace_id_direct_hit():
-    """A live UUID resolves to itself — zero behavior change for current listings."""
-    uuid = "f9fc524c-acef-4467-8387-91ac7cbd00ef"
-    ws = _mock_workspace([uuid])
-    cfg = {"agents": {"list": [{"id": uuid, "name": "Vera"}]}}
-    with patch.object(agent_export, "get_workspace", return_value=ws):
-        assert agent_export._resolve_workspace_id("seller", uuid, cfg) == uuid
-
-
-def test_resolve_workspace_id_slug_fallback():
-    """A legacy slug resolves to the live workspace UUID via the display name."""
-    uuid = "f9fc524c-acef-4467-8387-91ac7cbd00ef"
-    ws = _mock_workspace([uuid])
-    cfg = {"agents": {"list": [{"id": uuid, "name": "Vera"}]}}
-    with patch.object(agent_export, "get_workspace", return_value=ws):
-        assert agent_export._resolve_workspace_id("seller", "vera", cfg) == uuid
-
-
-def test_resolve_workspace_id_miss_returns_unchanged():
-    """An unresolvable id is handed back so the downstream existence check
-    raises the familiar 'agent dir not found' — no behavior change."""
-    ws = _mock_workspace(["f9fc524c-acef-4467-8387-91ac7cbd00ef"])
-    cfg = {"agents": {"list": [{"id": "f9fc524c-acef-4467-8387-91ac7cbd00ef", "name": "Vera"}]}}
-    with patch.object(agent_export, "get_workspace", return_value=ws):
-        assert agent_export._resolve_workspace_id("seller", "ghost", cfg) == "ghost"
-        # No config to scan → also a miss (returns unchanged).
-        assert agent_export._resolve_workspace_id("seller", "vera", None) == "vera"
-
-
-def test_resolve_workspace_id_ambiguous_raises():
-    """Two live agents slugifying the same way → refuse to guess."""
-    a = "11111111-1111-1111-1111-111111111111"
-    b = "22222222-2222-2222-2222-222222222222"
-    ws = _mock_workspace([a, b])
-    cfg = {"agents": {"list": [{"id": a, "name": "Vera"}, {"id": b, "name": "Vera"}]}}
-    with patch.object(agent_export, "get_workspace", return_value=ws):
-        with pytest.raises(agent_export.AgentNotFoundError, match="ambiguous"):
-            agent_export._resolve_workspace_id("seller", "vera", cfg)
-
-
-def test_resolve_workspace_id_ignores_non_live_config_ids():
-    """A config entry whose id is NOT a live workspace dir (e.g. a traversal
-    payload) can never be returned — the resolver only yields live-dir members."""
-    ws = _mock_workspace(["uuid-a-1111-1111-1111-111111111111"])
-    cfg = {"agents": {"list": [{"id": "../escape", "name": "Vera"}]}}
-    with patch.object(agent_export, "get_workspace", return_value=ws):
-        # '../escape' isn't a live dir → not a candidate → slug returned unchanged.
-        assert agent_export._resolve_workspace_id("seller", "vera", cfg) == "vera"
 
 
 def test_export_uuid_direct_unchanged(hermes_profile):
     """Publishing by the live id is unchanged — manifest carries that id."""
     seller_id, agent_id, _ = hermes_profile
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     assert pkg.manifest["agent_id"] == agent_id
 
 
-async def test_friday_guard_closed_for_legacy_slug(tmp_path):
-    """A legacy slug 'friday' resolves to the CEO's workspace UUID, so resolving
-    BEFORE the Friday guard (as the router now does) catches it — closing the
-    bypass where the raw slug slips past the guard's UUID comparison."""
-    from core.containers import workspace as workspace_module
-
+async def test_friday_guard_catches_the_ceo_by_its_canonical_id():
+    """The guard compares the agent id to the CEO's Paperclip id, and that id is the ONLY way
+    to name an agent now: a profile prefix is the canonical id, so the legacy-slug bypass the
+    resolver used to close is unreachable -- a slug names no profile and the download raises
+    ``AgentNotFoundError`` long before the guard would be asked."""
     friday_uuid = "f1111111-2222-3333-4444-555555555555"
-    seller_id = "user_owner_x"
-    user_root = tmp_path / "users" / seller_id
-    (user_root / f"workspace-{friday_uuid}").mkdir(parents=True)
-    (user_root / "openclaw.json").write_text(
-        json.dumps({"agents": {"list": [{"id": friday_uuid, "name": "Friday"}]}}),
-        encoding="utf-8",
-    )
-    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
 
     async def _fetch(*, owner_id):
         return [{"id": friday_uuid, "role": "ceo"}]
 
-    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
-        # The raw slug bypasses the guard (the CEO's id is a UUID, not 'friday').
-        assert (
-            await agent_export.is_reserved_friday_agent(
-                owner_id=seller_id, agent_id="friday", fetch_paperclip_agents=_fetch
-            )
-            is False
+    assert (
+        await agent_export.is_reserved_friday_agent(
+            owner_id="user_owner_x", agent_id=friday_uuid, fetch_paperclip_agents=_fetch
         )
-        # Resolving first maps 'friday' → the CEO UUID …
-        resolved = agent_export.resolve_workspace_agent_id(seller_id, "friday")
-        assert resolved == friday_uuid
-        # … which the guard then catches.
-        assert (
-            await agent_export.is_reserved_friday_agent(
-                owner_id=seller_id, agent_id=resolved, fetch_paperclip_agents=_fetch
-            )
-            is True
+        is True
+    )
+    assert (
+        await agent_export.is_reserved_friday_agent(
+            owner_id="user_owner_x", agent_id="some-other-agent", fetch_paperclip_agents=_fetch
         )
+        is False
+    )
 
 
 def test_export_strips_package_json_declaring_openclaw_extensions(hermes_profile):
@@ -1738,7 +1614,7 @@ def test_export_strips_package_json_declaring_openclaw_extensions(hermes_profile
     bad_nested.mkdir()
     (bad_nested / "package.json").write_text("not json at all", encoding="utf-8")
 
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
     pkg_members = [n for n in names if n.rsplit("/", 1)[-1] == "package.json"]
     assert pkg_members == ["./clean/package.json"], names
@@ -1840,7 +1716,9 @@ def test_paths_ships_only_listed_entries_and_recurses_dirs(hermes_profile):
     (agent_dir / "reports").mkdir()
     (agent_dir / "reports" / "finance.md").write_text("revenue\n", encoding="utf-8")
 
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, paths=["README.md", "scripts/"])
+    pkg = agent_export.export_agent_from_profile(
+        seller_id=seller_id, agent_id=agent_id, paths=["README.md", "scripts/"]
+    )
 
     names = _list_tar_names(pkg.tarball_bytes)
     assert "./README.md" in names
@@ -1854,7 +1732,7 @@ def test_paths_ships_only_listed_entries_and_recurses_dirs(hermes_profile):
 
 def test_paths_ancestor_and_descendant_do_not_double_ship(hermes_profile):
     seller_id, agent_id, _ = hermes_profile
-    pkg = agent_export.export_agent_from_efs(
+    pkg = agent_export.export_agent_from_profile(
         seller_id=seller_id, agent_id=agent_id, paths=["scripts", "scripts/run.sh"]
     )
     assert _list_tar_names(pkg.tarball_bytes).count("./scripts/run.sh") == 1
@@ -1863,7 +1741,7 @@ def test_paths_ancestor_and_descendant_do_not_double_ship(hermes_profile):
 def test_paths_rejects_traversal_absolute_and_missing(hermes_profile):
     seller_id, agent_id, _ = hermes_profile
     with pytest.raises(agent_export.InvalidExportPathsError) as exc:
-        agent_export.export_agent_from_efs(
+        agent_export.export_agent_from_profile(
             seller_id=seller_id,
             agent_id=agent_id,
             paths=["README.md", "../openclaw.json", "/etc/passwd", "never-there.md", "scripts/../../x"],
@@ -1880,7 +1758,7 @@ def test_explicit_paths_ship_a_checkouts_working_tree_but_never_its_git_dir(herm
     seller_id, agent_id, agent_dir = hermes_profile
     _add_repo_checkout(agent_dir, "isol8")
 
-    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, paths=["isol8"])
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id, paths=["isol8"])
 
     names = _list_tar_names(pkg.tarball_bytes)
     assert "./isol8/src/main.py" in names
@@ -1897,7 +1775,7 @@ def test_file_cap_stops_the_walk_immediately(hermes_profile, monkeypatch):
     monkeypatch.setattr(agent_export, "_MAX_EXPORT_FILES", 5)
 
     with pytest.raises(agent_export.ExportTooLargeError) as exc:
-        agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+        agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
 
     # Raised on the first file past the cap, not after tarring all 50+.
     assert exc.value.file_count == 6
@@ -1911,7 +1789,7 @@ def test_byte_cap_stops_the_walk(hermes_profile, monkeypatch):
     monkeypatch.setattr(agent_export, "_MAX_EXPORT_BYTES", 1024)
 
     with pytest.raises(agent_export.ExportTooLargeError) as exc:
-        agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+        agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
     assert exc.value.byte_count > 1024
 
 
@@ -1920,7 +1798,7 @@ def test_cap_applies_to_explicit_paths_too(hermes_profile, monkeypatch):
     (agent_dir / "dump.json").write_bytes(b"{" * 4096)
     monkeypatch.setattr(agent_export, "_MAX_EXPORT_BYTES", 1024)
     with pytest.raises(agent_export.ExportTooLargeError):
-        agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id, paths=["dump.json"])
+        agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id, paths=["dump.json"])
 
 
 # ---------------------------------------------------------------------------
@@ -1932,6 +1810,42 @@ def test_resolve_agent_location_returns_s3_prefix_for_agentcore_owner():
     container = {"owner_id": "owner_1", "runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}
     result = agent_export._resolve_agent_location(seller_id="owner_1", agent_id="agent_9", container=container)
     assert result == ("s3", "owner_1/hermes/agent_9")
+
+
+@pytest.mark.parametrize(
+    "seller_id, agent_id",
+    [
+        ("owner_1", "../../other_owner/hermes/agent_1"),
+        ("owner_1", "a/b"),
+        ("../owner_2", "agent_9"),
+    ],
+)
+def test_a_traversal_shaped_id_is_refused_and_metered(seller_id, agent_id):
+    """``marketplace.path_traversal_attempt`` is the marketplace's last path-traversal
+    trip-wire -- observability-stack's P11 alarms on it, and its EFS-side sibling went with
+    core/containers/workspace.py. Both halves of the profile key are checked: an unvalidated
+    id is how one seller's prefix gets addressed with another's fragment."""
+    with patch.object(agent_export, "put_metric") as metric:
+        with pytest.raises(agent_export.InvalidAgentIdError):
+            agent_export._resolve_agent_location(seller_id=seller_id, agent_id=agent_id)
+    metric.assert_called_once_with("marketplace.path_traversal_attempt")
+
+
+def test_a_good_id_is_never_metered_as_a_traversal():
+    """The metric means exactly one thing, so it may only fire on the refusal."""
+    with patch.object(agent_export, "put_metric") as metric:
+        agent_export._resolve_agent_location(seller_id="owner_1", agent_id="agent_9")
+        agent_export.resolve_workspace_agent_id("owner_1", "agent_9")
+    metric.assert_not_called()
+
+
+def test_resolve_workspace_agent_id_meters_its_own_refusal():
+    """The router validates through THIS seam before the Friday guard and the routine
+    capture, so it is a second entry point the trip-wire has to cover."""
+    with patch.object(agent_export, "put_metric") as metric:
+        with pytest.raises(agent_export.InvalidAgentIdError):
+            agent_export.resolve_workspace_agent_id("owner_1", "../escape")
+    metric.assert_called_once_with("marketplace.path_traversal_attempt")
 
 
 @pytest.fixture
@@ -1973,20 +1887,29 @@ def test_download_s3_profile_excludes_runtime_and_secret_keys(s3_hermes_bucket, 
     assert downloaded == set(keep.keys())
 
 
-def test_export_agent_from_efs_reads_s3_profile_for_agentcore_owner(fake_efs, s3_hermes_bucket):
-    """An AgentCore seller's export must come from their Hermes S3 profile,
-    not the (irrelevant, untouched) EFS workspace-{id}/ dir the fake_efs
-    fixture also builds -- README.md/scripts/run.sh live only on EFS and
-    must NOT ship."""
+def _seed_publishable_profile(s3, prefix: str, agent_id: str) -> None:
+    """The minimum a profile needs to be publishable: content, the roster openclaw.json the
+    slice is projected from, plus the two things the download must REFUSE to carry."""
+    s3.put_object(Bucket="test-replicas", Key=f"{prefix}/SOUL.md", Body=b"# Soul")
+    s3.put_object(
+        Bucket="test-replicas",
+        Key=f"{prefix}/openclaw.json",
+        Body=json.dumps({"agents": {"list": [{"id": agent_id, "name": "MyAgent"}]}}).encode(),
+    )
+    s3.put_object(Bucket="test-replicas", Key=f"{prefix}/.env", Body=b"SECRET=1")
+    s3.put_object(Bucket="test-replicas", Key=f"{prefix}/sessions/x.json", Body=b"{}")
+
+
+def test_export_agent_from_profile_reads_the_s3_profile_and_its_exclusions(fake_efs, s3_hermes_bucket):
+    """The export reads the seller's Hermes S3 profile. The ``fake_efs`` tree is NOT mirrored
+    by this fixture, so README.md/scripts/run.sh -- which exist only on disk -- prove the
+    export never reaches for anything outside the profile; ``.env`` and ``sessions/`` prove
+    the download's own exclusions hold."""
     seller_id, agent_id, _agent_dir = fake_efs
     prefix = f"{seller_id}/hermes/{agent_id}"
-    s3_hermes_bucket.put_object(Bucket="test-replicas", Key=f"{prefix}/SOUL.md", Body=b"# Soul")
-    s3_hermes_bucket.put_object(Bucket="test-replicas", Key=f"{prefix}/.env", Body=b"SECRET=1")
-    s3_hermes_bucket.put_object(Bucket="test-replicas", Key=f"{prefix}/sessions/x.json", Body=b"{}")
+    _seed_publishable_profile(s3_hermes_bucket, prefix, agent_id)
 
-    pkg = agent_export.export_agent_from_efs(
-        seller_id=seller_id, agent_id=agent_id, container={"runtime_host": "agentcore"}
-    )
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
 
     names = _list_tar_names(pkg.tarball_bytes)
     assert any("SOUL.md" in n for n in names)
@@ -1996,15 +1919,11 @@ def test_export_agent_from_efs_reads_s3_profile_for_agentcore_owner(fake_efs, s3
     assert pkg.manifest["agent_id"] == agent_id
 
 
-def test_enumerate_for_preview_reads_s3_profile_for_agentcore_owner(fake_efs, s3_hermes_bucket):
+def test_enumerate_for_preview_reads_the_s3_profile(fake_efs, s3_hermes_bucket):
     seller_id, agent_id, _agent_dir = fake_efs
-    prefix = f"{seller_id}/hermes/{agent_id}"
-    s3_hermes_bucket.put_object(Bucket="test-replicas", Key=f"{prefix}/SOUL.md", Body=b"# Soul")
-    s3_hermes_bucket.put_object(Bucket="test-replicas", Key=f"{prefix}/.env", Body=b"SECRET=1")
+    _seed_publishable_profile(s3_hermes_bucket, f"{seller_id}/hermes/{agent_id}", agent_id)
 
-    preview = agent_export.enumerate_for_preview(
-        seller_id=seller_id, agent_id=agent_id, container={"runtime_host": "agentcore"}
-    )
+    preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
 
     assert preview["agent_id"] == agent_id
     assert "SOUL.md" in preview["persona_files"]
@@ -2015,7 +1934,7 @@ def test_enumerate_for_preview_reads_s3_profile_for_agentcore_owner(fake_efs, s3
 # ---------------------------------------------------------------------------
 
 
-def test_export_agent_from_efs_cleans_up_scratch_dir_when_download_raises(fake_efs, monkeypatch):
+def test_export_agent_from_profile_cleans_up_scratch_dir_when_download_raises(fake_efs, monkeypatch):
     seller_id, agent_id, _agent_dir = fake_efs
     captured: list[Path] = []
 
@@ -2027,7 +1946,7 @@ def test_export_agent_from_efs_cleans_up_scratch_dir_when_download_raises(fake_e
     monkeypatch.setattr(agent_export, "_download_s3_profile", _raising_download)
 
     with pytest.raises(RuntimeError, match="s3 unavailable"):
-        agent_export.export_agent_from_efs(
+        agent_export.export_agent_from_profile(
             seller_id=seller_id, agent_id=agent_id, container={"runtime_host": "agentcore"}
         )
 

@@ -33,15 +33,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.services import company_deploy_service as svc
-from core.services import service_token as service_token_mod
 from core.services.company_agent_materializer import render_agent_identity_md
 from core.services.company_package import DeployPlan, PlannedAgent, PlannedRoutine
 from core.services.hermes_provisioning import HermesProfileError
 from core.services.paperclip_agent_lifecycle import resolve_agent_adapter as real_resolve_agent_adapter
-from core.services.paperclip_openclaw_pairing import (
-    ensure_operator_device_paired as real_ensure_operator_device_paired,
-)
-from core.services.paperclip_openclaw_pairing import pair_with_openclaw as real_pair_with_openclaw
 
 FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "companies" / "gstack"
 
@@ -117,35 +112,16 @@ class FakeAdmin:
         return {"id": pid, "name": name, "role": role}
 
 
-class FakeEcs:
-    def __init__(self, container, ip) -> None:
-        self._container = container
-        self._ip = ip
-
-    async def resolve_running_container(self, owner_id):
-        return self._container, self._ip
-
-
 class Harness:
     """Bundles the fakes + call recorders installed onto the service module."""
 
     def __init__(self) -> None:
         self.admin = FakeAdmin()
         self.http = FakeHttp()
-        self.pair_calls: list[str] = []
-        self.ensure_calls: list[str] = []
-        self.materialize_calls: list[str] = []
         self.routine_calls: list[dict] = []
         self.seeded_ids: set[str] = set()
         self.deleted: list[str] = []
-        self.unwound: list[str] = []
-        self.unwind_causes: list[BaseException | None] = []
-        # When set, FakeCatalog.unwind_partial_deploy raises instead of returning
-        # — the unknown-unknown branch the rollback has to treat as a FAILED
-        # unwind rather than a completed one.
-        self.unwind_raises: BaseException | None = None
-        self.container = {"gateway_token": "gw_token"}
-        self.ip = "10.0.0.5"
+        self.container = dict(AGENTCORE_CONTAINER)
         # (listing_id, name) tuples recorded by the one-company-per-workspace
         # marker write on real success.
         self.deployed_markers: list[tuple[str, str]] = []
@@ -168,9 +144,12 @@ def _install(monkeypatch, h: Harness, plan=None):
 
         monkeypatch.setattr(svc, "_parse_plan_async", fake_parse)
 
-    # Container reachability.
-    monkeypatch.setattr(svc, "get_ecs_manager", lambda: FakeEcs(h.container, h.ip))
-    monkeypatch.setattr(svc, "get_workspace", lambda: object())
+    # Readiness: the deploy reads the row directly -- a row with a runtime ARN IS "reachable"
+    # (see run_company_deploy). Bound late through the harness so a test can null it.
+    async def fake_get_by_owner_id(owner_id):
+        return h.container
+
+    monkeypatch.setattr(svc.container_repo, "get_by_owner_id", fake_get_by_owner_id)
 
     # Company resolution.
     async def fake_resolve_company(*, owner_id, repo):
@@ -179,29 +158,14 @@ def _install(monkeypatch, h: Harness, plan=None):
     monkeypatch.setattr(svc, "resolve_company_id_for_owner", fake_resolve_company)
 
     # Adapter selection + synthesis (server-side) -- faked at the ONE shared seam
-    # (resolve_agent_adapter) every Paperclip agent-creation door now calls through,
-    # rather than its two internal pieces (adapter_type_for's container-row read +
-    # synthesize_openclaw_adapter). Byte-identical to today's ECS/openclaw_gateway shape;
-    # the dedicated adapter-selection tests below exercise the real resolver.
-    async def fake_resolve_adapter(owner_id, *, agent_label, gateway_user_id):
-        return "openclaw_gateway", {"url": "wss://fake", "authToken": "svc_tok", "sessionKey": gateway_user_id}
+    # (resolve_agent_adapter) every Paperclip agent-creation door calls through, rather than its
+    # internal pieces. It takes only the owner now: its agent_label/gateway_user_id arguments
+    # were accepted and unused, and there is one adapter to pick. The dedicated
+    # adapter-selection tests below exercise the real resolver.
+    async def fake_resolve_adapter(owner_id):
+        return "hermes_gateway", {"url": "https://fake", "hookToken": "hook_tok"}
 
     monkeypatch.setattr(svc, "resolve_agent_adapter", fake_resolve_adapter)
-
-    # Pairing + materialize.
-    async def fake_pair(*, owner_id, paperclip_agent, extra_update_fields=None):
-        h.pair_calls.append(paperclip_agent["id"])
-
-    async def fake_ensure(*, owner_id, paperclip_agent, gateway_token):
-        h.ensure_calls.append(paperclip_agent["id"])
-
-    async def fake_materialize(*, owner_id, new_agent_id, planned, skill_assets, workspace, apply_aux):
-        h.materialize_calls.append(new_agent_id)
-        return {"id": new_agent_id}
-
-    monkeypatch.setattr(svc, "pair_with_openclaw", fake_pair)
-    monkeypatch.setattr(svc, "ensure_operator_device_paired", fake_ensure)
-    monkeypatch.setattr(svc, "materialize_agent", fake_materialize)
 
     # Routines.
     async def fake_create_routines(*, admin, session_cookie, company_id, agent_id, routines):
@@ -217,20 +181,8 @@ def _install(monkeypatch, h: Harness, plan=None):
     async def fake_delete(*, owner_id, agent_id):
         h.deleted.append(agent_id)
 
-    class FakeCatalog:
-        async def unwind_partial_deploy(self, *, owner_id, new_agent_id, cause=None):
-            h.unwound.append(new_agent_id)
-            h.unwind_causes.append(cause)
-            if h.unwind_raises is not None:
-                raise h.unwind_raises
-            # Mirrors the real return contract: False iff the unwind was SKIPPED
-            # because the cause was a client-side timeout. The rollback keys the
-            # Paperclip delete off this.
-            return not isinstance(cause, TimeoutError)
-
     monkeypatch.setattr(svc, "is_seeded_agent", fake_is_seeded)
     monkeypatch.setattr(svc, "delete_paperclip_for_marketplace", fake_delete)
-    monkeypatch.setattr(svc, "get_catalog_service", lambda: FakeCatalog())
 
     # One-company marker — recorded, never hits DynamoDB in unit tests.
     async def fake_set_deployed(owner_id, *, listing_id, name):
@@ -287,7 +239,6 @@ def _tar_fixture(pkg_dir: Path) -> bytes:
 async def test_gstack_full_deploy_topological(monkeypatch):
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=None)  # real parse path
     _resolve_calls, write_profile, upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
 
@@ -302,9 +253,9 @@ async def test_gstack_full_deploy_topological(monkeypatch):
 
     # Every create is server-synthesized + budgeted; never a package adapter.
     for call in h.admin.create_calls:
-        assert call["adapter_type"] == "openclaw_gateway"
+        assert call["adapter_type"] == "hermes_gateway"
         assert call["budget_monthly_cents"] == 1000
-        assert call["adapter_config"]["authToken"] == "svc_tok"
+        assert call["adapter_config"]["hookToken"] == "hook_tok"
         # Company deploy has no durable operation row yet. Replaying an agent
         # UUID here could let one background worker roll back another's live
         # install, so this path must stay outside create idempotency for now.
@@ -321,13 +272,9 @@ async def test_gstack_full_deploy_topological(monkeypatch):
     assert by_name["Release Engineer"]["reports_to"] == cto_id
     assert by_name["Staff Engineer"]["reports_to"] == cto_id
 
-    # Every agent's Hermes profile written (AgentCore transport -- no pairing,
-    # no EFS materialize).
+    # Every agent's Hermes profile written -- that IS the install.
     assert len(write_profile.calls) == 5
     assert len(upload_files.calls) == 5
-    assert h.pair_calls == []
-    assert h.ensure_calls == []
-    assert h.materialize_calls == []
     # No rollback on the happy path.
     assert h.deleted == []
     # Admin session closed.
@@ -344,7 +291,6 @@ async def test_every_create_carries_server_adapter_and_budget(monkeypatch):
     plan = _simple_plan()
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
     _wire_agentcore_profile(monkeypatch)
 
@@ -352,49 +298,23 @@ async def test_every_create_carries_server_adapter_and_budget(monkeypatch):
 
     assert h.admin.create_calls  # sanity
     for call in h.admin.create_calls:
-        assert call["adapter_type"] == "openclaw_gateway"
+        assert call["adapter_type"] == "hermes_gateway"
         assert call["budget_monthly_cents"] == 1000
-        assert call["adapter_config"]["authToken"] == "svc_tok"
+        assert call["adapter_config"]["hookToken"] == "hook_tok"
 
 
 @pytest.mark.asyncio
-async def test_ecs_owner_adapter_selection_is_byte_identical_via_the_real_resolver(monkeypatch):
-    """Same real ``resolve_agent_adapter`` the AgentCore test below exercises, but with no
-    container row -- the pre-migration ECS default, byte-identical to what the harness's own
-    fake (above) already asserts."""
+async def test_the_real_resolver_selects_the_native_hermes_adapter(monkeypatch):
+    """There is one adapter: ``resolve_agent_adapter`` binds every company agent to the native
+    Hermes gateway facade. The ECS-default branch it used to pick for a row-less owner (the
+    device-paired ``openclaw_gateway``) went with that transport."""
     plan = _simple_plan()
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
     _wire_agentcore_profile(monkeypatch)
     monkeypatch.setattr(svc, "resolve_agent_adapter", real_resolve_agent_adapter)
-    monkeypatch.setattr(svc.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
-    monkeypatch.setattr(service_token_mod, "mint", lambda owner_id: "svc_tok")
-
-    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
-
-    assert h.admin.create_calls
-    for call in h.admin.create_calls:
-        assert call["adapter_type"] == "openclaw_gateway"
-        assert call["adapter_config"]["authToken"] == "svc_tok"
-
-
-@pytest.mark.asyncio
-async def test_agentcore_owner_gets_the_native_hermes_adapter_via_the_real_resolver(monkeypatch):
-    """The shared resolver selects the native Hermes adapter for AgentCore owners."""
-    plan = _simple_plan()
-    h = Harness()
-    h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
-    _install(monkeypatch, h, plan=plan)
-    _wire_agentcore_profile(monkeypatch)
-    monkeypatch.setattr(svc, "resolve_agent_adapter", real_resolve_agent_adapter)
-    monkeypatch.setattr(
-        svc.container_repo,
-        "get_by_owner_id",
-        AsyncMock(return_value={"runtime_host": "agentcore", "hook_token": "hook_abc"}),
-    )
+    h.container = {**AGENTCORE_CONTAINER, "hook_token": "hook_abc"}
     monkeypatch.setattr(svc.settings, "PUBLIC_API_BASE", "https://api-dev.flickmeon.ai")
 
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
@@ -413,7 +333,6 @@ async def test_child_reports_to_freshly_minted_manager(monkeypatch):
     plan = _simple_plan()
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
     _wire_agentcore_profile(monkeypatch)
 
@@ -442,7 +361,6 @@ async def test_routines_created_via_create_agent_routines(monkeypatch):
     )
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
     _wire_agentcore_profile(monkeypatch)
 
@@ -462,7 +380,6 @@ async def test_no_cron_routines_creates_none(monkeypatch):
     plan = _simple_plan(routines=[])
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
     _wire_agentcore_profile(monkeypatch)
 
@@ -481,7 +398,6 @@ async def test_routine_failure_does_not_roll_back_materialized_company(monkeypat
     plan = _simple_plan(routines=[PlannedRoutine(agent_slug="cto", title="Nightly", description="d", cron="0 8 * * *")])
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
     _resolve_calls, write_profile, upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
 
@@ -498,7 +414,6 @@ async def test_routine_failure_does_not_roll_back_materialized_company(monkeypat
     assert len(write_profile.calls) == 3
     # ...and NONE were rolled back despite the routine failure.
     assert h.deleted == []
-    assert h.unwound == []
     # Admin session still closed.
     assert h.http.closed is True
 
@@ -517,7 +432,6 @@ async def test_failure_rolls_back_created_set_and_skips_seeded(monkeypatch):
     plan = _simple_plan()
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
     _resolve_calls, write_profile, upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
 
@@ -541,7 +455,6 @@ async def test_failure_rolls_back_created_set_and_skips_seeded(monkeypatch):
     # pc_2 (CTO) is not seeded -> deleted. pc_1 (CEO) is seeded -> skipped.
     assert h.deleted == ["pc_2"]
     # AgentCore rollback deletes directly -- never the ECS/EFS unwind path.
-    assert h.unwound == []
     assert "pc_1" not in h.deleted
     # Admin session still closed on the failure path.
     assert h.http.closed is True
@@ -556,8 +469,7 @@ async def test_failure_rolls_back_created_set_and_skips_seeded(monkeypatch):
 async def test_container_unreachable_creates_nothing(monkeypatch):
     plan = _simple_plan()
     h = Harness()
-    h.container = None  # ECS reports no running container
-    h.ip = None
+    h.container = None  # no row at all
     _install(monkeypatch, h, plan=plan)
 
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
@@ -570,7 +482,7 @@ async def test_container_unreachable_creates_nothing(monkeypatch):
 async def test_missing_gateway_token_creates_nothing(monkeypatch):
     plan = _simple_plan()
     h = Harness()
-    h.container = {"gateway_token": ""}  # row exists but no token
+    h.container = {"gateway_token": ""}  # row exists but carries no runtime ARN
     _install(monkeypatch, h, plan=plan)
 
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
@@ -591,7 +503,6 @@ async def test_agentcore_row_without_runtime_arn_creates_nothing(monkeypatch):
     plan = _simple_plan()
     h = Harness()
     h.container = {"runtime_host": "agentcore"}  # no agentcore_runtime_arn yet
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
 
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
@@ -636,12 +547,11 @@ class _RecordingUploadFiles:
 
 
 def _wire_agentcore_profile(monkeypatch):
-    """Fake the Hermes profile-writing boundary (resolve_profile_inputs /
-    write_profile_for_agent / upload_profile_files) and restore pair_with_openclaw /
-    ensure_operator_device_paired to their REAL implementations -- container_rpc.call is
-    left genuinely unmocked, so if the AgentCore branch still reached pairing it would
-    attempt a live HTTP call and fail loudly in this sandbox instead of a fake silently
-    recording it."""
+    """Fake the Hermes profile-writing boundary: resolve_profile_inputs /
+    write_profile_for_agent / upload_profile_files. Nothing else is stubbed, so a deploy that
+    somehow reached a runtime would attempt a live call and fail loudly in this sandbox rather
+    than have a fake silently record it. (The device-pairing functions this used to restore to
+    their real implementations for that purpose are deleted -- there is nothing to pair.)"""
     resolve_calls: list[str] = []
     inputs_sentinel = object()
 
@@ -654,21 +564,16 @@ def _wire_agentcore_profile(monkeypatch):
     monkeypatch.setattr(svc, "resolve_profile_inputs", fake_resolve_profile_inputs)
     monkeypatch.setattr(svc, "write_profile_for_agent", write_profile)
     monkeypatch.setattr(svc, "upload_profile_files", upload_files)
-    monkeypatch.setattr(svc, "pair_with_openclaw", real_pair_with_openclaw)
-    monkeypatch.setattr(svc, "ensure_operator_device_paired", real_ensure_operator_device_paired)
     return resolve_calls, write_profile, upload_files, inputs_sentinel
 
 
 @pytest.mark.asyncio
-async def test_agentcore_row_runs_the_per_agent_loop_with_no_pairing_or_efs(monkeypatch):
-    """M6-R33: an AgentCore row with a runtime ARN now runs the REAL per-agent loop instead
-    of M6-R26's refusal -- N Paperclip creates, N write_profile_for_agent calls sharing the
-    ONE resolved inputs, this agent's content uploaded via upload_profile_files, and neither
-    pairing nor EFS materialization is reached."""
+async def test_a_company_deploy_runs_the_per_agent_profile_loop(monkeypatch):
+    """M6-R33: N Paperclip creates, N write_profile_for_agent calls sharing the ONE resolved
+    owner-level inputs, and each agent's own content uploaded under ITS profile."""
     plan = _simple_plan()
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
     resolve_calls, write_profile, upload_files, inputs_sentinel = _wire_agentcore_profile(monkeypatch)
 
@@ -690,10 +595,7 @@ async def test_agentcore_row_runs_the_per_agent_loop_with_no_pairing_or_efs(monk
         agent_id = h.admin.name_to_id[planned.name]
         assert by_agent_id[agent_id] == {"AGENTS.md": render_agent_identity_md(planned).encode()}
 
-    # No pairing, no EFS materialize.
-    assert h.materialize_calls == []
     assert h.deleted == []
-    assert h.unwound == []
 
 
 @pytest.mark.asyncio
@@ -703,7 +605,6 @@ async def test_agentcore_skipped_aux_mutations_logged_and_counted(monkeypatch, c
     plan = _simple_plan()
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
     _wire_agentcore_profile(monkeypatch)
 
@@ -712,7 +613,7 @@ async def test_agentcore_skipped_aux_mutations_logged_and_counted(monkeypatch, c
 
     assert caplog.text.count("skipped aux mutation kind=agent_entry") == 3
     assert caplog.text.count("skipped aux mutation kind=plugins_patch") == 3
-    assert "agentcore deploy summary" in caplog.text
+    assert "deploy summary" in caplog.text
     assert "'agent_entry': 3" in caplog.text
     assert "'plugins_patch': 3" in caplog.text
 
@@ -727,7 +628,6 @@ async def test_agentcore_mid_loop_failure_rolls_back_by_paperclip_delete_only(mo
     plan = _simple_plan()
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
     _resolve_calls, write_profile, _upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
 
@@ -752,7 +652,6 @@ async def test_agentcore_mid_loop_failure_rolls_back_by_paperclip_delete_only(mo
     cto_id = h.admin.name_to_id["CTO"]
     assert sorted(h.deleted) == sorted([ceo_id, cto_id])
     # Never through the ECS-only container/EFS unwind path.
-    assert h.unwound == []
 
 
 # ---------------------------------------------------------------------------
@@ -801,7 +700,6 @@ async def test_deploy_grafts_onto_rootless_friday_not_prior_package_ceo(monkeypa
     plan = _simple_plan()
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     h.admin = FakeAdmin(
         roster=[
             {"id": "pc_prior_ceo", "role": "ceo", "reportsTo": FRIDAY_ID},  # earlier deploy, first
@@ -859,7 +757,6 @@ async def test_admin_http_closed_on_success(monkeypatch):
     plan = _simple_plan()
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=plan)
     _wire_agentcore_profile(monkeypatch)
 
@@ -880,7 +777,6 @@ async def test_claim_extended_per_agent_and_released_on_success(monkeypatch):
     no cause when the run succeeds."""
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=_simple_plan())
     _wire_agentcore_profile(monkeypatch)
     extends: list[str] = []
@@ -908,7 +804,6 @@ async def test_claim_released_with_the_failure_as_cause(monkeypatch):
     the single-agent path."""
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=_simple_plan())
     _wire_agentcore_profile(monkeypatch)
     boom = RuntimeError("profile write failed")
@@ -965,7 +860,6 @@ async def test_no_claim_token_touches_no_claim(monkeypatch):
 async def test_success_writes_the_deployed_company_marker(monkeypatch):
     h = Harness()
     h.container = dict(AGENTCORE_CONTAINER)
-    h.ip = "agentcore"
     _install(monkeypatch, h, plan=_simple_plan())
     _wire_agentcore_profile(monkeypatch)
 
@@ -980,10 +874,12 @@ async def test_failure_does_not_burn_the_company_slot(monkeypatch):
     h = Harness()
     _install(monkeypatch, h, plan=_simple_plan())
 
-    async def fail_pair(*, owner_id, paperclip_agent, extra_update_fields=None):
-        raise RuntimeError("pair failed")
+    # The profile write is the step that can fail per agent now (it was the pairing RPC).
+    async def fail_write_profile(owner_id, agent, *, container_row, inputs):
+        raise RuntimeError("profile write failed")
 
-    monkeypatch.setattr(svc, "pair_with_openclaw", fail_pair)
+    monkeypatch.setattr(svc, "resolve_profile_inputs", AsyncMock(return_value=object()))
+    monkeypatch.setattr(svc, "write_profile_for_agent", fail_write_profile)
 
     await svc.run_company_deploy(owner_id=OWNER, listing={"listing_id": "l1", "name": "Acme"}, tar_bytes=b"")
 
@@ -992,10 +888,10 @@ async def test_failure_does_not_burn_the_company_slot(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_creating_nothing_does_not_burn_the_company_slot(monkeypatch):
-    """The creating-nothing early returns (here: container unreachable) exit
-    without an exception but created nothing — no marker."""
+    """The creating-nothing early returns (here: no provisioned runtime) exit without an
+    exception but created nothing — no marker."""
     h = Harness()
-    h.ip = None
+    h.container = None
     _install(monkeypatch, h, plan=_simple_plan())
 
     await svc.run_company_deploy(owner_id=OWNER, listing={"listing_id": "l1", "name": "Acme"}, tar_bytes=b"")

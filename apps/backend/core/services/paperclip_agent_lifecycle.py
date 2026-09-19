@@ -13,7 +13,6 @@ for ``httpx.AsyncClient`` + admin-cookie management.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -22,7 +21,6 @@ import httpx
 from core.config import settings
 from core.repositories import billing_repo, container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import container_rpc, service_token
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_agent_idempotency import (
     build_agent_create_idempotency_key,
@@ -31,131 +29,68 @@ from core.services.paperclip_agent_idempotency import (
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_adapter_config import (
     HERMES_GATEWAY_TYPE,
-    OPENCLAW_GATEWAY_TYPE,
-    adapter_type_for,
     build_hermes_gateway_adapter_config,
-    desired_agent_adapter_fields,
-    synthesize_openclaw_adapter,
 )
 from core.services.paperclip_meta import PaperclipMeta, resolve_create_agent_fields
 from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
-from core.services.paperclip_provisioning import _ws_gateway_url
 
 logger = logging.getLogger(__name__)
 
 _TERMINAL_ISSUE_STATUSES = {"done", "cancelled"}
 
 
-async def resolve_agent_adapter(
-    owner_id: str, *, agent_label: str, gateway_user_id: str, runtime_host: str | None = None
-) -> tuple[str, dict]:
+async def resolve_agent_adapter(owner_id: str) -> tuple[str, dict]:
     """Which Paperclip adapter type + config carries an agent this door creates.
 
     Shared by every Paperclip agent-creation call site in the backend (chat-create and
     marketplace-deploy below; also ``core/services/company_deploy_service.py`` and
-    ``routers/teams/agents.py``'s ``/agents`` endpoint) so the ECS-vs-AgentCore pick lives in
-    exactly one place.
+    ``routers/teams/agents.py``'s ``/agents`` endpoint) so the wiring lives in exactly one
+    place. There is one answer: Paperclip's native ``hermes_gateway`` adapter through the
+    authenticated backend facade, which needs no operator device pairing.
 
-    Hermes/AgentCore owners use Paperclip's native ``hermes_gateway`` adapter through the
-    authenticated backend facade; no operator device pairing is needed. Everyone else keeps the
-    existing device-paired ``openclaw_gateway`` adapter unchanged.
-
-    ``agent_label`` is retained in this shared create API because ECS call sites use it in their
-    own post-create pairing flow. The native adapter derives the real agent id from Paperclip's
-    signed run context and sends it in ``X-Hermes-Session-Key``.
-
-    ``runtime_host``: an optional hint forwarded to ``adapter_type_for`` -- a caller that
-    already read the owner's container row (for any other reason) can pass its
-    ``runtime_host`` straight through and skip a redundant read. Every caller today passes
-    nothing (``None``), which keeps today's behaviour: ``adapter_type_for`` does its own read,
-    and a read failure PROPAGATES rather than being swallowed into a silent ECS fallback (a
-    seed-time DynamoDB blip should surface as a failure, not a mis-wired agent).
+    It takes ONLY the owner id. The ``agent_label``/``gateway_user_id``/``runtime_host``
+    arguments four call sites used to thread here went with the device-paired adapter: the
+    native one derives the real agent id from Paperclip's signed run context and sends it in
+    ``X-Hermes-Session-Key``, and there is one host.
     """
-    adapter_type = await adapter_type_for(owner_id, runtime_host=runtime_host)
-    if adapter_type == HERMES_GATEWAY_TYPE:
-        # Only the native Hermes branch needs the container row (for its hook token).
-        container = await container_repo.get_by_owner_id(owner_id)
-        return adapter_type, build_hermes_gateway_adapter_config(
-            owner_id, hook_token=(container or {}).get("hook_token") or ""
-        )
-    return adapter_type, synthesize_openclaw_adapter(
-        gateway_url=_ws_gateway_url(settings.ENVIRONMENT or ""),
-        service_token=service_token.mint(owner_id),
-        user_id=gateway_user_id,
+    container = await container_repo.get_by_owner_id(owner_id)
+    return HERMES_GATEWAY_TYPE, build_hermes_gateway_adapter_config(
+        owner_id, hook_token=(container or {}).get("hook_token") or ""
     )
 
 
-async def repoint_agent_adapter(
-    owner_id: str, agent: dict[str, Any], *, runtime_host: str, gateway_token: str | None = None
-) -> bool:
-    """Move ONE **existing** agent's Paperclip adapter onto ``runtime_host``'s transport.
+async def repoint_agent_adapter(owner_id: str, agent: dict[str, Any]) -> bool:
+    """Move ONE **existing** agent's Paperclip adapter onto the native Hermes transport.
 
     ``resolve_agent_adapter`` above picks the adapter at agent-CREATE time and nothing had ever
-    re-picked it, so a workspace that MOVES between ECS and AgentCore kept whatever its agents
-    were created with (M6 task-14 row 1, the founder blocker): every migrated workspace's agents
-    went on dialling an operator WebSocket at an address that no longer resolves, so each routine
-    fire, issue run and Teams Run/Retry died inside ``gateway_relay``'s ``except`` while room chat
-    — which rides the WORK bus, not the adapter — kept working. Nothing looked broken.
+    re-picked it, so a workspace that MOVED between runtimes kept whatever its agents were
+    created with (M6 task-14 row 1, the founder blocker): every migrated workspace's agents went
+    on dialling an operator WebSocket at an address that no longer resolves, so each routine
+    fire, issue run and Teams Run/Retry died while room chat -- which rides the WORK bus, not the
+    adapter -- kept working. Nothing looked broken.
 
-    Deliberately the SAME resolver a fresh create uses, with ``runtime_host`` passed explicitly so
-    it never re-reads a row that may be mid-flip. ``agent_label`` is the agent's REAL id here (a
-    create cannot know it yet; a re-point always does).
+    Deliberately the SAME resolver a fresh create uses.
 
-    Returns True when a patch landed, False when the agent was already on the target adapter —
-    i.e. idempotent, so a re-entered migration tail or a re-run rollback re-points only what is
-    still wrong. **Raises** on any failure: a half-re-pointed workspace looks healthy, which is
-    the entire defect this closes.
+    ZERO CALLERS TODAY -- the migration job that drove it is deleted, and every prod and dev
+    workspace is migrated. Kept because it is the only repair path for an agent row still
+    carrying ``openclaw_gateway``: that agent's routines, issue runs and Teams Run/Retry all
+    fail silently while room chat (which rides the WORK bus, not the adapter) keeps working, so
+    nothing looks broken. Re-deriving it from scratch mid-incident is the expensive option.
 
-    ``gateway_token`` is required when re-pointing back to ``openclaw_gateway``. The first
-    authoritative patch carries the current gateway token and per-agent routing fields, while
-    retaining an existing stable device PEM and timeout fields on a same-type repair. The existing
-    ``ensure_operator_device_paired`` seam still updates ``paired.json`` after that patch, and the
-    relay's NOT_PAIRED path remains the live self-heal if the best-effort pre-pair cannot land.
+    Returns True when a patch landed, False when the agent was already on the target adapter --
+    i.e. idempotent, so a re-entered migration tail re-points only what is still wrong.
+    **Raises** on any failure: a half-re-pointed workspace looks healthy, which is the entire
+    defect this closes.
     """
-    from core.services.paperclip_openclaw_pairing import ensure_operator_device_paired
-
     agent_id = agent.get("id")
     if not agent_id:
         raise ValueError(f"repoint_agent_adapter: agent row for owner={owner_id} has no id")
-    target_type = await adapter_type_for(owner_id, runtime_host=runtime_host)
-    current_type = agent.get("adapterType")
-    current_config = agent.get("adapterConfig") or {}
-
-    if target_type == OPENCLAW_GATEWAY_TYPE:
-        if not gateway_token:
-            raise RuntimeError(f"repoint_agent_adapter: owner={owner_id} has no gateway_token for ECS rollback")
-        desired = desired_agent_adapter_fields(agent_id=agent_id, gateway_token=gateway_token)
-        complete = (
-            current_type == target_type
-            and all(current_config.get(k) for k in ("url", "devicePrivateKeyPem", "sessionKeyStrategy", "sessionKey"))
-            and all(current_config.get(k) == v for k, v in desired.items())
-        )
-        if complete:
-            return False
-        # Same-type retry keeps every persisted field (including the stable device PEM and both
-        # timeout spellings). A type change starts from the canonical gateway shape. Required bind
-        # fields are merged BEFORE the one authoritative PATCH, so its failure raises and retrying
-        # the partial row converges without depending on ensure_operator_device_paired's
-        # deliberately best-effort follow-up.
-        preserved = current_config if current_type == target_type else {}
-        adapter_config = synthesize_openclaw_adapter(
-            gateway_url=_ws_gateway_url(settings.ENVIRONMENT or ""),
-            service_token=service_token.mint(owner_id),
-            user_id=owner_id,
-            device_private_key_pem=preserved.get("devicePrivateKeyPem"),
-            agent_id=agent_id,
-        )
-        adapter_config = {**adapter_config, **preserved, **desired}
-    else:
-        if current_type == target_type:
-            return False
-        _, adapter_config = await resolve_agent_adapter(
-            owner_id, agent_label=agent_id, gateway_user_id=owner_id, runtime_host=runtime_host
-        )
-        # The empty-hook-token guard moved INTO build_hermes_gateway_adapter_config, which
-        # raises AdapterConfigError before this line: every door onto the native adapter
-        # (seed, /teams create, this re-point) now gets the same refusal, instead of one door
-        # having a private check the other two lacked.
+    if agent.get("adapterType") == HERMES_GATEWAY_TYPE:
+        return False
+    # The empty-hook-token guard lives INSIDE build_hermes_gateway_adapter_config, which raises
+    # AdapterConfigError before the PATCH: every door onto the native adapter (seed, /teams
+    # create, this re-point) gets the same refusal.
+    _, adapter_config = await resolve_agent_adapter(owner_id)
     async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
         admin = PaperclipAdminClient(http_client=http)
         cookie = await get_admin_session_cookie(http)
@@ -163,24 +98,16 @@ async def repoint_agent_adapter(
             session_cookie=cookie,
             agent_id=agent_id,
             body={
-                "adapterType": target_type,
+                "adapterType": HERMES_GATEWAY_TYPE,
                 "adapterConfig": adapter_config,
                 "replaceAdapterConfig": True,
             },
         )
-    if target_type == OPENCLAW_GATEWAY_TYPE and gateway_token:
-        await ensure_operator_device_paired(
-            owner_id=owner_id,
-            paperclip_agent={**agent, "adapterType": target_type, "adapterConfig": adapter_config},
-            gateway_token=gateway_token,
-        )
-    logger.info("repoint_agent_adapter: owner=%s agent=%s -> %s", owner_id, agent_id, target_type)
+    logger.info("repoint_agent_adapter: owner=%s agent=%s -> %s", owner_id, agent_id, HERMES_GATEWAY_TYPE)
     return True
 
 
 _ISSUE_PAGE_SIZE = 1000
-_AGENT_DELETE_LOCK_RETRY_DELAYS_S: tuple[float, ...] = (0.25, 1.0)
-_OPENCLAW_FILE_LOCK_TIMEOUT_MARKER = "code=file_lock_timeout"
 FINAL_ROOT_CEO_CONFLICT = "The final root CEO cannot be deleted or demoted."
 
 
@@ -337,38 +264,6 @@ async def disarm_owner_nightly_automation(owner_id: str) -> dict[str, int]:
         await http.aclose()
 
 
-def _is_openclaw_file_lock_timeout(exc: RuntimeError) -> bool:
-    """Return whether OpenClaw rejected a config mutation on its file lock."""
-
-    # Pinned OpenClaw defines FILE_LOCK_TIMEOUT_ERROR_CODE in
-    # src/plugin-sdk/file-lock.ts; agents-config-mutations.ts sends deletes
-    # through that lock. The gateway currently flattens the typed upstream
-    # error into RuntimeError text, so retain its stable code marker here.
-    return _OPENCLAW_FILE_LOCK_TIMEOUT_MARKER in str(exc).lower()
-
-
-async def delete_runtime_agent_with_lock_retry(*, owner_id: str, agent_id: str) -> Any:
-    """Delete from a running OpenClaw, retrying only its transient file lock."""
-
-    total_attempts = len(_AGENT_DELETE_LOCK_RETRY_DELAYS_S) + 1
-    for attempt in range(1, total_attempts + 1):
-        try:
-            return await container_rpc.call(owner_id, "agents.delete", {"agentId": agent_id, "deleteFiles": True})
-        except RuntimeError as exc:
-            if not _is_openclaw_file_lock_timeout(exc) or attempt == total_attempts:
-                raise
-            delay_s = _AGENT_DELETE_LOCK_RETRY_DELAYS_S[attempt - 1]
-            logger.warning(
-                "OpenClaw config lock blocked agent delete for owner=%s agent=%s (attempt %d/%d); retrying in %.2fs",
-                owner_id,
-                agent_id,
-                attempt,
-                total_attempts,
-                delay_s,
-            )
-            await asyncio.sleep(delay_s)
-
-
 async def prepare_paperclip_agent_delete(
     *,
     owner_id: str,
@@ -466,68 +361,21 @@ async def prepare_paperclip_agent_delete(
 
 
 async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, Any]:
-    """Delete an agent across Paperclip, OpenClaw, config, and EFS.
+    """Delete an agent across Paperclip and its Hermes profile.
 
-    The OpenClaw step happens before Paperclip removal. If it fails, the
-    Paperclip row remains visible and a retry can reconcile the operation. If
-    the container is not running, removing the persisted config entry is the
-    authoritative OpenClaw deletion for its next boot.
+    The profile delete happens before Paperclip removal: if it fails, the Paperclip row stays
+    visible and a retry can reconcile the operation.
     """
 
-    from core.containers import get_ecs_manager, get_workspace
-    from core.containers.workspace import cleanup_deleted_agent
     from core.dynamodb import run_in_thread
     from core.services import hermes_profiles
-    from core.services.config_patcher import (
-        deregister_lightbulb_agent_account,
-        remove_from_openclaw_config_list,
-    )
-    from core.services.runtime_transport import host_for
 
     preserved = await prepare_paperclip_agent_delete(owner_id=owner_id, agent_id=agent_id)
 
-    ecs = get_ecs_manager()
-    container, ip = await ecs.resolve_running_container(owner_id)
-    # F4 (predeploy review, M6-R37): the probe (and the delete it might trigger) is an ECS-only
-    # concept -- an AgentCore row has no gateway agents.list RPC to check first (the S3 profile
-    # delete below is this transport's whole story), and probing one anyway paid the 30s
-    # runtime_rpc default against a possibly-parked microVM for an answer this branch never uses.
-    if container is not None and ip and host_for(container) != "agentcore":
-        live_agents = _rows(await container_rpc.call(owner_id, "agents.list", {}), "agents")
-        if any(agent.get("id") == agent_id for agent in live_agents):
-            await delete_runtime_agent_with_lock_retry(owner_id=owner_id, agent_id=agent_id)
-
-    if host_for(container or {}) == "agentcore":
-        # Q9a row #3: no openclaw.json for an AgentCore owner -- every EFS-touching cleanup
-        # below (config-list removal, the Lightbulb channel account, which is an OpenClaw-only
-        # concept) would raise ConfigPatchError on the missing file (task-9-scan.md row #3).
-        # The S3 profile prefix is this transport's equivalent durable record to remove.
-        await run_in_thread(hermes_profiles.delete_profile, owner_id, agent_id)
-    else:
-        # Belt-and-suspenders persistence cleanup: gateway deletion updates a
-        # running process, while this guarantees a stopped/restarted container
-        # cannot reload the removed entry from openclaw.json.
-        await remove_from_openclaw_config_list(
-            owner_id,
-            ["agents", "list"],
-            lambda entry: isinstance(entry, dict) and entry.get("id") == agent_id,
-        )
-        # Same belt-and-suspenders reasoning as above: the agent's Lightbulb
-        # channel account + binding are Lightbulb-side config OpenClaw's own
-        # agents.delete RPC knows nothing about, so they never self-clean.
-        await deregister_lightbulb_agent_account(owner_id, agent_id)
-    # cleanup_deleted_agent is intentionally best-effort, but the sidecar is
-    # also the marketplace's install record. Remove it strictly before the
-    # Paperclip handle disappears so a failed unlink leaves a visible, retryable
-    # agent instead of a stale installed marker with no owner-facing handle.
-    #
-    # Both of these run unconditionally for AgentCore too (Q9a fix round 1, item 7): the
-    # sidecar path is `Path.unlink(missing_ok=True)` (ENOENT from a missing PARENT directory
-    # is the same OSError as a missing leaf file, so a never-provisioned EFS tree is a silent
-    # no-op, not a raise), and cleanup_deleted_agent wraps its own EFS walk in a try/except
-    # that only logs -- neither can 500 an AgentCore delete the way the EFS writers above did.
-    await asyncio.to_thread(get_workspace().remove_template_sidecar, owner_id, agent_id)
-    await cleanup_deleted_agent(owner_id, agent_id)
+    # The S3 profile prefix is this transport's whole durable record of the agent -- its
+    # config.yaml, .env and SOUL.md. There is no gateway `agents.list` to probe first, no
+    # `agents.delete` RPC, and no openclaw.json entry or Lightbulb channel account to strip.
+    await run_in_thread(hermes_profiles.delete_profile, owner_id, agent_id)
     await delete_paperclip_for_chat(owner_id=owner_id, agent_id=agent_id)
     return {"deleted": True, "agent_id": agent_id, **preserved}
 
@@ -583,9 +431,7 @@ async def create_paperclip_for_chat(
         # ``user_id=creator_user_id`` is still correct: that field is the
         # adapterConfig.sessionKey fallback (per-creator manual-wake
         # session key), not the auth principal.
-        adapter_type, adapter_config = await resolve_agent_adapter(
-            owner_id, agent_label=name, gateway_user_id=creator_user_id
-        )
+        adapter_type, adapter_config = await resolve_agent_adapter(owner_id)
         fields = resolve_create_agent_fields(role=role, meta=meta)
         idempotency_key = build_agent_create_idempotency_key(
             operation="chat",
@@ -709,9 +555,7 @@ async def create_paperclip_for_marketplace(
     try:
         admin_client = PaperclipAdminClient(http_client=http)
         admin_cookie = await get_admin_session_cookie(http)
-        adapter_type, adapter_config = await resolve_agent_adapter(
-            owner_id, agent_label=name, gateway_user_id=buyer_user_id
-        )
+        adapter_type, adapter_config = await resolve_agent_adapter(owner_id)
         fields = resolve_create_agent_fields(role=role, meta=meta)
         return await admin_client.create_agent(
             company_id=company_id,

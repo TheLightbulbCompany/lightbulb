@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from core.containers.config import BEDROCK_TRIAL_CHOICE
+from core.services.hermes_profiles import _BEDROCK_TRIAL_CHOICE as BEDROCK_TRIAL_CHOICE
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ def provider_choice_from_row(row: dict | None) -> tuple[str, str | None]:
         # writes one back.
         #
         # The free tier runs on Bedrock through the `bedrock_trial` CONFIG MODE:
-        # a single, IAM-pinned Sonnet inference profile (ecs_manager mints
+        # a single, IAM-pinned Sonnet inference profile (the provisioner mints
         # tiers=["sonnet"], and build_owner_bedrock_policy scopes the owner's
         # task role to exactly that AIP). Returning "bedrock_claude" here would
         # hand a card-less owner the full paid three-tier ladder — Opus included.
@@ -55,7 +55,7 @@ async def resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
 def emit_provision_metric(status: str) -> None:
     """Best-effort ``container.provision`` metric — a metrics outage must never
     turn the swallow-all task into a raise. Same single dimension key (status)
-    as the synchronous ecs_manager emissions, so every value lands on the one
+    every other provision emission uses, so every value lands on the one
     CloudWatch stream the provision alarms watch."""
     try:
         from core.observability.metrics import put_metric

@@ -79,7 +79,9 @@ async def _build_metadata(auth: AuthContext, req: SupportTicketRequest) -> dict:
         "container": {
             "status": (container or {}).get("status"),
             "substatus": (container or {}).get("substatus"),
-            "service_name": (container or {}).get("service_name"),
+            # The runtime ARN, not the retired ECS service name: it is what an operator pastes
+            # into ``aws bedrock-agentcore get-agent-runtime`` from the ticket.
+            "agentcore_runtime_arn": (container or {}).get("agentcore_runtime_arn"),
             "last_error": (container or {}).get("last_error"),
             "last_provisioned_at": (container or {}).get("updated_at"),
         },

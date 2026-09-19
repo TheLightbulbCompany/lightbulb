@@ -74,12 +74,3 @@ async def test_put_never_touches_the_real_os_resolver(monkeypatch):
     monkeypatch.setattr(task_address.socket, "gethostbyname", _boom)
     svc = _svc()
     await svc.put_relay_presence(connection_id="relay#1", identity=IDENT)
-
-
-@pytest.mark.asyncio
-async def test_count_relay_nodes_counts_node_rows_only():
-    svc = _svc()
-    with patch.object(
-        svc, "query_by_owner", return_value=[("c1", "u", "node"), ("c2", "u", "operator"), ("c3", "u", "node")]
-    ):
-        assert await svc.count_relay_nodes("org_1") == 2

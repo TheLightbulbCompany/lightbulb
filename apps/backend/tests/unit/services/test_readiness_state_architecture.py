@@ -1,6 +1,9 @@
 """INV-1 enforcement: ``readiness_state.compute_status`` is the SOLE
-composer of readiness+onboarding truth from the four inputs (containers
-row, billing-accounts row, gateway liveness, paperclip-companies row).
+composer of readiness+onboarding truth from the three inputs (containers
+row, billing-accounts row, paperclip-companies row). Gateway liveness was a
+fourth until the AgentCore move: AWS parks an idle microVM invisibly and wakes
+it on invoke, so a health probe answers "asleep", not "not ready" -- and
+probing would wake the very box the poll must leave parked.
 
 **Scope, honestly stated.** A literal "no module anywhere imports more
 than one of the four store modules" import-linter rule was tried first (a
@@ -36,7 +39,7 @@ stores with no single owner):
    either — the READINESS verdict itself comes from
    ``readiness_state.compute_status``.
 3. ``core/services/readiness_state.py`` itself is verified to actually
-   import all four stores (a sanity check that the composer is doing its
+   import all three stores (a sanity check that the composer is doing its
    job, not that it's vacuously "compliant" by reading nothing).
 """
 
@@ -51,13 +54,12 @@ BACKEND_ROOT = Path(__file__).resolve().parents[3]
 _STORE_MODULES = {
     "container_repo": "core.repositories.container_repo",
     "billing_repo": "core.repositories.billing_repo",
-    "container_rpc": "core.services.container_rpc",
     "paperclip_repo": "core.repositories.paperclip_repo",
 }
 
 
 def _imported_stores(path: Path) -> set[str]:
-    """Which of the four store modules `path` imports, by any of the
+    """Which of the three store modules `path` imports, by any of the
     idioms this codebase actually uses (`import core.repositories.X`,
     `from core.repositories import X`, `from core.repositories.X import Y`).
     """
@@ -80,19 +82,19 @@ def _imported_stores(path: Path) -> set[str]:
     return found
 
 
-def test_readiness_state_module_exists_and_imports_all_four_stores():
+def test_readiness_state_module_exists_and_imports_all_three_stores():
     path = BACKEND_ROOT / "core" / "services" / "readiness_state.py"
     assert path.is_file(), "core/services/readiness_state.py must exist — it is the SOLE composer (INV-1)"
     stores = _imported_stores(path)
     assert stores == set(_STORE_MODULES), (
-        "readiness_state.py must import all four readiness inputs "
-        f"(container_repo, billing_repo, container_rpc, paperclip_repo); got {stores}"
+        "readiness_state.py must import all three readiness inputs "
+        f"(container_repo, billing_repo, paperclip_repo); got {stores}"
     )
 
 
 def test_compute_status_is_defined_in_exactly_one_module():
     """A second ``compute_status`` (or a same-shaped composer under a
-    different name that ALSO reads >=2 of the four stores to derive a
+    different name that ALSO reads >=2 of the three stores to derive a
     phase/lifecycle verdict) would fork the single readiness answer INV-1
     exists to prevent. This scans for the literal function name — a
     same-behavior duplicate under a different name would slip past a
@@ -116,7 +118,7 @@ def test_container_router_no_longer_composes_paperclip_or_billing_directly():
     """The regression this PR fixes: routers/container.py used to import
     ``paperclip_repo`` directly (inside the now-deleted
     ``_resolve_teams_status``) alongside its own ``container_repo`` use —
-    composing two of the four readiness stores itself, in the router, the
+    composing two of the three readiness stores itself, in the router, the
     exact thing INV-1 forbids. It must now source teams/onboarding state
     exclusively through ``readiness_state.compute_status``.
 
@@ -142,16 +144,16 @@ def test_container_router_no_longer_composes_paperclip_or_billing_directly():
     )
 
 
-def test_readiness_state_docstring_states_the_four_inputs():
-    """Cheap documentation-drift guard: if someone adds a fifth input (or
+def test_readiness_state_docstring_states_the_three_inputs():
+    """Cheap documentation-drift guard: if someone adds a fourth input (or
     quietly drops one) to compute_status, the module docstring should say
-    so — this just pins that the docstring currently enumerates all four.
+    so — this just pins that the docstring currently enumerates all three.
     """
     src = (BACKEND_ROOT / "core" / "services" / "readiness_state.py").read_text()
     module_doc = ast.get_docstring(ast.parse(src)) or ""
-    for needle in ("containers", "billing-accounts", "gateway liveness", "paperclip-companies"):
+    for needle in ("containers", "billing-accounts", "paperclip-companies"):
         assert needle in module_doc, textwrap.dedent(f"""
             readiness_state.py's module docstring should name "{needle}" as
-            one of the four composed inputs — if this fails because the
+            one of the three composed inputs — if this fails because the
             input set genuinely changed, update this test alongside it.
             """)

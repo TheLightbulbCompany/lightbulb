@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.services import runtime_rpc as rpc
-from core.services.config_patcher import ConfigPatchError
 from core.services.messaging import ApiProblem
 from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict
 
@@ -61,10 +60,17 @@ async def test_specialist_delete_delegates_to_shared_lifecycle(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_config_patch_error_is_a_clean_rpc_error_not_a_500(monkeypatch):
-    """Q9a row #3 (task-9-scan.md): an ECS EFS failure (a stale lock, a missing config) must
+async def test_a_profile_delete_fault_is_a_clean_rpc_error_not_a_500(monkeypatch):
+    """Q9a row #3 (task-9-scan.md): the durable record of an agent is its S3 profile, so the
+    delete's transport fault is an S3 one now (it was an EFS config-lock error). It must still
     surface as a clean, retryable RPC error -- not an unhandled 500."""
-    delete_everywhere = AsyncMock(side_effect=ConfigPatchError("Config not found for owner o1"))
+    import botocore.exceptions
+
+    delete_everywhere = AsyncMock(
+        side_effect=botocore.exceptions.ClientError(
+            {"Error": {"Code": "SlowDown", "Message": "please retry"}}, "DeleteObject"
+        )
+    )
     monkeypatch.setattr(rpc, "delete_agent_everywhere", delete_everywhere)
     call_mock = AsyncMock()
     monkeypatch.setattr(rpc.container_rpc, "call", call_mock)

@@ -159,7 +159,6 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
     fake_manager = MagicMock()
     fake_manager.stop_user_service = AsyncMock()
     fake_manager.drain_then_dispatch_provision = MagicMock()
-    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
     # The cold path's takeover fence reads the container row lazily from the
     # real repo module - no row here, so the fence is skipped.
     monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
@@ -181,47 +180,34 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
-    """A switch INTO bedrock_claude must NOT take the hot path (which would
-    call build_provider_block(bedrock, aip_arns=None) and raise), and must
-    NOT raise — it stop-first reprovisions (cold path, F1 fix)."""
-    # No prior provider_choice -> none of the OLD-provider side-effect cleanup
-    # blocks (oauth, byo) fire, keeping the test free of oauth/key I/O while
-    # still exercising the bedrock hot-vs-cold selector.
+async def test_change_provider_takes_over_before_it_dispatches(monkeypatch):
+    """ONE path: re-provision, which re-derives the owner's Bedrock AIPs and rewrites every agent
+    profile from the committed provider_choice. Nothing is stopped or drained -- the provision is
+    two S3 writes, and the agent reads the rewritten profile on its next turn.
+
+    The takeover is the load-bearing half: ``dispatch_provision``'s claim does not admit a
+    "running" row, so a bare dispatch would stand down SILENTLY while we told the caller
+    ``restart: True`` and the owner kept running on the old provider.
+    """
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",
-        AsyncMock(
-            return_value={
-                "subscription_status": "active",
-                "stripe_subscription_id": "sub_1",
-            }
-        ),
+        AsyncMock(return_value={"subscription_status": "active", "stripe_subscription_id": "sub_1"}),
     )
     # change_provider imports is_subscription_active LAZILY from
     # core.services.provision_gate, so patch it at the source module.
     monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda a: True)
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
-    hot = AsyncMock()
-    monkeypatch.setattr(billing_service, "_hot_swap_provider", hot)
-    # change_provider's cold path lazily imports get_ecs_manager from
-    # core.containers, awaits .stop_user_service, and dispatches
-    # .drain_then_dispatch_provision(owner_id) as a background task (F1
-    # fix) — patch at the source module, and capture the dispatched task
-    # instead of scheduling it so nothing outlives the test loop.
-    fake_manager = MagicMock()
-    fake_manager.stop_user_service = AsyncMock()
-    fake_manager.drain_then_dispatch_provision = MagicMock()
-    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
-    # The cold path's takeover fence reads the container row lazily from the
-    # real repo module - no row here, so the fence is skipped.
-    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
-    created: list = []
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
     monkeypatch.setattr(
-        billing_service.asyncio,
-        "create_task",
-        lambda coro: created.append(coro) or MagicMock(),
+        "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"owner_id": "user_x"})
     )
+    takeover = AsyncMock()
+    monkeypatch.setattr("core.repositories.container_repo.takeover_provision", takeover)
+    dispatch = MagicMock()
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
+    created: list = []
+    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: created.append(coro) or MagicMock())
 
     result = await billing_service.change_provider(
         owner_id="user_x",
@@ -230,89 +216,89 @@ async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
         provider_choice="bedrock_claude",
     )
 
-    hot.assert_not_awaited()  # hot path skipped for bedrock target
     assert result["restart"] is True
-    # No container row: there is nothing to stop, and issuing the stop anyway
-    # would open a TOCTOU (a poll creating the row between the fence read and
-    # the stop would get an unfenced "stopped" stamp). So the stop is SKIPPED
-    # and the cold path falls straight through to the drain-only dispatch,
-    # whose create-from-scratch claim provisions the owner.
-    fake_manager.stop_user_service.assert_not_awaited()
-    fake_manager.drain_then_dispatch_provision.assert_called_once_with("user_x")
+    takeover.assert_awaited_once_with("user_x")
+    dispatch.assert_called_once_with("user_x")
     assert len(created) == 1
 
 
 @pytest.mark.asyncio
-async def test_hot_swap_pre_stages_under_owner_id(monkeypatch):
-    """One ChatGPT account ↔ one container: the token READ is keyed on the
-    switcher (the connector), but the EFS auth file is WRITTEN under the
-    container OWNER (org_id for orgs). For an org the two ids differ — pin
-    that the read uses clerk_user_id and the write uses owner_id."""
-    get_tokens = AsyncMock(return_value={"access_token": "tok", "account_id": "acc"})
-    monkeypatch.setattr("core.services.oauth_service.get_decrypted_tokens", get_tokens)
-    pre_stage = AsyncMock()
-    monkeypatch.setattr("core.containers.workspace.pre_stage_auth_profile_store", pre_stage)
-    # Stub the config side so the helper reaches the patch step without real
-    # config I/O. build_provider_block returns the (providers, default, plugins)
-    # triple; replace_provider_block is the EFS write we don't care about here.
+async def test_change_provider_skips_the_takeover_for_a_workspace_with_no_row(monkeypatch):
+    """With no row there is no lease to fence, and a takeover would CREATE one as
+    "provisioning" with a fresh lease -- which the dispatch's own claim then refuses, breaking
+    the create-from-scratch path for a never-provisioned owner."""
     monkeypatch.setattr(
-        "core.containers.config.build_provider_block",
-        lambda **kwargs: ({}, {"primary": "p", "fallbacks": ["p"]}, {}),
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active", "stripe_subscription_id": "sub_1"}),
     )
-    monkeypatch.setattr("core.containers.config.premium_model_ref", lambda *a, **k: None)
-    monkeypatch.setattr("core.containers.config.cheap_model_ref", lambda *a, **k: "cheap")
-    monkeypatch.setattr("core.services.config_patcher.replace_provider_block", AsyncMock())
-    fake_manager = MagicMock()
-    fake_manager._deployed_image_tag = AsyncMock(return_value=None)
-    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
+    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda a: True)
+    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+    takeover = AsyncMock()
+    monkeypatch.setattr("core.repositories.container_repo.takeover_provision", takeover)
+    dispatch = MagicMock()
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
+    created: list = []
+    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: created.append(coro) or MagicMock())
 
-    await billing_service._hot_swap_provider(
-        owner_id="org_1",
-        clerk_user_id="user_a",
-        new_provider="chatgpt_oauth",
+    result = await billing_service.change_provider(
+        owner_id="user_x",
+        clerk_user_id="user_x",
+        owner_type="personal",
+        provider_choice="bedrock_claude",
     )
 
-    # Token read keyed on the human connector (the switcher).
-    get_tokens.assert_awaited_once_with(user_id="user_a", bound_to="org_1")
-    # Auth file written under the container owner (org_1), not the connector.
-    pre_stage.assert_awaited_once_with(user_id="org_1", oauth_tokens={"access_token": "tok", "account_id": "acc"})
+    assert result["restart"] is True
+    takeover.assert_not_awaited()
+    dispatch.assert_called_once_with("user_x")
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("deployed_tag", "expected_policy"),
-    [
-        ("2026.7.2-isol8.4-abc1234", None),
-        ("2026.8.1-isol8.2-035a60f", {"allow": ["openai/*"]}),
-    ],
-)
-async def test_hot_swap_gates_model_policy_on_the_running_image(monkeypatch, deployed_tag, expected_policy):
-    """``modelPolicy`` is an 8.1-only key and ``agents.defaults`` is strict on
-    7.2, so the hot swap must gate it on the image the owner's container is
-    ACTUALLY running -- not the env pin, which a live container lags by a whole
-    upstream version during a rollback or promotion window. Writing it from the
-    pin would crash-loop a 7.2 container on its next config reload."""
+async def test_change_provider_reverts_the_commit_when_the_takeover_fails(monkeypatch):
+    """The new provider is committed BEFORE the takeover, so a failed takeover leaves a row that
+    matches the request -- and a retry would hit the no-op fast path and dispatch nothing. The
+    commit is reverted so the retry re-runs the whole switch."""
     monkeypatch.setattr(
-        "core.services.oauth_service.get_decrypted_tokens",
-        AsyncMock(return_value={"access_token": "tok", "account_id": "acc"}),
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_1",
+                "provider_choice": "byo_key",
+                "byo_provider": "openai",
+            }
+        ),
     )
-    monkeypatch.setattr("core.containers.workspace.pre_stage_auth_profile_store", AsyncMock())
-    monkeypatch.setattr("core.containers.config.premium_model_ref", lambda *a, **k: None)
-    monkeypatch.setattr("core.containers.config.cheap_model_ref", lambda *a, **k: "cheap")
-    replace = AsyncMock()
-    monkeypatch.setattr("core.services.config_patcher.replace_provider_block", replace)
-    fake_manager = MagicMock()
-    fake_manager._deployed_image_tag = AsyncMock(return_value=deployed_tag)
-    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
-
-    await billing_service._hot_swap_provider(
-        owner_id="org_1",
-        clerk_user_id="user_a",
-        new_provider="chatgpt_oauth",
+    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda a: True)
+    set_choice = AsyncMock()
+    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", set_choice)
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
+    monkeypatch.setattr("core.services.key_service.KeyService", MagicMock())
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"owner_id": "user_x"})
     )
+    monkeypatch.setattr(
+        "core.repositories.container_repo.takeover_provision", AsyncMock(side_effect=RuntimeError("ddb down"))
+    )
+    dispatch = MagicMock()
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
 
-    fake_manager._deployed_image_tag.assert_awaited_once_with("org_1")
-    assert replace.await_args.kwargs["model_policy"] == expected_policy
+    with pytest.raises(billing_service.ChangeProviderError) as exc:
+        await billing_service.change_provider(
+            owner_id="user_x",
+            clerk_user_id="user_x",
+            owner_type="personal",
+            provider_choice="bedrock_claude",
+        )
+
+    assert exc.value.code == "reprovision_stop_failed"
+    dispatch.assert_not_called()
+    # Committed to bedrock, then restored to what the workspace is actually running.
+    assert [c.kwargs["provider_choice"] for c in set_choice.await_args_list] == ["bedrock_claude", "byo_key"]
+    assert set_choice.await_args_list[1].kwargs["requires_reprovision"] is False
 
 
 @pytest.mark.asyncio
@@ -336,7 +322,6 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
     fake_manager = MagicMock()
     fake_manager.stop_user_service = AsyncMock()
     fake_manager.drain_then_dispatch_provision = MagicMock()
-    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
     # The cold path's takeover fence reads the container row lazily from the
     # real repo module - no row here, so the fence is skipped.
     monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))

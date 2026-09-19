@@ -52,6 +52,11 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
     ),
     "company-slugs": ([("slug", "HASH", "S")], {"by-owner": [("owner_id", "HASH", "S")]}),
     "agent-email-addresses": ([("address", "HASH", "S")], {"by-owner": [("owner_id", "HASH", "S")]}),
+    "slack-installs": ([("team_id", "HASH", "S")], {"by-owner": [("owner_id", "HASH", "S")]}),
+    "agent-mail-inbox": (
+        [("address", "HASH", "S"), ("received_key", "RANGE", "S")],
+        {"by-message-id": [("message_id", "HASH", "S")]},
+    ),
     "webhook-event-dedup": ([("event_id", "HASH", "S")], {}),
     "admin-actions": (
         [("admin_user_id", "HASH", "S"), ("timestamp_action_id", "RANGE", "S")],
@@ -71,6 +76,11 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
         [("workflow_id", "HASH", "S")],
         {"owner-state-index": [("owner_id", "HASH", "S"), ("state", "RANGE", "S")]},
     ),
+    "room-read-cursors": ([("owner_id", "HASH", "S"), ("cursor_key", "RANGE", "S")], {}),
+    "workspace-join-links": ([("org_id", "HASH", "S")], {}),
+    "launch-waitlist": ([("email", "HASH", "S")], {"referral-code-index": [("referral_code", "HASH", "S")]}),
+    "launch-entries": ([("owner_id", "HASH", "S")], {}),
+    "launch-settings": ([("id", "HASH", "S")], {}),
     "paperclip-companies": (
         [("user_id", "HASH", "S")],
         {

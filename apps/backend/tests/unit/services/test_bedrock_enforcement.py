@@ -18,7 +18,12 @@ def _enforcement(
     provider_choice: str | None = "bedrock_claude",
     subscription_status: str = "active",
 ):
-    """Patch the lazy-imported collaborators; yields (revoke, ecs_factory).
+    """Patch the lazy-imported collaborators; yields the revoke mock.
+
+    It used to also yield the ECS-manager factory, because the two "revoke but never STOP the
+    container" tests asserted the factory was never even constructed. Enforcement reaches no
+    runtime at all now -- it revokes the Bedrock grant and nothing else -- so the factory, and
+    the assertion that it stayed unused, went with the manager.
 
     Defaults the billing row to an active ``bedrock_claude`` owner because that
     is the only population credit-balance enforcement acts on; the exclusion
@@ -40,35 +45,32 @@ def _enforcement(
             "core.repositories.container_repo.get_by_owner_id",
             new=AsyncMock(return_value=container_row),
         ),
-        patch("core.containers.get_ecs_manager") as ecs_factory,
     ):
-        yield revoke, ecs_factory
+        yield revoke
 
 
 @pytest.mark.asyncio
 async def test_low_balance_fires_revoke_when_enforcement_live(monkeypatch):
     monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", True)
-    with _enforcement(container_row={"owner_id": "org_Y", "status": "running"}) as (revoke, ecs_factory):
+    with _enforcement(container_row={"owner_id": "org_Y", "status": "running"}) as revoke:
         await enforce_on_low_balance("org_Y", -100)
     revoke.assert_awaited_once_with("org_Y")
     # Revoke-only: the container must NOT be stopped — the subscription pays
     # for the box; only Bedrock inference is cut.
-    ecs_factory.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_low_balance_fires_revoke_at_exactly_zero(monkeypatch):
     monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", True)
-    with _enforcement(container_row={"owner_id": "org_Y"}) as (revoke, ecs_factory):
+    with _enforcement(container_row={"owner_id": "org_Y"}) as revoke:
         await enforce_on_low_balance("org_Y", 0)
     revoke.assert_awaited_once_with("org_Y")
-    ecs_factory.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_low_balance_no_revoke_when_balance_positive(monkeypatch):
     monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", True)
-    with _enforcement() as (revoke, _):
+    with _enforcement() as revoke:
         await enforce_on_low_balance("org_Y", 42_000)
     revoke.assert_not_called()
 
@@ -79,7 +81,7 @@ async def test_low_balance_no_revoke_when_enforcement_off(monkeypatch):
     non-positive balance never fires the revoke — the Metronome pipeline
     can be validated end-to-end with zero blast radius."""
     monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", False)
-    with _enforcement() as (revoke, _):
+    with _enforcement() as revoke:
         await enforce_on_low_balance("org_Y", -100)
     revoke.assert_not_called()
 
@@ -89,7 +91,7 @@ async def test_low_balance_skips_refire_when_already_revoked(monkeypatch):
     """revoke_owner_bedrock stamps bedrock_revoked=True; subsequent triggers
     while the balance stays <= 0 must not re-fire the IAM delete."""
     monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", True)
-    with _enforcement(container_row={"owner_id": "org_Y", "bedrock_revoked": True}) as (revoke, _):
+    with _enforcement(container_row={"owner_id": "org_Y", "bedrock_revoked": True}) as revoke:
         await enforce_on_low_balance("org_Y", -9_999)
     revoke.assert_not_called()
 
@@ -99,7 +101,7 @@ async def test_missing_container_row_still_attempts_revoke(monkeypatch):
     """No containers row ≠ already revoked: revoke_owner_bedrock treats a
     missing IAM policy as already-revoked, so attempting is always safe."""
     monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", True)
-    with _enforcement(container_row=None) as (revoke, _):
+    with _enforcement(container_row=None) as revoke:
         await enforce_on_low_balance("org_Y", -1)
     revoke.assert_awaited_once_with("org_Y")
 
@@ -110,7 +112,7 @@ async def test_revoke_failure_does_not_propagate(monkeypatch):
     trigger redelivery storms) — the revoke is best-effort and the fast-gate
     flag already blocks new sends."""
     monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", True)
-    with _enforcement(container_row={"owner_id": "org_Y"}) as (revoke, _):
+    with _enforcement(container_row={"owner_id": "org_Y"}) as revoke:
         revoke.side_effect = RuntimeError("iam down")
         await enforce_on_low_balance("org_Y", -1)
     revoke.assert_awaited_once_with("org_Y")
@@ -131,7 +133,7 @@ async def test_trial_local_owner_is_never_revoked_on_zero_balance(monkeypatch):
     with _enforcement(
         container_row={"owner_id": "user_T", "status": "running"},
         provider_choice="trial_local_has_no_provider",  # provider_choice != bedrock_claude
-    ) as (revoke, _ecs):
+    ) as revoke:
         await enforce_on_low_balance("user_T", 0)
     revoke.assert_not_awaited()
 
@@ -140,7 +142,7 @@ async def test_trial_local_owner_is_never_revoked_on_zero_balance(monkeypatch):
 async def test_owner_with_no_provider_choice_is_never_revoked(monkeypatch):
     """A trial_local row carries provider_choice=None. Balance 0 must not revoke."""
     monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", True)
-    with _enforcement(container_row={"owner_id": "user_T"}, provider_choice=None) as (revoke, _ecs):
+    with _enforcement(container_row={"owner_id": "user_T"}, provider_choice=None) as revoke:
         await enforce_on_low_balance("user_T", -5000)
     revoke.assert_not_awaited()
 
@@ -153,7 +155,7 @@ async def test_bedrock_claude_owner_is_still_revoked_on_zero_balance(monkeypatch
     with _enforcement(
         container_row={"owner_id": "org_P", "status": "running"},
         provider_choice="bedrock_claude",
-    ) as (revoke, _ecs):
+    ) as revoke:
         await enforce_on_low_balance("org_P", 0)
     revoke.assert_awaited_once_with("org_P")
 
@@ -170,6 +172,6 @@ async def test_trial_local_with_bedrock_claude_provider_is_still_not_revoked(mon
         container_row={"owner_id": "user_upgrading", "status": "running"},
         provider_choice="bedrock_claude",
         subscription_status="trial_local",
-    ) as (revoke, _ecs):
+    ) as revoke:
         await enforce_on_low_balance("user_upgrading", 0)
     revoke.assert_not_awaited()

@@ -443,16 +443,16 @@ async def test_webhook_backup_write_bedrock_passes_no_connector(mock_repo):
 # trial_local -> paid conversion forces a cold reprovision off the trial box
 # ---------------------------------------------------------------------------
 #
-# The no-card local trial runs a locked-down trial container. When the owner
-# subscribes via /billing/trial-checkout, Stripe emits
-# customer.subscription.created (status trialing/active) and this handler flips
-# the persisted status off "trial_local". A RUNNING container's
-# provision_user_container only force-redeploys the stale task def + config, so
-# the handler must dispatch ecs_manager.reprovision_for_user, which scales to
-# zero + drains first so the follow-on dispatch_provision takes the
-# scale-from-zero branch that re-registers the task def AND rewrites
-# openclaw.json — by which point the stored status is already the paid one, so
-# resolve_provider_choice reads the owner's real paid provider.
+# The no-card local trial runs a locked-down trial workspace. When the owner subscribes via
+# /billing/trial-checkout, Stripe emits customer.subscription.created (status trialing/active)
+# and this handler flips the persisted status off "trial_local", then dispatches a provision.
+# By that point the stored status is already the paid one, so the provision re-derives the
+# owner's AIPs and rewrites every agent profile from the paid provider_choice.
+#
+# It used to route through ``ecs_manager.reprovision_for_user``, which scaled the trial task to
+# zero and drained it first so the follow-on provision took the scale-from-zero branch that
+# re-registered the task def AND rewrote openclaw.json. There is nothing to scale or drain: the
+# profile rewrite the provision performs IS what the next turn reads.
 
 
 async def _run_state_capturing_reprovision(mock_repo, prior_status, new_status):
@@ -475,11 +475,10 @@ async def _run_state_capturing_reprovision(mock_repo, prior_status, new_status):
         }
     )
     event = _subscription_event(default_payment_method=None, status=new_status)
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioning"})
+    dispatch = AsyncMock(return_value={"status": "reprovisioning"})
     created: list = []
     with (
-        patch("core.containers.get_ecs_manager", return_value=mgr),
+        patch("core.services.provision_dispatch.dispatch_provision", dispatch),
         patch.object(
             handlers.asyncio,
             "create_task",
@@ -489,7 +488,7 @@ async def _run_state_capturing_reprovision(mock_repo, prior_status, new_status):
         await handlers.handle_subscription_state(event, MagicMock())
         for coro in created:
             await coro
-    return mgr.reprovision_for_user, created
+    return dispatch, created
 
 
 async def _run_state_capturing_telemetry(mock_repo, prior_status, new_status):
@@ -505,10 +504,9 @@ async def _run_state_capturing_telemetry(mock_repo, prior_status, new_status):
         }
     )
     event = _subscription_event(default_payment_method=None, status=new_status)
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioning"})
+    dispatch = AsyncMock(return_value={"status": "reprovisioning"})
     with (
-        patch("core.containers.get_ecs_manager", return_value=mgr),
+        patch("core.services.provision_dispatch.dispatch_provision", dispatch),
         patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: coro.close() or MagicMock()),
         patch.object(handlers, "capture_product_event") as mock_capture,
     ):
@@ -672,10 +670,9 @@ async def test_trial_converted_telemetry_failure_does_not_break_webhook(mock_rep
         }
     )
     event = _subscription_event(default_payment_method=None, status="active")
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioning"})
+    dispatch = AsyncMock(return_value={"status": "reprovisioning"})
     with (
-        patch("core.containers.get_ecs_manager", return_value=mgr),
+        patch("core.services.provision_dispatch.dispatch_provision", dispatch),
         patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: coro.close() or MagicMock()),
         patch.object(
             handlers,
@@ -736,7 +733,6 @@ async def test_conversion_stamps_row_before_dispatching_reprovision(mock_repo, m
 
     event = _subscription_event(default_payment_method=None, status="active")
     with (
-        patch("core.containers.get_ecs_manager", return_value=MagicMock()),
         patch.object(handlers.asyncio, "create_task", side_effect=capture_task),
     ):
         await handlers.handle_subscription_state(event, MagicMock())
@@ -760,12 +756,11 @@ async def test_non_conversion_event_does_not_stamp_the_container_row(mock_repo, 
 async def test_reprovision_success_clears_substatus_and_pending(mock_container_repo):
     """Success: the converting marker is cleared AND conversion_pending drops,
     so the self-heal below never re-fires a conversion that already landed."""
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioning"})
-    with patch("core.containers.get_ecs_manager", return_value=mgr):
+    dispatch = AsyncMock(return_value={"status": "reprovisioning"})
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
-    mgr.reprovision_for_user.assert_awaited_once_with("org_x")
+    dispatch.assert_awaited_once_with("org_x")
     fields = _stamped_fields(mock_container_repo.update_conversion_fields)
     assert fields["substatus"] is None
     assert fields["conversion_pending"] is False
@@ -777,9 +772,8 @@ async def test_reprovision_failure_clears_substatus_but_keeps_pending(mock_conta
     nothing acts on), but conversion_pending survives — it is the flag the
     status-path self-heal keys off to re-fire the dead conversion. The task
     itself must not raise (it's a fire-and-forget create_task target)."""
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock(side_effect=RuntimeError("ecs boom"))
-    with patch("core.containers.get_ecs_manager", return_value=mgr):
+    dispatch = AsyncMock(side_effect=RuntimeError("ecs boom"))
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
         await handlers.run_conversion_reprovision("org_x")  # must not raise
 
     fields = _stamped_fields(mock_container_repo.update_conversion_fields)
@@ -802,12 +796,11 @@ async def test_reprovision_is_deferred_while_oauth_tokens_are_missing(mock_conta
     trial shape) and conversion_started_at (the self-heal's rate-limit
     anchor); record why it was deferred so the completion path can re-arm."""
     prerequisite_gate.return_value = _gate("oauth_required")
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock()
-    with patch("core.containers.get_ecs_manager", return_value=mgr):
+    dispatch = AsyncMock()
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
-    mgr.reprovision_for_user.assert_not_awaited()
+    dispatch.assert_not_awaited()
     fields = _stamped_fields(mock_container_repo.update_conversion_fields)
     assert fields == {"substatus": None, "conversion_deferred_reason": "oauth_required"}
 
@@ -828,12 +821,11 @@ async def test_deferral_rearms_itself_when_the_prerequisite_lands_before_the_mar
             "conversion_started_at": _fresh_ts(),
         }
     )
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock()
-    with patch("core.containers.get_ecs_manager", return_value=mgr):
+    dispatch = AsyncMock()
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
-    mgr.reprovision_for_user.assert_not_awaited()
+    dispatch.assert_not_awaited()
     writes = [c.args[1] for c in mock_container_repo.update_conversion_fields.await_args_list]
     assert writes == [{"substatus": None, "conversion_deferred_reason": "oauth_required"}]
     mock_container_repo.clear_conversion_deferral.assert_awaited_once_with("org_x", deferred_reason="oauth_required")
@@ -842,12 +834,11 @@ async def test_deferral_rearms_itself_when_the_prerequisite_lands_before_the_mar
 @pytest.mark.asyncio
 async def test_reprovision_is_deferred_while_byo_provider_is_unchosen(mock_container_repo, prerequisite_gate):
     prerequisite_gate.return_value = _gate("byo_provider_required")
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock()
-    with patch("core.containers.get_ecs_manager", return_value=mgr):
+    dispatch = AsyncMock()
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
-    mgr.reprovision_for_user.assert_not_awaited()
+    dispatch.assert_not_awaited()
     assert _stamped_fields(mock_container_repo.update_conversion_fields)["conversion_deferred_reason"] == (
         "byo_provider_required"
     )
@@ -858,12 +849,11 @@ async def test_reprovision_proceeds_past_gates_the_provisioner_can_survive(mock_
     """Credits / past-due are UX on a box that CAN be built; deferring over
     them would leave a paying owner on the trial shape."""
     prerequisite_gate.return_value = _gate("credits_required")
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioning"})
-    with patch("core.containers.get_ecs_manager", return_value=mgr):
+    dispatch = AsyncMock(return_value={"status": "reprovisioning"})
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
-    mgr.reprovision_for_user.assert_awaited_once_with("org_x")
+    dispatch.assert_awaited_once_with("org_x")
 
 
 @pytest.mark.asyncio
@@ -871,12 +861,11 @@ async def test_prerequisite_gate_read_failure_fails_open_to_reprovision(mock_con
     """A gate-read blip must not strand a paying owner on the trial shape;
     the provisioner is the real fence."""
     prerequisite_gate.side_effect = RuntimeError("ddb blip")
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioning"})
-    with patch("core.containers.get_ecs_manager", return_value=mgr):
+    dispatch = AsyncMock(return_value={"status": "reprovisioning"})
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
-    mgr.reprovision_for_user.assert_awaited_once_with("org_x")
+    dispatch.assert_awaited_once_with("org_x")
 
 
 @pytest.mark.asyncio
@@ -884,15 +873,14 @@ async def test_a_real_attempt_spends_the_deferral_marker(mock_container_repo):
     """Success or failure, once the reprovision was actually attempted the
     deferral marker is cleared — it only describes a conversion that has NOT
     been tried yet."""
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock(return_value={"status": "ok"})
-    with patch("core.containers.get_ecs_manager", return_value=mgr):
+    dispatch = AsyncMock(return_value={"status": "ok"})
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
         await handlers.run_conversion_reprovision("org_x")
     assert _stamped_fields(mock_container_repo.update_conversion_fields)["conversion_deferred_reason"] is None
 
     mock_container_repo.update_conversion_fields.reset_mock()
-    mgr.reprovision_for_user = AsyncMock(side_effect=RuntimeError("ecs down"))
-    with patch("core.containers.get_ecs_manager", return_value=mgr):
+    dispatch = AsyncMock(side_effect=RuntimeError("ecs down"))
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
         await handlers.run_conversion_reprovision("org_x")
     assert _stamped_fields(mock_container_repo.update_conversion_fields)["conversion_deferred_reason"] is None
 
@@ -1231,7 +1219,6 @@ async def test_second_conversion_event_noops_when_entry_already_claimed(
     event["type"] = "customer.subscription.updated"
     captured: list = []
     with (
-        patch("core.containers.get_ecs_manager", return_value=MagicMock()),
         patch.object(
             handlers.asyncio,
             "create_task",
@@ -1280,7 +1267,6 @@ async def test_conversion_entry_rolled_back_when_stamp_fails(mock_repo, mock_con
     )
     event = _subscription_event(default_payment_method=None, status="active")
     with (
-        patch("core.containers.get_ecs_manager", return_value=MagicMock()),
         patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: coro.close() or MagicMock()),
     ):
         # Must not raise (best-effort posture).
@@ -1418,7 +1404,7 @@ async def test_subscription_deleted_refreshes_owner_facts(facts_mock):
     }
     with (
         patch.object(handlers, "billing_repo") as repo,
-        patch("core.containers.get_ecs_manager") as ecs,
+        patch("core.services.hermes_provisioning.delete_workspace_runtime", AsyncMock()),
         patch(
             "core.services.paperclip_provisioning.build_paperclip_provisioning",
             AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
@@ -1436,7 +1422,6 @@ async def test_subscription_deleted_refreshes_owner_facts(facts_mock):
             return_value={"owner_id": "org_x", "owner_type": "org", "stripe_customer_id": "cus_x"}
         )
         repo.set_plan = AsyncMock()
-        ecs.return_value.delete_user_service = AsyncMock()
         await handlers.handle_subscription_deleted(event, billing_service)
 
     facts_mock.assert_awaited_once_with("org_x", account_overrides={"subscription_status": "canceled"})
@@ -1457,7 +1442,7 @@ async def test_subscription_deleted_resets_plan_to_standard(facts_mock):
     }
     with (
         patch.object(handlers, "billing_repo") as repo,
-        patch("core.containers.get_ecs_manager") as ecs,
+        patch("core.services.hermes_provisioning.delete_workspace_runtime", AsyncMock()),
         patch(
             "core.services.paperclip_provisioning.build_paperclip_provisioning",
             AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
@@ -1480,7 +1465,6 @@ async def test_subscription_deleted_resets_plan_to_standard(facts_mock):
             }
         )
         repo.set_plan = AsyncMock()
-        ecs.return_value.delete_user_service = AsyncMock()
         await handlers.handle_subscription_deleted(event, billing_service)
 
     repo.set_plan.assert_awaited_once()
@@ -1514,10 +1498,9 @@ async def _run_state(mock_repo, prior_status, new_status, **event_overrides):
         }
     )
     event = _subscription_event(default_payment_method=None, status=new_status, **event_overrides)
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioning"})
+    dispatch = AsyncMock(return_value={"status": "reprovisioning"})
     with (
-        patch("core.containers.get_ecs_manager", return_value=mgr),
+        patch("core.services.provision_dispatch.dispatch_provision", dispatch),
         patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: coro.close() or MagicMock()),
     ):
         await handlers.handle_subscription_state(event, MagicMock())
@@ -1602,9 +1585,8 @@ async def test_successful_conversion_clears_the_guard_timestamp(mock_repo, mock_
     hoisted above /recover's status split it also owns the MANUAL "Restart
     Gateway" action, so a stale stamp means a user clicking Restart on a wedged
     gateway gets `already_recovering` for minutes."""
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock(return_value={"status": "ok"})
-    with patch("core.containers.get_ecs_manager", return_value=mgr):
+    dispatch = AsyncMock(return_value={"status": "ok"})
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
     fields = mock_container_repo.update_conversion_fields.await_args.args[1]
@@ -1617,9 +1599,8 @@ async def test_failed_conversion_keeps_the_guard_markers(mock_repo, mock_contain
     """The failure path deliberately retains both markers — they are the only
     record that this owner is paying for a trial-shaped container, and what
     `maybe_resume_stuck_conversion` re-fires off."""
-    mgr = MagicMock()
-    mgr.reprovision_for_user = AsyncMock(side_effect=RuntimeError("ecs down"))
-    with patch("core.containers.get_ecs_manager", return_value=mgr):
+    dispatch = AsyncMock(side_effect=RuntimeError("ecs down"))
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
     fields = mock_container_repo.update_conversion_fields.await_args.args[1]

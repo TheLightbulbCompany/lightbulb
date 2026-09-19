@@ -6,6 +6,7 @@ resolution), ``get_admin_session_cookie``, and ``PaperclipAdminClient`` so
 nothing here touches a real Paperclip deployment.
 """
 
+import contextlib
 import json
 import re
 from contextlib import asynccontextmanager
@@ -618,13 +619,16 @@ async def test_list_vercel_projects_not_connected_raises_lookup_error():
 
 # --- auto_google_watch --------------------------------------------------------
 #
-# The gog layer is mocked at google_watch's runner helper (_run_gog), with
-# _gog_env stubbed so no EFS paths are touched — the REAL command construction
-# runs, and the tests assert exact argv. The fence being pinned: caller data
-# (the account email, the channel token) rides only as discrete argv elements.
-# The agent-side state file is written for real, under tmp_path via
-# _efs_root_patch (atomic_write skips its chown on a non-root euid, same as
-# the materializer tests).
+# The gog layer is mocked at google_watch's runner helper (_run_gog), with _gog_env stubbed so no
+# credential paths are touched — the REAL command construction runs, and the tests assert exact
+# argv. The fence being pinned: caller data (the account email, the channel token) rides only as
+# discrete argv elements.
+#
+# The agent-side state file is a profile write now, not an EFS one: it lands in EVERY roster
+# profile under `home/google-watch/`, which is `~/google-watch/` to the agent's shell. So
+# `_watch_state_patch` captures what write_profile_subtree was handed per agent instead of reading
+# a file back off disk — and that per-agent fan-out is itself the thing to assert, since the
+# trigger names a routine, not an agent.
 
 _GOOG_SECRET = {"webhookUrl": "https://pc/hooks/x", "webhookSecret": "pcsec_g1"}
 
@@ -651,8 +655,28 @@ def _gog_env_patch():
     return patch("core.services.google_watch._gog_env", return_value={"FAKE": "env"})
 
 
-def _efs_root_patch(tmp_path):
-    return patch("core.services.inbound_triggers.owner_efs_root", lambda owner_id: tmp_path / owner_id)
+class _WatchStateWrites:
+    """Captures ``hermes_profiles.write_profile_subtree`` calls: {agent_id: {rel_path: bytes}}."""
+
+    def __init__(self):
+        self.by_agent: dict[str, dict[str, bytes]] = {}
+
+    def __call__(self, owner_id, agent_id, files, prune):
+        self.by_agent.setdefault(agent_id, {}).update(files)
+
+    def state(self, agent_id="agent_ceo", public_id="pub_1"):
+        return json.loads(self.by_agent[agent_id][f"home/google-watch/{public_id}.json"])
+
+
+@contextlib.contextmanager
+def _watch_state_patch(roster=("agent_ceo",)):
+    """Yields the recorder, with the roster read and the profile writer both stubbed."""
+    writes = _WatchStateWrites()
+    with (
+        patch("core.services.hermes_profiles.write_profile_subtree", writes),
+        patch("core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": a} for a in roster])),
+    ):
+        yield writes
 
 
 def _channels_get_patch(existing=()):
@@ -674,6 +698,40 @@ def _channel_response(resource_id="res_1", expiration="1799999999000"):
 
 
 @pytest.mark.asyncio
+async def test_the_watch_state_is_seeded_into_every_roster_profile():
+    """The trigger names a ROUTINE, not an agent, and the watch is owner-level state -- one per
+    Google account -- so whichever agent's routine actually fires has to find the file.
+
+    Seeding only one profile means the re-arm clause reads a missing file on every other agent,
+    and the ≤7-day channel then expires silently. Each profile gets an identical seed; the agent
+    that re-arms rewrites ITS copy and the bridge's recency sync carries that back, leaving
+    siblings with a stale expiration they never read.
+    """
+    admin = _fake_admin(secret_material=_GOOG_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    run_gog = MagicMock(return_value=_channel_response(resource_id="res_cal_1"))
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(),
+        _gog_env_patch(),
+        patch("core.services.google_watch._run_gog", run_gog),
+        _watch_state_patch(roster=("agent_ceo", "agent_eng", "agent_fin")) as watch_writes,
+        _channels_get_patch(),
+        _channels_set_patch(),
+    ):
+        await seed_trigger_routine("owner_1", "google", ["calendar.changed"], resource="ada@example.com")
+
+    assert set(watch_writes.by_agent) == {"agent_ceo", "agent_eng", "agent_fin"}
+    seeds = [watch_writes.state(agent) for agent in watch_writes.by_agent]
+    assert all(seed == seeds[0] for seed in seeds)
+    # Profile-relative, and `home/` is what the bridge mounts as $HOME for a turn's shell -- so
+    # the path the maintenance clause tells the agent to read (`~/google-watch/...`) resolves.
+    assert all(list(files) == ["home/google-watch/pub_1.json"] for files in watch_writes.by_agent.values())
+
+
+@pytest.mark.asyncio
 async def test_seed_trigger_routine_auto_google_watch_calendar(tmp_path):
     """The calendar shape: events.watch via gog's generic Discovery caller on
     the picked account's primary calendar, channel token = the trigger's own
@@ -692,7 +750,7 @@ async def test_seed_trigger_routine_auto_google_watch_calendar(tmp_path):
         _google_accounts_patch(),
         _gog_env_patch(),
         patch("core.services.google_watch._run_gog", run_gog),
-        _efs_root_patch(tmp_path),
+        _watch_state_patch() as watch_writes,
         _channels_get_patch() as get_channels,
         _channels_set_patch() as set_channels,
     ):
@@ -730,16 +788,15 @@ async def test_seed_trigger_routine_auto_google_watch_calendar(tmp_path):
     assert patch_call.kwargs["routine_id"] == "rt_1"
     desc = patch_call.kwargs["body"]["description"]
     assert desc.startswith("Every run, FIRST do maintenance")
-    assert "/home/node/.openclaw/google-watch/pub_1.json" in desc
+    assert "~/google-watch/pub_1.json" in desc
     assert out["proxy_url"] in desc
     assert "-a ada@example.com" in desc
     assert "pcsec_g1" not in desc
     assert "A Google push notification just fired" in desc
 
-    # The agent-side state file: everything a re-arm needs, including the
-    # secret — 0600 on the owner's own EFS.
-    state_file = tmp_path / "owner_1" / "google-watch" / "pub_1.json"
-    assert json.loads(state_file.read_text()) == {
+    # The agent-side state file: everything a re-arm needs, including the secret. It lands in
+    # the profile, which is per-owner, so the secret never leaves the owner's own storage.
+    assert watch_writes.state() == {
         "kind": "calendar",
         "account": "ada@example.com",
         "calendar_id": "primary",
@@ -780,7 +837,7 @@ async def test_seed_trigger_routine_auto_google_watch_drive(tmp_path):
         _google_accounts_patch(),
         _gog_env_patch(),
         patch("core.services.google_watch._run_gog", run_gog),
-        _efs_root_patch(tmp_path),
+        _watch_state_patch() as watch_writes,
         _channels_get_patch() as get_channels,
         _channels_set_patch() as set_channels,
     ):
@@ -807,11 +864,10 @@ async def test_seed_trigger_routine_auto_google_watch_drive(tmp_path):
     # The drive maintenance clause names the drive re-arm command.
     desc = admin.patch_routine.await_args.kwargs["body"]["description"]
     assert "gog drive changes watch" in desc
-    assert "/home/node/.openclaw/google-watch/pub_1.json" in desc
+    assert "~/google-watch/pub_1.json" in desc
     assert "pcsec_g1" not in desc
 
-    state_file = tmp_path / "owner_1" / "google-watch" / "pub_1.json"
-    assert json.loads(state_file.read_text()) == {
+    assert watch_writes.state() == {
         "kind": "drive",
         "account": "ada@example.com",
         "address": out["proxy_url"],
@@ -1069,7 +1125,7 @@ async def test_seed_trigger_routine_gmail_push_starts_watch_and_records_entry(tm
         _google_accounts_patch(),
         _gog_env_patch(),
         patch("core.services.google_watch._run_gog", run_gog),
-        _efs_root_patch(tmp_path),
+        _watch_state_patch() as watch_writes,
         _channels_get_patch(),
         _channels_set_patch() as set_channels,
     ):
@@ -1086,11 +1142,10 @@ async def test_seed_trigger_routine_gmail_push_starts_watch_and_records_entry(tm
     # description nor the state file carries one.
     desc = admin.patch_routine.await_args.kwargs["body"]["description"]
     assert "gog gmail watch renew -a ada@example.com" in desc
-    assert "/home/node/.openclaw/google-watch/pub_1.json" in desc
+    assert "~/google-watch/pub_1.json" in desc
     assert "pcsec_g1" not in desc
 
-    state_file = tmp_path / "owner_1" / "google-watch" / "pub_1.json"
-    assert json.loads(state_file.read_text()) == {
+    assert watch_writes.state() == {
         "kind": "gmail",
         "account": "ada@example.com",
         "topic": _GMAIL_TOPIC,
@@ -1200,7 +1255,7 @@ async def test_seed_trigger_routine_gmail_push_row_write_failure_stops_watch(tmp
         _gog_env_patch(),
         patch("core.services.google_watch._run_gog", run_gog),
         patch("core.services.google_watch.stop_gmail_watch", stop),
-        _efs_root_patch(tmp_path),
+        _watch_state_patch(),
         _channels_get_patch(),
         _channels_set_patch() as set_channels,
         pytest.raises(RuntimeError, match="ddb down"),
@@ -1841,7 +1896,7 @@ async def test_attach_google_watch_appends_the_clause_after_the_owners_words(tmp
         _google_accounts_patch(),
         _gog_env_patch(),
         patch("core.services.google_watch._run_gog", run_gog),
-        _efs_root_patch(tmp_path),
+        _watch_state_patch(),
         _channels_get_patch(),
         _channels_set_patch(),
     ):
@@ -1854,7 +1909,7 @@ async def test_attach_google_watch_appends_the_clause_after_the_owners_words(tmp
 
     block = _appended_block(admin.patch_routine.await_args.kwargs["body"]["description"])
     assert block.startswith("Every run, FIRST do maintenance")
-    assert "/home/node/.openclaw/google-watch/pub_1.json" in block
+    assert "~/google-watch/pub_1.json" in block
     assert "pcsec_g1" not in block  # the channel token stays in the 0600 state file
 
     # The renewal schedule is what makes the watch self-renewing — attached
@@ -1876,7 +1931,7 @@ async def test_attach_gmail_push_appends_the_clause_after_the_owners_words(tmp_p
         patch(
             "core.services.google_watch._run_gog", MagicMock(return_value=json.dumps({"expiration": "1799999999000"}))
         ),
-        _efs_root_patch(tmp_path),
+        _watch_state_patch(),
         _channels_get_patch(),
         _channels_set_patch(),
     ):
@@ -1969,7 +2024,7 @@ async def test_attach_gmail_push_drops_its_channel_row_when_the_append_fails(tmp
             "core.services.google_watch._run_gog", MagicMock(return_value=json.dumps({"expiration": "1799999999000"}))
         ),
         patch("core.services.google_watch.stop_gmail_watch", stop),
-        _efs_root_patch(tmp_path),
+        _watch_state_patch(),
         patch(
             "core.services.inbound_triggers.integrations_repo.get_google_watch_channels",
             AsyncMock(side_effect=[[], [written]]),

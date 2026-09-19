@@ -13,27 +13,22 @@ os.environ.setdefault(
     "https://test.execute-api.us-east-1.amazonaws.com/test",
 )
 
-# service_token.mint() reads PAPERCLIP_SERVICE_TOKEN_KEY at call time;
-# every test in this module either patches mint() outright or runs the
-# create_agent path that calls it. Set a deterministic key so the few
-# call paths that exercise mint() unmocked don't crash.
-os.environ.setdefault("PAPERCLIP_SERVICE_TOKEN_KEY", "test-key-not-used")
-
 
 @pytest.fixture(autouse=True)
-def _ecs_default_container(monkeypatch):
-    """``create_agent`` picks its ADAPTER TYPE via
-    ``paperclip_agent_lifecycle.resolve_agent_adapter``, which reads the owner's
-    container row (``adapter_type_for``) -- a row that doesn't exist under test. A
-    MISSING row is the correct ECS default for that selection (see that function's
-    docstring), not a real DynamoDB call, so this stands in for "no container row
-    yet" everywhere. This is independent of ``runtime_transport.host_for``, which
-    is pinned to AgentCore fleet-wide -- every test's actual post-create wiring
-    goes through the Hermes profile write, never container pairing (deletion PR-1;
-    see ``tests/unit/services/test_runtime_rpc_agent_lifecycle_agentcore.py``)."""
+def _provisioned_container(monkeypatch):
+    """``create_agent`` builds its adapter via ``paperclip_agent_lifecycle.resolve_agent_adapter``,
+    which reads the owner's container row for the hook token -- and the shared builder REFUSES to
+    write an adapter without one (every run would 401 at the facade, reported per RUN rather than
+    as a broken agent). These tests are not about that guard, so hand them a provisioned row;
+    ``test_paperclip_agent_lifecycle.py`` covers the refusal. Tests needing a different row stub
+    the same read themselves."""
     from core.repositories import container_repo
 
-    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"hook_token": "hook-tok", "agentcore_runtime_arn": "arn:r1"}),
+    )
 
 
 @pytest.mark.asyncio
@@ -71,39 +66,18 @@ async def test_teams_create_agent_uses_user_id_for_personal_owner(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_container_is_reachable_uses_resolve_running_container(monkeypatch):
-    """The helper now goes through ecs_manager.resolve_running_container
-    (which uses ECS DescribeTasks) rather than reading a non-existent
-    private_ip field from DDB."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    fake_ecs = MagicMock()
-    fake_ecs.resolve_running_container = AsyncMock(
-        return_value=(
-            {"owner_id": "user_x", "gateway_token": "gw_tok", "service_name": "svc"},
-            "10.0.0.42",
-        )
-    )
-    monkeypatch.setattr("routers.teams.agents.get_ecs_manager", lambda: fake_ecs)
-
-    from routers.teams.agents import _container_is_reachable
-
-    reachable, ip, token = await _container_is_reachable("user_x")
-    assert reachable is True
-    assert ip == "10.0.0.42"
-    assert token == "gw_tok"
-    fake_ecs.resolve_running_container.assert_awaited_once_with("user_x")
-
-
-@pytest.mark.asyncio
-async def test_container_is_reachable_returns_false_when_no_running_task(monkeypatch):
-    """If resolve_running_container returns (None, None) — no row or
-    not running — _container_is_reachable returns (False, None, None)."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    fake_ecs = MagicMock()
-    fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
-    monkeypatch.setattr("routers.teams.agents.get_ecs_manager", lambda: fake_ecs)
+@pytest.mark.parametrize(
+    "row",
+    [
+        None,
+        {"owner_id": "user_x", "gateway_token": "gw_tok"},  # not provisioned yet
+        {"owner_id": "user_x", "agentcore_runtime_arn": "arn:r1"},  # no gateway token
+    ],
+)
+async def test_container_is_reachable_is_false_without_a_runtime_and_a_token(monkeypatch, row):
+    """Both halves are required: the ARN is the address and the token is the only way to
+    authenticate to it, so a row carrying one without the other is not reachable."""
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=row))
 
     from routers.teams.agents import _container_is_reachable
 
@@ -111,117 +85,65 @@ async def test_container_is_reachable_returns_false_when_no_running_task(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_teams_create_agent_mints_service_token_with_owner_id(monkeypatch):
-    """In org context the synthesized adapterConfig.authToken MUST be a
-    JWT minted with sub=owner_id (the
-    org_id), NOT sub=member_user_id. The WS authorizer treats service
-    tokens as orgId="" + userId=<sub>, so a member-keyed token routes
-    Paperclip wakes to the member's PERSONAL container instead of the
-    org's shared container.
+async def test_container_is_reachable_reads_the_row_and_pings_nothing(monkeypatch):
+    """It used to resolve a live task IP through ECS. Any ``InvokeAgentRuntime`` wakes the
+    microVM, so there is no task IP and no "is the task serving yet" question to answer -- and
+    asking one would WAKE the workspace just to answer whether an agent can be created in it."""
+    row = {"owner_id": "user_x", "gateway_token": "gw_tok", "agentcore_runtime_arn": "arn:r1"}
+    read = AsyncMock(return_value=row)
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", read)
+
+    from routers.teams.agents import _container_is_reachable
+
+    assert await _container_is_reachable("user_x") == (True, "agentcore", "gw_tok")
+    read.assert_awaited_once_with("user_x")
+
+
+@pytest.mark.asyncio
+async def test_container_is_reachable_reads_a_ddb_blip_as_not_reachable(monkeypatch):
+    """Defensive: the caller refuses to create an agent it cannot wire, which is the safe answer
+    when we simply could not tell."""
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id", AsyncMock(side_effect=RuntimeError("throttled"))
+    )
+
+    from routers.teams.agents import _container_is_reachable
+
+    assert await _container_is_reachable("user_x") == (False, None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_id", "org_id", "expected_owner"),
+    [("user_member_b", "org_xyz", "org_xyz"), ("user_personal", None, "user_personal")],
+)
+async def test_teams_create_agent_scopes_the_adapter_to_the_owner(monkeypatch, user_id, org_id, expected_owner):
+    """P1: the adapter is built for the OWNER, never the member who happens to be creating the
+    agent. It used to be a service JWT minted with ``sub=owner_id``, where a member's id would
+    have routed Paperclip's wakes to that member's own workspace; it is a per-workspace callback
+    URL plus that workspace's hook token now, and the same mistake points the agent at the wrong
+    workspace just as silently.
     """
     from routers.teams.agents import create_agent
     from routers.teams.schemas import CreateAgentBody
 
-    # create_agent no longer mints/synthesizes inline -- both now happen inside the shared
-    # paperclip_agent_lifecycle.resolve_agent_adapter (openclaw_gateway branch), so that's
-    # where the patches now go.
-    mint_mock = MagicMock(return_value="svc.tok.minted-for-org")
-    monkeypatch.setattr(
-        "core.services.paperclip_agent_lifecycle.service_token.mint",
-        mint_mock,
-    )
-    # Capture the synthesized adapter config so we can confirm the minted
-    # token threaded through.
-    synth_mock = MagicMock(return_value={"authToken": "svc.tok.minted-for-org"})
-    monkeypatch.setattr(
-        "core.services.paperclip_agent_lifecycle.synthesize_openclaw_adapter",
-        synth_mock,
-    )
-
-    # host_for is pinned to AgentCore now -- the row-less owner (the autouse
-    # fixture's ``None``) still routes through the Hermes profile write, not
-    # container pairing; mock it out so create_agent completes instead of
-    # rolling back on a real S3/Paperclip call.
-    monkeypatch.setattr(
-        "core.services.hermes_provisioning.write_profile_for_agent",
-        AsyncMock(),
-    )
+    monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", AsyncMock())
     admin_instance = MagicMock()
     admin_instance.create_agent = AsyncMock(return_value={"id": "a_new"})
-    monkeypatch.setattr(
-        "routers.teams.agents._admin",
-        lambda: admin_instance,
-    )
-    monkeypatch.setattr(
-        "routers.teams.agents._user_session",
-        AsyncMock(return_value="cookie123"),
-    )
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: admin_instance)
+    monkeypatch.setattr("routers.teams.agents._user_session", AsyncMock(return_value="cookie123"))
 
     ctx = MagicMock()
-    ctx.auth.user_id = "user_member_b"
-    ctx.auth.org_id = "org_xyz"
+    ctx.auth.user_id = user_id
+    ctx.auth.org_id = org_id
     ctx.company_id = "co_xyz"
 
     await create_agent(CreateAgentBody(name="Helper", role="engineer"), ctx)
 
-    # P1: token is minted under the OWNER's id, not the member's.
-    mint_mock.assert_called_once_with("org_xyz")
-    # The minted token threaded through to synthesize_openclaw_adapter.
-    assert synth_mock.call_args.kwargs["service_token"] == "svc.tok.minted-for-org"
+    config = admin_instance.create_agent.await_args.kwargs["adapter_config"]
+    assert config["apiBaseUrl"].endswith(f"/api/v1/internal/paperclip/hermes/{expected_owner}")
+    assert config["apiKey"] == "hook-tok"
 
-
-@pytest.mark.asyncio
-async def test_teams_create_agent_mints_with_user_id_for_personal_owner(monkeypatch):
-    """Regression guard for the personal-owner branch: when the caller
-    has no org_id, mint with sub=user_id so personal users keep working
-    after the org-context fix."""
-    from routers.teams.agents import create_agent
-    from routers.teams.schemas import CreateAgentBody
-
-    mint_mock = MagicMock(return_value="svc.tok.minted-for-personal")
-    monkeypatch.setattr(
-        "core.services.paperclip_agent_lifecycle.service_token.mint",
-        mint_mock,
-    )
-    monkeypatch.setattr(
-        "core.services.paperclip_agent_lifecycle.synthesize_openclaw_adapter",
-        MagicMock(return_value={"authToken": "svc.tok.minted-for-personal"}),
-    )
-    # host_for is pinned to AgentCore now -- see the comment in the sibling
-    # org-context test above.
-    monkeypatch.setattr(
-        "core.services.hermes_provisioning.write_profile_for_agent",
-        AsyncMock(),
-    )
-    admin_instance = MagicMock()
-    admin_instance.create_agent = AsyncMock(return_value={"id": "a_new"})
-    monkeypatch.setattr(
-        "routers.teams.agents._admin",
-        lambda: admin_instance,
-    )
-    monkeypatch.setattr(
-        "routers.teams.agents._user_session",
-        AsyncMock(return_value="cookie123"),
-    )
-
-    ctx = MagicMock()
-    ctx.auth.user_id = "user_personal"
-    ctx.auth.org_id = None
-    ctx.company_id = "co_personal"
-
-    await create_agent(CreateAgentBody(name="Helper", role="engineer"), ctx)
-
-    # Personal owner: sub == user_id (no regression).
-    mint_mock.assert_called_once_with("user_personal")
-
-
-# ---------------------------------------------------------------------------
-# M6-R59: the Teams create/patch doors on a MIGRATED (AgentCore) workspace.
-#
-# There is no container to pair with there, so the ECS pairing block was simply
-# skipped and nothing wrote the agent's Hermes profile -- the roster row existed
-# and the agent could never run a turn (found live on a migrated dev workspace).
-# ---------------------------------------------------------------------------
 
 _AGENTCORE_ROW = {
     "owner_id": "org_xyz",
@@ -379,19 +301,13 @@ async def test_teams_delete_agent_on_agentcore_removes_the_s3_profile(monkeypatc
 
     from core.services import paperclip_agent_lifecycle as lifecycle
 
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(return_value=(_AGENTCORE_ROW, "agentcore"))
     delete_profile = MagicMock()
-    workspace = MagicMock()
 
     from routers.teams.agents import delete_agent
 
     with (
         patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
-        patch("core.containers.get_ecs_manager", return_value=ecs),
-        patch("core.containers.get_workspace", return_value=workspace),
         patch("core.services.hermes_profiles.delete_profile", delete_profile),
-        patch("core.containers.workspace.cleanup_deleted_agent", new=AsyncMock()),
         patch.object(lifecycle, "delete_paperclip_for_chat", new=AsyncMock()) as delete_paperclip,
     ):
         result = await delete_agent("agent-1", _agentcore_ctx())

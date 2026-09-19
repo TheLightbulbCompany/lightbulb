@@ -60,7 +60,7 @@ def _client():
     """Lazy boto3 SESv2 client — deferred so import-time works without creds.
 
     A plain module-level function (not a class) so tests can monkeypatch it
-    directly, mirroring the `_client()` pattern in core/crypto/kms_secrets.py.
+    directly, for the same reason every other AWS client in this package is lazy.
     """
     global _ses_client
     if _ses_client is None:

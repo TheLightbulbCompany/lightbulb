@@ -41,7 +41,7 @@ from core.config import settings
 from core.services.credentials.materializers.base import (
     NODE_GID,
     NODE_UID,
-    owner_efs_root,
+    materializer_root,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,8 +92,8 @@ def _gog_env(owner_id: str) -> dict[str, str]:
     the owner's EFS. Hoisted so write/remove/export can never drift on the keyring
     location (a mismatch points gog at an empty keyring on ephemeral disk). The
     dirs are created so gog is never handed a path that does not exist."""
-    cfg = owner_efs_root(owner_id) / ".config"
-    data = owner_efs_root(owner_id) / ".local" / "share"
+    cfg = materializer_root() / ".config"
+    data = materializer_root() / ".local" / "share"
     cfg.mkdir(parents=True, exist_ok=True)
     data.mkdir(parents=True, exist_ok=True)
     return {
@@ -114,7 +114,7 @@ def _restore_gogcli_ownership(owner_id: str) -> None:
     uid-1000 gog — breaking the owner's OTHER accounts that share that client
     config. Best-effort: a chown failure must not mask the original error being
     re-raised (and is itself a no-op when running non-root)."""
-    root = owner_efs_root(owner_id)
+    root = materializer_root()
     for tree in (root / ".config" / "gogcli", root / ".local" / "share" / "gogcli"):
         try:
             _chown_tree_to_node(tree)
@@ -243,8 +243,8 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
         # The backend writes as root; the container reads as uid 1000. Chown BOTH the
         # config (OAuth client) and the data (keyring) trees, or the container's gog
         # can't read the EFS-resident keyring.
-        _chown_tree_to_node(owner_efs_root(owner_id) / ".config" / "gogcli")
-        _chown_tree_to_node(owner_efs_root(owner_id) / ".local" / "share" / "gogcli")
+        _chown_tree_to_node(materializer_root() / ".config" / "gogcli")
+        _chown_tree_to_node(materializer_root() / ".local" / "share" / "gogcli")
     except Exception:
         # Restore ownership of the root-written config/keyring; never delete tokens.
         _restore_gogcli_ownership(owner_id)
@@ -297,6 +297,6 @@ def remove(owner_id: str, provider_key: str, credential: dict) -> None:
     # grant is revoked at Google before its keyring is dropped.
     for account in credential.get("accounts", []):
         _revoke_grant_at_google(owner_id, account, env)
-    root = owner_efs_root(owner_id)
+    root = materializer_root()
     shutil.rmtree(root / ".local" / "share" / "gogcli", ignore_errors=True)
     shutil.rmtree(root / ".config" / "gogcli", ignore_errors=True)

@@ -112,30 +112,19 @@ class Settings(BaseSettings):
         """Parse CLERK_AUTHORIZED_PARTIES as comma-separated list."""
         return [p.strip() for p in self.CLERK_AUTHORIZED_PARTIES.split(",") if p.strip()]
 
-    # --- ECS Fargate ---
-    ECS_CLUSTER_ARN: str = ""
-    # ECS_TASK_DEFINITION removed — EcsManager now reads the latest CDK base
-    # revision live via describe_task_definition(family) on each provision.
-    # Per-user clones live in a separate family (`<base>-user`) so the base
-    # family is uncontaminated. See #410.
+    # --- Workspace runtime networking ---
+    # The VPC placement an owner's AgentCore runtime is created with
+    # (core/services/agentcore_runtime.py). Named for the ECS-era CDK outputs that still
+    # feed them; there is no ECS cluster or task definition any more.
     ECS_SUBNETS: str = ""  # comma-separated
     ECS_SECURITY_GROUP_ID: str = ""
 
     # PROVISION Step Functions state machine ARN — THE provisioning executor
     # (spec §7, PR-10; no flag, active on merge). Dispatched by
     # core.services.provision_dispatch.dispatch_provision via StartExecution;
-    # the one-shot scripts/provision_runner.py runs as an ECS task the
-    # machine supervises, never in-process in this backend.
+    # the one-shot scripts/provision_runner.py runs as a task the machine
+    # supervises, never in-process in this backend.
     PROVISION_STATE_MACHINE_ARN: str = ""
-
-    # --- Cloud Map ---
-    CLOUD_MAP_SERVICE_ARN: str = ""
-    CLOUD_MAP_NAMESPACE_NAME: str = ""
-    CLOUD_MAP_SERVICE_NAME: str = ""
-
-    # --- EFS ---
-    EFS_MOUNT_PATH: str = "/mnt/efs/users"
-    EFS_FILE_SYSTEM_ID: str = ""
 
     # Public S3 URL of the hosted AWS read-only connector CloudFormation
     # template (the public-read lightbulb-{env}-cfn-templates bucket, wired by CDK
@@ -160,11 +149,6 @@ class Settings(BaseSettings):
     core/observability/product_analytics.py to land billing-lifecycle events
     onto the person. This is the SAME public key the frontend ships as
     NEXT_PUBLIC_POSTHOG_KEY. Empty disables the bridge (events stay EMF-only)."""
-
-    # --- OpenClaw ---
-    # The container image is pinned in openclaw-version.json at the repo root
-    # and imported directly by the CDK container stack. No env var override
-    # in production — bump the JSON file to upgrade.
 
     # Webhook event-id dedup table (Stripe + Clerk). Conditional PutItem with
     # attribute_not_exists drops replays at the edge. Wired via CDK service-stack.
@@ -249,20 +233,10 @@ class Settings(BaseSettings):
     un-revokes a paid-up owner (see core/services/metronome_gate.py)."""
 
     TRIAL_WAKE_GATE_ENABLED: bool = True
-    """Kill switch for wake-on-intent gating of parked (stop_reason=trial_idle)
-    trial containers. Off = every wake_policy entry point returns ALLOW/no-op,
-    restoring wake-on-read exactly as before; stop_reason stamping and the
-    chat-send server wake stay live either way (harmless, keeps re-enable
-    coherent). Flipping requires a CDK deploy (~15-25 min) — but because the
-    suppress marker is a query param (no CORS surface), a plain backend code
-    revert is equally safe."""
-
-    TRIAL_WAKE_DAILY_BUDGET: int = 6
-    """Max legacy (un-flagged) poll-driven wakes of a parked trial container
-    per UTC day. Bounds already-open tabs running pre-gate frontend bundles —
-    the only lever that reaches them, since a never-reloaded tab keeps its old
-    JS for weeks. Explicit intent (wake verb, chat send, retry) is never
-    budgeted."""
+    """Kill switch for reporting an idle trial workspace as parked. Off = every
+    wake_policy entry point answers "not parked", so no surface renders "Agents
+    asleep". It is a REPORT, not a gate: AgentCore wakes the microVM on the next
+    invoke, so nothing is being held back either way."""
 
     BROWSER_EGRESS_PROXY_PORT: int = 0
     """Loopback port of the container's Cloudflare WARP local proxy, or 0 for
@@ -349,13 +323,6 @@ class Settings(BaseSettings):
     # truth and the app renders the localized price off the product itself.
     APPLE_IAP_PRODUCT_ID: str = ""
 
-    # openclaw.json schema gate (core/services/config_schema.py). "audit" logs
-    # + meters violations and lets the write through; "enforce" rejects it.
-    # Default audit because a wrong vendored schema would otherwise brick config
-    # delivery fleet-wide — untrusted marketplace slices are enforced regardless
-    # of this knob, so the risky input never rides on the default.
-    OPENCLAW_CONFIG_SCHEMA_MODE: str = "audit"
-
     # Marketplace (set by CDK ServiceStack — empty default lets the backend
     # boot in non-marketplace contexts like local unit tests).
     MARKETPLACE_LISTINGS_TABLE: str = ""
@@ -365,23 +332,15 @@ class Settings(BaseSettings):
     MARKETPLACE_SELLERS_TABLE: str = ""
     MARKETPLACE_ARTIFACTS_BUCKET: str = ""
 
-    # Litestream replica bucket for the local-sqlite container layout (set
-    # by CDK ServiceStack per env, dev-first). Empty means the env still runs
-    # the EFS state layout: the backend can reach hot SQLite directly on EFS
-    # and every local-sqlite code path (sentinel, S3 replica lifecycle) stays inert.
-    LITESTREAM_BUCKET: str = ""
-    # Hermes per-owner profile state (config.yaml/.env/SOUL.md — see core.services.hermes_profiles),
-    # in the SAME bucket as the litestream replicas. M4-R7: a later lane renames the CDK env var
-    # that feeds this; until that ships, an unset value falls back to LITESTREAM_BUCKET (see
-    # _default_owner_state_bucket below) so both names keep working.
+    # EVERY per-owner file the platform stores: the Hermes profiles
+    # (config.yaml/.env/SOUL.md — see core.services.hermes_profiles), the SQLite replicas the
+    # runtime restores at session start, marketplace install payloads, and room attachments.
+    # One bucket, one per-owner ``<owner>/*`` IAM grant. Set by CDK ServiceStack per env; empty
+    # means no owner state can be written, which the writers refuse rather than guess around.
     OWNER_STATE_BUCKET: str = ""
     # The gateway-only arm64 image a workspace's AgentCore runtime runs. Empty = the platform
     # is not enabled here; ensure_runtime refuses rather than guessing an image.
     AGENTCORE_GATEWAY_IMAGE: str = ""
-
-    # Provision new workspaces onto Hermes/AgentCore instead of ECS. Per ENVIRONMENT, not per
-    # owner: the choice is recorded on the container row at provision and read from there after.
-    HERMES_RUNTIME: bool = False
     # The Hermes bridge image a workspace's AgentCore runtime runs. Empty = provision_hermes_runtime
     # refuses rather than guessing an image (mirrors AGENTCORE_GATEWAY_IMAGE above).
     AGENTCORE_HERMES_IMAGE: str = ""
@@ -502,14 +461,6 @@ class Settings(BaseSettings):
     # secret — must stay stable forever or existing keyrings become unreadable.
     GOG_KEYRING_PASSWORD: str = ""
 
-    # KMS CMK ARN/alias for per-container secrets (operator device private keys,
-    # gateway tokens). Provisioned by CDK as the auth-stack KMS CMK (its ARN is
-    # threaded through as `CONTAINER_SECRETS_KMS_KEY_ID`).
-    # Backend calls kms:Encrypt at provision time and kms:Decrypt at handshake
-    # time — both operations are audited via CloudTrail so we have a per-call
-    # record of which backend instance touched which container's secrets.
-    CONTAINER_SECRETS_KMS_KEY_ID: str = ""
-
     # --- Paperclip integration ---
     # Internal URL the backend uses to reach Paperclip's REST API (private subnet).
     # e.g. ``http://paperclip.internal.isol8.local`` — set by CDK in deployed envs.
@@ -587,17 +538,6 @@ class Settings(BaseSettings):
         if v not in ("audit", "enforce"):
             raise ValueError(f"CLERK_AZP_MODE must be 'audit' or 'enforce'; got {v!r}")
         return v
-
-    @model_validator(mode="after")
-    def _default_owner_state_bucket(self) -> "Settings":
-        """M4-R7: OWNER_STATE_BUCKET falls back to LITESTREAM_BUCKET when unset.
-
-        A later lane renames the CDK env var that feeds this bucket name; until that ships,
-        both names must keep resolving to the same bucket.
-        """
-        if not self.OWNER_STATE_BUCKET:
-            self.OWNER_STATE_BUCKET = self.LITESTREAM_BUCKET
-        return self
 
     @model_validator(mode="after")
     def _validate_deployed_security(self) -> "Settings":

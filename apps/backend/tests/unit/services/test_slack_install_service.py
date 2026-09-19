@@ -1,43 +1,11 @@
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.services import slack_install_service as svc  # noqa: E402
-
-
-def test_account_block_is_http_with_secret_refs_and_no_plaintext():
-    block = svc.account_block("T0123ABC")
-    assert block["mode"] == "http"
-    assert block["webhookPath"] == "/slack/events/T0123ABC"
-    assert block["botToken"] == {"source": "env", "provider": "default", "id": "SLACK_BOT_TOKEN_T0123ABC"}
-    assert block["signingSecret"] == {"source": "env", "provider": "default", "id": "OPENCLAW_HOOK_TOKEN"}
-    assert "appToken" not in block
-    assert block["dmPolicy"] == "open" and block["allowFrom"] == ["*"]
-    assert block["slashCommand"] == {"enabled": True, "name": "lightbulb"}
-
-
-def test_account_block_opens_channels_so_mentions_are_answered():
-    """The plugin's schema materializes groupPolicy="allowlist" when unset, and
-    we never list channels — so every channel message was dropped with an
-    ephemeral "not in its allowlist" notice that only the mentioner saw.
-    "open" + the default requireMention=true is a normal Slack bot: it answers
-    when @-mentioned in a channel a human invited it to."""
-    block = svc.account_block("T0123ABC")
-    assert block["groupPolicy"] == "open"
-    # Both halves pinned: "open" without requireMention answers EVERY channel
-    # message, and requireMention's true is only a runtime `?? true` upstream.
-    assert block["requireMention"] is True
-
-
-def test_route_binding_targets_agent_by_account():
-    assert svc.route_binding("T1", "agent_f") == {
-        "type": "route",
-        "agentId": "agent_f",
-        "match": {"channel": "slack", "accountId": "T1"},
-    }
 
 
 def _install_kwargs(**over):
@@ -58,7 +26,15 @@ def _install_kwargs(**over):
 
 
 @pytest.mark.asyncio
-async def test_apply_install_writes_secret_row_taskdef_and_config_in_order():
+async def test_apply_install_writes_the_secret_then_the_row_then_the_status():
+    """Order is the whole contract: the token lands in Secrets Manager BEFORE the install row
+    claims the workspace, and the owner's card only says Connected once the row is ours -- a
+    conflict after the status flip would leave a Connected card for somebody else's workspace.
+
+    The task-definition roll and the ``channels.slack.accounts.<team>`` + route-binding writes
+    into ``openclaw.json`` that used to sit between the row and the greeting are gone with the
+    runtime that read them (Slack transport is M5/LATER).
+    """
     calls: list[str] = []
 
     async def _put_secret(owner, provider, cred):
@@ -72,46 +48,19 @@ async def test_apply_install_writes_secret_row_taskdef_and_config_in_order():
     async def _status(*a, **k):
         calls.append("status")
 
-    async def _refresh(owner, *, extra_secrets):
-        calls.append(f"refresh:{extra_secrets[0]['name']}:{extra_secrets[0]['valueFrom']}")
-        return "arn:td"
-
     async def _greet(token, user):
         calls.append(f"greet:{token}:{user}")
 
-    async def _patch(owner, patch, *, agent_for_account=None):
-        calls.append("patch")
-        assert patch["channels"]["slack"]["accounts"]["T1"]["mode"] == "http"
-        assert patch["channels"]["slack"]["enabled"] is True
-        # toolProgress off: progress posts each tool's OUTPUT into the channel,
-        # and a Read of a bundled SKILL.md dumped the whole file into the
-        # owner's shared company channel.
-        assert patch["channels"]["slack"]["streaming"] == {
-            "mode": "progress",
-            "progress": {"toolProgress": False},
-        }
-        assert agent_for_account == {"T1": "agent_f"}
-
-    mgr = MagicMock()
-    mgr.refresh_task_definition = _refresh
     with (
         patch("core.services.slack_install_service.integration_secret_store.put", _put_secret),
         patch("core.services.slack_install_service.slack_installs_repo.put", _put_row),
         patch("core.services.slack_install_service._mark_connected", _status),
-        patch("core.services.slack_install_service.get_ecs_manager", lambda: mgr),
-        patch("core.services.slack_install_service.patch_openclaw_config", _patch),
         patch("core.services.slack_install_service._greet_installer", _greet),
     ):
         row = await svc.apply_install(**_install_kwargs())
+
     assert row["status"] == "active"
-    assert calls == [
-        "secret:org_1:slack/T1:xoxb-1",
-        "row",
-        "status",
-        "refresh:SLACK_BOT_TOKEN_T1:arn:secret:bot_token::",
-        "patch",
-        "greet:xoxb-1:U_ADMIN",
-    ]
+    assert calls == ["secret:org_1:slack/T1:xoxb-1", "row", "status", "greet:xoxb-1:U_ADMIN"]
 
 
 @pytest.mark.asyncio
@@ -132,104 +81,50 @@ async def test_apply_install_conflict_raises_and_deletes_secret():
 
 
 @pytest.mark.asyncio
-async def test_apply_install_rolls_back_row_and_secret_when_patch_fails():
-    mgr = MagicMock()
-    mgr.refresh_task_definition = AsyncMock(return_value="arn:td")
-
+async def test_apply_install_unwinds_when_the_greeting_fails():
+    """The greeting is the last step and the only one that can fail after the row is active. A
+    partial failure must not leave an active install row plus a "Connected" card behind -- unwind
+    to the same state as if the install never happened."""
     with (
         patch("core.services.slack_install_service.integration_secret_store.put", AsyncMock(return_value="arn:secret")),
         patch(
             "core.services.slack_install_service.slack_installs_repo.put", AsyncMock(return_value={"status": "active"})
         ),
         patch("core.services.slack_install_service._mark_connected", AsyncMock()),
-        patch("core.services.slack_install_service.get_ecs_manager", lambda: mgr),
         patch(
-            "core.services.slack_install_service.patch_openclaw_config",
-            AsyncMock(side_effect=RuntimeError("efs down")),
+            "core.services.slack_install_service._greet_installer", AsyncMock(side_effect=RuntimeError("slack down"))
         ),
         patch("core.services.slack_install_service.revoke_install", AsyncMock(return_value=True)) as revoke,
     ):
-        with pytest.raises(RuntimeError, match="efs down"):
+        with pytest.raises(RuntimeError, match="slack down"):
             await svc.apply_install(**_install_kwargs())
     revoke.assert_awaited_once_with("T1")
 
 
 @pytest.mark.asyncio
 async def test_revoke_install_tears_down_everything():
+    """The secret delete is UNCONDITIONAL now. It used to be ordered behind a task-definition
+    roll that dropped the env reference first, and skipped when that roll failed -- a dead secret
+    ARN in a live task definition breaks the container's boot, while an orphaned secret is
+    harmless. Nothing but us references the secret, so there is nothing to order it behind."""
     row = {"team_id": "T1", "owner_id": "org_1", "agent_id": "agent_f", "status": "active"}
-    removed = {}
-    order: list[str] = []
-
-    async def _remove(owner, path, predicate):
-        removed["pred"] = predicate
-
-    async def _refresh(owner, *, drop_secrets=None):
-        order.append("refresh")
-        return "arn:td"
-
-    async def _delete_secret(owner, provider):
-        order.append("delete_secret")
-
-    mgr = MagicMock()
-    mgr.refresh_task_definition = AsyncMock(side_effect=_refresh)
 
     with (
         patch("core.services.slack_install_service.slack_installs_repo.get", AsyncMock(return_value=row)),
         patch("core.services.slack_install_service.slack_installs_repo.set_status", AsyncMock()) as set_status,
-        patch("core.services.slack_install_service.get_ecs_manager", lambda: mgr),
-        patch(
-            "core.services.slack_install_service.integration_secret_store.delete", AsyncMock(side_effect=_delete_secret)
-        ) as del_secret,
-        patch("core.services.slack_install_service.delete_openclaw_config_path", AsyncMock()) as del_path,
-        patch("core.services.slack_install_service.remove_from_openclaw_config_list", _remove),
-        patch(
-            "core.services.slack_install_service.channel_link_repo.sweep_by_owner_provider_agent",
-            AsyncMock(return_value=2),
-        ),
-        patch("core.services.slack_install_service.slack_installs_repo.list_for_owner", AsyncMock(return_value=[])),
-        patch("core.services.slack_install_service._mark_disconnected", AsyncMock()) as mark_disconnected,
-    ):
-        assert await svc.revoke_install("T1") is True
-    mark_disconnected.assert_awaited_once_with("org_1")
-    set_status.assert_awaited_once_with("T1", "revoked")
-    mgr.refresh_task_definition.assert_awaited_once_with("org_1", drop_secrets=["SLACK_BOT_TOKEN_T1"])
-    del_secret.assert_awaited_once_with("org_1", "slack/T1")
-    del_path.assert_awaited_once_with("org_1", ["channels", "slack", "accounts", "T1"])
-    assert order == ["refresh", "delete_secret"]
-    assert removed["pred"]({"type": "route", "agentId": "x", "match": {"channel": "slack", "accountId": "T1"}}) is True
-    assert removed["pred"]({"type": "route", "agentId": "x", "match": {"channel": "slack", "accountId": "T9"}}) is False
-
-
-@pytest.mark.asyncio
-async def test_revoke_continues_when_taskdef_refresh_fails():
-    """An ECS hiccup mid-revoke must not abort the rest of teardown — only the
-    secret delete is skipped (a dead ARN in a task-def is worse than an
-    orphaned secret, which is harmless)."""
-    row = {"team_id": "T1", "owner_id": "org_1", "agent_id": "agent_f", "status": "active"}
-
-    mgr = MagicMock()
-    mgr.refresh_task_definition = AsyncMock(side_effect=RuntimeError("ecs down"))
-
-    with (
-        patch("core.services.slack_install_service.slack_installs_repo.get", AsyncMock(return_value=row)),
-        patch("core.services.slack_install_service.slack_installs_repo.set_status", AsyncMock()) as set_status,
-        patch("core.services.slack_install_service.get_ecs_manager", lambda: mgr),
         patch("core.services.slack_install_service.integration_secret_store.delete", AsyncMock()) as del_secret,
-        patch("core.services.slack_install_service.delete_openclaw_config_path", AsyncMock()) as del_path,
-        patch("core.services.slack_install_service.remove_from_openclaw_config_list", AsyncMock()) as del_binding,
         patch(
             "core.services.slack_install_service.channel_link_repo.sweep_by_owner_provider_agent",
             AsyncMock(return_value=2),
-        ),
+        ) as sweep,
         patch("core.services.slack_install_service.slack_installs_repo.list_for_owner", AsyncMock(return_value=[])),
         patch("core.services.slack_install_service._mark_disconnected", AsyncMock()) as mark_disconnected,
     ):
         assert await svc.revoke_install("T1") is True
-    del_secret.assert_not_awaited()
-    del_path.assert_awaited_once_with("org_1", ["channels", "slack", "accounts", "T1"])
-    del_binding.assert_awaited_once()
-    set_status.assert_awaited_once_with("T1", "revoked")
     mark_disconnected.assert_awaited_once_with("org_1")
+    set_status.assert_awaited_once_with("T1", "revoked")
+    del_secret.assert_awaited_once_with("org_1", "slack/T1")
+    sweep.assert_awaited_once_with(owner_id="org_1", provider="slack", agent_id="agent_f")
 
 
 @pytest.mark.asyncio
@@ -239,16 +134,11 @@ async def test_revoke_keeps_slack_connected_while_another_workspace_remains():
     while the other workspace is still transporting."""
     row = {"team_id": "T1", "owner_id": "org_1", "agent_id": "agent_f", "status": "active"}
     remaining = [{"team_id": "T2", "owner_id": "org_1", "agent_id": "agent_g", "status": "active"}]
-    mgr = MagicMock()
-    mgr.refresh_task_definition = AsyncMock(return_value="arn:td")
 
     with (
         patch("core.services.slack_install_service.slack_installs_repo.get", AsyncMock(return_value=row)),
         patch("core.services.slack_install_service.slack_installs_repo.set_status", AsyncMock()),
-        patch("core.services.slack_install_service.get_ecs_manager", lambda: mgr),
         patch("core.services.slack_install_service.integration_secret_store.delete", AsyncMock()),
-        patch("core.services.slack_install_service.delete_openclaw_config_path", AsyncMock()),
-        patch("core.services.slack_install_service.remove_from_openclaw_config_list", AsyncMock()),
         patch(
             "core.services.slack_install_service.channel_link_repo.sweep_by_owner_provider_agent",
             AsyncMock(return_value=0),
@@ -268,16 +158,11 @@ async def test_revoke_ignores_a_stale_gsi_echo_of_the_revoked_row():
     revoked can still read as active. It must not count as "remaining"."""
     row = {"team_id": "T1", "owner_id": "org_1", "agent_id": "agent_f", "status": "active"}
     stale = [{"team_id": "T1", "owner_id": "org_1", "agent_id": "agent_f", "status": "active"}]
-    mgr = MagicMock()
-    mgr.refresh_task_definition = AsyncMock(return_value="arn:td")
 
     with (
         patch("core.services.slack_install_service.slack_installs_repo.get", AsyncMock(return_value=row)),
         patch("core.services.slack_install_service.slack_installs_repo.set_status", AsyncMock()),
-        patch("core.services.slack_install_service.get_ecs_manager", lambda: mgr),
         patch("core.services.slack_install_service.integration_secret_store.delete", AsyncMock()),
-        patch("core.services.slack_install_service.delete_openclaw_config_path", AsyncMock()),
-        patch("core.services.slack_install_service.remove_from_openclaw_config_list", AsyncMock()),
         patch(
             "core.services.slack_install_service.channel_link_repo.sweep_by_owner_provider_agent",
             AsyncMock(return_value=0),

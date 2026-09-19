@@ -6,6 +6,10 @@ a thread we cannot identify must fall back to the old throwaway session rather
 than to a key that the next message in that thread could not re-derive.
 """
 
+import re
+
+import pytest
+
 from core.services.agent_mail_thread import derive_thread_root, thread_session_key
 
 ROOT = "<0100019fab803ac1-aaaa@email.amazonses.com>"
@@ -64,18 +68,36 @@ def test_different_threads_get_different_keys():
     assert a != b
 
 
-def test_key_carries_the_allowlisted_prefix():
-    """`hooks.allowedSessionKeyPrefixes` is what bounds a leaked hook token to
-    email threads. A key outside it is rejected by the container outright.
-
-    ⚠️ COUPLED: this prefix must stay covered by
-    ``core/containers/config.py``'s ``hooks.allowedSessionKeyPrefixes`` AND by
-    the copy of that list already baked into each container's openclaw.json.
-    Renaming one side alone silently stops inbound agent mail from reaching
-    any session."""
+def test_key_carries_the_mail_prefix():
     key = thread_session_key({"Message-ID": SELF})
     assert key is not None
     assert key.startswith("lightbulb-email:")
+
+
+@pytest.mark.parametrize(
+    "message_id",
+    [
+        "<agent:other:lightbulb:channel:room-1@x>",
+        "<paperclip:company:c1:agent:a1:issue:i1@x>",
+        "<lightbulb-email:deadbeefdeadbeef@x>",
+        "<../../etc/passwd@x>",
+        "<" + "A" * 4000 + "@x>",
+    ],
+    ids=["room-key", "paperclip-key", "another-thread", "traversal", "huge"],
+)
+def test_a_sender_cannot_steer_the_key_out_of_the_mail_namespace(message_id):
+    """The bridge takes ``sessionKey`` VERBATIM (``turn._resolve_session_key``), so the shape
+    of this key is the whole boundary — and it is guaranteed by construction, not by an
+    allowlist: the sender's Message-ID is the SHA-256 input, never interpolated.
+
+    This replaces the container's ``hooks.allowedSessionKeyPrefixes``, which bounded the
+    OpenClaw gateway's own RPC surface (a hook-token holder naming a ``sessionKey`` on
+    ``chat.send``) and has no Hermes equivalent. Nothing reachable from outside the backend can
+    name a session any more; this test pins the one place a sender's bytes get near one.
+    """
+    key = thread_session_key({"Message-ID": message_id})
+    assert key is not None
+    assert re.fullmatch(r"lightbulb-email:[0-9a-f]{16}", key), key
 
 
 def test_key_is_hashed_not_the_raw_message_id():

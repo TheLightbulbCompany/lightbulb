@@ -1,50 +1,28 @@
-"""Deliver an inbound agent-email message into the owner's running OpenClaw container.
+"""Deliver an inbound agent-email message into the owner's AgentCore runtime.
 
-Mirrors ``routers/hooks_proxy.py``'s resolve-container -> read hook_token ->
-POST-to-``/hooks/agent`` pattern, but for internal-origin inbound mail rather
-than external webhook callers.
+Mail enters on the one inbound door the Hermes bridge serves, tagged with its own
+``eventKind``. AgentCore starts the microVM on invoke, so there is no scaled-to-zero
+service to wake first -- the invoke itself holds through the cold start (~90s budget,
+the same one the canonical room ingress uses).
 
-**Wakes a scaled-to-zero container, gated by the SAME cap predicate chat and
-container-start use.** If ``resolve_running_container`` reports no IP, the
-container is a free-tier box that scaled to zero while idle. We check
-``trial_cap.trial_block_reason`` ourselves before waking: an over-cap owner
-is never woken by mail (``"container_not_running"``, same as before -- the
-caller's cap check upstream already normally intercepts this, but this
-service must not wake an over-cap owner even if called from somewhere that
-skipped that check). An under-cap owner gets ``start_user_service`` fired and
-the wake stamped (``container_repo.stamp_email_cold_wake``), and we return
-``"woken"`` -- we do NOT wait for the container and do NOT POST in this
-request. Delivery of this specific message is completed by **SES's own
-retry**: the caller maps ``"woken"`` to HTTP 503, the ses-inbound Lambda
-re-raises on a 5xx (see ``_post_to_backend`` in
-``apps/infra/lambda/ses-inbound/index.py``), and because its SES invocation
-is asynchronous, AWS retries it roughly a minute later -- by which time the
-Fargate cold start has finished and the normal ``"delivered"`` path runs.
-Nothing is queued, polled, or held in memory here; a backend restart between
-the wake and the retry loses nothing because there is nothing in-process to
-lose.
+**Still cap-gated.** A cold start is cost, so it goes through the SAME predicate chat
+and container-start use: an over-cap trial owner is never started by mail
+(``"container_not_running"``). The caller's cap check upstream normally intercepts
+this, but this service must not start an over-cap owner even if called from somewhere
+that skipped it.
 
-**Never raises.** Callers (the inbound mail webhook handler) must be able to
-treat this as a terminal step; every failure mode collapses to ``"error"``.
+**Never raises.** Callers (the inbound mail webhook handler) must be able to treat this
+as a terminal step; every failure mode collapses to ``"error"``.
 """
 
 import logging
 
-import httpx
-
-from core.containers import get_ecs_manager
-from core.containers.ecs_manager import GATEWAY_PORT
 from core.repositories import container_repo
 from core.services import runtime_transport
 from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S
 from core.services.trial_cap import trial_block_reason
 
 logger = logging.getLogger(__name__)
-
-
-def _client_factory() -> httpx.AsyncClient:
-    """Build the upstream HTTP client. Module-level so tests can swap in a stub transport."""
-    return httpx.AsyncClient(timeout=10)
 
 
 async def deliver_to_agent(
@@ -55,136 +33,49 @@ async def deliver_to_agent(
     idempotency_key: str,
     session_key: str | None = None,
 ) -> str:
-    """POST an inbound message to the owner's running container's agent hook.
+    """POST an inbound message to the owner's runtime.
 
-    Returns one of ``"delivered"``, ``"woken"``, ``"container_not_running"``,
-    ``"error"``. Never raises.
+    Returns one of ``"delivered"``, ``"container_not_running"``, ``"error"``. Never raises.
     """
     try:
-        container, ip = await get_ecs_manager().resolve_running_container(owner_id)
-        if not ip:
-            # Asleep. Waking is cost, so it goes through the SAME cap
-            # predicate chat and container-start use -- an over-cap owner is
-            # never woken by mail.
-            if await trial_block_reason(owner_id) is not None:
-                return "container_not_running"
-            await get_ecs_manager().start_user_service(owner_id)
-            await container_repo.stamp_email_cold_wake(owner_id)
-            # Delivery is completed by SES's OWN retry, not by anything here.
-            # The caller maps "woken" to a 503, the ingest Lambda re-raises on
-            # 5xx, and its async invocation is retried ~1 min later -- by which
-            # time the Fargate cold start (~40s) has finished. Nothing is
-            # queued or held in memory, so a backend restart loses nothing.
-            return "woken"
+        container = await container_repo.get_by_owner_id(owner_id)
+        if not container or not container.get("agentcore_runtime_arn"):
+            return "container_not_running"
+        if await trial_block_reason(owner_id) is not None:
+            return "container_not_running"
 
-        if runtime_transport.host_for(container or {}) == "agentcore":
-            # Hermes has no OpenClaw hooks ingress; mail enters on the one inbound door the
-            # bridge serves, tagged with its own eventKind. `deliver:false` goes away with the
-            # channel-outbound layer that made it necessary -- the bridge has none. The bridge
-            # gates this door on the GATEWAY token (server.py's _authorized), not the hook
-            # token used below for the ECS `/hooks/agent` branch -- the two are independently
-            # minted and never coincide (final-review C2).
-            gateway_token = (container or {}).get("gateway_token") or ""
-            response = await runtime_transport.request(
-                container,
-                f"/plugins/lightbulb-channel/inbound/{agent_id}",
-                ip=ip,
-                json_body={
-                    "version": 1,
-                    "eventId": idempotency_key,
-                    "eventKind": "agent_mail",
-                    "targetAgentId": agent_id,
-                    # Omitted entirely (never sent as a literal `null`) when there's no
-                    # usable Message-ID to derive one from -- same idiom as the ECS branch
-                    # below, and what a well-behaved JSON producer does for "no value" rather
-                    # than asserting a null.
-                    **({"sessionKey": session_key} if session_key else {}),
-                    "message": {"text": message},
-                },
-                headers={"Authorization": f"Bearer {gateway_token}"},
-                # AgentCore holds the invoke through a cold microVM start (~90s budget,
-                # same as the canonical ingress caller in openclaw_work._post) -- a mail
-                # delivery to a parked workspace must outlast that, not the old 10s ECS-era
-                # budget.
-                timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
+        # The bridge gates this door on the GATEWAY token (server.py's `_authorized`), not the
+        # hook token -- the two are independently minted and never coincide (final-review C2).
+        gateway_token = container.get("gateway_token") or ""
+        response = await runtime_transport.request(
+            container,
+            f"/plugins/lightbulb-channel/inbound/{agent_id}",
+            json_body={
+                "version": 1,
+                "eventId": idempotency_key,
+                "eventKind": "agent_mail",
+                "targetAgentId": agent_id,
+                # Omitted entirely (never sent as a literal `null`) when there is no usable
+                # Message-ID to derive one from. A stable per-thread key is what makes a reply
+                # reach the SAME session as the message it answers.
+                **({"sessionKey": session_key} if session_key else {}),
+                "message": {"text": message},
+            },
+            headers={"Authorization": f"Bearer {gateway_token}"},
+            # AgentCore holds the invoke through a cold microVM start -- a mail delivery to a
+            # parked workspace must outlast that, not the old 10s ECS-era budget.
+            timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
+        )
+        # 202 accepted and 200 replayed (idempotent replay of the same eventId) both mean the
+        # message reached the agent.
+        if not 200 <= response.status_code < 300:
+            logger.warning(
+                "agent_mail_delivery failed owner=%s agent=%s err=agentcore inbound returned %s",
+                owner_id,
+                agent_id,
+                response.status_code,
             )
-            # 202 accepted and 200 replayed (idempotent replay of the same eventId) both mean
-            # the message reached the agent.
-            if not 200 <= response.status_code < 300:
-                logger.warning(
-                    "agent_mail_delivery failed owner=%s agent=%s err=agentcore inbound returned %s",
-                    owner_id,
-                    agent_id,
-                    response.status_code,
-                )
-                return "error"
-            return "delivered"
-
-        hook_token = (container or {}).get("hook_token") or ""
-        headers = {"Authorization": f"Bearer {hook_token}"}
-        target = f"http://{ip}:{GATEWAY_PORT}/hooks/agent"
-        body = {
-            "message": message,
-            "agentId": agent_id,
-            "name": "Email",
-            "idempotencyKey": idempotency_key,
-            # Stable per-thread session so a reply reaches the SAME session as
-            # the message it answers. Omitted -> the container generates its
-            # own `hook:<uuid>`, i.e. the old cold-start-per-email behaviour,
-            # which is the right fallback for mail with no usable message-id.
-            #
-            # Requires hooks.allowRequestSessionKey=true in the container
-            # config: upstream rejects a request-supplied key otherwise
-            # (resolveHookSessionKey, source="request"). The key is bounded by
-            # hooks.allowedSessionKeyPrefixes, which is what keeps a leaked
-            # hook token from claiming arbitrary session ownership.
-            **({"sessionKey": session_key} if session_key else {}),
-            # Delivery opt-out. OpenClaw "channels" are transport PLUGINS
-            # (slack/discord/telegram); our email is not one of them — the
-            # agent answers by invoking lightbulb-mail.sh send, which comes back
-            # through our own backend to SES. Upstream defaults `deliver` to
-            # true (`resolveHookDeliver`: anything but false means deliver)
-            # and `channel` to "last", so after the run did its work OpenClaw
-            # tried to deliver the final message to a channel, found none, and
-            # ended EVERY inbound-email run with
-            #     status=error "Channel is required (no configured channels...)"
-            # even on a fully successful reply. That permanently poisoned
-            # status=error as a signal — a real failure looked identical to a
-            # working one. Opting out is what this field exists for.
-            "deliver": False,
-        }
-
-        async with _client_factory() as client:
-            response = await client.post(target, json=body, headers=headers)
-
-            # BACKWARD COMPATIBILITY, and it is load-bearing: a container
-            # provisioned before hooks.allowRequestSessionKey was enabled
-            # REJECTS a request-supplied session key with a hard 400 --
-            #     if (!sessionKey.ok) sendJson(res, 400, ...)
-            # (gateway/server/hooks-request-handler.ts). raise_for_status would
-            # turn that into "error" -> the router's 503 -> SES retries -> the
-            # same 400 forever, i.e. inbound email BROKEN on every container
-            # whose openclaw.json predates the flag. Config lives on each
-            # owner's EFS volume, so a backend deploy does NOT update them;
-            # they only pick it up on reprovision or via
-            # scripts/reapply_openclaw_config.py.
-            #
-            # So a 400 while we supplied a key means "this container is older
-            # than the flag" -- retry once WITHOUT it and take the throwaway
-            # session. Strictly better than failing: the message still reaches
-            # the agent, just without thread continuity. Self-healing too, with
-            # no need to track which containers have been updated.
-            if response.status_code == 400 and session_key:
-                logger.info(
-                    "agent_mail_delivery: container rejected sessionKey (pre-flag config), "
-                    "retrying unthreaded owner=%s agent=%s",
-                    owner_id,
-                    agent_id,
-                )
-                body.pop("sessionKey", None)
-                response = await client.post(target, json=body, headers=headers)
-
-        response.raise_for_status()
+            return "error"
         return "delivered"
     except Exception as exc:  # noqa: BLE001 — must never raise; every failure -> "error"
         logger.warning("agent_mail_delivery failed owner=%s agent=%s err=%s", owner_id, agent_id, exc)

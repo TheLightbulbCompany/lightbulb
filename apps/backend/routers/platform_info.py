@@ -20,7 +20,7 @@ handler builds each dict from a fixed field allowlist — never ``model_dump()``
 
 from fastapi import APIRouter
 
-from core.containers.config import CHANNEL_PROVIDER_IDS
+from core.constants import CHANNEL_PROVIDER_IDS
 from core.services.credentials import registry
 
 router = APIRouter()

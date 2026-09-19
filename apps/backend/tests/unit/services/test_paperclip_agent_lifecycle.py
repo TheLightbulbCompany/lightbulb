@@ -2,8 +2,8 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
-from core.services import paperclip_adapter_config as cfg_module
 from core.services import paperclip_agent_lifecycle as lifecycle
+from core.services.paperclip_adapter_config import AdapterConfigError
 
 
 def _wire_prepare(monkeypatch, agents):
@@ -122,7 +122,7 @@ async def test_paperclip_delete_conditionally_removes_starter_uuid(monkeypatch):
 
 def _wire_repoint(monkeypatch, *, hook_token="hook-tok"):
     """Paperclip admin behind a real async context manager (``repoint_agent_adapter`` uses
-    ``async with httpx.AsyncClient(...)``), plus the container row its http branch reads."""
+    ``async with httpx.AsyncClient(...)``), plus the container row the adapter builder reads."""
     admin = MagicMock()
     admin.patch_agent = AsyncMock(return_value={})
 
@@ -136,22 +136,26 @@ def _wire_repoint(monkeypatch, *, hook_token="hook-tok"):
     monkeypatch.setattr(lifecycle.httpx, "AsyncClient", lambda **_kwargs: _Client())
     monkeypatch.setattr(lifecycle, "PaperclipAdminClient", lambda http_client: admin)
     monkeypatch.setattr(lifecycle, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
-    monkeypatch.setattr(lifecycle.service_token, "mint", lambda owner_id: "svc-jwt")
     monkeypatch.setattr(lifecycle.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": hook_token}))
     return admin
 
 
 @pytest.mark.asyncio
-async def test_repoint_moves_an_existing_agent_onto_the_http_adapter(monkeypatch):
-    """The whole point: an agent CREATED on ECS keeps ``openclaw_gateway`` forever, so a migrated
-    workspace dials an operator socket at a dead address for every routine/issue/Run."""
+async def test_repoint_moves_an_existing_agent_onto_the_native_adapter(monkeypatch):
+    """The whole point: an agent CREATED on the old runtime keeps ``openclaw_gateway`` forever,
+    and nothing re-picks the adapter, so a migrated workspace dials an operator WebSocket at an
+    address that no longer resolves -- for every routine fire, issue run and Teams Run/Retry,
+    while room chat (which rides the WORK bus, not the adapter) keeps working. Nothing looks
+    broken."""
     admin = _wire_repoint(monkeypatch)
     agent = {"id": "agent-1", "name": "Ada", "adapterType": "openclaw_gateway"}
 
-    assert await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="agentcore") is True
+    assert await lifecycle.repoint_agent_adapter("org_1", agent) is True
 
     body = admin.patch_agent.await_args.kwargs["body"]
     assert body["adapterType"] == lifecycle.HERMES_GATEWAY_TYPE
+    # replaceAdapterConfig, not a merge: the old config carries a device private key and a
+    # relay URL, and a merged result would keep both alongside the new fields.
     assert body["replaceAdapterConfig"] is True
     assert body["adapterConfig"]["apiBaseUrl"].endswith("/api/v1/internal/paperclip/hermes/org_1")
     assert body["adapterConfig"]["apiKey"] == "hook-tok"
@@ -160,121 +164,52 @@ async def test_repoint_moves_an_existing_agent_onto_the_http_adapter(monkeypatch
 
 @pytest.mark.asyncio
 async def test_repoint_is_idempotent_on_an_agent_already_on_the_target(monkeypatch):
-    """A re-entered migration tail / re-run rollback must re-point only what is still wrong."""
+    """It is the only repair path for a stray `openclaw_gateway` row, so it has to be safe to run
+    across a whole roster: an agent already on the native adapter is left alone."""
     admin = _wire_repoint(monkeypatch)
     agent = {"id": "agent-1", "adapterType": lifecycle.HERMES_GATEWAY_TYPE}
 
-    assert await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="agentcore") is False
+    assert await lifecycle.repoint_agent_adapter("org_1", agent) is False
 
     admin.patch_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_repoint_refuses_to_write_a_native_adapter_with_no_hook_token(monkeypatch):
-    """An empty token mints an adapter whose every run 401s at the facade — and Paperclip
+    """An empty token mints an adapter whose every run 401s at the facade -- and Paperclip
     reports that per RUN (``hermes_gateway_auth_failed``), not as a broken agent, so a
-    half-re-pointed workspace looks healthy. The guard now lives in the shared builder
-    (``AdapterConfigError``), so the seed and ``/teams`` create refuse it identically rather
-    than this door alone having a private check."""
+    half-re-pointed workspace looks healthy. The guard lives in the shared builder
+    (``AdapterConfigError``), so the seed and ``/teams`` create refuse it identically rather than
+    this door alone having a private check."""
     admin = _wire_repoint(monkeypatch, hook_token="")
     agent = {"id": "agent-1", "adapterType": "openclaw_gateway"}
 
-    with pytest.raises(cfg_module.AdapterConfigError, match="hook_token"):
-        await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="agentcore")
+    with pytest.raises(AdapterConfigError):
+        await lifecycle.repoint_agent_adapter("org_1", agent)
 
     admin.patch_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_repoint_back_to_gateway_binds_the_operator_device(monkeypatch):
-    """Rollback: a freshly synthesized gateway adapter carries the service JWT as ``authToken``
-    and an unregistered device, so the live gateway rejects it until the per-agent bind runs."""
+async def test_repoint_raises_rather_than_reporting_a_partial_success(monkeypatch):
+    """A half-re-pointed workspace looks healthy, which is the entire defect this closes -- so a
+    failed PATCH must raise, and the same call must converge on a retry."""
     admin = _wire_repoint(monkeypatch)
-    monkeypatch.setattr(lifecycle.settings, "ENVIRONMENT", "")  # -> ws://localhost:8000, allowlisted
-    monkeypatch.setattr(lifecycle.service_token, "mint", lambda owner_id: "svc-jwt")
-    paired = AsyncMock()
-    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", paired)
-    agent = {"id": "agent-1", "adapterType": lifecycle.HERMES_GATEWAY_TYPE}
+    admin.patch_agent.side_effect = [RuntimeError("paperclip 503"), {}]
+    agent = {"id": "agent-1", "adapterType": "openclaw_gateway"}
 
-    assert await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="ecs", gateway_token="gw") is True
+    with pytest.raises(RuntimeError, match="paperclip 503"):
+        await lifecycle.repoint_agent_adapter("org_1", agent)
 
-    body = admin.patch_agent.await_args.kwargs["body"]
-    assert body["adapterType"] == lifecycle.OPENCLAW_GATEWAY_TYPE
-    assert body["adapterConfig"]["authToken"] == "gw"
-    assert body["adapterConfig"]["agentId"] == "agent-1"
-    assert body["adapterConfig"]["claimedApiKeyPath"].endswith("workspace-agent-1/paperclip-claimed-api-key.json")
-    paired.assert_awaited_once()
-    assert paired.await_args.kwargs["gateway_token"] == "gw"
-    assert paired.await_args.kwargs["paperclip_agent"]["adapterConfig"] == body["adapterConfig"]
-
-
-@pytest.mark.asyncio
-async def test_repoint_back_to_gateway_requires_the_gateway_token_before_patching(monkeypatch):
-    admin = _wire_repoint(monkeypatch)
-    agent = {"id": "agent-1", "adapterType": lifecycle.HERMES_GATEWAY_TYPE}
-
-    with pytest.raises(RuntimeError, match="gateway_token"):
-        await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="ecs")
-
-    admin.patch_agent.assert_not_awaited()
-
-
-def _partial_gateway_adapter():
-    return {
-        "url": "ws://localhost:8000?token=svc-jwt&clientId=paperclip-operator",
-        "authToken": "svc-jwt",
-        "sessionKeyStrategy": "issue",
-        "sessionKey": "paperclip:org_1",
-        "devicePrivateKeyPem": "stable-existing-pem",
-        "timeoutSec": 600,
-        "timeoutMs": 600_000,
-        "waitTimeoutMs": 600_000,
-    }
-
-
-@pytest.mark.asyncio
-async def test_repoint_repairs_a_partially_bound_same_type_gateway_adapter(monkeypatch):
-    """A failed old bind leaves adapterType correct but authToken/agentId wrong. Retry must repair
-    that row, preserve its stable device and timeout fields, and not skip on type alone."""
-    admin = _wire_repoint(monkeypatch)
-    paired = AsyncMock()
-    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", paired)
-    agent = {
-        "id": "agent-1",
-        "adapterType": lifecycle.OPENCLAW_GATEWAY_TYPE,
-        "adapterConfig": _partial_gateway_adapter(),
-    }
-
-    assert await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="ecs", gateway_token="gw") is True
-
-    config = admin.patch_agent.await_args.kwargs["body"]["adapterConfig"]
-    assert config["authToken"] == "gw"
-    assert config["agentId"] == "agent-1"
-    assert config["devicePrivateKeyPem"] == "stable-existing-pem"
-    assert config["timeoutSec"] == 600
-    assert config["timeoutMs"] == 600_000
-    assert config["waitTimeoutMs"] == 600_000
-    paired.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_repoint_required_bind_failure_is_observable_and_the_same_retry_converges(monkeypatch):
-    """The first authoritative patch is the required bind. If it fails, report failure; retry the
-    same partial row rather than skipping it because adapterType already says gateway."""
-    admin = _wire_repoint(monkeypatch)
-    admin.patch_agent.side_effect = [RuntimeError("bind failed"), {}]
-    paired = AsyncMock()
-    monkeypatch.setattr("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", paired)
-    agent = {
-        "id": "agent-1",
-        "adapterType": lifecycle.OPENCLAW_GATEWAY_TYPE,
-        "adapterConfig": _partial_gateway_adapter(),
-    }
-
-    with pytest.raises(RuntimeError, match="bind failed"):
-        await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="ecs", gateway_token="gw")
-    paired.assert_not_awaited()
-
-    assert await lifecycle.repoint_agent_adapter("org_1", agent, runtime_host="ecs", gateway_token="gw") is True
+    assert await lifecycle.repoint_agent_adapter("org_1", agent) is True
     assert admin.patch_agent.await_count == 2
-    paired.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_repoint_refuses_an_agent_row_with_no_id(monkeypatch):
+    admin = _wire_repoint(monkeypatch)
+
+    with pytest.raises(ValueError, match="no id"):
+        await lifecycle.repoint_agent_adapter("org_1", {"adapterType": "openclaw_gateway"})
+
+    admin.patch_agent.assert_not_awaited()

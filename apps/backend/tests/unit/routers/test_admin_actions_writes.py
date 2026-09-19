@@ -2,7 +2,7 @@
 
 TDD-style: these tests were written BEFORE the action endpoints existed.
 
-Each of the 15 mutation endpoints under test must:
+Each of the 12 mutation endpoints under test must:
   1. Be gated by `Depends(require_platform_admin)` (403 for non-admins)
   2. Be decorated with `@audit_admin_action("...")` so a row lands in
      admin_actions DDB synchronously (fail-closed)
@@ -11,13 +11,14 @@ Each of the 15 mutation endpoints under test must:
      underlying side effect (C4: a durable claim on the shared dedup table,
      not a replayed response)
 
-Endpoints (15 total):
+Endpoints (12 total):
 
-Container actions (4):
+Container actions (1):
   POST /api/v1/admin/users/{user_id}/container/reprovision
-  POST /api/v1/admin/users/{user_id}/container/stop
-  POST /api/v1/admin/users/{user_id}/container/start
-  POST /api/v1/admin/users/{user_id}/container/resize         body: {tier}
+
+  Stop / start / resize / force-apply-image-update / reapply-config went with the ECS runtime:
+  a microVM has no desiredCount to set, its size is the runtime spec, its image rolls through
+  ``hermes_provisioning.roll_runtime_image``, and there is no ``openclaw.json`` to reapply.
 
 Billing actions (4):
   POST /api/v1/admin/users/{user_id}/billing/cancel-subscription
@@ -37,6 +38,7 @@ Config + agent actions (3):
   POST  /api/v1/admin/users/{user_id}/agents/{agent_id}/clear-sessions
 """
 
+import contextlib
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -121,14 +123,37 @@ def mock_audit_repo():
 class TestContainerReprovision:
     """POST /api/v1/admin/users/{user_id}/container/reprovision."""
 
+    @staticmethod
+    @contextlib.contextmanager
+    def _wired(row={"owner_id": "u_target", "status": "running"}):
+        """The route is a takeover plus a dispatch now -- there is no ECS manager to call. It
+        MUST take over first: ``dispatch_provision``'s claim does not admit a "running" row, so a
+        bare dispatch on a live workspace stands down silently and the admin sees "provisioning"
+        while nothing runs."""
+        with (
+            patch("routers.admin.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=row),
+            patch("routers.admin.container_repo.takeover_provision", new_callable=AsyncMock) as takeover,
+            patch("routers.admin.dispatch_provision", new_callable=AsyncMock) as dispatch,
+        ):
+            yield takeover, dispatch
+
     @pytest.mark.asyncio
     async def test_happy_path(self, async_client, admin_env):
-        ecs = MagicMock()
-        ecs.reprovision_for_user = AsyncMock(return_value={"status": "started"})
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
+        with self._wired() as (takeover, dispatch):
             res = await async_client.post("/api/v1/admin/users/u_target/container/reprovision")
         assert res.status_code == 200
-        ecs.reprovision_for_user.assert_awaited_once_with("u_target")
+        assert res.json()["status"] == "provisioning"
+        takeover.assert_awaited_once_with("u_target")
+        dispatch.assert_awaited_once_with("u_target")
+
+    @pytest.mark.asyncio
+    async def test_a_workspace_with_no_row_is_dispatched_without_a_takeover(self, async_client, admin_env):
+        """Nothing to supersede, and ``takeover_provision`` is conditioned on the row existing."""
+        with self._wired(row=None) as (takeover, dispatch):
+            res = await async_client.post("/api/v1/admin/users/u_target/container/reprovision")
+        assert res.status_code == 200
+        takeover.assert_not_awaited()
+        dispatch.assert_awaited_once_with("u_target")
 
     @pytest.mark.asyncio
     async def test_403_for_non_admin(self, async_client, non_admin_env):
@@ -137,9 +162,7 @@ class TestContainerReprovision:
 
     @pytest.mark.asyncio
     async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
-        ecs = MagicMock()
-        ecs.reprovision_for_user = AsyncMock(return_value={"status": "started"})
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
+        with self._wired():
             res = await async_client.post("/api/v1/admin/users/u_target/container/reprovision")
         assert res.status_code == 200
         mock_audit_repo.assert_awaited_once()
@@ -150,380 +173,14 @@ class TestContainerReprovision:
 
     @pytest.mark.asyncio
     async def test_idempotent_within_window(self, async_client, admin_env):
-        """Same Idempotency-Key within 60s => underlying service runs once."""
-        ecs = MagicMock()
-        ecs.reprovision_for_user = AsyncMock(return_value={"status": "started"})
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
+        """Same Idempotency-Key within 60s => the dispatch runs once."""
+        with self._wired() as (_takeover, dispatch):
             headers = {"Idempotency-Key": "reprov-key-1"}
             r1 = await async_client.post("/api/v1/admin/users/u_target/container/reprovision", headers=headers)
             r2 = await async_client.post("/api/v1/admin/users/u_target/container/reprovision", headers=headers)
         assert r1.status_code == 200
         assert r2.status_code == 409
-        assert ecs.reprovision_for_user.await_count == 1
-
-
-class TestContainerStop:
-    """POST /api/v1/admin/users/{user_id}/container/stop."""
-
-    @pytest.mark.asyncio
-    async def test_happy_path(self, async_client, admin_env):
-        ecs = MagicMock()
-        ecs.stop_user_service = AsyncMock(return_value=None)
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
-            res = await async_client.post("/api/v1/admin/users/u_target/container/stop")
-        assert res.status_code == 200
-        ecs.stop_user_service.assert_awaited_once_with("u_target", reason="admin")
-
-    @pytest.mark.asyncio
-    async def test_403_for_non_admin(self, async_client, non_admin_env):
-        res = await async_client.post("/api/v1/admin/users/u_target/container/stop")
-        assert res.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
-        ecs = MagicMock()
-        ecs.stop_user_service = AsyncMock(return_value=None)
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
-            res = await async_client.post("/api/v1/admin/users/u_target/container/stop")
-        assert res.status_code == 200
-        mock_audit_repo.assert_awaited_once()
-        kwargs = mock_audit_repo.await_args.kwargs
-        assert kwargs["action"] == "container.stop"
-        assert kwargs["target_user_id"] == "u_target"
-
-    @pytest.mark.asyncio
-    async def test_idempotent_within_window(self, async_client, admin_env):
-        ecs = MagicMock()
-        ecs.stop_user_service = AsyncMock(return_value=None)
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
-            headers = {"Idempotency-Key": "stop-key-1"}
-            r1 = await async_client.post("/api/v1/admin/users/u_target/container/stop", headers=headers)
-            r2 = await async_client.post("/api/v1/admin/users/u_target/container/stop", headers=headers)
-        assert r1.status_code == 200
-        assert r2.status_code == 409
-        assert ecs.stop_user_service.await_count == 1
-
-
-class TestContainerStart:
-    """POST /api/v1/admin/users/{user_id}/container/start."""
-
-    @pytest.mark.asyncio
-    async def test_happy_path(self, async_client, admin_env):
-        ecs = MagicMock()
-        ecs.start_user_service = AsyncMock(return_value=None)
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
-            res = await async_client.post("/api/v1/admin/users/u_target/container/start")
-        assert res.status_code == 200
-        # force=True is the operator break-glass: an admin start is not subject
-        # to the free-tier cap or the trial-conversion guard that
-        # start_user_service applies to customer-driven starts, and it is the
-        # only manual lever for a container with a stranded conversion marker.
-        ecs.start_user_service.assert_awaited_once_with("u_target", force=True)
-
-    @pytest.mark.asyncio
-    async def test_403_for_non_admin(self, async_client, non_admin_env):
-        res = await async_client.post("/api/v1/admin/users/u_target/container/start")
-        assert res.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
-        ecs = MagicMock()
-        ecs.start_user_service = AsyncMock(return_value=None)
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
-            res = await async_client.post("/api/v1/admin/users/u_target/container/start")
-        assert res.status_code == 200
-        mock_audit_repo.assert_awaited_once()
-        kwargs = mock_audit_repo.await_args.kwargs
-        assert kwargs["action"] == "container.start"
-
-    @pytest.mark.asyncio
-    async def test_idempotent_within_window(self, async_client, admin_env):
-        ecs = MagicMock()
-        ecs.start_user_service = AsyncMock(return_value=None)
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
-            headers = {"Idempotency-Key": "start-key-1"}
-            r1 = await async_client.post("/api/v1/admin/users/u_target/container/start", headers=headers)
-            r2 = await async_client.post("/api/v1/admin/users/u_target/container/start", headers=headers)
-        assert r1.status_code == 200
-        assert r2.status_code == 409
-        assert ecs.start_user_service.await_count == 1
-
-
-class TestContainerResize:
-    """POST /api/v1/admin/users/{user_id}/container/resize — no body.
-
-    Re-applies the canonical flat-fee task profile. Recovery action for
-    containers wedged on a stale task def.
-    """
-
-    @pytest.mark.asyncio
-    async def test_happy_path(self, async_client, admin_env):
-        ecs = MagicMock()
-        ecs.reapply_standard_sizing = AsyncMock(return_value={"status": "resized"})
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
-            res = await async_client.post("/api/v1/admin/users/u_target/container/resize")
-        assert res.status_code == 200
-        ecs.reapply_standard_sizing.assert_awaited_once_with("u_target")
-
-    @pytest.mark.asyncio
-    async def test_403_for_non_admin(self, async_client, non_admin_env):
-        res = await async_client.post("/api/v1/admin/users/u_target/container/resize")
-        assert res.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
-        ecs = MagicMock()
-        ecs.reapply_standard_sizing = AsyncMock(return_value={"status": "resized"})
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
-            res = await async_client.post("/api/v1/admin/users/u_target/container/resize")
-        assert res.status_code == 200
-        mock_audit_repo.assert_awaited_once()
-        kwargs = mock_audit_repo.await_args.kwargs
-        assert kwargs["action"] == "container.resize"
-
-    @pytest.mark.asyncio
-    async def test_idempotent_within_window(self, async_client, admin_env):
-        ecs = MagicMock()
-        ecs.reapply_standard_sizing = AsyncMock(return_value={"status": "resized"})
-        with patch("routers.admin.get_ecs_manager", return_value=ecs):
-            headers = {"Idempotency-Key": "resize-key-1"}
-            r1 = await async_client.post("/api/v1/admin/users/u_target/container/resize", headers=headers)
-            r2 = await async_client.post("/api/v1/admin/users/u_target/container/resize", headers=headers)
-        assert r1.status_code == 200
-        assert r2.status_code == 409
-        assert ecs.reapply_standard_sizing.await_count == 1
-
-
-class TestContainerForceApplyImageUpdate:
-    """POST /api/v1/admin/users/{user_id}/container/apply-image-update.
-
-    Admin-initiated force-apply of an image update NOW (no waiting for the
-    owner to click the banner). Queues the pending update then applies it via
-    the SAME ``apply_update()`` path the owner banner uses — non-destructive:
-    reuses the container's existing on-disk openclaw.json (strips removed-schema
-    keys first) and rolls the per-user task-def. EFS workspace/state preserved.
-    """
-
-    _CREATED = {"owner_id": "u_target", "update_id": "upd_123", "status": "pending"}
-
-    def test_config_lock_refresh_is_a_conflicting_task_definition_roll(self):
-        from core.services.update_service import TASK_DEFINITION_REFRESH_CHANGE
-        from routers.admin import _rolls_task_def
-
-        assert _rolls_task_def({TASK_DEFINITION_REFRESH_CHANGE: True}) is True
-
-    @pytest.mark.asyncio
-    async def test_happy_path(self, async_client, admin_env):
-        with (
-            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
-            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)) as mock_create,
-            patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
-        ):
-            res = await async_client.post(
-                "/api/v1/admin/users/u_target/container/apply-image-update",
-                json={"new_image": "ecr/lightbulb/openclaw-extended:2026.7.1-beta.3-isol8.1-e8e1cce"},
-            )
-        assert res.status_code == 200
-        body = res.json()
-        assert body["status"] == "applied"
-        assert body["update_id"] == "upd_123"
-        # A pending image_update row was created for the resolved owner...
-        create_kwargs = mock_create.await_args.kwargs
-        assert create_kwargs["owner_id"] == "u_target"
-        assert create_kwargs["update_type"] == "image_update"
-        assert create_kwargs["changes"]["new_image"].endswith("e8e1cce")
-        # ...then applied via the exact apply_update() path the owner banner uses.
-        mock_apply.assert_awaited_once_with("u_target", "upd_123")
-
-    @pytest.mark.asyncio
-    async def test_non_container_inflight_does_not_block(self, async_client, admin_env):
-        """An in-flight row that does NOT rewrite the task-def (e.g. a
-        paperclip_provision retry left 'pending', or a pure config_patch) must not
-        block a force image apply — the guard keys on the changes payload, not the
-        update_type label."""
-        non_conflicting = [
-            {"update_id": "prov", "status": "pending", "update_type": "paperclip_provision", "changes": {"op": "seed"}},
-        ]
-        with (
-            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=non_conflicting)),
-            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
-            patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
-        ):
-            res = await async_client.post(
-                "/api/v1/admin/users/u_target/container/apply-image-update",
-                json={"new_image": "img:tag"},
-            )
-        assert res.status_code == 200
-        mock_apply.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_403_for_non_admin(self, async_client, non_admin_env):
-        res = await async_client.post(
-            "/api/v1/admin/users/u_target/container/apply-image-update",
-            json={"new_image": "img:tag"},
-        )
-        assert res.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_missing_new_image_422(self, async_client, admin_env):
-        res = await async_client.post(
-            "/api/v1/admin/users/u_target/container/apply-image-update",
-            json={},
-        )
-        assert res.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_409_when_owner_has_inflight_task_def_roll(self, async_client, admin_env):
-        """Per-owner mutual exclusion: if another update that rewrites the task-def
-        (carries new_image/new_cpu/new_memory) is already pending/scheduled/applying
-        for the owner, reject with 409 BEFORE creating or applying a new one — else a
-        second concurrent resize_user_container could race and clobber image/size."""
-        with (
-            patch(
-                "routers.admin.update_repo.get_in_flight",
-                new=AsyncMock(
-                    return_value=[{"update_id": "other", "status": "applying", "changes": {"new_image": "old:tag"}}]
-                ),
-            ),
-            patch("routers.admin.update_repo.create", new=AsyncMock()) as mock_create,
-            patch("routers.admin.apply_update", new=AsyncMock()) as mock_apply,
-        ):
-            res = await async_client.post(
-                "/api/v1/admin/users/u_target/container/apply-image-update",
-                json={"new_image": "img:tag"},
-            )
-        assert res.status_code == 409
-        # Guard runs first: neither a new row nor an apply is issued.
-        mock_create.assert_not_awaited()
-        mock_apply.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_502_when_apply_raises(self, async_client, admin_env):
-        """No in-flight row, so the freshly-created row always acquires; a False
-        return therefore means apply_update caught an exception mid-roll and marked
-        the row 'failed'. Surface that as 502 (not a queued-row 409)."""
-        with (
-            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
-            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
-            patch("routers.admin.apply_update", new=AsyncMock(return_value=False)),
-        ):
-            res = await async_client.post(
-                "/api/v1/admin/users/u_target/container/apply-image-update",
-                json={"new_image": "img:tag"},
-            )
-        assert res.status_code == 502
-
-    @pytest.mark.asyncio
-    async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
-        with (
-            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
-            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
-            patch("routers.admin.apply_update", new=AsyncMock(return_value=True)),
-        ):
-            res = await async_client.post(
-                "/api/v1/admin/users/u_target/container/apply-image-update",
-                json={"new_image": "img:tag"},
-            )
-        assert res.status_code == 200
-        kwargs = mock_audit_repo.await_args.kwargs
-        assert kwargs["action"] == "container.force_apply_image_update"
-        assert kwargs["target_user_id"] == "u_target"
-
-    @pytest.mark.asyncio
-    async def test_idempotent_within_window(self, async_client, admin_env):
-        """Same Idempotency-Key within 60s => the queue+apply runs exactly once."""
-        with (
-            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
-            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
-            patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
-        ):
-            headers = {"Idempotency-Key": "force-apply-key-1"}
-            body = {"new_image": "img:tag"}
-            r1 = await async_client.post(
-                "/api/v1/admin/users/u_target/container/apply-image-update",
-                json=body,
-                headers=headers,
-            )
-            r2 = await async_client.post(
-                "/api/v1/admin/users/u_target/container/apply-image-update",
-                json=body,
-                headers=headers,
-            )
-        assert r1.status_code == 200
-        assert r2.status_code == 409
-        assert mock_apply.await_count == 1
-
-
-class TestContainerReapplyConfig:
-    """POST /api/v1/admin/users/{user_id}/container/reapply-config.
-
-    Regenerates the owner's openclaw.json from the CURRENT config generator
-    (dashboard twin of scripts/reapply_openclaw_config.py). Config-only —
-    no task restart; the route delegates entirely to
-    ``update_service.reapply_owner_config``, which handles the regen +
-    runtime-subtree restore.
-    """
-
-    _RESULT = {
-        "owner_id": "u_target",
-        "provider_choice": "bedrock_claude",
-        "byo_provider": None,
-        "restored_subtrees": ["bindings", "channels", "identity"],
-    }
-
-    @pytest.mark.asyncio
-    async def test_happy_path(self, async_client, admin_env):
-        with patch("routers.admin.reapply_owner_config", new=AsyncMock(return_value=self._RESULT)) as mock_reapply:
-            res = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config")
-        assert res.status_code == 200
-        body = res.json()
-        assert body["status"] == "reapplied"
-        assert body["restored_subtrees"] == ["bindings", "channels", "identity"]
-        mock_reapply.assert_awaited_once_with("u_target")
-
-    @pytest.mark.asyncio
-    async def test_404_when_no_container_row(self, async_client, admin_env):
-        with patch(
-            "routers.admin.reapply_owner_config",
-            new=AsyncMock(side_effect=LookupError("No container row for owner u_target")),
-        ):
-            res = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config")
-        assert res.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_409_for_legacy_row_without_gateway_token(self, async_client, admin_env):
-        """Legacy rows without a gateway_token are refused — minting a fresh
-        token would diverge from the running task-def and break gateway auth."""
-        with patch(
-            "routers.admin.reapply_owner_config",
-            new=AsyncMock(side_effect=ValueError("no gateway_token")),
-        ):
-            res = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config")
-        assert res.status_code == 409
-
-    @pytest.mark.asyncio
-    async def test_403_for_non_admin(self, async_client, non_admin_env):
-        res = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config")
-        assert res.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
-        with patch("routers.admin.reapply_owner_config", new=AsyncMock(return_value=self._RESULT)):
-            res = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config")
-        assert res.status_code == 200
-        kwargs = mock_audit_repo.await_args.kwargs
-        assert kwargs["action"] == "container.reapply_config"
-        assert kwargs["target_user_id"] == "u_target"
-
-    @pytest.mark.asyncio
-    async def test_idempotent_within_window(self, async_client, admin_env):
-        with patch("routers.admin.reapply_owner_config", new=AsyncMock(return_value=self._RESULT)) as mock_reapply:
-            headers = {"Idempotency-Key": "reapply-key-1"}
-            r1 = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config", headers=headers)
-            r2 = await async_client.post("/api/v1/admin/users/u_target/container/reapply-config", headers=headers)
-        assert r1.status_code == 200
-        assert r2.status_code == 409
-        assert mock_reapply.await_count == 1
+        assert dispatch.await_count == 1
 
 
 # ===========================================================================

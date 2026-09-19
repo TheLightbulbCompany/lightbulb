@@ -1,7 +1,6 @@
 """Tests for core.services.owner_facts."""
 
 import json
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -80,7 +79,6 @@ async def test_write_owner_facts_overrides_beat_stale_row(monkeypatch):
         written["content"] = facts_json
 
     monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", stale_get)
-    monkeypatch.setattr(owner_facts.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
     monkeypatch.setattr("core.services.messaging.load_agent_roster", fake_roster)
     monkeypatch.setattr(hermes_profiles, "write_facts_to_profiles", fake_write_facts)
 
@@ -134,9 +132,8 @@ def test_build_owner_facts_uses_ultra_plan_label():
 def _facts_env(monkeypatch, owner_facts, rows, written):
     """Shared doubles: billing row, hermes-profile write capture, address rows.
 
-    Every owner is AgentCore now (``is_agentcore_owner`` always ``True``), so
-    the write lands via ``hermes_profiles.write_facts_to_profiles`` rather
-    than EFS.
+    The write lands via ``hermes_profiles.write_facts_to_profiles``; there is no EFS branch
+    and nothing to classify.
     """
     from core.services import hermes_profiles
 
@@ -155,7 +152,6 @@ def _facts_env(monkeypatch, owner_facts, rows, written):
         written["content"] = facts_json
 
     monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_billing)
-    monkeypatch.setattr(owner_facts.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
     monkeypatch.setattr(owner_facts.agent_email_repo, "query_by_owner", fake_query_by_owner)
     monkeypatch.setattr("core.services.messaging.load_agent_roster", fake_roster)
     monkeypatch.setattr(hermes_profiles, "write_facts_to_profiles", fake_write_facts)
@@ -321,20 +317,9 @@ async def test_write_owner_facts_agentcore_owner_stages_every_profile(monkeypatc
     def fake_write_facts(owner_id, agent_ids, facts_json):
         calls.append((owner_id, agent_ids, facts_json))
 
-    ws_calls = []
-
-    class FakeWs:
-        def write_file(self, *a, **k):
-            ws_calls.append("write_file")
-
-        def delete_file(self, *a, **k):
-            ws_calls.append("delete_file")
-
     monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_get)
-    monkeypatch.setattr(owner_facts.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
     monkeypatch.setattr("core.services.messaging.load_agent_roster", fake_roster)
     monkeypatch.setattr(hermes_profiles, "write_facts_to_profiles", fake_write_facts)
-    monkeypatch.setattr(owner_facts, "get_workspace", lambda: FakeWs())
 
     await owner_facts.write_owner_facts("org_agentcore")
 
@@ -344,8 +329,9 @@ async def test_write_owner_facts_agentcore_owner_stages_every_profile(monkeypatc
     assert agent_ids == ["agent-ceo", "agent-eng"]
     facts = json.loads(facts_json)
     assert facts["provider_choice"] == "bedrock_claude"
-    # EFS is never touched for an AgentCore owner.
-    assert ws_calls == []
+    # The EFS write this used to also prove was never reached is gone with the mount; the
+    # module holds no workspace handle at all.
+    assert not hasattr(owner_facts, "get_workspace")
 
 
 @pytest.mark.asyncio
@@ -357,7 +343,6 @@ async def test_write_owner_facts_agentcore_write_failure_is_swallowed(monkeypatc
         return [{"id": "agent-ceo"}]
 
     monkeypatch.setattr(owner_facts.billing_repo, "get_by_owner_id", fake_get)
-    monkeypatch.setattr(owner_facts.runtime_transport, "is_agentcore_owner", AsyncMock(return_value=True))
     monkeypatch.setattr("core.services.messaging.load_agent_roster", fake_roster)
 
     def boom(*a, **k):

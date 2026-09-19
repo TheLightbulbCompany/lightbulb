@@ -16,7 +16,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 import io  # noqa: E402
 import tarfile  # noqa: E402
-from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
+from unittest.mock import AsyncMock, patch  # noqa: E402
 
 import boto3  # noqa: E402
 import pytest  # noqa: E402
@@ -358,18 +358,10 @@ async def test_install_agentcore_deploy_reads_the_tarball_soul_md_before_writing
 
 
 def _make_service_for_deploy():
-    workspace = MagicMock()
-    workspace.extract_tarball_to_workspace = MagicMock(return_value=None)
-    workspace.write_template_sidecar = MagicMock(return_value=None)
-    workspace.read_cron_jobs = MagicMock(return_value=[])
-    pair_fn = AsyncMock(return_value=None)
-    apply_aux = AsyncMock(return_value=None)
-    return (
-        CatalogService(workspace=workspace, apply_deploy_aux_mutations=apply_aux, pair_fn=pair_fn),
-        workspace,
-        pair_fn,
-        apply_aux,
-    )
+    """``CatalogService`` is stateless now. Its three injected collaborators -- a ``Workspace``
+    (EFS tarball extraction + the ``.template`` sidecar + cron reads), the openclaw.json aux
+    merger, and the gateway pair fn -- have no successor: the install is two S3 writes."""
+    return CatalogService()
 
 
 def _patch_agentcore_collaborators(
@@ -410,7 +402,7 @@ async def test_deploy_from_artifact_mints_profiles_then_content_for_a_fresh_agen
     Paperclip itself (same helper every ECS caller already uses), then
     writes the profile, then places the content. Order: create -> profile ->
     content."""
-    svc, workspace, pair_fn, apply_aux = _make_service_for_deploy()
+    svc = _make_service_for_deploy()
     call_order: list[str] = []
     with contextlib.ExitStack() as stack:
         delete_mock = _patch_agentcore_collaborators(stack, call_order)
@@ -428,31 +420,23 @@ async def test_deploy_from_artifact_mints_profiles_then_content_for_a_fresh_agen
     assert result["agent_id"] == "minted_agent_1"
     assert result["runtimeHost"] == "agentcore"
     delete_mock.assert_not_awaited()
-    workspace.extract_tarball_to_workspace.assert_not_called()
-    pair_fn.assert_not_called()
-    apply_aux.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_deploy_from_artifact_reads_the_row_when_no_container_is_threaded():
-    """M6 task-14 row 19: the branch used to key on the ``container`` PARAMETER, defaulting to
-    the EFS path on ``None`` — correct only while every caller remembered to pass it. A caller
-    that forgot would extract a marketplace agent onto a tree no migrated agent reads and report
-    a successful deploy. The runtime seam, not the argument, decides."""
-    svc, workspace, pair_fn, _apply_aux = _make_service_for_deploy()
+    """M6 task-14 row 19: the branch used to key on the ``container`` PARAMETER, defaulting to the
+    EFS path on ``None`` -- correct only while every caller remembered to pass it, and a caller
+    that forgot extracted a marketplace agent onto a tree no migrated agent reads and reported a
+    successful deploy. There is one path now, and the parameter is a pure optimisation: ``None``
+    is READ here rather than deciding anything."""
+    svc = _make_service_for_deploy()
     call_order: list[str] = []
     with contextlib.ExitStack() as stack:
         _patch_agentcore_collaborators(stack, call_order)
-        stack.enter_context(
-            patch(
-                "core.services.runtime_transport.is_agentcore_owner",
-                new=AsyncMock(return_value=True),
-            )
-        )
-        stack.enter_context(
+        read_row = stack.enter_context(
             patch(
                 "core.repositories.container_repo.get_by_owner_id",
-                new=AsyncMock(return_value={"runtime_host": "agentcore"}),
+                new=AsyncMock(return_value={"agentcore_runtime_arn": "arn:r1"}),
             )
         )
         result = await svc.deploy_from_artifact(
@@ -465,8 +449,7 @@ async def test_deploy_from_artifact_reads_the_row_when_no_container_is_threaded(
         )
 
     assert result["runtimeHost"] == "agentcore"
-    workspace.extract_tarball_to_workspace.assert_not_called()
-    pair_fn.assert_not_called()
+    read_row.assert_awaited_once_with("user_buyer")
 
 
 @pytest.mark.asyncio
@@ -475,7 +458,7 @@ async def test_deploy_from_artifact_does_not_re_mint_a_pre_supplied_agentcore_id
     minted the Paperclip agent before calling deploy_from_artifact -- a
     second mint here would orphan a different id than the one being
     deployed."""
-    svc, *_ = _make_service_for_deploy()
+    svc = _make_service_for_deploy()
     call_order: list[str] = []
     with contextlib.ExitStack() as stack:
         delete_mock = _patch_agentcore_collaborators(stack, call_order)
@@ -496,7 +479,7 @@ async def test_deploy_from_artifact_does_not_re_mint_a_pre_supplied_agentcore_id
 
 @pytest.mark.asyncio
 async def test_deploy_from_artifact_rolls_back_self_minted_agent_on_profile_failure():
-    svc, *_ = _make_service_for_deploy()
+    svc = _make_service_for_deploy()
     call_order: list[str] = []
     with contextlib.ExitStack() as stack:
         delete_mock = _patch_agentcore_collaborators(
@@ -521,7 +504,7 @@ async def test_deploy_from_artifact_never_rolls_back_a_pre_supplied_agentcore_id
     """A failure on a pre-minted agent is the CALLER's rollback envelope
     (mirrors every ECS caller's existing unwind) -- this function must not
     delete an agent it didn't create."""
-    svc, *_ = _make_service_for_deploy()
+    svc = _make_service_for_deploy()
     call_order: list[str] = []
     with contextlib.ExitStack() as stack:
         delete_mock = _patch_agentcore_collaborators(

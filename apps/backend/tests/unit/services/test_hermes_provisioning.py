@@ -350,59 +350,6 @@ async def test_prepare_hermes_workspace_is_a_noop_once_already_fully_provisioned
 # --- I3/M4-R37: freshness guard against rotating a live ECS owner's bearer -----------------
 
 
-@pytest.mark.asyncio
-async def test_prepare_hermes_workspace_refuses_a_live_ecs_owner_without_migrate(monkeypatch):
-    """HERMES_RUNTIME is one env-wide flag; the first dispatch after a flip must not mint
-    Hermes credentials (and rotate the owner's live bearer) for an owner already running on
-    ECS -- mirrors ensure_runtime's own guard against two gateways on one owner."""
-    monkeypatch.setattr(
-        hermes_provisioning.container_repo,
-        "get_by_owner_id",
-        _row({"service_name": "openclaw-org_a-abc123", "hook_token": "ecs-hook", "gateway_token": "ecs-gw"}),
-    )
-    monkeypatch.setattr(hermes_provisioning, "ensure_agentcore_trust", _explode)
-    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _explode)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _explode)
-
-    await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1")
-
-
-@pytest.mark.asyncio
-async def test_prepare_hermes_workspace_migrate_true_proceeds_for_a_live_ecs_owner(monkeypatch):
-    """The one sanctioned bypass: the M6 cutover job passes migrate=True and deliberately
-    crosses an existing ECS owner over, reusing its hook/gateway tokens exactly as the
-    fresh-provision path does and minting only a fresh bearer."""
-    _patch_owner_aws(
-        monkeypatch,
-        existing_row={"service_name": "openclaw-org_a-abc123", "hook_token": "ecs-hook", "gateway_token": "ecs-gw"},
-    )
-
-    written = {}
-
-    async def _fake_write_boot_secret(owner_id, *, hook_token, gateway_token, bedrock_bearer):
-        written.update(hookToken=hook_token, gatewayToken=gateway_token, bedrockBearer=bedrock_bearer)
-        return f"lightbulb/dev/hermes/{owner_id}/boot"
-
-    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _fake_write_boot_secret)
-
-    row_fields = {}
-
-    async def _fake_update_container_leased(owner_id, claim_id, fields, **kwargs):
-        row_fields.update(fields)
-
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _fake_update_container_leased)
-
-    await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1", migrate=True)
-
-    # Reused off the row -- the ECS-minted tokens, not fresh ones.
-    assert written["hookToken"] == "ecs-hook"
-    assert written["gatewayToken"] == "ecs-gw"
-    assert row_fields["hook_token"] == "ecs-hook"
-    assert row_fields["gateway_token"] == "ecs-gw"
-    # The bearer is always freshly minted (see _patch_owner_aws's mint_gate_token double).
-    assert written["bedrockBearer"] == "bearer-plaintext"
-
-
 # --- provision_hermes_runtime ---------------------------------------------------------------
 
 
@@ -705,53 +652,6 @@ async def test_provision_updates_the_reused_runtime_when_the_image_drifted(monke
 
 
 # --- N1/M4-R39: provision_hermes_runtime gets the same freshness guard as prepare -----------
-
-
-@pytest.mark.asyncio
-async def test_provision_hermes_runtime_refuses_a_live_ecs_owner_without_migrate(monkeypatch):
-    """A service_name row is a live ECS workspace -- without migrate=True this must not create a
-    SECOND runtime and flip the row to runtime_host=agentcore/status=running out from under it."""
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(
-        hermes_provisioning.container_repo,
-        "get_by_owner_id",
-        _row({"service_name": "openclaw-org_a-abc123"}),
-    )
-    monkeypatch.setattr(hermes_provisioning, "_load_role_and_aips", _explode)
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _explode)
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _explode)
-
-    with pytest.raises(ValueError, match="openclaw-org_a-abc123"):
-        await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
-
-
-@pytest.mark.asyncio
-async def test_provision_hermes_runtime_migrate_true_proceeds_for_a_live_ecs_owner(monkeypatch):
-    """The M6 cutover job's sanctioned bypass: migrate=True proceeds to create the runtime even
-    though the row still carries a live ECS service_name -- the job stops that ECS service itself
-    once this reaches READY, which is not this module's job."""
-    _configure_hermes_settings(monkeypatch)
-    monkeypatch.setattr(
-        hermes_provisioning.container_repo,
-        "get_by_owner_id",
-        _row({"service_name": "openclaw-org_a-abc123"}),
-    )
-    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:aws:bedrock-agentcore:...:runtime/r1")
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
-    monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(
-            ("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "arn:aip:sonnet"})
-        ),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
-    _no_runtime_found_by_name(monkeypatch)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _noop_async)
-
-    arn = await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1", migrate=True)
-    assert arn == "arn:aws:bedrock-agentcore:...:runtime/r1"
 
 
 # --- M4-R28: fenced terminal write, mirroring ecs_manager.wait_for_running -----------------
@@ -1336,9 +1236,9 @@ async def test_resolve_profile_inputs_returns_bedrock_trial_choice_for_a_trial_l
         "org_trial", container_row={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
     )
 
-    from core.containers.config import BEDROCK_TRIAL_CHOICE
+    from core.services.hermes_profiles import _BEDROCK_TRIAL_CHOICE
 
-    assert inputs.provider_choice == BEDROCK_TRIAL_CHOICE
+    assert inputs.provider_choice == _BEDROCK_TRIAL_CHOICE
     assert inputs.byo_provider is None
     assert inputs.aip_arns == {"sonnet": "arn:aip:sonnet"}
 

@@ -672,30 +672,26 @@ async def test_list_user_agents_returns_none_when_no_container():
 
 
 @pytest.mark.asyncio
-async def test_list_user_agents_agentcore_owner_never_invokes_runtime():
-    """Parity audit row 80: an AgentCore invoke wakes a parked microVM (90s floor,
-    container_rpc.call) -- admin inspection must answer from the Paperclip roster instead."""
+async def test_list_user_agents_answers_from_the_roster_never_the_runtime():
+    """Parity audit row 80: an invoke wakes a parked microVM (90s RPC floor) -- admin
+    inspection must answer from the Paperclip roster the backend already owns. The module
+    imports no RPC client at all now, which is what keeps that true."""
     from core.services import admin_service
 
-    never_call = AsyncMock(side_effect=AssertionError("container_rpc.call must not be invoked for an agentcore owner"))
+    # The prose still explains WHY; the assertion is that no RPC client is imported.
+    assert not hasattr(admin_service, "container_rpc"), "admin inspection must never reach the runtime"
+
     roster_listing = AsyncMock(
         return_value={
             "defaultId": "a1",
             "agents": [{"id": "a1", "name": "Agent A", "role": "ceo", "model": "m1", "modelName": "Sonnet"}],
         }
     )
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(
-        side_effect=AssertionError("ECS resolution must not run for an agentcore owner")
-    )
-
     with (
         patch(
             "core.services.admin_service.container_repo.get_by_owner_id",
             new=AsyncMock(return_value={"status": "running", "runtime_host": "agentcore"}),
         ),
-        patch("core.services.admin_service.get_ecs_manager", return_value=ecs),
-        patch("core.services.admin_service.container_rpc.call", never_call),
         patch("core.services.admin_service.runtime_rpc.agentcore_agents_list", roster_listing),
     ):
         result = await admin_service.list_user_agents("u1")
@@ -703,7 +699,6 @@ async def test_list_user_agents_agentcore_owner_never_invokes_runtime():
     assert result["container_status"] == "running"
     assert result["agents"] == [{"id": "a1", "name": "Agent A", "role": "ceo", "model": "m1", "modelName": "Sonnet"}]
     roster_listing.assert_awaited_once_with("u1")
-    never_call.assert_not_awaited()
 
 
 # ---- get_agent_detail -----------------------------------------------------
@@ -724,13 +719,12 @@ async def test_get_agent_detail_returns_error_when_container_not_running():
 
 
 @pytest.mark.asyncio
-async def test_get_agent_detail_agentcore_owner_never_invokes_runtime():
+async def test_get_agent_detail_answers_from_the_roster_and_the_profile():
     """Parity audit row 80: identity comes from the roster/model listing, config from the
-    agent's own Hermes profile in S3 -- zero container_rpc calls, sessions/skills come back
-    empty rather than waking a parked microVM."""
+    agent's own Hermes profile in S3. Sessions/skills come back empty rather than waking a
+    parked microVM to enumerate them."""
     from core.services import admin_service
 
-    never_call = AsyncMock(side_effect=AssertionError("container_rpc.call must not be invoked for an agentcore owner"))
     roster_listing = AsyncMock(
         return_value={
             "defaultId": "a1",
@@ -738,18 +732,12 @@ async def test_get_agent_detail_agentcore_owner_never_invokes_runtime():
         }
     )
     config_snapshot = MagicMock(return_value=({"providers": {"anthropic_api_key": "sk-secret-shh"}}, "hash123"))
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(
-        side_effect=AssertionError("ECS resolution must not run for an agentcore owner")
-    )
 
     with (
         patch(
             "core.services.admin_service.container_repo.get_by_owner_id",
             new=AsyncMock(return_value={"status": "running", "runtime_host": "agentcore"}),
         ),
-        patch("core.services.admin_service.get_ecs_manager", return_value=ecs),
-        patch("core.services.admin_service.container_rpc.call", never_call),
         patch("core.services.admin_service.runtime_rpc.agentcore_agents_list", roster_listing),
         patch("core.services.admin_service.hermes_profiles.config_snapshot", config_snapshot),
     ):
@@ -760,7 +748,6 @@ async def test_get_agent_detail_agentcore_owner_never_invokes_runtime():
     assert result["skills"] == []
     assert result["config_redacted"]["providers"]["anthropic_api_key"] == "***redacted***"
     config_snapshot.assert_called_once_with("u1", "a1")
-    never_call.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -857,131 +844,3 @@ async def test_get_actions_audit_no_filter_scans_recent(monkeypatch):
     monkeypatch.setattr(admin_actions_repo, "scan_recent", fake_scan_recent)
     result = await admin_service.get_actions_audit()
     assert result["items"] == [{"action_id": "a1"}]
-
-
-def test_current_image_tags_resolve_from_single_source():
-    """admin_service.CURRENT_DEV_TAG / CURRENT_PROD_TAG are resolved from the
-    single source of truth via core.openclaw_version, so they reflect
-    openclaw-version.json without a hand-mirrored constant. In CI (no env vars
-    set) they fall back to the repo JSON, so they must equal the pinned values.
-    """
-    import json
-    from pathlib import Path
-
-    from core.services import admin_service
-
-    # apps/backend/tests/unit/services/test_admin_service.py -> repo root is parents[5]
-    repo_root = Path(__file__).resolve().parents[5]
-    pinned = json.loads((repo_root / "openclaw-version.json").read_text())
-    assert admin_service.CURRENT_DEV_TAG == pinned["dev"]["tag"]
-    assert admin_service.CURRENT_PROD_TAG == pinned["prod"]["tag"]
-
-
-# --- available-images list: PIN OR NEWER -----------------------------------
-#
-# The admin image picker feeds "Apply now", which force-rolls the owner onto
-# whatever is selected. Listing every tag ever pushed put older images one
-# click from a prod owner, and rolling a SINGLE owner backwards is not a
-# per-owner action anyway -- a rollback is a pin flip in openclaw-version.json
-# applied fleet-wide. So the list is truncated at the pinned prod tag.
-
-
-def _ecr_page(entries):
-    """entries: list of (tag, pushed_at). Newest-first is NOT assumed."""
-    return {
-        "imageDetails": [
-            {"imageDigest": f"sha256:{tag}", "imagePushedAt": pushed, "imageTags": [tag]} for tag, pushed in entries
-        ]
-    }
-
-
-def _patch_ecr(monkeypatch, page):
-    import boto3
-
-    class _Client:
-        def describe_images(self, **kwargs):
-            return page
-
-    monkeypatch.setattr(boto3, "client", lambda *a, **k: _Client())
-
-
-@pytest.mark.asyncio
-async def test_available_images_truncates_at_the_pinned_prod_tag(monkeypatch):
-    from datetime import datetime, timezone
-
-    from core.services import admin_service
-
-    def dt(day):
-        return datetime(2026, 7, day, tzinfo=timezone.utc)
-
-    monkeypatch.setattr(admin_service, "CURRENT_PROD_TAG", "v-pinned")
-    _patch_ecr(
-        monkeypatch,
-        _ecr_page(
-            [
-                ("v-newer-2", dt(28)),
-                ("v-newer-1", dt(27)),
-                ("v-pinned", dt(26)),
-                ("v-older-1", dt(25)),
-                ("v-older-2", dt(24)),
-            ]
-        ),
-    )
-
-    rows = await admin_service.list_extended_image_tags(limit=25)
-    tags = [r["tag"] for r in rows]
-
-    assert tags == ["v-newer-2", "v-newer-1", "v-pinned"]
-    assert "v-older-1" not in tags, "rolling one owner backwards is a pin flip, not a per-owner action"
-    assert "v-pinned" in tags, "the pinned image must remain selectable -- it is the default"
-
-
-@pytest.mark.asyncio
-async def test_available_images_keeps_everything_when_the_pin_is_missing(monkeypatch):
-    """The pin can be absent (tag expired/deleted, or beyond the page bound).
-    Truncating to nothing would take the lever away entirely, which is worse
-    than showing extra tags."""
-    from datetime import datetime, timezone
-
-    from core.services import admin_service
-
-    monkeypatch.setattr(admin_service, "CURRENT_PROD_TAG", "v-not-in-ecr")
-    _patch_ecr(
-        monkeypatch,
-        _ecr_page(
-            [
-                ("v-a", datetime(2026, 7, 28, tzinfo=timezone.utc)),
-                ("v-b", datetime(2026, 7, 27, tzinfo=timezone.utc)),
-            ]
-        ),
-    )
-
-    rows = await admin_service.list_extended_image_tags(limit=25)
-    assert [r["tag"] for r in rows] == ["v-a", "v-b"]
-
-
-@pytest.mark.asyncio
-async def test_available_images_always_keeps_the_pin_within_the_cap(monkeypatch):
-    """The pin is the frontend's DEFAULT selection, so it must survive the cap.
-
-    If several builds land after a promotion, a small `limit` would cap the pin
-    out of the list -- and the picker would fall back to defaulting to the
-    newest image, reintroducing the accidental-version-change this filtering
-    exists to prevent.
-    """
-    from datetime import datetime, timezone
-
-    from core.services import admin_service
-
-    monkeypatch.setattr(admin_service, "CURRENT_PROD_TAG", "v-pinned")
-    entries = [(f"v-new-{i}", datetime(2026, 7, 28, 12, i, tzinfo=timezone.utc)) for i in range(8)]
-    entries.append(("v-pinned", datetime(2026, 7, 20, tzinfo=timezone.utc)))
-    entries.append(("v-older", datetime(2026, 7, 19, tzinfo=timezone.utc)))
-    _patch_ecr(monkeypatch, _ecr_page(entries))
-
-    rows = await admin_service.list_extended_image_tags(limit=3)
-    tags = [r["tag"] for r in rows]
-
-    assert len(tags) == 3
-    assert "v-pinned" in tags, "the default selection must never be capped out"
-    assert "v-older" not in tags

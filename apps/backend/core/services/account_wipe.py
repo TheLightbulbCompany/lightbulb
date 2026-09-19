@@ -46,17 +46,18 @@ for them (see the inline notes at those call sites):
   spec #2  -> "paperclip_aurora_user" (paperclip_user_delete.delete_paperclip_user)
   (no spec row) -> "bedrock_gate_tokens" (bedrock_gate_tokens.delete_gate_token_rows)
   (no spec row) -> "provisioning" (provisioning_workflow_repo.transition -> "cancelled")
-  spec #3  -> "ecs_service"           (ecs_manager.delete_user_service)
-  spec #4  -> "efs_workspace_dir"     (Workspace.delete_user_dir)
-  spec #5  -> folded into "ecs_service" (see note below)
-  spec #6-7-> folded into "ecs_service" (bedrock_aip.reap_owner_bedrock_resources)
-  spec #8  -> folded into "ecs_service" (bedrock_aip.reap_owner_bedrock_resources)
+  spec #3  -> "runtime"               (hermes_provisioning.delete_workspace_runtime)
+  spec #4  -> folded into "runtime" (the S3 profile prefix IS the owner's content
+              on this transport; there is no EFS tree left)
+  spec #5  -> folded into "runtime" (no per-owner EFS access point left either)
+  spec #6-7-> folded into "runtime" (bedrock_aip.reap_owner_bedrock_resources)
+  spec #8  -> folded into "runtime" (bedrock_aip.reap_owner_bedrock_resources)
   spec #9  -> "metronome"             (MetronomeClient.archive_customer)
   spec #10 -> "stripe"                (billing_service.delete_stripe_customer)
   spec #11 -> "usage_counters" / "messaging" / "paperclip_row" /
               "billing_row" / "user_row"
               (containers row + channel-links already folded into
-              "ecs_service" — see note below; "paperclip_row" also carries the
+              "runtime" — see note below; "paperclip_row" also carries the
               owner's ``__pending_brief__:`` item, which lives in the SAME
               table under a prefixed key)
   spec #12 -> "clerk_user"            (clerk_admin.delete_user) -- ALWAYS LAST
@@ -103,7 +104,7 @@ from core.auth import is_org_owner_id
 from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes
 from core.billing.metronome_client import for_settings as metronome_for_settings
 from core.config import settings
-from core.containers import get_ecs_manager, get_workspace
+from core.services.hermes_provisioning import delete_workspace_runtime
 from core.repositories import (
     agent_email_repo,
     billing_repo,
@@ -270,9 +271,9 @@ class _Identifiers:
     union) and ``paperclip_row`` (always attempts the pending-brief delete).
 
     The Bedrock footprint no longer reads this snapshot at all: it is reaped
-    inside the ``ecs_service`` step off the containers row's own ALL_OLD image,
+    inside the ``runtime`` step off the containers row's own ALL_OLD image,
     so an AIP minted mid-wipe is caught as long as the row named it when it
-    died. Still snapshot-gated, and knowingly: the ``ecs_service`` step itself,
+    died. Still snapshot-gated, and knowingly: the ``runtime`` step itself,
     and the ``billing_row`` / ``user_row`` / paperclip-company deletes.
     None of those rows is the sole handle on anything else, so the residue is
     findable and a re-run clears it.
@@ -555,42 +556,19 @@ async def preview_wipe(owner_id: str) -> WipeReport:
     )
     _preview_step(
         steps,
-        system="ecs_service",
-        action="delete_user_service",
+        system="runtime",
+        action="delete_workspace_runtime",
         exists=ids.container is not None,
         detail_if_exists=(
-            f"service_name={(ids.container or {}).get('service_name', '')} "
-            "(+ EFS access point, containers row, channel-links, "
+            f"agentcore_runtime_arn={(ids.container or {}).get('agentcore_runtime_arn', '')} "
+            "(+ boot secret, S3 profiles, containers row, channel-links, "
             "and the Bedrock footprint: gate-token rows, AIPs, IAM role)"
         ),
         detail_if_absent="no containers row",
     )
 
-    workspace_path = get_workspace().user_path(owner_id)
-    workspace_exists = workspace_path.exists()
-    _preview_step(
-        steps,
-        system="efs_workspace_dir",
-        action="delete_user_dir",
-        exists=workspace_exists,
-        detail_if_exists=str(workspace_path),
-        detail_if_absent="directory does not exist",
-    )
-
-    # Litestream replica prefix — existence would need an S3 List per preview; the
-    # delete is idempotent, so mirror the usage_counters convention: show
-    # would_delete when the env replicates at all, skipped on the EFS layout.
-    _preview_step(
-        steps,
-        system="litestream_replicas",
-        action="delete_replica_prefix",
-        exists=bool(settings.LITESTREAM_BUCKET),
-        detail_if_exists=f"s3://{settings.LITESTREAM_BUCKET}/{owner_id}/",
-        detail_if_absent="LITESTREAM_BUCKET unset (EFS layout)",
-    )
-
     # No standalone bedrock_aips / bedrock_role preview steps: the executed wipe
-    # no longer has them either. Both are reaped inside the ecs_service step, by
+    # no longer has them either. Both are reaped inside the runtime step, by
     # the shared reaper at the seam every teardown path crosses. Preview and
     # execution have to list the same systems or the preview lies.
 
@@ -893,29 +871,27 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
 
     await _step(steps, system="bedrock_gate_tokens", action="delete_gate_token_rows", fn=_s2b)
 
-    # --- Step 3 (spec #3 + #5 folded): ECS service ------------------------
-    # ecs_manager.delete_user_service already does, in the right internal
-    # order: scale-to-0 + delete ECS service (spec #3) -> deregister the
-    # per-user task-def -> delete the per-user EFS access point (spec #5,
-    # which the spec requires to run AFTER the ECS drain -- guaranteed here
-    # because it's the same call) -> delete the containers row (part of
-    # spec #11) -> sweep channel-links rows for this owner. There is no
-    # standalone public method for the EFS-access-point delete alone
-    # (EcsManager._delete_access_point is private and only ever called from
-    # here), so this single WipeStep stands in for spec rows #3, #5, and the
-    # containers-row/channel-links slice of #11.
+    # --- Step 3 (spec #3 + #4 + #5 folded): the runtime ------------------
+    # ``hermes_provisioning.delete_workspace_runtime`` already does, in the right internal
+    # order: StopRuntimeSession + DeleteAgentRuntime -> revoke the live gate-token hash ->
+    # delete the boot secret -> delete every object under ``<owner>/hermes/`` (spec #4's
+    # "content" step, which on this transport IS the S3 profile prefix -- there is no EFS
+    # tree or access point left) -> delete the containers row (part of spec #11) -> reap the
+    # owner's Bedrock footprint -> sweep channel-links rows. One WipeStep stands in for spec
+    # rows #3, #4, #5 and the containers-row/channel-links slice of #11.
     if ids.container is not None:
 
         async def _s3() -> str:
-            # M6-R42: this is the one full-account-wipe caller, so it also deletes an AgentCore
-            # owner's S3 profiles here -- the exact same "content" step account_wipe's own step 4
-            # (EFS) does for an ECS owner unconditionally, below. Every other delete_user_service
-            # caller (entitlement_teardown, debug's routine reprovision) leaves this False and
-            # keeps the owner's memory/skills/SOUL.md/auth.json intact, same as they do on ECS.
-            row_at_death = await get_ecs_manager().delete_user_service(owner_id, delete_hermes_profiles=True)
-            detail = "ECS service + task-def + EFS access point + containers row + channel-links removed"
+            # M6-R42: this is one of exactly TWO terminal callers that pass
+            # ``delete_profiles=True`` -- this wipe and ``routers/debug.py``'s
+            # ``DELETE /debug/user-data`` (the e2e empty-slate reset; debug is 403 in prod).
+            # Every other caller (entitlement_teardown on a lapsed card, debug's routine
+            # reprovision) leaves it False and keeps the owner's memory/skills/SOUL.md/
+            # auth.json. Do not re-broaden it.
+            row_at_death = await delete_workspace_runtime(owner_id, delete_profiles=True)
+            detail = "agentcore runtime + boot secret + S3 profiles + containers row + channel-links removed"
             # FINAL SWEEP — the last moment any gate-token hash is reachable.
-            # ``delete_user_service`` returns the row's own ALL_OLD image, so
+            # ``delete_workspace_runtime`` returns the row's own ALL_OLD image, so
             # this covers exactly what step 2b could not see: a hash minted
             # after its strongly-consistent re-read, and every hash at all if
             # that step failed. Already-deleted hashes cost a free no-op
@@ -928,54 +904,13 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
                 detail += f" (+ swept {swept} gate-token row(s) still named on the row at delete time)"
             return detail
 
-        await _step(steps, system="ecs_service", action="delete_user_service", fn=_s3)
+        await _step(steps, system="runtime", action="delete_workspace_runtime", fn=_s3)
     else:
-        _skip(steps, "ecs_service", "delete_user_service", "no containers row")
-
-    # --- Step 4 (spec #4): EFS workspace directory ------------------------
-    # Unconditional -- Workspace.delete_user_dir is idempotent (no-ops if
-    # the directory is already absent) and the directory's existence isn't
-    # gated on the containers row.
-    async def _s4() -> str:
-        get_workspace().delete_user_dir(owner_id)
-        return f"/mnt/efs/users/{owner_id}"
-
-    await _step(steps, system="efs_workspace_dir", action="delete_user_dir", fn=_s4)
-
-    # --- Step 4b: Litestream S3 replicas (local-sqlite layout) ----------
-    # The container boot script restores whatever survives under the owner's
-    # replica prefix — leaving it behind resurrects pre-wipe sessions, device
-    # trust, and auth_profile_store rows (live OAuth refresh tokens) on the
-    # next provision. Idempotent; no-op while LITESTREAM_BUCKET is unset.
-    async def _s4b() -> str:
-        from core.services.litestream_replicas import delete_replica_prefix
-
-        # delete_user_service only SUBMITS the scale-to-zero + delete; a still
-        # running container's litestream can land an in-flight upload AFTER we
-        # delete, silently repopulating the prefix so the next provision
-        # restores the state this wipe reported as erased. Drain first, and
-        # treat a drain timeout as a FAILURE rather than deleting anyway: a
-        # visible, retryable failed step beats a racy delete reported as
-        # success. Budget exceeds the container's stopTimeout (120s) so a
-        # normal full-length drain does not read as a timeout.
-        if not settings.LITESTREAM_BUCKET:
-            return "skipped (EFS layout — no replicas)"
-        # NOT gated on ids.container: delete_user_service removes the row
-        # before this step, so a retried wipe sees container=None while the
-        # task may still be draining. wait_until_drained returns immediately
-        # when the service is already gone, so the unconditional call is cheap.
-        if not await get_ecs_manager().wait_until_drained(owner_id, timeout_s=180.0):
-            raise RuntimeError("container did not drain; refusing to delete replicas while a writer may still be live")
-        ok = await delete_replica_prefix(owner_id)
-        if not ok:
-            raise RuntimeError("replica prefix delete failed")
-        return f"s3 prefix {owner_id}/"
-
-    await _step(steps, system="litestream_replicas", action="delete_replica_prefix", fn=_s4b)
+        _skip(steps, "runtime", "delete_workspace_runtime", "no containers row")
 
     # --- Steps 5-6 (spec #6-7-8): Bedrock AIPs + owner role ----------------
     # Deliberately NOT separate steps any more. Both are reaped inside step 3's
-    # ``delete_user_service`` (see bedrock_aip.reap_owner_bedrock_resources),
+    # ``delete_workspace_runtime`` (see bedrock_aip.reap_owner_bedrock_resources),
     # which is the seam EVERY teardown path crosses -- the entitlement
     # cancellation webhook and both /debug teardowns leaked these until it moved
     # there, and dev/staging/prod share one AWS account and therefore one

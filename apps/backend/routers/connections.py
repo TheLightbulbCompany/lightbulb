@@ -38,9 +38,8 @@ from core.services.credentials import (
 from core.services.credentials.apply_connection import RuntimeUnsupportedError
 from core.services.credentials import hermes_cli
 from core.services.credentials.mcp_server import reconcile_integrations
-from core.services.efs_file_lock import SidecarLockTimeoutError
 from core.services.google_identity import seed_agent_google_identity
-from core.services.owner_lifecycle import owner_lifecycle_guard
+from core.services.owner_lifecycle import OwnerLifecycleBusyError, owner_lifecycle_guard
 
 logger = logging.getLogger(__name__)
 
@@ -779,13 +778,31 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
     await _reseed_surviving_google_assignments(owner_id)
 
 
+#: Providers whose registry row is gone but whose stored credentials may not be. Only these keys
+#: get the tolerant teardown below. ``shopify`` rode `acquisition: container_login`, which logged
+#: the Shopify CLI in INSIDE the owner's container -- deleted with that runtime.
+RETIRED_PROVIDERS = frozenset({"shopify"})
+
+
 @router.delete("/{provider}")
 async def disconnect(provider: str, account: str | None = None, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     # Teardown deliberately skips the availability gate — see
     # _get_provider_for_teardown. Revocation must outlive a gate change.
-    p = _get_provider_for_teardown(provider)
+    try:
+        p = _get_provider_for_teardown(provider)
+    except HTTPException:
+        if provider not in RETIRED_PROVIDERS:
+            raise
+        # The provider ROW is gone from the registry, but owners who connected before it was
+        # deleted still hold our copies -- and revocation must outlive the provider definition
+        # (same reasoning as the availability gate above; a credential the UI cannot delete is
+        # the worse state). Named explicitly rather than "any unknown key", so a typo'd or
+        # probed provider is still a 404.
+        await integration_secret_store.delete(owner_id, provider)
+        await integrations_repo.delete(owner_id, provider)
+        return {"status": "disconnected", "provider": provider}
     # ?account= scopes the disconnect to one Google account. It is Google-specific
     # (one provider, many accounts), so reject it on any other provider rather
     # than silently honoring it.
@@ -797,15 +814,15 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
     # Serialize the teardown against an in-flight connect: the OAuth callback
     # takes the same per-owner guard around its write section, so whichever runs
     # second sees the other's completed state and a disconnect can no longer be
-    # undone by a callback still finishing its writes. Cross-process (an EFS
-    # file lock) and per-OWNER now, not per-(owner, provider) -- a disconnect
+    # undone by a callback still finishing its writes. Cross-process (a DynamoDB
+    # lease) and per-OWNER now, not per-(owner, provider) -- a disconnect
     # also serializes against a concurrent provision or resize for the same
     # owner, which is deliberate: that race is the same bug class the old
     # per-provider lock was too narrow to catch.
     try:
         async with owner_lifecycle_guard(owner_id):
             await _disconnect_teardown(owner_id, provider, p)
-    except SidecarLockTimeoutError:
+    except OwnerLifecycleBusyError:
         # Nothing is written before the guard, so this is a clean no-op --
         # tell the caller to retry rather than surface a raw 500.
         raise HTTPException(status_code=409, detail="busy")
@@ -867,10 +884,10 @@ async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provide
     # there's nothing to refresh.
     if apply_connection.is_mcp_shaped(p):
         try:
-            await reconcile_integrations(owner_id, agentcore=True)
+            await reconcile_integrations(owner_id)
         except Exception:  # noqa: BLE001 — a disconnect must never fail because the refresh did
             logger.exception(
-                "agentcore: profile refresh after disconnect failed for owner=%s provider=%s",
+                "hermes: profile refresh after disconnect failed for owner=%s provider=%s",
                 owner_id,
                 provider,
             )
@@ -1083,7 +1100,7 @@ async def oauth_callback(
                     await integration_secret_store.delete(owner_id, prov)
                 return _done("error=apply_failed")
             await integrations_repo.put_status(owner_id, prov, "connected")
-    except SidecarLockTimeoutError:
+    except OwnerLifecycleBusyError:
         # The OAuth state is already consumed at this point, so nothing is
         # written before the guard -- land back on the connections page with a
         # retryable error instead of a raw 500.

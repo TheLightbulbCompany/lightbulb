@@ -1,7 +1,7 @@
 """Tests for agent_export.export_built_agent_from_staging — the Atlas
 agent-builder snapshot path.
 
-Unlike the seller path (``export_agent_from_efs``), the built agent is
+Unlike the seller path (``export_agent_from_profile``), the built agent is
 self-describing: the skeleton-generator nests the agent's own ``openclaw.json``
 + persona files under a ``workspace/`` subdir of the staging dir, with a
 ``build-manifest.json`` at the staging-dir root. The export tars the inner
@@ -114,8 +114,9 @@ def _staging_openclaw_config(agent_id: str = "atlas-staging-build-001") -> dict:
 @pytest.fixture
 def fake_staging(tmp_path: Path, hermes_profile_s3):
     """Builds /tmp/<root>/users/<owner>/workspace-<staging-id>/ with the
-    skeleton-generator on-disk layout (files under workspace/, build-manifest
-    at staging root) and patches get_workspace() to anchor at <root>/users.
+    skeleton-generator on-disk layout (files under workspace/, build-manifest at staging
+    root). ``hermes_profile_s3`` mirrors that tree into a moto bucket and serves it through
+    the REAL ``_download_s3_profile``, which is the only way the export reads it.
     """
     owner_id = "org_owner_abc"
     staging_agent_id = "atlas-staging-build-001"
@@ -137,11 +138,7 @@ def fake_staging(tmp_path: Path, hermes_profile_s3):
         encoding="utf-8",
     )
 
-    from core.containers import workspace as workspace_module
-
-    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
-    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
-        yield owner_id, staging_agent_id, staging_dir
+    yield owner_id, staging_agent_id, staging_dir
 
 
 def _list_tar_names(tar_bytes: bytes) -> list[str]:
@@ -239,11 +236,7 @@ def test_staging_export_falls_back_to_root_openclaw_json(tmp_path: Path, hermes_
     # must NOT ship — it's an Atlas build artifact, not a workspace file.
     (staging_dir / "build-manifest.json").write_text('{"build_id": "b1"}', encoding="utf-8")
 
-    from core.containers import workspace as workspace_module
-
-    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
-    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
-        pkg = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
+    pkg = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
     names = _list_tar_names(pkg.tarball_bytes)
     assert "./openclaw.json" in names, names
     assert "./AGENTS.md" in names, names
@@ -267,11 +260,7 @@ def test_staging_export_never_adopts_a_build_chosen_agent_id(tmp_path: Path, her
     )
     (workspace_subdir / "AGENTS.md").write_text("# slug id\n", encoding="utf-8")
 
-    from core.containers import workspace as workspace_module
-
-    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
-    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
-        pkg = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
+    pkg = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
 
     assert pkg.manifest["agent_id"] == staging_agent_id
     assert "product-analytics-scorecard" not in json.dumps(pkg.manifest)
@@ -295,11 +284,7 @@ def test_staging_export_accepts_a_bundle_with_no_agent_id(tmp_path: Path, hermes
     (workspace_subdir / "openclaw.json").write_text(json.dumps(cfg), encoding="utf-8")
     (workspace_subdir / "AGENTS.md").write_text("# no id\n", encoding="utf-8")
 
-    from core.containers import workspace as workspace_module
-
-    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
-    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
-        pkg = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
+    pkg = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
 
     assert pkg.manifest["agent_id"] == staging_agent_id
     assert pkg.openclaw_slice["agent"].get("name") == "lex-legal"
@@ -315,12 +300,8 @@ def test_staging_export_missing_config_raises(tmp_path: Path, hermes_profile_s3)
     workspace_subdir.mkdir(parents=True)
     (workspace_subdir / "AGENTS.md").write_text("# no config here\n", encoding="utf-8")
 
-    from core.containers import workspace as workspace_module
-
-    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
-    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
-        with pytest.raises(agent_export.BuiltAgentConfigError, match="no parseable openclaw.json"):
-            agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
+    with pytest.raises(agent_export.BuiltAgentConfigError, match="no parseable openclaw.json"):
+        agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
 
 
 def test_staging_export_multi_agent_config_raises(tmp_path: Path, hermes_profile_s3):
@@ -335,12 +316,8 @@ def test_staging_export_multi_agent_config_raises(tmp_path: Path, hermes_profile
     cfg["agents"]["list"].append({"id": "second-agent", "skills": []})
     (workspace_subdir / "openclaw.json").write_text(json.dumps(cfg), encoding="utf-8")
 
-    from core.containers import workspace as workspace_module
-
-    fake_ws = workspace_module.Workspace(mount_path=str(tmp_path / "users"))
-    with patch.object(agent_export, "get_workspace", return_value=fake_ws):
-        with pytest.raises(agent_export.BuiltAgentConfigError, match="multiple agents"):
-            agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
+    with pytest.raises(agent_export.BuiltAgentConfigError, match="multiple agents"):
+        agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
 
 
 def test_staging_export_selected_mcps_and_skills_ride_the_slice(fake_staging):

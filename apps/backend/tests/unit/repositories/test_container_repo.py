@@ -486,33 +486,6 @@ async def test_remove_paired_device_deletes_only_target(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_record_wake_debit_increments_nested_map(dynamodb_table):
-    """The wake budget's debit must actually count against a REAL DynamoDB
-    engine — the whole budget is dead if the UpdateExpression raises. Guards
-    the nested-map SET form against a regression back to `ADD wake_debits.#d`
-    (ValidationException → fail-open → unbounded wakes)."""
-    from core.repositories import container_repo
-
-    await container_repo.upsert("user_wd", {"status": "stopped", "stop_reason": "trial_idle"})
-
-    assert await container_repo.record_wake_debit("user_wd", "2026-07-19") == 1
-    assert await container_repo.record_wake_debit("user_wd", "2026-07-19") == 2
-    assert await container_repo.record_wake_debit("user_wd", "2026-07-19") == 3
-    # A different UTC day is an independent counter.
-    assert await container_repo.record_wake_debit("user_wd", "2026-07-20") == 1
-
-    row = await container_repo.get_by_owner_id("user_wd")
-    assert row["wake_debits"] == {"2026-07-19": 3, "2026-07-20": 1}
-
-
-@pytest.mark.asyncio
-async def test_record_wake_debit_missing_row_returns_zero(dynamodb_table):
-    from core.repositories import container_repo
-
-    assert await container_repo.record_wake_debit("nonexistent", "2026-07-19") == 0
-
-
-@pytest.mark.asyncio
 async def test_release_provision_to_error_records_cause(dynamodb_table):
     """The error transition records WHY it failed -- last_error (a short
     human-readable cause) and retryable (transient vs deterministic) -- so the
@@ -1240,31 +1213,6 @@ async def test_swap_gate_token_hash_no_ops_on_an_absent_row(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_stamp_stop_reason_trial_idle_sets_parked_at(dynamodb_table):
-    from core.repositories import container_repo
-
-    await container_repo.upsert("user_sr", {"status": "stopped"})
-    await container_repo.stamp_stop_reason("user_sr", "trial_idle")
-    row = await container_repo.get_by_owner_id("user_sr")
-    assert row["stop_reason"] == "trial_idle"
-    assert "parked_at" in row
-
-    # A subsequent operator stop clears parked_at (no longer a healthy park).
-    await container_repo.stamp_stop_reason("user_sr", "admin")
-    row = await container_repo.get_by_owner_id("user_sr")
-    assert row["stop_reason"] == "admin"
-    assert "parked_at" not in row
-
-
-# --- Daily owner-email send cap -------------------------------------------
-#
-# DURABLE by design: this is the only fence against an agent looping on the
-# owner-send endpoint, and the backend runs several ECS tasks behind an ALB,
-# so an in-process bucket would give a real limit of cap*task_count and reset
-# on every deploy.
-
-
-@pytest.mark.asyncio
 async def test_daily_email_cap_allows_up_to_cap_then_blocks(dynamodb_table):
     from core.repositories import container_repo
 
@@ -1328,107 +1276,3 @@ async def test_daily_system_notice_claim_is_per_owner_and_per_kind(dynamodb_tabl
     # A different owner, and a different notice kind, each have their own slot.
     assert await container_repo.try_claim_daily_system_notice("user_b", day="2026-07-26") is True
     assert await container_repo.try_claim_daily_system_notice("user_a", day="2026-07-26", kind="other") is True
-
-
-@pytest.mark.asyncio
-async def test_cold_wake_stamp_is_consumed_once(dynamodb_table):
-    from core.repositories import container_repo
-
-    await container_repo.upsert("user_a", {"hook_token": "t"})
-    await container_repo.stamp_email_cold_wake("user_a")
-
-    assert await container_repo.consume_email_cold_wake("user_a") is True
-    # Second read must be False -- the footer appears exactly once.
-    assert await container_repo.consume_email_cold_wake("user_a") is False
-
-
-@pytest.mark.asyncio
-async def test_cold_wake_stamp_expires(dynamodb_table):
-    from core.repositories import container_repo
-
-    await container_repo.upsert("user_a", {"hook_token": "t"})
-    await container_repo.stamp_email_cold_wake("user_a")
-
-    # A stale stamp must not attach a footer to an unrelated reply days later.
-    assert await container_repo.consume_email_cold_wake("user_a", max_age_seconds=0) is False
-
-
-@pytest.mark.asyncio
-async def test_no_stamp_is_false_not_an_error(dynamodb_table):
-    from core.repositories import container_repo
-
-    await container_repo.upsert("user_a", {"hook_token": "t"})
-    assert await container_repo.consume_email_cold_wake("user_a") is False
-
-
-@pytest.mark.asyncio
-async def test_consume_email_cold_wake_is_one_conditional_write(dynamodb_table):
-    """Two concurrent consumers must not both see the stamp as fresh -- that
-    would attach the "I was asleep" footer to two separate replies. Safety
-    comes from ONE conditional write: the condition admits a single winner and
-    the loser gets ConditionalCheckFailedException.
-
-    This asserts that SHAPE rather than racing two callers, because racing them
-    is not a sound test against moto: moto does not serialize conditional
-    writes the way DynamoDB does, so both threads can pass
-    attribute_exists(email_cold_wake_at) before either REMOVEs it and a
-    CORRECT implementation fails intermittently. That flake was hit in CI.
-    Real DynamoDB guarantees the single winner; what our code has to get right
-    -- and what a read-then-remove regression would break -- is issuing one
-    conditional write instead of a read followed by a write.
-    """
-    from unittest.mock import MagicMock, patch
-
-    from core.repositories import container_repo
-
-    await container_repo.upsert("user_a", {"hook_token": "t"})
-    await container_repo.stamp_email_cold_wake("user_a")
-
-    real_table = container_repo._get_table()
-    spy = MagicMock(wraps=real_table)
-    with patch.object(container_repo, "_get_table", return_value=spy):
-        assert await container_repo.consume_email_cold_wake("user_a") is True
-
-    # Exactly one write, and NO separate read: a get_item/query first would be
-    # the read-then-remove shape this guards against.
-    assert spy.update_item.call_count == 1
-    assert spy.get_item.call_count == 0
-    kwargs = spy.update_item.call_args.kwargs
-    # The condition is what makes a single winner possible at all.
-    assert "attribute_exists(email_cold_wake_at)" in kwargs["ConditionExpression"]
-    # UPDATED_OLD is how the same write also READS the value it cleared --
-    # without it we would need a second call and the race would be back.
-    assert kwargs["ReturnValues"] == "UPDATED_OLD"
-
-
-@pytest.mark.asyncio
-async def test_consume_email_cold_wake_loser_reports_false(dynamodb_table):
-    """The concurrent LOSER's half of the contract: a
-    ConditionalCheckFailedException means another caller already consumed the
-    stamp, so this caller must report False -- not raise, and not report a
-    cold wake it did not win."""
-    from unittest.mock import MagicMock, patch
-
-    from botocore.exceptions import ClientError
-
-    from core.repositories import container_repo
-
-    spy = MagicMock()
-    spy.update_item.side_effect = ClientError(
-        {"Error": {"Code": "ConditionalCheckFailedException", "Message": "no"}}, "UpdateItem"
-    )
-    with patch.object(container_repo, "_get_table", return_value=spy):
-        assert await container_repo.consume_email_cold_wake("user_a") is False
-
-
-@pytest.mark.asyncio
-async def test_cold_wake_stamp_cleared_on_stale_path_too(dynamodb_table):
-    from core.repositories import container_repo
-
-    await container_repo.upsert("user_a", {"hook_token": "t"})
-    await container_repo.stamp_email_cold_wake("user_a")
-
-    assert await container_repo.consume_email_cold_wake("user_a", max_age_seconds=0) is False
-    # The stamp must have been cleared even though it was judged stale --
-    # otherwise it could resurface as "fresh" on a later, unrelated reply.
-    assert await container_repo.consume_email_cold_wake("user_a") is False

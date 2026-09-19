@@ -30,7 +30,7 @@ async def get_credentials(user: AuthContext = Depends(get_current_user)) -> dict
     - 409 ``hook_token_pending`` — row exists but ``hook_token`` is missing.
       Narrow window: a legacy user who provisioned before hook-token
       plumbing landed AND hasn't been backfilled yet AND hasn't triggered
-      a reprovision (which now self-heals — see ``ecs_manager``). Returning
+      a reprovision (which self-heals the token). Returning
       409 instead of an empty-token 200 lets the frontend render a
       "provisioning" message rather than a working-looking empty state
       that copies as a bad token to Stripe / etc.

@@ -254,7 +254,6 @@ class TestStripeWebhook:
                 "core.services.entitlement_teardown.billing_repo.get_by_owner_id",
                 new=AsyncMock(return_value={"owner_id": "user_webhook_test", "subscription_status": "canceled"}),
             ),
-            patch("core.containers.get_ecs_manager") as mock_ecs,
             patch(
                 "core.services.paperclip_provisioning.build_paperclip_provisioning",
                 new=AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
@@ -262,7 +261,6 @@ class TestStripeWebhook:
         ):
             mock_billing_svc = AsyncMock()
             mock_billing_cls.return_value = mock_billing_svc
-            mock_ecs.return_value.delete_user_service = AsyncMock()
 
             response = await async_client.post(
                 "/api/v1/billing/webhooks/stripe",

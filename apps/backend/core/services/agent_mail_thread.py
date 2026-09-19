@@ -23,19 +23,34 @@ Note the root is only stable because outbound replies emit the FULL chain
 with just the parent, the root moved on every exchange and any key derived
 from it would have split one conversation into several.
 
-The key is hashed rather than embedding the Message-ID: session keys are
-lowercased upstream, and a raw Message-ID carries ``<>``, ``@`` and arbitrary
-punctuation. The prefix below must remain covered by the container's
-``hooks.allowedSessionKeyPrefixes`` (``core/containers/config.py``) — a key
-outside that allowlist is rejected by the gateway, so inbound mail would stop
-reaching a session at all.
+The key is hashed rather than embedding the Message-ID: session keys are lowercased upstream,
+and a raw Message-ID carries ``<>``, ``@`` and arbitrary punctuation.
+
+**What bounds this key.** Its shape is guaranteed by CONSTRUCTION, not by an allowlist: this
+module is the only producer of a ``lightbulb-email:`` key, it appends 16 hex chars of a SHA-256
+digest to a constant prefix, and the sender's Message-ID is the digest INPUT — never
+interpolated. So an inbound mail cannot name a session; it can only pick which hash it lands
+on, within its own thread.
+
+It used to also have to sit inside the container's ``hooks.allowedSessionKeyPrefixes``. That
+allowlist bounded the OpenClaw gateway's own RPC surface, where a holder of the owner's hook
+token could pass a ``sessionKey`` of its choosing to ``chat.send``. There is no such surface
+now: the ingress (``/plugins/lightbulb-channel/inbound/<agentId>``) is reachable only through
+``InvokeAgentRuntime`` with the backend's own IAM role, and is gated on the GATEWAY token, not
+the hook token. The bridge takes ``sessionKey`` verbatim (``turn._resolve_session_key``), which
+is exactly why the backend must never derive one from an untrusted string.
+
+The ONE door that still accepts a caller-supplied session key is the native Paperclip facade's
+``X-Hermes-Session-Key`` (``routers/messaging.py``), and it is bounded harder than this ever
+was: ``_HERMES_SESSION_RE`` pins the exact shape, and ``_verify_paperclip_hermes_identity``
+re-checks the key's ``companyId`` against the authenticated owner's canonical
+``paperclip-companies`` row on every call.
 """
 
 import hashlib
 
-# Prefix must stay inside `hooks.allowedSessionKeyPrefixes` (see
-# core/containers/config.py) — that allowlist is what bounds a leaked hook
-# token to email threads instead of arbitrary session ownership.
+#: Constant. Every key this module emits is this prefix plus a hex digest, so no caller can
+#: steer the key outside the mail namespace (see the module docstring on what bounds it).
 _PREFIX = "lightbulb-email:"
 
 # 16 hex chars of SHA-256. Collisions would merge two unrelated threads into

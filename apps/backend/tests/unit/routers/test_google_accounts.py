@@ -115,16 +115,13 @@ class TestAssignAccount:
         mock_seed.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("core.services.runtime_transport.is_agentcore_owner", new_callable=AsyncMock)
     @patch("routers.google_accounts.seed_agent_google_identity", new_callable=AsyncMock)
     @patch("routers.google_accounts.google_accounts_repo")
-    async def test_assign_is_allowed_on_an_agentcore_workspace(
-        self, mock_repo, mock_seed, mock_agentcore, async_client
-    ):
+    async def test_assign_writes_the_row_and_reseeds_with_no_runtime_branch(self, mock_repo, mock_seed, async_client):
         """The old 422 rested on "no gog on a microVM", which is no longer true: the image ships
         it and the seeder delivers the binding as ``GOG_ACCOUNT`` in the agent's profile. The
-        router has no runtime branch left — it writes the row and re-seeds like any other."""
-        mock_agentcore.return_value = True
+        router has no runtime branch left — and nothing to classify, so the
+        ``is_agentcore_owner`` stub this test used to carry is gone with the predicate."""
         mock_repo.list_accounts = AsyncMock(return_value=[{"email": "alice@example.com"}])
         mock_repo.set_assignment = AsyncMock()
         mock_repo.list_assignments = AsyncMock(return_value={"agent_1": "alice@example.com"})

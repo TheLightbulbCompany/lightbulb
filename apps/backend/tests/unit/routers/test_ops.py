@@ -42,7 +42,7 @@ def _as_non_admin(app: FastAPI) -> None:
 def test_fleet_accepts_clerk_platform_admin(app, client):
     _as_admin(app)
     grid = [{"owner_id": "org_a", "service_name": "s", "status": "running"}]
-    with patch.object(ops_router.ecs_ops, "fleet_grid", AsyncMock(return_value=grid)):
+    with patch.object(ops_router.fleet, "fleet_grid", AsyncMock(return_value=grid)):
         response = client.get("/api/v1/ops/fleet", headers=_auth("clerk-token"))
 
     assert response.status_code == 200
@@ -55,7 +55,7 @@ def test_fleet_accepts_clerk_platform_admin(app, client):
 
 def test_fleet_empty_grid_is_ok_not_unavailable(app, client):
     _as_admin(app)
-    with patch.object(ops_router.ecs_ops, "fleet_grid", AsyncMock(return_value=[])):
+    with patch.object(ops_router.fleet, "fleet_grid", AsyncMock(return_value=[])):
         response = client.get("/api/v1/ops/fleet", headers=_auth("clerk-token"))
 
     assert response.status_code == 200
@@ -68,7 +68,7 @@ def test_fleet_empty_grid_is_ok_not_unavailable(app, client):
 def test_fleet_degrades_when_source_unavailable(app, client):
     _as_admin(app)
     with patch.object(
-        ops_router.ecs_ops,
+        ops_router.fleet,
         "fleet_grid",
         AsyncMock(side_effect=RuntimeError("throttled")),
     ):

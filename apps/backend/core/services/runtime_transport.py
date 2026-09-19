@@ -3,9 +3,8 @@
 ``InvokeAgentRuntime`` carries a ``{path, method, headers, body}`` envelope, which the
 runtime's contract server unwraps onto 127.0.0.1:18789.
 
-Every prod and dev workspace is on AgentCore, so ``containers.runtime_host`` is no longer
-consulted and the ECS transport is gone (deletion PR-1). ``host_for`` survives as a constant
-only so the ECS branches it used to select can be deleted file-by-file in the follow-up PRs.
+Every workspace is on AgentCore, so ``containers.runtime_host`` is not consulted at all and
+there is nothing to classify: a runtime is addressed by the row's ``agentcore_runtime_arn``.
 
 **Why the session id is derived from the owner id.** AgentCore creates a NEW microVM for every
 distinct ``runtimeSessionId`` and keeps them warm in parallel. Two live sessions for one
@@ -25,15 +24,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-
-#: Nothing here dials it any more; ``openclaw_work``'s own ECS leg is the last reader, so it
-#: goes with that file.
-GATEWAY_PORT = 18789
-
-#: What ``resolve_running_container`` reports as the address of a workspace. Truthy on purpose:
-#: every "no ip → 503" door stays shut. Never dialled — the transport addresses the runtime by
-#: ARN and ignores it. Goes when the last caller stops unpacking an ``ip``.
-AGENTCORE_ADDRESS = "agentcore"
 
 #: F4 (predeploy review, M6-R37): the RPC budget for a call to a possibly-parked AgentCore
 #: workspace -- AgentCore holds an invoke through the microVM start (~35s) and the gateway boot
@@ -83,30 +73,10 @@ def session_id_for(owner_id: str) -> str:
     return candidate if len(candidate) >= _MIN_SESSION_ID_LEN else candidate.ljust(_MIN_SESSION_ID_LEN, "0")
 
 
-def host_for(container: dict) -> str:
-    """Which transport this owner is on. Always AgentCore — the ECS runtime is deleted.
-
-    The argument is ignored (no row read). Kept as a function rather than inlined at its ~50
-    call sites so each caller's dead ECS branch can be removed with its own file.
-    """
-    return "agentcore"
-
-
-async def is_agentcore_owner(owner_id: str, *, fail_closed: bool = False) -> bool:
-    """Always ``True``: AgentCore is the only runtime, so there is nothing left to classify.
-
-    Still ``async`` and still accepting ``fail_closed`` — both inert — so the ~30 call sites do
-    not churn in a behavioural PR. They go with their ECS branches in PR-3…PR-5, and
-    ``RuntimeHostUnknownError`` goes with them: nothing raises it any more.
-    """
-    return True
-
-
 async def request(
     container: dict,
     path: str,
     *,
-    ip: str | None = None,
     method: str = "POST",
     json_body: Any = None,
     content: bytes | None = None,
@@ -115,10 +85,9 @@ async def request(
 ) -> RuntimeResponse:
     """Send one request to the owner's gateway.
 
-    ``ip`` is accepted and ignored: addressing comes from the container row's
-    ``agentcore_runtime_arn``. The kwarg stays only so the nine call sites still passing it can
-    drop it with their own files. ``content`` is a raw body for proxies that forward bytes
-    verbatim (webhooks); it wins over ``json_body``.
+    Addressing comes from the container row's ``agentcore_runtime_arn`` — there is no address
+    to pass in. ``content`` is a raw body for proxies that forward bytes verbatim (webhooks);
+    it wins over ``json_body``.
 
     Failures are httpx-shaped — ``httpx.ReadTimeout`` when the gateway did not answer in time,
     ``httpx.ConnectError`` for anything else in the way — so a caller's existing

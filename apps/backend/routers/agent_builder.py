@@ -25,7 +25,6 @@ import re
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from core.containers import get_ecs_manager
 from core.repositories import container_repo
 from core.services import agent_export
 from core.services.catalog_package import CatalogPackage
@@ -36,7 +35,6 @@ from core.services.paperclip_agent_lifecycle import (
 )
 from core.services.paperclip_agent_idempotency import build_agent_create_idempotency_key
 from core.services.paperclip_meta import derive_from_listing
-from core.services.paperclip_openclaw_pairing import ensure_operator_device_paired
 from core.dynamodb import run_in_thread
 
 logger = logging.getLogger(__name__)
@@ -252,23 +250,11 @@ async def _register_built_agent(
         description_md=package.manifest.get("description") or None,
     )
 
-    # 2. Resolve the running container BEFORE minting Paperclip. The container
-    #    is often still starting while Atlas works; checking first means a
-    #    not-ready container returns 503 without minting — otherwise we'd create
-    #    a Paperclip agent and immediately roll it back on every retry until the
-    #    container stabilizes.
-    ecs = get_ecs_manager()
-    container, container_ip = await ecs.resolve_running_container(owner_id)
-    if container is None or container_ip is None:
-        raise HTTPException(status_code=503, detail="container starting — retry in a moment")
-    # Take the token from the row _require_hook_token already read, rather than
-    # re-reading container["gateway_token"] (resolve_running_container does its
-    # own fetch for the IP/running-check; the token doesn't need a third).
-    container_token = auth_container.get("gateway_token")
-    if not container_token:
-        # Row exists but predates gateway_token (or a partial write) — treat as
-        # not-ready rather than KeyError-into-misleading-rollback.
-        raise HTTPException(status_code=503, detail="container not ready (no gateway token) — retry in a moment")
+    # 2. Check the workspace is provisioned BEFORE minting Paperclip: a not-ready workspace
+    #    returns 503 without minting, otherwise every retry would create a Paperclip agent and
+    #    immediately roll it back until provisioning settles.
+    if not auth_container.get("agentcore_runtime_arn"):
+        raise HTTPException(status_code=503, detail="workspace still provisioning — retry in a moment")
 
     # Default org placement: report to the owner's apex CEO (Friday) so built
     # agents never land unparented. Resolved only once the container is ready
@@ -322,84 +308,45 @@ async def _register_built_agent(
     #    the stable Paperclip key then returns the same UUID. Reconcile that
     #    existing install instead of appending its cron jobs a second time.
     catalog = get_catalog_service()
-    existing_install = catalog.live_install_for_agent(owner_id, new_agent_id)
-    install_already_committed = isinstance(existing_install, dict)
     try:
-        if install_already_committed:
-            deploy_result = {"agent_id": new_agent_id}
-        else:
-            deploy_result = await catalog.deploy_from_artifact(
-                owner_id=owner_id,
-                slug=_slugify(payload.name),
-                manifest=package.manifest,
-                slice_=slice_,
-                tar_bytes=package.tarball_bytes,
-                new_agent_id=new_agent_id,
-                # Fix round 1, item 1: auth_container is already resolved.
-                container=auth_container,
-            )
-
-        # Register the new agent's operator device into the running container's
-        # paired.json + bind its authToken to the gateway token, so its first
-        # relayed connect isn't rejected NOT_PAIRED. catalog deploy only
-        # RPC-registers the agent (agents.create/update); without this the
-        # built agent — which Paperclip wakes on events and runs through the
-        # operator relay — can't pass the device-auth handshake until the
-        # next reprovision. Mirrors the marketplace deploy path.
-        # ``paperclip_agent`` (not the slice) carries adapterConfig.devicePrivateKeyPem.
-        await ensure_operator_device_paired(
+        deploy_result = await catalog.deploy_from_artifact(
             owner_id=owner_id,
-            paperclip_agent=paperclip_agent,
-            gateway_token=container_token,
+            slug=_slugify(payload.name),
+            manifest=package.manifest,
+            slice_=slice_,
+            tar_bytes=package.tarball_bytes,
+            new_agent_id=new_agent_id,
+            container=auth_container,
         )
     except Exception as exc:  # noqa: BLE001 — roll back the orphan, re-raise
-        if install_already_committed:
-            logger.exception(
-                "register_built_agent: reconciliation failed for committed agent %s owner=%s staging=%s; "
-                "preserving the existing install",
-                new_agent_id,
-                owner_id,
-                payload.staging_agent_id,
-            )
-            if isinstance(exc, HTTPException):
-                raise
-            reason = f"{type(exc).__name__}: {exc}"[:300]
-            raise HTTPException(
-                status_code=502,
-                detail=f"reconcile existing container install failed ({reason}) — retry in a moment",
-            ) from exc
-
         logger.exception(
             "register_built_agent: deploy failed for owner=%s staging=%s — rolling back %s",
             owner_id,
             payload.staging_agent_id,
             new_agent_id,
         )
-        # Unwind the container/EFS side effects first (openclaw.json agents.list
-        # entry + extracted workspace dirs), mirroring the marketplace deploy
-        # router. Without this every failed attempt strands a half-installed
-        # ``name=<uuid>`` ghost in the owner's config — and if the entry is the
-        # thing that failed validation, it keeps the whole config invalid until
-        # an admin regenerates it. Self-contained best-effort; never raises.
-        # ``cause=exc`` lets it skip the unwind on a client-side TimeoutError
-        # (deploy_from_artifact's pair RPC can time out) — see its docstring.
-        # A skipped unwind means the container-side install is still standing, so
-        # the Paperclip row stays too: deleting it would leave an agent in the
-        # container that nobody can see or remove from Teams.
-        unwound = await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id, cause=exc)
-        if unwound:
+        # The orphan to remove is the Paperclip row: any S3 profile objects a failed install
+        # wrote are overwritten by the next attempt, and no install record is keyed on them
+        # (see catalog_service's module docstring).
+        #
+        # EXCEPT on a timeout, where the row is what makes the half-install disposable. A
+        # TimeoutError means "no answer yet", not "failed": the profile write may still be
+        # landing, and the Paperclip agent may already exist and work. Deleting only the row then
+        # leaves a live profile with no row for the owner to see or delete it by, and nothing
+        # that would ever clean it up -- keeping it makes that an ordinary agent in Teams.
+        if isinstance(exc, TimeoutError):
+            logger.warning(
+                "register_built_agent: timed out for owner=%s staging=%s — KEEPING paperclip agent %s so the "
+                "half-install stays ownable",
+                owner_id,
+                payload.staging_agent_id,
+                new_agent_id,
+            )
+        else:
             try:
                 await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
             except Exception:
                 logger.exception("register_built_agent: rollback failed for agent %s", new_agent_id)
-        else:
-            logger.warning(
-                "register_built_agent: keeping paperclip agent %s for owner=%s — container-side install "
-                "was NOT safely unwound (client-side timeout, or the sidecar unlink failed), so it stays "
-                "visible + deletable in Teams",
-                new_agent_id,
-                owner_id,
-            )
         if isinstance(exc, HTTPException):
             raise
         # Carry the failure class + message in the detail. The caller is the
@@ -412,13 +359,12 @@ async def _register_built_agent(
         reason = f"{type(exc).__name__}: {exc}"[:300]
         raise HTTPException(
             status_code=502,
-            detail=f"deploy into container failed ({reason}) — retry the build in a moment",
+            detail=f"deploy into the workspace failed ({reason}) — retry the build in a moment",
         ) from exc
 
-    # Committed: the deploy + pairing envelope above survived. Emitting from
-    # inside deploy_from_artifact counted builds the rollback had undone.
-    if not install_already_committed:
-        emit_agent_deployed(owner_id=owner_id, slug=_slugify(payload.name), agent_id=new_agent_id)
+    # Committed: the deploy envelope above survived. Emitting from inside
+    # deploy_from_artifact counted builds the rollback had undone.
+    emit_agent_deployed(owner_id=owner_id, slug=_slugify(payload.name), agent_id=new_agent_id)
 
     # Surface sanitizer-dropped keys so Atlas learns its bundle emitted
     # non-schema config instead of the loss dying in a CloudWatch warn.

@@ -16,7 +16,8 @@ resilience signal: any 500 on hostile input is a real unhandled-exception bug.
 The under-documented error responses are recorded as an SP3 finding, not gated."""
 
 import pytest
-from hypothesis import HealthCheck, settings
+from hypothesis import HealthCheck, reject, settings
+from requests.exceptions import InvalidHeader
 
 from schemathesis.checks import not_a_server_error
 
@@ -36,4 +37,14 @@ def test_contract_negative(case, chaos_ddb):
     label = case.operation.label
     if label in NEGATIVE_PASS_EXCLUSIONS:
         pytest.skip(f"excluded: {NEGATIVE_PASS_EXCLUSIONS[label]}")
-    case.call_and_validate(checks=[not_a_server_error])
+    try:
+        case.call_and_validate(checks=[not_a_server_error])
+    except InvalidHeader:
+        # The fuzzer put a CR/LF or a leading space in a header value (it has
+        # hit `x-lightbulb-ws-internal` on POST /ws/disconnect). `requests`
+        # refuses to transmit that, so the app never receives a request and
+        # there is no response to check — every real client and every proxy in
+        # front of us rejects it the same way. Discard the example instead of
+        # reporting the transport's refusal as a server error. Anything the
+        # client CAN send still gets the full 5xx check.
+        reject()

@@ -11,3 +11,8 @@ SYSTEM_ACTOR_ID = "__system__"
 # DO NOT RENAME: resolved against the live Clerk user list at startup — this is
 # an existing account's address, not a label.
 ISOL8_CURATOR_EMAIL = "admin@isol8.co"
+
+# The channel providers the platform knows about. Surfaced by /platform/info and
+# used to classify a marketplace listing's requirements. Three strings, no runtime
+# behaviour — it outlived the OpenClaw config generator that used to own it.
+CHANNEL_PROVIDER_IDS = ("telegram", "discord", "slack")

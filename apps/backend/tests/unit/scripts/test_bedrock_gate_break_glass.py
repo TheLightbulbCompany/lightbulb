@@ -2,7 +2,7 @@
 policy + reprovisions; --revert puts the FENCE policy back. Only Bedrock-path
 owners are touched."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -13,9 +13,9 @@ _ARNS = {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/s"
 
 def _patches(*, rows, billing_by_owner):
     put_policy = AsyncMock()
+    # The re-render is a provision dispatch now: it re-writes the owner's agent profiles and
+    # boot secret for the current SSM mode. There is no ECS service to reprovision.
     reprovision = AsyncMock()
-    ecs = MagicMock()
-    ecs.reprovision_for_user = reprovision
 
     async def _billing(owner_id):
         return billing_by_owner.get(owner_id)
@@ -32,7 +32,7 @@ def _patches(*, rows, billing_by_owner):
         patch("core.repositories.billing_repo.get_by_owner_id", AsyncMock(side_effect=_billing)),
         patch("core.billing.bedrock_aip.put_owner_bedrock_policy", put_policy),
         patch("core.billing.bedrock_aip.aip_fan_out_regions", lambda: ("us-east-1",)),
-        patch("core.containers.get_ecs_manager", MagicMock(return_value=ecs)),
+        patch("core.services.provision_dispatch.dispatch_provision", reprovision),
     ]
     return put_policy, reprovision, cms
 

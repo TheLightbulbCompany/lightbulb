@@ -22,13 +22,6 @@ from core.services.messaging import ApiProblem
 _PAID_AIPS = {"opus": "arn:aip:opus", "sonnet": "arn:aip:sonnet", "haiku": "arn:aip:haiku"}
 
 
-def _agentcore(is_agentcore: bool):
-    async def fake(owner_id):
-        return is_agentcore
-
-    return fake
-
-
 def _wire_owner(monkeypatch, *, provider_choice="bedrock_claude", aip_arns=_PAID_AIPS):
     monkeypatch.setattr(
         "core.services.container_provision.resolve_provider_choice",
@@ -51,7 +44,6 @@ async def _models_list(owner_id="org_a"):
 
 @pytest.mark.asyncio
 async def test_bedrock_owner_gets_their_own_aips_by_name_with_no_microvm_wake(monkeypatch):
-    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(True))
     _wire_owner(monkeypatch)
     _no_bridge(monkeypatch)
 
@@ -71,7 +63,6 @@ async def test_bedrock_owner_gets_their_own_aips_by_name_with_no_microvm_wake(mo
 async def test_a_trial_owner_is_offered_only_the_one_profile_they_hold(monkeypatch):
     """A trial owner holds exactly one AIP. Offering opus/haiku would hand them a model the
     bedrock-gate refuses on every turn."""
-    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(True))
     _wire_owner(monkeypatch, provider_choice="bedrock_trial", aip_arns={"sonnet": "arn:aip:sonnet"})
     _no_bridge(monkeypatch)
 
@@ -83,7 +74,6 @@ async def test_a_trial_owner_is_offered_only_the_one_profile_they_hold(monkeypat
 
 @pytest.mark.asyncio
 async def test_no_aips_on_the_row_yet_is_an_empty_list_not_an_error(monkeypatch):
-    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(True))
     _wire_owner(monkeypatch, aip_arns={})
     _no_bridge(monkeypatch)
 
@@ -94,7 +84,6 @@ async def test_no_aips_on_the_row_yet_is_an_empty_list_not_an_error(monkeypatch)
 async def test_byo_owner_falls_through_to_the_bridges_hermes_catalog(monkeypatch):
     """Only the runtime holds Hermes's own provider catalog, so a BYO/OAuth workspace's list
     comes from the bridge -- passed through unchanged."""
-    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(True))
     _wire_owner(monkeypatch, provider_choice="byo_key", aip_arns={})
     payload = {"models": [{"id": "claude-sonnet-5", "name": "claude-sonnet-5", "provider": "anthropic"}]}
     call = AsyncMock(return_value=payload)
@@ -102,15 +91,6 @@ async def test_byo_owner_falls_through_to_the_bridges_hermes_catalog(monkeypatch
 
     assert await _models_list() == payload
     assert call.await_args.args[1] == "models.list"
-
-
-@pytest.mark.asyncio
-async def test_models_list_still_forwards_for_an_ecs_row(monkeypatch):
-    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(False))
-    call = AsyncMock(return_value={"from": "container"})
-    monkeypatch.setattr(rpc.container_rpc, "call", call)
-
-    assert await _models_list() == {"from": "container"}
 
 
 # ---------------------------------------------------------------------------

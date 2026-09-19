@@ -41,13 +41,13 @@ def reset_background_tasks():
 
 @pytest.mark.asyncio
 async def test_fleet_counts_delegates_to_live_ecs():
-    """_fleet_counts now reads LIVE from ECS via ecs_ops (was DDB-derived)."""
+    """_fleet_counts delegates to the fleet grid (ops.fleet), under a 2s bound."""
     from unittest.mock import AsyncMock
 
     from core.services import system_health
 
     with patch(
-        "core.services.system_health.ecs_ops.fleet_counts_live",
+        "core.services.system_health.fleet_ops.fleet_counts_live",
         AsyncMock(return_value={"running": 3, "provisioning": 1, "stopped": 2, "error": 0, "unknown": 0, "total": 6}),
     ):
         counts = await system_health._fleet_counts()
@@ -57,13 +57,13 @@ async def test_fleet_counts_delegates_to_live_ecs():
 
 @pytest.mark.asyncio
 async def test_fleet_counts_returns_live_shape_faithfully():
-    """_fleet_counts passes through whatever ecs_ops yields (incl. the unknown key)."""
+    """_fleet_counts passes through whatever the grid yields (incl. the unknown key)."""
     from unittest.mock import AsyncMock
 
     from core.services import system_health
 
     with patch(
-        "core.services.system_health.ecs_ops.fleet_counts_live",
+        "core.services.system_health.fleet_ops.fleet_counts_live",
         AsyncMock(return_value={"running": 2, "provisioning": 0, "stopped": 0, "error": 1, "unknown": 1, "total": 4}),
     ):
         counts = await system_health._fleet_counts()

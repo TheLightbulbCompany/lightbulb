@@ -1,10 +1,10 @@
-"""One-shot container-provision runner.
+"""One-shot workspace-provision runner.
 
 Two invocation modes, same code path and the same exit-code ABI:
 - INLINE (the fast path): the backend's dispatcher runs this module as a
   CHILD PROCESS of the backend task as attempt 0
   (``provision_dispatch._run_inline``), skipping the ~30s ECS task
-  cold-launch entirely.
+  cold-launch of the SFN path below.
 - SFN (the durable path): executed as an ECS task by the lightbulb-{env}-provision
   Step Functions state machine — for retries after a failed inline attempt,
   and for claims the backend could not finish (crash / deploy handoff).
@@ -14,17 +14,14 @@ healthy, 10 deterministic failure (no retry), 11 transient failure (machine
 retries), 20 superseded by a deliberate reprovision (machine stops quietly).
 
 Two legs, in order: step 0 seeds the owner's Paperclip company (see
-``_seed_owner_paperclip``), then the container leg provisions ECS — and the
-container leg is a NO-OP when the owner's box is already up and healthy (see
-``_container_already_healthy``). That is what makes the single dispatch safe
-for callers whose container is already running: they get the seed reconcile
-without a force-redeploy.
+``_seed_owner_paperclip``), then the runtime leg provisions the workspace's AgentCore runtime
+and writes every roster profile (``hermes_provisioning.provision_hermes_runtime``) — and that
+leg is a NO-OP when the owner's workspace is already up and healthy (see
+``_container_already_healthy``). That is what makes the single dispatch safe for callers whose
+workspace is already running: they get the seed reconcile without a force-reprovision.
 
-The runner owns the provisioning -> running transition in the FOREGROUND
-(wait_for_running) — the detached create_task pollers ecs_manager fires
-internally for non-provisioning paths (wake, resize) never run inside this
-process; the foreground wait is the one that matters here, and every row
-write is condition-guarded (claim + generation + per-attempt token).
+The runner owns the provisioning -> running transition in the FOREGROUND, and every row write
+is condition-guarded (claim + generation + per-attempt token).
 
 PROVISION_ATTEMPT_TOKEN (env, set by the state machine's containerOverrides
 from ``$.attempt_token``) is this ATTEMPT's fencing token — fresh every SFN
@@ -56,7 +53,6 @@ import logging
 import os
 import sys
 
-from core.config import settings
 
 # Imported eagerly (unlike this module's other core.* imports, which are lazy inside
 # functions) so tests can monkeypatch `provision_runner.hermes_provisioning` directly.
@@ -70,85 +66,10 @@ EXIT_SUPERSEDED = 20
 logger = logging.getLogger("provision_runner")
 
 
-def _get_manager():
-    from core.containers import get_ecs_manager
-
-    return get_ecs_manager()
-
-
-async def _resolve_provider(owner_id: str):
-    from core.services.container_provision import resolve_provider_choice
-
-    return await resolve_provider_choice(owner_id)
-
-
-async def _get_row(owner_id: str):
-    from core.repositories import container_repo
-
-    return await container_repo.get_by_owner_id(owner_id)
-
-
-async def _container_already_healthy(manager, owner_id: str, row: dict | None) -> bool:
-    """True when this owner ALREADY has a reachable container: an ECS task the
-    service discovery can find AND whose gateway port answers.
-
-    The container leg's short-circuit. Every claimable row shape (absent,
-    ``error``, ``stopped``, stale ``provisioning`` — see
-    ``container_repo.try_claim_provision``) can still sit on top of a perfectly
-    healthy live task: the commonest case is a seed (step 0) failure, which
-    flips a RUNNING owner's row to ``error`` while the box keeps serving chat.
-    Re-running ``provision_user_container`` there is not a no-op — it rotates
-    the per-owner bedrock-gate token, re-puts the IAM policy, rewrites the
-    configs and issues a ``forceNewDeployment`` — i.e. it restarts a healthy
-    container and re-mints credentials the running task already holds. So when
-    the box is up we skip straight to ``wait_for_running``, which observes the
-    same healthy task and writes the fenced terminal transition.
-
-    ``has_live_service`` first, then the probe — BOTH must pass. The probe
-    (``resolve_running_container`` + ``is_healthy``, the gateway TCP check)
-    cannot be replaced by ``has_live_service`` alone: "an ACTIVE service with
-    desiredCount > 0" is TRUE for a wedged box whose task is up but whose
-    gateway never opened, and skipping the provision there would remove the
-    one thing that heals it. But the probe alone is not enough either: a
-    deliberate stop (provider change, admin reprovision) sets desiredCount=0
-    and only then exposes a claimable row, and the old task keeps answering
-    the gateway probe for its whole drain window (~30s+). Skipping on that
-    probe leaves the runner in ``wait_for_running`` against a service nothing
-    will ever scale up — the founder-org 30-minute provision hang, 2026-08-20.
-    ``has_live_service`` (desired>0 AND a task running or a rollout in
-    progress) is exactly the "something will be up" predicate that drain
-    window fails. Anything indeterminate (no service yet, no IP, probe error)
-    answers False, so the runner provisions exactly as it does today — the
-    skip is the special case, never the fallback.
-    """
-    if not (row or {}).get("service_name"):
-        return False  # brand-new owner: nothing to discover, full provision
-    try:
-        if not await manager.has_live_service(owner_id):
-            # desiredCount=0 / no ACTIVE service: a deliberate stop owns this
-            # box; its still-draining task can look healthy. Provision (the
-            # scale-from-zero branch), never skip.
-            return False
-        container, ip = await manager.resolve_running_container(owner_id)
-        if not container or not ip:
-            return False
-        return bool(manager.is_healthy(ip))
-    except Exception:  # noqa: BLE001 — an indeterminate probe must provision, not skip
-        logger.warning("container liveness probe failed for owner %s — provisioning", owner_id, exc_info=True)
-        return False
-
-
-async def _seed_owner_paperclip(owner_id: str, *, runtime_host: str | None = None) -> int:
+async def _seed_owner_paperclip(owner_id: str) -> int:
     """Step 0: run the OWNER Paperclip seed under the executor's single-flight,
     BEFORE the container work. Returns an exit code from the runner's ABI
     (0 ok / 10 deterministic / 11 transient).
-
-    ``runtime_host``: forwarded to ``_ensure_paperclip_for_org`` only when set
-    (M4-R8) — ``run()`` passes ``"agentcore"`` here when ``settings.HERMES_RUNTIME``
-    is on, so the starter-seed loop wires the ``http`` adapter for every agent
-    BEFORE the containers row exists to read it from (see
-    ``paperclip_adapter_config.adapter_type_for``). ``None`` (the default, and
-    every non-Hermes caller) is unchanged behavior.
 
     WHY here: GET /container/status used to run provision_org (Better-Auth
     signup + company + starter roster) on the poll thread, where load-balanced
@@ -227,10 +148,7 @@ async def _seed_owner_paperclip(owner_id: str, *, runtime_host: str | None = Non
         # the company already exists (an idempotent re-run) this same call
         # falls through to the JOIN path and no-ops on the creator's already
         # -active owner row.
-        ensure_org_kwargs = dict(org_id=owner_id, user_id=creator_user_id, email=owner_email, is_admin=True)
-        if runtime_host is not None:
-            ensure_org_kwargs["runtime_host"] = runtime_host
-        await _ensure_paperclip_for_org(**ensure_org_kwargs)
+        await _ensure_paperclip_for_org(org_id=owner_id, user_id=creator_user_id, email=owner_email, is_admin=True)
         await arm_nightly_ceo(owner_id, trust_cache=False)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         logger.exception("seed step 0 (owner paperclip) failed for owner %s", owner_id)
@@ -243,24 +161,10 @@ async def run(owner_id: str, claim_id: str) -> int:
     from core.auth import is_org_owner_id
     from core.observability.logging import bind_log_context
     from core.repositories import container_repo
-    from core.repositories.container_repo import ProvisionSuperseded, classify_provision_error
-    from core.services import runtime_transport
+    from core.repositories.container_repo import ProvisionSuperseded
 
     bind_log_context(user_id=owner_id)
 
-    # Minor (predeploy review, M6-R39): an existing row already on agentcore takes the Hermes
-    # leg regardless of settings.HERMES_RUNTIME -- the flag is ONE per-environment switch, and a
-    # dispatch that reached here for an already-migrated owner while it happens to read False
-    # would otherwise start an ECS task beside a LIVE microVM on the same access point and
-    # rotate the bearer the microVM is still presenting. The worst failure this design wants to
-    # avoid, for one extra eventually-consistent read.
-    existing_row = await container_repo.get_by_owner_id(owner_id)
-    hermes = settings.HERMES_RUNTIME or runtime_transport.host_for(existing_row or {}) == "agentcore"
-    # Hermes/AgentCore has no ECS service to manage — the manager is purely an ECS
-    # concept, so it is never constructed on that leg (tests rely on this: a manager
-    # double that explodes on any call proves the Hermes leg never touches it).
-    runtime_host = "agentcore" if hermes else None
-    manager = None if hermes else _get_manager()
     # Attempt-token fencing (hazard 1, spec §7): every attempt -- including
     # attempt 0, where this is a same-value no-op re-assertion -- re-stamps
     # the row's provision_attempt_token BEFORE any other checkpoint. See
@@ -272,23 +176,20 @@ async def run(owner_id: str, claim_id: str) -> int:
     try:
         await container_repo.claim_attempt(owner_id, claim_id, attempt_token)
 
-        if hermes:
-            # M4-R33: mint/write hook_token + gateway_token (+ the boot secret) BEFORE step 0
-            # seeds the roster. Step 0's starter-agent loop bakes hook_token into the http
-            # adapter's Authorization header at seed time — seeding first shipped every starter
-            # agent with an EMPTY bearer, since nothing had minted one yet. Fenced, NON-terminal
-            # (the provision isn't done): a lost fence here raises ProvisionSuperseded, caught by
-            # the same handler as every other checkpoint in this function.
-            # C2/M4-R36: any OTHER exception is released to error here — prepare_hermes_workspace
-            # has no internal release of its own (unlike provision_user_container on the ECS leg).
-            try:
-                await hermes_provisioning.prepare_hermes_workspace(
-                    owner_id, claim_id=claim_id, attempt_token=attempt_token
-                )
-            except ProvisionSuperseded:
-                raise
-            except Exception as exc:  # noqa: BLE001 — classified + released; see the helper's docstring
-                return await _release_hermes_failure_to_error(owner_id, claim_id, attempt_token, exc, "prepare")
+        # M4-R33: mint/write hook_token + gateway_token (+ the boot secret) BEFORE step 0
+        # seeds the roster. Step 0's starter-agent loop bakes hook_token into the http
+        # adapter's Authorization header at seed time — seeding first shipped every starter
+        # agent with an EMPTY bearer, since nothing had minted one yet. Fenced, NON-terminal
+        # (the provision isn't done): a lost fence here raises ProvisionSuperseded, caught by
+        # the same handler as every other checkpoint in this function.
+        # C2/M4-R36: any OTHER exception is released to error here — prepare_hermes_workspace
+        # has no internal release of its own.
+        try:
+            await hermes_provisioning.prepare_hermes_workspace(owner_id, claim_id=claim_id, attempt_token=attempt_token)
+        except ProvisionSuperseded:
+            raise
+        except Exception as exc:  # noqa: BLE001 — classified + released; see the helper's docstring
+            return await _release_hermes_failure_to_error(owner_id, claim_id, attempt_token, exc, "prepare")
 
         # Step 0: the OWNER Paperclip seed runs HERE, under the executor's
         # single-flight (this is the ONLY runner for this owner's claim),
@@ -303,11 +204,7 @@ async def run(owner_id: str, claim_id: str) -> int:
         # same release_provision_to_error pattern provision_user_container uses
         # for its own failures — so seed success is tied to the execution rather
         # than silently swallowed.
-        # Omit runtime_host entirely (rather than passing it as None) when the flag is
-        # off, so every existing ECS-leg caller's _seed_owner_paperclip call stays
-        # byte-identical (M4-R8: "ECS callers unchanged").
-        seed_kwargs = {"runtime_host": runtime_host} if runtime_host is not None else {}
-        seed_exit = await _seed_owner_paperclip(owner_id, **seed_kwargs)
+        seed_exit = await _seed_owner_paperclip(owner_id)
         if seed_exit != EXIT_OK:
             try:
                 await container_repo.release_provision_to_error(
@@ -325,107 +222,29 @@ async def run(owner_id: str, claim_id: str) -> int:
                 logger.exception("seed step 0: error release failed for owner %s", owner_id)
             return seed_exit
 
-        if hermes:
-            # CreateAgentRuntime is one synchronous call, so there is no service to poll and
-            # no generation to re-read: provision_hermes_runtime writes the terminal row
-            # itself, FENCED on the same claim_id/attempt_token this run already holds
-            # (M4-R28 — mirrors manager.wait_for_running's own fenced terminal write below).
-            # Everything else below this branch (manager, pre_row/generation fencing,
-            # wait_for_running) is an ECS concept and is skipped wholesale. A lost fence
-            # raises ProvisionSuperseded, caught by the same handler as the ECS leg's.
-            # C2/M4-R36: any OTHER exception is released to error here, same as prepare's own
-            # branch above — provision_hermes_runtime has no internal release of its own.
-            try:
-                await hermes_provisioning.provision_hermes_runtime(
-                    owner_id, claim_id=claim_id, attempt_token=attempt_token
-                )
-            except ProvisionSuperseded:
-                raise
-            except Exception as exc:  # noqa: BLE001 — classified + released; see the helper's docstring
-                return await _release_hermes_failure_to_error(
-                    owner_id, claim_id, attempt_token, exc, "runtime provision"
-                )
-            return EXIT_OK
-
-        # Read the container-incarnation fence off the row (see module
-        # docstring for why this is NOT threaded through the SFN input).
-        # Absent for a brand-new owner -- create_user_service mints it later,
-        # inside provision_user_container below.
-        pre_row = await container_repo.get_by_owner_id(owner_id)
-        generation = (pre_row or {}).get("provision_generation")
-
-        # CONTAINER LEG — skipped entirely when the owner's box is already up
-        # and healthy (see _container_already_healthy). This is what makes ONE
-        # dispatch safe to fire at an owner who needs only the seed: a
-        # self-heal run for a failed Teams workspace no longer force-redeploys
-        # a healthy container (nor re-mints its gate token / IAM). The row is
-        # still "provisioning" (the claim put it there), so wait_for_running
-        # below writes the terminal fenced transition on BOTH paths.
-        if await _container_already_healthy(manager, owner_id, pre_row):
-            logger.info(
-                "container leg: owner %s already healthy — skipping provision (seed-only run)",
-                owner_id,
-            )
-        else:
-            provider_choice, byo_provider = await _resolve_provider(owner_id)
-            # Step 0 has already refused a non-org owner.
-            await manager.provision_user_container(
-                owner_id,
-                provider_choice=provider_choice,
-                byo_provider=byo_provider,
-                owner_type="org",
-                claim_id=claim_id,
-                generation=generation,
-                attempt_token=attempt_token,
-            )
-            # The full-provision path (create_user_service) MINTS a fresh
-            # provision_generation — for a brand-new owner AND for an existing
-            # row whose ECS service was missing/INACTIVE. Re-read so
-            # wait_for_running fences on the CURRENT incarnation, not the
-            # pre-create value read above (which would make its own running
-            # write raise ProvisionSuperseded against this very run and wedge
-            # the row in "provisioning"). claim_id/attempt_token stay the
-            # primary fences. The skip path mints nothing, so its pre-read
-            # value is already current.
-            post_row = await container_repo.get_by_owner_id(owner_id)
-            generation = (post_row or {}).get("provision_generation")
-        await manager.wait_for_running(
-            owner_id,
-            claim_id=claim_id,
-            generation=generation,
-            attempt_token=attempt_token,
-        )
+        # CreateAgentRuntime is one synchronous call, so there is no service to poll and no
+        # generation to re-read: provision_hermes_runtime writes the terminal row itself,
+        # FENCED on the same claim_id/attempt_token this run already holds (M4-R28). A lost
+        # fence raises ProvisionSuperseded, caught below.
+        # C2/M4-R36: any OTHER exception is released to error here, same as prepare's own
+        # branch above — provision_hermes_runtime has no internal release of its own.
+        try:
+            await hermes_provisioning.provision_hermes_runtime(owner_id, claim_id=claim_id, attempt_token=attempt_token)
+        except ProvisionSuperseded:
+            raise
+        except Exception as exc:  # noqa: BLE001 — classified + released; see the helper's docstring
+            return await _release_hermes_failure_to_error(owner_id, claim_id, attempt_token, exc, "runtime provision")
+        return EXIT_OK
     except ProvisionSuperseded:
         return await _stand_down_superseded(owner_id)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
-        # provision_user_container already released the lease to error with
-        # cause fields (via the same shared classifier); the exit code only
-        # tells the machine whether to retry.
+        # Every step above already released the lease to error with cause fields; the exit
+        # code only tells the machine whether to retry.
+        from core.repositories.container_repo import classify_provision_error
+
         logger.exception("provision failed for owner %s", owner_id)
         _, retryable = classify_provision_error(exc)
         return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC
-
-    row = await _get_row(owner_id)
-    status = (row or {}).get("status")
-    if status == "running":
-        return EXIT_OK
-    if status == "error":
-        # The row-flipped-under-us path. It used to exit silently, which made
-        # every incident here start with "why did this exit 11 with nothing in
-        # the logs" — the cause is already on the row, so say it.
-        retryable = (row or {}).get("retryable", True)
-        logger.warning(
-            "provision run for owner %s ended with the row at error (retryable=%s, last_error=%r) — exiting %s",
-            owner_id,
-            retryable,
-            (row or {}).get("last_error"),
-            EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC,
-        )
-        return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC
-    # Any other status (stopped/deleted/provisioning-under-new-lease): an
-    # external actor owns the row now — succeed quietly, write nothing.
-    logger.info("owner %s left provisioning externally (status=%s)", owner_id, status)
-    return EXIT_OK
 
 
 async def _release_hermes_failure_to_error(

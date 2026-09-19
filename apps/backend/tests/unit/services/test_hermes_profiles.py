@@ -134,7 +134,7 @@ def test_byo_key_selects_the_direct_provider_and_its_model_ids():
 
 
 def test_byo_key_premium_and_cheap_tiers_come_from_the_shared_catalog_not_a_local_copy(monkeypatch):
-    """I4: premium_model_ref/cheap_model_ref (core.containers.config) are the single source of
+    """I4: premium_model_ref/cheap_model_ref are the single source of
     truth for these ids elsewhere in the codebase — their own docstrings record two catalog
     rotations that already broke a hardcoded ref ("fails every Friday run until discovery
     refreshes"). Monkeypatching the shared functions and seeing the change reflected here proves

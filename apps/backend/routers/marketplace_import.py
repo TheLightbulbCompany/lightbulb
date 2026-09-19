@@ -1,43 +1,41 @@
-"""Import an existing OpenClaw setup (an ``openclaw backup create`` archive, a
-plain tar of ``~/.openclaw``, or a bare agent workspace) or a Claude Code
-context (a tar of ``~/.claude``) into the owner's roster.
+"""Import a Claude Code context (a tar of ``~/.claude``) into one roster agent.
 
   POST /api/v1/marketplace/import/presign {filename, size_bytes}
-       → presigned S3 PUT for imports/{owner}/{uuid}.tar.gz (browser uploads
-         straight to the artifacts bucket; API Gateway caps bodies at 10 MB).
+       → presigned S3 PUT for imports/{owner}/{import_id}.tar.gz (the browser
+         uploads straight to the artifacts bucket; API Gateway caps bodies at 10 MB).
   POST /api/v1/marketplace/import {key}
-       → names-only detection pass; a Claude Code context (~/.claude) streams
-         through the allowlist normalizer (core/services/claude_code_import.py),
-         anything else through the two-pass extractor + dry-run staging export
-         (core/services/openclaw_backup_import.py), both into EFS
-         workspace-{import_id}/; delete the raw object → ImportPreviewResponse.
+       → detection + allowlist normalize into a scratch dir, purely to compute the
+         preview (collections / skills / user memory / safety flags); the scratch dir
+         is dropped and the RAW OBJECT IS KEPT as the staging → ImportPreviewResponse.
   POST /api/v1/marketplace/import/{import_id}/confirm ImportConfirmRequest
-       → claude staging (import-manifest.json kind == "claude"): apply the
-         selected collections/skills + user memory into target_agent_id's
-         workspace (claude_code_import.apply_to_workspace) → container bounce
-         if memory/skills landed → staging removed. No Ultra gate — nothing
-         here mints an agent.
-       → anything else: for each selected agent: restage → staging export →
-         register_staged_agent_under_claim (the Atlas mint →
-         deploy_from_artifact → pair → rollback envelope) →
-         staging removed only when every agent succeeded.
+       → re-stream the same object, apply the selected collections/skills + user
+         memory into ``target_agent_id``'s Hermes profile, delete the object.
+         No Ultra gate — nothing here mints an agent.
   DELETE /api/v1/marketplace/import/{import_id}
 
+**S3 is the staging.** It used to be an EFS dir (``workspace-<import-id>/`` under the
+owner's root) that the preview wrote and a later request read back, plus a 24h sweep
+for abandoned ones. There is no shared mount now: the backend runs 2-4 tasks, so a
+scratch dir written by the task that served the preview is not there for the task that
+serves the confirm. Keeping the uploaded object and re-streaming it on confirm makes
+the staging something every task can see, and the bucket's own lifecycle rule replaces
+the sweep. The cost is one extra GET + normalize pass per confirm.
+
+**The OpenClaw-backup import rail is gone.** It restored an ``openclaw backup create``
+archive (or a bare agent workspace) by staging it onto EFS and minting agents through
+the Atlas register path. Both halves of that — the EFS staging and the openclaw.json
+slice a minted agent needed — went with the ECS runtime. Claude Code import is a
+separate, live feature and is what this router is now.
+
 Clerk-authed (owner = resolve_owner_id), unlike the hook-token Atlas bridge.
-Staging dirs follow the Atlas convention (``workspace-<id>/`` under the owner's
-EFS root) because ``export_built_agent_from_staging`` resolves them that way;
-``raw/`` and the sidecars sit at the staging root so the tarball never carries
-them. Abandoned staging dirs older than 24h are swept on the next import.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-import shutil
 import tarfile
-import time
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Annotated
@@ -48,14 +46,9 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.containers import get_ecs_manager, get_workspace
 from core.dynamodb import run_in_thread
-from core.openclaw_version import deployed_upstream_version
 from core.repositories import container_repo
-from core.services import agent_export
-from core.services import claude_code_import
-from core.services import openclaw_backup_import as backup_import
-from routers.agent_builder import RegisterBuiltAgentRequest, register_staged_agent_under_claim
+from core.services import agent_export, claude_code_import, hermes_profiles
 from schemas import marketplace as schemas
 
 logger = logging.getLogger(__name__)
@@ -63,163 +56,127 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/marketplace/import", tags=["marketplace"])
 
 PRESIGN_TTL_S = 900
-STALE_STAGING_S = 24 * 3600
-_KEY_RE = re.compile(r"^imports/([A-Za-z0-9_-]+)/([0-9a-f]{32})\.tar\.gz$")
-_USER_ERRORS = (
-    backup_import.BackupImportError,
-    agent_export.BuiltAgentConfigError,
-    agent_export.CredentialLeakError,
-    agent_export.InvalidAgentIdError,
-    agent_export.AgentNotFoundError,
-)
+_KEY_RE = re.compile(r"^imports/([A-Za-z0-9_-]+)/(import-[0-9a-f]{12})\.tar\.gz$")
+
+#: What the apply half needs to see of the agent's CURRENT profile: ``USER.md`` for the
+#: marker-fenced memory merge, and ``skills/`` so an existing skill is reported
+#: ``skipped_exists`` instead of being overwritten. ``memory/imports/claude-code/`` is
+#: deliberately absent — a re-import REPLACES a selected collection in place, so pulling the
+#: old copy down first would only make the rmtree slower.
+_APPLY_CONTEXT_PREFIXES = ("USER.md", "skills/")
 
 
 def _s3():
     return boto3.client("s3")
 
 
-def _staging_dir(owner_id: str, import_id: str) -> Path:
-    return get_workspace().user_path(owner_id) / f"workspace-{import_id}"
+def _bucket() -> str:
+    return settings.MARKETPLACE_ARTIFACTS_BUCKET
+
+
+def _upload_key(owner_id: str, import_id: str) -> str:
+    return f"imports/{owner_id}/{import_id}.tar.gz"
 
 
 def _check_import_id(import_id: str) -> None:
-    if not backup_import.IMPORT_ID_RE.match(import_id):
+    if not claude_code_import.IMPORT_ID_RE.match(import_id):
         raise HTTPException(status_code=400, detail="invalid import id")
 
 
 async def _require_container(owner_id: str) -> dict:
     row = await container_repo.get_by_owner_id(owner_id)
     if not row:
-        raise HTTPException(status_code=404, detail="no workspace container yet — finish setup, then import")
+        raise HTTPException(status_code=404, detail="no workspace yet — finish setup, then import")
     return row
 
 
-def _sweep_stale(owner_id: str) -> None:
-    """Drop abandoned workspace-import-* dirs older than STALE_STAGING_S."""
-    root = get_workspace().user_path(owner_id)
-    if not root.is_dir():
-        return
-    cutoff = time.time() - STALE_STAGING_S
-    for d in root.glob("workspace-import-*"):
-        try:
-            if d.is_dir() and d.stat().st_mtime < cutoff:
-                shutil.rmtree(d, ignore_errors=True)
-        except OSError:
-            continue
+def _delete_raw(key: str, import_id: str) -> None:
+    try:
+        _s3().delete_object(Bucket=_bucket(), Key=key)
+    except ClientError:
+        logger.warning("import %s: could not delete raw upload %s (lifecycle will)", import_id, key)
 
 
-def _selection(payload: schemas.ImportConfirmRequest) -> backup_import.ImportSelection:
-    return backup_import.ImportSelection(
-        skills=set(payload.skills) if payload.skills is not None else None,
-        mcp_servers=set(payload.mcp_servers) if payload.mcp_servers is not None else None,
-        include_memory=payload.include_memory,
-        include_cron=payload.include_cron,
-    )
+def _open_stream(key: str, etag: str | None):
+    """A fresh readable over the upload, pinned to ``etag``.
+
+    Every pass is its own GET (``r|gz`` streams cannot seek), and every one is pinned to the
+    ETag ``head_object`` saw so a re-upload landing between passes fails loud (412) instead of
+    silently splicing two different archives together.
+    """
+
+    def _get():
+        kwargs = {"IfMatch": etag} if etag else {}
+        return _s3().get_object(Bucket=_bucket(), Key=key, **kwargs)["Body"]
+
+    return _get
 
 
-def _export(
-    owner_id: str,
-    import_id: str,
-    normalized: backup_import.ImportNormalized,
-):
-    # No ``container=``: this import's staging dir is the one ``_stage_from_s3`` just
-    # extracted the upload into, NOT the owner's Hermes profile. Resolving the profile
-    # prefix here read a key nothing had written and 400'd every import.
-    package = agent_export.export_built_agent_from_staging(
-        owner_id=owner_id,
-        staging_agent_id=import_id,
-        selected_mcps=normalized.mcp_names,
-        selected_skills=normalized.skill_names,
-    )
-    package.openclaw_slice["cron_jobs"] = normalized.cron_jobs
-    return package
+def _normalize(key: str, etag: str | None, dst: Path) -> claude_code_import.ClaudeNormalized:
+    """Detection pass, then the allowlist normalize into ``dst``.
 
+    The detection pass reads NAMES only and bounds the decompressed bytes it streams through:
+    ``MAX_MEMBERS`` caps the header count, but one member with a huge declared size would
+    otherwise force an unbounded decompress-and-discard.
+    """
+    get = _open_stream(key, etag)
+    names: list[str] = []
+    declared = 0
+    body = get()
+    try:
+        with tarfile.open(fileobj=body, mode="r|gz") as tf:
+            for member in tf:
+                names.append(member.name)
+                declared += member.size
+                if declared > claude_code_import.CLAUDE_MAX_TOTAL_BYTES:
+                    raise claude_code_import.ClaudeImportError("archive expands past the extraction cap")
+                if len(names) >= claude_code_import.MAX_MEMBERS:
+                    break  # the normalizer raises on its own member cap
+    except tarfile.TarError as exc:
+        raise claude_code_import.ClaudeImportError("not a valid .tar.gz archive") from exc
+    finally:
+        # tarfile.close() does not close an externally supplied fileobj — drop the S3
+        # connection here instead of holding it until GC.
+        body.close()
 
-def _staging_id_for(import_id: str, agent_id: str) -> str:
-    """Per-agent staging id → distinct Paperclip idempotency intent per agent."""
-    return f"{import_id}-{re.sub(r'[^A-Za-z0-9._-]', '-', agent_id)[:40]}"
+    if claude_code_import.detect_claude_root(names) is None:
+        raise claude_code_import.ClaudeImportError(
+            "this does not look like a Claude Code context — export it with "
+            "`tar czf claude-context.tgz .claude` from your home directory"
+        )
+    return claude_code_import.extract_claude_archive(get, dst)
 
 
 @router.post("/presign", response_model=schemas.ImportPresignResponse)
 async def presign_import(
     payload: schemas.ImportPresignRequest, auth: Annotated[AuthContext, Depends(get_current_user)]
 ):
+    """The import id is minted HERE and carried in the key, so the confirm can address the
+    staged object without a listing or a server-side copy."""
     owner_id = resolve_owner_id(auth)
     await _require_container(owner_id)
-    if payload.size_bytes > backup_import.MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413, detail=f"archive is over the {backup_import.MAX_UPLOAD_BYTES // 1024**3} GB limit"
-        )
-    key = f"imports/{owner_id}/{uuid.uuid4().hex}.tar.gz"
+    max_bytes = claude_code_import.MAX_UPLOAD_BYTES
+    if payload.size_bytes > max_bytes:
+        raise HTTPException(status_code=413, detail=f"archive is over the {max_bytes // 1024**3} GB limit")
+    key = _upload_key(owner_id, f"import-{uuid.uuid4().hex[:12]}")
     url = await run_in_thread(
         _s3().generate_presigned_url,
         "put_object",
-        Params={"Bucket": settings.MARKETPLACE_ARTIFACTS_BUCKET, "Key": key, "ContentType": "application/gzip"},
+        Params={"Bucket": _bucket(), "Key": key, "ContentType": "application/gzip"},
         ExpiresIn=PRESIGN_TTL_S,
     )
-    return {"upload_url": url, "key": key, "max_bytes": backup_import.MAX_UPLOAD_BYTES, "expires_in": PRESIGN_TTL_S}
+    return {"upload_url": url, "key": key, "max_bytes": max_bytes, "expires_in": PRESIGN_TTL_S}
 
 
-def _stage_from_s3(owner_id: str, import_id: str, key: str, etag: str | None):
-    s3 = _s3()
-    bucket = settings.MARKETPLACE_ARTIFACTS_BUCKET
-    staging_dir = _staging_dir(owner_id, import_id)
+def _preview(key: str, etag: str | None) -> claude_code_import.ClaudeNormalized:
+    """Normalize into a throwaway dir purely to compute the preview.
 
-    # Every pass over the upload is its own GET (r|gz streams can't seek) —
-    # the names-only detection pass, then the claude normalizer's single pass
-    # or the backup extractor's two. All are pinned to the ETag head_object
-    # saw so a re-upload landing between passes fails loud (412) instead of
-    # silently splicing two different archives together.
-    def _get():
-        kwargs = {"IfMatch": etag} if etag else {}
-        return s3.get_object(Bucket=bucket, Key=key, **kwargs)["Body"]
-
-    def _delete_raw():
-        try:
-            s3.delete_object(Bucket=bucket, Key=key)
-        except ClientError:
-            logger.warning("import %s: could not delete raw upload %s (lifecycle will)", import_id, key)
-
-    try:
-        names: list[str] = []
-        declared = 0
-        body = _get()
-        try:
-            with tarfile.open(fileobj=body, mode="r|gz") as tf:
-                for member in tf:
-                    names.append(member.name)
-                    # Bound the decompressed bytes this pass itself streams
-                    # through — MAX_MEMBERS caps header count, but one member
-                    # with a huge declared size would otherwise force an
-                    # unbounded decompress-and-discard.
-                    declared += member.size
-                    if declared > backup_import.MAX_EXTRACTED_BYTES:
-                        raise backup_import.BackupImportError("archive expands past the extraction cap")
-                    if len(names) >= backup_import.MAX_MEMBERS:
-                        break  # whichever extractor runs raises on its own member cap
-        except tarfile.TarError as exc:
-            raise backup_import.BackupImportError("not a valid .tar.gz archive") from exc
-        finally:
-            # tarfile.close() does not close an externally supplied fileobj —
-            # drop the S3 connection here instead of holding it until GC.
-            body.close()
-
-        if claude_code_import.detect_claude_root(names) is not None:
-            normalized = claude_code_import.extract_claude_archive(_get, staging_dir)
-            _delete_raw()
-            return normalized
-
-        normalized, report = backup_import.stage_upload(_get, staging_dir, fleet_version=deployed_upstream_version())
-        package = _export(owner_id, import_id, normalized)
-        _delete_raw()
-        return normalized, report, package
-    except (backup_import.BackupImportError, claude_code_import.ClaudeImportError):
-        # The archive itself is bad — no retry reuses this object, and it can
-        # hold credentials, so drop it now instead of waiting on the bucket
-        # lifecycle rule. The 412/ClientError path deliberately keeps it: that
-        # flow tells the client to re-upload and retry against the same key.
-        _delete_raw()
-        raise
+    Nothing staged here survives the request: the uploaded object is the staging, and the
+    confirm re-streams it. The scratch dir exists only because the normalizer's contract is a
+    filesystem one.
+    """
+    with tempfile.TemporaryDirectory(prefix="claude-import-") as tmp:
+        return _normalize(key, etag, Path(tmp))
 
 
 @router.post("", response_model=schemas.ImportPreviewResponse)
@@ -229,280 +186,146 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
     m = _KEY_RE.match(payload.key)
     if not m or m.group(1) != owner_id:
         raise HTTPException(status_code=400, detail="invalid upload key")
+    import_id = m.group(2)
     try:
-        head = await run_in_thread(_s3().head_object, Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET, Key=payload.key)
+        head = await run_in_thread(_s3().head_object, Bucket=_bucket(), Key=payload.key)
     except ClientError:
         raise HTTPException(status_code=404, detail="upload not found — it may have expired; upload again")
-    if int(head.get("ContentLength") or 0) > backup_import.MAX_UPLOAD_BYTES:
+    if int(head.get("ContentLength") or 0) > claude_code_import.MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="archive is over the upload limit")
     etag = head.get("ETag")
 
-    workspace = get_workspace()
-    workspace.ensure_user_dir(owner_id)
-    await run_in_thread(_sweep_stale, owner_id)
-    import_id = f"import-{uuid.uuid4().hex[:12]}"
-    staging_dir = _staging_dir(owner_id, import_id)
     try:
-        staged = await run_in_thread(_stage_from_s3, owner_id, import_id, payload.key, etag)
-    except agent_export.ExportTooLargeError as exc:
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
-    except (*_USER_ERRORS, claude_code_import.ClaudeImportError) as exc:
-        shutil.rmtree(staging_dir, ignore_errors=True)
+        staged = await run_in_thread(_preview, payload.key, etag)
+    except claude_code_import.ClaudeImportError as exc:
+        # The archive itself is bad — no retry reuses this object, and it can hold
+        # credentials, so drop it now instead of waiting on the bucket lifecycle rule. The
+        # 412/ClientError path below deliberately KEEPS it: that flow tells the client to
+        # re-upload and retry against the same key.
+        await run_in_thread(_delete_raw, payload.key, import_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except claude_code_import.BackupImportError as exc:
+        await run_in_thread(_delete_raw, payload.key, import_id)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ClientError as exc:
-        shutil.rmtree(staging_dir, ignore_errors=True)
         code = exc.response.get("Error", {}).get("Code", "")
         if code in ("PreconditionFailed", "412"):
             raise HTTPException(status_code=409, detail="upload changed while importing — upload it again") from exc
         raise
-    except Exception:
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        raise
-    if isinstance(staged, claude_code_import.ClaudeNormalized):
-        return {
-            "import_id": import_id,
-            "kind": "claude",
-            "agent_id": "",
-            "name": "Claude Code context",
-            "claude": {
-                "collections": [{"id": c.id, "label": c.label, "file_count": c.file_count} for c in staged.collections],
-                "has_user_memory": staged.has_user_memory,
-                "skills": staged.skills,
-                "skipped": staged.skipped,
-                # snippet deliberately dropped — never echo a flagged source
-                # line back to the client.
-                "safety_flags": [
-                    {"pattern": f.pattern, "severity": f.severity, "file": f.file, "line": f.line}
-                    for f in staged.safety_flags
-                ],
-            },
-        }
-    normalized, report, package = staged
-    if report.skipped_links:
-        normalized.warnings.append(
-            f"{report.skipped_links} linked archive member(s) (symbolic or hard links) were skipped — links "
-            "cannot be imported; copy the real files into the workspace and re-export if you need them"
-        )
+
     return {
         "import_id": import_id,
-        "kind": normalized.kind,
-        "agent_id": normalized.agent_id,
-        "name": normalized.name,
-        "description": package.manifest.get("description") or "",
-        "agents": [
-            {
-                "id": c.id,
-                "name": c.name,
-                "has_history": c.history is not None,
-                "history_bytes": c.history.bytes if c.history else 0,
-            }
-            for c in normalized.agents
-        ],
-        "plugins": [
-            {"id": p.id, "spec": f"{p.package_name}@{p.version}", "has_dependencies": p.has_dependencies}
-            for p in normalized.plugins
-        ],
-        "file_count": len(package.tarball_contents),
-        "files": package.tarball_contents[:200],
-        "mcp_servers": normalized.mcp_names,
-        "skills": normalized.skill_names,
-        "cron_jobs": len(normalized.cron_jobs),
-        "safety_flags": package.manifest.get("safety_flags") or [],
-        "warnings": normalized.warnings,
-        "skipped_big_files": report.skipped_big,
+        "name": "Claude Code context",
+        "claude": {
+            "collections": [{"id": c.id, "label": c.label, "file_count": c.file_count} for c in staged.collections],
+            "has_user_memory": staged.has_user_memory,
+            "skills": staged.skills,
+            "skipped": staged.skipped,
+            # snippet deliberately dropped — never echo a flagged source line back to the client.
+            "safety_flags": [
+                {"pattern": f.pattern, "severity": f.severity, "file": f.file, "line": f.line}
+                for f in staged.safety_flags
+            ],
+        },
     }
 
 
-def _claude_manifest(staging_dir: Path) -> dict | None:
-    """The staging's claude ``import-manifest.json``, or None when this staging
-    is not a claude one (backup stagings carry ``raw/`` instead)."""
-    try:
-        data = json.loads((staging_dir / "import-manifest.json").read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) and data.get("kind") == "claude" else None
+def _apply_into_profile(
+    owner_id: str,
+    agent_id: str,
+    key: str,
+    etag: str | None,
+    collections: list[str] | None,
+    skills: list[str] | None,
+) -> list[dict]:
+    """Re-stage the upload, validate the selection against it, apply, upload what changed.
+
+    The selection is checked against the RE-NORMALIZED staging rather than a stored manifest:
+    the archive is the only record of what this import contains, and the ETag pin proves it is
+    the same bytes the preview described. Checked BEFORE the apply, so a typo'd id cannot half
+    apply an import.
+
+    The agent's CURRENT ``USER.md`` + ``skills/`` are pulled down first so the memory merge and
+    the ``skipped_exists`` rule see real state rather than an empty tree. Only files the apply
+    actually wrote or changed are uploaded, and ``write_profile_subtree`` bumps ``.revision``
+    last — which IS the delivery: the bridge re-pulls the changed objects on the agent's next
+    turn, so there is no restart to trigger.
+    """
+    with tempfile.TemporaryDirectory(prefix="claude-import-") as tmp:
+        root = Path(tmp)
+        staging, profile = root / "staging", root / "profile"
+        staging.mkdir()
+        profile.mkdir()
+        normalized = _normalize(key, etag, staging)
+
+        known = {c.id for c in normalized.collections} | set(normalized.skills)
+        unknown = [name for name in (*(collections or ()), *(skills or ())) if name not in known]
+        if unknown:
+            raise claude_code_import.ClaudeImportError(f"not in this import: {', '.join(unknown)}")
+
+        hermes_profiles.fetch_profile_subtree(owner_id, agent_id, _APPLY_CONTEXT_PREFIXES, profile)
+        before = _snapshot(profile)
+        items = claude_code_import.apply_to_workspace(staging, profile, collections, skills)
+        changed = {rel: body for rel, body in _snapshot(profile).items() if before.get(rel) != body}
+        if changed:
+            hermes_profiles.write_profile_subtree(owner_id, agent_id, changed, ())
+        return items
 
 
-async def _confirm_claude(
-    owner_id: str, import_id: str, staging_dir: Path, payload: schemas.ImportConfirmRequest, manifest: dict
-):
-    """Apply a staged claude import to one existing roster agent's workspace.
-    No Ultra gate — nothing here mints an agent."""
-    await _require_container(owner_id)
-    if not payload.target_agent_id:
-        raise HTTPException(status_code=400, detail="target_agent_id is required for a Claude Code import")
-    if backup_import.IMPORT_ID_RE.match(payload.target_agent_id):
-        # An import id resolves to a staging dir (workspace-import-*), so the
-        # "apply" would copy staging onto itself and then destroy it — a
-        # misleading 200 that applies nothing to any roster agent.
-        raise HTTPException(status_code=400, detail="target_agent_id must be a roster agent, not an import id")
-    try:
-        agent_id = await run_in_thread(agent_export.resolve_workspace_agent_id, owner_id, payload.target_agent_id)
-    except agent_export.InvalidAgentIdError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except agent_export.AgentNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    workspace_dir = get_workspace().agent_workspace_path(owner_id, agent_id)
-    if not workspace_dir.is_dir():
-        # resolve_workspace_agent_id returns a clean miss unchanged rather
-        # than raising; without this check a bogus id would mint a ghost
-        # workspace dir on EFS.
-        raise HTTPException(status_code=404, detail=f"no workspace for agent {payload.target_agent_id!r}")
-
-    known_collections = {c.get("id") for c in manifest.get("collections") or []}
-    known_skills = set(manifest.get("skills") or [])
-    unknown = [c for c in payload.claude_collections or [] if c not in known_collections]
-    unknown += [s for s in payload.claude_skills or [] if s not in known_skills]
-    if unknown:
-        raise HTTPException(status_code=400, detail=f"not in this import: {', '.join(unknown)}")
-
-    items = await run_in_thread(
-        claude_code_import.apply_to_workspace,
-        staging_dir,
-        workspace_dir,
-        payload.claude_collections,
-        payload.claude_skills,
-    )
-
-    warnings: list[str] = []
-    restarting = False
-    # New memory collections and skills are only indexed/discovered at boot,
-    # so a bounce is needed for them to take effect; the USER.md block is read
-    # from disk per session and needs none.
-    if any(i["status"] == "applied" and i["item"] != "user-memory" for i in items):
-        try:
-            await get_ecs_manager().force_redeploy_user_service(owner_id)
-            restarting = True
-        except Exception:
-            # Best-effort, same as the backup branch: everything is already on
-            # EFS and the container picks it up on its next restart regardless.
-            logger.exception("import %s: could not start a workspace restart", import_id)
-            warnings.append(
-                "workspace restart could not be started — imported memory/skills will apply on its next restart"
-            )
-    shutil.rmtree(staging_dir, ignore_errors=True)
-    return {"claude_items": items, "restarting": restarting, "warnings": warnings}
+def _snapshot(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
 
 
 @router.post("/{import_id}/confirm", response_model=schemas.ImportConfirmResponse)
 async def confirm_import(
     import_id: str, payload: schemas.ImportConfirmRequest, auth: Annotated[AuthContext, Depends(get_current_user)]
 ):
+    """Apply a staged Claude import to one existing roster agent. No Ultra gate — nothing
+    here mints an agent."""
     owner_id = resolve_owner_id(auth)
     _check_import_id(import_id)
-    staging_dir = _staging_dir(owner_id, import_id)
-    # The claude branch dispatches BEFORE the raw/ guard below — a claude
-    # staging has no raw/ and would otherwise 404 here.
-    manifest = await run_in_thread(_claude_manifest, staging_dir)
-    if manifest is not None:
-        return await _confirm_claude(owner_id, import_id, staging_dir, payload, manifest)
-    container = await _require_container(owner_id)
-    if not (staging_dir / "raw").is_dir():
-        raise HTTPException(status_code=404, detail="import not found — it may already be applied or discarded")
+    await _require_container(owner_id)
+    if not payload.target_agent_id:
+        raise HTTPException(status_code=400, detail="target_agent_id is required for a Claude Code import")
+    if claude_code_import.IMPORT_ID_RE.match(payload.target_agent_id):
+        # An import id is not a roster agent; applying "onto" one would be a misleading 200
+        # that changes nothing any agent reads.
+        raise HTTPException(status_code=400, detail="target_agent_id must be a roster agent, not an import id")
+    try:
+        agent_id = await run_in_thread(agent_export.resolve_workspace_agent_id, owner_id, payload.target_agent_id)
+    except agent_export.InvalidAgentIdError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    key = _upload_key(owner_id, import_id)
+    try:
+        head = await run_in_thread(_s3().head_object, Bucket=_bucket(), Key=key)
+    except ClientError as exc:
+        raise HTTPException(
+            status_code=404, detail="import not found — it may already be applied or discarded"
+        ) from exc
 
     try:
-        source = await run_in_thread(backup_import.locate_source, staging_dir / "raw")
-    except backup_import.BackupImportError as exc:
+        items = await run_in_thread(
+            _apply_into_profile,
+            owner_id,
+            agent_id,
+            key,
+            head.get("ETag"),
+            payload.claude_collections,
+            payload.claude_skills,
+        )
+    except (claude_code_import.ClaudeImportError, claude_code_import.BackupImportError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    candidates = backup_import.list_agents(source)
-    wanted = payload.agent_ids if payload.agent_ids is not None else [c.id for c in candidates]
-    known = {c.id for c in candidates}
-    unknown = [a for a in wanted if a not in known]
-    if unknown:
-        raise HTTPException(status_code=400, detail=f"agents not in this backup: {', '.join(unknown)}")
-    if not wanted:
-        raise HTTPException(status_code=400, detail="select at least one agent")
 
-    selection = _selection(payload)
-    fleet = deployed_upstream_version()
-    results: list[dict] = []
-    registered: list[tuple[str, str]] = []  # (source_agent_id, new_agent_id)
-    for source_agent_id in wanted:
-        try:
-            normalized = await run_in_thread(
-                backup_import.restage, staging_dir, agent_id=source_agent_id, selection=selection, fleet_version=fleet
-            )
-            package = await run_in_thread(_export, owner_id, import_id, normalized)
-            result = await register_staged_agent_under_claim(
-                owner_id=owner_id,
-                payload=RegisterBuiltAgentRequest(
-                    staging_agent_id=_staging_id_for(import_id, source_agent_id),
-                    name=normalized.name,
-                    reports_to=payload.reports_to,
-                ),
-                auth_container=container,
-                claim_label=f"import:{import_id}",
-                package=package,
-            )
-            registered.append((source_agent_id, result["agent_id"]))
-            results.append(
-                {
-                    "source_agent_id": source_agent_id,
-                    "agent_id": result["agent_id"],
-                    "name": result["name"],
-                    "ok": True,
-                    "warnings": [*normalized.warnings, *(result.get("warnings") or [])],
-                }
-            )
-        except HTTPException as exc:
-            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-            results.append(
-                {
-                    "source_agent_id": source_agent_id,
-                    "agent_id": None,
-                    "name": source_agent_id,
-                    "ok": False,
-                    "error": detail,
-                }
-            )
-        except agent_export.ExportTooLargeError as exc:
-            results.append(
-                {
-                    "source_agent_id": source_agent_id,
-                    "agent_id": None,
-                    "name": source_agent_id,
-                    "ok": False,
-                    "error": str(exc),
-                }
-            )
-        except _USER_ERRORS as exc:
-            results.append(
-                {
-                    "source_agent_id": source_agent_id,
-                    "agent_id": None,
-                    "name": source_agent_id,
-                    "ok": False,
-                    "error": str(exc),
-                }
-            )
-
-    warnings: list[str] = []
-    plugins_installed: list[str] = []
-    history_staged: list[str] = []
-    restarting = False
-    # Plugins landed in openclaw.json and history in EFS sessions/ -- both write where
-    # Hermes never reads, and neither has an AgentCore-side equivalent yet. Skip them and
-    # say so; the agent registration above is unaffected (agent_export already reads and
-    # writes the Hermes S3 profile for this owner).
-    if registered and payload.plugins != []:
-        warnings.append("Installing plugins is unsupported_on_agentcore — skipped.")
-    if payload.include_history and registered:
-        warnings.append("Importing session history is unsupported_on_agentcore — skipped.")
-    if all(r["ok"] for r in results):
-        shutil.rmtree(staging_dir, ignore_errors=True)
-    return {
-        "agents": results,
-        "plugins_installed": plugins_installed,
-        "history_staged": history_staged,
-        "restarting": restarting,
-        "warnings": warnings,
-    }
+    await run_in_thread(_delete_raw, key, import_id)
+    # The profile write IS the delivery (``.revision`` bumped last, re-pulled on the agent's
+    # next turn) — there is no container to bounce, so nothing to report but the items.
+    return {"claude_items": items, "warnings": []}
 
 
 @router.delete("/{import_id}", status_code=204)
 async def discard_import(import_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
     owner_id = resolve_owner_id(auth)
     _check_import_id(import_id)
-    shutil.rmtree(_staging_dir(owner_id, import_id), ignore_errors=True)
+    await run_in_thread(_delete_raw, _upload_key(owner_id, import_id), import_id)
     return Response(status_code=204)

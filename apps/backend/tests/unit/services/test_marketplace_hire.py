@@ -182,130 +182,20 @@ def _approval_for(agent_id=_AGENT_ID, listing_id=_LISTING["listing_id"]):
     }
 
 
-def _ecs_double(running=True):
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(
-        return_value=({"gateway_token": "gwt"}, "10.0.0.5") if running else (None, None)
-    )
-    return ecs
+#: ``deploy_for_approval``'s readiness check reads the owner's containers row directly. It used
+#: to resolve a running ECS service and thread the row into ``deploy_from_artifact`` as
+#: ``container=``; the install reads the row itself now, and there is no service to resolve. The
+#: device-pairing doubles that stood beside this went with the pairing step -- a Hermes agent's
+#: "pairing" IS its S3 profile, written by the install.
+_PROVISIONED_ROW = {"owner_id": "user_x", "agentcore_runtime_arn": "arn:x"}
 
 
-_FULL_AGENT = {
-    "id": _AGENT_ID,
-    "name": "Pulse",
-    "adapterType": "openclaw_gateway",
-    "adapterConfig": {"devicePrivateKeyPem": "PEM"},
-}
-
-
-def _admin_double(monkeypatch, get_agent=None):
-    """Mock the full-agent fetch deploy_for_approval does before pairing."""
-    admin = MagicMock()
-    admin.get_agent = get_agent or AsyncMock(return_value=_FULL_AGENT)
-    monkeypatch.setattr("core.services.paperclip_admin_client.PaperclipAdminClient", lambda **kwargs: admin)
-    monkeypatch.setattr(
-        "core.services.paperclip_admin_session.get_admin_session_cookie",
-        AsyncMock(return_value="cookie"),
-    )
-    monkeypatch.setattr("core.config.settings.PAPERCLIP_INTERNAL_URL", "http://paperclip.internal", raising=False)
-    return admin
-
-
-@pytest.mark.asyncio
-# autospec pins the real signature: the pre-fix call passed only (owner_id,
-# paperclip_agent) and an AsyncMock happily swallowed it while production
-# TypeError'd and rolled back every approval-path hire.
-@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
-@patch("core.services.marketplace_hire._fetch_artifact")
-@patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
-@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-async def test_install_targets_the_preapproved_agent_and_pairs_its_device(
-    get_listing, get_ecs, get_catalog, fetch, pair, monkeypatch
-):
-    """The whole point of payload.agentId: the workspace lands on the agent the
-    approval governs, and the operator device is paired — without which the
-    agent is rejected NOT_PAIRED on its first relayed connect."""
-    get_listing.return_value = _PUBLISHED
-    get_ecs.return_value = _ecs_double()
-    fetch.return_value = (b"tar", {"agent": {"name": "Pulse"}})
-    catalog = MagicMock()
-    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
-    get_catalog.return_value = catalog
-    _admin_double(monkeypatch)
-
-    await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
-
-    kwargs = catalog.deploy_from_artifact.await_args.kwargs
-    assert kwargs["new_agent_id"] == _AGENT_ID
-    assert kwargs["owner_id"] == "user_x"
-    assert kwargs["tar_bytes"] == b"tar"
-    assert kwargs["listing_id"] == _PUBLISHED["listing_id"]
-    assert kwargs["seller_id"] == _PUBLISHED["seller_id"]
-    # Manifest comes from the listing ROW, mirroring deploy_listing.
-    assert kwargs["manifest"]["version"] == 9
-    pair.assert_awaited_once()
-    pair_kwargs = pair.await_args.kwargs
-    # The FULL agent record (with the PEM) and the live-pairing coordinates —
-    # a stub {"id": ...} no-ops inside the helper.
-    assert pair_kwargs["paperclip_agent"] == _FULL_AGENT
-    assert pair_kwargs["gateway_token"] == "gwt"
-    assert "ip" not in pair_kwargs
-
-
-@pytest.mark.asyncio
-@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
-@patch("core.services.marketplace_hire._fetch_artifact")
-@patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
-@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-async def test_deploy_for_approval_threads_the_resolved_container_through(
-    get_listing, get_ecs, get_catalog, fetch, _pair, monkeypatch
-):
-    """Fix round 1, item 1: `container` is already resolved by
-    resolve_running_container right above the deploy_from_artifact call --
-    deploy_for_approval must thread it through so an AgentCore row reaches
-    the S3-profile branch instead of assuming EFS."""
-    get_listing.return_value = _PUBLISHED
-    agentcore_container = {"gateway_token": "gwt", "runtime_host": "agentcore"}
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(return_value=(agentcore_container, "agentcore"))
-    get_ecs.return_value = ecs
-    fetch.return_value = (b"tar", {"agent": {"name": "Pulse"}})
-    catalog = MagicMock()
-    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
-    get_catalog.return_value = catalog
-    _admin_double(monkeypatch)
-
-    await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
-
-    kwargs = catalog.deploy_from_artifact.await_args.kwargs
-    assert kwargs["container"] == agentcore_container
-
-
-@pytest.mark.asyncio
-@patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
-@patch("core.services.marketplace_hire._fetch_artifact")
-@patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
-@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-async def test_pairing_failure_does_not_roll_back_a_committed_install(
-    get_listing, get_ecs, get_catalog, fetch, rollback, monkeypatch
-):
-    """Pairing is best-effort AFTER the install commits: the paired.json
-    fallback pairs the device at next boot, so a pairing hiccup must not
-    destroy a completed hire."""
-    get_listing.return_value = _PUBLISHED
-    get_ecs.return_value = _ecs_double()
-    fetch.return_value = (b"tar", {})
-    catalog = MagicMock()
-    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
-    get_catalog.return_value = catalog
-    _admin_double(monkeypatch, get_agent=AsyncMock(side_effect=RuntimeError("paperclip down")))
-
-    await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
-
-    rollback.assert_not_awaited()
+@pytest.fixture(autouse=True)
+def provisioned_row(monkeypatch):
+    """Default every test to a provisioned workspace; the unprovisioned test overrides it."""
+    row = AsyncMock(return_value=_PROVISIONED_ROW)
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", row)
+    return row
 
 
 @pytest.mark.asyncio
@@ -313,15 +203,13 @@ async def test_pairing_failure_does_not_roll_back_a_committed_install(
 @patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
 @patch("core.services.marketplace_hire._fetch_artifact")
 @patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 async def test_a_rolled_back_approval_install_is_not_counted_as_a_deployment(
-    get_listing, get_ecs, get_catalog, fetch, rollback, emit
+    get_listing, get_catalog, fetch, rollback, emit
 ):
     """A hire the rollback undid is not a deployment. The funnel event belongs
     after the install commits, not inside ``deploy_from_artifact``."""
     get_listing.return_value = _PUBLISHED
-    get_ecs.return_value = _ecs_double()
     fetch.return_value = (b"tar", {})
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("efs exploded"))
@@ -335,21 +223,17 @@ async def test_a_rolled_back_approval_install_is_not_counted_as_a_deployment(
 
 @pytest.mark.asyncio
 @patch("core.services.catalog_service.emit_agent_deployed")
-@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
 @patch("core.services.marketplace_hire._fetch_artifact")
 @patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 async def test_a_committed_approval_install_is_counted_as_a_deployment(
-    get_listing, get_ecs, get_catalog, fetch, pair, emit, monkeypatch
+    get_listing, get_catalog, fetch, emit, monkeypatch
 ):
     get_listing.return_value = _PUBLISHED
-    get_ecs.return_value = _ecs_double()
     fetch.return_value = (b"tar", {"agent": {"name": "Pulse"}})
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
     get_catalog.return_value = catalog
-    _admin_double(monkeypatch)
 
     await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
 
@@ -362,13 +246,11 @@ async def test_a_committed_approval_install_is_counted_as_a_deployment(
 @patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
 @patch("core.services.marketplace_hire._fetch_artifact")
 @patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-async def test_install_failure_removes_the_agent_and_reraises(get_listing, get_ecs, get_catalog, fetch, rollback):
+async def test_install_failure_removes_the_agent_and_reraises(get_listing, get_catalog, fetch, rollback):
     """Never leave a roster entry with no workspace behind it, and never let the
     approving user believe the hire completed."""
     get_listing.return_value = _PUBLISHED
-    get_ecs.return_value = _ecs_double()
     fetch.return_value = (b"tar", {})
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("efs exploded"))
@@ -383,9 +265,8 @@ async def test_install_failure_removes_the_agent_and_reraises(get_listing, get_e
 
 @pytest.mark.asyncio
 @patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-async def test_listing_retired_between_ask_and_decision_rolls_back(get_listing, get_ecs, rollback):
+async def test_listing_retired_between_ask_and_decision_rolls_back(get_listing, rollback):
     """A listing can be retired while the approval sits in the inbox."""
     get_listing.return_value = {**_PUBLISHED, "status": "retired"}
 
@@ -393,20 +274,21 @@ async def test_listing_retired_between_ask_and_decision_rolls_back(get_listing, 
         await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
 
     rollback.assert_awaited_once()
-    get_ecs.assert_not_called()
 
 
 @pytest.mark.asyncio
 @patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-async def test_cold_container_rolls_back_rather_than_half_installing(get_listing, get_ecs, rollback):
-    """Containers scale to zero when idle; approving while cold must not leave a
-    roster entry the workspace never reached."""
+async def test_an_unprovisioned_workspace_rolls_back_rather_than_half_installing(
+    get_listing, rollback, provisioned_row
+):
+    """Approving before the workspace exists must not leave a roster entry the install never
+    reached. (This used to be the COLD-container case -- an idle ECS service scaled to zero;
+    a parked microVM is addressable, so what is left to refuse is "no row at all".)"""
     get_listing.return_value = _PUBLISHED
-    get_ecs.return_value = _ecs_double(running=False)
+    provisioned_row.return_value = None
 
-    with pytest.raises(RuntimeError, match="container is not running"):
+    with pytest.raises(RuntimeError, match="no workspace yet"):
         await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
 
     rollback.assert_awaited_once()
@@ -768,14 +650,10 @@ _PAID = {**_PUBLISHED, "price_cents": 1500, "seller_id": "seller_1"}
 @patch("core.repositories.marketplace_repo.has_unrevoked_purchase", new_callable=AsyncMock)
 @patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
 @patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-async def test_approval_install_refuses_an_unpurchased_paid_listing(
-    get_listing, get_ecs, get_catalog, rollback, has_purchase
-):
+async def test_approval_install_refuses_an_unpurchased_paid_listing(get_listing, get_catalog, rollback, has_purchase):
     """A paid listing must not install free through the Teams approval door."""
     get_listing.return_value = _PAID
-    get_ecs.return_value = _ecs_double()
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock()
     get_catalog.return_value = catalog
@@ -791,22 +669,18 @@ async def test_approval_install_refuses_an_unpurchased_paid_listing(
 
 @pytest.mark.asyncio
 @patch("core.repositories.marketplace_repo.has_unrevoked_purchase", new_callable=AsyncMock)
-@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
 @patch("core.services.marketplace_hire._fetch_artifact")
 @patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 async def test_approval_install_passes_for_an_entitled_paid_listing(
-    get_listing, get_ecs, get_catalog, fetch, _pair, has_purchase, monkeypatch
+    get_listing, get_catalog, fetch, has_purchase, monkeypatch
 ):
     get_listing.return_value = _PAID
-    get_ecs.return_value = _ecs_double()
     fetch.return_value = (b"tar", {"agent": {"name": "Pulse"}})
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
     get_catalog.return_value = catalog
     has_purchase.return_value = True
-    _admin_double(monkeypatch)
 
     await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
 
@@ -815,23 +689,19 @@ async def test_approval_install_passes_for_an_entitled_paid_listing(
 
 @pytest.mark.asyncio
 @patch("core.repositories.marketplace_repo.has_unrevoked_purchase", new_callable=AsyncMock)
-@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
 @patch("core.services.marketplace_hire._fetch_artifact")
 @patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 async def test_approval_install_exempts_the_seller_from_the_purchase_check(
-    get_listing, get_ecs, get_catalog, fetch, _pair, has_purchase, monkeypatch
+    get_listing, get_catalog, fetch, has_purchase, monkeypatch
 ):
     """Sellers hold no purchase row for their own listings — same bypass as the
     buyer route."""
     get_listing.return_value = {**_PAID, "seller_id": "user_x"}
-    get_ecs.return_value = _ecs_double()
     fetch.return_value = (b"tar", {"agent": {"name": "Pulse"}})
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
     get_catalog.return_value = catalog
-    _admin_double(monkeypatch)
 
     await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
 
@@ -893,21 +763,17 @@ async def test_ask_is_filed_for_an_entitled_paid_listing(
 
 
 @pytest.mark.asyncio
-@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
 @patch("core.services.marketplace_hire._fetch_artifact")
 @patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 async def test_approval_install_bumps_listing_install_count(
-    get_listing, get_ecs, get_catalog, fetch, _pair, monkeypatch, _stub_listing_install_counter
+    get_listing, get_catalog, fetch, monkeypatch, _stub_listing_install_counter
 ):
     get_listing.return_value = _PUBLISHED
-    get_ecs.return_value = _ecs_double()
     fetch.return_value = (b"tar", {"agent": {"name": "Pulse"}})
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
     get_catalog.return_value = catalog
-    _admin_double(monkeypatch)
 
     await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
 
@@ -925,22 +791,18 @@ async def test_approval_install_bumps_listing_install_count(
 @pytest.mark.asyncio
 @patch("core.repositories.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
 @patch("core.repositories.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
-@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
 @patch("core.services.marketplace_hire._fetch_artifact")
 @patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 async def test_approval_install_takes_and_releases_the_owner_deploy_claim(
-    get_listing, get_ecs, get_catalog, fetch, _pair, claim, release, monkeypatch
+    get_listing, get_catalog, fetch, claim, release, monkeypatch
 ):
     get_listing.return_value = _PUBLISHED
-    get_ecs.return_value = _ecs_double()
     fetch.return_value = (b"tar", {"agent": {"name": "Pulse"}})
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
     get_catalog.return_value = catalog
     claim.return_value = ("tok_1", None)
-    _admin_double(monkeypatch)
 
     await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
 
@@ -955,10 +817,9 @@ async def test_approval_install_takes_and_releases_the_owner_deploy_claim(
 @patch("core.repositories.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
 @patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
 @patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 async def test_second_concurrent_approval_is_refused_fast_and_rolls_the_agent_back(
-    get_listing, get_ecs, get_catalog, rollback, claim, release
+    get_listing, get_catalog, rollback, claim, release
 ):
     """A refusal is immediate — never a server-side wait — and leaves no agent
     that can never be installed.
@@ -971,7 +832,6 @@ async def test_second_concurrent_approval_is_refused_fast_and_rolls_the_agent_ba
     and is a no-op on the container side.
     """
     get_listing.return_value = _PUBLISHED
-    get_ecs.return_value = _ecs_double()
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock()
     get_catalog.return_value = catalog
@@ -992,14 +852,10 @@ async def test_second_concurrent_approval_is_refused_fast_and_rolls_the_agent_ba
 @patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
 @patch("core.services.marketplace_hire._fetch_artifact")
 @patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-async def test_claim_is_released_when_the_install_fails(
-    get_listing, get_ecs, get_catalog, fetch, _rollback, claim, release
-):
+async def test_claim_is_released_when_the_install_fails(get_listing, get_catalog, fetch, _rollback, claim, release):
     """A leaked claim would wedge every hire this owner tries for the whole lease."""
     get_listing.return_value = _PUBLISHED
-    get_ecs.return_value = _ecs_double()
     fetch.return_value = (b"tar", {})
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("efs exploded"))
@@ -1014,52 +870,14 @@ async def test_claim_is_released_when_the_install_fails(
 
 
 @pytest.mark.asyncio
-@patch("core.services.paperclip_agent_lifecycle.delete_paperclip_for_marketplace", new_callable=AsyncMock)
-@patch("core.services.catalog_service.get_catalog_service")
-async def test_rollback_keeps_both_sides_on_a_timeout(get_catalog, delete_pc):
-    """A pair timeout leaves the container-side install standing, so the
-    Paperclip row stays with it — otherwise the owner is left with an agent in
-    their container that Teams cannot show or delete, and the next Hire mints a
-    duplicate beside it."""
-    catalog = MagicMock()
-    catalog.unwind_partial_deploy = AsyncMock(return_value=False)
-    get_catalog.return_value = catalog
-
-    await marketplace_hire._rollback_agent(owner_id="user_x", agent_id=_AGENT_ID, cause=TimeoutError())
-
-    assert isinstance(catalog.unwind_partial_deploy.await_args.kwargs["cause"], TimeoutError)
-    delete_pc.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@patch("core.services.paperclip_agent_lifecycle.delete_paperclip_for_marketplace", new_callable=AsyncMock)
-@patch("core.services.catalog_service.get_catalog_service")
-async def test_rollback_keeps_the_row_when_the_unwind_itself_raises(get_catalog, delete_pc):
-    """``unwind_partial_deploy`` is documented never to raise, so a raise here is
-    an unknown-unknown: the container may still hold the workspace, the
-    agents.list entry and the sidecar. Dropping the Paperclip row on top of that
-    manufactures an agent Teams cannot show or delete. A retained row is
-    recoverable; a ghost is not."""
-    catalog = MagicMock()
-    catalog.unwind_partial_deploy = AsyncMock(side_effect=RuntimeError("efs stalled"))
-    get_catalog.return_value = catalog
-
-    await marketplace_hire._rollback_agent(owner_id="user_x", agent_id=_AGENT_ID, cause=None)
-
-    catalog.unwind_partial_deploy.assert_awaited_once()
-    delete_pc.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 @patch("core.repositories.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
 @patch("core.repositories.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
 @patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
 @patch("core.services.marketplace_hire._fetch_artifact")
 @patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 async def test_a_timed_out_install_hands_the_timeout_to_the_claim_release(
-    get_listing, get_ecs, get_catalog, fetch, _rollback, claim, release
+    get_listing, get_catalog, fetch, _rollback, claim, release
 ):
     """The timeout must reach the release, which HOLDS the claim on it.
 
@@ -1068,7 +886,6 @@ async def test_a_timed_out_install_hands_the_timeout_to_the_claim_release(
     claim lets the next approval start a second one on top of it.
     """
     get_listing.return_value = _PUBLISHED
-    get_ecs.return_value = _ecs_double()
     fetch.return_value = (b"tar", {})
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(side_effect=TimeoutError("pair RPC"))
@@ -1086,11 +903,8 @@ async def test_a_timed_out_install_hands_the_timeout_to_the_claim_release(
 @patch("core.repositories.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
 @patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
 @patch("core.services.catalog_service.get_catalog_service")
-@patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-async def test_a_raising_claim_does_not_strand_the_approved_agent(
-    get_listing, get_ecs, get_catalog, rollback, claim, release
-):
+async def test_a_raising_claim_does_not_strand_the_approved_agent(get_listing, get_catalog, rollback, claim, release):
     """The approval is already SPENT when this runs, so an exception that escapes
     before the rollback envelope leaves an idle agent with no workspace and no
     route left to install one. ``try_claim_owner_deploy`` now fails open on any
@@ -1099,7 +913,6 @@ async def test_a_raising_claim_does_not_strand_the_approved_agent(
     from botocore.exceptions import EndpointConnectionError
 
     get_listing.return_value = _PUBLISHED
-    get_ecs.return_value = _ecs_double()
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock()
     get_catalog.return_value = catalog
@@ -1112,52 +925,3 @@ async def test_a_raising_claim_does_not_strand_the_approved_agent(
     rollback.assert_awaited_once()
     assert rollback.await_args.kwargs == {"owner_id": "user_x", "agent_id": _AGENT_ID}
     release.assert_not_awaited()  # never held it
-
-
-@pytest.mark.asyncio
-@patch("core.services.paperclip_agent_lifecycle.delete_paperclip_for_marketplace", new_callable=AsyncMock)
-async def test_a_failed_sidecar_unlink_keeps_the_paperclip_row(delete_pc, monkeypatch):
-    """An UNSAFE unwind is not only the timeout case. Driven through the REAL
-    ``CatalogService``, because the defect was in the boolean it returns: a
-    sidecar unlink that failed still reported True, so this caller went on to
-    delete the Paperclip row. If the same EFS fault also broke the config edit
-    and the dir cleanup — which the docstring treats as correlated — the
-    sidecar and the ``agents.list`` entry both survived, and once EFS recovered
-    every later Hire of that slug resolved to an agent Teams can no longer show
-    OR delete.
-    """
-    from core.services.catalog_service import CatalogService
-
-    workspace = MagicMock()
-    workspace.remove_template_sidecar = MagicMock(side_effect=OSError("efs gone"))
-    workspace.cleanup_agent_dirs = MagicMock(return_value=None)
-    catalog = CatalogService(
-        workspace=workspace,
-        apply_deploy_aux_mutations=AsyncMock(return_value=None),
-        pair_fn=AsyncMock(return_value=None),
-    )
-    monkeypatch.setattr("core.services.catalog_service.get_catalog_service", lambda: catalog)
-    monkeypatch.setattr(
-        "core.services.config_patcher.remove_from_openclaw_config_list",
-        AsyncMock(side_effect=RuntimeError("efs gone")),
-    )
-
-    await marketplace_hire._rollback_agent(owner_id="user_x", agent_id=_AGENT_ID, cause=RuntimeError("deploy failed"))
-
-    delete_pc.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@patch("core.services.paperclip_agent_lifecycle.delete_paperclip_for_marketplace", new_callable=AsyncMock)
-@patch("core.services.catalog_service.get_catalog_service")
-async def test_rollback_unwinds_the_container_side_too(get_catalog, delete_pc):
-    """This path used to delete only the Paperclip row, stranding the extracted
-    workspace (sidecar included) and any half-created container-side agent."""
-    catalog = MagicMock()
-    catalog.unwind_partial_deploy = AsyncMock(return_value=True)
-    get_catalog.return_value = catalog
-
-    await marketplace_hire._rollback_agent(owner_id="user_x", agent_id=_AGENT_ID, cause=RuntimeError("boom"))
-
-    assert catalog.unwind_partial_deploy.await_args.kwargs["new_agent_id"] == _AGENT_ID
-    delete_pc.assert_awaited_once()

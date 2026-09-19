@@ -50,10 +50,88 @@ from pathlib import Path, PurePosixPath
 import yaml
 
 from core.config import settings
-from core.containers.config import cheap_model_ref, premium_model_ref
 from core.dynamodb import run_in_thread
 
 _BEDROCK = "bedrock"
+_BEDROCK_TRIAL_CHOICE = "bedrock_trial"
+_BEDROCK_PROVIDER_CHOICES = ("bedrock_claude", _BEDROCK_TRIAL_CHOICE)
+
+
+def premium_model_ref(
+    provider_choice: str, byo_provider: str | None, *, aip_arns: dict[str, str] | None = None
+) -> str | None:
+    """The premium model ref reserved for the CEO agent (Friday), per provider
+    path — or ``None`` when there is no premium tier to reserve.
+
+    The default agent runs on the cheaper standard tier; only the CEO is pinned
+    to the top tier. ``chatgpt_oauth`` returns ``None`` because it's a flat-rate
+    plan — there's no cheaper tier to demote the default to, so the CEO inherits
+    the same model as everyone else.
+
+    ``bedrock_trial`` — and any Bedrock owner whose AIP map carries no ``opus``
+    — also returns ``None``: their IAM role is pinned to the AIPs they actually
+    hold, so pinning Friday to an opus profile they don't own would
+    AccessDeniedException on every one of the CEO's turns. A missing map still
+    raises: that's a provisioning bug, not a one-tier owner.
+
+    Returns ``<provider>/<id>``; ``_strip_provider_prefix`` takes the id half.
+    """
+    if provider_choice in _BEDROCK_PROVIDER_CHOICES:
+        if not aip_arns:
+            raise ValueError(f"{provider_choice} premium_model_ref requires aip_arns")
+        if provider_choice == _BEDROCK_TRIAL_CHOICE or "opus" not in aip_arns:
+            return None
+        return f"amazon-bedrock/{aip_arns['opus']}"
+    if provider_choice == "byo_key":
+        if byo_provider == "anthropic":
+            # Anthropic-DIRECT id — no Bedrock "-v1" suffix / date-stamp. The CEO
+            # pin has NO per-agent fallback, so a ref the catalog cannot resolve
+            # does not degrade — it fails every Friday run.
+            return "anthropic/claude-opus-5"
+        if byo_provider == "openai":
+            return "openai/gpt-5.6-sol"
+    return None
+
+
+def cheap_model_ref(
+    provider_choice: str, byo_provider: str | None, *, aip_arns: dict[str, str] | None = None
+) -> str | None:
+    """The cheapest model ref per provider path, routed to pure-overhead aux
+    operations — or ``None`` when there is no cheaper tier to route to.
+
+    History compaction, memory-flush and the maintenance heartbeat are overhead
+    that doesn't need the premium default model. Routing them to the cheapest
+    tier cuts spend — compaction especially, since it processes the largest
+    contexts.
+
+    ``chatgpt_oauth`` returns ``None``: its agents run on the Codex runtime,
+    which uses native server-side compaction and does NOT honour an
+    OpenClaw-side summarizer override — the aux call fails, compaction never
+    runs, and the turn dies on a context overflow. ``None`` lets aux work
+    inherit the primary, which the OAuth token can actually invoke.
+
+    ``bedrock_trial`` — and any Bedrock owner whose AIP map carries no ``haiku``
+    — returns ``None`` for the reason ``premium_model_ref`` does: the owner's
+    IAM role can only invoke the AIPs they hold.
+
+    Returns ``<provider>/<id>``; ``_strip_provider_prefix`` takes the id half.
+    """
+    if provider_choice in _BEDROCK_PROVIDER_CHOICES:
+        if not aip_arns:
+            raise ValueError(f"{provider_choice} cheap_model_ref requires aip_arns")
+        if provider_choice == _BEDROCK_TRIAL_CHOICE or "haiku" not in aip_arns:
+            return None
+        return f"amazon-bedrock/{aip_arns['haiku']}"
+    if provider_choice == "byo_key":
+        if byo_provider == "anthropic":
+            return "anthropic/claude-haiku-4-5"
+        if byo_provider == "openai":
+            # byo_key openai is the DIRECT OpenAI API (not Codex) — the owner's
+            # key CAN invoke the mini tier as a summarizer.
+            return "openai/gpt-5.4-mini"
+    return None
+
+
 _BEDROCK_CLAUDE_CONTEXT = 200_000  # Claude 4.x on Bedrock
 
 #: Every auxiliary task we pin. Hermes's auto-chain is main provider -> OpenRouter -> Nous Portal
@@ -145,11 +223,11 @@ SKILLS_DIR_HERMES_BUNDLED = "/opt/hermes/skills"
 SKILLS_EXTERNAL_DIRS = [SKILLS_DIR_LIGHTBULB, SKILLS_DIR_HERMES_BUNDLED]
 
 #: Fix round 1, I4: ONLY the Hermes provider NAME (a namespace this module alone owns — Hermes's
-#: own "openai-api" differs from the openclaw-style "openai" ref prefix ``core.containers.config``
+#: own "openai-api" differs from the "openai" ref prefix ``premium_model_ref``/``cheap_model_ref``
 #: uses) and the "standard" (non-premium, non-cheap) default-tier id, which has no standalone
 #: function anywhere — it only lives inline inside ``build_provider_block``'s ``byo_key`` branch.
 #: The premium/cheap ids themselves are NOT duplicated here any more: they come straight from
-#: ``premium_model_ref``/``cheap_model_ref`` below, the same functions the Bedrock branch already
+#: ``premium_model_ref``/``cheap_model_ref`` above, the same functions the Bedrock branch already
 #: calls — those two have already broken a hardcoded ref across two catalog rotations (see their
 #: own docstrings), and a second local copy is exactly the class of bug that causes.
 _BYO_HERMES_PROVIDER = {"anthropic": ("anthropic", "claude-sonnet-5"), "openai": ("openai-api", "gpt-5.4")}
@@ -570,9 +648,9 @@ def write_agent_profile(
     ``byo_provider``/``byo_api_key`` are OWNER-level keywords (fix round 1, C2) — never read off
     the Paperclip roster row (``agent``), whose documented shape is
     ``{"id","name","role","title","capabilities","icon"}`` and carries no such field. The provider
-    choice is threaded next to ``provider_choice`` everywhere else in the codebase
-    (``ecs_manager.py``); reading it from the roster row silently pinned every BYO owner to
-    Anthropic with no key delivered anywhere.
+    choice is threaded next to ``provider_choice`` everywhere else in the codebase; reading it
+    from the roster row silently pinned every BYO owner to Anthropic with no key delivered
+    anywhere.
 
     ``soul_md_override`` (M6 lane R1): when given, replaces the generated ``build_soul_md``
     identity outright — the one hook the ECS-to-Hermes workspace migration job needs to carry
@@ -704,12 +782,11 @@ def delete_profile(owner_id: str, agent_id: str) -> None:
             client.delete_objects(Bucket=bucket, Delete={"Objects": keys})
 
 
-# ---- Task 13a: config.get/config.patch/config.set on an AgentCore row --------------------------
+# ---- Task 13a: config.get/config.patch/config.set on a profile ---------------------------------
 # Spec §4.5: "Config is read once per AIAgent construction and cached on file mtime, so rewriting
 # profiles/<id>/config.yaml takes effect on the agent's next turn. No watcher, no restart." The
 # backend is the ONLY writer of a Hermes profile, so a hot patch is an S3 rewrite plus a revision
-# bump — never a round trip to a live microVM. This is what deletes config_patcher.py's EFS locks
-# for an AgentCore row (the ECS path is untouched and keeps using them).
+# bump — never a round trip to a live microVM, and no file lock at all.
 #
 # M4-R49 audit (fix round 2 continuation): every sync-boto3 writer in this module reached from a
 # coroutine, and how it stays off the event loop --
@@ -778,6 +855,27 @@ def _s3_get_bytes(bucket: str, key: str) -> bytes | None:
         if code in ("NoSuchKey", "404"):
             return None
         raise
+
+
+def put_owner_object(key: str, body: bytes) -> None:
+    """PUT one object into the owner-state bucket by absolute key.
+
+    The seam for owner-scoped blobs that are NOT part of an agent profile (messaging
+    attachments). Raises rather than no-op when the bucket is unset, so a caller never
+    reports a write that did not happen. Sync -- call via ``run_in_thread``."""
+    _s3_put_bytes(_require_owner_bucket(), key, body)
+
+
+def get_owner_object(key: str) -> bytes | None:
+    """``put_owner_object``'s reader. ``None`` means genuinely ABSENT."""
+    return _s3_get_bytes(_require_owner_bucket(), key)
+
+
+def _require_owner_bucket() -> str:
+    bucket = settings.OWNER_STATE_BUCKET
+    if not bucket:
+        raise RuntimeError("OWNER_STATE_BUCKET is not configured")
+    return bucket
 
 
 def _s3_list_keys(bucket: str, prefix: str) -> list[str]:

@@ -1,9 +1,10 @@
-"""Q9a rows #1 + #2 (task-9-scan.md): agents.create / agents.update on an AgentCore row.
+"""Q9a rows #1 + #2 (task-9-scan.md): agents.create / agents.update.
 
 Both RPC doors used to stage Paperclip agent metadata into openclaw.json via
-``config_patcher.apply_paperclip_meta`` -- an EFS write that raises
-``ConfigPatchError`` for an owner with no openclaw.json at all (an AgentCore
-workspace has none; see the module docstring on ``hermes_provisioning``).
+``config_patcher.apply_paperclip_meta`` -- an EFS write that raised ``ConfigPatchError`` for an
+owner with no openclaw.json at all. There is no such file and no such module now, which
+``test_the_openclaw_metadata_write_cannot_come_back`` pins: these tests used to assert the write
+was not attempted, and an assertion about a mock nobody can create any more is not an assertion.
 ``agents.create`` propagated that error as an unhandled 500; ``agents.update``
 swallowed it silently behind a bare ``except Exception``. Both now branch on
 the owner's runtime instead.
@@ -44,16 +45,6 @@ def _no_stored_soul_md_by_default(monkeypatch):
     "the profile has none yet", which is the regenerate branch they were all written against; the
     marker tests below override it."""
     monkeypatch.setattr(rpc.hermes_profiles, "read_soul_md", MagicMock(return_value=None))
-
-
-def _agentcore(is_agentcore: bool):
-    """``_is_agentcore`` is ``async def`` -- the replacement must be a real coroutine
-    function, never a bare value (an ``await`` on a non-awaitable raises ``TypeError``)."""
-
-    async def fake(owner_id):
-        return is_agentcore
-
-    return fake
 
 
 class _Http:
@@ -114,8 +105,6 @@ async def test_agents_create_on_agentcore_row_writes_the_real_profile_with_no_pa
     _wire_profile_inputs(monkeypatch, _BEDROCK_INPUTS)
     upload_mock = AsyncMock()
     monkeypatch.setattr(rpc.hermes_profiles, "upload_profile", upload_mock)
-    apply_meta = AsyncMock()
-    monkeypatch.setattr("core.services.config_patcher.apply_paperclip_meta", apply_meta)
     publish = AsyncMock()
     monkeypatch.setattr(rpc, "publish_owner_users", publish)
 
@@ -128,7 +117,6 @@ async def test_agents_create_on_agentcore_row_writes_the_real_profile_with_no_pa
     )
 
     assert result["agentId"] == "agent_new"
-    apply_meta.assert_not_awaited()
     upload_mock.assert_awaited_once()
     owner_arg, agent_arg, files_arg = upload_mock.await_args.args
     assert (owner_arg, agent_arg) == ("owner_1", "agent_new")
@@ -185,8 +173,6 @@ async def test_a_role_change_never_rewrites_the_owners_model_pick(monkeypatch):
     )
     patch_config = MagicMock()
     monkeypatch.setattr(rpc.hermes_profiles, "patch_profile_config", patch_config)
-    apply_meta = AsyncMock()
-    monkeypatch.setattr("core.services.config_patcher.apply_paperclip_meta", apply_meta)
     write_profile = AsyncMock()
     monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", write_profile)
     # A role change also carries a "role" key in `body`, so refresh_agent_soul runs too.
@@ -198,7 +184,6 @@ async def test_a_role_change_never_rewrites_the_owners_model_pick(monkeypatch):
 
     await rpc._mirror_agent_update("org_1", {"agentId": "a1", "params": {"paperclip": {"role": "ceo"}}}, agentcore=True)
 
-    apply_meta.assert_not_awaited()
     write_profile.assert_not_awaited()  # never re-runs the full writer -- would clobber edits
     admin.patch_agent.assert_awaited_once()  # Paperclip still gets the role change
     upload_soul.assert_called_once()  # and SOUL.md still reflects it
@@ -280,14 +265,11 @@ async def test_mirror_agent_update_rename_on_agentcore_row_refreshes_soul_md_onl
     monkeypatch.setattr(rpc.hermes_profiles, "upload_soul_md", upload_soul)
     patch_config = MagicMock()
     monkeypatch.setattr(rpc.hermes_profiles, "patch_profile_config", patch_config)
-    apply_meta = AsyncMock()
-    monkeypatch.setattr("core.services.config_patcher.apply_paperclip_meta", apply_meta)
     write_profile = AsyncMock()
     monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", write_profile)
 
     await rpc._mirror_agent_update("org_1", {"agentId": "a1", "name": "Renamed Ada"}, agentcore=True)
 
-    apply_meta.assert_not_awaited()
     patch_config.assert_not_called()  # no role/model change -- config.yaml/.env untouched
     write_profile.assert_not_awaited()
     upload_soul.assert_called_once()
@@ -439,7 +421,6 @@ async def test_mirror_agent_update_model_only_never_touches_paperclip_even_on_ag
 
 @pytest.mark.asyncio
 async def test_agents_update_on_agentcore_row_returns_ok_and_never_reaches_container_rpc(monkeypatch):
-    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(True))
     admin = MagicMock()
     admin.get_agent = AsyncMock(return_value={"id": "a1", "companyId": "company", "role": "general"})
     admin.patch_agent = AsyncMock(return_value={})
@@ -471,30 +452,6 @@ async def test_agents_update_on_agentcore_row_returns_ok_and_never_reaches_conta
     )
 
 
-@pytest.mark.asyncio
-async def test_agents_update_on_ecs_row_still_forwards_to_container_rpc(monkeypatch):
-    """The ECS branch stays byte-identical: unchanged fallthrough to the live gateway. Not an
-    AgentCore test -- mocking _mirror_agent_update here only proves execute_sync's own dispatch,
-    which is the point."""
-    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(False))
-    monkeypatch.setattr(rpc, "_mirror_agent_update", AsyncMock())
-    call_mock = AsyncMock(return_value={"ok": True, "forwarded": True})
-    monkeypatch.setattr(rpc.container_rpc, "call", call_mock)
-
-    result = await rpc.execute_sync(
-        owner_id="owner_1",
-        user_id="user_1",
-        request_id="r1",
-        method="agents.update",
-        params={"agentId": "a1", "model": "gpt-5"},
-    )
-
-    assert result == {"ok": True, "forwarded": True}
-    call_mock.assert_awaited_once_with(
-        "owner_1", "agents.update", {"agentId": "a1", "model": "gpt-5"}, timeout_s=rpc._RPC_TIMEOUT_S
-    )
-
-
 # ---------------------------------------------------------------------------
 # M6 task 10, row 12 -- agents.update must not answer ok while writing nothing
 # ---------------------------------------------------------------------------
@@ -505,7 +462,6 @@ async def test_agents_update_tools_is_refused_on_an_agentcore_row(monkeypatch):
     """The scan's worst failure class: the Tools tab's Save returned {"ok": True} while
     _mirror_agent_update early-returned and wrote NOTHING. Hermes gates by toolset, so the
     field has no home -- refuse it instead of confirming it."""
-    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(True))
     mirror = AsyncMock()
     monkeypatch.setattr(rpc, "_mirror_agent_update", mirror)
     call_mock = AsyncMock()
@@ -533,7 +489,6 @@ async def test_agents_update_tools_is_refused_on_an_agentcore_row(monkeypatch):
 async def test_agents_update_refuses_any_other_unwritable_field_too(monkeypatch):
     """Row 12 is not tools-specific: the same silent lie covers every future field the
     intercept does not persist, including an unknown key under `params`."""
-    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(True))
     monkeypatch.setattr(rpc, "_mirror_agent_update", AsyncMock())
 
     with pytest.raises(ApiProblem) as exc_info:
@@ -553,7 +508,6 @@ async def test_agents_update_refuses_any_other_unwritable_field_too(monkeypatch)
 async def test_agents_update_still_accepts_what_the_intercept_actually_writes(monkeypatch):
     """name + params.paperclip + model are persisted (Paperclip mirror, SOUL.md, model block),
     so they must NOT be caught by the refusal."""
-    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(True))
     mirror = AsyncMock()
     monkeypatch.setattr(rpc, "_mirror_agent_update", mirror)
 
@@ -569,21 +523,13 @@ async def test_agents_update_still_accepts_what_the_intercept_actually_writes(mo
     mirror.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_agents_update_tools_still_forwards_on_an_ecs_row(monkeypatch):
-    """ECS behaviour is unchanged -- the live gateway owns per-tool allow/deny there."""
-    monkeypatch.setattr(rpc, "_is_agentcore", _agentcore(False))
-    monkeypatch.setattr(rpc, "_mirror_agent_update", AsyncMock())
-    call_mock = AsyncMock(return_value={"ok": True})
-    monkeypatch.setattr(rpc.container_rpc, "call", call_mock)
+def test_the_openclaw_metadata_write_cannot_come_back():
+    """The staging seam both doors used is gone at the module level, not merely unreached. It
+    wrote the owner's ``openclaw.json``, which no workspace has -- so a re-import here would
+    raise ``ConfigPatchError`` on every agents.create in the fleet, not degrade quietly."""
+    import importlib
 
-    result = await rpc.execute_sync(
-        owner_id="owner_1",
-        user_id="user_1",
-        request_id="r1",
-        method="agents.update",
-        params={"agentId": "a1", "tools": {"deny": ["exec"]}},
-    )
+    import pytest as _pytest
 
-    assert result == {"ok": True}
-    call_mock.assert_awaited_once()
+    with _pytest.raises(ModuleNotFoundError):
+        importlib.import_module("core.services.config_patcher")

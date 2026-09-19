@@ -1,6 +1,6 @@
 import json
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -28,15 +28,11 @@ CRED = {
 }
 
 
-@patch(
-    "core.services.credentials.materializers.instagram_cli.config_patcher.set_openclaw_config_path",
-    new_callable=AsyncMock,
-)
 @patch("core.services.credentials.materializers.instagram_cli.httpx.get")
-def test_write_seeds_skill_and_credentials(mock_get, mock_set, tmp_path):
+def test_write_seeds_skill_and_credentials(mock_get, tmp_path):
     mock_get.return_value = _FakeResponse({"user_id": "178414123", "username": "isol8ai"})
     with patch(
-        "core.services.credentials.materializers.instagram_cli.owner_efs_root",
+        "core.services.credentials.materializers.instagram_cli.materializer_root",
         return_value=tmp_path,
     ):
         identity = instagram_cli.write("org_1", "instagram", CRED)
@@ -62,25 +58,22 @@ def test_write_seeds_skill_and_credentials(mock_get, mock_set, tmp_path):
         "username": "isol8ai",
         "token_expiry": "2026-09-17T00:00:00+00:00",
     }
-    mock_set.assert_awaited_once_with("org_1", ["skills", "entries", "instagram"], {"enabled": True})
+    # Hermes finds a skill by SCANNING the profile, so landing these three files IS the
+    # install -- there is no config entry to enable and nothing else to write.
+    assert sorted(p.name for p in skill_dir.iterdir()) == ["SKILL.md", "credentials.json", "token.sh"]
 
 
-@patch(
-    "core.services.credentials.materializers.instagram_cli.config_patcher.delete_openclaw_config_path",
-    new_callable=AsyncMock,
-)
-def test_remove_deletes_dir_and_config_entry(mock_delete, tmp_path):
+def test_remove_deletes_the_skill_dir(tmp_path):
     skill_dir = tmp_path / "skills" / "instagram"
     skill_dir.mkdir(parents=True)
     (skill_dir / "credentials.json").write_text("{}")
     with patch(
-        "core.services.credentials.materializers.instagram_cli.owner_efs_root",
+        "core.services.credentials.materializers.instagram_cli.materializer_root",
         return_value=tmp_path,
     ):
         instagram_cli.remove("org_1", "instagram", {})
 
     assert not skill_dir.exists()
-    mock_delete.assert_awaited_once_with("org_1", ["skills", "entries", "instagram"])
 
 
 def test_registry_platform_app_mutual_exclusion():

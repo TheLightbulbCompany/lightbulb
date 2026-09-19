@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from core.services import node_broker, runtime_transport
+from core.services import node_broker
 from core.services.machine_auth import MachineIdentity
 from routers import gateway_relay
 
@@ -175,16 +175,16 @@ async def test_router_accepts_the_socket_exactly_once_for_an_agentcore_node():
     RuntimeError before the challenge frame ever went out, closing 1011 and leaving the
     Mac to reconnect forever."""
     fake = _CountingRouterSocket([])
-    manager = MagicMock()
-    manager.resolve_running_container = AsyncMock(
-        return_value=({"runtime_host": "agentcore"}, runtime_transport.AGENTCORE_ADDRESS)
-    )
     svc = MagicMock()
     svc.put_relay_presence = AsyncMock()
     svc.delete_connection = MagicMock()
     with (
         patch("routers.gateway_relay.machine_auth.verify_upgrade", new_callable=AsyncMock, return_value=_identity()),
-        patch("routers.gateway_relay.get_ecs_manager", return_value=manager),
+        patch(
+            "routers.gateway_relay.container_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={"owner_id": "org_1", "agentcore_runtime_arn": "arn:r1"},
+        ),
         patch("routers.gateway_relay.ConnectionService", return_value=svc),
     ):
         await gateway_relay.gateway_relay_ws(fake)
@@ -217,10 +217,10 @@ async def test_the_relay_speaks_first_and_answers_a_valid_connect_with_hello_ok(
 async def test_a_declared_command_outside_the_paired_record_is_dropped_from_the_allowlist():
     seen_commands: dict[tuple[str, str], set[str]] = {}
 
-    async def _capture_ready(owner_id, user_id, device_id):
+    async def _capture_ready(owner_id, user_id):
         # Snapshot the session's commands while it is still registered -- on_node_ready
         # fires after the session is stored and before the socket is ever pumped/closed.
-        seen_commands[(owner_id, device_id)] = set(gateway_relay.node_sessions[(owner_id, device_id)].commands)
+        seen_commands[(owner_id, "dev-1")] = set(gateway_relay.node_sessions[(owner_id, "dev-1")].commands)
 
     received = [_connect_frame("c-2", ["system.run", "camera.capture"])]
     with (

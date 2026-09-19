@@ -255,9 +255,9 @@ async def maybe_restore_trial_bedrock(*, owner_id: str, container: Mapping[str, 
          this function. Restoring a paid owner here would hand back Bedrock
          with no balance check at all.
       3. ``trial_cap.reason_for_account`` — the account-accepting twin of
-         ``trial_block_reason``, the SAME predicate ``ecs_manager.
-         start_user_service`` consults before starting a trial owner's
-         container — is None for the row already read in step 2 (no second
+         ``trial_block_reason``, the SAME predicate every start path consults
+         before running a trial owner's workspace — is None for the row already
+         read in step 2 (no second
          GetItem of the billing row just to re-derive the same answer). A
          TRIAL_EXPIRED reason must NEVER restore: expiry is permanent, unlike
          the daily cap, which self-clears on the next UTC day.
@@ -500,8 +500,8 @@ async def _evaluate_provision_gate_inner(
     # Layer-2 provider_required check below. A trial_local owner is
     # provision-eligible without a stored provider.
     if account.get("subscription_status") == "trial_local":
-        # ONE predicate, shared with ecs_manager.start_user_service and the
-        # daily Bedrock-restore trigger, so the gate and every start path can
+        # ONE predicate, shared with every start path and the
+        # daily Bedrock-restore trigger, so the gate and those paths can
         # never disagree about whether a trial owner may have a container.
         # This branch used to inline its own expiry+cap check; the chokepoint
         # inlined only the cap, and an EXPIRED trial could therefore wake a

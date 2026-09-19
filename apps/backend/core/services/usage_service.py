@@ -30,7 +30,7 @@ def _strip_provider_prefix(model: str) -> str:
 
 
 def _is_bedrock_model(model: str) -> bool:
-    """True when *model* is an ``amazon-bedrock/`` provider ref.
+    """True for a Bedrock provider ref or Hermes application-inference-profile ARN.
 
     Pricing only knows Bedrock models, so a pricing miss is a genuine,
     page-worthy gap only for Bedrock refs. OpenAI (``openai/``), Codex
@@ -39,7 +39,9 @@ def _is_bedrock_model(model: str) -> bool:
     model ref (before any prefix stripping) where the provider is still
     visible.
     """
-    return model.startswith(_BEDROCK_PROVIDER_PREFIX)
+    return model.startswith(_BEDROCK_PROVIDER_PREFIX) or (
+        model.startswith("arn:aws:bedrock:") and ":application-inference-profile/" in model
+    )
 
 
 async def record_usage(
@@ -88,6 +90,17 @@ async def record_usage(
     unchanged and still carry every turn exactly once.
     """
     bare_model = _strip_provider_prefix(model)
+    bedrock_model = model.removeprefix(_BEDROCK_PROVIDER_PREFIX)
+    is_aip = bedrock_model.startswith("arn:aws:bedrock:") and ":application-inference-profile/" in bedrock_model
+    if is_aip and not (raw_cost_microcents is not None and raw_cost_microcents > 0):
+        from core.billing.bedrock_aip import TIER_TO_FM, read_owner_aips
+
+        # Hermes reports the owner's opaque AIP ARN. Resolve against the persisted
+        # owner map, never a Bedrock control-plane lookup or another tenant's map.
+        arns = await read_owner_aips(owner_id) or {}
+        bare_model = next(
+            (TIER_TO_FM[tier] for tier, arn in arns.items() if arn == bedrock_model and tier in TIER_TO_FM), model
+        )
     # The raw-cost override (OpenClaw's cache-inclusive ``estimatedCostUsd``)
     # is only authoritative Isol8 spend on the Isol8-billed path: Bedrock.
     # Non-Bedrock sessions (ChatGPT OAuth / OpenAI / BYO) can carry

@@ -317,6 +317,10 @@ def _patch_owner_aws(monkeypatch, *, hook_token=None, gateway_token=None, existi
     import core.billing.bedrock_aip as bedrock_aip_mod
     import core.billing.bedrock_gate_tokens as bedrock_gate_tokens_mod
 
+    monkeypatch.setattr(
+        "core.services.container_provision.resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None))
+    )
+    monkeypatch.setattr(bedrock_gate_tokens_mod, "reconcile_gate_token_tiers", AsyncMock(), raising=False)
     monkeypatch.setattr(bedrock_aip_mod, "ensure_owner_aips", AsyncMock(return_value={"sonnet": "arn:aip:sonnet"}))
     monkeypatch.setattr(
         bedrock_aip_mod,
@@ -1539,3 +1543,25 @@ def test_create_runtime_gives_up_after_the_bound(monkeypatch):
     with pytest.raises(_ValidationException):
         hermes_provisioning._create_runtime({"agentRuntimeName": "x"})
     assert client.calls == hermes_provisioning._ROLE_PROPAGATION_ATTEMPTS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider,tiers", [("bedrock_trial", ["sonnet"]), ("bedrock_claude", None)])
+@pytest.mark.parametrize("prepare", [True, False])
+async def test_hermes_aips_follow_authoritative_provider_and_reconcile_live_tokens(
+    monkeypatch, provider, tiers, prepare
+):
+    from core.billing import bedrock_aip, bedrock_gate_tokens
+
+    _patch_owner_aws(monkeypatch, existing_row={})
+    monkeypatch.setattr(
+        "core.services.container_provision.resolve_provider_choice", AsyncMock(return_value=(provider, None))
+    )
+    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", AsyncMock())
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", AsyncMock())
+    if prepare:
+        await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim")
+    else:
+        await hermes_provisioning._load_role_and_aips("org_a")
+    bedrock_aip.ensure_owner_aips.assert_awaited_once_with("org_a", tiers=tiers)
+    bedrock_gate_tokens.reconcile_gate_token_tiers.assert_awaited_once_with("org_a", {"sonnet": "arn:aip:sonnet"})

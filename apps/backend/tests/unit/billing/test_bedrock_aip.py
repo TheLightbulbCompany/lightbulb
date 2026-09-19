@@ -1030,3 +1030,22 @@ class TestOwnerBrowserPolicy:
         fake = self._put(monkeypatch)
         await mod.ensure_owner_browser_policy("org_x", "")
         fake.put_role_policy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_trial_repair_keeps_resource_inventory_but_returns_only_sonnet(aip_tables, monkeypatch):
+    from core.billing import bedrock_aip as mod
+
+    arns = _aip_arns()
+    await mod.persist_owner_aips("org_abc", arns)
+    monkeypatch.setattr(mod, "_bedrock_client", lambda: pytest.fail("must reuse existing AIPs"))
+    for _ in range(2):
+        assert await mod.ensure_owner_aips("org_abc", tiers=["sonnet"]) == {"sonnet": arns["sonnet"]}
+    assert await mod.read_owner_aips("org_abc") == arns
+    for arn in arns.values():
+        row = aip_tables.get_item(TableName="test-aip-owners", Key={"aip_arn": {"S": arn}})["Item"]
+        assert row["plan"]["S"] == "trial"
+    assert await mod.ensure_owner_aips("org_abc") == arns
+    for arn in arns.values():
+        row = aip_tables.get_item(TableName="test-aip-owners", Key={"aip_arn": {"S": arn}})["Item"]
+        assert row["plan"]["S"] == "paid"

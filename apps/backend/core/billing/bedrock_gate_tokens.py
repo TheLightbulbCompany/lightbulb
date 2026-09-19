@@ -726,3 +726,34 @@ async def deny_gate_token(owner_id: str, denied: bool) -> None:
             failure = failure or e
     if failure is not None:
         raise failure
+
+
+async def reconcile_gate_token_tiers(owner_id: str, aip_arns: dict[str, str]) -> None:
+    """Reconcile every tracked bearer generation without rotation or changing deny state.
+
+    Provision/repair and trial-to-paid transitions share this path. Updating the
+    current hash alone leaves a warm runtime's superseded bearer over-permitted.
+    Never resurrect an expired token or update a different owner's row.
+    """
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    hashes = owner_gate_token_hashes(row)
+    if not hashes:
+        return
+    table = _tokens_table()
+    failure: Exception | None = None
+    for token_hash in hashes:
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"token_hash": token_hash},
+                UpdateExpression="SET aip_tiers = :tiers",
+                ConditionExpression="attribute_exists(token_hash) AND owner_id = :owner",
+                ExpressionAttributeValues={":tiers": {arn: tier for tier, arn in aip_arns.items()}, ":owner": owner_id},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                failure = failure or exc
+        except Exception as exc:  # noqa: BLE001 -- attempt every generation, then propagate
+            failure = failure or exc
+    if failure is not None:
+        raise failure

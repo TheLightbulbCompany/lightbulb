@@ -305,10 +305,9 @@ def _filter_request_headers(req: Request) -> dict[str, str]:
 # §4 adapter-plugin-store pre-disable.
 # ---------------------------------------------------------------------------
 
-# Isol8 runs OpenClaw only. `hermes_gateway` is a second remote-gateway adapter
-# the fork supports and would be equally host-safe, but it is deliberately
-# excluded until Isol8 ships a Hermes flow — add it here if that changes.
-_ALLOWED_ADAPTER_TYPES = frozenset({"openclaw_gateway"})
+# Only the deployed remote runtime adapter is exposed; local/process/HTTP
+# execution and adapter management remain blocked below.
+_ALLOWED_ADAPTER_TYPES = frozenset({"hermes_gateway"})
 
 # Each entry is (methods, pattern); methods=None matches every method. `path`
 # is matched WITHOUT its leading slash (e.g. "api/companies/x/agents").

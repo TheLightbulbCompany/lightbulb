@@ -2,92 +2,59 @@
 
 <!--
   MAINTENANCE (Lightbulb engineers): anchored to code.
-  - CLI + refs ......... fork src/cli/skills-cli.ts (install command: <skill-ref>, --agent, --global, --as)
-  - Install target ..... fork src/skills/lifecycle/archive-install.ts (<workspaceDir>/skills)
-  - Sources ............ fork src/config/types.skills.ts (maxSkillsLoadedPerSource: bundled/managed/workspace/extra)
-  - Per-agent scoping .. fork src/config/types.agents.ts (AgentEntry.skills) + src/skills/discovery/agent-filter.ts
-  - RPC tiers .......... fork src/gateway/methods/core-descriptors.ts (skills.install / skills.upload.* = operator.admin)
-  - Owner UI ........... apps/frontend/src/components/control/panels/SkillsTab.tsx (skills.status / skills.update)
-  - The Paperclip gap .. paperclip fork server/src/routes/agents.ts (buildUnsupportedSkillSnapshot; adapter.listSkills
-                         exists for claude/codex/cursor/gemini/grok/opencode/pi — NOT openclaw_gateway)
+  - The three dirs ..... apps/backend/core/services/hermes_profiles.py
+                         (SKILLS_DIR_LIGHTBULB, SKILLS_DIR_HERMES_BUNDLED, SKILLS_EXTERNAL_DIRS,
+                          and build_profile_config's `skills` block: write_approval + external_dirs)
+  - Ambiguity rule ..... the image's /opt/hermes/tools/skills_tool.py (_find_all_skills advertises
+                         a duplicated name, _locate_skill/skill_view then refuse it) — quoted in
+                         SKILLS_DIR_LIGHTBULB's docstring
+  - Baked tree ......... apps/infra/hermes/skills-src + skills-overlay, built by
+                         apps/infra/hermes/build-skills.sh into the image at /opt/hermes-skills
+  - Re-apply ops door .. apps/backend/scripts/reapply_hermes_skills_dirs.py
+  - Owner UI ........... apps/frontend/src/components/control/panels/SkillsTab.tsx
+  - The Paperclip gap .. core/services/paperclip_adapter_config.py (HERMES_GATEWAY_TYPE);
+                         paperclip fork server/src/routes/agents.ts (adapter.listSkills exists for
+                         claude/codex/cursor/gemini/grok/opencode/pi — not the gateway adapters)
 -->
 
-## Skills are OpenClaw's, and they live in this container
+## Skills are folders on disk here
 
-A skill is a folder with a `SKILL.md`, on disk here. Nothing fetches them at
-answer time. OpenClaw loads them from four sources:
+A skill is a folder with a `SKILL.md`. Nothing fetches one at answer time — the
+`skills` toolset reads what is already on this machine, from three places:
 
 | Source | Where | Who writes it |
 |---|---|---|
-| **bundled** | `/app/skills/` (`lightbulb`, `paperclip`, …) | baked into the image — you cannot change these |
-| **managed** | `~/.openclaw/skills/` | shared across every agent in this container |
-| **workspace** | `<agent workspace>/skills/` | per-agent — this is the one you install into |
-| **extra** | `skills.load.extraDirs` | rarely used |
+| **Lightbulb baked** | `/opt/hermes-skills/` (`lightbulb`, `paperclip`) | baked into the image — you cannot change these |
+| **Hermes bundled** | `/opt/hermes/skills/` | shipped with the runtime, read-only |
+| **your profile** | your own profile's `skills/` directory | yours — this is the one you can write |
+
+**A name that exists in two of those dirs cannot be loaded at all.** The index
+still advertises it, and the load then refuses with `Ambiguous skill name`.
+Reach such a skill by its categorised path (e.g. `productivity/pdf`) instead,
+and prefer a distinct name when you author one: several Hermes-bundled names
+are common (`pdf`, `docx`, `xlsx`, `github`, `notion`, `systematic-debugging`).
+
+Every loaded skill costs prompt space. Prefer a focused subset over everything
+a repository contains.
 
 ## DO NOT use Paperclip's company-skills library for an agent here
 
-`/app/skills/paperclip/references/company-skills.md` documents a company skill
-library with `skills install` / `skills agent sync`. **That path does not work
-on Lightbulb.** Paperclip syncs skills into a harness directory for adapters
-that implement it — claude, codex, cursor, gemini, grok, opencode, pi. Every
-Lightbulb agent uses the `openclaw_gateway` adapter, which does not, so the
-sync endpoint answers:
-
-```json
-{"adapterType":"openclaw_gateway","supported":false,"mode":"unsupported",
- "warnings":["This adapter does not implement skill sync yet."]}
-```
+`/opt/hermes-skills/paperclip/references/company-skills.md` documents a company
+skill library with `skills install` / `skills agent sync`. **That path does not
+work on Lightbulb.** Paperclip syncs skills into a harness directory for
+adapters that implement it — claude, codex, cursor, gemini, grok, opencode, pi.
+Every Lightbulb agent uses the `hermes_gateway` adapter, which does not, so the
+sync endpoint answers `supported: false` with
+`"This adapter does not implement skill sync yet."`
 
 That is not a bug to report or retry, and it is not a reason to tell the owner
 their request is impossible. It means you were on the wrong plane: Paperclip's
-library exists to push skills into OTHER harnesses. Yours are already in the
-same container you run in. Use the CLI below.
-
-## Installing a skill
-
-```bash
-openclaw skills install <skill-ref> --agent <agent-id>
-```
-
-`<skill-ref>` is one of:
-
-| Form | Example |
-|---|---|
-| ClawHub | `@owner/weather` |
-| skills.sh | `skills-sh:owner/repo/weather` |
-| Git repo | `git:https://github.com/owner/repo` |
-| Local directory | `/path/to/skill-dir` |
-
-Useful flags: `--agent <id>` targets that agent's workspace (omit and it infers
-from cwd, then the default agent); `--global` installs into the shared managed
-directory for every agent instead; `--as <slug>` names a git/local skill;
-`--version <v>` pins one.
-
-A repo of many skills is many installs — one per skill folder. Prefer a
-focused subset over everything a repo contains: every loaded skill costs
-prompt space, and `maxSkillsInPrompt` / `maxSkillsPromptChars` will silently
-drop the overflow.
-
-## Scoping a skill to one agent
-
-Installing into an agent's workspace already scopes it. To restrict which
-skills an agent loads at all, `agents.entries.<agentId>.skills` is an
-allowlist — an explicit list REPLACES `agents.defaults.skills` rather than
-merging with it, so a list of one means that agent loads exactly one skill.
-
-## What you cannot do
-
-- **`skills.install` and `skills.upload.*` are gateway RPCs at
-  `operator.admin`.** You are not an operator; those are the owner's Skills
-  tab, not your door. There is no install-from-URL RPC. Your door is the CLI
-  above, through `exec`.
-- **You cannot install into `/app/skills/`** — it is baked into the image.
-  Changing a bundled skill takes an image rebuild by Lightbulb engineers.
+library exists to push skills into OTHER harnesses. Yours are already on the
+machine you run on.
 
 ## Telling the owner
 
 The owner's own view is the **Skills tab** (Control Panel, flickmeon.ai/chat):
 it lists what is installed, what each skill needs, and lets them enable or
-disable one. Skills you install appear there. Skill *Proposals* — the ones you
-author yourself from repeated corrections — are a different tab; see
-`references/marketplace.md`.
+disable one. Skill *Proposals* — the ones you author yourself from repeated
+corrections — are a different tab; see `references/marketplace.md`.

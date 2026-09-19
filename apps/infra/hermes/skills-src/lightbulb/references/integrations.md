@@ -65,7 +65,7 @@ ask them what they see if it matters:
   `byo_required`: they cannot supply an app for something they can't reach.
 - **`requestable: false`, `byo_required: false`** — one-click. They press
   **Connect** and authorize in the browser — or you start it for them (below)
-  and they sign in in the Browser panel.
+  and they sign in there.
 - **`requestable: false`, `byo_required: true`** — connectable, but only with
   the owner's OWN OAuth app: the row walks them through creating it in the
   provider's console and pasting the client ID/secret before the Connect step.
@@ -105,19 +105,17 @@ the platform can't do.
   next to <service> — sign in there and I'll take it from here."* They are
   almost always already signed in to <service> in their own browser, and the
   OAuth finishes there with nothing to re-type. **Never open a third-party
-  sign-in page in your own Chrome unprompted** — the owner would have to log
-  in to <service> inside the Browser panel, which is slower and reads as the
-  wrong door. Only when the owner explicitly asks you to start it for them:
+  sign-in page in your own browser unprompted** — that is the wrong door.
+  Only when the owner explicitly asks you to start it for them:
   `/app/skills/lightbulb/scripts/lightbulb-connect.sh link <provider>` prints
   the sign-in URL. It exits non-zero and names the HTTP status when it cannot:
   409 = already connected; 400/404 = not a one-click provider for this owner —
   send them to Connections; 503 = not available to connect yet — say so; 502 =
   provider error — retry next turn; 401 = platform fault — tell the owner,
-  never work around it. Open that URL with your browser tool — the Browser
-  panel surfaces on its own — and say *"I've opened <service>'s sign-in in the
-  Browser panel — sign in there and I'll take it from here."* You cannot enter
-  their credentials; once they finish, the service arrives per its rail above
-  (tools appear / binary authenticates).
+  never work around it. Hand that URL to the owner and say *"open this and
+  sign in — I'll take it from here."* You cannot enter their credentials; once
+  they finish, the service arrives per its rail above (tools appear / binary
+  authenticates).
 - **What you cannot do:** you cannot authorize or disconnect a service
   yourself, and you cannot start BYO-app or `requestable` ones. For those,
   name the service and send the owner to Connections (the plug icon on the
@@ -126,13 +124,4 @@ the platform can't do.
 - Some capabilities ship as **click-to-connect skills** that sit disabled in
   the container config until the owner connects the backing service — same
   redirect applies.
-- **Shopify signs in from inside your container, two doors, one session.**
-  Its Connections row (`acquisition: container_login`) has a store-domain box:
-  Connect starts `shopify store auth` in your container and opens Shopify's
-  sign-in in the Browser panel, where the owner finishes it. You can start the
-  identical login yourself with the baked CLI skill (`/app/skills/shopify`) —
-  the one sanctioned case for opening a sign-in page in your own Chrome,
-  because the CLI's OAuth callback only resolves inside your container. If the
-  owner is at the keyboard, Connections is the faster door; if they asked you
-  to do it, follow the skill. Read that skill before any Shopify task.
 

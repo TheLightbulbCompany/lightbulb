@@ -25,11 +25,6 @@ rm -rf "$dest"
 mkdir -p "$dest"
 cp -R "$here/skills-src/." "$dest/"
 
-# One reference the image does NOT ship: the Hermes SKILL.md (skills-overlay/) has no
-# routing row for `lightbulb/references/follow-ups.md`, so shipping it is dead weight.
-# Re-enabling it is this line plus a routing row.
-rm -rf "$dest/lightbulb/references/follow-ups.md"
-
 # MAINTENANCE.md is engineer-facing (it documents THIS build, among other things) and
 # nothing in the image reads it -- Hermes discovers skills by SKILL.md front matter.
 find "$dest" -name MAINTENANCE.md -delete

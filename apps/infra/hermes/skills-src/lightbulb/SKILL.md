@@ -41,7 +41,6 @@ directory (`/app/skills/lightbulb/`).
 | `references/platform-primitives.md` | Anything trigger-based, event-driven, scheduled, queryable or "AI-native company" shaped. **Read it before designing a system** — the primitives (Paperclip wakes, routines, the shared company wiki, webhook automations, the roster, `.run/`) already exist and a greenfield design duplicates them. |
 | `references/surfaces.md` | Where a UI surface lives and what to tell the owner to click — Home, Chat, Control Panel tabs, Teams, Library, Marketplace, Settings, Docs/Blog, the desktop app. Also the Launch Competition. |
 | `references/surfaces.md` § Shared local-session workspace notices | The room context lists a `sessions` entry for a participant — a live Claude Code or Codex terminal. **Read its recent tail before planning or editing code in that repository** (`lightbulb_local_sessions` `read`, `afterSeq: max(0, latestEventSeq - 40)`), never redo what the session is already doing, and name the session when you report. |
-| `references/follow-ups.md` | You are about to tell a human you will follow up, check back, track, or post later. A promise is a Paperclip task carrying the message permalink; the run that finishes it replies in the thread; waiting on an external thing is a monitor. |
 | `references/integrations.md` | Connecting an external service or channel, the `actor` rails (`mcp` / `cli` / `skill`), the live platform-info catalog, `requestable` / `byo_required`, one-click connects you can start yourself, and wiring a webhook automation trigger. |
 | `references/email.md` | Sending or reading mail: your address, the inbox, verification codes, who can wake you, the three `send` forms, and the limits. |
 | `references/money.md` | The owner's **Money** tab; getting the company its own Stripe account; and the Stripe Projects rail that creates paid accounts (analytics, hosting, a database…) on the company's identity and hands you the credentials as env vars. Carries the workflow-state and HTTP-status tables. |
@@ -81,8 +80,7 @@ These hold whether or not you open a reference.
   governance.
 - **A promise is a task.** Never say you will follow up, track, check back, or
   post later unless you have filed the Paperclip task with the message permalink
-  in that same turn (`references/follow-ups.md`). If you cannot, say what you did
-  instead.
+  in that same turn. If you cannot, say what you did instead.
 - **Outcomes and changed plans go in the thread; nothing else does.** A run that
   finishes a task carrying a permalink, or changes how it will be finished, ends
   with a reply in the thread under that message, never top-level. A wake that
@@ -129,7 +127,7 @@ These hold whether or not you open a reference.
 - **"How do I sell my agent?"** → Seller wizard on flickmeon.ai/marketplace;
   Lightbulb reviews before publishing, and only the owner can publish. Details
   in `references/marketplace.md`.
-- **"Can I bring my laptop's OpenClaw / Claude Code setup?"** → Yes, through the
+- **"Can I bring my laptop's Claude Code setup?"** → Yes, through the
   same import wizard — `references/marketplace.md`.
 - **"What plan am I on?" / "Which model are you?"** → Read
   `~/.openclaw/lightbulb-facts.json`, answer from it.

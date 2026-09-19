@@ -49,9 +49,8 @@ def _texts(skills: Path):
 def test_the_build_produces_the_hermes_image_tree(skills):
     assert (skills / "lightbulb/SKILL.md").exists()
     assert (skills / "paperclip/SKILL.md").exists()
-    # The two things the build deliberately does not ship: the follow-ups reference (no
-    # routing row in the Hermes SKILL.md) and the engineer-facing MAINTENANCE.md files.
-    assert not (skills / "lightbulb/references/follow-ups.md").exists()
+    # The one thing the build deliberately does not ship: the engineer-facing
+    # MAINTENANCE.md files.
     assert not list(skills.rglob("MAINTENANCE.md"))
 
 

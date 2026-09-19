@@ -9,9 +9,9 @@ This tree is the source of the Hermes image's bundled skills, and its only
 consumer: `apps/infra/hermes/build-skills.sh` copies it, swaps a handful of
 tokens (`/app/skills/` -> `/opt/hermes-skills/`, `exec` -> `terminal`,
 `~/.openclaw/lightbulb-facts.json` -> `$HERMES_HOME/lightbulb-facts.json`,
-`skill_workshop` -> `skills`), drops `references/follow-ups.md`, and overlays
-`apps/infra/hermes/skills-overlay/` for the few files whose content genuinely
-differs there (no ACP coding harness). An overlaid file is the one the image
+`skill_workshop` -> `skills`), drops the engineer-facing MAINTENANCE.md files, and
+overlays `apps/infra/hermes/skills-overlay/` for the few files whose content
+genuinely differs there (no ACP coding harness). An overlaid file is the one the image
 actually ships, so an edit here that names a tool, a path, or a capability
 must land in the overlay too. Hermes tool names are anchored to its
 `CONFIGURABLE_TOOLSETS`
@@ -118,7 +118,6 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- /app/skills/lightbulb/scripts/lightbulb-api.sh — every OPENCLAW_HOOK_TOKEN call goes through a script on disk;
                                  apps/infra/hermes/plugins/lightbulb/__init__.py (_register_redaction) masks that header including $VAR refs,
                                  so an agent-typed curl poisons its own next turn (401 loop)
-  - Follow-ups ............... references/follow-ups.md + SKILL.md (routing row + two non-negotiables)
                               <- apps/infra/hermes/bridge/ (the run payload's message {id, threadRootMessageId}) and
                                  apps/infra/hermes/plugins/lightbulb/__init__.py (send_room_message's threadRootMessageId);
                                  paperclip skill references/monitors.md;

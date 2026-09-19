@@ -28,11 +28,15 @@ import { logGroupPath } from "../table-names";
  *    litestream-era scar and renaming it strands every profile,
  *  - the CI image-builder OIDC role,
  *  - the EventBridge trail that persists ECS task-state changes for that
- *    cluster (the backend's own stop reasons outlive ECS's 1h window there).
+ *    cluster (the backend's own stop reasons outlive ECS's 1h window there),
+ *  - `ContainerSecurityGroup`, which despite its name is LIVE: it is the VPC
+ *    security group every workspace's AgentCore runtime ENI carries, threaded
+ *    to the backend as ECS_SECURITY_GROUP_ID and put into
+ *    `CreateAgentRuntime`'s networkConfiguration by hermes_provisioning.
  *
- * The EFS filesystem, both security groups, the two per-user ECS roles and the
- * per-user Cloud Map service are still declared, for exactly one deploy — see
- * the export-pin block at the bottom of the constructor.
+ * The EFS filesystem, the EFS security group, the two per-user ECS roles and
+ * the per-user Cloud Map service are still declared, for exactly one deploy —
+ * see the export-pin block at the bottom of the constructor.
  */
 export interface ContainerStackProps extends cdk.StackProps {
   environment: string;
@@ -137,9 +141,15 @@ export class ContainerStack extends cdk.Stack {
     // -----------------------------------------------------------------------
     // RETIRED, DELETED IN THE FOLLOW-UP PR (see the export-pin block at the
     // bottom of this constructor for why they cannot go in the same deploy):
-    // the EFS filesystem + both security groups, the two per-user ECS roles,
-    // and the per-user Cloud Map service above. Nothing reads any of them —
-    // service-stack stopped importing every one of them in this PR.
+    // the EFS filesystem + its security group + the NFS ingress rule, the two
+    // per-user ECS roles, and the per-user Cloud Map service above. Nothing
+    // reads any of them — service-stack stopped importing every one in this PR.
+    //
+    // NOT in that set: `ContainerSecurityGroup` below. It keeps the name of the
+    // per-user ECS task it was made for, but it is the security group every
+    // AgentCore runtime ENI now carries (service-stack threads it through as
+    // ECS_SECURITY_GROUP_ID). Deleting it detaches every live Hermes runtime
+    // from the VPC.
     // -----------------------------------------------------------------------
 
     // EFS security group
@@ -690,10 +700,14 @@ export class ContainerStack extends cdk.Stack {
     // — the exact failure this repo already hit on the Cloud Map rename (see
     // the NamespaceV2 comment above). These calls keep the nine orphaned
     // exports published for one deploy while every consumer drops its import.
-    // The next PR deletes the EFS filesystem + both security groups, the two
+    // The next PR deletes the EFS filesystem + its security group, the two
     // per-user ECS task roles, the per-user Cloud Map service, and this block.
+    //
+    // ContainerSecurityGroup is deliberately NOT pinned here: service-stack
+    // still references it for real (ECS_SECURITY_GROUP_ID → the AgentCore
+    // runtime's networkConfiguration), so CDK generates that export from the
+    // live reference and it outlives this whole program.
     // -----------------------------------------------------------------------
-    this.exportValue(this.containerSecurityGroup.securityGroupId);
     this.exportValue(this.efsSecurityGroup.securityGroupId);
     this.exportValue(this.efsFileSystem.fileSystemArn);
     this.exportValue(this.efsFileSystem.fileSystemId);

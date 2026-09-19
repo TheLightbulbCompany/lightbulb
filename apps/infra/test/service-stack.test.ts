@@ -68,6 +68,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     container: {
       cluster: container.cluster,
       cloudMapNamespace: container.cloudMapNamespace,
+      containerSecurityGroup: container.containerSecurityGroup,
       ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
       ownerBedrockBoundary: container.ownerBedrockBoundary,
     },
@@ -100,11 +101,32 @@ const SERVICE_TEMPLATE_DEV = buildServiceStack("dev");
 describe("ServiceStack — clean handoff / rolling deploy", () => {
   const template = SERVICE_TEMPLATE_DEV;
 
+  test("keeps the AgentCore runtime's VPC placement wired to the backend", () => {
+    // ECS_SUBNETS + ECS_SECURITY_GROUP_ID are ECS-era NAMES but a LIVE Hermes
+    // dependency: hermes_provisioning.build_runtime_request_for_owner reads both
+    // into CreateAgentRuntime's networkConfiguration.networkModeConfig, on the
+    // fresh provision AND on roll_runtime_image. Dropping either does not fail
+    // loudly -- it hands the next runtime an empty VPC config, so pin them here.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "backend",
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "ECS_SUBNETS" }),
+            Match.objectLike({ Name: "ECS_SECURITY_GROUP_ID" }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
   test("injects no OpenClaw image identity — nothing runs that image", () => {
     const rendered = JSON.stringify(template.findResources("AWS::ECS::TaskDefinition"));
     expect(rendered).not.toContain("OPENCLAW_UPSTREAM_VERSION");
     expect(rendered).not.toContain("OPENCLAW_EXTENDED_ARTIFACT_DIGEST");
     expect(rendered).not.toContain("AGENTCORE_GATEWAY_IMAGE");
+    expect(rendered).not.toContain("EFS_MOUNT_PATH");
+    expect(rendered).not.toContain("CLOUD_MAP_SERVICE_ARN");
     // The dispatch bus keeps its name; it is not an image reference.
     expect(rendered).toContain("OPENCLAW_WORK_QUEUE_URL");
   });

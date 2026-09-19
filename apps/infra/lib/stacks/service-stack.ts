@@ -130,6 +130,16 @@ export interface ServiceStackProps extends cdk.StackProps {
   container: {
     cluster: ecs.ICluster;
     cloudMapNamespace: servicediscovery.IPrivateDnsNamespace;
+    /**
+     * The VPC security group every workspace's AgentCore runtime ENI carries.
+     * Named for the retired per-user ECS task it was created for, but it is
+     * LIVE on the Hermes path: `hermes_provisioning.build_runtime_request_for_owner`
+     * puts it (and the private subnets below) into `CreateAgentRuntime`'s
+     * `networkConfiguration.networkModeConfig`, so an empty value means every
+     * new or rolled runtime gets no VPC config. Renaming it is a separate
+     * coordinated change, not part of the deletion program.
+     */
+    containerSecurityGroup: ec2.ISecurityGroup;
     // Per-owner Bedrock enforcement (Plan 2): the backend reads these ARNs to
     // condition iam:CreateRole on the boundary and to attach the base policy to
     // every minted per-owner role. Live construct refs (same CDK stage), NOT
@@ -1268,6 +1278,9 @@ export class ServiceStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     // Fargate Task Definition
     // -------------------------------------------------------------------------
+    const privateSubnetIds = props.vpc
+      .selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS })
+      .subnetIds.join(",");
     // env.startsWith, not ===, so this stays correct if a prod-prefixed variant is ever
     // introduced.
     const currentHermesTag = env.startsWith("prod") ? HERMES_VERSION.prod.tag : HERMES_VERSION.dev.tag;
@@ -1399,6 +1412,16 @@ export class ServiceStack extends cdk.Stack {
       // these, so a missing or wrong directory disables the feature rather than
       // weakening it.
       APPLE_IAP_ROOT_CERTS_DIR: "/app/certs/apple",
+      // The VPC placement of every workspace's AgentCore runtime. Both names are
+      // ECS-era scars, and both are LIVE:
+      // `hermes_provisioning.build_runtime_request_for_owner` reads them into
+      // `CreateAgentRuntime`'s `networkConfiguration.networkModeConfig` on the fresh
+      // provision AND on `roll_runtime_image`. Dropping either one does not fail loudly —
+      // it hands the next runtime an empty VPC config. A rename is a coordinated
+      // backend+CDK change of its own.
+      ECS_SUBNETS: privateSubnetIds,
+      ECS_SECURITY_GROUP_ID:
+        props.container.containerSecurityGroup.securityGroupId,
       DYNAMODB_TABLE_PREFIX: tablePrefix(env),
       OAUTH_TOKENS_TABLE: tableName(env, "oauth-tokens"),
       // Metronome lifecycle + gating settings. Metronome is the ONLY

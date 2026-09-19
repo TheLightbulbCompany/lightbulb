@@ -11,7 +11,6 @@ import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ecs from "aws-cdk-lib/aws-ecs";
-import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as rds from "aws-cdk-lib/aws-rds";
 import * as route53 from "aws-cdk-lib/aws-route53";
@@ -58,7 +57,6 @@ export interface ObservabilityStackProps extends cdk.StackProps {
   wsApiId: string;
   // Container stack references
   cluster: ecs.ICluster;
-  efsFileSystem: efs.IFileSystem;
   // Database table NAMES (for DynamoDB alarms).
   //
   // Names, not ITable: taking the construct creates a cross-stack Export from
@@ -608,19 +606,6 @@ def handler(event, context):
   // =========================================================================
 
   private createPageAlarms(props: ObservabilityStackProps): void {
-    // P1: container-error-state
-    const p1 = this.createAlarm({
-      id: "P1",
-      name: "container-error-state",
-      metricName: "container.error_state",
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "page",
-      description: "Per-user OpenClaw container in stuck/error state",
-    });
     // P2: stripe-webhook-sig-fail
     this.createAlarm({
       id: "P2",
@@ -635,26 +620,11 @@ def handler(event, context):
       description: "Stripe webhook signature verification failed",
     });
 
-    // P3: workspace-path-traversal
-    this.createAlarm({
-      id: "P3",
-      name: "workspace-path-traversal",
-      metricName: "workspace.path_traversal.attempt",
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "page",
-      description: "Path traversal attempt blocked - security event",
-    });
-
     // P11: marketplace-path-traversal
     // Backend emits marketplace.path_traversal_attempt (no extra dims) in
     // core/services/agent_export.py when a seller's agent_id resolves outside
-    // their workspaces dir. Same breach-on-event security trip-wire shape as
-    // P3 (workspace path traversal). Pages so a marketplace export attack is
-    // never silent.
+    // their workspaces dir. A breach-on-event security trip-wire: pages so a
+    // marketplace export attack is never silent.
     this.createAlarm({
       id: "P11",
       name: "marketplace-path-traversal",
@@ -1364,60 +1334,6 @@ def handler(event, context):
       severity: "warn",
     });
 
-    // W2: container-lifecycle-latency-p99
-    // Flap resistance (2-of-3 over 10-min periods = a 30-min window): a single
-    // slow ECS cold start pushing one p99 bucket over 60s is not an incident.
-    // Missing data = no provisions = NOT_BREACHING (helper default).
-    this.createAlarm({
-      id: "W2",
-      name: "container-lifecycle-latency-p99",
-      metricName: "container.lifecycle.latency",
-      statistic: "p99",
-      threshold: 60000,
-      evaluationPeriods: 3,
-      datapointsToAlarm: 2,
-      periodMinutes: 10,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description: "Container lifecycle p99 latency exceeds 60s",
-    });
-
-    // W3: container-efs-access-point-fail
-    // The emitter tags { op, status } (op = create | delete), so a literal
-    // { status: "error" } bound a set nothing publishes. Search across ops.
-    this.createAlarm({
-      id: "W3",
-      name: "container-efs-access-point-fail",
-      metric: this.statusSum({
-        metricName: "container.efs.access_point",
-        status: "error",
-        periodMinutes: 1,
-        label: "EFS access point errors (all ops)",
-      }),
-      threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description: "EFS access point operation failed",
-    });
-
-    // W4: container-task-def-register-fail
-    this.createAlarm({
-      id: "W4",
-      name: "container-task-def-register-fail",
-      metricName: "container.task_def.register",
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      dimensions: { status: "error" },
-      severity: "warn",
-      description: "ECS task definition registration failed",
-    });
-
     // W67: agent-run-failure-storm
     // run.completed{outcome=failure, source=paperclip} — the alarmable
     // reliability signal for AUTONOMOUS work (nightly CEO + every Paperclip
@@ -1620,21 +1536,7 @@ def handler(event, context):
         "Org admin denied requests exceed 50 per hour",
     });
 
-    // -- Workspace, proxy, update (W24-W27) --
-
-    // W24: workspace-file-write-error
-    this.createAlarm({
-      id: "W24",
-      name: "workspace-file-write-error",
-      metricName: "workspace.file.write.error",
-      threshold: 10,
-      evaluationPeriods: 1,
-      periodMinutes: 60,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "warn",
-      description: "EFS file write errors exceed 10 per hour",
-    });
+    // -- Proxy, update (W25-W27) --
 
     // W25 (proxy-upstream-5xx) and W26 (proxy-budget-check-fail) DELETED:
     // proxy.upstream is never emitted, and proxy.budget_check.fail was a
@@ -2198,98 +2100,10 @@ def handler(event, context):
     this.createAlarm({
       id: "W58",
       name: "per-user-crash-loop",
-      description: ">=3 unexpected container stops in 5 min - a per-user container is in a crash/restart loop (likely CPU-starve healthcheck SIGKILL). Provisional threshold.",
+      description: ">=3 unexpected task stops in 5 min on the platform cluster (backend, provisioner, paperclip) - a crash/restart loop. Provisional threshold.",
       metric: crashLoopMetric,
       threshold: 3,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      severity: "warn",
-    });
-
-    // W59: EFS >1-task-per-access-point detector. Two RUNNING tasks on one
-    // per-user service write the same EFS access point → OpenClaw WAL-SQLite
-    // corruption (root cause mitigated by maxPercent=100 single-writer deploys;
-    // this detects a REGRESSION). Basic AWS/ECS has no RunningTaskCount (that's
-    // Container Insights, which we keep off for cost), so a tiny EventBridge→
-    // Lambda checks running-task count on each RUNNING transition. Reuses the
-    // free-Lambda pattern; events are low-volume.
-    const multiTaskRule = new events.Rule(this, "TaskRunningRule", {
-      ruleName: `lightbulb-${this.envName}-ecs-task-running`,
-      description:
-        "Captures ECS task RUNNING transitions for >1-task-per-service detection",
-      eventPattern: {
-        source: ["aws.ecs"],
-        detailType: ["ECS Task State Change"],
-        detail: {
-          clusterArn: [props.cluster.clusterArn],
-          lastStatus: ["RUNNING"],
-        },
-      },
-    });
-    const multiTaskFn = new lambda.Function(this, "MultiTaskFn", {
-      functionName: `${resourcePrefix(this.envName)}multi-task-metric`,
-      runtime: lambda.Runtime.PYTHON_3_12,
-      handler: "index.handler",
-      timeout: cdk.Duration.seconds(15),
-      code: lambda.Code.fromInline(`
-import boto3
-ecs = boto3.client('ecs')
-cw = boto3.client('cloudwatch')
-
-def handler(event, _ctx):
-    detail = event.get('detail') or {}
-    group = detail.get('group') or ''            # e.g. "service:openclaw-<uid>-<hash>"
-    cluster_arn = detail.get('clusterArn') or ''
-    if not group.startswith('service:'):
-        return                                   # only per-user SERVICE tasks
-    service = group.split(':', 1)[1]
-    if 'openclaw' not in service:
-        return                                   # ignore the backend/paperclip services
-    # Count currently-RUNNING tasks for this service. >1 = the double-writer
-    # precondition for EFS WAL-SQLite corruption.
-    running = ecs.list_tasks(cluster=cluster_arn, serviceName=service, desiredStatus='RUNNING')
-    count = len(running.get('taskArns') or [])
-    if count > 1:
-        cw.put_metric_data(Namespace='LightbulbAI/ECS', MetricData=[{
-            'MetricName': 'MultiTaskPerService',
-            'Dimensions': [{'Name': 'ClusterName', 'Value': cluster_arn.split('/')[-1]}],
-            'Value': 1.0, 'Unit': 'Count',
-        }])
-`),
-    });
-    // TWO separate statements: cloudwatch:PutMetricData does NOT support the
-    // ecs:cluster condition key, so combining them would make IAM evaluate the
-    // condition as non-matching and DENY the metric write (the alarm would get
-    // no datapoints). ecs:ListTasks keeps the cluster condition; PutMetricData
-    // is scoped instead by a cloudwatch:namespace condition.
-    multiTaskFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["ecs:ListTasks"],
-        resources: ["*"],
-        conditions: { StringEquals: { "ecs:cluster": props.cluster.clusterArn } },
-      }),
-    );
-    multiTaskFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["cloudwatch:PutMetricData"],
-        resources: ["*"],
-        conditions: { StringEquals: { "cloudwatch:namespace": "LightbulbAI/ECS" } },
-      }),
-    );
-    multiTaskRule.addTarget(new events_targets.LambdaFunction(multiTaskFn));
-
-    const multiTaskMetric = new cloudwatch.Metric({
-      namespace: "LightbulbAI/ECS",
-      metricName: "MultiTaskPerService",
-      statistic: "Sum",
-      period: cdk.Duration.minutes(1),
-      dimensionsMap: { ClusterName: clusterName },
-    });
-    this.createAlarm({
-      id: "W59",
-      name: "efs-multi-task-per-ap",
-      description: "A per-user service has >1 RUNNING task - two writers on one EFS access point, the OpenClaw WAL-SQLite corruption precondition. Single-writer deploy (maxPercent=100) should prevent this; firing = regression.",
-      metric: multiTaskMetric,
-      threshold: 0,
       severity: "warn",
     });
 
@@ -2379,66 +2193,6 @@ def handler(event, _ctx):
         new cloudwatch_actions.SnsAction(this.warnTopic),
       );
     }
-
-    // -- EFS (W43-W45) --
-    const efsId = props.efsFileSystem.fileSystemId;
-
-    // W43: EFS PercentIOLimit
-    this.createAlarm({
-      id: "W43",
-      name: "efs-io-limit",
-      description: "EFS PercentIOLimit exceeds 80%",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/EFS",
-        metricName: "PercentIOLimit",
-        statistic: "Maximum",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: { FileSystemId: efsId },
-      }),
-      threshold: 80,
-      evaluationPeriods: 3,
-      severity: "warn",
-    });
-
-    // W44: EFS BurstCreditBalance low
-    const w44 = new cloudwatch.Alarm(this, "W44", {
-      alarmName: `${resourcePrefix(this.envName)}W44-efs-burst-credits`,
-      alarmDescription: "EFS burst credit balance is low",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/EFS",
-        metricName: "BurstCreditBalance",
-        statistic: "Minimum",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: { FileSystemId: efsId },
-      }),
-      // Alert when credits drop below 1 TB (in bytes)
-      threshold: 1099511627776,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    w44.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
-
-    // W45: EFS ClientConnections drop
-    // NOT_BREACHING: only catches a real non-zero → zero transition, not the
-    // simple absence of the metric on idle dev (the old BREACHING config
-    // false-fired when no clients were mounted).
-    this.createAlarm({
-      id: "W45",
-      name: "efs-client-connections",
-      description: "EFS client connections dropped to zero",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/EFS",
-        metricName: "ClientConnections",
-        statistic: "Sum",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: { FileSystemId: efsId },
-      }),
-      threshold: 0,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
-      severity: "warn",
-    });
 
     // -- Bedrock (W46-W47) --
     //
@@ -3274,19 +3028,6 @@ def handler(event, _ctx):
         width: 6,
         height: 6,
       }),
-      new cloudwatch.GraphWidget({
-        title: "Container lifecycle latency",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "LightbulbAI",
-            metricName: "container.lifecycle.latency",
-            statistic: "p99",
-            dimensionsMap: dims,
-          }),
-        ],
-        width: 6,
-        height: 6,
-      }),
     );
 
     // Row 3 (Chat pipeline: "Chat messages & errors", "Webchat E2E latency",
@@ -3414,7 +3155,7 @@ def handler(event, _ctx):
       // billing.budget_check.error is never emitted.
     );
 
-    // ----- Row 5: Auth & Security (3 widgets) -----
+    // ----- Row 5: Auth & Security (2 widgets) -----
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
         title: "Auth JWT failures",
@@ -3422,19 +3163,6 @@ def handler(event, _ctx):
           new cloudwatch.Metric({
             namespace: "LightbulbAI",
             metricName: "auth.jwt.fail",
-            statistic: "Sum",
-            dimensionsMap: dims,
-          }),
-        ],
-        width: 8,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: "Workspace path traversal attempts",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "LightbulbAI",
-            metricName: "workspace.path_traversal.attempt",
             statistic: "Sum",
             dimensionsMap: dims,
           }),
@@ -3534,7 +3262,7 @@ def handler(event, _ctx):
       }),
     );
 
-    // ----- Row 7: ECS + EFS (4 widgets) -----
+    // ----- Row 7: Backend ECS (2 widgets) -----
     const clusterName = props.cluster.clusterName;
     const dashServiceName = cdk.Fn.select(
       2,
@@ -3568,36 +3296,6 @@ def handler(event, _ctx):
             dimensionsMap: {
               ClusterName: clusterName,
               ServiceName: dashServiceName,
-            },
-          }),
-        ],
-        width: 6,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: "EFS I/O limit %",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "AWS/EFS",
-            metricName: "PercentIOLimit",
-            statistic: "Maximum",
-            dimensionsMap: {
-              FileSystemId: props.efsFileSystem.fileSystemId,
-            },
-          }),
-        ],
-        width: 6,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: "EFS burst credits",
-        left: [
-          new cloudwatch.Metric({
-            namespace: "AWS/EFS",
-            metricName: "BurstCreditBalance",
-            statistic: "Minimum",
-            dimensionsMap: {
-              FileSystemId: props.efsFileSystem.fileSystemId,
             },
           }),
         ],

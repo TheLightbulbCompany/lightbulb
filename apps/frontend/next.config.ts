@@ -3,6 +3,28 @@ import withBundleAnalyzer from "@next/bundle-analyzer";
 import path from "path";
 
 import { ROOT_DOMAIN } from "./src/lib/domain";
+import { AWS_REGION } from "./src/lib/aws";
+
+// AgentCore Browser's DCV live view: the presigned URL the backend mints is
+// fetched over https and then upgraded to wss on the SAME host, so connect-src
+// needs both schemes. Region from the app's own env-backed constant — never a
+// hardcoded us-east-1.
+const agentCoreOrigin = `bedrock-agentcore.${AWS_REGION}.amazonaws.com`;
+
+// Kept in lockstep with scripts/copy-dcv-assets.mjs, which copies this same
+// tree into public/ for the workers and wasm DCV fetches at runtime.
+const TURBOPACK_ROOT = path.resolve(__dirname, "../../");
+const DCV_SDK_DIR = path.resolve(
+  __dirname,
+  "node_modules/bedrock-agentcore/dist/src/tools/browser/live-view/nice-dcv-web-client-sdk",
+);
+// Turbopack resolves a `resolveAlias` value as a module REQUEST with THIS
+// directory as the context (its own error prints "inside of
+// [project]/apps/frontend"), and reads a leading `/` as server-root-relative —
+// so an absolute path, and a path relative to the turbopack root, both fail.
+// A `./` path relative to apps/frontend is the form that resolves.
+const dcvAlias = (file: string): string =>
+  `./${path.relative(__dirname, path.join(DCV_SDK_DIR, file)).split(path.sep).join("/")}`;
 
 // Our API origin, derived per-environment rather than enumerated. The static
 // string this replaced named prod AND dev hosts at once, which cannot be right
@@ -62,7 +84,7 @@ const reportOnlyCsp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  `connect-src 'self' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} ${apiOrigin} https://api.stripe.com wss://*.appsync-realtime-api.us-east-1.amazonaws.com https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io`,
+  `connect-src 'self' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} ${apiOrigin} https://api.stripe.com wss://*.appsync-realtime-api.us-east-1.amazonaws.com https://${agentCoreOrigin} wss://${agentCoreOrigin} https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io`,
   // blob: is required for <iframe src="blob:...">, the PDF preview path (both
   // the new FileViewerDialog/FileContentViewer PDF branch and the pre-existing
   // Teams ArtifactViewerDialog use it) — measured live: without it, Chrome logs
@@ -127,7 +149,16 @@ const nextConfig: NextConfig = {
   },
 
   turbopack: {
-    root: path.resolve(__dirname, '../../'),
+    root: TURBOPACK_ROOT,
+    // `bedrock-agentcore`'s BrowserLiveView imports the NICE DCV web client as
+    // the bare specifiers `dcv` / `dcv-ui`, but ships it as files inside its own
+    // `dist/` and publishes no `exports` subpath for them — so every consumer
+    // has to alias, and a package-relative request is blocked by that same
+    // `exports` map. Without these two lines the Browser panel fails the build.
+    resolveAlias: {
+      dcv: dcvAlias("dcvjs-esm/dcv.js"),
+      "dcv-ui": dcvAlias("dcv-ui/dcv-ui.js"),
+    },
   },
 
   // Reverse-proxy PostHog through our own domain so ad-blockers /

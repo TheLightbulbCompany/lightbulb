@@ -16,6 +16,9 @@ const eslintConfig = defineConfig([
     // Playwright generated files
     "playwright-report/**",
     "test-results/**",
+    // Vendored NICE DCV web client, copied in by scripts/copy-dcv-assets.mjs.
+    // Third-party minified bundles — gitignored build output, not our source.
+    "public/nice-dcv-web-client-sdk/**",
   ]),
   // CEO A2: prevent the public client bundle from importing admin code.
   // The middleware host gate (CEO A1) keeps unauth'd users out at the edge;

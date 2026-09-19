@@ -43,7 +43,6 @@ from core.services.inbound_triggers import automation_requirement
 from core.services.messaging import ApiProblem
 from core.services.hermes_provisioning import HermesProfileError
 from core.services.catalog_service import (
-    CatalogService,
     MissingCredentialsError,
     emit_agent_deployed,
     get_catalog_service,
@@ -665,24 +664,6 @@ def _fetch_company_tar(*, s3_prefix: str, listing_id) -> bytes:
         raise HTTPException(status_code=500, detail="failed to fetch listing artifact") from exc
 
 
-def _live_install_of(
-    catalog: CatalogService, *, owner_id: str, slug: str | None, seller_id: str | None = None
-) -> dict | None:
-    """The owner's still-live install of ``slug`` from ``seller_id``, or None.
-
-    Always None. This read was a ``.template`` sidecar on the buyer's EFS workspace
-    cross-checked against ``openclaw.json``'s ``agents.list``; the profile transport writes no
-    install record yet, so a retry after a lost response no longer heals into the existing
-    agent -- it mints a second one, the "Pulse 2" shape. That is a KNOWN GAP this deletion
-    makes visible rather than creates (it was already always None for a migrated workspace);
-    a profile-side install record is Task 10 remap work.
-
-    Overlapping deploys stay fenced by ``container_repo.try_claim_owner_deploy`` below, which
-    is a real lock and is unaffected -- only the sequential-retry heal is lost.
-    """
-    return None
-
-
 @router.post("/listings/{listing_id}/deploy")
 async def deploy_listing(
     listing_id: str,
@@ -841,59 +822,16 @@ async def deploy_listing(
     catalog = get_catalog_service()
     owner_id = resolve_owner_id(auth)
 
-    # Idempotency. A deploy can take a minute-plus when the buyer's container
-    # is busy — long enough that the browser can lose the response and
-    # report "Couldn't hire". The buyer then clicks Hire again and mints a
-    # SECOND agent from the same listing: prod grew a "Pulse" and a "Pulse 2"
-    # this way. Resolve the existing install instead of duplicating it, so a
-    # retry after a lost response heals into success. The drawer offers Hire
-    # once per listing (installed cards render "Hired ✓"), so a repeat deploy of
-    # a slug the owner already has is always an accidental retry, never intent.
-    already = _live_install_of(catalog, owner_id=owner_id, slug=listing.get("slug"), seller_id=listing.get("seller_id"))
-    if already:
-        logger.info(
-            "Marketplace deploy: owner=%s already has listing %s as agent %s — returning existing install",
-            owner_id,
-            listing.get("listing_id"),
-            already.get("agent_id"),
-        )
-        # A ``reports_to`` on the retry is intentionally dropped: the agent
-        # already exists with the placement the first deploy gave it, and a
-        # retry is an accidental duplicate of the same intent, not a request to
-        # move it. Re-parenting lives in Teams.
-        return {
-            "slug": listing.get("slug"),
-            "version": already.get("template_version") or listing.get("version", 1),
-            "agent_id": already.get("agent_id"),
-            "agent_uuid": already.get("agent_id"),
-            "name": listing.get("name") or listing.get("slug"),
-            # A legacy sidecar without the canonical listing id is not enough
-            # evidence to claim Marketplace origin. The retry still heals to
-            # the live install, but provenance stays conservatively Custom.
-            "origin": ("Marketplace" if already.get("listing_id") and already.get("seller_id") else "Custom"),
-            **(
-                {
-                    "marketplace": {
-                        "listingId": already.get("listing_id"),
-                        "slug": listing.get("slug"),
-                        "version": already.get("template_version") or listing.get("version", 1),
-                        "seller": already.get("seller_id"),
-                    }
-                }
-                if already.get("listing_id") and already.get("seller_id")
-                else {}
-            ),
-            "skills_added": [],
-            "plugins_enabled": [],
-            # Nothing was installed this call, so there is nothing new to warn
-            # about — the warnings belong to the deploy that actually ran.
-            "warnings": [],
-            # Pending automations are NOT of that kind: they describe the
-            # agent's standing state, not this call's work, and a heal after a
-            # lost response is exactly when the buyer never saw the list.
-            "automations_pending": _pending_automations((listing.get("manifest_json") or {}).get("routines") or []),
-            "already_installed": True,
-        }
+    # KNOWN GAP -- the retry heal is gone. A deploy can take a minute-plus, long enough that the
+    # browser loses the response and the drawer reports "Couldn't hire"; the buyer clicks Hire
+    # again and mints a SECOND agent from the same listing (prod grew a "Pulse" and a "Pulse 2"
+    # this way). The heal that resolved the existing install read a ``.template`` sidecar on the
+    # buyer's EFS workspace, cross-checked against ``openclaw.json``'s ``agents.list``. The
+    # profile transport writes no install record, so there is nothing left to resolve against and
+    # the whole branch was dead code; a profile-side install record is remap work, not deletion
+    # work. What is NOT affected is the overlapping-deploy fence below
+    # (``try_claim_owner_deploy``) -- that is a real lock, and only the SEQUENTIAL-retry heal is
+    # lost.
 
     # Exclusive claim for the whole deploy, OWNER-WIDE (not per-listing). The
     # sidecar read above is a READ, not a lock: two OVERLAPPING deploys can both
@@ -1075,14 +1013,33 @@ async def deploy_listing(
             # are overwritten by the next attempt, and no install record is keyed on them (see
             # catalog_service's module docstring). Best-effort; the original exception is what
             # the caller needs to see.
+            #
+            # EXCEPT on a timeout, where the row is what makes the half-install disposable. A
+            # TimeoutError means "no answer yet", not "failed": the runtime may still be
+            # finishing the profile write, and the Paperclip agent may already exist and work.
+            # Deleting only the row then produced an unownable ghost -- a live profile (and,
+            # when the create landed and only the follow-up timed out, a runtime-side agent)
+            # with no row for the owner to see or delete it by, and nothing that would ever
+            # clean it up. Keeping it makes that an ordinary agent in Teams, and the retry
+            # resolves to it instead of minting a duplicate beside it. The owner-wide claim is
+            # held in the same case (see release_owner_deploy_claim's `cause`).
             deploy_cause = exc
-            try:
-                await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
-            except Exception:
-                logger.exception(
-                    "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
+            if isinstance(exc, TimeoutError):
+                logger.warning(
+                    "Marketplace deploy: timed out for owner=%s listing=%s — KEEPING paperclip agent %s so the "
+                    "half-install stays ownable",
+                    owner_id,
+                    listing.get("listing_id"),
                     new_agent_id,
                 )
+            else:
+                try:
+                    await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
+                except Exception:
+                    logger.exception(
+                        "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
+                        new_agent_id,
+                    )
             # Preserve the original HTTP status — the 503 short-circuit
             # already carries the right code; only unexpected errors get
             # mapped to 500.

@@ -64,6 +64,11 @@ def test_agent_written_credentials_never_go_up():
         assert sync.is_excluded(rel) is True, rel
 
 
+def test_browser_screenshots_are_not_pushed():
+    # ONE glob: is_excluded uses fnmatch, whose * matches "/", so this covers every depth.
+    assert sync.is_excluded("cache/screenshots/browser_screenshot_abc.png")
+
+
 def test_nested_credential_copies_are_covered_whichever_pr_lands_first():
     """Overlap with the CLI-credential rail: its root-anchored ``.aws/*`` / ``.config/gh/*``
     make the root entries here a harmless duplicate (``is_excluded`` is an ``any()``), kept so

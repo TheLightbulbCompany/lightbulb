@@ -186,6 +186,11 @@ EXCLUDE_GLOBS = (
     # hermes_profiles.write_facts_to_profiles (owner_facts.write_owner_facts's AgentCore
     # branch) on every plan/provider change -- same clobber risk as the four above.
     "lightbulb-facts.json",
+    # AgentCore Browser task: Hermes's own browser_vision tool writes
+    # browser_screenshot_*.png here on every browse turn. Nothing stops save_profile pushing
+    # them to S3 otherwise, and a screenshot reaches the room as an attachment (Task 9), not
+    # a profile artifact.
+    "cache/screenshots/*",
     # Backend-projected CLI connector credentials (backend credentials/hermes_cli.py). Same
     # class as the five above: the backend is the only writer, so an upload from here could
     # only ever revert a connect/disconnect the owner just made -- and would let a turn push

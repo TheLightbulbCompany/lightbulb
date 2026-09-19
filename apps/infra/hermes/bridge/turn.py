@@ -1,6 +1,7 @@
 """One Hermes turn: profile restore, run the agent, post run/reply callbacks to the backend."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -345,6 +346,77 @@ def _check_message(msg: dict, room_id: str, label: str) -> None:
         _check(int(att.get("size") or 0) <= cap, f"{label}.attachments[{i}].size exceeds {cap} bytes")
 
 
+# ---- outbound media (design §2i) -------------------------------------------------------------
+# Hermes hands a tool-produced file back as a `MEDIA:<absolute path>` line inside the reply
+# TEXT, so without this the room message arrives with `attachments: null` and the human reads a
+# filesystem path (observed on every browse turn in the Task 1 spike). Content type comes from
+# the suffix and nothing else: the backend re-checks the bytes' own signature against the type
+# we declare, so a guess that is merely plausible is rejected there anyway.
+MEDIA_PREFIX = "MEDIA:"
+MEDIA_CONTENT_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".gif": "image/gif", ".pdf": "application/pdf",
+}
+
+
+def _attachable(line: str, root: Path) -> Path | None:
+    """The file a `MEDIA:` line names, if it is safe to send: inside the agent's own profile
+    dir (resolved, so a symlink cannot point out of it), a type the room accepts, and within
+    that type's byte cap -- the same caps the ingress enforces coming the other way."""
+    if not line.startswith(MEDIA_PREFIX):
+        return None
+    path = Path(line[len(MEDIA_PREFIX):].strip())
+    content_type = MEDIA_CONTENT_TYPES.get(path.suffix.lower())
+    if content_type is None:
+        return None
+    try:
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root.resolve()) or not resolved.is_file():
+            return None
+        if resolved.stat().st_size > ATTACHMENT_MAX_BYTES_BY_TYPE.get(content_type, MAX_ATTACHMENT_BYTES):
+            return None
+    except (OSError, ValueError):  # ValueError: an embedded null byte -- nothing to attach
+        return None
+    return resolved
+
+
+def extract_media(reply: str, root: Path) -> tuple[str, list[Path]]:
+    """Split the attachable `MEDIA:` files out of a reply, returning the text without them.
+
+    A line is stripped ONLY when its file is actually going up; everything else -- over cap,
+    over size, missing, wrong type, outside the profile -- keeps its line verbatim. A
+    screenshot must never fail a turn, and a dropped one must not vanish silently either."""
+    kept: list[Path] = []
+    lines: list[str] = []
+    for line in reply.splitlines():
+        path = _attachable(line, root) if len(kept) < MAX_ATTACHMENTS else None
+        if path is None:
+            lines.append(line)
+        else:
+            kept.append(path)
+    return "\n".join(lines).strip(), kept
+
+
+def _inline_attachments(paths: list[Path]) -> list[dict]:
+    """The files as the backend's `AgentMessageRequest.attachments` wants them: base64 inline
+    on the reply POST we are already making. ponytail: no aggregate byte budget -- API Gateway
+    caps the body at 10 MB and a 413 lands in the same 4xx fallback as everything else, while
+    a real screenshot is a couple of hundred KB."""
+    out = []
+    for path in paths:
+        try:
+            data = path.read_bytes()
+        except OSError as exc:  # raced with a cleanup; never fail a reply over a screenshot
+            log.warning("media read failed: %s", exc)
+            continue
+        out.append({
+            "fileName": path.name,
+            "contentType": MEDIA_CONTENT_TYPES[path.suffix.lower()],
+            "dataBase64": base64.b64encode(data).decode(),
+        })
+    return out
+
+
 def parse_ingress(body: dict) -> dict:
     """All-or-nothing validation of the version-1 ingress body (spec §5, report 03 §1)."""
     _check(isinstance(body, dict) and body.get("version") == 1, "body.version must be 1")
@@ -407,6 +479,25 @@ def _post_backend(path: str, body: dict) -> int:
         except Exception as exc:  # noqa: BLE001 — never throw; a network error retries too
             log.warning("backend %s failed (attempt %d/%d): %s", path, attempt, POST_BACKEND_ATTEMPTS, exc)
     return last_status
+
+
+def _post_reply(agent_id: str, body: dict, reply: str) -> None:
+    """The final reply POST, with any `MEDIA:` files attached inline (design §2i).
+
+    A 4xx means the backend rejected this body -- most plausibly one deployed before the
+    `attachments` field existed, since the contract models are ``extra="forbid"`` -- so the
+    reply goes up again verbatim, unparsed. Losing a screenshot beats losing the reply, and it
+    is what lets this image ship without waiting on a prod backend promotion. The eventId is
+    unchanged, so the retry is the same message, not a second one."""
+    text, media = extract_media(reply, _profile_dir(agent_id))
+    attachments = _inline_attachments(media)
+    if not attachments:
+        _post_backend(f"agent-messages/{OWNER}", {**body, "text": reply})
+        return
+    status = _post_backend(f"agent-messages/{OWNER}", {**body, "text": text, "attachments": attachments})
+    if 400 <= status < 500:
+        log.warning("agent-messages rejected %d attachment(s) with %s; re-posting as text", len(attachments), status)
+        _post_backend(f"agent-messages/{OWNER}", {**body, "text": reply})
 
 
 # ---- AppSync run frames (spec §4.2, §5 "Run lifecycle") --------------------------------------
@@ -1431,17 +1522,17 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
     try:
         took = time.time() - t0
         if reply and has_run:  # a mail turn's reply has no room to post into
-            _post_backend(
-                f"agent-messages/{OWNER}",
+            _post_reply(
+                agent_id,
                 {
                     "eventId": f"{body.get('eventId')}:{agent_id}:reply",  # one ingress eventId fans out to N agents
                     "roomId": room.get("id"),
                     "agentId": agent_id,
-                    "text": reply,
                     "replyToMessageId": msg.get("messageId"),
                     "threadRootMessageId": thread_root,
                     "runId": run_id,
                 },
+                reply,
             )
         if has_run:
             _post_backend(f"runs/{OWNER}/events", run_ended_body(run_id, session_key, outcome, error_kind, usage))

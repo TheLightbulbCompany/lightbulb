@@ -73,11 +73,10 @@ mis-billed. The risk is missed events, not bad ones.
 
 ⚠️ **This alarm is silent and cannot fire.** Its only emitter was the
 fleet-wide `PATCH /container/config` endpoint, which was deleted with the
-`openclaw.json` config rail — a microVM has no config file to rewrite. The
-alarm itself is still declared in `observability-stack.ts` and should be
-removed; until it is, do not read its silence as coverage. There is no
-fleet-wide config door to audit any more: an agent's config is its S3 Hermes
-profile, written per owner.
+`openclaw.json` config rail — a microVM has no config file to rewrite. **PR-6b
+deletes the alarm** (in flight); until that lands, do not read its silence as
+coverage. There is no fleet-wide config door to audit any more: an agent's
+config is its S3 Hermes profile, written per owner.
 
 ## P5 — debug-endpoint-prod-hit
 
@@ -161,6 +160,97 @@ This alarm treats missing data as breaching, which is correct: silence *is*
 the signal. Check the service is running and look at recent task stops.
 Everything else in this file is downstream of the backend being up, so start
 here if multiple alarms fire together.
+
+## P13 — app-unreachable
+
+The product front door (`flickmeon.ai` / `dev.flickmeon.ai`) is failing its
+Route53 health check from multiple AWS regions. **Users cannot load the
+product.**
+
+Route53 probes from several regions every 30s and flips only after 3
+consecutive failures, so this is never a single blip or one bad region. The
+front door is Vercel, so check Vercel status and the last frontend deploy
+before touching AWS — and remember prod frontend only ships on a
+`workflow_dispatch`, so a recent merge is not a suspect.
+
+## P14 — api-unreachable
+
+The backend API (`api.flickmeon.ai` / `api-dev…`) is failing its Route53 health
+check on `/health` from multiple AWS regions. **Chat, billing and provisioning
+are all down.**
+
+`/health` is the only public path that answers 200 without a Clerk token, so a
+failure here is the whole REST door, not one route. Same 3-strike multi-region
+rule as P13. Pair it with P9 and P12: P14 + P12 quiet is the backend; P14 alone
+with P12 healthy points at the API Gateway / VPC Link / ALB chain in front of it.
+
+## P15 — provision-inline-timeout
+
+An inline provision attempt hit its 1800s hard timeout.
+
+By the time this fires **one owner has already been without a workspace for the
+whole 30 minutes**, and recovery now rides the SFN leg — or nothing at all, in
+the "unwatched attempt" degrade where `StartExecution` failed and the inline
+child was the only thing running. Any occurrence pages. The 2026-08-20 founder
+outage had exactly this signature and paged nobody: the metric landed on a
+dimension stream no alarm watched (W1 reads only `status=ok/error`) and the SFN
+watchdog SUCCEEDED after taking the row over, so the executions-failed pages
+never fired either. Start from the owner id in the backend logs, then read the
+Step Functions execution history for that claim.
+
+## P17 — alert-subscriptions-page-topic
+
+The page topic has fewer than its expected number of **confirmed**
+subscriptions. **Nobody is receiving pages.**
+
+Prod's page tier expects 2 destinations (the alert mailbox AND PagerDuty);
+every other tier/env expects 1. The usual cause is that the confirmation mail
+was never clicked and SNS deleted the subscription after three days — which is
+exactly the silent failure the orientation block at the top of this file warns
+about, now watched hourly by a Lambda instead of by memory. Fix it by
+re-subscribing and clicking the link; a subscription is only real when
+`SubscriptionArn` is not the literal string `PendingConfirmation`.
+
+## P19 — messaging-worker-dead
+
+The work-queue worker has emitted no `messaging.worker.alive` sample for 5
+minutes. **Nothing is draining `openclaw-work.fifo`, so no agent is being woken
+for any room message.**
+
+The worker gauges on every poll iteration including empty ones, so absence is
+unambiguous rather than "quiet traffic". Missing data is treated as breaching,
+which also means this alarm sits BREACHING until a backend that emits the metric
+is deployed. Check P12 first: a dead backend takes the worker with it.
+
+## P20 — messaging-queue-wait-p99
+
+p99 wait **before** the worker picks work up exceeds 30s — it is falling behind
+the queue.
+
+Distinct from `openclaw-work-oldest-age` (api-stack), which measures the oldest
+message *including* the in-flight one an agent is still answering and therefore
+has to tolerate hour-long turns. This one has no such excuse: it is queue time
+only.
+
+## P21 — messaging-reply-latency-p95
+
+p95 time from a human message to the agent message answering it exceeds 5
+minutes (the stated SLO).
+
+The one number a user would recognise as "is this thing working". A cold
+AgentCore workspace legitimately costs ~54-57s on its first invoke, so a p95 in
+the minutes means turns are slow or failing, not that microVMs are starting.
+
+## P22 — messaging-ingress-4xx
+
+The bridge's `lightbulb-channel` ingress rejected a dispatch with a 4xx.
+
+**Non-transient and silent:** a 4xx is OUR bug — bad agent id, wrong auth,
+malformed body — it will not self-heal, and every affected message never reaches
+the agent. Any occurrence pages. The classic cause is a contract skew between a
+promoted backend and an un-rolled runtime image, so check what
+`get-agent-runtime` reports for `containerUri` against `hermes-version.json`
+before looking anywhere else.
 
 ## provision-executions-failed / provision-executions-timedout
 

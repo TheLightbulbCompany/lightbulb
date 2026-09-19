@@ -153,10 +153,14 @@ done
    `AGENTCORE_HERMES_IMAGE` — so it picks up the currently pinned Hermes tag
    with no manual image step.
 7. **Hit Hire on each marketplace listing** the org owns. The seller-self-deploy
-   bypass (PR #712) skips Stripe checkout. ⚠️ A retry after a lost response now
-   mints a SECOND agent from the same listing — the `already_installed` heal
-   read a `.template` sidecar on EFS and is gone. Check the roster before
-   re-clicking.
+   bypass (PR #712) skips Stripe checkout. Re-clicking after a lost response is
+   safe: the deploy carries a stable `Idempotency-Key` derived from
+   `{slug, listingId}`, so Paperclip replays the SAME agent rather than minting
+   a second one — the retry just re-runs the profile write onto it. What IS
+   gone is the install RECORD (the `.template` sidecar lived on EFS), so the
+   "already installed" skip and the sidebar's installed-templates filter are
+   inert: the UI will not tell you a listing is already deployed. Read the
+   roster to know what you have, not the listing page.
 8. **Re-pair the desktop app** if used — the containers row's device trust went
    with step 4.
 

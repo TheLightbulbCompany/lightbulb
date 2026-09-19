@@ -8,10 +8,10 @@ install used to also roll the owner's ECS task definition (so the container
 resolved ``process.env.SLACK_BOT_TOKEN_{TEAM}``) and write a
 ``channels.slack.accounts.<team>`` block plus a route binding into
 ``openclaw.json``. A Hermes profile has neither, so what survives here is the
-owner-visible half: the bot token in Secrets Manager, the install row, the
-agent routing row and the Connected/Disconnected status. Connect and Disconnect
-stay honest and reversible; nothing delivers a Slack message to an agent until
-the Hermes-side channel rail exists.
+owner-visible half: the bot token in Secrets Manager, the install row (which
+carries the agent this workspace routes to) and the Connected/Disconnected
+status. Connect and Disconnect stay honest and reversible; nothing delivers a
+Slack message to an agent until the Hermes-side channel rail exists.
 """
 
 from __future__ import annotations

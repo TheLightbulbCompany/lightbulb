@@ -74,230 +74,87 @@ async def test_prepare_delete_reassigns_open_issues_and_preserves_routines():
     assert [call.kwargs["params"]["offset"] for call in admin.list_issues.await_args_list] == ["0", "2"]
 
 
-# NOTE: `test_delete_everywhere_removes_runtime_config_workspace_then_paperclip` was deleted.
-# It drove `delete_agent_everywhere`'s ECS gateway-probe (`agents.list` -> `agents.delete`)
-# and EFS config-removal branches, both gated on `host_for(container) != "agentcore"` --
-# unreachable now that `host_for` is pinned to "agentcore" fleet-wide, so `container_rpc.call`
-# is never awaited and `hermes_profiles.delete_profile` runs instead. The AgentCore-shaped
-# equivalent (S3 profile delete, sidecar/workspace/paperclip cleanup, gateway probe asserted
-# NEVER awaited) is already covered by test_delete_everywhere_on_agentcore_row_deletes_s3_
-# profile_not_efs below.
+# ---------------------------------------------------------------------------
+# delete_agent_everywhere: the S3 profile prefix is the agent's whole durable record.
 #
-# NOTE: `test_delete_everywhere_retries_after_runtime_agent_is_already_absent` was deleted --
-# same reasoning: the "agents.list finds it already gone, so skip agents.delete" concept is
-# specific to the now-unreachable ECS gateway probe.
-
-
-@pytest.mark.asyncio
-async def test_delete_runtime_agent_retries_transient_openclaw_file_lock():
-    """`delete_agent_everywhere` no longer reaches `delete_runtime_agent_with_lock_retry` at
-    all (its one call site is gated on an ECS row, and `host_for` is pinned to "agentcore"
-    fleet-wide) -- but the retry helper itself is still real, reachable code, so it keeps its
-    own direct unit coverage instead of going through that now-dead integration path."""
-    gw_call = AsyncMock(
-        side_effect=[
-            RuntimeError(
-                '{"code":"UNAVAILABLE","message":"file lock timeout for '
-                '/home/node/.openclaw/openclaw.json: code=file_lock_timeout"}'
-            ),
-            {"ok": True},
-        ]
-    )
-
-    with (
-        patch.object(lifecycle.container_rpc, "call", gw_call),
-        patch.object(lifecycle.asyncio, "sleep", new=AsyncMock()) as retry_sleep,
-    ):
-        result = await lifecycle.delete_runtime_agent_with_lock_retry(owner_id="owner", agent_id="retiring")
-
-    assert result == {"ok": True}
-    assert gw_call.await_count == 2
-    for call in gw_call.await_args_list:
-        assert call.args[1] == "agents.delete"
-        assert call.args[2] == {"agentId": "retiring", "deleteFiles": True}
-    retry_sleep.assert_awaited_once_with(0.25)
-
-
-@pytest.mark.asyncio
-async def test_delete_runtime_agent_exhausts_file_lock_retries_then_raises():
-    """Same reasoning as test_delete_runtime_agent_retries_transient_openclaw_file_lock above
-    -- direct coverage of the helper, since delete_agent_everywhere no longer reaches it."""
-    lock_error = RuntimeError("code=file_lock_timeout")
-    gw_call = AsyncMock(side_effect=[lock_error, lock_error, lock_error])
-
-    with (
-        patch.object(lifecycle.container_rpc, "call", gw_call),
-        patch.object(lifecycle.asyncio, "sleep", new=AsyncMock()) as retry_sleep,
-    ):
-        with pytest.raises(RuntimeError, match="file_lock_timeout"):
-            await lifecycle.delete_runtime_agent_with_lock_retry(owner_id="owner", agent_id="retiring")
-
-    assert retry_sleep.await_args_list[0].args == (0.25,)
-    assert retry_sleep.await_args_list[1].args == (1.0,)
-    assert gw_call.await_count == 3
-
-
-@pytest.mark.asyncio
-async def test_delete_runtime_agent_does_not_retry_unrelated_gateway_error():
-    gw_call = AsyncMock(side_effect=RuntimeError("gateway unavailable"))
-
-    with (
-        patch.object(lifecycle.container_rpc, "call", gw_call),
-        patch.object(lifecycle.asyncio, "sleep", new=AsyncMock()) as retry_sleep,
-    ):
-        with pytest.raises(RuntimeError, match="gateway unavailable"):
-            await lifecycle.delete_runtime_agent_with_lock_retry(owner_id="owner", agent_id="retiring")
-
-    gw_call.assert_awaited_once()
-    retry_sleep.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_delete_everywhere_reconciles_persistence_when_container_is_stopped():
-    """A container with no live row still needs its persisted record cleaned up. Every row
-    is AgentCore now (`host_for` is pinned fleet-wide), so that record is the S3 profile
-    prefix, not an openclaw.json entry -- see the Q9a row #3 branch in
-    `delete_agent_everywhere`."""
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(return_value=(None, None))
-    workspace = MagicMock()
-    workspace.remove_template_sidecar = MagicMock()
-    delete_profile = MagicMock()
-
-    with (
-        patch(
-            "core.services.paperclip_openclaw_pairing.is_seeded_agent",
-            new=AsyncMock(return_value=False),
-        ),
-        patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
-        patch("core.containers.get_ecs_manager", return_value=ecs),
-        patch("core.containers.get_workspace", return_value=workspace),
-        patch("core.services.hermes_profiles.delete_profile", delete_profile),
-        patch(
-            "core.containers.workspace.cleanup_deleted_agent",
-            new=AsyncMock(),
-        ),
-        patch.object(lifecycle, "delete_paperclip_for_chat", new=AsyncMock()) as delete_paperclip,
-    ):
-        result = await lifecycle.delete_agent_everywhere(owner_id="owner", agent_id="retiring")
-
-    assert result["deleted"] is True
-    delete_profile.assert_called_once_with("owner", "retiring")
-    workspace.remove_template_sidecar.assert_called_once_with("owner", "retiring")
-    delete_paperclip.assert_awaited_once_with(owner_id="owner", agent_id="retiring")
-
-
-@pytest.mark.asyncio
-async def test_delete_everywhere_keeps_paperclip_handle_when_sidecar_removal_fails():
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(return_value=(None, None))
-    workspace = MagicMock()
-    workspace.remove_template_sidecar = MagicMock(side_effect=OSError("efs unavailable"))
-
-    with (
-        patch(
-            "core.services.paperclip_openclaw_pairing.is_seeded_agent",
-            new=AsyncMock(return_value=False),
-        ),
-        patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
-        patch("core.containers.get_ecs_manager", return_value=ecs),
-        patch("core.containers.get_workspace", return_value=workspace),
-        patch(
-            "core.services.config_patcher.remove_from_openclaw_config_list",
-            new=AsyncMock(),
-        ),
-        patch(
-            "core.services.config_patcher.deregister_lightbulb_agent_account",
-            new=AsyncMock(),
-        ),
-        patch(
-            "core.containers.workspace.cleanup_deleted_agent",
-            new=AsyncMock(),
-        ) as cleanup,
-        patch.object(lifecycle, "delete_paperclip_for_chat", new=AsyncMock()) as delete_paperclip,
-    ):
-        with pytest.raises(OSError, match="efs unavailable"):
-            await lifecycle.delete_agent_everywhere(owner_id="owner", agent_id="retiring")
-
-    cleanup.assert_not_awaited()
-    delete_paperclip.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_delete_everywhere_allows_starter_specialist():
-    with (
-        patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
-        patch("core.containers.get_ecs_manager") as get_ecs,
-        patch("core.containers.get_workspace") as get_workspace,
-        patch("core.services.config_patcher.remove_from_openclaw_config_list", new=AsyncMock()),
-        patch("core.services.config_patcher.deregister_lightbulb_agent_account", new=AsyncMock()),
-        patch("core.containers.workspace.cleanup_deleted_agent", new=AsyncMock()),
-        patch.object(lifecycle, "delete_paperclip_for_chat", new=AsyncMock()) as delete_paperclip,
-    ):
-        get_ecs.return_value.resolve_running_container = AsyncMock(return_value=(None, None))
-        get_workspace.return_value.remove_template_sidecar = MagicMock()
-        result = await lifecycle.delete_agent_everywhere(owner_id="owner", agent_id="starter-specialist")
-
-    assert result["deleted"] is True
-    delete_paperclip.assert_awaited_once_with(owner_id="owner", agent_id="starter-specialist")
-
-
-# ---------------------------------------------------------------------------
-# Q9a row #3 (task-9-scan.md): an AgentCore row has no openclaw.json -- the S3
-# profile prefix is the durable record to remove instead.
+# The ECS-shaped halves this used to also drive are gone with that runtime: the gateway
+# `agents.list` probe and the `agents.delete` RPC it might trigger (a parked microVM has no
+# gateway RPC to probe, and probing one paid a 30s timeout for an answer the branch never used),
+# the `openclaw.json` agent-entry and channel-account strip, the EFS `workspace-{id}/` cleanup,
+# the `.template` sidecar removal, and the `openclaw.json` file-lock retry helper the delete
+# wrapped all of it in.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_delete_everywhere_on_agentcore_row_deletes_s3_profile_not_efs():
-    """F4 (predeploy review, M6-R37): the agents.list probe (and the gateway delete it might
-    trigger) is an ECS-only concept -- an AgentCore row has no gateway RPC to check first, and
-    probing one anyway paid runtime_rpc's 30s default against a possibly-parked microVM for an
-    answer this branch never used. The S3 profile delete below is this transport's whole
-    story, so container_rpc.call must never be reached at all here."""
+async def test_delete_everywhere_deletes_the_profile_before_the_paperclip_row():
+    """Order is the recovery story: if the profile delete fails, the Paperclip row stays VISIBLE
+    and a retry reconciles. Deleting the row first would leave a live profile with nothing in
+    Teams to delete it by."""
     events: list[str] = []
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(
-        return_value=({"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x"}, "agentcore")
-    )
-    gw_call = AsyncMock(side_effect=AssertionError("agents.list must never be probed on an agentcore row"))
-    delete_profile = MagicMock(side_effect=lambda *_: events.append("s3"))
-    remove_config = AsyncMock(side_effect=lambda *_a, **_k: events.append("config"))
-    deregister = AsyncMock(side_effect=lambda *_a, **_k: events.append("deregister"))
-    workspace = MagicMock()
-    workspace.remove_template_sidecar = MagicMock(side_effect=lambda *_: events.append("sidecar"))
-
-    async def record_workspace(*_a, **_k):
-        events.append("workspace")
 
     async def record_paperclip(**_kwargs):
         events.append("paperclip")
 
     with (
         patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
-        patch("core.containers.get_ecs_manager", return_value=ecs),
-        patch("core.containers.get_workspace", return_value=workspace),
-        patch.object(lifecycle.container_rpc, "call", gw_call),
-        patch("core.services.hermes_profiles.delete_profile", delete_profile),
-        patch("core.services.config_patcher.remove_from_openclaw_config_list", remove_config),
-        patch("core.services.config_patcher.deregister_lightbulb_agent_account", deregister),
-        patch("core.containers.workspace.cleanup_deleted_agent", new=AsyncMock(side_effect=record_workspace)),
+        patch(
+            "core.services.hermes_profiles.delete_profile", MagicMock(side_effect=lambda *_: events.append("profile"))
+        ) as delete_profile,
         patch.object(lifecycle, "delete_paperclip_for_chat", new=AsyncMock(side_effect=record_paperclip)),
     ):
         result = await lifecycle.delete_agent_everywhere(owner_id="owner", agent_id="retiring")
 
     assert result["deleted"] is True
-    # No EFS call at all -- the openclaw.json-shaped cleanup is entirely skipped.
-    assert events == ["s3", "sidecar", "workspace", "paperclip"]
+    assert events == ["profile", "paperclip"]
     delete_profile.assert_called_once_with("owner", "retiring")
-    remove_config.assert_not_awaited()
-    deregister.assert_not_awaited()
-    gw_call.assert_not_awaited()
 
 
-# NOTE: `test_delete_everywhere_on_ecs_row_still_removes_from_openclaw_config` was deleted.
-# Its whole premise -- "the ECS branch stays byte-identical: unchanged EFS cleanup, no S3
-# profile delete" -- is exactly what this deletion PR ends: `host_for` no longer reads the
-# row, so a `container=(None, None)` row now takes the SAME S3-profile-delete branch as any
-# other, per test_delete_everywhere_reconciles_persistence_when_container_is_stopped above
-# (which covers this identical container-is-None scenario and asserts the new behaviour).
+@pytest.mark.asyncio
+async def test_delete_everywhere_keeps_the_paperclip_row_when_the_profile_delete_fails():
+    """A throttled S3 delete must not take the row with it -- the owner needs something in Teams
+    to retry against."""
+    with (
+        patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
+        patch("core.services.hermes_profiles.delete_profile", MagicMock(side_effect=OSError("s3 throttled"))),
+        patch.object(lifecycle, "delete_paperclip_for_chat", new=AsyncMock()) as delete_paperclip,
+    ):
+        with pytest.raises(OSError, match="s3 throttled"):
+            await lifecycle.delete_agent_everywhere(owner_id="owner", agent_id="retiring")
+
+    delete_paperclip.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_everywhere_carries_the_preserved_fields_back_to_the_caller():
+    """``prepare_paperclip_agent_delete`` reassigns the agent's open issues and records what it
+    preserved (routines, starter-roster uuid). The caller renders that, so dropping it silently
+    tells the owner nothing was carried over."""
+    with (
+        patch.object(
+            lifecycle,
+            "prepare_paperclip_agent_delete",
+            new=AsyncMock(return_value={"reassigned_issues": 3, "preserved_routines": 2}),
+        ),
+        patch("core.services.hermes_profiles.delete_profile", MagicMock()),
+        patch.object(lifecycle, "delete_paperclip_for_chat", new=AsyncMock()),
+    ):
+        result = await lifecycle.delete_agent_everywhere(owner_id="owner", agent_id="retiring")
+
+    assert result == {"deleted": True, "agent_id": "retiring", "reassigned_issues": 3, "preserved_routines": 2}
+
+
+@pytest.mark.asyncio
+async def test_delete_everywhere_never_probes_a_runtime():
+    """M6-R37: probing a possibly-parked microVM paid a 30s timeout for an answer this path never
+    used, and on AgentCore it would also WAKE the workspace to delete an agent from it."""
+    with (
+        patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
+        patch("core.services.hermes_profiles.delete_profile", MagicMock()),
+        patch.object(lifecycle, "delete_paperclip_for_chat", new=AsyncMock()),
+        patch(
+            "core.services.container_rpc.call",
+            new=AsyncMock(side_effect=AssertionError("the runtime must never be probed to delete an agent")),
+        ),
+    ):
+        assert (await lifecycle.delete_agent_everywhere(owner_id="owner", agent_id="retiring"))["deleted"] is True

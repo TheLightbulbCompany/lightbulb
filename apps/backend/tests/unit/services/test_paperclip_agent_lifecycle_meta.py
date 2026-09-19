@@ -16,14 +16,15 @@ from core.services.paperclip_meta import PaperclipMeta  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _ecs_default_container(monkeypatch):
-    """Both create paths pick their adapter type via
-    paperclip_agent_lifecycle.resolve_agent_adapter -> adapter_type_for, which reads the
-    owner's container row. A MISSING row is the correct pre-migration ECS default; these
-    meta-kwarg-threading tests don't model a container table."""
+def _provisioned_container(monkeypatch):
+    """Both create paths build their adapter through ``resolve_agent_adapter``, which reads the
+    owner's container row for its hook token -- and the shared builder REFUSES to write an
+    adapter without one (every run would 401 at the facade, reported per RUN rather than as a
+    broken agent). These meta-kwarg-threading tests are not about that guard, so give them a
+    provisioned row; ``test_paperclip_agent_lifecycle.py`` covers the refusal."""
     from core.repositories import container_repo
 
-    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "hook-tok"}))
 
 
 @pytest.mark.asyncio
@@ -52,12 +53,10 @@ async def test_create_paperclip_for_chat_forwards_meta_fields():
             "core.services.paperclip_agent_lifecycle.get_admin_session_cookie",
             new=AsyncMock(return_value="sess=cookie"),
         ),
-        patch("core.services.paperclip_agent_lifecycle.service_token") as mock_st,
     ):
         mock_repo = MagicMock()
         mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co-1"))
         mock_repo_cls.return_value = mock_repo
-        mock_st.mint = MagicMock(return_value="svc-token")
 
         await create_paperclip_for_chat(
             creator_user_id="user_creator",
@@ -96,12 +95,10 @@ async def test_create_paperclip_for_chat_no_meta_keeps_existing_behavior():
             "core.services.paperclip_agent_lifecycle.get_admin_session_cookie",
             new=AsyncMock(return_value="c"),
         ),
-        patch("core.services.paperclip_agent_lifecycle.service_token") as mock_st,
     ):
         mock_repo = MagicMock()
         mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
         mock_repo_cls.return_value = mock_repo
-        mock_st.mint = MagicMock(return_value="t")
 
         await create_paperclip_for_chat(
             creator_user_id="u",
@@ -121,8 +118,12 @@ async def test_create_paperclip_for_chat_no_meta_keeps_existing_behavior():
 
 
 @pytest.mark.asyncio
-async def test_chat_retry_reuses_key_when_adapter_credentials_are_reminted():
-    """Volatile service/device credentials are not part of logical intent."""
+async def test_chat_retry_reuses_the_key_across_a_rebuilt_adapter_config():
+    """The idempotency key is derived from logical INTENT, never from the adapter config -- so a
+    second attempt resolves to the same Paperclip agent rather than minting a duplicate. It used
+    to matter because the config carried a freshly minted service JWT and a new device key pair
+    on every call; the native adapter's config is stable, which makes the key's independence from
+    it easy to break silently."""
 
     mock_admin = MagicMock()
     mock_admin.create_agent = AsyncMock(return_value={"id": "same-uuid"})
@@ -137,12 +138,10 @@ async def test_chat_retry_reuses_key_when_adapter_credentials_are_reminted():
             "core.services.paperclip_agent_lifecycle.get_admin_session_cookie",
             new=AsyncMock(return_value="c"),
         ),
-        patch("core.services.paperclip_agent_lifecycle.service_token") as mock_st,
     ):
         mock_repo = MagicMock()
         mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
         mock_repo_cls.return_value = mock_repo
-        mock_st.mint = MagicMock(side_effect=["first-token", "second-token"])
 
         for _ in range(2):
             await create_paperclip_for_chat(
@@ -155,11 +154,11 @@ async def test_chat_retry_reuses_key_when_adapter_credentials_are_reminted():
 
     first, second = mock_admin.create_agent.await_args_list
     assert first.kwargs["idempotency_key"] == second.kwargs["idempotency_key"]
-    assert first.kwargs["adapter_config"]["authToken"] == "first-token"
-    assert second.kwargs["adapter_config"]["authToken"] == "second-token"
-    assert (
-        first.kwargs["adapter_config"]["devicePrivateKeyPem"] != second.kwargs["adapter_config"]["devicePrivateKeyPem"]
-    )
+    # Rebuilt from scratch on each call, and carrying no per-call credential: the device private
+    # key and the freshly minted service JWT that made this config volatile are both gone.
+    assert first.kwargs["adapter_config"] == second.kwargs["adapter_config"]
+    assert "devicePrivateKeyPem" not in first.kwargs["adapter_config"]
+    assert "authToken" not in first.kwargs["adapter_config"]
 
 
 @pytest.mark.asyncio
@@ -180,12 +179,10 @@ async def test_create_paperclip_for_marketplace_forwards_meta():
             "core.services.paperclip_agent_lifecycle.get_admin_session_cookie",
             new=AsyncMock(return_value="c"),
         ),
-        patch("core.services.paperclip_agent_lifecycle.service_token") as mock_st,
     ):
         mock_repo = MagicMock()
         mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
         mock_repo_cls.return_value = mock_repo
-        mock_st.mint = MagicMock(return_value="t")
 
         await create_paperclip_for_marketplace(
             buyer_user_id="u",

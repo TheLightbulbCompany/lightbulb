@@ -142,76 +142,6 @@ def test_list_agents_stamps_complete_marketplace_provenance(client, monkeypatch)
     }
 
 
-def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
-    admin = MagicMock()
-    admin.create_agent = AsyncMock(return_value={"id": "a_new"})
-    from routers.teams import agents as agents_mod
-
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    # create_agent no longer mints/synthesizes inline -- both now happen inside the shared
-    # paperclip_agent_lifecycle.resolve_agent_adapter (openclaw_gateway branch, since no
-    # container row exists below), so the patches go there.
-    mint_mock = MagicMock(return_value="freshly-minted-token")
-    monkeypatch.setattr("core.services.paperclip_agent_lifecycle.service_token.mint", mint_mock)
-    monkeypatch.setattr(
-        "core.services.paperclip_agent_lifecycle._ws_gateway_url",
-        lambda env: f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws",
-    )
-    # No container row -> the pre-migration ECS default (openclaw_gateway) for the ADAPTER
-    # TYPE selection specifically -- unrelated to (and unaffected by) runtime_transport's
-    # host_for, which is pinned to AgentCore fleet-wide (deletion PR-1), so the post-create
-    # wiring below still goes through the Hermes profile write. Stub it out so the request
-    # completes instead of rolling back on a real S3/Paperclip call.
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id",
-        AsyncMock(return_value=None),
-    )
-    monkeypatch.setattr(
-        "core.services.hermes_provisioning.write_profile_for_agent",
-        AsyncMock(),
-    )
-    count_agents = AsyncMock(return_value=11)
-    monkeypatch.setattr(
-        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
-        count_agents,
-    )
-    monkeypatch.setattr(
-        "core.repositories.billing_repo.get_by_owner_id",
-        AsyncMock(return_value={"plan": "standard"}),
-    )
-
-    r = client.post(
-        "/api/v1/teams/agents",
-        json={"name": "Helper", "role": "engineer"},
-        headers={"Authorization": "Bearer test"},
-    )
-    assert r.status_code == 200
-    call = admin.create_agent.await_args
-    assert call.kwargs["adapter_type"] == "openclaw_gateway"
-    assert call.kwargs["idempotency_key"].startswith("lightbulb-agent-create:v1:teams:")
-    assert "idempotency_replay_only" not in call.kwargs
-    count_agents.assert_not_awaited()
-    adapter_cfg = dict(call.kwargs["adapter_config"])
-    # devicePrivateKeyPem is a freshly-minted ed25519 key (non-deterministic),
-    # so assert it's a valid PEM separately and compare the stable fields.
-    device_pem = adapter_cfg.pop("devicePrivateKeyPem")
-    assert device_pem.startswith("-----BEGIN PRIVATE KEY-----")
-    assert adapter_cfg == {
-        "url": f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws?token=freshly-minted-token&clientId=paperclip-operator",
-        "authToken": "freshly-minted-token",
-        "sessionKeyStrategy": "issue",
-        "sessionKey": "paperclip:u1",
-        # Gateway run-timeout bounds so a long agent run isn't soft-timed-out.
-        "timeoutSec": 600,
-        "waitTimeoutMs": 600_000,
-    }
-    # Service token MUST be minted with owner_id
-    # (== org_id for org members) so the WS authorizer routes Paperclip
-    # wakes to the org's shared container, not the member's personal
-    # owner. The fixture's TeamsContext has org_id="o1" / owner_id="o1".
-    mint_mock.assert_called_once_with("o1")
-
-
 def test_create_agent_on_agentcore_owner_gets_the_native_hermes_adapter(client, monkeypatch):
     """AgentCore owners use Paperclip's native polling adapter through our backend."""
     admin = MagicMock()
@@ -279,12 +209,10 @@ def test_create_agent_response_redacts_device_private_key(client, monkeypatch):
         }
     )
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr("core.services.paperclip_agent_lifecycle.service_token.mint", MagicMock(return_value="tok"))
     monkeypatch.setattr(
-        "core.services.paperclip_agent_lifecycle._ws_gateway_url",
-        lambda env: f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws",
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"hook_token": "hook-tok"}),
     )
-    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
     # host_for is pinned to AgentCore fleet-wide (deletion PR-1) regardless of the
     # (missing) container row above, so the post-create wiring goes through the
     # Hermes profile write rather than container pairing. Stub it out so the
@@ -378,14 +306,9 @@ def test_create_agent_returns_upstream_status_on_paperclip_error(client, monkeyp
     )
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
     monkeypatch.setattr(
-        "core.services.paperclip_agent_lifecycle.service_token.mint",
-        MagicMock(return_value="fresh-token"),
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"hook_token": "hook-tok"}),
     )
-    monkeypatch.setattr(
-        "core.services.paperclip_agent_lifecycle._ws_gateway_url",
-        lambda env: f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws",
-    )
-    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
 
     r = client.post(
         "/api/v1/teams/agents",

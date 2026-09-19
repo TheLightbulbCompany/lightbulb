@@ -158,12 +158,12 @@ def _install(monkeypatch, h: Harness, plan=None):
     monkeypatch.setattr(svc, "resolve_company_id_for_owner", fake_resolve_company)
 
     # Adapter selection + synthesis (server-side) -- faked at the ONE shared seam
-    # (resolve_agent_adapter) every Paperclip agent-creation door now calls through,
-    # rather than its two internal pieces (adapter_type_for's container-row read +
-    # synthesize_openclaw_adapter). Byte-identical to today's ECS/openclaw_gateway shape;
-    # the dedicated adapter-selection tests below exercise the real resolver.
-    async def fake_resolve_adapter(owner_id, *, agent_label, gateway_user_id):
-        return "openclaw_gateway", {"url": "wss://fake", "authToken": "svc_tok", "sessionKey": gateway_user_id}
+    # (resolve_agent_adapter) every Paperclip agent-creation door calls through, rather than its
+    # internal pieces. It takes only the owner now: its agent_label/gateway_user_id arguments
+    # were accepted and unused, and there is one adapter to pick. The dedicated
+    # adapter-selection tests below exercise the real resolver.
+    async def fake_resolve_adapter(owner_id):
+        return "hermes_gateway", {"url": "https://fake", "hookToken": "hook_tok"}
 
     monkeypatch.setattr(svc, "resolve_agent_adapter", fake_resolve_adapter)
 
@@ -253,9 +253,9 @@ async def test_gstack_full_deploy_topological(monkeypatch):
 
     # Every create is server-synthesized + budgeted; never a package adapter.
     for call in h.admin.create_calls:
-        assert call["adapter_type"] == "openclaw_gateway"
+        assert call["adapter_type"] == "hermes_gateway"
         assert call["budget_monthly_cents"] == 1000
-        assert call["adapter_config"]["authToken"] == "svc_tok"
+        assert call["adapter_config"]["hookToken"] == "hook_tok"
         # Company deploy has no durable operation row yet. Replaying an agent
         # UUID here could let one background worker roll back another's live
         # install, so this path must stay outside create idempotency for now.
@@ -298,9 +298,9 @@ async def test_every_create_carries_server_adapter_and_budget(monkeypatch):
 
     assert h.admin.create_calls  # sanity
     for call in h.admin.create_calls:
-        assert call["adapter_type"] == "openclaw_gateway"
+        assert call["adapter_type"] == "hermes_gateway"
         assert call["budget_monthly_cents"] == 1000
-        assert call["adapter_config"]["authToken"] == "svc_tok"
+        assert call["adapter_config"]["hookToken"] == "hook_tok"
 
 
 @pytest.mark.asyncio

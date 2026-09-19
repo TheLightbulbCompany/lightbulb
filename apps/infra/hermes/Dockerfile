@@ -74,6 +74,27 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # `npm` are both in the Hermes base image already.
 RUN npm i -g --allow-scripts=@xdevplatform/xurl @xdevplatform/xurl@1.2.3 && xurl --help >/dev/null
 
+# agent-browser drives AgentCore Browser through its OWN merged provider (PR #397); the runtime
+# env sets AGENT_BROWSER_PROVIDER=agentcore. Global install so the native arm64 binary is on PATH
+# with no npx/Node at runtime; the release asset arrives in the npm POSTINSTALL, so this must stay
+# outside any --ignore-scripts install (same pattern as the xurl line above). The second command is
+# the one that matters: the provider is feature-gated upstream, and a binary without it fails every
+# browser call at runtime instead of failing the build -- an unknown-provider error whose
+# "Supported:" list names agentcore is the build-time proof it's compiled in (measured live in the
+# dev spike, 2026-09-19: "Unknown provider 'nosuchprovider'. Supported: browserbase, browserless,
+# browser-use, kernel, agentcore, or a configured plugin with browser.provider"). The CLI exits
+# non-zero on that error, so the check is wrapped with `|| true` and the grep is what actually gates
+# the build; AGENT_BROWSER_SOCKET_DIR/HOME give the daemon a writable socket dir to fail inside.
+RUN npm i -g --allow-scripts=agent-browser agent-browser@0.38.1 && agent-browser --version \
+ && ( AGENT_BROWSER_PROVIDER=nosuchprovider AGENT_BROWSER_SOCKET_DIR=/tmp/ab-smoke HOME=/tmp \
+      agent-browser --json open about:blank 2>&1 || true ) | grep -q agentcore
+
+# Hermes advertises browser_* only when _chromium_installed() is true, and that check is a bare
+# os.path.isfile on AGENT_BROWSER_EXECUTABLE_PATH (browser_tool_install.py:227-242). This zero-byte
+# file is that gate. A provider connection never launches a local engine, so it is never exec'd --
+# and if the provider path ever fails, exec'ing it errors loudly with this path in the message.
+RUN mkdir -p /opt/lightbulb && : > /opt/lightbulb/no-local-browser && test -f /opt/lightbulb/no-local-browser
+
 COPY bridge /opt/bridge/bridge
 COPY plugins/ /opt/hermes/plugins/
 # Bundled agent-facing skills. NOT checked in: `skills/` is GENERATED into this build

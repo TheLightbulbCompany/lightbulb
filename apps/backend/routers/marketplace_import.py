@@ -215,8 +215,6 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
 
     return {
         "import_id": import_id,
-        "kind": "claude",
-        "agent_id": "",
         "name": "Claude Code context",
         "claude": {
             "collections": [{"id": c.id, "label": c.label, "file_count": c.file_count} for c in staged.collections],
@@ -320,13 +318,9 @@ async def confirm_import(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     await run_in_thread(_delete_raw, key, import_id)
-    return {
-        "claude_items": items,
-        # The profile write IS the delivery (``.revision`` bumped last, re-pulled on the
-        # agent's next turn) — there is no container to bounce.
-        "restarting": False,
-        "warnings": [],
-    }
+    # The profile write IS the delivery (``.revision`` bumped last, re-pulled on the agent's
+    # next turn) — there is no container to bounce, so nothing to report but the items.
+    return {"claude_items": items, "warnings": []}
 
 
 @router.delete("/{import_id}", status_code=204)

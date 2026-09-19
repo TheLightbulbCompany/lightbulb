@@ -414,19 +414,6 @@ class ImportStartRequest(BaseModel):
     key: str = Field(..., min_length=1, max_length=512)
 
 
-class ImportAgentCandidate(BaseModel):
-    id: str
-    name: str
-    has_history: bool = False
-    history_bytes: int = 0
-
-
-class ImportPluginCandidate(BaseModel):
-    id: str
-    spec: str
-    has_dependencies: bool = False
-
-
 class ClaudeImportCollection(BaseModel):
     id: str
     label: str
@@ -444,37 +431,22 @@ class ClaudeImportPreview(BaseModel):
 
 
 class ImportPreviewResponse(BaseModel):
+    """What a staged Claude Code import contains.
+
+    The OpenClaw-backup half this used to also describe (``kind``, the agent/plugin/MCP/skill
+    candidate lists, the file and cron counts) went with that rail. Every one of those fields
+    defaulted to empty on a Claude import, so the client branched on ``kind`` to know which
+    half was real; there is one shape now.
+    """
+
     import_id: str
-    kind: Literal["backup", "state-dir", "workspace", "claude"]
-    agent_id: str
     name: str
-    description: str = ""
-    agents: list[ImportAgentCandidate] = Field(default_factory=list)
-    plugins: list[ImportPluginCandidate] = Field(default_factory=list)
-    file_count: int = 0
-    files: list[str] = Field(default_factory=list)
-    mcp_servers: list[str] = Field(default_factory=list)
-    skills: list[str] = Field(default_factory=list)
-    cron_jobs: int = 0
-    safety_flags: list[SafetyFlag] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-    skipped_big_files: list[str] = Field(default_factory=list)
-    # Populated only when kind == "claude"; the backup-specific fields above
-    # stay at their defaults on that path.
-    claude: ClaudeImportPreview | None = None
+    claude: ClaudeImportPreview
 
 
 class ImportConfirmRequest(BaseModel):
-    agent_ids: list[str] | None = None  # None = all
-    skills: list[str] | None = None  # None = all
-    mcp_servers: list[str] | None = None  # None = all
-    include_memory: bool = True
-    include_cron: bool = True
-    plugins: list[str] | None = None  # plugin ids to install; None = all non-bundled
-    include_history: bool = False
-    reports_to: str | None = None
-    # Claude imports only (kind == "claude"): which roster agent receives the
-    # staged content, and which staged pieces to apply.
+    """Which roster agent receives the staged content, and which staged pieces to apply."""
+
     target_agent_id: str | None = None
     claude_collections: list[str] | None = None  # collection ids; None = all
     claude_skills: list[str] | None = None  # None = all
@@ -485,21 +457,13 @@ class ClaudeImportItemResult(BaseModel):
     status: Literal["applied", "skipped_exists"]
 
 
-class ImportAgentResult(BaseModel):
-    source_agent_id: str
-    agent_id: str | None = None
-    name: str
-    ok: bool
-    error: str | None = None
-    warnings: list[str] = Field(default_factory=list)
-
-
 class ImportConfirmResponse(BaseModel):
-    agents: list[ImportAgentResult] = Field(default_factory=list)
-    plugins_installed: list[str] = Field(default_factory=list)
-    history_staged: list[str] = Field(default_factory=list)
-    restarting: bool = False
+    """Per-item results of an applied Claude import.
+
+    Nothing is minted, so there is no per-agent result list: the content lands on an EXISTING
+    roster agent's profile, and the ``.revision`` bump IS the delivery (re-pulled on that
+    agent's next turn), so there is no restart to report either.
+    """
+
+    claude_items: list[ClaudeImportItemResult] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
-    # Populated only when the staging was a claude import; the backup-specific
-    # fields above stay at their defaults on that path.
-    claude_items: list[ClaudeImportItemResult] | None = None

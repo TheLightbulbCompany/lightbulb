@@ -143,9 +143,11 @@ def test_import_claude_context_returns_claude_preview_and_keeps_the_object(clien
     r = c.post("/api/v1/marketplace/import", json={"key": KEY})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["import_id"] == IMPORT_ID and body["kind"] == "claude"
-    assert body["agent_id"] == "" and body["name"] == "Claude Code context"
-    assert body["agents"] == [] and body["plugins"] == []
+    assert body["import_id"] == IMPORT_ID and body["name"] == "Claude Code context"
+    # ONE shape. The OpenClaw-backup half this response used to also carry (`kind`, the
+    # agent/plugin/MCP/skill candidate lists, the file and cron counts) defaulted to empty on
+    # every Claude import, and the client branched on `kind` to know which half was real.
+    assert set(body) == {"import_id", "name", "claude"}
     claude = body["claude"]
     assert [col["file_count"] for col in claude["collections"]] == [2]
     assert claude["skills"] == ["graphify"]
@@ -247,15 +249,14 @@ def test_confirm_applies_into_the_agents_profile(client):
 
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["agents"] == [] and body["plugins_installed"] == []
+    # Nothing is minted, so there is no per-agent result list -- and the profile write IS the
+    # delivery (.revision bumped by write_profile_subtree), so there is no restart to report.
+    assert set(body) == {"claude_items", "warnings"}
     assert {i["item"]: i["status"] for i in body["claude_items"]} == {
         f"memory:{CID}": "applied",
         "user-memory": "applied",
         "skill:graphify": "applied",
     }
-    # The profile write IS the delivery (.revision bumped by write_profile_subtree), so there
-    # is no container to bounce.
-    assert body["restarting"] is False
 
     written = {k: v for w in profile.writes for k, v in w.items()}
     # Memory lands in upstream's own migrate-claude namespace, so a user who ran the local

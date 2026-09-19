@@ -40,9 +40,9 @@ current hash would leave the presentable one live.
 
 This replaced a flat one-hour TTL set at mint time, which killed a prod
 container for good: the reprovision minted a new token, put the old one on a
-60-minute fuse, and then the service never rolled onto the new task definition —
-so the live container kept presenting a credential that DynamoDB reaped out from
-under it an hour later. Every evaluation here therefore fails toward
+60-minute fuse, and then the rotation never reached the runtime the workspace
+actually boots from — so it kept presenting a credential that DynamoDB reaped
+out from under it an hour later. Every evaluation here therefore fails toward
 AVAILABILITY: any error leaves the row alone. A stale row is a token nobody
 holds; a deleted live row is a customer with zero inference.
 
@@ -83,7 +83,7 @@ logger = logging.getLogger(__name__)
 # Self-bounding, which is why it needs no cap or sweep: it is only ever written
 # through ``_swap_hash_pointer``, which writes the pruned survivor set — and a
 # hash only survives a prune while something can still present it, which is at
-# most the service's task definition plus whatever tasks are live. (A swap that
+# most the one bearer the owner's boot secret carries. (A swap that
 # loses the race adds the winner's hash on top of that, but the winner's own
 # list was pruned the same way, so the bound holds.)
 #
@@ -300,8 +300,8 @@ async def _drain_superseded(
 
     ``adopt_orphans`` — also return any hash the PREDICATE says is presentable
     that is neither the current pointer nor already tracked. That is the legacy
-    failed-roll state this whole module was written about: the service's task
-    definition presents A, the row points at B, and nothing records A, so
+    failed-roll state this whole module was written about: the runtime's boot
+    secret presents A, the row points at B, and nothing records A, so
     nothing protects it or disarms its one-hour ``ttl``. Adopting it makes it an
     ordinary tracked hash — protected by the predicate, covered by
     ``deny_gate_token``, expired only when nothing can present it.
@@ -335,7 +335,7 @@ async def _drain_superseded(
         for orphan in presentable:
             if orphan not in known:
                 logger.warning(
-                    "bedrock-gate token %s.. ADOPTED for owner %s: the service presents it but nothing tracked it "
+                    "bedrock-gate token %s.. ADOPTED for owner %s: the runtime presents it but nothing tracked it "
                     "(legacy failed-roll state) — %s",
                     orphan[:_HASH_PREFIX_LEN],
                     owner_id,
@@ -372,7 +372,7 @@ async def _drain_superseded(
             continue
         if deleted.get("Attributes"):
             logger.info(
-                "bedrock-gate token %s.. expired for owner %s: no task definition or unstopped task presents it",
+                "bedrock-gate token %s.. expired for owner %s: the runtime's boot secret does not carry it",
                 token_hash[:_HASH_PREFIX_LEN],
                 owner_id,
             )
@@ -387,9 +387,9 @@ async def _retain(table, hashes: list[str]) -> list[str]:
     absence.* Not "remove it when we adopt" — adoption happens once, and a
     one-shot write loses to anything that arms the clock afterwards:
 
-    - a rolling deploy where an old task moves the pointer, pauses, and only
+    - a concurrent provision where the loser moves the pointer, pauses, and only
       then issues its unconditional ``SET ttl`` on the outgoing hash — after
-      the new task has already looked and found nothing to remove;
+      the winner has already looked and found nothing to remove;
     - a disarm that was throttled or 5xx'd, which no amount of care at the
       moment of adoption can retry.
 
@@ -438,7 +438,7 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
       once ``create_user_service``'s upsert has created it.
     - ROTATION SCHEDULES NOTHING. The superseded hash is recorded in
       ``_SUPERSEDED_FIELD`` and its row survives until the liveness predicate
-      proves no task definition and no live task can present it. The mint first
+      proves the owner's runtime cannot present it. The mint first
       runs that drain as a backstop for a confirmation that never came, then
       writes the pruned survivors plus the outgoing hash in the SAME row update.
 
@@ -681,8 +681,8 @@ async def deny_gate_token(owner_id: str, denied: bool) -> None:
     still tracked in** ``_SUPERSEDED_FIELD`` — not the current one alone. Since
     a superseded row now lives exactly as long as something can still present
     it, denying only the current hash would defeat the kill switch in precisely
-    the state this module preserves: mint B, the roll never lands, the service's
-    task definition still carries A, the container does all its inference with
+    the state this module preserves: mint B, the rotation never lands, the boot
+    secret still carries A, the workspace does all its inference with
     A — and the deny lands on B, a row nothing presents. Under the TTL this
     replaced, A was reaped within an hour; here it lives indefinitely, so the
     coverage has to follow it.

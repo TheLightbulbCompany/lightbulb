@@ -79,13 +79,6 @@ function buildStacks(environment: "dev" | "prod"): {
     container: {
       cluster: container.cluster,
       cloudMapNamespace: container.cloudMapNamespace,
-      cloudMapService: container.cloudMapService,
-      efsFileSystem: container.efsFileSystem,
-      efsSecurityGroup: container.efsSecurityGroup,
-      containerSecurityGroup: container.containerSecurityGroup,
-      taskExecutionRole: container.taskExecutionRole,
-      taskRole: container.taskRole,
-      openclawTaskDef: container.openclawTaskDef,
       ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
       ownerBedrockBoundary: container.ownerBedrockBoundary,
     },
@@ -177,19 +170,14 @@ describe("hermes runtime wiring", () => {
     );
   });
 
-  it("wires HERMES_RUNTIME off in both envs at this point", () => {
-    expect(backendContainerEnv(dev.serviceTemplate, "dev").HERMES_RUNTIME).toBe("false");
-    expect(backendContainerEnv(prod.serviceTemplate, "prod").HERMES_RUNTIME).toBe("false");
-  });
-
-  it("names the state bucket for what it holds, while still accepting the old name during the transition", () => {
+  it("names the state bucket for what it holds, and no longer ships the old name", () => {
     const env = backendContainerEnv(dev.serviceTemplate, "dev");
-    // OWNER_STATE_BUCKET is the new name; LITESTREAM_BUCKET rides alongside it
-    // (M4-R6) so a CDK deploy and a backend roll can land in either order.
-    // A later cleanup drops LITESTREAM_BUCKET once the backend only reads the
-    // new name.
+    // Every Hermes profile lives under <owner>/hermes/ in this bucket. The
+    // litestream-era LITESTREAM_BUCKET alias is gone; HERMES_RUNTIME went with
+    // it -- AgentCore is the only runtime, so there is no flag left to read.
     expect(env.OWNER_STATE_BUCKET).toBe("lightbulb-dev-openclaw-replicas");
-    expect(env.LITESTREAM_BUCKET).toBe("lightbulb-dev-openclaw-replicas");
+    expect(env.LITESTREAM_BUCKET).toBeUndefined();
+    expect(env.HERMES_RUNTIME).toBeUndefined();
   });
 
   it("lets the per-owner role pull the Hermes image in both the base policy and the boundary", () => {

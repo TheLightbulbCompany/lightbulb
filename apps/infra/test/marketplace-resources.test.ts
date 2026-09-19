@@ -87,13 +87,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     container: {
       cluster: container.cluster,
       cloudMapNamespace: container.cloudMapNamespace,
-      cloudMapService: container.cloudMapService,
-      efsFileSystem: container.efsFileSystem,
-      efsSecurityGroup: container.efsSecurityGroup,
-      containerSecurityGroup: container.containerSecurityGroup,
-      taskExecutionRole: container.taskExecutionRole,
-      taskRole: container.taskRole,
-      openclawTaskDef: container.openclawTaskDef,
       ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
       ownerBedrockBoundary: container.ownerBedrockBoundary,
     },

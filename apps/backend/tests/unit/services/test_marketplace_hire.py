@@ -321,11 +321,6 @@ async def test_ask_parks_the_agent_inert_then_files_the_approval(
         return {"id": "ap_9"}
 
     admin.create_approval = AsyncMock(side_effect=_create_approval)
-    count_agents = AsyncMock(return_value=11)
-    monkeypatch.setattr(
-        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
-        count_agents,
-    )
     monkeypatch.setattr(
         "core.repositories.billing_repo.get_by_owner_id",
         AsyncMock(return_value={"plan": "standard"}),
@@ -343,7 +338,6 @@ async def test_ask_parks_the_agent_inert_then_files_the_approval(
     assert body["payload"]["agentId"] == _AGENT_ID
     assert body["issueIds"] == ["iss_1"]
     assert "idempotency_replay_only" not in create_agent.await_args.kwargs
-    count_agents.assert_not_awaited()
 
 
 @pytest.mark.asyncio

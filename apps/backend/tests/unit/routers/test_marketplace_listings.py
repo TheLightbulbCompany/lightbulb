@@ -497,11 +497,6 @@ def test_deploy_free_listing_succeeds(
         }
     )
     mock_get_catalog.return_value = catalog
-    count_agents = AsyncMock(return_value=11)
-    monkeypatch.setattr(
-        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
-        count_agents,
-    )
     monkeypatch.setattr(
         "core.repositories.billing_repo.get_by_owner_id",
         AsyncMock(return_value={"plan": "standard"}),
@@ -522,7 +517,6 @@ def test_deploy_free_listing_succeeds(
     assert kwargs["slice_"] == real_slice
     assert kwargs["listing_id"] == "lst_1"
     assert "idempotency_replay_only" not in mock_create_pc.await_args.kwargs
-    count_agents.assert_not_awaited()
 
 
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)

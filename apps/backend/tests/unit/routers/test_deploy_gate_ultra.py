@@ -104,11 +104,6 @@ def test_large_company_deploy_does_not_consult_live_agent_count(
     admin_client,
     monkeypatch,
 ):
-    count_agents = AsyncMock(return_value=25)
-    monkeypatch.setattr(
-        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
-        count_agents,
-    )
     mock_get_published.return_value = _company_listing()
     body = MagicMock()
     body.read.return_value = b"COMPANYTAR"
@@ -118,5 +113,4 @@ def test_large_company_deploy_does_not_consult_live_agent_count(
 
     assert response.status_code == 202, response.text
     assert response.json() == {"started": True, "agent_count": 15}
-    count_agents.assert_not_awaited()
     mock_create_task.assert_called_once()

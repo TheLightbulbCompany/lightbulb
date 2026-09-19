@@ -736,9 +736,13 @@ async def reconcile_hermes_aips(owner_id: str) -> dict[str, str]:
     """
     from core.billing.bedrock_aip import ensure_owner_aips
     from core.billing.bedrock_gate_tokens import reconcile_gate_token_tiers
-    from core.services.container_provision import BEDROCK_TRIAL_CHOICE, resolve_provider_choice
+    from core.repositories import billing_repo
+    from core.services.container_provision import BEDROCK_TRIAL_CHOICE, provider_choice_from_row
 
-    provider, _ = await resolve_provider_choice(owner_id)
+    # This read rewrites authorization and meter classification: a stale trial
+    # row after checkout would narrow a paying workspace back to Sonnet.
+    billing = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+    provider, _ = provider_choice_from_row(billing)
     aip_arns = await ensure_owner_aips(owner_id, tiers=["sonnet"] if provider == BEDROCK_TRIAL_CHOICE else None)
     await reconcile_gate_token_tiers(owner_id, aip_arns)
     return aip_arns

@@ -1,5 +1,0 @@
-# This plugin's dist/ is HAND-WRITTEN source (baked into the image by the
-# Dockerfile via `COPY plugins/aws-exec-profile`), NOT build output. Override
-# the repo-root `dist/` ignore so it is tracked.
-!dist/
-!dist/**

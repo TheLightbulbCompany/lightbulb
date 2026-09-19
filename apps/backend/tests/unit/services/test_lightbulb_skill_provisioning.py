@@ -14,7 +14,7 @@ paragraph does not fail a test; only changing the words does.
 
 from pathlib import Path
 
-SKILL_DIR = Path(__file__).resolve().parents[4] / "infra" / "openclaw" / "skills" / "lightbulb"
+SKILL_DIR = Path(__file__).resolve().parents[4] / "infra" / "hermes" / "skills-src" / "lightbulb"
 SKILL = SKILL_DIR / "SKILL.md"
 HEADING = "## Setting up accounts for the company"
 

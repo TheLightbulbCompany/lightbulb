@@ -7,8 +7,8 @@ cron jobs next to Paperclip routines as a scheduler.
 
 - ``lightbulb-api.sh`` refuses owner-only routes up front instead of sending
   them, so the agent reads "wrong door" rather than "platform fault".
-- The skill names Paperclip routines as the ONLY scheduler and forbids
-  ``openclaw cron``.
+- The skill names Paperclip routines as the ONLY scheduler and forbids the
+  machine's own cron (``openclaw cron`` then; the Hermes host's cron now).
 
 Prose is matched against a WHITESPACE-FLATTENED copy so re-wrapping does not
 fail a test; only changing the words does.
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-SKILL_DIR = Path(__file__).resolve().parents[4] / "infra" / "openclaw" / "skills" / "lightbulb"
+SKILL_DIR = Path(__file__).resolve().parents[4] / "infra" / "hermes" / "skills-src" / "lightbulb"
 SKILL = SKILL_DIR / "SKILL.md"
 HELPER = SKILL_DIR / "scripts" / "lightbulb-api.sh"
 
@@ -105,7 +105,7 @@ def test_helper_allows_the_public_platform_info_route(fake_curl, tmp_path):
 def test_the_skill_names_paperclip_routines_as_the_only_scheduler():
     flat = _flat()
     assert "they are the ONLY scheduler" in flat
-    assert "Never `openclaw cron`" in flat
+    assert "Never the machine's own cron" in flat
     assert "Cron jobs and Paperclip routines" not in flat
 
 

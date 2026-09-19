@@ -113,6 +113,13 @@ describe("ContainerStack — dev", () => {
                 "token.actions.githubusercontent.com:sub":
                   "repo:TheLightbulbCompany@253404738/lightbulb@1182791203:ref:refs/heads/main",
                 "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                // The OpenClaw image and its workflow are deleted; a workflow
+                // that can assume this role but has no ECR grant would fail on
+                // push instead of at the door.
+                "token.actions.githubusercontent.com:workflow": [
+                  "build-paperclip-image",
+                  "build-hermes-image",
+                ],
               }),
             }),
           }),

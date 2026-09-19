@@ -25,7 +25,6 @@ on:
       - '.github/workflows/infra-ci.yml'
       - '.github/workflows/deploy.yml'
       - '.github/workflows/desktop-build.yml'
-      - 'openclaw-version.json'
       - 'paperclip-version.json'
       - 'hermes-version.json'
       - 'pnpm-lock.yaml'
@@ -146,12 +145,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # No `tsc --noEmit` step. The package's tsconfig also covers
-      # openclaw/plugins/**, which are OpenClaw plugin sources baked into the
-      # container image, not CDK — they import the OpenClaw plugin SDK, which
-      # is not a dependency here, so a whole-package type check fails on ~20
-      # pre-existing errors that have nothing to do with infrastructure.
-      # Narrowing that is its own change; this job exists to catch templates
+      # No `tsc --noEmit` step. `lib/**` is now clean (the OpenClaw plugin
+      # sources that used to fail it are deleted), but the package's tsconfig
+      # declares no `types` for vitest, so every test/*.ts fails on `describe`/
+      # `it`/`expect`, and vite's own d.ts files need a newer moduleResolution.
+      # Fixing that is its own change; this job exists to catch templates
       # CloudFormation would reject, and synth is what does that.
       - name: Run tests
         run: pnpm --filter @lightbulb/infra run test

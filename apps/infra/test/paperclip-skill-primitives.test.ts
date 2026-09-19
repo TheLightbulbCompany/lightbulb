@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 
-const skillRoot = resolve(__dirname, "../openclaw/skills/paperclip");
+const skillRoot = resolve(__dirname, "../hermes/skills-src/paperclip");
 const helper = resolve(skillRoot, "scripts/paperclip-api.sh");
 const skillMd = readFileSync(resolve(skillRoot, "SKILL.md"), "utf8");
 const monitorsMd = readFileSync(resolve(skillRoot, "references/monitors.md"), "utf8");

@@ -1,3 +1,12 @@
+"""Every mutating RPC tells the owner's open tabs which resource went stale.
+
+The per-connection ``*.changed`` broadcast is gone, so an invalidation event on the owner's user
+channel is the only thing that makes a second tab (or the desktop app) re-read after a write.
+Driven over a method that still FORWARDS to the runtime (``skills.install``) -- ``config.patch``
+is served from the profile in S3 now, and its invalidation is covered where that path is
+(test_runtime_rpc_hermes_config.py).
+"""
+
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,10 +20,6 @@ async def _run(method, params=None, *, call=None):
             "core.services.runtime_rpc.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}
         ) as rpc_call,
         patch("core.services.runtime_rpc.publish_owner_users", new_callable=AsyncMock) as publish,
-        # This suite is about the invalidation-publish behaviour, exercised over the ECS
-        # (forward-to-container) path — an AgentCore row's config.get/config.patch are served
-        # from S3 instead (see test_runtime_rpc_hermes_config.py, Task 13a).
-        patch("core.services.runtime_rpc._is_agentcore", new_callable=AsyncMock, return_value=False),
     ):
         if call is not None:
             rpc_call.side_effect = call
@@ -25,26 +30,30 @@ async def _run(method, params=None, *, call=None):
 
 
 @pytest.mark.asyncio
-async def test_mutating_config_call_publishes_invalidation():
-    result, call, publish = await _run("config.patch", {"raw": "{}"})
+async def test_mutating_call_publishes_invalidation():
+    result, call, publish = await _run("skills.install", {"name": "x"})
     assert result == {"ok": True}
-    call.assert_awaited_once_with("org_1", "config.patch", {"raw": "{}"}, timeout_s=rpc._RPC_TIMEOUT_S)
+    call.assert_awaited_once_with("org_1", "skills.install", {"name": "x"}, timeout_s=rpc._RPC_TIMEOUT_S)
     event = publish.await_args.args[1]
     assert (publish.await_args.args[0], event["type"], event["payload"]) == (
         "org_1",
         "runtime.resource.invalidated",
-        {"resource": "config"},
+        {"resource": "skills"},
     )
 
 
 @pytest.mark.asyncio
 async def test_read_call_publishes_nothing():
-    _, _, publish = await _run("config.get")
+    """A read has nothing to invalidate, and publishing on one would make every poll in every
+    tab trigger a refetch in every other tab."""
+    _, _, publish = await _run("sessions.list")
     publish.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_publish_failure_does_not_fail_the_rpc():
+    """The write already landed. Failing the call because the notification did not would make
+    the client retry a completed mutation."""
     with patch(
         "core.services.runtime_rpc.publish_owner_users", new_callable=AsyncMock, side_effect=RuntimeError("appsync")
     ):
@@ -55,3 +64,20 @@ async def test_publish_failure_does_not_fail_the_rpc():
                 )
                 == 1
             )
+
+
+@pytest.mark.asyncio
+async def test_every_mutating_method_names_a_resource():
+    """The map is the whole mechanism: a mutating method missing from it writes and tells nobody,
+    which looks like the write never happened until the tab is reloaded."""
+    assert set(rpc._INVALIDATES) == {
+        "agents.create",
+        "agents.update",
+        "agents.delete",
+        "config.set",
+        "config.patch",
+        "skills.install",
+        "skills.update",
+        "skills.proposals.apply",
+        "skills.proposals.reject",
+    }

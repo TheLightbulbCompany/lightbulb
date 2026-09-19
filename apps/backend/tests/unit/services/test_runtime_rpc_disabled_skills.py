@@ -21,11 +21,7 @@ from core.services import runtime_rpc as rpc
 _ROWS = [{"name": "pdf", "disabled": False}, {"name": "shopify", "disabled": True}]
 
 
-def _wire(monkeypatch, *, is_agentcore=True, configs=None, snapshot=None):
-    async def fake_agentcore(_owner_id):
-        return is_agentcore
-
-    monkeypatch.setattr(rpc, "_is_agentcore", fake_agentcore)
+def _wire(monkeypatch, *, configs=None, snapshot=None):
     monkeypatch.setattr(rpc, "load_agent_roster", AsyncMock(return_value=[{"id": agent} for agent in (configs or {})]))
     monkeypatch.setattr(
         rpc.container_rpc,
@@ -71,13 +67,6 @@ async def test_a_hermes_config_set_string_literal_is_parsed_not_read_as_one_skil
     _wire(monkeypatch, configs={"ceo": {"skills": {"disabled": '["pdf", "shopify"]'}}})
 
     assert (await _status())["disabledNames"] == ["pdf", "shopify"]
-
-
-@pytest.mark.asyncio
-async def test_an_ecs_owner_keeps_the_runtimes_own_answer(monkeypatch):
-    _wire(monkeypatch, is_agentcore=False, configs={})
-
-    assert (await _status())["disabledNames"] == ["only-what-the-bridge-saw"]
 
 
 @pytest.mark.asyncio

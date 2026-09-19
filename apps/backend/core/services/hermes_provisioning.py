@@ -68,6 +68,7 @@ from dataclasses import dataclass
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
+from core.services import browser_sessions
 from core.services.agentcore_runtime import (
     IDLE_TIMEOUT_S,
     MAX_LIFETIME_S,
@@ -108,6 +109,7 @@ def build_hermes_runtime_env(
     boot_secret_id: str,
     gate_endpoint: str,
     sonnet_aip_arn: str,
+    browser_profile_id: str = "",
 ) -> dict[str, str]:
     """The bridge's environment (M4-R19). Identifiers ONLY — every credential lives in the ONE
     Secrets Manager boot secret ``boot_secret_id`` names; nothing here is a bearer, a hook token,
@@ -121,8 +123,15 @@ def build_hermes_runtime_env(
     does not silently pick a side. Same value as the endpoint var: both must point at the gate,
     never the real bedrock-runtime endpoint, or that route AccessDenies fleet-wide (the owner
     role carries no ``bedrock:Invoke``).
+
+    ``browser_profile_id`` adds the AgentCore Browser block, ALL SIX KEYS OR NONE. The last
+    of them is the gate: Hermes advertises ``browser_*`` only when
+    ``AGENT_BROWSER_EXECUTABLE_PATH`` names an existing file (a bare ``os.path.isfile``,
+    never a Chromium check), and the image bakes a zero-byte sentinel at that path. Keeping
+    the gate variable inside the same ``if`` is what makes "no profile" mean "no browser
+    tools advertised" rather than "a browser tool that fails on every call".
     """
-    return {
+    env = {
         "ISOL8_OWNER_ID": owner_id,
         "ISOL8_API_URL": api_base.rstrip("/"),
         "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": gate_endpoint,
@@ -143,6 +152,19 @@ def build_hermes_runtime_env(
         "PYTHONUNBUFFERED": "1",
         BOOT_SECRET_ENV_VAR: boot_secret_id,
     }
+    if browser_profile_id:
+        env.update(
+            {
+                "AGENT_BROWSER_PROVIDER": "agentcore",
+                "AGENTCORE_REGION": settings.AWS_REGION,
+                "AGENTCORE_BROWSER_ID": "aws.browser.v1",
+                "AGENTCORE_PROFILE_ID": browser_profile_id,
+                # The CLI's own default is 3600; a turn's session lives 4-15 s.
+                "AGENTCORE_SESSION_TIMEOUT": "900",
+                "AGENT_BROWSER_EXECUTABLE_PATH": "/opt/lightbulb/no-local-browser",
+            }
+        )
+    return env
 
 
 def build_hermes_runtime_request(
@@ -555,10 +577,17 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
     )
 
 
-def build_runtime_request_for_owner(owner_id: str, role_arn: str, aip_arns: dict[str, str]) -> dict:
+def build_runtime_request_for_owner(
+    owner_id: str, role_arn: str, aip_arns: dict[str, str], *, browser_profile_id: str = ""
+) -> dict:
     """The CreateAgentRuntime/UpdateAgentRuntime spec for ``owner_id`` on the CURRENTLY configured
     image (N2/M4-R40's one spec-building path, lifted out of ``provision_hermes_runtime`` so
-    ``roll_runtime_image`` reuses it verbatim). Calls ``gate_url()`` -- a real (cached) SSM read."""
+    ``roll_runtime_image`` reuses it verbatim). Calls ``gate_url()`` -- a real (cached) SSM read.
+
+    ``browser_profile_id`` is the workspace's AgentCore Browser profile (``""`` = no browser);
+    both callers resolve it with ``browser_sessions.ensure_browser_profile`` just before
+    building the request, so a roll is also the door through which an existing runtime gets
+    its first profile."""
     from core.billing.bedrock_gate_url import gate_url
 
     return build_hermes_runtime_request(
@@ -574,6 +603,7 @@ def build_runtime_request_for_owner(owner_id: str, role_arn: str, aip_arns: dict
             boot_secret_id=boot_secret_name(owner_id),
             gate_endpoint=gate_url(),
             sonnet_aip_arn=aip_arns["sonnet"],
+            browser_profile_id=browser_profile_id,
         ),
     )
 
@@ -667,7 +697,14 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     if dry_run:
         return "would-update"
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
-    await run_in_thread(_update_runtime_image, arn, build_runtime_request_for_owner(owner_id, role_arn, aip_arns))
+    # The roll is how an ALREADY-provisioned workspace gets its first Browser profile: a
+    # create-or-adopt, then the env block. Never raises -- "" just means no browser.
+    browser_profile_id = await browser_sessions.ensure_browser_profile(owner_id)
+    await run_in_thread(
+        _update_runtime_image,
+        arn,
+        build_runtime_request_for_owner(owner_id, role_arn, aip_arns, browser_profile_id=browser_profile_id),
+    )
     await run_in_thread(_wait_for_runtime_ready, arn)
     idle = await _wait_for_idle_session(owner_id)
     if idle:
@@ -1024,6 +1061,10 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         return arn
 
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
+    # Create-or-adopt this workspace's AgentCore Browser profile and grant it, before the
+    # request is built: its id is what turns the browser env block on. Never raises -- ""
+    # means the runtime simply advertises no browser tools this round.
+    browser_profile_id = await browser_sessions.ensure_browser_profile(owner_id)
     if not arn:
         # N4/M4-R42: write_profiles runs BEFORE CreateAgentRuntime, so a row that already
         # carries an ARN has its profiles in S3 already. Idempotence now keys on
@@ -1048,7 +1089,7 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         # partial replace. Only called from the two branches that actually need it (create, or
         # update-on-drift) -- gate_url() is a real (cached) SSM read, not free to call on every
         # idempotent poll-and-reuse pass.
-        return build_runtime_request_for_owner(owner_id, role_arn, aip_arns)
+        return build_runtime_request_for_owner(owner_id, role_arn, aip_arns, browser_profile_id=browser_profile_id)
 
     if arn:
         # Reusing an already-created runtime (recorded on the row, or found by name). Bring it

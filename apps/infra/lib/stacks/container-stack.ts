@@ -565,10 +565,12 @@ export class ContainerStack extends cdk.Stack {
     // repos and their image history outlive any stack teardown. Only the builder role's
     // grants live here.
     if (props.environment === "dev") {
-      // OIDC role for the build-openclaw-image workflow. Scoped to this repo
-      // so the existing isol8-dev-github-actions role (which only has
-      // sts:AssumeRole on cdk-* roles) doesn't need broader ECR perms.
-      // Created in dev only (account-scoped role, single source of truth).
+      // OIDC role for the image-build workflows. Scoped to this repo so the
+      // existing isol8-dev-github-actions role (which only has sts:AssumeRole
+      // on cdk-* roles) doesn't need broader ECR perms. Created in dev only
+      // (account-scoped role, single source of truth). The `openclaw` in its
+      // name is a scar — renaming replaces the role, and build-hermes-image.yml
+      // and build-paperclip-image.yml hardcode this ARN.
       const oidcProviderArn = `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`;
       const oidcProvider = iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
         this,
@@ -588,13 +590,12 @@ export class ContainerStack extends cdk.Stack {
               "repo:TheLightbulbCompany@253404738/lightbulb@1182791203:ref:refs/heads/main",
             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
             "token.actions.githubusercontent.com:workflow": [
-              "build-openclaw-image",
               "build-paperclip-image",
               "build-hermes-image",
             ],
           },
         }),
-        description: "Used by .github/workflows/build-openclaw-image.yml to push to ECR",
+        description: "Used by .github/workflows/build-{paperclip,hermes}-image.yml to push to ECR",
         maxSessionDuration: cdk.Duration.minutes(60),
       });
       builderRole.addToPolicy(

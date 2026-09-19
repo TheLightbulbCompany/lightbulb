@@ -344,21 +344,6 @@ export class ServiceStack extends cdk.Stack {
       ],
     });
 
-    // ECR pull + DescribeImages (admin dropdown of available openclaw-extended tags)
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "EcrAccess",
-        actions: [
-          "ecr:GetAuthorizationToken",
-          "ecr:BatchCheckLayerAvailability",
-          "ecr:GetDownloadUrlForLayer",
-          "ecr:BatchGetImage",
-          "ecr:DescribeImages",
-        ],
-        resources: ["*"],
-      }),
-    );
-
     // Bucket-level LIST on the per-owner state bucket. Hermes needs it: every
     // profile read/write/delete path (hermes_profiles, hermes_provisioning)
     // paginates list_objects_v2 under <owner>/hermes/, and ListBucket is a

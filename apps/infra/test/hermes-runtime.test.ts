@@ -269,6 +269,8 @@ describe("hermes runtime wiring", () => {
               "bedrock-agentcore:CreateBrowserProfile",
               "bedrock-agentcore:GetBrowserProfile",
               "bedrock-agentcore:ListBrowserProfiles",
+              // Account wipe deletes the profile (backend PR #2793's reap_owner_bedrock_resources).
+              "bedrock-agentcore:DeleteBrowserProfile",
             ]),
             // CFN collapses a single-element Resource array to a bare string.
             Resource: "arn:aws:bedrock-agentcore:us-east-1:877352799272:browser-profile/*",
@@ -289,11 +291,10 @@ describe("hermes runtime wiring", () => {
       }),
     });
 
-    // The backend never starts a session or deletes a profile in v1 (design §2d): it discovers
-    // sessions by List-then-Get and only presigns the live-view URL. DeleteBrowserProfile in
-    // particular is a deliberately absent grant, not an oversight -- see PR #2790 review finding 1.
+    // The backend never starts a browser session itself (design §2d): it discovers sessions by
+    // List-then-Get and only presigns the live-view URL. DeleteBrowserProfile is no longer
+    // absent -- account wipe needs it (see the test above) -- so only this negative remains.
     const doc = JSON.stringify(dev.serviceTemplate.findResources("AWS::IAM::Policy"));
     expect(doc).not.toContain("bedrock-agentcore:StartBrowserSession");
-    expect(doc).not.toContain("bedrock-agentcore:DeleteBrowserProfile");
   });
 });

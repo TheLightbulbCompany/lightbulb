@@ -200,6 +200,29 @@ def test__run_hermes_keeps_current_and_historical_images_on_their_messages(home,
     assert base64.b64decode(current_content[1]["image_url"]["url"].split(",", 1)[1]) == _RED_PNG
 
 
+def test__run_hermes_moves_own_historical_images_to_a_user_provenance_turn(home, monkeypatch):
+    _install_native_vision_stub(monkeypatch)
+    seen = _capture_agent_call(monkeypatch)
+    monkeypatch.setattr(sync, "_get_backend_bytes", lambda _path: _BLUE_PNG)
+    body = f.ingress(message=f.message(text="now"), recentHistory=[f.message(
+        messageId="agent-history", messageSeq=5,
+        author={"kind": "agent", "id": "ceo", "displayName": "CEO"},
+        text="earlier", attachments=[
+            {"id": "history-image", "fileName": "past.png", "contentType": "image/png", "size": len(_BLUE_PNG)},
+        ],
+    )])
+
+    turn._run_hermes("ceo", body, None)
+
+    history = seen["conversation_history"]
+    assert history[0] == {"role": "assistant", "content": "earlier"}
+    assert history[1]["role"] == "user"
+    assert history[1]["content"][0] == {
+        "type": "text", "text": "[Context: image attachment from assistant CEO message]"
+    }
+    assert base64.b64decode(history[1]["content"][1]["image_url"]["url"].split(",", 1)[1]) == _BLUE_PNG
+
+
 def test__run_hermes_does_not_turn_a_pdf_into_image_content(home, monkeypatch):
     _install_native_vision_stub(monkeypatch)
     seen = _capture_agent_call(monkeypatch)

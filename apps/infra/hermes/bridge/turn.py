@@ -951,8 +951,16 @@ def _history(body: dict, agent_id: str, image_paths: dict[str, list[str]] | None
         if not text and not images:
             continue
         if author.get("kind") == "agent" and author.get("id") == agent_id:
-            content = _message_content(text, images)
-            out.append({"role": "assistant", "content": content})
+            if text:
+                out.append({"role": "assistant", "content": text})
+            if images:
+                name = names.get(agent_id, agent_id)
+                out.append({
+                    "role": "user",
+                    "content": _message_content(
+                        f"[Context: image attachment from assistant {name} message]", images
+                    ),
+                })
         else:
             content = _message_content(f"{names.get(author.get('id'), author.get('id', '?'))}: {text}", images)
             out.append({"role": "user", "content": content})

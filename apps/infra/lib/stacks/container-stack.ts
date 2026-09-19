@@ -3,9 +3,7 @@ import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as events from "aws-cdk-lib/aws-events";
-import * as efs from "aws-cdk-lib/aws-efs";
 import * as iam from "aws-cdk-lib/aws-iam";
-import * as kms from "aws-cdk-lib/aws-kms";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
@@ -33,22 +31,10 @@ import { logGroupPath } from "../table-names";
  *    security group every workspace's AgentCore runtime ENI carries, threaded
  *    to the backend as ECS_SECURITY_GROUP_ID and put into
  *    `CreateAgentRuntime`'s networkConfiguration by hermes_provisioning.
- *
- * The EFS filesystem, the EFS security group, the two per-user ECS roles and
- * the per-user Cloud Map service are still declared, for exactly one deploy —
- * see the export-pin block at the bottom of the constructor.
  */
 export interface ContainerStackProps extends cdk.StackProps {
   environment: string;
   vpc: ec2.IVpc;
-  /** Pass as string ARN to avoid cross-stack dependency cycle. */
-  kmsKeyArn: string;
-  /**
-   * Secret NAMES (not ISecret) the retired per-user task execution role is still
-   * scoped to. Both go with that role in the follow-up PR; nothing reads them.
-   */
-  gogKeyringPasswordSecretName: string;
-  cloudflareWarpEnrollmentSecretName: string;
 }
 
 const ENV_CONFIG: Record<
@@ -62,12 +48,7 @@ const ENV_CONFIG: Record<
 export class ContainerStack extends cdk.Stack {
   public readonly cluster: ecs.Cluster;
   public readonly cloudMapNamespace: servicediscovery.PrivateDnsNamespace;
-  public readonly cloudMapService: servicediscovery.Service;
-  public readonly efsFileSystem: efs.FileSystem;
-  public readonly efsSecurityGroup: ec2.SecurityGroup;
   public readonly containerSecurityGroup: ec2.SecurityGroup;
-  public readonly taskExecutionRole: iam.Role;
-  public readonly taskRole: iam.Role;
   public readonly ownerBedrockBasePolicy: iam.ManagedPolicy;
   public readonly ownerBedrockBoundary: iam.ManagedPolicy;
 
@@ -77,9 +58,6 @@ export class ContainerStack extends cdk.Stack {
     const config = ENV_CONFIG[props.environment] ?? ENV_CONFIG.dev;
 
     const litestreamBucketName = `lightbulb-${props.environment}-openclaw-replicas`;
-
-    // Import KMS key by ARN to avoid cross-stack dependency cycle
-    const kmsKey = kms.Key.fromKeyArn(this, "ImportedKmsKey", props.kmsKeyArn);
 
     // THE PLATFORM ECS cluster — the backend Fargate service (service-stack) and
     // the Step Functions provisioner EcsRunTask run on it. Nothing per-user does
@@ -100,8 +78,8 @@ export class ContainerStack extends cdk.Stack {
 
     // Cloud Map private DNS namespace.
     //
-    // The construct ids stay "NamespaceV2"/"ContainerServiceV2" even though the
-    // TypeScript members are the plain names. Renaming a construct id changes
+    // The construct id stays "NamespaceV2" even though the TypeScript member
+    // is the plain name. Renaming a construct id changes
     // the LOGICAL id, which CloudFormation reads as delete-and-recreate — it
     // would destroy the live namespace every service is registered in, purely
     // to make this file read more nicely. The V2 suffix is the scar from the
@@ -129,55 +107,6 @@ export class ContainerStack extends cdk.Stack {
       },
     );
 
-    this.cloudMapService = this.cloudMapNamespace.createService(
-      "ContainerServiceV2",
-      {
-        dnsRecordType: servicediscovery.DnsRecordType.A,
-        dnsTtl: cdk.Duration.seconds(10),
-        description: `Lightbulb ${props.environment} container service discovery`,
-      },
-    );
-
-    // -----------------------------------------------------------------------
-    // RETIRED, DELETED IN THE FOLLOW-UP PR (see the export-pin block at the
-    // bottom of this constructor for why they cannot go in the same deploy):
-    // the EFS filesystem + its security group + the NFS ingress rule, the two
-    // per-user ECS roles, and the per-user Cloud Map service above. Nothing
-    // reads any of them — service-stack stopped importing every one in this PR.
-    //
-    // NOT in that set: `ContainerSecurityGroup` below. It keeps the name of the
-    // per-user ECS task it was made for, but it is the security group every
-    // AgentCore runtime ENI now carries (service-stack threads it through as
-    // ECS_SECURITY_GROUP_ID). Deleting it detaches every live Hermes runtime
-    // from the VPC.
-    // -----------------------------------------------------------------------
-
-    // EFS security group
-    this.efsSecurityGroup = new ec2.SecurityGroup(this, "EfsSecurityGroup", {
-      vpc: props.vpc,
-      description: `Isol8 ${props.environment} EFS security group`,
-      allowAllOutbound: false,
-    });
-
-    // EFS filesystem
-    this.efsFileSystem = new efs.FileSystem(this, "FileSystem", {
-      vpc: props.vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-      securityGroup: this.efsSecurityGroup,
-      encrypted: true,
-      kmsKey,
-      lifecyclePolicy: efs.LifecyclePolicy.AFTER_30_DAYS,
-      performanceMode: efs.PerformanceMode.GENERAL_PURPOSE,
-      throughputMode: efs.ThroughputMode.BURSTING,
-      // NOT config.removalPolicy: ENV_CONFIG's prod RETAIN still governs the
-      // replicas bucket and must. This filesystem is deleted in PR-6b, and a
-      // removal only destroys what the DEPLOYED template marks Delete — so the
-      // flip has to ship in this deploy, while the resource is still declared.
-      // The prod recovery point in AWS Backup is the hedge.
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-
-    // Container (Fargate task) security group
     this.containerSecurityGroup = new ec2.SecurityGroup(
       this,
       "ContainerSecurityGroup",
@@ -186,106 +115,6 @@ export class ContainerStack extends cdk.Stack {
         description: `Isol8 ${props.environment} Fargate container security group`,
         allowAllOutbound: true,
       },
-    );
-
-    // Allow containers to mount EFS
-    this.efsSecurityGroup.addIngressRule(
-      this.containerSecurityGroup,
-      ec2.Port.tcp(2049),
-      "Allow NFS from Fargate containers",
-    );
-
-    // ECS task execution role (used by ECS agent)
-    this.taskExecutionRole = new iam.Role(this, "TaskExecutionRole", {
-      roleName: `lightbulb-${props.environment}-openclaw-task-execution`,
-      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Lightbulb ${props.environment} ECS task execution role`,
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName(
-          "service-role/AmazonECSTaskExecutionRolePolicy",
-        ),
-      ],
-    });
-
-    // Scoped to the only secrets per-user task defs inject: per-user BYOK
-    // LLM keys (ecs_manager._build_byo_secrets_for_user) and the shared gog
-    // keyring password (referenced by name below, so CDK cannot auto-grant
-    // it). Secret ARNs carry a random 6-char suffix, hence the trailing
-    // wildcards. Unscoped GetSecretValue would let a leaked execution-role
-    // credential read every secret in the account.
-    this.taskExecutionRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "PerUserTaskSecrets",
-        actions: ["secretsmanager:GetSecretValue"],
-        resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${props.environment}/user-keys/*`,
-          // Platform Slack app: per-workspace bot tokens ride the task-def as
-          // secrets:, under the owner's integrations prefix. Same AWS-managed
-          // key as user-keys, so no KMS grant is needed.
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${props.environment}/integrations/*`,
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${props.gogKeyringPasswordSecretName}*`,
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${props.cloudflareWarpEnrollmentSecretName}*`,
-        ],
-      }),
-    );
-
-    // The gog file-keyring password secret is encrypted with the AuthStack CMK
-    // (unlike per-user BYOK secrets, which use the AWS-managed key that
-    // GetSecretValue covers implicitly). Injecting a CMK-encrypted secret needs
-    // an explicit kms:Decrypt on that key. Manual grant (not CDK auto-grant) to
-    // avoid a cross-stack KMS cycle, mirroring the backend service.
-    this.taskExecutionRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "KmsDecryptForSecrets",
-        actions: ["kms:Decrypt"],
-        resources: [props.kmsKeyArn],
-      }),
-    );
-
-    // ECS task role (used by the container itself)
-    this.taskRole = new iam.Role(this, "TaskRole", {
-      roleName: `lightbulb-${props.environment}-openclaw-task`,
-      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-      description: `Lightbulb ${props.environment} ECS task role`,
-    });
-
-    // EFS client access — required for IAM-authenticated EFS mounts
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        actions: [
-          "elasticfilesystem:ClientMount",
-          "elasticfilesystem:ClientWrite",
-          "elasticfilesystem:ClientRootAccess",
-        ],
-        resources: ["*"],
-      }),
-    );
-
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        actions: [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents",
-        ],
-        resources: ["*"],
-      }),
-    );
-
-    // ECS Exec — lets us aws ecs execute-command into per-user OpenClaw
-    // containers for live debugging (skill installs, workspace state, etc.).
-    // Paired with enableExecuteCommand=true on each per-user service in
-    // ecs_manager.py.
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        actions: [
-          "ssmmessages:CreateControlChannel",
-          "ssmmessages:CreateDataChannel",
-          "ssmmessages:OpenControlChannel",
-          "ssmmessages:OpenDataChannel",
-        ],
-        resources: ["*"],
-      }),
     );
 
     // The 3 fan-out regions x 3 foundation models = 9 FM ARNs. Mirrors
@@ -300,7 +129,7 @@ export class ContainerStack extends cdk.Stack {
       FM_IDS.map((model) => `arn:aws:bedrock:${region}::foundation-model/${model}`),
     );
 
-    // EFS/logs/ssm grants the backend attaches to every per-owner role. Keeps
+    // The logs/ssm grants the backend attaches to every per-owner role. Keeps
     // the non-Bedrock grants in IaC (auditable); only the per-owner-varying
     // scoped-Bedrock inline policy lives in backend code.
     this.ownerBedrockBasePolicy = new iam.ManagedPolicy(this, "OwnerBedrockBasePolicy", {
@@ -689,39 +518,5 @@ export class ContainerStack extends cdk.Stack {
         }),
       ],
     });
-
-    // -----------------------------------------------------------------------
-    // Transitional export pins — DELETE in the follow-up PR, together with the
-    // six resources they name.
-    //
-    // CloudFormation refuses to remove an Output whose Export another stack
-    // still imports, and the pipeline deploys THIS stack BEFORE
-    // lightbulb-{env}-service and -observability. So the consumer removal
-    // (this PR) and the resource deletion CANNOT ride the same deploy: the
-    // container-stack update would run first and fail with
-    //
-    //   Cannot delete export lightbulb-{env}-container:ExportsOutputRefFileSystem…
-    //   as it is in use by lightbulb-{env}-service
-    //
-    // — the exact failure this repo already hit on the Cloud Map rename (see
-    // the NamespaceV2 comment above). These calls keep the nine orphaned
-    // exports published for one deploy while every consumer drops its import.
-    // The next PR deletes the EFS filesystem + its security group, the two
-    // per-user ECS task roles, the per-user Cloud Map service, and this block.
-    //
-    // ContainerSecurityGroup is deliberately NOT pinned here: service-stack
-    // still references it for real (ECS_SECURITY_GROUP_ID → the AgentCore
-    // runtime's networkConfiguration), so CDK generates that export from the
-    // live reference and it outlives this whole program.
-    // -----------------------------------------------------------------------
-    this.exportValue(this.efsSecurityGroup.securityGroupId);
-    this.exportValue(this.efsFileSystem.fileSystemArn);
-    this.exportValue(this.efsFileSystem.fileSystemId);
-    this.exportValue(this.cloudMapService.serviceArn);
-    this.exportValue(this.cloudMapService.serviceName);
-    this.exportValue(this.cloudMapNamespace.namespaceArn);
-    this.exportValue(this.taskExecutionRole.roleArn);
-    this.exportValue(this.taskRole.roleArn);
-
   }
 }

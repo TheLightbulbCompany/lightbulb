@@ -39,7 +39,7 @@ describe("BedrockMeterStack", () => {
     expect(envs).toEqual(["dev", "prod"]);
   });
 
-  test("each instance is configured purely via env vars (tables, DLQ, secret, cluster)", () => {
+  test("each instance is configured purely via env vars (tables, DLQ, secret)", () => {
     for (const meterEnv of ["dev", "prod"]) {
       template.hasResourceProperties("AWS::Lambda::Function", {
         Runtime: "python3.12",
@@ -50,7 +50,6 @@ describe("BedrockMeterStack", () => {
             BILLING_TABLE: `${tablePrefix(meterEnv)}billing-accounts`,
             CONTAINERS_TABLE: `${tablePrefix(meterEnv)}containers`,
             GATE_TOKENS_TABLE: `${tablePrefix(meterEnv)}bedrock-gate-tokens`,
-            ECS_CLUSTER_PREFIX: `lightbulb-${meterEnv}-container`,
             INVOCATION_DEDUP_TABLE: Match.anyValue(),
             DLQ_URL: Match.anyValue(),
             METRONOME_API_KEY_SECRET_ARN: Match.anyValue(),
@@ -213,33 +212,17 @@ describe("BedrockMeterStack", () => {
     expect(policies).not.toContain("iam:AttachRolePolicy");
   });
 
-  test("THE KILL: ecs:UpdateService scoped to the env's per-user services", () => {
-    // The IAM revoke is ~5-15s eventually consistent and does not kill an
-    // already-admitted streaming call — desiredCount=0 is the instant stop.
-    // Scoped to the env's cluster + the per-user openclaw-* service name, so
-    // the meter can never touch the backend's own service.
-    for (const meterEnv of ["dev", "prod"]) {
-      template.hasResourceProperties("AWS::IAM::Policy", {
-        PolicyDocument: {
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Action: "ecs:UpdateService",
-              Effect: "Allow",
-              Resource: `arn:aws:ecs:us-east-1:877352799272:service/lightbulb-${meterEnv}-container/openclaw-*`,
-            }),
-          ]),
-        },
-      });
-    }
+  test("the meter holds no ECS permission at all", () => {
+    // The per-user ECS services are gone (every workspace is an AgentCore
+    // runtime), so the desiredCount=0 half of the kill had nothing left to
+    // call. Its grants go with it — a standing ecs:UpdateService on a Lambda
+    // that never uses it is reach nobody audits.
     const policies = JSON.stringify(template.findResources("AWS::IAM::Policy"));
-    expect(policies).toContain("ecs:ListClusters");
-    // No destructive ECS verbs: the kill scales to zero, it never deletes.
-    expect(policies).not.toContain("ecs:DeleteService");
-    expect(policies).not.toContain("ecs:StopTask");
+    expect(policies).not.toContain("ecs:");
   });
 
   test("THE KILL: deny-flag half — GetItem/UpdateItem on containers + gate-tokens", () => {
-    // The third kill step flips denied=true on the owner's bedrock-gate token
+    // This kill step flips denied=true on the owner's bedrock-gate token
     // row (the gateway's kill switch). It reads the containers row for the
     // rotation pointer (bedrock_gate_token_hash) then writes the gate-tokens
     // row — GetItem + UpdateItem, scoped to the env's two tables. The
@@ -391,8 +374,8 @@ describe("BedrockMeterStack", () => {
     });
   });
 
-  test("alarms per instance: DLQ depth + 10 skip/failure metrics + fn errors, env-scoped dimensions", () => {
-    // (1 DLQ + 10 skip/failure-metric + 1 fn-Errors) alarms x 2 instances = 24.
+  test("alarms per instance: DLQ depth + 9 skip/failure metrics + fn errors, env-scoped dimensions", () => {
+    // (1 DLQ + 9 skip/failure-metric + 1 fn-Errors) alarms x 2 instances = 22.
     // Each metric alarm scopes to its instance via the env dimension so dev
     // noise never pages prod (both Lambdas share namespace Isol8 + the
     // service name).
@@ -401,7 +384,7 @@ describe("BedrockMeterStack", () => {
     // the cap fired and the owner is STILL able to spend. meter.cap_kill and
     // meter.replay_skipped are deliberately NOT alarmed — a trial owner
     // hitting their cap and a CW-Logs batch retry are normal operation.
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 24);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 22);
     for (const meterEnv of ["dev", "prod"]) {
       for (const metricName of [
         "meter.unattributed",
@@ -410,7 +393,6 @@ describe("BedrockMeterStack", () => {
         "meter.parse_failed",
         "meter.counter_error",
         "meter.kill_iam_error",
-        "meter.kill_ecs_error",
         "meter.kill_stamp_error",
         "meter.kill_deny_token_error",
         "meter.malformed_record",
@@ -502,7 +484,7 @@ describe("BedrockMeterStack", () => {
     template.resourceCountIs("AWS::SNS::Topic", 0);
     // Alarm names replace only the DOTS in the metric name, so the underscores
     // survive: meter.kill_iam_error -> isol8-{env}-meter-kill_iam_error.
-    const PAGING = ["meter-kill_iam_error", "meter-kill_ecs_error", "meter-kill_deny_token_error"];
+    const PAGING = ["meter-kill_iam_error", "meter-kill_deny_token_error"];
     const alarms = Object.values(
       template.findResources("AWS::CloudWatch::Alarm"),
     ) as any[];
@@ -518,9 +500,9 @@ describe("BedrockMeterStack", () => {
         `lightbulb-${expectedEnv}-alerts-${tier}`,
       );
     }
-    // All three kill-failure alarms (iam, ecs, deny-token), both envs. If this
-    // drops, a failed kill went silent again.
-    expect(paged).toBe(6);
+    // Both kill-failure alarms (iam, deny-token), both envs. If this drops, a
+    // failed kill went silent again.
+    expect(paged).toBe(4);
   });
 
   /** REGRESSION (2026-08-30 incident): the logging custom resource must carry

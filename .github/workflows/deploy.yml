@@ -1522,7 +1522,6 @@ jobs:
       - Assets-FileAsset15
       - Assets-FileAsset8
       - dev-lightbulb-dev-network-Deploy
-      - dev-lightbulb-dev-auth-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
       - name: Authenticate Via OIDC Role
@@ -2261,7 +2260,6 @@ jobs:
       - Build-Synth
       - Assets-FileAsset36
       - prod-lightbulb-prod-network-Deploy
-      - prod-lightbulb-prod-auth-Deploy
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy

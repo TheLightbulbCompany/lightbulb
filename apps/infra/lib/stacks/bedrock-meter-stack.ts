@@ -20,13 +20,12 @@ import { Construct } from "constructs";
 // function instances (dev + prod). Paid owners are ingested to Metronome;
 // TRIAL owners are priced locally, counted, and CUT OFF at the $3/day cap.
 // =============================================================================
-// The cap is the load-bearing part. The per-user container holds its own AWS
-// credentials and calls Bedrock directly — the backend is not on the inference
-// path — so the only thing that provably stops a free owner's spend is taking
-// away the container's ability to invoke: delete the per-owner scoped inline
-// IAM policy AND set its ECS service to desiredCount=0. Hence this Lambda's
-// role carries iam:DeleteRolePolicy + ecs:UpdateService, tightly scoped to the
-// per-owner role-name prefix and the per-user service-name prefix.
+// The cap is the load-bearing part. The backend is not on the inference path,
+// so the only thing that provably stops a free owner's spend is taking away the
+// workspace's ability to invoke: deny its bedrock-gate token AND delete the
+// per-owner scoped inline IAM policy (which still bites in break-glass direct
+// mode). Hence this Lambda's role carries iam:DeleteRolePolicy, tightly scoped
+// to the per-owner role-name prefix.
 // =============================================================================
 // Instantiated ONCE (prod stage only). Bedrock model-invocation logging is an
 // ACCOUNT+REGION-level config (one per region) and there is ONE invocation-log
@@ -280,13 +279,6 @@ export class BedrockMeterStack extends cdk.Stack {
           // step flips denied=true on the owner's row so the gateway 403s the
           // cut-over owner — the gateway-path half of the kill.
           GATE_TOKENS_TABLE: `${tablePrefix(meterEnv)}bedrock-gate-tokens`,
-          // The per-user ECS services live in the env's container-stack cluster,
-          // whose physical name is CFN-generated (renaming it would REPLACE the
-          // cluster and destroy every per-user service) and, for dev, unknowable
-          // from this prod-stage stack. The Lambda resolves it once per cold
-          // start by listing clusters and matching this prefix — keeping the
-          // "instances differ ONLY in env vars" rule intact.
-          ECS_CLUSTER_PREFIX: `lightbulb-${meterEnv}-container`,
           // The env dimension on the Lambda's EMF metrics — both instances
           // share namespace Isol8 + service=isol8-bedrock-meter, so this is
           // what keeps dev noise out of the prod alarms. ALSO the env segment
@@ -414,33 +406,6 @@ export class BedrockMeterStack extends cdk.Stack {
         }),
       );
 
-      // THE KILL, half two: desiredCount=0 on the owner's own service. The IAM
-      // revoke is ~5-15s eventually consistent and does NOT kill an
-      // already-admitted streaming call — this is the instant stop, which is
-      // why the two are fired independently and neither may depend on the
-      // other. ListClusters carries no resource-level permissions (it is the
-      // cold-start cluster discovery); UpdateService is scoped to the env's
-      // cluster and the per-user openclaw-* service name, so the meter cannot
-      // touch the backend's own service.
-      fn.addToRolePolicy(
-        new iam.PolicyStatement({
-          sid: "StopOwnerContainer",
-          effect: iam.Effect.ALLOW,
-          actions: ["ecs:UpdateService"],
-          resources: [
-            `arn:aws:ecs:${this.region}:${this.account}:service/lightbulb-${meterEnv}-container/openclaw-*`,
-          ],
-        }),
-      );
-      fn.addToRolePolicy(
-        new iam.PolicyStatement({
-          sid: "DiscoverEnvCluster",
-          effect: iam.Effect.ALLOW,
-          actions: ["ecs:ListClusters"],
-          resources: ["*"],
-        }),
-      );
-
       // THE KILL, gateway half: flip denied=true on the owner's bedrock-gate
       // token row so the gateway 403s the cut-over owner (the gateway-path
       // equivalent of the IAM revoke). Reads the containers row for the
@@ -511,8 +476,8 @@ export class BedrockMeterStack extends cdk.Stack {
       // A meter.kill_*_error means the cap FIRED and the owner is STILL ABLE TO
       // SPEND — the one failure in this system that burns money in real time,
       // and the only one with no self-healing path (the kill is now re-asserted
-      // on every over-cap record, but if IAM/ECS is durably broken that retry
-      // never lands). alerts-warn is email-only to alerts@; that is not a
+      // on every over-cap record, but if IAM/DynamoDB is durably broken that
+      // retry never lands). alerts-warn is email-only to alerts@; that is not a
       // response to unbounded spend. These go to the PAGE topic (SMS + oncall@),
       // which is what the comment above has always said they must do.
       const pageTopic = sns.Topic.fromTopicArn(
@@ -523,7 +488,6 @@ export class BedrockMeterStack extends cdk.Stack {
       const pageAction = new cloudwatchActions.SnsAction(pageTopic);
       const PAGING_METRICS = new Set([
         "meter.kill_iam_error",
-        "meter.kill_ecs_error",
         "meter.kill_deny_token_error",
       ]);
 
@@ -584,13 +548,10 @@ export class BedrockMeterStack extends cdk.Stack {
         ["meter.parse_failed", "MeterParseFailedAlarm"],
         ["meter.counter_error", "MeterCounterErrorAlarm"],
         ["meter.kill_iam_error", "MeterKillIamErrorAlarm"],
-        ["meter.kill_ecs_error", "MeterKillEcsErrorAlarm"],
         ["meter.kill_stamp_error", "MeterKillStampErrorAlarm"],
         // A failed deny-gate-token step: the owner crossed the cap but their
-        // gateway token stays valid. IAM revoke + ECS stop (the other two kill
-        // steps) still fired, so it is not an immediate leak during the
-        // transition — but once owner IAM is dropped (Phase 4) the deny flag IS
-        // the fence, so this must page like the other kill_* failures.
+        // gateway token stays valid. The deny flag IS the fence — owner roles
+        // carry no bedrock:Invoke — so this is an immediate leak and must page.
         ["meter.kill_deny_token_error", "MeterKillDenyTokenErrorAlarm"],
         ["meter.malformed_record", "MeterMalformedRecordAlarm"],
       ];

@@ -1,6 +1,5 @@
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
-import * as kms from "aws-cdk-lib/aws-kms";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { ContainerStack } from "../lib/stacks/container-stack";
 import { LightbulbStage } from "../lib/lightbulb-stage";
@@ -13,25 +12,20 @@ import { HOSTED_ZONE_CONTEXT } from "./helpers";
  * workspace's AgentCore Runtime execution role), the per-owner state bucket
  * every Hermes profile lives in, and the CI image-builder role.
  *
- * The per-user OpenClaw task definition, its log group and the ECS
- * task-state-change rule are gone. The EFS filesystem, both security groups,
- * the two per-user ECS roles and the per-user Cloud Map service are still here
- * for exactly one deploy — see the export-pin block at the bottom of
- * container-stack.ts — and go in the follow-up PR.
+ * The per-user OpenClaw task definition and its log group are gone, and so are
+ * the EFS filesystem, the EFS security group, the two per-user ECS roles, the
+ * per-user Cloud Map service and the transitional export pins that held their
+ * exports open for one deploy.
  */
 function buildStack(environment: "dev" | "prod"): Template {
   const app = new cdk.App();
   const env = { account: "877352799272", region: "us-east-1" };
   const supportStack = new cdk.Stack(app, `Support-${environment}`, { env });
   const vpc = new ec2.Vpc(supportStack, "Vpc");
-  const kmsKey = new kms.Key(supportStack, "KmsKey");
   const containerStack = new ContainerStack(app, `Container-${environment}`, {
     env,
     environment,
     vpc,
-    kmsKeyArn: kmsKey.keyArn,
-    gogKeyringPasswordSecretName: `lightbulb/${environment}/gog-keyring-password`,
-    cloudflareWarpEnrollmentSecretName: `lightbulb/${environment}/cloudflare-warp-enrollment`,
   });
   return Template.fromStack(containerStack);
 }
@@ -78,6 +72,21 @@ describe("ContainerStack — dev", () => {
     template.hasResourceProperties("AWS::EC2::SecurityGroup", {
       GroupDescription: Match.stringLikeRegexp("Fargate container security group"),
     });
+  });
+
+  test("declares none of the retired per-user resources", () => {
+    // The EFS filesystem, its security group, the two per-user ECS roles and the
+    // per-user Cloud Map service went with the runtime. One security group is
+    // left (ContainerSecurityGroup, asserted above) and one Cloud Map resource
+    // (the namespace Paperclip registers into).
+    template.resourceCountIs("AWS::EFS::FileSystem", 0);
+    template.resourceCountIs("AWS::EC2::SecurityGroup", 1);
+    template.resourceCountIs("AWS::ServiceDiscovery::Service", 0);
+    const roleNames = Object.values(template.findResources("AWS::IAM::Role")).map(
+      (r: any) => r.Properties?.RoleName,
+    );
+    expect(roleNames).not.toContain("lightbulb-dev-openclaw-task");
+    expect(roleNames).not.toContain("lightbulb-dev-openclaw-task-execution");
   });
 
   test("keeps the ECS task-state-change trail for the platform cluster", () => {
@@ -306,14 +315,33 @@ describe("ContainerStack — prod", () => {
     template.resourceCountIs("AWS::ECS::TaskDefinition", 0);
   });
 
-  test("EFS filesystem is DESTROYed in prod — the flip must ship while it is still declared (PR-6b deletes it)", () => {
-    template.hasResource("AWS::EFS::FileSystem", {
-      DeletionPolicy: "Delete",
-      UpdateReplacePolicy: "Delete",
-    });
+  test("declares none of the retired per-user resources", () => {
+    // Same invariant as the dev case, asserted separately because prod is where
+    // the RemovalPolicy asymmetry lived: ENV_CONFIG gives prod RETAIN, and the
+    // filesystem used to inherit it.
+    //
+    // ⚠️ REMOVING A RESOURCE DOES NOT OVERRIDE THE DEPLOYED POLICY. CloudFormation
+    // reads DeletionPolicy from the DEPLOYED template when a resource is absent
+    // from the new one, so the flip to Delete had to ship while the filesystem
+    // was still declared. It did: #2784 (d780e55a6) set the construct to DESTROY,
+    // and the deployed prod template read Delete/Delete on 2026-09-19 before this
+    // PR's dispatch. Precondition for the prod deploy of THIS PR: `cdk diff`
+    // renders fs-07640461cc0f09b14 as `destroy`, never `orphan`. See Rollout.
+    template.resourceCountIs("AWS::EFS::FileSystem", 0);
+    template.resourceCountIs("AWS::EC2::SecurityGroup", 1);
+    template.resourceCountIs("AWS::ServiceDiscovery::Service", 0);
+    const roleNames = Object.values(template.findResources("AWS::IAM::Role")).map(
+      (r: any) => r.Properties?.RoleName,
+    );
+    expect(roleNames).not.toContain("lightbulb-prod-openclaw-task");
+    expect(roleNames).not.toContain("lightbulb-prod-openclaw-task-execution");
   });
 
   test("state bucket is RETAINed in prod (never auto-deleted)", () => {
+    // The other half of the asymmetry: ENV_CONFIG's RETAIN still governs the
+    // replicas bucket and MUST keep doing so — every Hermes profile lives in
+    // it. A fix for the filesystem's DeletionPolicy that goes through
+    // ENV_CONFIG would take this with it.
     template.hasResource("AWS::S3::Bucket", {
       Properties: Match.objectLike({ BucketName: "lightbulb-prod-openclaw-replicas" }),
       DeletionPolicy: "Retain",
@@ -334,9 +362,9 @@ describe("ContainerStack — prod", () => {
 
 /**
  * Export names have to be asserted against a FULL stage synth, not an isolated
- * ContainerStack: six of the fourteen are generated by cross-stack references
- * from -service and -observability and simply do not exist when this stack is
- * synthesized alone. The other eight are the transitional `exportValue` pins.
+ * ContainerStack: every one of the six is generated by a cross-stack reference
+ * from -service or -observability, so none of them exists when this stack is
+ * synthesized alone.
  */
 describe("ContainerStack — CFN exports", () => {
   let template: Template;
@@ -354,33 +382,25 @@ describe("ContainerStack — CFN exports", () => {
     template = Template.fromStack(containerStack!);
   });
 
-  test("publishes exactly the export set the live stack already has", () => {
-    // CloudFormation refuses to delete an Export another stack still imports, and
-    // the pipeline deploys this stack BEFORE -service and -observability. So the
-    // export set must not shrink while the consumer removal ships: the eight
-    // `exportValue` pins hold the orphaned names open for one deploy, and the
-    // follow-up PR drops them together with the resources they name.
+  test("publishes exactly the six exports its live consumers import", () => {
+    // The eight transitional `exportValue` pins are gone, together with the EFS
+    // filesystem, the EFS security group, the two per-user ECS roles and the
+    // per-user Cloud Map service they named. What is left is exactly what
+    // -service and -observability still import for real; every one of these is
+    // generated by a live cross-stack reference, so a name here that no longer
+    // appears means a consumer was dropped, and a name added means a new one.
     //
     // The exact names, not a count or a fragment match: an export name is a hash
     // of the construct path, so one that drifts is a deploy that fails on the
-    // real stack and on nothing else. Verified equal to
-    // `aws cloudformation list-exports` in BOTH environments.
+    // real stack and on nothing else.
     const exports = Object.values((template.toJSON() as any).Outputs ?? {})
       .flatMap((o: any) => (o.Export ? [o.Export.Name as string] : []))
       .sort();
     expect(exports).toEqual([
       "lightbulb-dev-container:ExportsOutputFnGetAttClusterEB0386A7Arn2F2E3C3F",
       "lightbulb-dev-container:ExportsOutputFnGetAttContainerSecurityGroup38DC7A88GroupId12565082",
-      "lightbulb-dev-container:ExportsOutputFnGetAttEfsSecurityGroupEC5F36ACGroupIdA97B1E69",
-      "lightbulb-dev-container:ExportsOutputFnGetAttFileSystem8A8E25C0Arn4398EB54",
-      "lightbulb-dev-container:ExportsOutputFnGetAttNamespaceV2A3FDDFD9Arn24B4B22C",
       "lightbulb-dev-container:ExportsOutputFnGetAttNamespaceV2A3FDDFD9Id65EAD270",
-      "lightbulb-dev-container:ExportsOutputFnGetAttNamespaceV2ContainerServiceV294A9D44BArnECA61423",
-      "lightbulb-dev-container:ExportsOutputFnGetAttNamespaceV2ContainerServiceV294A9D44BName24EC9259",
-      "lightbulb-dev-container:ExportsOutputFnGetAttTaskExecutionRole250D2532Arn61CC7A98",
-      "lightbulb-dev-container:ExportsOutputFnGetAttTaskRole30FC0FBBArn85EA3C60",
       "lightbulb-dev-container:ExportsOutputRefClusterEB0386A796A0E3FE",
-      "lightbulb-dev-container:ExportsOutputRefFileSystem8A8E25C0B454ACF3",
       "lightbulb-dev-container:ExportsOutputRefOwnerBedrockBasePolicy975142B0B0F2F85F",
       "lightbulb-dev-container:ExportsOutputRefOwnerBedrockBoundary85EE08FFB4B914DE",
     ]);

@@ -48,9 +48,6 @@ function buildStacks(environment: "dev" | "prod"): {
     env,
     environment,
     vpc: network.vpc,
-    kmsKeyArn: kmsKey.keyArn,
-    gogKeyringPasswordSecretName: `lightbulb/${environment}/gog-keyring-password`,
-    cloudflareWarpEnrollmentSecretName: `lightbulb/${environment}/cloudflare-warp-enrollment`,
   });
 
   const service = new ServiceStack(app, `Service-${environment}`, {

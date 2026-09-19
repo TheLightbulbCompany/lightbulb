@@ -639,20 +639,6 @@ def handler(event, context):
         "Marketplace agent export path traversal attempt blocked - security event",
     });
 
-    // P4: update-fleet-patch-invoked
-    this.createAlarm({
-      id: "P4",
-      name: "update-fleet-patch-invoked",
-      metricName: "update.fleet_patch.invoked",
-      threshold: 0,
-      evaluationPeriods: 1,
-      periodMinutes: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      severity: "page",
-      description: "Fleet-wide config patch invoked - audit trail",
-    });
-
     // P5: debug-endpoint-prod-hit
     this.createAlarm({
       id: "P5",
@@ -969,7 +955,7 @@ def handler(event, context):
     // Stripe account is a DESIRABLE business event. It is worth knowing about
     // promptly while the door is new and unverified, but it fires again on
     // every future success, and an alarm that pages on success is how a team
-    // learns to ignore pages. P4/P5/P11 page because the event they catch is
+    // learns to ignore pages. P5/P11 page because the event they catch is
     // one nobody wants; this one is the opposite.
     this.createAlarm({
       id: "P16",

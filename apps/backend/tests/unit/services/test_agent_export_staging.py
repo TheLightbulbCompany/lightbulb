@@ -1,7 +1,7 @@
 """Tests for agent_export.export_built_agent_from_staging — the Atlas
 agent-builder snapshot path.
 
-Unlike the seller path (``export_agent_from_efs``), the built agent is
+Unlike the seller path (``export_agent_from_profile``), the built agent is
 self-describing: the skeleton-generator nests the agent's own ``openclaw.json``
 + persona files under a ``workspace/`` subdir of the staging dir, with a
 ``build-manifest.json`` at the staging-dir root. The export tars the inner

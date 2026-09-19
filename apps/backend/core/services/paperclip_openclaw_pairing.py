@@ -8,11 +8,10 @@ Paperclip-facing service needs. Owner keying matches the rest of the platform:
 The OpenClaw half this module was named for (``pair_with_openclaw``,
 ``ensure_operator_device_paired``, ``register_paperclip_agent_devices``, the
 trust-store approval channel, and the operator-device keypair they all minted) is
-gone: a Hermes agent's "pairing" is its S3
-profile (``hermes_provisioning.write_profile_for_agent`` — config, Paperclip
-key, SOUL), and the HTTP adapter (``paperclip_adapter_config.
-build_http_adapter_config``) needs no device identity. The filename is a scar;
-renaming it would churn 25 import sites for no behaviour.
+gone: a Hermes agent's "pairing" is its S3 profile
+(``hermes_provisioning.write_profile_for_agent`` — config, Paperclip key, SOUL), and the native
+adapter (``paperclip_adapter_config.build_hermes_gateway_adapter_config``) needs no device
+identity. The filename is a scar; renaming it would churn 25 import sites for no behaviour.
 """
 
 from __future__ import annotations

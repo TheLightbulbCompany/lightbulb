@@ -822,16 +822,24 @@ async def deploy_listing(
     catalog = get_catalog_service()
     owner_id = resolve_owner_id(auth)
 
-    # KNOWN GAP -- the retry heal is gone. A deploy can take a minute-plus, long enough that the
-    # browser loses the response and the drawer reports "Couldn't hire"; the buyer clicks Hire
-    # again and mints a SECOND agent from the same listing (prod grew a "Pulse" and a "Pulse 2"
-    # this way). The heal that resolved the existing install read a ``.template`` sidecar on the
-    # buyer's EFS workspace, cross-checked against ``openclaw.json``'s ``agents.list``. The
-    # profile transport writes no install record, so there is nothing left to resolve against and
-    # the whole branch was dead code; a profile-side install record is remap work, not deletion
-    # work. What is NOT affected is the overlapping-deploy fence below
-    # (``try_claim_owner_deploy``) -- that is a real lock, and only the SEQUENTIAL-retry heal is
-    # lost.
+    # KNOWN GAP -- the install RECORD is gone, not the idempotency. The ``already_installed``
+    # branch that used to short-circuit here read a ``.template`` sidecar on the buyer's EFS
+    # workspace, cross-checked against ``openclaw.json``'s ``agents.list``; the profile transport
+    # writes no equivalent, so the branch could only ever resolve to "not installed" and was
+    # deleted rather than left as dead code.
+    #
+    # NO SECOND AGENT IS MINTED by a retry. The Paperclip create below carries a STABLE
+    # idempotency key derived from the intent alone (listingId + reportsTo + version), so a
+    # buyer who clicks Hire again after a lost response resolves to the SAME Paperclip agent,
+    # and the profile write is an overwrite of that agent's own prefix. What a retry does cost
+    # is a second ``catalog_agent_deployed`` funnel event and a second artifact fetch. The
+    # overlapping-deploy fence below (``try_claim_owner_deploy``) is a real lock and is
+    # untouched.
+    #
+    # What IS lost is provenance: ``GET /me/installed-templates`` and the Teams
+    # marketplace-origin sidecar both read that record, so an installed listing renders as
+    # deployable in the sidebar gallery and a hired agent shows no "from the marketplace"
+    # badge. Already true for every post-migration deploy before this deletion.
 
     # Exclusive claim for the whole deploy, OWNER-WIDE (not per-listing). The
     # sidecar read above is a READ, not a lock: two OVERLAPPING deploys can both
@@ -1461,7 +1469,7 @@ async def upload_artifact_from_agent(
     # large workspace can't stall the event loop for every other request.
     try:
         package = await run_in_thread(
-            agent_export.export_agent_from_efs,
+            agent_export.export_agent_from_profile,
             seller_id=owner_id,
             agent_id=resolved_agent_id,
             selected_mcps=selected_mcps,

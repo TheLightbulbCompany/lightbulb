@@ -189,7 +189,7 @@ async def replace_artifact(
     v_new=2 row can still be revised in place.
 
     ``openclaw_slice`` is the seller's agent slice synthesized at export
-    time (see ``agent_export.export_agent_from_efs``). Persisted to S3 at
+    time (see ``agent_export.export_agent_from_profile``). Persisted to S3 at
     ``{prefix}openclaw-slice.json`` so deploy_listing can fetch it and
     feed it to ``catalog_service.deploy_from_artifact`` for buyer-side
     config registration.

@@ -1,10 +1,10 @@
-"""One-shot container-provision runner.
+"""One-shot workspace-provision runner.
 
 Two invocation modes, same code path and the same exit-code ABI:
 - INLINE (the fast path): the backend's dispatcher runs this module as a
   CHILD PROCESS of the backend task as attempt 0
   (``provision_dispatch._run_inline``), skipping the ~30s ECS task
-  cold-launch entirely.
+  cold-launch of the SFN path below.
 - SFN (the durable path): executed as an ECS task by the lightbulb-{env}-provision
   Step Functions state machine — for retries after a failed inline attempt,
   and for claims the backend could not finish (crash / deploy handoff).
@@ -14,11 +14,11 @@ healthy, 10 deterministic failure (no retry), 11 transient failure (machine
 retries), 20 superseded by a deliberate reprovision (machine stops quietly).
 
 Two legs, in order: step 0 seeds the owner's Paperclip company (see
-``_seed_owner_paperclip``), then the container leg provisions ECS — and the
-container leg is a NO-OP when the owner's box is already up and healthy (see
-``_container_already_healthy``). That is what makes the single dispatch safe
-for callers whose container is already running: they get the seed reconcile
-without a force-redeploy.
+``_seed_owner_paperclip``), then the runtime leg provisions the workspace's AgentCore runtime
+and writes every roster profile (``hermes_provisioning.provision_hermes_runtime``) — and that
+leg is a NO-OP when the owner's workspace is already up and healthy (see
+``_container_already_healthy``). That is what makes the single dispatch safe for callers whose
+workspace is already running: they get the seed reconcile without a force-reprovision.
 
 The runner owns the provisioning -> running transition in the FOREGROUND, and every row write
 is condition-guarded (claim + generation + per-attempt token).

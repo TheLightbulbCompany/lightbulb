@@ -9,15 +9,16 @@ This used to be an EFS file lock on the backend's shared mount. That mount is go
 runtime, and a filesystem lock without it succeeds independently in each of the 2-4 backend
 tasks -- i.e. fences nothing, silently. The lease is a conditional DynamoDB write instead
 (``container_repo.try_claim_owner_lifecycle``), which is the only thing left that all the tasks
-can see. The in-process lock below is kept in front of it: same-process callers wait on a mutex
-instead of both polling DynamoDB.
+can see -- and which serializes same-process callers too, so there is no in-process mutex in
+front of it. A second caller on this task pays one ``_POLL_INTERVAL_S`` handoff rather than
+waking the instant the first releases; the alternative was a per-owner ``threading.Lock`` dict
+that nothing ever evicted.
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
-import threading
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from functools import wraps
@@ -35,20 +36,12 @@ _held_owner: ContextVar[tuple[asyncio.Task[object], str] | None] = ContextVar(
     default=None,
 )
 
-_locks: dict[str, threading.Lock] = {}
-_locks_guard = threading.Lock()
-
 P = ParamSpec("P")
 R = TypeVar("R")
 
 
 class OwnerLifecycleBusyError(TimeoutError):
     """Raised when another caller holds this owner's lifecycle lease."""
-
-
-def _local_lock(owner_id: str) -> threading.Lock:
-    with _locks_guard:
-        return _locks.setdefault(owner_id, threading.Lock())
 
 
 async def _acquire_lease(owner_id: str, deadline: float) -> str:
@@ -90,39 +83,15 @@ async def owner_lifecycle_guard(owner_id: str) -> AsyncIterator[None]:
         return
 
     deadline = asyncio.get_running_loop().time() + OWNER_LIFECYCLE_TIMEOUT_S
-    local = _local_lock(owner_id)
-    # The mutex carries the SAME budget as the lease, so the documented bound holds for an
-    # in-process contender too -- an unbounded acquire here would make the timeout a lie for
-    # exactly the two callers most likely to collide (they land on one task more often than not).
-    # Shielded so a cancellation between "acquired" and "we hold it" cannot leak the mutex.
-    acquiring = asyncio.create_task(asyncio.to_thread(local.acquire, True, OWNER_LIFECYCLE_TIMEOUT_S))
+    lease = await _acquire_lease(owner_id, deadline)
+    token = _held_owner.set((task, owner_id))
     try:
-        acquired = await asyncio.shield(acquiring)
-    except asyncio.CancelledError:
-        if await acquiring:
-            local.release()
-        raise
-    if not acquired:
-        raise OwnerLifecycleBusyError(f"timed out waiting for the lifecycle lease: {owner_id}")
-
-    lease: str | None = None
-    token = None
-    try:
-        lease = await _acquire_lease(owner_id, deadline)
-        token = _held_owner.set((task, owner_id))
         yield
     finally:
-        if token is not None:
-            _held_owner.reset(token)
-        try:
-            if lease is not None:
-                # Shielded: the release is the only thing standing between a cancelled caller
-                # and a lease nobody drops for LIFECYCLE_CLAIM_STALE_S.
-                await asyncio.shield(
-                    asyncio.create_task(container_repo.release_owner_lifecycle_claim(owner_id, token=lease))
-                )
-        finally:
-            local.release()
+        _held_owner.reset(token)
+        # Shielded: the release is the only thing standing between a cancelled caller and a
+        # lease nobody drops for LIFECYCLE_CLAIM_STALE_S.
+        await asyncio.shield(asyncio.create_task(container_repo.release_owner_lifecycle_claim(owner_id, token=lease)))
 
 
 def serialize_owner_lifecycle(method: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:

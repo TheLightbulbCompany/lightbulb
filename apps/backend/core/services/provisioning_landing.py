@@ -10,13 +10,15 @@ reasons:
 2. **The integrations row** — POINTERS only (resource id, name, service,
    status, env var NAMES, dashboard URL) plus ``actor: "projects"``, keyed
    ``projects/{provider}``.
-3. ~~**The container**~~ — ``env.vars.<NAME>`` in openclaw.json, OpenClaw's
-   documented "environment variable overrides merged into runtime process
-   environment". Static env is the right class here: these are provider WRITE
-   tokens scoped to the owner's own resources (spec §3.5). The connected-account
-   Stripe key and anything else with money authority must ride the credential
-   PROXY (``apps/infra/openclaw/plugins/aws-exec-profile``) instead — a named
-   follow-up, deliberately NOT in P0b.
+3. **The agent's runtime env** — ``build_provisioned_env`` re-reads the Secrets Manager
+   copy at every provision and lands it in each roster profile's ``.env``
+   (``hermes_profiles.write_agent_profile``), so a credential provisioned between two
+   provisions reaches the agent on the next one. It used to be ``env.vars.<NAME>`` in
+   ``openclaw.json``; the class is the same, which is what matters here: these are provider
+   WRITE tokens scoped to the owner's own resources (spec §3.5). The connected-account Stripe
+   key and anything else with money authority was meant to ride a credential PROXY instead —
+   that proxy was a baked OpenClaw plugin and is gone with it, so the distinction is currently
+   unenforced (still a named follow-up, still deliberately not in P0b).
 
 **Both storage keys are namespaced** via ``integrations_repo.projects_key`` —
 the ``integrations`` sort key AND the Secrets Manager provider segment. The

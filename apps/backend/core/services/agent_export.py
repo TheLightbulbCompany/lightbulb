@@ -1,13 +1,16 @@
-"""Snapshot a seller's OpenClaw agent from EFS into a marketplace artifact.
+"""Snapshot a seller's agent from its Hermes profile into a marketplace artifact.
 
-Path B for the marketplace publish flow: an Isol8 paid user picks one of
-their existing agents and we tar the agent's EFS directory directly into a
-CatalogPackage with format="openclaw". No container interaction — we read
-the agents/ tree even when the container is scaled to zero.
+Path B for the marketplace publish flow: a paid user picks one of their existing agents and we
+tar that agent's S3 profile into a CatalogPackage with format="openclaw". No runtime
+interaction — the profile is the durable copy, so this works against a parked workspace.
 
-Snapshot at call time. Subsequent edits to the seller's agent do not affect
-already-published versions; the buyer always installs the bytes that were
-in S3 at upload time.
+It used to read the agent's directory off EFS, which is where the ``_from_efs`` in the old
+function name came from; ``export_agent_from_profile`` says what it does. The
+``format="openclaw"`` on the package is NOT the same kind of residue: it is a stored value on
+already-published listing rows, so renaming it would orphan every buyer's entitlement.
+
+Snapshot at call time. Subsequent edits to the seller's agent do not affect already-published
+versions; the buyer always installs the bytes that were in S3 at upload time.
 """
 
 from __future__ import annotations
@@ -757,7 +760,7 @@ def _scan_tarball_for_safety_flags(tarball_bytes: bytes, *, include_snippets: bo
     return dicts if include_snippets else marketplace_safety.flags_without_snippets(dicts)
 
 
-def export_agent_from_efs(
+def export_agent_from_profile(
     seller_id: str,
     agent_id: str,
     *,
@@ -768,7 +771,7 @@ def export_agent_from_efs(
     paths: list[str] | None = None,
     container: dict | None = None,
 ) -> CatalogPackage:
-    """Read the seller's agent dir from EFS, tar it, return a CatalogPackage.
+    """Download the seller's agent profile from S3, tar it, return a CatalogPackage.
 
     The CatalogPackage carries an ``openclaw_slice`` synthesized from the
     profile's own openclaw.json so the buyer-side deploy can register
@@ -789,8 +792,8 @@ def export_agent_from_efs(
     nothing here redacts.
 
     Args:
-        seller_id: Clerk user id of the seller (also the EFS dir owner).
-        agent_id: Subdirectory name under ``agents/`` to publish.
+        seller_id: Owner id of the seller (also the profile-prefix owner).
+        agent_id: The agent whose profile to publish.
         selected_mcps: Names of MCP servers to bundle (from publish wizard).
         selected_skills: Names of skills to bundle (from publish wizard).
         enable_acp: Seller's declaration that the agent delegates to ACP
@@ -968,7 +971,7 @@ def export_built_agent_from_staging(
 
     Atlas (the in-container recruiter) builds a new specialist agent's files
     into a staging workspace dir, then asks the backend to register it. Unlike
-    ``export_agent_from_efs`` — which sources the slice from the OWNER's root
+    ``export_agent_from_profile`` — which sources the slice from the OWNER's root
     openclaw.json and 400s if the agent isn't listed there — the staging agent
     is **self-describing**: the skeleton-generator writes the agent's own
     ``openclaw.json`` + persona files under a ``workspace/`` subdir of the
@@ -991,7 +994,7 @@ def export_built_agent_from_staging(
 
     Args:
         owner_id: Clerk/org id that owns the EFS dir (same role ``seller_id``
-            plays in ``export_agent_from_efs``).
+            plays in ``export_agent_from_profile``).
         staging_agent_id: The ``workspace-{token}/`` dir name Atlas built into.
         selected_mcps / selected_skills: forwarded to extract_agent_slice; None (Atlas) keeps the {agent, plugins, tools} shape.
         container: Accepted for the caller's convenience and unused -- every export reads
@@ -1005,7 +1008,7 @@ def export_built_agent_from_staging(
         CredentialLeakError: a credential survived scrubbing in the built slice.
     """
     # Resolve the staging workspace location. owner_id is the dir owner,
-    # exactly as seller_id is for export_agent_from_efs. Direct-hit EFS
+    # exactly as seller_id is for export_agent_from_profile. Direct-hit EFS
     # resolution only (config=None) — the staging dir name IS a live workspace
     # dir, so the legacy slug-forwarding the seller path needs doesn't apply
     # here. An AgentCore owner's staging build instead lives under the same
@@ -1193,7 +1196,7 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str, container: dict | No
     ``container`` is accepted and unused — every export reads the agent's S3 profile (see
     ``_resolve_agent_location``).
 
-    Raises the same errors as ``export_agent_from_efs``:
+    Raises the same errors as ``export_agent_from_profile``:
     InvalidAgentIdError / AgentNotFoundError / AgentNotInConfigError.
     """
     _kind, location = _resolve_agent_location(seller_id=seller_id, agent_id=agent_id, container=container)
@@ -1207,7 +1210,7 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str, container: dict | No
         agent_dir = Path(tmp_dir.name)
         repo_dirs = _download_s3_profile(location, agent_dir)
         resolved_agent_id = agent_id
-        # Same slice source as the publish (see export_agent_from_efs): the profile's own
+        # Same slice source as the publish (see export_agent_from_profile): the profile's own
         # openclaw.json, absent on a Hermes-native profile.
         config = _read_profile_openclaw_config(agent_dir) or {}
         # Validate the agent is registered in the seller's config; the entry
@@ -1260,7 +1263,7 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str, container: dict | No
         # Surface (but do NOT block on) any credential that would survive the
         # scrub in the published slice. Preview is informational — the wizard's
         # Review step renders these inline so the seller fixes them BEFORE
-        # submit, where export_agent_from_efs raises CredentialLeakError. Build a
+        # submit, where export_agent_from_profile raises CredentialLeakError. Build a
         # slice over everything available so the preview flags match what the
         # actual publish would catch. Best-effort: a slice-build failure here
         # must never break the preview.
@@ -1374,7 +1377,7 @@ def _is_publishable(text: str) -> bool:
     ``manifest.json`` is served by ``GET /marketplace/listings/{id}``, and a
     routine's title and description are the seller-authored strings that reach
     it WITHOUT passing the tarball's safety scan — routine capture is appended
-    after ``export_agent_from_efs`` has already produced ``safety_flags``, so a
+    after ``export_agent_from_profile`` has already produced ``safety_flags``, so a
     finding here would not even reach moderation. They get the same patterns
     the tarball does rather than a second set of regexes.
 

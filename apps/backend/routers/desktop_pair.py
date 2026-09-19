@@ -68,10 +68,12 @@ class PairRequest(BaseModel):
 
 class PairResponse(BaseModel):
     gatewayUrl: str
-    # The raw WebSocket gateway relay's door — the node clients dial THIS one
-    # (`bv-` CloudFront/ALB, one backend task pipes both sockets). `gatewayUrl`
-    # above stays on the API Gateway door: the local-session relay still needs
-    # its Management API and reads that field, not this one.
+    # The raw WebSocket gateway relay's door — the node clients dial THIS one (`bv-`
+    # CloudFront/ALB). The backend TERMINATES that socket now (`gateway_relay`'s
+    # `_serve_node_protocol`): it used to pipe frames verbatim to a second socket on the
+    # owner's container, and an AgentCore runtime serves none. `gatewayUrl` above stays on the
+    # API Gateway door: the local-session relay still needs its Management API and reads that
+    # field, not this one.
     relayUrl: str
     gatewayToken: str
     # Container owner (org_id for an org, else the personal user_id). The

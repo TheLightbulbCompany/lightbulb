@@ -19,7 +19,6 @@ _UNRESERVED_UPDATE = Attr("release_revision").not_exists() & (
 _OWNER_APPLY_CONTAINER_PINS = (
     "id",
     "status",
-    "task_definition_arn",
     "desired_release_id",
     "active_release_id",
     "release_revision",
@@ -47,10 +46,8 @@ _OWNER_APPLY_UPDATE_EXCLUSIONS = (
     "target_release_id",
     "prior_release_id",
     "prior_desired_release_id",
-    "prior_task_definition_arn",
     "prior_desired_count",
     "target_desired_count",
-    "target_task_definition_arn",
     "staged_config_sha256",
     "prior_config_sha256",
     "effect_kind",
@@ -257,39 +254,6 @@ async def heartbeat_apply(owner_id: str, update_id: str, claim_id: str) -> bool:
             },
             ConditionExpression=(
                 _UNRESERVED_UPDATE & Attr("status").eq("applying") & Attr("apply_claim_id").eq(claim_id)
-            ),
-        )
-        return True
-    except table.meta.client.exceptions.ConditionalCheckFailedException:
-        return False
-
-
-async def set_apply_target(
-    owner_id: str,
-    update_id: str,
-    claim_id: str,
-    task_definition_arn: str,
-) -> bool:
-    """Persist the immutable ECS target while the caller still owns the claim."""
-
-    table = _get_table()
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id, "update_id": update_id},
-            UpdateExpression="SET target_task_definition_arn = :target, updated_at = :updated",
-            ExpressionAttributeValues={
-                ":target": task_definition_arn,
-                ":updated": utc_now_iso(),
-            },
-            ConditionExpression=(
-                _UNRESERVED_UPDATE
-                & Attr("status").eq("applying")
-                & Attr("apply_claim_id").eq(claim_id)
-                & (
-                    Attr("target_task_definition_arn").not_exists()
-                    | Attr("target_task_definition_arn").eq(task_definition_arn)
-                )
             ),
         )
         return True

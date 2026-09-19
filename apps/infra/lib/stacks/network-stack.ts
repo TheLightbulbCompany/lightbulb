@@ -171,9 +171,12 @@ export class NetworkStack extends cdk.Stack {
     // Browser-view listener (:8081) — the ONLY WebSocket-capable door to the
     // backend. api[-env] is an API Gateway HTTP API, and HTTP APIs do not pass
     // WebSocket upgrades (verified live: the upgrade dies with an ALB 400 and
-    // never reaches uvicorn), so the container-browser live view
-    // (routers/browser_view.py) rides CloudFront → VPC origin → this listener
-    // instead (api-stack.ts, BrowserViewDistribution).
+    // never reaches uvicorn), so the machine gateway relay
+    // (routers/gateway_relay.py) rides CloudFront → VPC origin → this listener
+    // instead (api-stack.ts, BrowserViewDistribution). The construct ids keep
+    // their BrowserView names: renaming one replaces the listener and the
+    // distribution, and the container-browser live view they were named for is
+    // gone, not the door.
     //
     // A dedicated port because path scoping must live HERE: CloudFront VPC
     // origins put their ENIs behind an AWS-managed security group that only
@@ -193,12 +196,13 @@ export class NetworkStack extends cdk.Stack {
     });
     browserViewListener.addAction("BrowserViewRelay", {
       priority: 10,
-      // The raw machine-relay WS door (routers/gateway_relay.py — desktop
-      // node hosts + Paperclip operators) rides this same bv- listener
-      // alongside the browser-view live view; both are Clerk/device/service
-      // authenticated at the application layer, so one forward rule covers
-      // both paths without widening what an in-VPC caller can reach.
-      conditions: [elbv2.ListenerCondition.pathPatterns(["/api/v1/browser-view/*", "/api/v1/gateway/*"])],
+      // The raw machine-relay WS door (routers/gateway_relay.py — desktop node
+      // hosts + Paperclip operators) is the only route left on this listener:
+      // /api/v1/browser-view/* went with routers/browser_view.py, so the cap is
+      // narrowed to match. A device or service token authenticates at the
+      // application layer; widening this pattern widens what a hostile in-VPC
+      // caller can reach.
+      conditions: [elbv2.ListenerCondition.pathPatterns(["/api/v1/gateway/*"])],
       action: elbv2.ListenerAction.forward([targetGroup]),
     });
 

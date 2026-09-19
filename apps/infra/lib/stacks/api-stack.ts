@@ -248,10 +248,9 @@ export class ApiStack extends cdk.Stack {
   public readonly wsApiId: string;
   public readonly wsStage: string;
   /** Machine relay (desktop node hosts + Paperclip operators) WS endpoint on
-   * the bv- door: wss://{browserViewDomain}/api/v1/gateway/ws. Set alongside
-   * BrowserViewUrlOutput below; falls back to a fixed dev URL on the
-   * no-cert/no-zone synth path (unit tests, unknown envs) so this is never
-   * `undefined` in service-stack's ECS env map. */
+   * the bv- door: wss://{browserViewDomain}/api/v1/gateway/ws. Falls back to a
+   * fixed dev URL on the no-cert/no-zone synth path (unit tests, unknown envs)
+   * so this is never `undefined` in service-stack's ECS env map. */
   public readonly gatewayRelayUrl: string;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
@@ -1509,20 +1508,20 @@ def handler(event, context):
     });
 
     // =========================================================================
-    // Browser-view door: CloudFront → VPC origin → internal ALB :8081
+    // bv- door: CloudFront → VPC origin → internal ALB :8081
     //
-    // The container-browser live view (routers/browser_view.py) is a raw
-    // binary WebSocket relay, and NEITHER existing public door can carry it:
-    // the HTTP API above does not pass WebSocket upgrades at all, and the
-    // WebSocket API's Management-API push model is per-message HTTP — wrong
-    // by orders of magnitude for a VNC framebuffer stream. CloudFront passes
+    // The machine gateway relay (routers/gateway_relay.py) is a raw binary
+    // WebSocket relay, and NEITHER existing public door can carry it: the HTTP
+    // API above does not pass WebSocket upgrades at all, and the WebSocket
+    // API's Management-API push model is per-message HTTP. CloudFront passes
     // WebSockets natively, and a VPC origin reaches the internal ALB without
-    // making the ALB public.
+    // making the ALB public. The construct ids keep their BrowserView names —
+    // renaming one replaces the distribution.
     //
     // Path scoping is enforced at the ALB listener (network-stack.ts,
-    // BrowserViewListener: fixed-404 default, one /api/v1/browser-view/*
-    // rule), not here — the listener is what an in-VPC caller can reach
-    // directly, so the cap must live there to mean anything.
+    // BrowserViewListener: fixed-404 default, one /api/v1/gateway/* rule), not
+    // here — the listener is what an in-VPC caller can reach directly, so the
+    // cap must live there to mean anything.
     //
     // Same env gate as the HTTP API custom domain: no cert/zone (unit-test
     // synth, unknown envs) → no distribution.
@@ -1540,7 +1539,7 @@ def handler(event, context):
       });
 
       const distribution = new cloudfront.Distribution(this, "BrowserViewDistribution", {
-        comment: `lightbulb ${env} container-browser live view relay`,
+        comment: `lightbulb ${env} machine gateway relay`,
         domainNames: [browserViewDomain],
         // The wildcard *.isol8.co cert works here because the deploy region IS
         // us-east-1 (CloudFront only accepts us-east-1 ACM certs).
@@ -1551,9 +1550,8 @@ def handler(event, context):
           // the whole FastAPI surface.
           origin: origins.VpcOrigin.withVpcOrigin(browserViewVpcOriginV2, {
             // A WS connection is long-lived but CloudFront's origin read
-            // timeout only bounds quiet gaps between reads; 60s of silence on
-            // a VNC session means the viewer is idle — noVNC's client-side
-            // keepalive traffic keeps real sessions well under it.
+            // timeout only bounds quiet gaps between reads; the relay's own
+            // keepalive traffic keeps a live machine session well under 60s.
             readTimeout: cdk.Duration.seconds(60),
           }),
           // A relay must never be cached, and the viewer's headers (cookies,
@@ -1569,12 +1567,6 @@ def handler(event, context):
         zone: props.hostedZone,
         recordName: browserViewDomain,
         target: route53.RecordTarget.fromAlias(new route53Targets.CloudFrontTarget(distribution)),
-      });
-
-      new cdk.CfnOutput(this, "BrowserViewUrlOutput", {
-        value: `wss://${browserViewDomain}/api/v1/browser-view/ws`,
-        description: "Container-browser live view relay endpoint",
-        exportName: `lightbulb-${env}-browser-view-url`,
       });
 
       this.gatewayRelayUrl = `wss://${browserViewDomain}/api/v1/gateway/ws`;

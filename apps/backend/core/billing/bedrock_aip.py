@@ -172,10 +172,11 @@ async def ensure_owner_browser_policy(owner_id: str, profile_id: str) -> None:
                     "bedrock-agentcore:StopBrowserSession",
                     "bedrock-agentcore:ConnectBrowserAutomationStream",
                 ],
-                "Resource": [
-                    f"arn:aws:bedrock-agentcore:{region}:aws:browser/{BUILTIN_BROWSER_ID}",
-                    f"arn:aws:bedrock-agentcore:{region}:{account_id}:browser/*",
-                ],
+                # ONLY the built-in browser. `{account}:browser/*` is the ARN shape for a
+                # CUSTOM browser, which we never create; it is also outside the CDK
+                # permissions boundary, so granting it authorizes nothing and merely reads
+                # as though the boundary covered it.
+                "Resource": f"arn:aws:bedrock-agentcore:{region}:aws:browser/{BUILTIN_BROWSER_ID}",
             },
             {
                 "Sid": "AgentCoreBrowserOwnProfile",
@@ -860,11 +861,19 @@ async def delete_owner_bedrock_role(owner_id: str) -> None:
     client = _iam_client()
     role_name = _owner_role_name(owner_id)
 
-    # EVERY inline policy must go: IAM refuses DeleteRole while any inline
-    # policy remains, so leaving owner-litestream-s3 (or owner-browser, on an
-    # AgentCore Browser workspace) behind would make the account-wipe
-    # bedrock_role step fail for that owner and leak the role.
-    for policy_name in ("owner-bedrock", "owner-litestream-s3", "owner-browser"):
+    # ENUMERATE, never name. IAM refuses DeleteRole while ANY inline policy
+    # remains, so a policy this list forgot leaks the role silently — and this
+    # list had already been bolted onto twice (owner-litestream-s3, then
+    # owner-browser). Same reasoning, and the same fix, as the managed-policy
+    # detach below: "Enumerating removes the class."
+    try:
+        inline = await run_in_thread(client.list_role_policies, RoleName=role_name)
+        policy_names = inline.get("PolicyNames", [])
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "NoSuchEntity":
+            raise
+        policy_names = []
+    for policy_name in policy_names:
         try:
             await run_in_thread(
                 client.delete_role_policy,
@@ -940,8 +949,8 @@ async def reap_owner_bedrock_resources(owner_id: str, row_image: dict | None) ->
     gate_hashes = owner_gate_token_hashes(row)
 
     # A ChatGPT-OAuth or BYOK owner never had any of this. IAM write TPS is low,
-    # and four no-op calls for every cancelling owner is enough to throttle IAM
-    # account-wide during a bulk-churn event and stall legitimate provisioning.
+    # and a handful of no-op calls for every cancelling owner is enough to throttle
+    # IAM account-wide during a bulk-churn event and stall legitimate provisioning.
     # No evidence on the row means nothing was ever minted: skip without
     # touching AWS at all.
     if not (aip_arns or gate_hashes or row.get("bedrock_role_arn")):
@@ -1000,6 +1009,17 @@ async def reap_owner_bedrock_resources(owner_id: str, row_image: dict | None) ->
         failure = failure or e
         put_metric("bedrock.reap", dimensions={"outcome": "failed", "resource": "role"})
         logger.exception("bedrock reap: IAM role failed for owner %s", owner_id)
+
+    # The AgentCore Browser profile. Deterministic name (== owner_id), same as the role, so
+    # it needs nothing from the row image. It holds the workspace's COOKIES and local
+    # storage, which makes leaving it behind a data-deletion gap rather than a quota one.
+    # Never contributes to `failure`: it 403s until the backend task role regains
+    # DeleteBrowserProfile, and that must not fail every owner's teardown meanwhile.
+    from core.services.browser_sessions import delete_browser_profiles
+
+    deleted_profiles = await delete_browser_profiles(owner_id)
+    if deleted_profiles:
+        done.append(f"{deleted_profiles} browser profile(s)")
 
     if failure is not None:
         raise failure

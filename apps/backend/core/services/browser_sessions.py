@@ -31,21 +31,34 @@ from botocore.exceptions import ClientError
 from botocore.session import get_session
 
 from core.billing import bedrock_aip
+from core.billing.bedrock_aip import BUILTIN_BROWSER_ID
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
 
-#: AWS's built-in managed browser. We never create a custom one, so this is a constant.
-BROWSER_ID = "aws.browser.v1"
+#: ``BUILTIN_BROWSER_ID`` ("aws.browser.v1") has ONE home, ``bedrock_aip`` — the owner's IAM
+#: grant, this module's session calls and the runtime's ``AGENTCORE_BROWSER_ID`` env var must
+#: agree or the failure is silent and split: the runtime starts sessions on a browser the
+#: policy does not name (403), or the backend lists a browser the runtime is not using (a
+#: permanently dead panel). Re-exported here so ``hermes_provisioning`` reaches it through the
+#: module it already imports.
+__all__ = ["BUILTIN_BROWSER_ID", "delete_browser_profiles", "ensure_browser_profile", "live_view", "owns_session"]
 
 #: AWS hard-caps the live-view presigned URL at 300 s. Not a tunable.
 LIVE_VIEW_TTL_S = 300
 
-#: The DCV stream's fixed remote resolution, echoed to the panel so it can scale.
+#: Fallback viewport, used ONLY when GetBrowserSession reports none. The session's own
+#: ``viewPort`` is what the panel must scale by.
 REMOTE_WIDTH = 1920
 REMOTE_HEIGHT = 1080
+
+#: Page bounds. The profile list is filtered by an all-but-exact name, and a workspace's live
+#: session is seconds old, so neither needs pagination — but an unbounded page would let a
+#: busy fleet turn one poll into hundreds of sequential Gets.
+_PROFILE_PAGE = 10
+_SESSION_PAGE = 100
 
 _INACTIVE = {
     "active": False,
@@ -67,15 +80,18 @@ def _data_client():
     return boto3.client("bedrock-agentcore", region_name=settings.AWS_REGION)
 
 
-def _profile_id_by_name(client, name: str) -> str:
+def _profile_ids_by_name(client, name: str) -> list[str]:
     """``name`` is documented as a FILTER, not an exact match, so the exact comparison is
-    ours: ``org_x`` and ``org_xy`` can come back in the same page and adopting the wrong
-    one would point a workspace at another tenant's profile. One page only — the filter
-    already narrows it to near-exact matches."""
-    for summary in client.list_browser_profiles(name=name).get("profileSummaries", []):
-        if summary.get("name") == name:
-            return summary["profileId"]
-    return ""
+    ours: ``org_x`` and ``org_xy`` can come back in the same page, and adopting (or
+    deleting) the wrong one reaches into another tenant's workspace. One page only — the
+    filter already narrows it to near-exact matches."""
+    page = client.list_browser_profiles(name=name, maxResults=_PROFILE_PAGE)
+    return [s["profileId"] for s in page.get("profileSummaries", []) if s.get("name") == name]
+
+
+def _profile_id_by_name(client, name: str) -> str:
+    ids = _profile_ids_by_name(client, name)
+    return ids[0] if ids else ""
 
 
 def _find_or_create_profile(owner_id: str) -> str:
@@ -123,19 +139,59 @@ async def ensure_browser_profile(owner_id: str) -> str:
         return ""
 
 
+def _delete_profiles(owner_id: str) -> int:
+    """Sync — call via ``run_in_thread``."""
+    client = _control_client()
+    deleted = 0
+    for profile_id in _profile_ids_by_name(client, owner_id):
+        client.delete_browser_profile(profileId=profile_id)
+        deleted += 1
+    return deleted
+
+
+async def delete_browser_profiles(owner_id: str) -> int:
+    """Account-wipe half: destroy this workspace's Browser Profile(s).
+
+    A profile stores the workspace's **cookies and local storage** (up to 50 MB), so leaving
+    it behind after a wipe leaves a deleted workspace's session state in our account — a
+    data-deletion gap, not merely a quota one. Its name is deterministic (``== owner_id``),
+    the same argument ``reap_owner_bedrock_resources`` uses to reap the IAM role
+    unconditionally, so this needs nothing from the row image.
+
+    **Never raises**, like every other leg of the reap's best-effort set. It returns 0 and
+    logs until ``bedrock-agentcore:DeleteBrowserProfile`` is back on the backend task role
+    (dropped in #2790's review round; a separate infra PR restores it).
+    """
+    try:
+        return await run_in_thread(_delete_profiles, owner_id)
+    except Exception:  # noqa: BLE001 — a wipe must not fail on the browser leg
+        logger.warning(
+            "browser profile delete failed for owner=%s (expected until the backend task role "
+            "regains bedrock-agentcore:DeleteBrowserProfile)",
+            owner_id,
+            exc_info=True,
+        )
+        return 0
+
+
 def _get_session(session_id: str) -> dict:
     """Sync — call via ``run_in_thread``."""
-    return _data_client().get_browser_session(browserIdentifier=BROWSER_ID, sessionId=session_id)
+    return _data_client().get_browser_session(browserIdentifier=BUILTIN_BROWSER_ID, sessionId=session_id)
 
 
-async def owns_session(owner_id: str, session_id: str) -> dict | None:
+async def owns_session(owner_id: str, session_id: str, *, profile_id: str | None = None) -> dict | None:
     """THE ownership rule, and the only one: a session belongs to this workspace when
     ``GetBrowserSession`` reports it ``READY`` and carries this workspace's own
     ``profileConfiguration.profileIdentifier``. A profileless session — which a compromised
     runtime can start, since its policy allows ``StartBrowserSession`` on the built-in
-    browser — matches nobody and is invisible to every panel."""
-    row = await container_repo.get_by_owner_id(owner_id) or {}
-    profile_id = row.get("browser_profile_id") or ""
+    browser — matches nobody and is invisible to every panel.
+
+    ``profile_id`` lets a caller that has already read the row hand it down rather than pay
+    a GetItem per candidate; omit it and the row is read here.
+    """
+    if profile_id is None:
+        row = await container_repo.get_by_owner_id(owner_id) or {}
+        profile_id = row.get("browser_profile_id") or ""
     if not profile_id:
         return None
     try:
@@ -151,9 +207,14 @@ async def owns_session(owner_id: str, session_id: str) -> dict | None:
 
 
 def _ready_session_ids() -> list[str]:
-    """Sync — call via ``run_in_thread``. One page: a workspace's live session is seconds
-    old, and the fleet's concurrent READY sessions are counted in single digits."""
-    items = _data_client().list_browser_sessions(browserIdentifier=BROWSER_ID, status="READY").get("items", [])
+    """Sync — call via ``run_in_thread``. NEWEST FIRST: one turn was observed spawning two
+    sessions three seconds apart, both carrying this workspace's profile, and the older of
+    the pair is the one about to terminate. AWS's page order is not creation order, so the
+    sort is what makes the first match the right one."""
+    page = _data_client().list_browser_sessions(
+        browserIdentifier=BUILTIN_BROWSER_ID, status="READY", maxResults=_SESSION_PAGE
+    )
+    items = sorted(page.get("items", []), key=lambda i: i["createdAt"], reverse=True)
     return [item["sessionId"] for item in items]
 
 
@@ -168,7 +229,7 @@ def _presign_live_view(session_id: str) -> str:
     request = AWSRequest(
         method="GET",
         url=f"https://bedrock-agentcore.{region}.amazonaws.com"
-        f"/browser-streams/{BROWSER_ID}/sessions/{session_id}/live-view",
+        f"/browser-streams/{BUILTIN_BROWSER_ID}/sessions/{session_id}/live-view",
     )
     SigV4QueryAuth(credentials.get_frozen_credentials(), "bedrock-agentcore", region, expires=LIVE_VIEW_TTL_S).add_auth(
         request
@@ -184,16 +245,30 @@ async def live_view(owner_id: str) -> dict:
     goes nowhere else — not a log, not analytics, not the row.
     """
     row = await container_repo.get_by_owner_id(owner_id) or {}
-    if not row.get("browser_profile_id"):
+    profile_id = row.get("browser_profile_id") or ""
+    if not profile_id:
         return dict(_INACTIVE)
-    for session_id in await run_in_thread(_ready_session_ids):
-        if await owns_session(owner_id, session_id):
-            expires_at = datetime.now(timezone.utc) + timedelta(seconds=LIVE_VIEW_TTL_S)
-            return {
-                "active": True,
-                "url": await run_in_thread(_presign_live_view, session_id),
-                "expiresAt": expires_at.isoformat(),
-                "remoteWidth": REMOTE_WIDTH,
-                "remoteHeight": REMOTE_HEIGHT,
-            }
+    try:
+        candidates = await run_in_thread(_ready_session_ids)
+    except ClientError:
+        # The panel polls this on a timer. A throttle (ListBrowserSessions is a 30 TPS
+        # quota) or any transient control-plane error reads as "nothing running" — never a
+        # 500 the client has to branch on in addition to `active`.
+        logger.info("browser session list failed for owner=%s", owner_id, exc_info=True)
+        return dict(_INACTIVE)
+    for session_id in candidates:
+        got = await owns_session(owner_id, session_id, profile_id=profile_id)
+        if not got:
+            continue
+        # The panel scales the DCV canvas by these, so the SESSION's own viewport is the
+        # answer and the module constants are only a fallback.
+        view_port = got.get("viewPort") or {}
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=LIVE_VIEW_TTL_S)
+        return {
+            "active": True,
+            "url": await run_in_thread(_presign_live_view, session_id),
+            "expiresAt": expires_at.isoformat(),
+            "remoteWidth": view_port.get("width") or REMOTE_WIDTH,
+            "remoteHeight": view_port.get("height") or REMOTE_HEIGHT,
+        }
     return dict(_INACTIVE)

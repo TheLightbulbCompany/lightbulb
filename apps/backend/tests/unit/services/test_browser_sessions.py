@@ -32,16 +32,22 @@ def _summary(name: str, profile_id: str) -> dict:
     }
 
 
-def _session_item(session_id: str) -> dict:
+def _session_item(session_id: str, created_at: datetime.datetime = NOW) -> dict:
     return {
         "browserIdentifier": "aws.browser.v1",
         "sessionId": session_id,
         "status": "READY",
-        "createdAt": NOW,
+        "createdAt": created_at,
     }
 
 
-def _got_session(session_id: str, *, profile_id: str | None, status: str = "READY") -> dict:
+def _got_session(
+    session_id: str,
+    *,
+    profile_id: str | None,
+    status: str = "READY",
+    view_port: dict | None = None,
+) -> dict:
     out = {
         "browserIdentifier": "aws.browser.v1",
         "sessionId": session_id,
@@ -50,7 +56,13 @@ def _got_session(session_id: str, *, profile_id: str | None, status: str = "READ
     }
     if profile_id is not None:
         out["profileConfiguration"] = {"profileIdentifier": profile_id}
+    if view_port is not None:
+        out["viewPort"] = view_port
     return out
+
+
+def _list_sessions_params() -> dict:
+    return {"browserIdentifier": "aws.browser.v1", "status": "READY", "maxResults": 100}
 
 
 @pytest.fixture
@@ -126,7 +138,7 @@ async def test_ensure_browser_profile_matches_the_name_exactly(stub_control, wri
     stub_control.add_response(
         "list_browser_profiles",
         {"profileSummaries": [_summary("org_xy", "org_xy-zz11223344"), _summary(OWNER, PROFILE_ID)]},
-        {"name": OWNER},
+        {"name": OWNER, "maxResults": 10},
     )
     # No create_browser_profile response is queued -- the Stubber errors if one is called.
     assert await browser_sessions.ensure_browser_profile(OWNER) == PROFILE_ID
@@ -140,7 +152,7 @@ async def test_create_uses_a_64_char_hex_client_token(stub_control, writes):
     id fails the model on both counts; a sha256 hex digest is the stable idempotency key."""
     token = hashlib.sha256(OWNER.encode()).hexdigest()
     assert len(token) == 64
-    stub_control.add_response("list_browser_profiles", {"profileSummaries": []}, {"name": OWNER})
+    stub_control.add_response("list_browser_profiles", {"profileSummaries": []}, {"name": OWNER, "maxResults": 10})
     stub_control.add_response(
         "create_browser_profile",
         {
@@ -158,10 +170,10 @@ async def test_create_uses_a_64_char_hex_client_token(stub_control, writes):
 async def test_a_concurrent_create_is_resolved_by_conflict_then_relist(stub_control, writes):
     """A provision and a roll can race; the loser gets ConflictException and adopts the
     winner's profile instead of failing the provision."""
-    stub_control.add_response("list_browser_profiles", {"profileSummaries": []}, {"name": OWNER})
+    stub_control.add_response("list_browser_profiles", {"profileSummaries": []}, {"name": OWNER, "maxResults": 10})
     stub_control.add_client_error("create_browser_profile", service_error_code="ConflictException")
     stub_control.add_response(
-        "list_browser_profiles", {"profileSummaries": [_summary(OWNER, PROFILE_ID)]}, {"name": OWNER}
+        "list_browser_profiles", {"profileSummaries": [_summary(OWNER, PROFILE_ID)]}, {"name": OWNER, "maxResults": 10}
     )
     assert await browser_sessions.ensure_browser_profile(OWNER) == PROFILE_ID
 
@@ -246,7 +258,7 @@ async def test_live_view_presigns_for_five_minutes(stub_data, row, aws_creds):
     stub_data.add_response(
         "list_browser_sessions",
         {"items": [_session_item("S1")]},
-        {"browserIdentifier": "aws.browser.v1", "status": "READY"},
+        _list_sessions_params(),
     )
     stub_data.add_response(
         "get_browser_session",
@@ -257,8 +269,104 @@ async def test_live_view_presigns_for_five_minutes(stub_data, row, aws_creds):
     assert out["active"] is True
     assert "X-Amz-Expires=300" in out["url"]
     assert "/browser-streams/aws.browser.v1/sessions/S1/live-view" in out["url"]
-    assert out["expiresAt"].endswith("+00:00")
+    # The advertised expiry must never outlive the signature it describes.
+    expires_at = datetime.datetime.fromisoformat(out["expiresAt"])
+    assert expires_at.tzinfo is not None
+    assert expires_at <= datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+        seconds=browser_sessions.LIVE_VIEW_TTL_S
+    )
+    # No viewPort on the session -> the constants are the FALLBACK, not the answer.
     assert (out["remoteWidth"], out["remoteHeight"]) == (1920, 1080)
+
+
+@pytest.mark.asyncio
+async def test_live_view_reports_the_sessions_own_viewport(stub_data, row, aws_creds):
+    """The panel scales the DCV canvas by these; a hardcoded 1920x1080 against a session
+    running at another size crops or letterboxes the view. GetBrowserSession carries the
+    real viewPort and we have already read it."""
+    stub_data.add_response(
+        "list_browser_sessions",
+        {"items": [_session_item("S1")]},
+        _list_sessions_params(),
+    )
+    stub_data.add_response(
+        "get_browser_session",
+        _got_session("S1", profile_id=PROFILE_ID, view_port={"width": 1280, "height": 800}),
+        {"browserIdentifier": "aws.browser.v1", "sessionId": "S1"},
+    )
+    out = await browser_sessions.live_view(OWNER)
+    assert (out["remoteWidth"], out["remoteHeight"]) == (1280, 800)
+
+
+@pytest.mark.asyncio
+async def test_live_view_prefers_the_newest_session(stub_data, row, aws_creds):
+    """A single turn was observed spawning TWO sessions seconds apart (Task 1, 17:10:03 and
+    17:10:06). Both carry this workspace's profile, so whichever AWS happened to list first
+    would win -- and that may be the one about to terminate. Only the newest is Got."""
+    older = _session_item("S-old", NOW)
+    newer = _session_item("S-new", NOW + datetime.timedelta(seconds=3))
+    stub_data.add_response("list_browser_sessions", {"items": [older, newer]}, _list_sessions_params())
+    # Exactly ONE Get is queued, for the newer id -- a loop that took the listed order
+    # fails parameter validation on S-old.
+    stub_data.add_response(
+        "get_browser_session",
+        _got_session("S-new", profile_id=PROFILE_ID),
+        {"browserIdentifier": "aws.browser.v1", "sessionId": "S-new"},
+    )
+    out = await browser_sessions.live_view(OWNER)
+    assert "/sessions/S-new/live-view" in out["url"]
+
+
+@pytest.mark.asyncio
+async def test_delete_browser_profiles_removes_only_this_workspaces_profile(stub_control):
+    """The profile holds the workspace's cookies and local storage, so a wipe that leaves it
+    behind leaves a deleted workspace's session state in our account. Same exact-name rule as
+    the create path: ``name`` is a filter, and deleting ``org_xy``'s profile is a live
+    tenant's outage."""
+    stub_control.add_response(
+        "list_browser_profiles",
+        {"profileSummaries": [_summary("org_xy", "org_xy-zz11223344"), _summary(OWNER, PROFILE_ID)]},
+        {"name": OWNER, "maxResults": 10},
+    )
+    stub_control.add_response(
+        "delete_browser_profile",
+        {
+            "profileId": PROFILE_ID,
+            "profileArn": f"arn:aws:bedrock-agentcore:us-east-1:1:browser-profile/{PROFILE_ID}",
+            "status": "DELETING",
+            "lastUpdatedAt": NOW,
+        },
+        {"profileId": PROFILE_ID},
+    )
+    assert await browser_sessions.delete_browser_profiles(OWNER) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_browser_profiles_swallows_the_403_until_the_grant_lands(stub_control):
+    """The backend task role has no DeleteBrowserProfile until the infra PR deploys. The wipe
+    must log and carry on, not fail the teardown for every owner in the meantime."""
+    stub_control.add_response(
+        "list_browser_profiles",
+        {"profileSummaries": [_summary(OWNER, PROFILE_ID)]},
+        {"name": OWNER, "maxResults": 10},
+    )
+    stub_control.add_client_error("delete_browser_profile", service_error_code="AccessDeniedException")
+    assert await browser_sessions.delete_browser_profiles(OWNER) == 0
+
+
+@pytest.mark.asyncio
+async def test_live_view_is_inactive_when_the_session_list_fails(stub_data, row):
+    """The panel polls this route on a timer. A ListBrowserSessions throttle (30 TPS quota)
+    or any transient control-plane error must read as "nothing running", never as a 500 the
+    client has to branch on."""
+    stub_data.add_client_error("list_browser_sessions", service_error_code="ThrottlingException")
+    assert await browser_sessions.live_view(OWNER) == {
+        "active": False,
+        "url": None,
+        "expiresAt": None,
+        "remoteWidth": 1920,
+        "remoteHeight": 1080,
+    }
 
 
 @pytest.mark.asyncio
@@ -268,7 +376,7 @@ async def test_live_view_skips_candidates_belonging_to_other_profiles(stub_data,
     stub_data.add_response(
         "list_browser_sessions",
         {"items": [_session_item("S-other"), _session_item("S-mine")]},
-        {"browserIdentifier": "aws.browser.v1", "status": "READY"},
+        _list_sessions_params(),
     )
     stub_data.add_response(
         "get_browser_session",
@@ -290,7 +398,7 @@ async def test_live_view_is_inactive_when_no_ready_session_is_ours(stub_data, ro
     stub_data.add_response(
         "list_browser_sessions",
         {"items": [_session_item("S-other")]},
-        {"browserIdentifier": "aws.browser.v1", "status": "READY"},
+        _list_sessions_params(),
     )
     stub_data.add_response(
         "get_browser_session",

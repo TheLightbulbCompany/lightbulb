@@ -961,6 +961,10 @@ async def test_delete_owner_role_removes_both_inline_policies(aip_tables, monkey
     import core.billing.bedrock_aip as mod
 
     fake = MagicMock()
+    # ENUMERATED, not named: whatever IAM reports is what gets deleted, so a future inline
+    # policy can never leak the role by being missing from a hardcoded tuple.
+    attached = ["owner-bedrock", "owner-litestream-s3", "owner-browser", "owner-something-new"]
+    fake.list_role_policies.return_value = {"PolicyNames": attached}
     monkeypatch.setattr(mod, "_iam_client", lambda: fake)
     monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
     monkeypatch.setattr(mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "", raising=False)
@@ -968,7 +972,7 @@ async def test_delete_owner_role_removes_both_inline_policies(aip_tables, monkey
     await mod.delete_owner_bedrock_role("org_abc")
 
     deleted = {c.kwargs["PolicyName"] for c in fake.delete_role_policy.call_args_list}
-    assert deleted == {"owner-bedrock", "owner-litestream-s3", "owner-browser"}
+    assert deleted == set(attached)
     fake.delete_role.assert_called_once()
 
 
@@ -1004,6 +1008,10 @@ class TestOwnerBrowserPolicy:
         assert "browser-profile/org_x-ab12cd34ef" in raw and "browser-profile/*" not in raw
         # The built-in browser lives under the literal `aws` pseudo-account.
         assert ":aws:browser/aws.browser.v1" in raw
+        # NOT `{account}:browser/*` -- that is the CUSTOM-browser ARN shape, which we never
+        # create and the CDK permissions boundary does not cover, so it would authorize
+        # nothing while reading as though it did.
+        assert "877352799272:browser/*" not in raw
         # Live 403 (Task 1): a start carrying profileConfiguration authorizes against the
         # PROFILE arn as well as the browser arn.
         profile_stmt = next(st for st in doc["Statement"] if "browser-profile/" in json.dumps(st["Resource"]))

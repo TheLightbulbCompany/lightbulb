@@ -462,6 +462,37 @@ async def test_provision_threads_the_browser_profile_into_the_runtime_request(mo
 
 
 @pytest.mark.asyncio
+async def test_provision_still_builds_a_usable_request_when_the_profile_resolve_fails(monkeypatch):
+    """The whole point of ensure_browser_profile's never-raise contract: AWS refusing the
+    profile must cost the workspace its browser tools, not its provision. Asserted at the
+    COMPOSITION level -- a refactor that made "" throw would still pass the two unit tests
+    on the env builder."""
+    created = {}
+    # The autouse _no_browser_profile fixture already answers "" here; this test is what
+    # pins the consequence.
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: created.update(req) or "arn:rt")
+    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_load_role_and_aips",
+        _noop_async_returns(
+            ("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "arn:aip:sonnet"})
+        ),
+    )
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
+    _configure_hermes_settings(monkeypatch)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _noop_async)
+    _no_runtime_found_by_name(monkeypatch)
+
+    await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
+
+    env = created["environmentVariables"]
+    assert env["ISOL8_OWNER_ID"] == "org_a"  # the request is complete, not half-built
+    assert not [k for k in env if k.startswith(("AGENTCORE_", "AGENT_BROWSER_"))]
+
+
+@pytest.mark.asyncio
 async def test_provision_refuses_without_a_configured_image(monkeypatch):
     monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", "")
     # m7: explicit rather than relying on the image guard firing before this is ever read --

@@ -409,14 +409,17 @@ class InlineAttachment(ContractModel):
     """One file an agent sends with its reply, base64 on the POST it is already making.
 
     The runtime has no attachment-upload route of its own and needs none: a screenshot is a
-    couple of hundred KB inside a request that is happening anyway. The bytes are not bounded
-    here -- the HTTP body limit in front of this route is the real bound, and
-    :func:`store_attachment` enforces the per-content-type cap on what it keeps.
+    couple of hundred KB inside a request that is happening anyway.
     """
 
     file_name: str = Field(min_length=1, max_length=256)
     content_type: str = Field(min_length=1, max_length=128)
-    data_base64: Base64Bytes
+    # The bound is on the ENCODED string and fires BEFORE the decode, so nothing unbounded is
+    # ever decoded -- the list's own ``max_length`` runs after item validation, and the gateway
+    # in front of this route is not a bound to depend on. Same reason the human upload route
+    # reads to an explicit ceiling rather than to EOF (routers/messaging.py). The real
+    # per-content-type cap still fires in :func:`store_attachment`.
+    data_base64: Base64Bytes = Field(max_length=ATTACHMENT_MAX_BYTES)
 
 
 class AgentMessageRequest(ContractModel):

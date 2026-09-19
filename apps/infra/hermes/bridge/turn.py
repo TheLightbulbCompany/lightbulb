@@ -349,72 +349,86 @@ def _check_message(msg: dict, room_id: str, label: str) -> None:
 # ---- outbound media (design §2i) -------------------------------------------------------------
 # Hermes hands a tool-produced file back as a `MEDIA:<absolute path>` line inside the reply
 # TEXT, so without this the room message arrives with `attachments: null` and the human reads a
-# filesystem path (observed on every browse turn in the Task 1 spike). Content type comes from
-# the suffix and nothing else: the backend re-checks the bytes' own signature against the type
-# we declare, so a guess that is merely plausible is rejected there anyway.
+# filesystem path (observed on every browse turn in the Task 1 spike).
 MEDIA_PREFIX = "MEDIA:"
 MEDIA_CONTENT_TYPES = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".webp": "image/webp", ".gif": "image/gif", ".pdf": "application/pdf",
 }
+# The suffix says what a file CLAIMS to be; these say what it is. The backend re-checks the
+# same signatures and rejects the WHOLE request on a mismatch, so a `creds.png` holding JSON
+# would take a real screenshot down with it -- sniff here, where the line can simply stay text.
+MEDIA_SIGNATURES = {"image/png": b"\x89PNG", "image/jpeg": b"\xff\xd8\xff",
+                    "image/webp": b"RIFF", "image/gif": b"GIF8", "application/pdf": b"%PDF-"}
+# Base64 is x4/3 and API Gateway caps the reply body at 10 MB, so THIS is the real outbound
+# ceiling -- smaller than the 20 MiB the storage layer accepts for a PDF. Over it the POST
+# 413s and every attachment in that reply is dropped, the 200 KB screenshot beside the PDF
+# included; an 8 MiB PDF alone already encodes to 11.2 MB.
+OUTBOUND_MEDIA_MAX_BYTES = 7 * 1024 * 1024
 
 
-def _attachable(line: str, root: Path) -> Path | None:
-    """The file a `MEDIA:` line names, if it is safe to send: inside the agent's own profile
-    dir (resolved, so a symlink cannot point out of it), a type the room accepts, and within
-    that type's byte cap -- the same caps the ingress enforces coming the other way."""
+def _attachable(line: str, root: Path, budget: int) -> dict | None:
+    """The file a `MEDIA:` line names, ready to post, if it is safe to send: inside the agent's
+    own profile dir (resolved, so a symlink cannot point out of it), a type the room accepts
+    whose BYTES agree with that type, and within both the per-type cap and what is left of the
+    outbound budget. The read happens HERE, at the one place that decides whether the line is
+    stripped -- a file that cannot be read keeps its path rather than vanishing, and nothing
+    can swap it between the check and the send.
+
+    Every rejection logs its reason (a path, never the bytes): a dropped file is otherwise
+    invisible to anyone not reading the room."""
     if not line.startswith(MEDIA_PREFIX):
         return None
     path = Path(line[len(MEDIA_PREFIX):].strip())
     content_type = MEDIA_CONTENT_TYPES.get(path.suffix.lower())
     if content_type is None:
+        log.info("media dropped (type): %s", path)
         return None
     try:
         resolved = path.resolve()
-        if not resolved.is_relative_to(root.resolve()) or not resolved.is_file():
+        if not resolved.is_relative_to(root.resolve()):
+            log.warning("media dropped (path): %s", path)
             return None
-        if resolved.stat().st_size > ATTACHMENT_MAX_BYTES_BY_TYPE.get(content_type, MAX_ATTACHMENT_BYTES):
+        if not resolved.is_file():
+            log.info("media dropped (missing): %s", path)
             return None
-    except (OSError, ValueError):  # ValueError: an embedded null byte -- nothing to attach
+        size = resolved.stat().st_size
+        if size > ATTACHMENT_MAX_BYTES_BY_TYPE.get(content_type, MAX_ATTACHMENT_BYTES):
+            log.info("media dropped (size): %s", path)
+            return None
+        if size > budget:
+            log.info("media dropped (budget): %s", path)
+            return None
+        data = resolved.read_bytes()
+    except (OSError, ValueError) as exc:  # ValueError: an embedded null byte -- nothing to read
+        log.warning("media dropped (unreadable): %s: %s", path, exc)
         return None
-    return resolved
+    if not data.startswith(MEDIA_SIGNATURES[content_type]):
+        log.warning("media dropped (sniff): %s", path)
+        return None
+    return {"fileName": resolved.name, "contentType": content_type,
+            "dataBase64": base64.b64encode(data).decode()}
 
 
-def extract_media(reply: str, root: Path) -> tuple[str, list[Path]]:
-    """Split the attachable `MEDIA:` files out of a reply, returning the text without them.
+def extract_media(reply: str, root: Path) -> tuple[str, list[dict]]:
+    """Split the attachable `MEDIA:` files out of a reply, returning the text without them and
+    the attachments as the backend's `AgentMessageRequest.attachments` wants them.
 
-    A line is stripped ONLY when its file is actually going up; everything else -- over cap,
-    over size, missing, wrong type, outside the profile -- keeps its line verbatim. A
-    screenshot must never fail a turn, and a dropped one must not vanish silently either."""
-    kept: list[Path] = []
+    A line is stripped ONLY when its file is actually going up; everything else -- over count,
+    over size, over budget, missing, unreadable, wrong type, wrong bytes, outside the profile
+    -- keeps its line verbatim. A screenshot must never fail a turn, and a dropped one must not
+    vanish silently either."""
+    kept: list[dict] = []
     lines: list[str] = []
+    budget = OUTBOUND_MEDIA_MAX_BYTES
     for line in reply.splitlines():
-        path = _attachable(line, root) if len(kept) < MAX_ATTACHMENTS else None
-        if path is None:
+        item = _attachable(line, root, budget) if len(kept) < MAX_ATTACHMENTS else None
+        if item is None:
             lines.append(line)
         else:
-            kept.append(path)
+            kept.append(item)
+            budget -= len(item["dataBase64"]) * 3 // 4
     return "\n".join(lines).strip(), kept
-
-
-def _inline_attachments(paths: list[Path]) -> list[dict]:
-    """The files as the backend's `AgentMessageRequest.attachments` wants them: base64 inline
-    on the reply POST we are already making. ponytail: no aggregate byte budget -- API Gateway
-    caps the body at 10 MB and a 413 lands in the same 4xx fallback as everything else, while
-    a real screenshot is a couple of hundred KB."""
-    out = []
-    for path in paths:
-        try:
-            data = path.read_bytes()
-        except OSError as exc:  # raced with a cleanup; never fail a reply over a screenshot
-            log.warning("media read failed: %s", exc)
-            continue
-        out.append({
-            "fileName": path.name,
-            "contentType": MEDIA_CONTENT_TYPES[path.suffix.lower()],
-            "dataBase64": base64.b64encode(data).decode(),
-        })
-    return out
 
 
 def parse_ingress(body: dict) -> dict:
@@ -481,21 +495,28 @@ def _post_backend(path: str, body: dict) -> int:
     return last_status
 
 
+# Exactly the three statuses a text-only re-post can actually recover from. 400: a backend
+# deployed before the `attachments` field (the contract models are ``extra="forbid"``, so it
+# rejects the WHOLE body). 409: an earlier attempt already stored the full text under this
+# eventId -- the re-post replays it and returns 200. 413: over API Gateway's body cap, and the
+# text-only body is ~4x smaller. Everything else is a guaranteed second failure (401/403/404)
+# or the opposite of the instruction (429), and belongs to the normal error path.
+REPLY_TEXT_FALLBACK_STATUSES = (400, 409, 413)
+
+
 def _post_reply(agent_id: str, body: dict, reply: str) -> None:
     """The final reply POST, with any `MEDIA:` files attached inline (design §2i).
 
-    A 4xx means the backend rejected this body -- most plausibly one deployed before the
-    `attachments` field existed, since the contract models are ``extra="forbid"`` -- so the
-    reply goes up again verbatim, unparsed. Losing a screenshot beats losing the reply, and it
-    is what lets this image ship without waiting on a prod backend promotion. The eventId is
-    unchanged, so the retry is the same message, not a second one."""
-    text, media = extract_media(reply, _profile_dir(agent_id))
-    attachments = _inline_attachments(media)
+    On one of the statuses above, the reply goes up again verbatim, unparsed: losing a
+    screenshot beats losing the reply, and it is what lets this image ship without waiting on
+    a prod backend promotion. The eventId is unchanged, so a re-post can only replay the
+    stored message -- never create a second one."""
+    text, attachments = extract_media(reply, _profile_dir(agent_id))
     if not attachments:
         _post_backend(f"agent-messages/{OWNER}", {**body, "text": reply})
         return
     status = _post_backend(f"agent-messages/{OWNER}", {**body, "text": text, "attachments": attachments})
-    if 400 <= status < 500:
+    if status in REPLY_TEXT_FALLBACK_STATUSES:
         log.warning("agent-messages rejected %d attachment(s) with %s; re-posting as text", len(attachments), status)
         _post_backend(f"agent-messages/{OWNER}", {**body, "text": reply})
 

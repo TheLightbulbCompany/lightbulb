@@ -20,9 +20,7 @@ from core.services.paperclip_credential_rule import (
 def render_agent_identity_md(planned: PlannedAgent) -> str:
     """The ``AGENTS.md`` content for one company agent: the planner's body verbatim, plus the
     appended Paperclip credential rule (see that module's docstring for why the append is
-    unconditional). Shared by the ECS write below (EFS ``workspace-{id}/AGENTS.md``) and the
-    AgentCore per-agent loop (``company_deploy_service``'s ``hermes_profiles.
-    upload_profile_files`` upload, M6-R33) -- one function so the two transports can never
-    describe "this agent's identity content" differently.
+    unconditional). ``company_deploy_service``'s per-agent loop uploads the result via
+    ``hermes_profiles.upload_profile_files`` (M6-R33).
     """
     return planned.body_md.rstrip("\n") + "\n" + PAPERCLIP_CREDENTIAL_RULE

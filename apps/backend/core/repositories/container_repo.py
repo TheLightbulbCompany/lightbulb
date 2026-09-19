@@ -1863,10 +1863,10 @@ async def upsert_paired_devices(owner_id: str, entries: dict) -> None:
     """Project desktop device-pubkey entries onto the owner row's ``paired_devices`` map.
 
     ``entries`` is ``{deviceId: {"publicKey": <b64url-raw>, "userId": <member>,
-    "clientId": <str>}}``. This is the authorizer-reachable projection of the
-    device pubkeys that also live in the container's EFS ``paired.json`` — it
-    gives the WebSocket Lambda authorizer a ``GetItem(containers, owner)`` point
-    lookup for device-key WS-upgrade auth, without a separate table.
+    "clientId": <str>}}``. It is the ONLY record of a paired device (the container's EFS
+    ``paired.json`` went with that runtime) and gives the WebSocket authorizer a
+    ``GetItem(containers, owner)`` point lookup for device-key WS-upgrade auth, with no
+    separate table.
 
     Each device is written with a SCOPED, server-atomic ``UpdateItem`` (touching
     only its one map key) rather than a full-item read-modify-write — so a
@@ -1879,7 +1879,8 @@ async def upsert_paired_devices(owner_id: str, entries: dict) -> None:
     member's PUBLIC key (freely observable) and collide their deviceId. The
     ``ConditionExpression`` only writes when the device is absent OR already owned
     by the SAME member — so one org member can never relabel another's device on
-    the authorizer's trust anchor (mirrors the paired.json guard in desktop_pair.py).
+    the authorizer's trust anchor. This IS the guard now; the EFS ``paired.json`` copy of it
+    went with that rail.
     No-op if the container row doesn't exist.
     """
     table = _get_table()

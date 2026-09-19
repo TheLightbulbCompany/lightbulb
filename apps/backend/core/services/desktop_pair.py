@@ -26,29 +26,11 @@ from core.repositories import container_repo
 logger = logging.getLogger(__name__)
 
 
-# Retired brand generations of the display-name suffix WE compose. A device
-# that re-pairs with the same key keeps its stored entry (tokens and all), so
-# nothing else would ever refresh the name and the old product name stays
-# stuck to the device forever. Only the exact suffix is swapped — everything
-# before " | " is the member's own Clerk name, which is theirs.
-_LEGACY_DISPLAY_NAME_SUFFIXES: tuple[tuple[str, str], ...] = (
-    (" | Lightbulb AI Mac", " | Lightbulb Mac"),
-    (" | Isol8 Mac", " | Lightbulb Mac"),
-    (" | Lightbulb AI Desktop (CLI)", " | Lightbulb Desktop (CLI)"),
-    (" | Isol8 Desktop (CLI)", " | Lightbulb Desktop (CLI)"),
-)
-
-
-def normalize_legacy_display_name(name: str) -> str:
-    """Swap a retired platform suffix for its current form; leave the rest alone.
-
-    A name the platform never composed (owner-renamed, or a suffix we don't
-    recognise) comes back untouched.
-    """
-    for legacy, current in _LEGACY_DISPLAY_NAME_SUFFIXES:
-        if name.endswith(legacy):
-            return name[: -len(legacy)] + current
-    return name
+# NOTE: the retired-brand display-name normalizer went with the EFS ``paired.json`` rail.
+# It existed because a same-key re-pair PRESERVED the stored entry, so nothing would ever
+# refresh a device's name. ``pair_desktop_devices`` now REWRITES each device's map entry on
+# every pair (the non-relabel ConditionExpression is the only thing it preserves), so the
+# composed name is current by construction.
 
 
 DESKTOP_MAC_COMMANDS: tuple[str, ...] = (

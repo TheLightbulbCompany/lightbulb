@@ -61,7 +61,5 @@ def build_hermes_gateway_adapter_config(owner_id: str, *, hook_token: str) -> di
     return config
 
 
-# clientId the synthesized adapter URL advertises so the gateway relay's
-# upgrade auth (core/services/machine_auth.py) admits it as an operator
 class AdapterConfigError(Exception):
     """Raised when adapter-config inputs fail validation."""

@@ -880,6 +880,12 @@ from routers import marketplace_listings  # noqa: E402
 app.include_router(marketplace_listings.router)
 
 
+# Claude Code context import — same /api/v1/marketplace prefix, own subtree.
+from routers import marketplace_import  # noqa: E402
+
+app.include_router(marketplace_import.router)
+
+
 # Marketplace purchases (Plan 2) — checkout, Stripe webhook, refunds.
 from routers import marketplace_purchases  # noqa: E402
 

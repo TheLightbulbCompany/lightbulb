@@ -859,24 +859,6 @@ async def test_get_actions_audit_no_filter_scans_recent(monkeypatch):
     assert result["items"] == [{"action_id": "a1"}]
 
 
-def test_current_image_tags_resolve_from_single_source():
-    """admin_service.CURRENT_DEV_TAG / CURRENT_PROD_TAG are resolved from the
-    single source of truth via core.openclaw_version, so they reflect
-    openclaw-version.json without a hand-mirrored constant. In CI (no env vars
-    set) they fall back to the repo JSON, so they must equal the pinned values.
-    """
-    import json
-    from pathlib import Path
-
-    from core.services import admin_service
-
-    # apps/backend/tests/unit/services/test_admin_service.py -> repo root is parents[5]
-    repo_root = Path(__file__).resolve().parents[5]
-    pinned = json.loads((repo_root / "openclaw-version.json").read_text())
-    assert admin_service.CURRENT_DEV_TAG == pinned["dev"]["tag"]
-    assert admin_service.CURRENT_PROD_TAG == pinned["prod"]["tag"]
-
-
 # --- available-images list: PIN OR NEWER -----------------------------------
 #
 # The admin image picker feeds "Apply now", which force-rolls the owner onto

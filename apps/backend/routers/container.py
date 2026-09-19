@@ -7,11 +7,11 @@ and a manual retry-provision endpoint.
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.services import readiness_state
+from core.services import browser_sessions, readiness_state
 from core.services.onboarding_brief import reconcile_pending_brief
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
@@ -431,6 +431,32 @@ def _status_response(contract: dict) -> dict:
         "provider": contract.get("provider"),
         "teams_state": contract.get("teams_state"),
     }
+
+
+#: Mounted at ``/api/v1/browser``, not under this file's ``/api/v1/container`` prefix — the
+#: panel's URL is ``/api/v1/browser/live-view``. Same two-routers-in-one-module shape
+#: ``connections.oauth_router`` already uses.
+browser_router = APIRouter()
+
+
+@browser_router.get(
+    "/live-view",
+    summary="Presigned live view of this workspace's running browser session",
+    description=(
+        "Returns a 300 s presigned DCV URL for the AgentCore Browser session this "
+        "workspace's agents are driving, or `active: false` when none is running. "
+        "Watch-only, and it never STARTS a session."
+    ),
+    operation_id="browser_live_view",
+)
+async def browser_live_view(
+    response: Response,
+    auth: AuthContext = Depends(get_current_user),
+):
+    # The URL is a short-lived bearer credential for a live browser: no CDN, no proxy, no
+    # disk cache. The owner comes from the Clerk claim and never from the request.
+    response.headers["Cache-Control"] = "no-store"
+    return await browser_sessions.live_view(resolve_owner_id(auth))
 
 
 @router.post(

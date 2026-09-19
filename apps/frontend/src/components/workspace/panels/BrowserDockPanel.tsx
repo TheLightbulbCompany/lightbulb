@@ -11,21 +11,12 @@
 // `lazy()` keeps those ~2 MB out of the workspace shell chunk for the desktop
 // sessions that never open this panel.
 //
-// Cadence (design §2g, ruling R14): a browsing turn spawns one or two sessions
-// living 4-15 s each, so the panel polls every 5 s WHILE THE ROOM REPORTS AN
-// ACTIVE RUN and not at all otherwise — a 240 s poll would catch a session ~6%
-// of the time and read empty while the agent was visibly browsing. 240 s is
-// only the re-mint bound for a URL already on screen: AWS hard-caps the
-// presigned URL at 300 s and the route always mints `now + 300 s`, so a
-// constant bound is always inside `expiresAt` without any clock-skew math —
-// which is why the response's `expiresAt` is not read here.
-//
-// The panel never STARTS a session: a browser costs $0.1273/hour and the agent
-// could not join one the panel opened. It also offers no take-control
-// affordance — take-control destroys the agent's automation session
-// (aws/bedrock-agentcore-sdk-python#518).
+// Discover every 5s during a known run, and keep watching a discovered session
+// until it ends. Retain each signed URL for 240s (AWS expires it at 300s).
+// This panel never starts a session or offers take-control: taking control
+// destroys the agent's automation session (aws/bedrock-agentcore-sdk-python#518).
 
-import { Suspense, lazy, useCallback, useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { useRuntimeHost } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
@@ -40,6 +31,7 @@ interface LiveViewResponse {
   url?: string | null;
   remoteWidth?: number;
   remoteHeight?: number;
+  loadedAt?: number;
 }
 
 const POLL_WHILE_RUNNING_MS = 5_000;
@@ -63,33 +55,36 @@ export function BrowserDockPanel(): React.ReactElement | null {
   // `roomProps.runs` is `useRooms`' live run state — the `run_active` frames
   // from `useLiveEvents` merged with the `activeRuns` the room detail seeds.
   // Optional because the panel must not throw outside a messaging provider.
-  const runs = useMessagingWorkspaceOptional()?.roomProps?.runs;
-  const runActive = !!runs?.some((run) => run.state === "running");
+  const workspace = useMessagingWorkspaceOptional();
+  const runActive = !!workspace?.roomProps?.runs?.some((run) => run.state === "running") ||
+    !!workspace?.directoryProps.participants.some((member) => member.agentActivity === "running");
 
   const [view, setView] = useState<LiveViewResponse | null>(null);
-
-  const load = useCallback(() => {
-    void api
-      .get("/browser/live-view")
-      .then((body) => setView(body as LiveViewResponse))
-      .catch(() => setView(INACTIVE));
-  }, [api]);
 
   const ready = host === "agentcore";
 
   useEffect(() => {
-    if (ready) load();
-  }, [ready, load]);
-
-  // Separate from the mount fetch on purpose: this effect re-runs whenever the
-  // cadence changes (a run starting or ending, a URL appearing), and folding
-  // the immediate fetch in here would fire an extra request on every such flip.
-  const period = runActive ? POLL_WHILE_RUNNING_MS : view?.url ? REMINT_MS : null;
-  useEffect(() => {
-    if (!ready || period === null) return;
-    const timer = setInterval(load, period);
-    return () => clearInterval(timer);
-  }, [ready, period, load]);
+    if (!ready) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      const body = await api.get("/browser/live-view").catch(() => INACTIVE) as LiveViewResponse;
+      if (cancelled) return;
+      setView((previous) => {
+        // Signatures change on every poll. Keep the connection for this session
+        // until refresh is due; a different URL path means a different session.
+        if (body.active && body.url && previous?.url &&
+            new URL(body.url).pathname === new URL(previous.url).pathname &&
+            Date.now() - (previous.loadedAt ?? 0) < REMINT_MS) return previous;
+        return { ...body, loadedAt: Date.now() };
+      });
+      if (runActive || body.url) {
+        timer = setTimeout(load, POLL_WHILE_RUNNING_MS);
+      }
+    };
+    void load();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [ready, api, runActive]);
 
   if (!ready) return null;
   if (!view) return <Notice>Looking for a live browser session…</Notice>;
@@ -100,6 +95,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
   return (
     <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
       <BrowserLiveView
+        key={view.url}
         signedUrl={view.url}
         remoteWidth={view.remoteWidth}
         remoteHeight={view.remoteHeight}

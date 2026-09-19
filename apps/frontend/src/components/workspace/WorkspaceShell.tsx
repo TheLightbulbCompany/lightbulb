@@ -99,9 +99,9 @@ function DockUnmountSentinel({ onUnmount }: { onUnmount: () => void }): null {
 }
 
 function DesktopMessagingProvider({ children }: { children: React.ReactNode }) {
-  const { activePanelId } = useWorkspaceState();
+  const { activePanelId, openPanelIds } = useWorkspaceState();
   return (
-    <MessagingWorkspaceProvider subscribeToRoom={activePanelId === MESSAGES_PANEL_ID}>
+    <MessagingWorkspaceProvider subscribeToRoom={activePanelId === MESSAGES_PANEL_ID} observeRuns={openPanelIds.includes("browser")}>
       {children}
     </MessagingWorkspaceProvider>
   );

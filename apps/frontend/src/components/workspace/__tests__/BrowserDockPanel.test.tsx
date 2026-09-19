@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 
 const get = vi.fn();
 const state = vi.hoisted(() => ({
   host: "agentcore" as "agentcore" | undefined,
+  participants: [] as { agentActivity: string }[],
   runs: [] as { state: string }[],
 }));
 
@@ -14,21 +16,23 @@ vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => state.host }));
 const apiClient = { get };
 vi.mock("@/lib/api", () => ({ useApi: () => apiClient }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
-  useMessagingWorkspaceOptional: () => ({ roomProps: { runs: state.runs } }),
+  useMessagingWorkspaceOptional: () => ({ roomProps: { runs: state.runs }, directoryProps: { participants: state.participants } }),
 }));
 vi.mock("bedrock-agentcore/browser/live-view", () => ({
   BrowserLiveView: ({ signedUrl, remoteWidth, remoteHeight }: {
     signedUrl: string;
     remoteWidth?: number;
     remoteHeight?: number;
-  }) => (
-    <div
+  }) => {
+    const [initialUrl] = useState(signedUrl);
+    return <div
       data-testid="dcv-live-view"
       data-signed-url={signedUrl}
+      data-initial-url={initialUrl}
       data-remote-width={remoteWidth}
       data-remote-height={remoteHeight}
-    />
-  ),
+    />;
+  },
 }));
 
 import { BrowserDockPanel } from "../panels/BrowserDockPanel";
@@ -49,6 +53,7 @@ beforeEach(() => {
   get.mockReset();
   state.host = "agentcore";
   state.runs = [];
+  state.participants = [];
 });
 
 describe("BrowserDockPanel", () => {
@@ -68,7 +73,7 @@ describe("BrowserDockPanel", () => {
     state.runs = [];
     view.rerender(<BrowserDockPanel />);
     await flush(30_000);
-    expect(get).toHaveBeenCalledTimes(4); // idle costs nothing
+    expect(get).toHaveBeenCalledTimes(5); // final check on run end, then idle
   });
 
   it("renders the live view with the session's own dimensions and re-mints before the URL expires", async () => {
@@ -102,6 +107,42 @@ describe("BrowserDockPanel", () => {
 
     expect(screen.getByText(/no browser session running/i)).toBeInTheDocument();
     expect(screen.queryByTestId("dcv-live-view")).toBeNull();
+  });
+
+  it("keeps a session connected between polls and reauthenticates for a new session", async () => {
+    state.runs = RUNNING;
+    const url = "https://browser.test/sessions/one/live-view?signature=first";
+    get.mockResolvedValue({ active: true, url });
+    render(<BrowserDockPanel />);
+    await flush();
+    get.mockResolvedValue({ active: true, url: url.replace("first", "second") });
+    await flush(5_000);
+    expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-signed-url", url);
+    await flush(235_000);
+    expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", url.replace("first", "second"));
+    const nextUrl = url.replace("/one/", "/two/");
+    get.mockResolvedValue({ active: true, url: nextUrl });
+    await flush(5_000);
+    expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", nextUrl);
+  });
+
+  it("polls for an autonomous workspace run outside the selected room", async () => {
+    state.participants = [{ agentActivity: "running" }];
+    get.mockResolvedValue({ active: false });
+    render(<BrowserDockPanel />);
+    await flush(10_000);
+    expect(get).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps discovering the end of a session found outside known runs", async () => {
+    get.mockResolvedValue({ active: true, url: "https://browser.test/sessions/other/live-view" });
+    render(<BrowserDockPanel />);
+    await flush();
+    get.mockResolvedValue({ active: false });
+    await flush(5_000);
+    expect(screen.getByText(/no browser session running/i)).toBeInTheDocument();
+    await flush(30_000);
+    expect(get).toHaveBeenCalledTimes(2);
   });
 
   it("offers no take-control affordance", async () => {

@@ -119,10 +119,12 @@ export function MessagingWorkspaceProvider({
   children,
   initialAgentId,
   subscribeToRoom = true,
+  observeRuns = false,
 }: {
   children: ReactNode;
   initialAgentId?: string | null;
   subscribeToRoom?: boolean;
+  observeRuns?: boolean;
 }) {
   const { userId, orgId } = useAuth();
   const scope = orgId ?? userId ?? "signed-out";
@@ -134,7 +136,9 @@ export function MessagingWorkspaceProvider({
   // Focus covers the room unless it is someone else's session with room for the
   // side column. A covered room must neither auto-read nor silence its notifications.
   const roomVisible = subscribeToRoom && (!sessionFocus || (!sessionFocus.own && sideColumn));
-  const rooms = useRooms(initialAgentId, subscribeToRoom, roomVisible);
+  // Browser watches run frames even when the room is hidden; visibility still
+  // controls read receipts and notification suppression.
+  const rooms = useRooms(initialAgentId, subscribeToRoom || observeRuns, roomVisible);
   const setRoomTyping = rooms.setTyping;
   const sendRoomMessage = rooms.sendMessage;
   const teams = useTeamsApi();
@@ -258,10 +262,11 @@ export function MessagingWorkspaceProvider({
       kind: "agent" as const,
       id: agent.id,
       displayName: agent.name,
+      agentActivity: activityByAgentId.get(agent.id),
       mentionHandle: rooms.activeRoom?.members.find((member) => member.kind === "agent" && member.id === agent.id)?.mentionHandle ?? null,
     }));
     return [...people, ...agents];
-  }, [humanRoster, agentRoster, rooms.activeRoom, userId, online, sharing]);
+  }, [humanRoster, agentRoster, rooms.activeRoom, userId, online, sharing, activityByAgentId]);
 
   const handleTyping = useCallback((isTyping: boolean) => {
     if (typingTimer.current) clearTimeout(typingTimer.current);

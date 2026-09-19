@@ -1,75 +1,94 @@
 ---
 name: prod-org-reprovision
-description: Wipe a prod owner's container runtime + Paperclip side so the next /container/status poll re-provisions Friday/Atlas on the latest OpenClaw image, while preserving Stripe subscription, credits, Clerk org, and marketplace rows. Use when the user asks to reprovision a prod org or bring a stale org current.
+description: Wipe a prod owner's workspace runtime + Paperclip side so the next /container/status poll re-provisions the starter roster on the latest Hermes image, while preserving Stripe subscription, credits, Clerk org, and marketplace rows. Use when the user asks to reprovision a prod org or bring a stale org current.
 ---
 
 # Prod Org Reprovision (preserving billing/sub/marketplace)
 
-Different workflow from the dev reset above. The goal is to wipe an
-existing owner's **container runtime + Paperclip side** so the next
-`/container/status` poll re-provisions Friday/Atlas onto the latest
-pinned OpenClaw image — but keep their Stripe subscription, Bedrock
-credits, Clerk org, and any marketplace listings/purchases intact.
+Different workflow from the dev reset. The goal is to wipe an existing owner's
+**workspace runtime + Paperclip side** so the next `/container/status` poll
+re-provisions the starter roster onto the currently pinned Hermes image — but
+keep their Stripe subscription, Bedrock credits, Clerk org, and any marketplace
+listings/purchases intact.
 
-Use cases: orgs whose container was provisioned before a major upgrade
-(e.g. pre-Paperclip, pre-marketplace) and need to be brought current.
-Performed live on 2026-05-20 against `org_3DBS8G83oPrMm49yN2b70EjoFpN`.
+## First: is a reprovision even the right tool?
+
+Three cheaper things it is often confused with. Reach for them first.
+
+| you want | do this, not a reprovision |
+|---|---|
+| a newer agent image | flip `hermes-version.json`'s `prod.tag`, promote, then run `apps/backend/scripts/roll_hermes_runtimes.py`. A roll re-specs the SAME runtime in place and keeps every profile. |
+| rewritten agent config | `PATCH /api/v1/debug/provision` in dev; in prod, `hermes_provisioning.write_profiles` + `StopRuntimeSession`. The `.revision` bump IS the delivery. |
+| the bundled skills refreshed | `apps/backend/scripts/reapply_hermes_skills_dirs.py`. A new image alone does not move skills into a profile that already has a copy. |
+
+A reprovision destroys the owner's Bedrock AIPs along with the row that names
+them, so only the provision runner can honestly recover — that is why step 6
+is "let the funnel run" and not a hand-rolled sequence.
 
 **Preserved (do NOT touch):** `users`, `billing-accounts`, `api-keys`,
 `usage-counters`, `admin-actions`, all `marketplace-*` tables, Clerk
 org/users, Stripe customer + subscription.
 
-**Wiped:** ECS service, EFS access point + workspace dir, `containers`
-DDB row, `pending-updates`, `channel-links`, Paperclip company in
-Aurora (cascades to agents/threads), Aurora Better Auth `user` rows
-for each org member, all `paperclip-companies` DDB rows for the org.
+**Wiped:** the AgentCore runtime, the boot secret, the gate-token rows, the
+owner's Bedrock AIPs + role, the `containers` row, `pending-updates`,
+`channel-links`, the Paperclip company in Aurora (cascades to agents/threads),
+the Aurora Better Auth `user` rows for each org member, and all
+`paperclip-companies` DDB rows for the org.
+
+**Hermes profiles in S3 are NOT wiped by default, and that is deliberate
+(M6-R42).** `delete_workspace_runtime`'s `delete_profiles` defaults to `False`
+precisely because non-terminal callers share it, and passing `True` from a
+routine reprovision destroyed a migrated owner's memory, skills, `SOUL.md` and
+`auth.json`. If this owner's profiles are the problem, say so explicitly and
+delete `s3://$OWNER_STATE_BUCKET/$OWNER/hermes/` by hand — do not make it the
+default.
+
+---
+
+## 1-5. Tear down (scripted)
+
+Steps 1-4 are exactly what `hermes_provisioning.delete_workspace_runtime`
+does. Prefer calling it over the CLI: it is the teardown seam every caller
+shares, and the Bedrock reap in step 4 is structural there — no caller can
+forget it. From the backend task:
 
 ```bash
-OWNER=org_xxx                                  # from `containers` DDB scan
-CLUSTER=$(aws ecs list-clusters --profile isol8-admin --region us-east-1 \
-  --output text --query 'clusterArns' | tr '\t' '\n' | grep isol8-prod-container)
-PER_USER_SERVICE=$(aws dynamodb get-item --table-name isol8-prod-containers \
-  --key "{\"owner_id\":{\"S\":\"$OWNER\"}}" --profile isol8-admin --region us-east-1 \
-  --output text --query 'Item.service_name.S')
-ACCESS_POINT=$(aws dynamodb get-item --table-name isol8-prod-containers \
-  --key "{\"owner_id\":{\"S\":\"$OWNER\"}}" --profile isol8-admin --region us-east-1 \
-  --output text --query 'Item.access_point_id.S')
-BACKEND_SERVICE=$(aws ecs list-services --cluster "$CLUSTER" --profile isol8-admin \
-  --region us-east-1 --output text --query 'serviceArns' | tr '\t' '\n' \
-  | grep isol8-prod-service)
+export AWS_PROFILE=isol8-admin AWS_REGION=us-east-1
+OWNER=org_xxx
 
-# 1. Drain + delete per-user ECS service. Wait for runningCount=0 before step 2.
-aws ecs update-service --cluster "$CLUSTER" --service "$PER_USER_SERVICE" \
-  --desired-count 0 --profile isol8-admin --region us-east-1
-aws ecs delete-service --cluster "$CLUSTER" --service "$PER_USER_SERVICE" \
-  --force --profile isol8-admin --region us-east-1
+CLUSTER=$(aws ecs list-clusters --output text --query 'clusterArns' \
+  | tr '\t' '\n' | grep lightbulb-prod-container)
+SERVICE=$(aws ecs list-services --cluster "$CLUSTER" --output text --query 'serviceArns' \
+  | tr '\t' '\n' | grep lightbulb-prod-service)
+TASK=$(aws ecs list-tasks --cluster "$CLUSTER" --service-name "${SERVICE##*/}" \
+  --query 'taskArns[0]' --output text | awk -F/ '{print $NF}')
 
-# 2. Delete EFS access point (must wait until step 1's task fully stopped or this errors with "in use").
-aws efs delete-access-point --access-point-id "$ACCESS_POINT" \
-  --profile isol8-admin --region us-east-1
-
-# 2b. O6 local-sqlite layout only (prod.storage="local-sqlite" in
-# openclaw-version.json): delete the owner's Litestream replicas, or the
-# reprovisioned container restores the OLD hot state from S3 (sessions,
-# device trust, auth rows) instead of starting clean.
-aws s3 rm "s3://lightbulb-prod-openclaw-replicas/$OWNER/" --recursive --profile isol8-admin
-
-# 3. rm -rf the EFS workspace dir via ECS exec on the BACKEND task.
-TASK=$(aws ecs list-tasks --cluster "$CLUSTER" --service-name "$BACKEND_SERVICE" \
-  --profile isol8-admin --region us-east-1 --query 'taskArns[0]' --output text \
-  | awk -F/ '{print $NF}')
+# 1-4: StopRuntimeSession -> DeleteAgentRuntime -> revoke the gate-token hash ->
+#      delete the boot secret -> delete the containers row -> reap the Bedrock
+#      footprint off its ALL_OLD image -> sweep channel_links. Profiles KEPT.
+SCRIPT_B64=$(cat <<PYEOF | base64
+import asyncio
+from core.services.hermes_provisioning import delete_workspace_runtime
+print(asyncio.run(delete_workspace_runtime("$OWNER")))
+PYEOF
+)
+SCRIPT_B64=$(echo "$SCRIPT_B64" | tr -d '\n')
 aws ecs execute-command --cluster "$CLUSTER" --task "$TASK" --container backend \
-  --interactive --command "/bin/sh -c 'rm -rf /mnt/efs/users/$OWNER && ls /mnt/efs/users/'" \
-  --profile isol8-admin --region us-east-1
+  --interactive --command "/bin/sh -c 'cd /app && echo $SCRIPT_B64 | base64 -d | uv run python -'"
+```
 
-# 4. Delete the containers DDB row.
-aws dynamodb delete-item --table-name isol8-prod-containers \
-  --key "{\"owner_id\":{\"S\":\"$OWNER\"}}" --profile isol8-admin --region us-east-1
+By hand, if you cannot reach a backend task, the CLI equivalents are in the
+`dev-clean-slate-reset` skill's step 2 — plus clearing the owner's rows from
+`lightbulb-prod-bedrock-gate-tokens` and deleting their application inference
+profiles, which the function does for you and a hand teardown silently skips.
 
-# 5a. Delete the Paperclip company via the admin API. Pipe a base64-encoded
-#     Python script through ECS exec to bypass shell-quoting issues — calls
-#     PaperclipAdminClient.delete_company. Cascades to agents/threads.
-COMPANY_ID=...   # from `aws dynamodb scan isol8-prod-paperclip-companies` (all rows for OWNER share the same company_id)
+**5a. Delete the Paperclip company** via the admin API (cascades to
+agents/threads). Get `COMPANY_ID` from
+`aws dynamodb scan --table-name lightbulb-prod-paperclip-companies` — all rows
+for one org share the same `company_id`.
+
+```bash
+COMPANY_ID=...
 SCRIPT_B64=$(cat <<PYEOF | base64
 import asyncio, httpx
 from core.config import settings
@@ -85,57 +104,65 @@ PYEOF
 )
 SCRIPT_B64=$(echo "$SCRIPT_B64" | tr -d '\n')
 aws ecs execute-command --cluster "$CLUSTER" --task "$TASK" --container backend \
-  --interactive --command "/bin/sh -c 'cd /app && echo $SCRIPT_B64 | base64 -d | uv run python -'" \
-  --profile isol8-admin --region us-east-1
+  --interactive --command "/bin/sh -c 'cd /app && echo $SCRIPT_B64 | base64 -d | uv run python -'"
+```
 
-# 5b. Delete each org member's orphan Aurora ``user`` row via the recovery
-#     script so no member is missed (a surviving member row leaves an orphan
-#     Better Auth user that wedges that member's /teams on their next visit
-#     — re-signup 422s against the existing user). Org owners have ONE
-#     PaperclipCompany row PER MEMBER, all sharing the same ``company_id``;
-#     each row's ``paperclip_user_id`` is a separate Better Auth user.
-#     Pass BOTH --email (scopes the Aurora delete) AND --user-id (the
-#     member's Clerk user_id, scopes the DDB delete) so recovering one
-#     member never touches another member's failed row.
+**5b. Delete each org member's orphan Aurora `user` row** via the recovery
+script, so no member is missed. A surviving member row leaves an orphan Better
+Auth user that wedges that member's `/teams` on their next visit (re-signup
+422s against the existing user). Org owners have ONE PaperclipCompany row **per
+member**, all sharing the same `company_id`; each row's `paperclip_user_id` is
+a separate Better Auth user. Pass BOTH `--email` (scopes the Aurora delete) AND
+`--user-id` (the member's Clerk user id, scopes the DDB delete) so recovering
+one member never touches another member's failed row.
+
+```bash
 cd apps/backend
-# email:clerk_user_id pairs for each member being reprovisioned
-for pair in member1@isol8.co:user_xxx member2@isol8.co:user_yyy member3@isol8.co:user_zzz; do
+for pair in member1@example.com:user_xxx member2@example.com:user_yyy; do
   email="${pair%%:*}"; uid="${pair##*:}"
   uv run python -m scripts.recover_orphan_paperclip_member \
     --env prod --email "$email" --user-id "$uid" --owner-id "$OWNER" --apply
 done
-# Post-condition: SELECT email FROM "user" must show ONLY
-# admin+paperclip@isol8.co (the prod bootstrap). The script refuses to
-# delete it, refuses ambiguous email matches, and refuses to delete more
-# than one failed DDB row without --user-id — so cross-check the remaining
-# rows before declaring the org clean.
+```
 
-# 5c. Delete all PaperclipCompany DDB rows for the org's members.
-for uid in user_xxx user_yyy user_zzz; do
-  aws dynamodb delete-item --table-name isol8-prod-paperclip-companies \
-    --key "{\"user_id\":{\"S\":\"$uid\"}}" --profile isol8-admin --region us-east-1
+Post-condition: `SELECT email FROM "user"` must show ONLY
+`admin+paperclip@isol8.co` (the prod bootstrap). The script refuses to delete
+it, refuses ambiguous email matches, and refuses to delete more than one failed
+DDB row without `--user-id` — so cross-check the remaining rows before
+declaring the org clean.
+
+**5c. Delete all PaperclipCompany DDB rows for the org's members.**
+
+```bash
+for uid in user_xxx user_yyy; do
+  aws dynamodb delete-item --table-name lightbulb-prod-paperclip-companies \
+    --key "{\"user_id\":{\"S\":\"$uid\"}}"
 done
 ```
 
-**Hands-off after step 5c.** Steps 6–8 require the user's Clerk session
-and physical machine:
+---
 
-6. **Visit `/chat`** → frontend polls `GET /container/status` → backend's
-   `ensure_user_ready` re-runs `provision_org` (re-seeds Paperclip company
-   + Friday + Atlas with current adapter wiring) and dispatches
-   `background_provision` which creates a new per-user ECS service.
-   The service clones from the CDK base task def (e.g.
-   `isol8-prod-openclaw:55`) so it automatically picks up the latest
-   pinned OpenClaw image — no manual task-def step needed.
-7. **Hit Hire on each marketplace listing** the org owns. Seller-self-deploy
-   bypass (PR #712) skips Stripe checkout.
-8. **Re-pair the desktop app** if used. The container row's
-   `operator_device_id` + `operator_priv_key_enc` were wiped with step 4.
+## Hands-off after 5c
 
-**Multi-member org caveat:** PaperclipCompany is keyed per-user (NOT
-per-org), so an org with N members has N DDB rows all pointing at the
-same `company_id`. Each member also has their own Better Auth user
-record in Aurora. The cleanup MUST remove every member's row in both
-places — leaving any one of them blocks re-provision (the surviving
-PaperclipCompany row short-circuits `provision_org`'s idempotency check,
-preventing Friday/Atlas re-seeding for everyone).
+6. **The owner visits `/chat`** → the frontend polls `GET /container/status` →
+   `ensure_user_ready` → `dispatch_provision` → `scripts/provision_runner.py`.
+   That runner mints the hook/gateway tokens and the Bedrock gate bearer into a
+   fresh boot secret, re-seeds the Paperclip company + starter roster with the
+   native `hermes_gateway` adapter, writes one Hermes profile per agent to
+   `<owner>/hermes/<agent>/`, and calls `CreateAgentRuntime` on
+   `AGENTCORE_HERMES_IMAGE` — so it picks up the currently pinned Hermes tag
+   with no manual image step.
+7. **Hit Hire on each marketplace listing** the org owns. The seller-self-deploy
+   bypass (PR #712) skips Stripe checkout. ⚠️ A retry after a lost response now
+   mints a SECOND agent from the same listing — the `already_installed` heal
+   read a `.template` sidecar on EFS and is gone. Check the roster before
+   re-clicking.
+8. **Re-pair the desktop app** if used — the containers row's device trust went
+   with step 4.
+
+**Multi-member org caveat:** PaperclipCompany is keyed per-user (NOT per-org),
+so an org with N members has N DDB rows all pointing at the same `company_id`.
+Each member also has their own Better Auth user record in Aurora. The cleanup
+MUST remove every member's row in both places — leaving any one of them blocks
+re-provision (the surviving PaperclipCompany row short-circuits
+`provision_org`'s idempotency check, so nobody's roster is re-seeded).

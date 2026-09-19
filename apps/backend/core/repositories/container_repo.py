@@ -697,6 +697,82 @@ async def try_claim_pass(name: str, *, interval_s: int, now: int | None = None) 
         return False
 
 
+# How long an owner-lifecycle claim stays exclusive before another caller may take it over.
+# It fences the OAuth connect / disconnect critical section in routers/connections.py: a
+# Secrets-Manager write plus the Hermes profile fan-out, tens of seconds at worst. 120 is a
+# ceiling, not a measurement -- the failure mode of a too-SHORT lease is two writers on one
+# owner's credentials, and of a too-long one is the owner waiting out a 409.
+LIFECYCLE_CLAIM_STALE_S = 120
+
+# Reserved-key row per owner, like PASS_KEY_PREFIX above: the guard must work for an owner who
+# has NO containers row yet (a connect can precede provisioning), so it cannot ride the owner's
+# own row the way the deploy claim does.
+LIFECYCLE_KEY_PREFIX = "__lifecycle__#"
+
+
+async def try_claim_owner_lifecycle(owner_id: str) -> str | None:
+    """Take the owner's exclusive lifecycle lease, or ``None`` if someone else holds it.
+
+    Replaces the EFS file lock ``owner_lifecycle`` used to take: the backend runs 2-4 tasks and
+    its shared mount is gone, so a filesystem lock now succeeds independently in every task and
+    fences nothing. One conditional write is the only thing that still serializes them.
+
+    FAILS CLOSED -- any fault refuses, rather than admitting every task into a section that
+    writes an owner's credentials. A refused connect is a 409 the caller retries; two admitted
+    connects interleave a Secrets-Manager write with a disconnect's teardown.
+
+    Returns a fencing token: a caller that hung past ``LIFECYCLE_CLAIM_STALE_S`` was taken over,
+    and an unconditional release would delete its successor's live claim.
+    """
+    now = int(time.time())
+    token = uuid.uuid4().hex
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": f"{LIFECYCLE_KEY_PREFIX}{owner_id}"},
+            UpdateExpression="SET claimed_at = :now, tok = :tok",
+            ConditionExpression="attribute_not_exists(claimed_at) OR claimed_at < :cutoff",
+            ExpressionAttributeValues={
+                ":now": now,
+                ":tok": token,
+                ":cutoff": now - LIFECYCLE_CLAIM_STALE_S,
+            },
+        )
+        return token
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning("try_claim_owner_lifecycle: DDB fault for owner=%s: %s", owner_id, e)
+        return None
+    except Exception as e:  # noqa: BLE001 -- BotoCoreError carries no Error code; fail closed
+        logger.warning("try_claim_owner_lifecycle: fault for owner=%s: %s", owner_id, e)
+        return None
+
+
+async def release_owner_lifecycle_claim(owner_id: str, *, token: str) -> None:
+    """Drop the owner's lifecycle claim, but only if ``token`` still holds it.
+
+    Never raises: it runs in the guard's ``finally``, where an exception would mask the real
+    error, and a lost release self-expires after ``LIFECYCLE_CLAIM_STALE_S``.
+    """
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": f"{LIFECYCLE_KEY_PREFIX}{owner_id}"},
+            UpdateExpression="REMOVE claimed_at, tok",
+            ConditionExpression="tok = :tok",
+            ExpressionAttributeValues={":tok": token},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning(
+                "release_owner_lifecycle_claim: failed for owner=%s -- claim expires in %ss",
+                owner_id,
+                LIFECYCLE_CLAIM_STALE_S,
+            )
+    except Exception as e:  # noqa: BLE001 -- never raises; see docstring
+        logger.warning("release_owner_lifecycle_claim: fault (%s) for owner=%s", e, owner_id)
+
+
 # How long a marketplace-deploy claim stays exclusive before another deploy may
 # take it over. Was 900 (15m) when the claim was keyed per-listing — sized for
 # a single lease. Now the claim is OWNER-WIDE (see try_claim_owner_deploy), so

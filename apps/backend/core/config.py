@@ -126,13 +126,6 @@ class Settings(BaseSettings):
     # supervises, never in-process in this backend.
     PROVISION_STATE_MACHINE_ARN: str = ""
 
-    # The BACKEND's own shared mount, used for exactly one thing: the per-owner cross-process
-    # lock directory in core/services/owner_lifecycle.py, which serializes connect/disconnect
-    # across the 2-4 backend tasks. Nothing per-owner lives under it any more -- an owner's
-    # state is their S3 Hermes profile. Replacing that guard with a DynamoDB lease is what
-    # would let this go; until then the backend task still needs the mount.
-    EFS_MOUNT_PATH: str = "/mnt/efs/users"
-
     # Public S3 URL of the hosted AWS read-only connector CloudFormation
     # template (the public-read lightbulb-{env}-cfn-templates bucket, wired by CDK
     # service-stack). The connections aws-setup endpoint feeds this as the
@@ -467,14 +460,6 @@ class Settings(BaseSettings):
     # at runtime. Provisioned by CDK from the `lightbulb/{env}/gog-keyring-password`
     # secret — must stay stable forever or existing keyrings become unreadable.
     GOG_KEYRING_PASSWORD: str = ""
-
-    # KMS CMK ARN/alias for per-container secrets (operator device private keys,
-    # gateway tokens). Provisioned by CDK as the auth-stack KMS CMK (its ARN is
-    # threaded through as `CONTAINER_SECRETS_KMS_KEY_ID`).
-    # Backend calls kms:Encrypt at provision time and kms:Decrypt at handshake
-    # time — both operations are audited via CloudTrail so we have a per-call
-    # record of which backend instance touched which container's secrets.
-    CONTAINER_SECRETS_KMS_KEY_ID: str = ""
 
     # --- Paperclip integration ---
     # Internal URL the backend uses to reach Paperclip's REST API (private subnet).

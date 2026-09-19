@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath
 from typing import Awaitable, Callable
 
 from core.config import settings
+from core.observability.metrics import put_metric
 from core.services import marketplace_safety
 from core.services.catalog_package import CatalogPackage
 from core.services.catalog_slice import (
@@ -57,6 +58,10 @@ FRIDAY_PUBLISH_ERROR_MSG = "cannot publish your default agent; only custom agent
 
 
 _AGENT_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}$")
+#: The other half of the profile key. Deliberately looser than the agent id -- an owner id is
+#: whatever Clerk minted -- but it still may not carry a ``/`` or a ``..``, which are the only
+#: two things that address a prefix other than this owner's.
+_OWNER_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
 # Content-scan ceiling for the generic text-file bucket in
 # _scan_tarball_for_safety_flags — anything larger is media/data, not config.
@@ -446,6 +451,17 @@ def _download_s3_profile(prefix: str, dest: Path) -> set[str]:
     return repo_dirs
 
 
+def _refuse_bad_id(what: str, value: str) -> None:
+    """Emit ``marketplace.path_traversal_attempt`` and raise.
+
+    That metric is the marketplace's last path-traversal trip-wire -- ``observability-stack``
+    alarms on it, and its sibling emitter went with the EFS workspace resolver. It is emitted
+    on the REFUSAL, not on a successful export, so the alarm means exactly one thing.
+    """
+    put_metric("marketplace.path_traversal_attempt")
+    raise InvalidAgentIdError(f"{what} must be alphanumeric (with . _ -), no path separators: {value!r}")
+
+
 def _resolve_agent_location(
     *, seller_id: str, agent_id: str, container: dict | None = None, config: dict | None = None
 ) -> tuple[str, str]:
@@ -455,13 +471,16 @@ def _resolve_agent_location(
     thing validating it: the S3 branch built a key from ``agent_id`` unchecked, so a
     malformed or traversal-shaped id reached ``list_objects_v2`` as a prefix. There is no
     filesystem to escape, but an unvalidated id is still how one seller's prefix gets
-    addressed with another's fragment.
+    addressed with another's fragment -- and ``seller_id`` is the other half of that key, so
+    it is checked here too rather than trusted from the caller.
 
     ``container``/``config`` are accepted and unused: the former chose between this and the
     EFS root, and the latter resolved a legacy slug against the seller's openclaw.json.
     """
     if not _AGENT_ID_RE.match(agent_id):
-        raise InvalidAgentIdError(f"agent_id must be alphanumeric (with . _ -), 3-64 chars: {agent_id!r}")
+        _refuse_bad_id("agent_id", agent_id)
+    if not _OWNER_ID_RE.match(seller_id):
+        _refuse_bad_id("seller_id", seller_id)
     return ("s3", f"{seller_id}/hermes/{agent_id}")
 
 
@@ -475,7 +494,7 @@ def resolve_workspace_agent_id(seller_id: str, agent_id: str) -> str:
     routine capture, so both run against a validated id rather than arbitrary caller input.
     """
     if not _AGENT_ID_RE.match(agent_id):
-        raise InvalidAgentIdError(f"agent_id must be alphanumeric (with . _ -), 3-64 chars: {agent_id!r}")
+        _refuse_bad_id("agent_id", agent_id)
     return agent_id
 
 
@@ -752,7 +771,7 @@ def export_agent_from_efs(
     """Read the seller's agent dir from EFS, tar it, return a CatalogPackage.
 
     The CatalogPackage carries an ``openclaw_slice`` synthesized from the
-    seller's per-user openclaw.json so the buyer-side deploy can register
+    profile's own openclaw.json so the buyer-side deploy can register
     the new agent in their config (matching the admin-catalog publish
     behavior). Without the slice, deploy_from_artifact extracts files but
     leaves the buyer's openclaw.json untouched.
@@ -797,16 +816,7 @@ def export_agent_from_efs(
         InvalidExportPathsError: a ``paths`` entry is invalid or missing.
         ExportTooLargeError: the walk crossed the export cap.
     """
-    # KNOWN GAP (M6), stated at the top rather than three steps in: the slice this publish
-    # builds is an ``openclaw.json`` projection (``extract_agent_slice``), and a Hermes
-    # workspace has no such file -- its per-agent state is ``config.yaml`` + ``.env`` in the
-    # profile. The check below is where publishing already failed for every migrated seller,
-    # after downloading the profile and building a tarball; raising first just stops paying
-    # for that. Re-shaping the slice onto the profile is Task 10 remap work.
-    config = None
-    _kind, location = _resolve_agent_location(
-        seller_id=seller_id, agent_id=agent_id, container=container, config=config
-    )
+    _kind, location = _resolve_agent_location(seller_id=seller_id, agent_id=agent_id, container=container)
     tmp_dir: tempfile.TemporaryDirectory | None = None
     try:
         # Download the Hermes S3 profile into a scratch dir; the tarball build, safety scan
@@ -820,10 +830,16 @@ def export_agent_from_efs(
         resolved_agent_id = agent_id
         tarball_bytes, contents, pruned = _build_tarball(agent_dir, paths=paths, repo_dirs=repo_dirs)
 
+        # The slice source is the PROFILE's own openclaw.json, not a per-user file on EFS.
+        # KNOWN GAP (M6): a Hermes-NATIVE profile carries config.yaml + .env and no
+        # openclaw.json, so its seller cannot publish until the slice is re-shaped onto the
+        # profile (Task 10 remap work). The refusal says exactly that rather than surfacing as
+        # "agent not registered".
+        config = _read_profile_openclaw_config(agent_dir)
         if not config:
             raise AgentNotInConfigError(
                 f"publishing agent {agent_id!r} is unavailable on this runtime: the marketplace slice is an "
-                "openclaw.json projection and a Hermes workspace has none"
+                "openclaw.json projection and this Hermes profile has none"
             )
         workspace_skill_names = _enumerate_workspace_skill_names(agent_dir)
         try:
@@ -915,17 +931,21 @@ def export_agent_from_efs(
 # ---------------------------------------------------------------------------
 
 
-def _read_staging_openclaw_config(staging_dir: Path) -> dict | None:
-    """Read an Atlas-built agent's OWN openclaw.json out of its staging dir.
+def _read_profile_openclaw_config(profile_dir: Path) -> dict | None:
+    """Read an agent's OWN openclaw.json out of a downloaded profile.
 
-    The skeleton-generator nests the agent's config (and persona files) under
-    a ``workspace/`` subdir — see atlas-skeleton-generator.js ``draftToFastIo``
-    (every generated artifact is keyed ``workspace/...``). We read
-    ``workspace/openclaw.json`` first, then fall back to a root-level
-    ``openclaw.json`` defensively. Returns the parsed dict, or ``None`` when
-    neither candidate exists / parses.
+    THE SLICE SOURCE, for both publish paths. It used to be the seller's per-USER
+    ``openclaw.json`` on EFS, which no longer exists — the profile is the only place an
+    agent's config can live now, and it is what the Atlas path already read.
+
+    The skeleton-generator nests a built agent's config (and persona files) under a
+    ``workspace/`` subdir — see atlas-skeleton-generator.js ``draftToFastIo`` (every generated
+    artifact is keyed ``workspace/...``). We read ``workspace/openclaw.json`` first, then fall
+    back to a root-level ``openclaw.json``. Returns the parsed dict, or ``None`` when neither
+    candidate exists / parses — which for a Hermes-NATIVE profile (``config.yaml`` + ``.env``,
+    no openclaw.json at all) is the normal answer, and the callers refuse the publish saying so.
     """
-    for candidate in (staging_dir / "workspace" / "openclaw.json", staging_dir / "openclaw.json"):
+    for candidate in (profile_dir / "workspace" / "openclaw.json", profile_dir / "openclaw.json"):
         if candidate.is_file():
             try:
                 data = json.loads(candidate.read_text(encoding="utf-8"))
@@ -1011,7 +1031,7 @@ def export_built_agent_from_staging(
         # Build the slice from the staging dir's OWN openclaw.json (not the owner's
         # root config) — agents.list[0] is the built agent. Same extract_agent_slice
         # logic as the seller path, just a different config source.
-        staging_config = _read_staging_openclaw_config(staging_dir)
+        staging_config = _read_profile_openclaw_config(staging_dir)
         if not staging_config:
             raise BuiltAgentConfigError(
                 f"staging agent {staging_agent_id!r} has no parseable openclaw.json — "
@@ -1176,14 +1196,7 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str, container: dict | No
     Raises the same errors as ``export_agent_from_efs``:
     InvalidAgentIdError / AgentNotFoundError / AgentNotInConfigError.
     """
-    # See ``export_agent_from_efs``: the seller's global ``openclaw.json`` is gone with the
-    # runtime, so the config-derived halves of this preview (declared skills, the agent's
-    # registration check) read as empty. The profile-derived halves -- the file list, the
-    # safety scan, the workspace skills -- are unaffected.
-    config = {}
-    _kind, location = _resolve_agent_location(
-        seller_id=seller_id, agent_id=agent_id, container=container, config=config
-    )
+    _kind, location = _resolve_agent_location(seller_id=seller_id, agent_id=agent_id, container=container)
     tmp_dir: tempfile.TemporaryDirectory | None = None
     try:
         # Fix round 1, item 3: the download itself is inside this try/finally
@@ -1194,6 +1207,9 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str, container: dict | No
         agent_dir = Path(tmp_dir.name)
         repo_dirs = _download_s3_profile(location, agent_dir)
         resolved_agent_id = agent_id
+        # Same slice source as the publish (see export_agent_from_efs): the profile's own
+        # openclaw.json, absent on a Hermes-native profile.
+        config = _read_profile_openclaw_config(agent_dir) or {}
         # Validate the agent is registered in the seller's config; the entry
         # itself is NOT used as a skills source (no per-agent skill scoping
         # exists at runtime — see the addable-skills note below).
@@ -1203,7 +1219,7 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str, container: dict | No
             None,
         )
         if not isinstance(agent_entry, dict):
-            raise AgentNotInConfigError(f"agent {agent_id!r} is not registered in the seller's openclaw.json roster")
+            raise AgentNotInConfigError(f"agent {agent_id!r} is not registered in the profile's openclaw.json roster")
 
         workspace_skill_names = _enumerate_workspace_skill_names(agent_dir)
 

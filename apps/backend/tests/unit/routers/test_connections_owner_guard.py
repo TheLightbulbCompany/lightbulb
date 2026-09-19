@@ -3,14 +3,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.config import settings
-from core.services.efs_file_lock import SidecarLockTimeoutError
-from core.services.owner_lifecycle import owner_lifecycle_guard
+from core.services.owner_lifecycle import OwnerLifecycleBusyError, owner_lifecycle_guard
 
 
 @asynccontextmanager
 async def _timing_out_guard(owner_id):
-    raise SidecarLockTimeoutError("timed out")
+    raise OwnerLifecycleBusyError("timed out")
     yield  # pragma: no cover - unreachable, keeps this a generator
 
 
@@ -50,7 +48,7 @@ async def test_disconnect_takes_the_owner_guard_around_the_teardown(async_client
 
 @pytest.mark.asyncio
 async def test_the_guard_is_taken_after_the_token_exchange_never_around_it(async_client, monkeypatch):
-    """Holding an EFS file lock across a provider round-trip would be a new problem."""
+    """Holding the lease across a provider round-trip would be a new problem."""
     from routers import connections
 
     events = []
@@ -86,12 +84,23 @@ async def test_the_guard_is_taken_after_the_token_exchange_never_around_it(async
 
 
 @pytest.mark.asyncio
-async def test_a_nested_serialize_owner_lifecycle_call_does_not_deadlock(tmp_path, monkeypatch):
-    """The write section may reach an @serialize_owner_lifecycle ecs_manager method."""
-    monkeypatch.setattr(settings, "EFS_MOUNT_PATH", str(tmp_path))
+async def test_a_nested_serialize_owner_lifecycle_call_does_not_deadlock(monkeypatch):
+    """The write section may reach another @serialize_owner_lifecycle method for the same
+    owner. Re-entry is answered from the ContextVar, so the inner call takes NO second lease --
+    which is also what stops it deadlocking against the one the outer call holds."""
+    from core.repositories import container_repo
+
+    claims = []
+    monkeypatch.setattr(
+        container_repo, "try_claim_owner_lifecycle", AsyncMock(side_effect=lambda o: claims.append(o) or "tok")
+    )
+    monkeypatch.setattr(container_repo, "release_owner_lifecycle_claim", AsyncMock())
+
     async with owner_lifecycle_guard("org_1"):
         async with owner_lifecycle_guard("org_1"):
             pass
+
+    assert claims == ["org_1"]
 
 
 def test_the_old_per_provider_lock_module_cannot_be_imported():

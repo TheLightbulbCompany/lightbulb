@@ -38,9 +38,8 @@ from core.services.credentials import (
 from core.services.credentials.apply_connection import RuntimeUnsupportedError
 from core.services.credentials import hermes_cli
 from core.services.credentials.mcp_server import reconcile_integrations
-from core.services.efs_file_lock import SidecarLockTimeoutError
 from core.services.google_identity import seed_agent_google_identity
-from core.services.owner_lifecycle import owner_lifecycle_guard
+from core.services.owner_lifecycle import OwnerLifecycleBusyError, owner_lifecycle_guard
 
 logger = logging.getLogger(__name__)
 
@@ -807,15 +806,15 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
     # Serialize the teardown against an in-flight connect: the OAuth callback
     # takes the same per-owner guard around its write section, so whichever runs
     # second sees the other's completed state and a disconnect can no longer be
-    # undone by a callback still finishing its writes. Cross-process (an EFS
-    # file lock) and per-OWNER now, not per-(owner, provider) -- a disconnect
+    # undone by a callback still finishing its writes. Cross-process (a DynamoDB
+    # lease) and per-OWNER now, not per-(owner, provider) -- a disconnect
     # also serializes against a concurrent provision or resize for the same
     # owner, which is deliberate: that race is the same bug class the old
     # per-provider lock was too narrow to catch.
     try:
         async with owner_lifecycle_guard(owner_id):
             await _disconnect_teardown(owner_id, provider, p)
-    except SidecarLockTimeoutError:
+    except OwnerLifecycleBusyError:
         # Nothing is written before the guard, so this is a clean no-op --
         # tell the caller to retry rather than surface a raw 500.
         raise HTTPException(status_code=409, detail="busy")
@@ -1093,7 +1092,7 @@ async def oauth_callback(
                     await integration_secret_store.delete(owner_id, prov)
                 return _done("error=apply_failed")
             await integrations_repo.put_status(owner_id, prov, "connected")
-    except SidecarLockTimeoutError:
+    except OwnerLifecycleBusyError:
         # The OAuth state is already consumed at this point, so nothing is
         # written before the guard -- land back on the connections page with a
         # retryable error instead of a raw 500.

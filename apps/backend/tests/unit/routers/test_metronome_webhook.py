@@ -152,7 +152,6 @@ def test_non_positive_balance_fires_revoke_when_enforcement_live(client, known_c
         ),
         patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
         _revoker() as revoke,
-        patch("core.containers.get_ecs_manager") as ecs_factory,
     ):
         gate = gate_cls.return_value
         gate.set_balance = AsyncMock()
@@ -161,7 +160,6 @@ def test_non_positive_balance_fires_revoke_when_enforcement_live(client, known_c
     gate.set_balance.assert_awaited_once_with(OWNER_ID, remaining_microcents=0)
     revoke.assert_awaited_once_with(OWNER_ID)
     # Revoke-only enforcement: the container is never stopped on low balance.
-    ecs_factory.assert_not_called()
 
 
 def test_trial_owner_low_balance_webhook_does_not_revoke(client, known_customer, monkeypatch):

@@ -1,4 +1,11 @@
-"""Workspace subscription item validation and plan derivation."""
+"""Workspace subscription item validation and plan derivation.
+
+The plan no longer sizes anything. ``ultra_pro`` used to resize the owner's ECS task
+(2 vCPU / 8 GB, and a reliability floor that refused to shrink a >10-agent roster back
+down), so five of these tests were about ``resize_user_container``. An AgentCore runtime
+has no per-owner size, so what remains is what the handler still does: derive and persist
+the plan, and fail closed on a subscription shape it cannot read.
+"""
 
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -45,11 +52,8 @@ def _account(plan="standard"):
 
 
 async def _drive(event, *, account, agents=None, set_plan_side_effect=None):
-    manager = MagicMock()
-    manager.resize_user_container = AsyncMock()
     with (
         patch.object(handlers, "billing_repo") as repo,
-        patch("core.containers.get_ecs_manager", return_value=manager),
         patch(
             "core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner",
             AsyncMock(return_value=list(agents or [])),
@@ -61,7 +65,7 @@ async def _drive(event, *, account, agents=None, set_plan_side_effect=None):
         repo.set_plan = AsyncMock(side_effect=set_plan_side_effect)
         mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
         await handlers.handle_subscription_state(event, MagicMock())
-        return repo, manager
+        return repo
 
 
 @pytest.mark.asyncio
@@ -79,75 +83,26 @@ async def test_workspace_item_persists_standard_plan_before_facts():
 
 @pytest.mark.asyncio
 async def test_ultra_item_persists_ultra_plan():
-    repo, manager = await _drive(_event(price_id="price_ultra"), account=_account())
+    repo = await _drive(_event(price_id="price_ultra"), account=_account())
 
     assert repo.set_plan.await_args.kwargs["plan"] == "ultra_pro"
-    manager.resize_user_container.assert_awaited_once_with("org_workspace", new_cpu="2048", new_memory="8192")
 
 
 @pytest.mark.asyncio
-async def test_workspace_downgrade_resizes_small_company_down():
-    from core.containers.ecs_manager import PER_USER_CPU, PER_USER_MEMORY_MIB
-
-    repo, manager = await _drive(
-        _event(), account=_account(plan="ultra_pro"), agents=[{"id": str(i)} for i in range(5)]
-    )
+async def test_a_downgrade_persists_the_standard_plan(monkeypatch):
+    """The four "resize on downgrade" tests (shrink a small roster, refuse to shrink a large
+    one, refuse on an unknown count, and never resize when set_plan itself failed) went with
+    the ECS task size. What the downgrade still owes is the durable plan write."""
+    repo = await _drive(_event(), account=_account(plan="ultra_pro"))
 
     assert repo.set_plan.await_args.kwargs["plan"] == "standard"
-    manager.resize_user_container.assert_awaited_once_with(
-        "org_workspace", new_cpu=PER_USER_CPU, new_memory=PER_USER_MEMORY_MIB
-    )
 
 
 @pytest.mark.asyncio
-async def test_workspace_downgrade_with_large_roster_preserves_reliability_size():
-    count_agents = AsyncMock(return_value=37)
-    with patch(
-        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
-        count_agents,
-    ):
-        repo, manager = await _drive(
-            _event(), account=_account(plan="ultra_pro"), agents=[{"id": str(i)} for i in range(11)]
-        )
-
-    assert repo.set_plan.await_args.kwargs["plan"] == "standard"
-    manager.resize_user_container.assert_not_awaited()
-    count_agents.assert_awaited_once_with("org_workspace")
-
-
-@pytest.mark.asyncio
-async def test_workspace_downgrade_with_unknown_count_does_not_shrink():
-    count_agents = AsyncMock(return_value=0)
-    with patch(
-        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
-        count_agents,
-    ):
-        repo, manager = await _drive(_event(), account=_account(plan="ultra_pro"))
-
-    assert repo.set_plan.await_args.kwargs["plan"] == "standard"
-    manager.resize_user_container.assert_not_awaited()
-    count_agents.assert_awaited_once_with("org_workspace")
-
-
-@pytest.mark.asyncio
-async def test_set_plan_failure_skips_ultra_resize():
-    """Never resize when Stripe's plan cannot be durably reflected locally."""
-    repo, manager = await _drive(
-        _event(price_id="price_ultra"),
-        account=_account(),
-        set_plan_side_effect=RuntimeError("DynamoDB unavailable"),
-    )
-
-    repo.set_plan.assert_awaited_once()
-    manager.resize_user_container.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_same_plan_rewrite_does_not_resize():
-    repo, manager = await _drive(_event(price_id="price_ultra"), account=_account(plan="ultra_pro"))
+async def test_a_same_plan_rewrite_is_still_persisted():
+    repo = await _drive(_event(price_id="price_ultra"), account=_account(plan="ultra_pro"))
 
     assert repo.set_plan.await_args.kwargs["plan"] == "ultra_pro"
-    manager.resize_user_container.assert_not_awaited()
 
 
 @pytest.mark.asyncio

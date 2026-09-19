@@ -19,7 +19,7 @@ def _runtime():
     """Stub the side effects, so tests assert on intent not on AWS."""
     with (
         patch("core.services.owner_facts.write_owner_facts", AsyncMock()) as facts,
-        patch("core.containers.get_ecs_manager") as ecs,
+        patch("core.services.hermes_provisioning.delete_workspace_runtime", AsyncMock()) as runtime,
         patch(
             "core.services.paperclip_provisioning.build_paperclip_provisioning",
             AsyncMock(side_effect=RuntimeError("paperclip unavailable in tests")),
@@ -33,14 +33,12 @@ def _runtime():
     ):
         # Returns the containers row's ALL_OLD image — the only handle on the
         # AIP arns once the row is gone.
-        ecs.return_value.delete_user_service = AsyncMock(
-            return_value={
-                "owner_id": "user_1",
-                "bedrock_aip_arns": {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/abc"},
-                "bedrock_role_arn": "arn:aws:iam::1:role/isol8-prod-owner-bedrock-user_1",
-            }
-        )
-        yield MagicMock(facts=facts, ecs=ecs, aips=aips, role=role, disarm=disarm)
+        runtime.return_value = {
+            "owner_id": "user_1",
+            "bedrock_aip_arns": {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/abc"},
+            "bedrock_role_arn": "arn:aws:iam::1:role/isol8-prod-owner-bedrock-user_1",
+        }
+        yield MagicMock(facts=facts, runtime=runtime, aips=aips, role=role, disarm=disarm)
 
 
 @pytest.mark.parametrize("status", ["active", "trialing", "trial_local", "past_due"])
@@ -58,7 +56,7 @@ async def test_an_owner_someone_still_pays_for_is_left_alone(_runtime, status):
 
     assert ran is False
     _runtime.facts.assert_not_awaited()
-    _runtime.ecs.return_value.delete_user_service.assert_not_awaited()
+    _runtime.runtime.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -80,7 +78,7 @@ async def test_stripe_cancelling_does_not_evict_a_live_apple_subscriber(_runtime
     ):
         assert await entitlement_teardown.teardown_if_unentitled("user_1", trigger="subscription_deleted") is False
 
-    _runtime.ecs.return_value.delete_user_service.assert_not_awaited()
+    _runtime.runtime.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -100,7 +98,7 @@ async def test_the_last_provider_ending_tears_the_runtime_down(_runtime):
         assert await entitlement_teardown.teardown_if_unentitled("user_1", trigger="apple_refund") is True
 
     _runtime.facts.assert_awaited_once_with("user_1", account_overrides={"subscription_status": "canceled"})
-    _runtime.ecs.return_value.delete_user_service.assert_awaited_once_with("user_1")
+    _runtime.runtime.assert_awaited_once_with("user_1")
 
 
 @pytest.mark.asyncio
@@ -130,7 +128,7 @@ async def test_teardown_reads_the_row_itself_rather_than_trusting_a_caller(_runt
 async def test_a_failing_step_does_not_abort_the_others(_runtime):
     """These run from webhook handlers, where raising means a 5xx and a provider
     retry — and retrying teardown re-enters calls that already half-succeeded."""
-    _runtime.ecs.return_value.delete_user_service = AsyncMock(side_effect=RuntimeError("ECS down"))
+    _runtime.runtime = AsyncMock(side_effect=RuntimeError("ECS down"))
 
     with patch.object(
         entitlement_teardown.billing_repo,
@@ -160,11 +158,11 @@ async def test_the_bedrock_reap_is_delegated_to_the_seam(_runtime):
     other three (admin account-wipe, DELETE /debug/provision, DELETE
     /debug/user-data) kept leaking into the same account-wide IAM role quota —
     dev, staging and prod share one AWS account. The reap now lives inside
-    ``delete_user_service``, the seam all four cross, so this path gets it by
-    crossing the seam rather than by carrying its own copy."""
+    ``hermes_provisioning.delete_workspace_runtime``, the seam all four cross, so this path
+    gets it by crossing the seam rather than by carrying its own copy."""
     assert await _cancel() is True
 
-    _runtime.ecs.return_value.delete_user_service.assert_awaited_once_with("user_1")
+    _runtime.runtime.assert_awaited_once_with("user_1")
     _runtime.aips.assert_not_awaited()
     _runtime.role.assert_not_awaited()
 
@@ -229,7 +227,6 @@ async def test_disarm_runs_before_paperclip_disable():
 
     with (
         patch("core.services.owner_facts.write_owner_facts", AsyncMock()),
-        patch("core.containers.get_ecs_manager") as ecs,
         patch(
             "core.services.paperclip_provisioning.build_paperclip_provisioning",
             AsyncMock(return_value=provisioning),
@@ -239,13 +236,16 @@ async def test_disarm_runs_before_paperclip_disable():
             "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
             side_effect=_disarm,
         ),
+        patch(
+            "core.services.hermes_provisioning.delete_workspace_runtime",
+            AsyncMock(return_value={"owner_id": "org_1"}),
+        ),
         patch.object(
             entitlement_teardown.billing_repo,
             "get_by_owner_id",
             AsyncMock(return_value={"owner_id": "org_1", "subscription_status": "canceled"}),
         ),
     ):
-        ecs.return_value.delete_user_service = AsyncMock(return_value={"owner_id": "org_1"})
         assert await entitlement_teardown.teardown_if_unentitled("org_1", trigger="subscription_deleted") is True
 
     assert order == ["disarm", "disable"]
@@ -270,17 +270,17 @@ async def test_a_resubscribe_mid_teardown_aborts_before_anything_is_destroyed():
             {"owner_id": "user_1", "subscription_status": "active"},
         ]
     )
+    runtime = AsyncMock()
     with (
         patch("core.services.owner_facts.write_owner_facts", AsyncMock()),
-        patch("core.containers.get_ecs_manager") as ecs,
+        patch("core.services.hermes_provisioning.delete_workspace_runtime", runtime),
         patch.object(entitlement_teardown.billing_repo, "get_by_owner_id", reads),
     ):
-        ecs.return_value.delete_user_service = AsyncMock()
         ran = await entitlement_teardown.teardown_if_unentitled("user_1", trigger="subscription_deleted")
 
     assert ran is False
-    # Nothing destructive ran — no container delete, so no reap behind it.
-    ecs.return_value.delete_user_service.assert_not_awaited()
+    # Nothing destructive ran — no runtime delete, so no reap behind it.
+    runtime.assert_not_awaited()
     assert reads.await_count == 2
 
 
@@ -302,7 +302,7 @@ async def test_a_failing_seam_does_not_abort_the_rest_of_the_teardown(_runtime):
     """Best-effort: this runs from a webhook handler where raising means a 5xx
     and a provider retry, and retrying re-enters calls that half-succeeded. The
     seam raises on a partial reap, so this covers that too."""
-    _runtime.ecs.return_value.delete_user_service = AsyncMock(side_effect=RuntimeError("reap incomplete"))
+    _runtime.runtime = AsyncMock(side_effect=RuntimeError("reap incomplete"))
 
     assert await _cancel() is True
 

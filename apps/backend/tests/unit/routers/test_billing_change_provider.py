@@ -65,7 +65,6 @@ def cold_reprovision():
     # modelPolicy key; None = "no task def yet", i.e. the env pin decides.
     manager._deployed_image_tag = AsyncMock(return_value=None)
     with (
-        patch("core.containers.get_ecs_manager", return_value=manager),
         patch(
             "core.repositories.container_repo.get_by_owner_id",
             new=AsyncMock(return_value={"owner_id": "owner", "status": "running"}),

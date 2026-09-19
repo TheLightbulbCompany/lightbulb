@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
-import { Template } from "aws-cdk-lib/assertions";
+import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
 import { describe, expect, it } from "vitest";
 import { ContainerStack } from "../lib/stacks/container-stack";
@@ -244,5 +244,56 @@ describe("hermes runtime wiring", () => {
     expect(flatten(profiles!.Action)).toEqual(expect.arrayContaining(["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]));
     // Scoped to the hermes/ sub-prefix only: the backend must stay out of the litestream replicas.
     expect(flatten(profiles!.Resource)).toEqual(["arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/hermes/*"]);
+  });
+
+  it("the owner boundary permits AgentCore Browser use, and the base policy grants none", () => {
+    const boundary = managedPolicyStatements(dev.containerTemplate, "lightbulb-dev-owner-bedrock-boundary");
+    const stmt = boundary.find((s) => s.Sid === "BoundaryAgentCoreBrowserUse");
+    expect(flatten(stmt?.Action)).toEqual(expect.arrayContaining([
+      "bedrock-agentcore:StartBrowserSession", "bedrock-agentcore:GetBrowserSession",
+      "bedrock-agentcore:StopBrowserSession", "bedrock-agentcore:ConnectBrowserAutomationStream",
+      "bedrock-agentcore:SaveBrowserSessionProfile"]));
+    expect(flatten(stmt?.Action)).not.toContain("bedrock-agentcore:ListBrowserSessions"); // the §2c fence
+    expect(flatten(stmt?.Resource).join(" ")).toContain(":aws:browser/aws.browser.v1");
+    const base = managedPolicyStatements(dev.containerTemplate, "lightbulb-dev-owner-bedrock-base");
+    expect(base.some((s) => /Browser/.test(s.Sid ?? ""))).toBe(false); // the grant is inline, per owner
+  });
+
+  it("grants the backend task role browser profile, session and live-view management, and nothing more", () => {
+    dev.serviceTemplate.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "AgentCoreBrowserManage",
+            Action: Match.arrayEquals([
+              "bedrock-agentcore:CreateBrowserProfile",
+              "bedrock-agentcore:GetBrowserProfile",
+              "bedrock-agentcore:ListBrowserProfiles",
+            ]),
+            // CFN collapses a single-element Resource array to a bare string.
+            Resource: "arn:aws:bedrock-agentcore:us-east-1:877352799272:browser-profile/*",
+          }),
+          Match.objectLike({
+            Sid: "AgentCoreBrowserSessionView",
+            Action: Match.arrayEquals([
+              "bedrock-agentcore:GetBrowserSession",
+              "bedrock-agentcore:ListBrowserSessions",
+              "bedrock-agentcore:ConnectBrowserLiveViewStream",
+            ]),
+            Resource: Match.arrayEquals([
+              "arn:aws:bedrock-agentcore:us-east-1:877352799272:browser/*",
+              "arn:aws:bedrock-agentcore:us-east-1:aws:browser/aws.browser.v1",
+            ]),
+          }),
+        ]),
+      }),
+    });
+
+    // The backend never starts a session or deletes a profile in v1 (design §2d): it discovers
+    // sessions by List-then-Get and only presigns the live-view URL. DeleteBrowserProfile in
+    // particular is a deliberately absent grant, not an oversight -- see PR #2790 review finding 1.
+    const doc = JSON.stringify(dev.serviceTemplate.findResources("AWS::IAM::Policy"));
+    expect(doc).not.toContain("bedrock-agentcore:StartBrowserSession");
+    expect(doc).not.toContain("bedrock-agentcore:DeleteBrowserProfile");
   });
 });

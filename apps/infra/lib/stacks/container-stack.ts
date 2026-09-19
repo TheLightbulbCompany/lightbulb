@@ -283,6 +283,28 @@ export class ContainerStack extends cdk.Stack {
             `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default/workload-identity/*`,
           ],
         }),
+        // Ceiling only. The GRANT is the per-owner inline policy `owner-browser`
+        // (bedrock_aip.ensure_owner_browser_policy), which names that workspace's own profile ARN --
+        // a boundary applies to inline policies too, so without this twin the inline grant is inert
+        // (#2705). Deliberately NOT mirrored into ownerBedrockBasePolicy, and deliberately WITHOUT
+        // ListBrowserSessions: that omission is what stops a rogue runtime learning another tenant's
+        // session id (design §1, §2c).
+        new iam.PolicyStatement({
+          sid: "BoundaryAgentCoreBrowserUse",
+          actions: [
+            "bedrock-agentcore:StartBrowserSession",
+            "bedrock-agentcore:GetBrowserSession",
+            "bedrock-agentcore:StopBrowserSession",
+            "bedrock-agentcore:ConnectBrowserAutomationStream",
+            "bedrock-agentcore:SaveBrowserSessionProfile",
+          ],
+          // BOTH resources carry StartBrowserSession: a start with profileConfiguration authorizes against
+          // the PROFILE arn too (dev spike 2026-09-19 -- the 403 named browser-profile/<id>, not the browser).
+          resources: [
+            `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`,
+            `arn:aws:bedrock-agentcore:${this.region}:${this.account}:browser-profile/*`,
+          ],
+        }),
         new iam.PolicyStatement({
           sid: "BoundaryAgentCoreTelemetry",
           actions: [

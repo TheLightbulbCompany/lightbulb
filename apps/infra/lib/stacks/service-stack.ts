@@ -439,6 +439,33 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // AgentCore Browser: the backend mints/reads the per-workspace profile and discovers the
+    // live session itself (design §2c -- nothing in the runtime reports one). No
+    // StopBrowserSession and no UpdateBrowserStream: the backend never stops a session and
+    // human takeover ships in no version of this plan.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AgentCoreBrowserManage",
+        actions: [
+          "bedrock-agentcore:CreateBrowserProfile",
+          "bedrock-agentcore:GetBrowserProfile",
+          "bedrock-agentcore:ListBrowserProfiles",
+        ],
+        resources: [agentcoreArn("browser-profile/*")],
+      }),
+    );
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AgentCoreBrowserSessionView",
+        actions: [
+          "bedrock-agentcore:GetBrowserSession",
+          "bedrock-agentcore:ListBrowserSessions",
+          "bedrock-agentcore:ConnectBrowserLiveViewStream",
+        ],
+        resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
+      }),
+    );
+
     // Self-account trust-pin gate (aws-sts scope tiers, Task 5): the backend
     // reads the trust policy of a pasted our-account connector role before
     // trusting it. Scoped to the single fixed role name CFN mints for this

@@ -6,8 +6,8 @@ row in the per-env gate-tokens table keyed on that hash. This module is the
 backend WRITER of those rows.
 
 Hash-only storage: the plaintext token exists exactly ONCE — at mint time, when
-it is returned to the caller for injection into the container's ECS
-task-definition env (``AWS_BEARER_TOKEN_BEDROCK``). Nothing persists the
+it is returned to the caller for the owner's boot secret, from which the runtime
+exports ``AWS_BEARER_TOKEN_BEDROCK``. Nothing persists the
 plaintext (mirrors ``api_key_repo`` / hook-token posture): a leaked table row
 cannot be turned back into a usable token, and a compromised token is handled by
 rotate (reprovision) or deny (kill switch), never by reading it back.
@@ -26,17 +26,12 @@ Lambda's own ``TOKENS_TABLE`` and ``bedrock_aip._aip_name``'s ``lightbulb-{env}-
 scheme. An explicit ``BEDROCK_GATE_TOKENS_TABLE`` override wins (tests / manual
 wiring).
 
-Lifetime: a token row lives until NOTHING CAN PRESENT IT. The token reaches a
-container only as an inline env var in its ECS task definition, frozen at task
-start, so the DDB side and the container side are coupled only by a redeploy
-that actually lands. Minting therefore schedules nothing; a superseded row is
-deleted only once ``_presentable_gate_token_hashes`` confirms that neither the
-owner's ECS **service task definition** (what will launch next — this covers
-scale-to-zero, crash/restart, and a roll that never landed) nor any **task ECS
-has not finished stopping** still carries it. The service-task-definition half
-is what actually decides things here; the live-task half is a correctness guard
-that the evaluation points make inert in practice — see that function's
-docstring before assuming it fires.
+Lifetime: a token row lives until NOTHING CAN PRESENT IT. The token reaches the
+runtime through its ONE boot secret, read at cold start, so the DDB side and the
+runtime side are coupled only by a boot that actually happens — a warm microVM
+keeps whatever it read. Minting therefore schedules nothing; a superseded row is
+deleted only once ``_presentable_gate_token_hashes`` confirms the owner's
+AgentCore runtime no longer names a boot secret carrying it.
 
 ``deny_gate_token`` (the kill switch) covers the SAME set, current hash plus
 tracked superseded hashes. It has to: a superseded token now outlives the mint
@@ -70,7 +65,6 @@ import json
 import logging
 import os
 import secrets
-from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
@@ -78,7 +72,6 @@ from botocore.exceptions import ClientError
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import container_repo
-from core.services.runtime_transport import host_for
 
 logger = logging.getLogger(__name__)
 
@@ -102,31 +95,26 @@ logger = logging.getLogger(__name__)
 # retained task-definition revision).
 _SUPERSEDED_FIELD = "bedrock_gate_superseded_hashes"
 
-# The env var whose value the predicate hashes. ``ecs_manager`` injects the same
+# The env var whose value the predicate hashes. Provisioning injects the same
 # token twice — here and as ``ANTHROPIC_AUTH_TOKEN`` for the Claude Code ACP
 # harness — but the harness pair is PAID-ONLY (skipped for bedrock_trial and for
-# revoked owners), so reading it would make a free-tier task definition look
-# tokenless and expire a token its container is actively using. This one is
+# revoked owners), so reading it would make a free-tier runtime look tokenless and
+# expire a token it is actively using. This one is
 # injected for every Bedrock owner whenever a gate URL resolves.
 _GATE_TOKEN_ENV = "AWS_BEARER_TOKEN_BEDROCK"
 
-# Hash chars logged for correlation against a `describe-task-definition` byte
-# comparison -- long enough to be useful for that, short enough that a log
-# reader can never reconstruct or brute-force the plaintext from it.
+# Hash chars logged for correlation against the boot secret's own bearer -- long
+# enough to be useful for that, short enough that a log reader can never
+# reconstruct or brute-force the plaintext from it.
 _HASH_PREFIX_LEN = 12
 
-# Appended to every "the ECS answer was incomplete" RuntimeError. The predicate
+# Appended to every "the runtime answer was incomplete" RuntimeError. The predicate
 # has exactly ONE failure direction it is allowed to take (a token outlives its
-# usefulness) and one it must never take (a live container locked out), and the
-# whole class of bugs here is ECS reporting per-resource failures INSIDE a 200 —
-# partial data that no `except` sees and that reads as positive proof of
-# absence. Every such path raises with this suffix so the log says which.
-_INCOMPLETE_NOTE = " — incomplete ECS data, keeping the rows"
+# usefulness) and one it must never take (a live runtime locked out), so every
+# UNKNOWN has to raise rather than read as positive proof of absence. This suffix
+# is what makes the log say which.
+_INCOMPLETE_NOTE = " — incomplete runtime data, keeping the rows"
 
-# Page cap for the ListTasks enumeration (100 ARNs/page). ECS bounds a service's
-# stopped-task history far below this; blowing through it means the enumeration
-# is not terminating, which is unknown, not empty.
-_MAX_TASK_PAGES = 50
 
 # The AgentCore runtime env var naming the boot secret -- NOT the bearer plaintext.
 # M4-R4/R5 ruling: there is exactly ONE boot-secret mechanism (M1's, already shipped
@@ -162,122 +150,6 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _owner_service_view(owner_id: str) -> tuple[Any, str, str]:
-    """``(ecs client, cluster arn, service name)`` for the owner's container.
-
-    Goes through the ``EcsManager`` singleton so the ECS wiring and the
-    service-name derivation keep exactly one definition. Imported lazily —
-    ``ecs_manager`` imports this module (also lazily) and a module-scope import
-    here would close the cycle.
-    """
-    from core.containers import get_ecs_manager
-
-    mgr = get_ecs_manager()
-    return mgr._ecs, mgr._cluster, mgr._service_name(owner_id)
-
-
-def _refers_to(identifier: str | None, service_name: str) -> bool:
-    """True when an ECS-returned identifier names the service we asked about.
-
-    DescribeServices echoes back either the bare name we passed (``serviceName``,
-    and the ``arn`` of a MISSING failure when it could not resolve one) or a
-    full ARN, so compare on the last path segment.
-    """
-    return bool(identifier) and identifier.rsplit("/", 1)[-1] == service_name
-
-
-async def _task_def_gate_token(ecs: Any, task_def_arn: str) -> str | None:
-    """The gate bearer token baked into a task definition's env, or None.
-
-    None means "this definition carries no gate token" — a real answer for a
-    non-Bedrock owner, or for break-glass direct mode where no gate URL
-    resolves. An INCOMPLETE response is not that answer: every registered task
-    definition has at least one container definition, so a reply missing them
-    is missing data, and reading it as "no token" would help delete a live row.
-    Raise instead — the caller keeps the rows (see ``_INCOMPLETE_NOTE``).
-    """
-    resp = await run_in_thread(ecs.describe_task_definition, taskDefinition=task_def_arn)
-    containers = (resp.get("taskDefinition") or {}).get("containerDefinitions")
-    if not containers:
-        raise RuntimeError(
-            f"DescribeTaskDefinition returned no container definitions for {task_def_arn}{_INCOMPLETE_NOTE}"
-        )
-    for container in containers:
-        for env in container.get("environment", []):
-            if env.get("name") == _GATE_TOKEN_ENV:
-                return env.get("value")
-    return None
-
-
-async def _live_task_definition_arns(ecs: Any, cluster: str, service_name: str) -> list[str]:
-    """Task-definition ARNs of the service's tasks that have not stopped yet.
-
-    Both desired states are listed because a task on its way out shows
-    ``desiredStatus=STOPPED`` before ``lastStatus`` reaches STOPPED. The filter
-    is ``lastStatus != "STOPPED"``, so it admits DEACTIVATING / STOPPING /
-    DEPROVISIONING as well as RUNNING — a terminating task is kept because it
-    may still be mid-request, and keeping is the safe direction.
-
-    This is NOT a dead branch (an earlier comment claimed it was, reading
-    "no RUNNING task with desiredStatus=STOPPED in prod" as "nothing is ever
-    listed here"). A STOPPING task has ``desiredStatus=STOPPED`` by definition,
-    and ``runningCount``/``pendingCount`` do not count a DEPROVISIONING task, so
-    ECS can start the replacement while the old one tears down. What makes it
-    inert is WHEN we evaluate — see ``_presentable_gate_token_hashes``.
-
-    An INCOMPLETE enumeration raises rather than returning a short list, on both
-    halves — a missing ARN here reads downstream as "no task presents that
-    token", which is the deletion decision.
-    """
-    task_arns: list[str] = []
-    for desired_status in ("RUNNING", "STOPPED"):
-        # PAGINATE. ListTasks returns at most 100 ARNs plus a nextToken, in NO
-        # guaranteed order, so a crash-looping service with a long stopped-task
-        # history can push the one still-terminating task that proves the token
-        # presentable onto a later page. Reading page 1 as the whole answer
-        # deletes it.
-        next_token: str | None = None
-        for _ in range(_MAX_TASK_PAGES):
-            kwargs = {"cluster": cluster, "serviceName": service_name, "desiredStatus": desired_status}
-            if next_token:
-                kwargs["nextToken"] = next_token
-            resp = await run_in_thread(ecs.list_tasks, **kwargs)
-            task_arns.extend(resp.get("taskArns") or [])
-            next_token = resp.get("nextToken")
-            if not next_token:
-                break
-        else:
-            # Still paging past the cap: the enumeration is unfinished, and an
-            # unfinished list is unknown, not empty.
-            raise RuntimeError(
-                f"ListTasks for {service_name} ({desired_status}) exceeded {_MAX_TASK_PAGES} pages{_INCOMPLETE_NOTE}"
-            )
-
-    arns: list[str] = []
-    # DescribeTasks caps at 100 ids per call. Chunk rather than truncate — the
-    # STOPPED-desired list is mostly stopped history, and ListTasks promises no
-    # ordering, so an arbitrary cap would silently decide which tasks count.
-    for offset in range(0, len(task_arns), 100):
-        chunk = task_arns[offset : offset + 100]
-        resp = await run_in_thread(ecs.describe_tasks, cluster=cluster, tasks=chunk)
-        tasks = resp.get("tasks") or []
-        # ECS reports per-resource problems in `failures` INSIDE a 200, so a
-        # short `tasks` list is not an exception and not an answer. If the
-        # dropped ARN was an unstopped task on the superseded definition, the
-        # comprehension below would quietly conclude nothing presents that
-        # token.
-        if resp.get("failures") or {t.get("taskArn") for t in tasks} != set(chunk):
-            raise RuntimeError(
-                f"DescribeTasks returned {len(tasks)} of {len(chunk)} tasks for {service_name}{_INCOMPLETE_NOTE}"
-            )
-        arns.extend(
-            task["taskDefinitionArn"]
-            for task in tasks
-            if task.get("lastStatus") != "STOPPED" and task.get("taskDefinitionArn")
-        )
-    return arns
-
-
 def _describe_agent_runtime(runtime_arn: str) -> dict:
     """``GetAgentRuntime`` for one workspace's runtime. Sync -- run off ``run_in_thread``."""
     client = boto3.client("bedrock-agentcore-control", region_name=settings.AWS_REGION)
@@ -298,7 +170,6 @@ async def _agentcore_presentable_hashes(owner_id: str, runtime_arn: str) -> dict
     """Hashes an AgentCore runtime can still present, mapped to why.
 
     One runtime per workspace (report 04 risk 3), so this is one ``GetAgentRuntime`` call and
-    no per-task enumeration -- simpler than the ECS half below.
 
     The runtime's ``environmentVariables`` carry ONLY the boot secret's NAME
     (``LIGHTBULB_SECRET_ID``), never the bearer plaintext -- see ``_BOOT_SECRET_ENV``'s
@@ -335,124 +206,27 @@ async def _agentcore_presentable_hashes(owner_id: str, runtime_arn: str) -> dict
 
 
 async def _presentable_gate_token_hashes(owner_id: str) -> dict[str, str]:
-    """Hashes of every gate token the owner's container can still present,
-    mapped to WHY -- which half of the predicate holds it alive. That reason
-    is what makes the expiry decision log a diagnosis instead of a verdict.
+    """Hashes of every gate token the owner's runtime can still present, mapped to WHY.
+    That reason is what makes the expiry decision log a diagnosis instead of a verdict.
 
-    An AgentCore owner (``containers.runtime_host == "agentcore"``) never reaches the ECS
-    half below -- see ``_agentcore_presentable_hashes``.
+    One runtime per workspace (report 04 risk 3), so the whole predicate is
+    ``_agentcore_presentable_hashes``: one ``GetAgentRuntime`` plus the boot secret it names.
+    The ECS half this used to also carry -- the service's current task definition plus every
+    not-yet-stopped task's definition, each read for its baked ``AWS_BEARER_TOKEN_BEDROCK``
+    -- is gone with the service.
 
-    THE PREDICATE. Two sources, and in this fleet only the first one decides
-    anything:
-
-    1. the ECS **service's current task definition** — what the service will
-       launch next. A drained service running nothing still points at it, so
-       this is what keeps a token alive across scale-to-zero, a crash/restart,
-       and (the incident) a redeploy that never landed. **This is the half that
-       does the work today.**
-    2. **live tasks** — anything ECS has not finished stopping, on whatever
-       definition it launched from. Reachable (see
-       ``_live_task_definition_arns``), but inert AT THE EVALUATION POINTS: the
-       roll-confirmation call fires once the NEW task is RUNNING, by which time
-       single-writer has long since stopped the old one, and the mint-time
-       backstop runs when the service is scaled to zero. So in practice every
-       ARN it contributes is already the service's own definition. It is not
-       "forbidden by ``SINGLE_WRITER_DEPLOYMENT_CONFIG``" — that config bars
-       old and new tasks from RUNNING together, not a terminating task from
-       being listed — and it becomes load-bearing the moment anyone raises
-       ``maximumPercent`` above 100 or evaluates mid-teardown.
-
-    Answering from running tasks alone would be WORSE than the TTL it replaces.
-    During the incident's reprovision the service was already drained to zero
-    when the new token was minted, so that rule would have deleted the live
-    token on the spot instead of an hour later.
-
-    Raises on any ECS failure — the caller turns that into "keep the row".
-
-    Returning ``{}`` DELETES every tracked row, so it is only ever returned
-    from a POSITIVE finding that this owner has no service: an ``INACTIVE``
-    status, or an explicit ``MISSING`` failure for the identifier we asked
-    about. Never from missing data.
-
-    That distinction is the whole safety property, and it is easy to lose
-    because **ECS reports per-resource failures inside a SUCCESSFUL response**,
-    not as an exception — so a broad ``except`` cannot be the fail-open
-    mechanism. Partial data must be turned into a raise explicitly, on every
-    call: a service neither described nor reported MISSING, a live service with
-    no ``taskDefinition``, an unfinished ``ListTasks`` pagination, a
-    ``DescribeTasks`` chunk that came back short or with failures, and a
-    ``DescribeTaskDefinition`` with no container definitions. Each of those
-    otherwise reads as "nothing presents this token" and permanently deletes a
-    credential the running container is using — ``UnrecognizedClientException``
-    on its next inference call, the incident this module exists to prevent.
+    A row that names no runtime yet (mid-provision) presents nothing: that is a positive
+    finding, not missing data. Everything else that is UNKNOWN raises -- see
+    ``_agentcore_presentable_hashes`` and ``_INCOMPLETE_NOTE``: reading unknown as empty is
+    the deletion decision, and deleting a credential the runtime is using is
+    ``UnrecognizedClientException`` on its next inference call, the incident this module
+    exists to prevent.
     """
     row = await _container_row(owner_id) or {}
-    if host_for(row) == "agentcore" and row.get("agentcore_runtime_arn"):
-        return await _agentcore_presentable_hashes(owner_id, row["agentcore_runtime_arn"])
-
-    ecs, cluster, service_name = _owner_service_view(owner_id)
-
-    resp = await run_in_thread(ecs.describe_services, cluster=cluster, services=[service_name])
-    service = next(
-        (
-            s
-            for s in resp.get("services") or []
-            if _refers_to(s.get("serviceName") or s.get("serviceArn"), service_name)
-        ),
-        None,
-    )
-    if service is None:
-        # ECS did not describe our service. Only an explicit MISSING failure for
-        # the identifier we asked about PROVES it is gone — that is the genuine
-        # deleted-owner case, and it must still expire. A failure with any other
-        # reason, or a response carrying neither our service nor a failure for
-        # it, is unknown: ECS reports per-resource problems in `failures` inside
-        # a 200, so no exception fires and the broad except never runs.
-        if any(
-            f.get("reason") == "MISSING" and _refers_to(f.get("arn"), service_name) for f in resp.get("failures") or []
-        ):
-            # Nothing will launch, and there is no service left to enumerate
-            # tasks for.
-            return {}
-        raise RuntimeError(
-            f"DescribeServices did not resolve {service_name}: failures={resp.get('failures')}{_INCOMPLETE_NOTE}"
-        )
-    if service.get("status") == "INACTIVE":
-        # Deleted but still described for a while. Also positive absence.
+    arn = row.get("agentcore_runtime_arn")
+    if not arn:
         return {}
-
-    service_task_def = service.get("taskDefinition")
-    if not service_task_def:
-        # DescribeServices on a live service ALWAYS carries taskDefinition, so
-        # this is incomplete data, not "the service launches nothing". Treating
-        # it as the latter is the one shape that would delete a token the
-        # container is holding — the exact class the liveness predicate exists
-        # to eliminate. Raise; the caller keeps the rows.
-        raise RuntimeError(
-            f"ECS service {service_name} is {service.get('status')} but reports no task definition{_INCOMPLETE_NOTE}"
-        )
-    service_def_arns: list[str] = [service_task_def]
-    live_arns = await _live_task_definition_arns(ecs, cluster, service_name)
-
-    hashes: dict[str, str] = {}
-    # de-dupe, preserving the service def first -- an arn that is both the
-    # service's def and a live task's def is resolved once, and gets the
-    # authoritative reason.
-    for arn in dict.fromkeys(service_def_arns + live_arns):
-        token = await _task_def_gate_token(ecs, arn)
-        if not token:
-            continue
-        # NOT "a task is still running with it": the live half admits
-        # DEACTIVATING/STOPPING/DEPROVISIONING too, and asserting "running"
-        # about a task that is shutting down is exactly the kind of overclaim
-        # these reason strings exist to avoid.
-        reason = (
-            "service task definition still references it"
-            if arn in service_def_arns
-            else "a task launched from it has not stopped yet"
-        )
-        hashes.setdefault(hash_token(token), reason)
-    return hashes
+    return await _agentcore_presentable_hashes(owner_id, arn)
 
 
 async def _disarm_ttl(table, token_hash: str) -> None:
@@ -533,7 +307,7 @@ async def _drain_superseded(
     ``deny_gate_token``, expired only when nothing can present it.
 
     OFF by default, and that is a COST decision, not a correctness one: adopting
-    requires the ECS view, so it cannot share the empty-list early return below.
+    requires the runtime view, so it cannot share the empty-list early return below.
     ``expire_superseded_gate_tokens`` runs on every wake for every owner and
     must keep that early return; ``mint_gate_token`` runs once per provision, a
     path already making far more AWS calls than this, so it adopts.
@@ -636,7 +410,7 @@ async def expire_superseded_gate_tokens(owner_id: str) -> None:
     row, which is safe, and an extra call is a no-op.
 
     NEVER RAISES. Non-Bedrock owners (``chatgpt_oauth`` / ``byo_key``) have no
-    token and no tracked hashes, so this returns before touching ECS at all.
+    token and no tracked hashes, so this returns before touching AWS at all.
     """
     try:
         row = await container_repo.get_by_owner_id(owner_id)
@@ -690,9 +464,9 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     # definition, so the token the container is actually holding is presentable
     # and survives — only genuinely orphaned rows go.
     #
-    # ADOPTING here too (the once-per-provision path, which already makes the
-    # ECS calls this needs) is what heals an owner deployed into from the legacy
-    # state: task definition presents A, pointer is B, nothing tracks A, and A's
+    # ADOPTING here too (the once-per-provision path, which already makes the AWS
+    # calls this needs) is what heals an owner deployed into from the legacy
+    # state: the runtime presents A, the pointer is B, nothing tracks A, and A's
     # row still carries the one-hour ttl the old code wrote.
     superseded = await _drain_superseded(owner_id, tracked, current_hash=prior_hash, adopt_orphans=True)
 
@@ -917,7 +691,7 @@ async def deny_gate_token(owner_id: str, denied: bool) -> None:
     never outlive its tracking: expiry deletes the row outright.
 
     NO-OP when the owner has no hashes at all (nothing to deny) — callers
-    (``revoke_owner_bedrock`` / ``restore_owner_bedrock``, ``ecs_manager``'s
+    (``revoke_owner_bedrock`` / ``restore_owner_bedrock``, the provisioner's
     revoked-owner re-assert) treat this as a best-effort backstop alongside the
     IAM revoke, so the absence of a token must be silent, not an error. A hash
     whose row has already been deleted is likewise silent: the write is

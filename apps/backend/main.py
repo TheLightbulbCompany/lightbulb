@@ -272,49 +272,6 @@ async def _running_count_gauge_loop():
         await asyncio.sleep(60)
 
 
-async def _resume_wake_resize_transitions() -> None:
-    """Resume the provisioning -> running poller for containers that were
-    mid-transition on a NON-provisioning path (wake-from-stopped, resize)
-    when the backend last shut down.
-
-    SFN-owned rows are explicitly EXCLUDED (``provision_claim_id`` present):
-    the PROVISION Step Functions executor (spec §7, PR-10) survives backend
-    process death natively — bounded per-attempt + total timeout, its own
-    retries — so a "provisioning" row created via ``dispatch_provision`` no
-    longer needs an in-process resume at all; that used to be this function's
-    main job (the old boot-reconciler re-arm) and is now dead weight AT BEST
-    and UNSAFE at worst — resuming a bare, unfenced ``_await_running_transition``
-    (claim_id=None -> plain ``update_fields``, no condition) over a row an
-    SFN execution still owns could race the runner's own FENCED write with
-    an unconditioned one.
-
-    ``start_user_service`` (wake) and ``resize_user_container`` never claim a
-    provision lease — their "provisioning" writes carry no
-    ``provision_claim_id`` — so their in-process pollers dying mid-poll (a
-    deploy or crash) still leaves a real gap this covers: on boot, find
-    provisioning rows with NO stamped claim and re-kick a plain (unfenced)
-    poller for them, exactly as before. Idempotent (a poller finding an
-    already-healthy container transitions it on its first iteration and
-    exits).
-    """
-    from core.containers import get_ecs_manager
-
-    try:
-        rows = await container_repo.get_by_status("provisioning")
-    except Exception:
-        logger.warning("Could not resume wake/resize transitions on startup", exc_info=True)
-        return
-
-    ecs = get_ecs_manager()
-    for row in rows:
-        if row.get("provision_claim_id"):
-            # SFN-owned — see docstring. Not ours to resume.
-            continue
-        owner_id = row["owner_id"]
-        asyncio.create_task(ecs._await_running_transition(owner_id))
-        logger.info("Resumed provisioning -> running poller for %s (wake/resize, unclaimed)", owner_id)
-
-
 async def _build_teams_event_broker():
     """Construct the singleton TeamsEventBroker used by /ws/message.
 
@@ -395,7 +352,6 @@ async def lifespan(app: FastAPI):
     # lifespan (e.g. one ASGI test client per hypothesis example) never inherits a
     # stale "shutting down" from a prior shutdown.
     set_shutting_down(False)
-    await _resume_wake_resize_transitions()
 
     from core.services.durable_activity import run_trial_idle_sweeper
     from core.services.openclaw_work import get_openclaw_work_worker

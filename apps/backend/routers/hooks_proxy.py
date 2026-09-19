@@ -40,7 +40,6 @@ import logging
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from core.containers import get_ecs_manager
 from core.repositories import billing_repo, container_repo
 from core.services import runtime_transport
 from core.services.provision_gate import has_always_on_entitlement
@@ -55,10 +54,6 @@ RATE_LIMIT_PER_MINUTE = 60
 # Multi-task fleets get independent buckets (RULING D17: 2-4x ceiling at
 # desiredCount 2-4) — flagged in spec, not v1 work.
 _RATE = RateBucket(RATE_LIMIT_PER_MINUTE)
-
-# Module-level instance so tests can patch
-# ``routers.hooks_proxy.ecs_manager.resolve_running_container``.
-ecs_manager = get_ecs_manager()
 
 
 def _client_factory() -> httpx.AsyncClient:
@@ -169,8 +164,8 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
         )
 
     # 5. Resolve the owner's runtime row
-    resolved_container, address = await ecs_manager.resolve_running_container(owner_id)
-    if not address:
+    resolved_container = await container_repo.get_by_owner_id(owner_id)
+    if not resolved_container or not resolved_container.get("agentcore_runtime_arn"):
         return Response(
             status_code=503,
             headers={"Retry-After": "30"},

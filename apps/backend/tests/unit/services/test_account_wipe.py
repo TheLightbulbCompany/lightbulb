@@ -42,18 +42,15 @@ OWNER_ID = "user_123"
 EXPECTED_ORDER = [
     "paperclip_company",
     "paperclip_aurora_user",
-    # The gate-token rows go BEFORE the ecs_service step, which destroys the
+    # The gate-token rows go BEFORE the runtime step, which destroys the
     # containers row that holds the only pointers to them.
     "bedrock_gate_tokens",
-    "ecs_service",
-    "efs_workspace_dir",
-    # O6: replica-prefix delete rides right after the EFS wipe — leaving the
-    # S3 replicas behind resurrects pre-wipe state (incl. auth rows) on the
-    # owner's next provision. No-op ("ok") while LITESTREAM_BUCKET is unset.
-    "litestream_replicas",
-    # No bedrock_aips / bedrock_role steps: the owner's Bedrock footprint is
-    # reaped inside ecs_service, by the shared reaper at the seam every teardown
-    # path crosses (bedrock_aip.reap_owner_bedrock_resources).
+    # One step for the whole runtime: the AgentCore runtime + boot secret, the S3 profile
+    # prefix (the owner's CONTENT on this transport), the containers row and channel-links.
+    # No bedrock_aips / bedrock_role steps either: the owner's Bedrock footprint is reaped
+    # inside it, by the shared reaper at the seam every teardown path crosses
+    # (bedrock_aip.reap_owner_bedrock_resources).
+    "runtime",
     "metronome",
     "stripe",
     # Step 8b shares the "stripe" system name with Step 8 above -- one is the
@@ -180,18 +177,7 @@ def wipe_mocks():
     paperclip_company_delete = AsyncMock(return_value=None)
     paperclip_user_delete_fn = AsyncMock(return_value=None)
 
-    ecs_manager_stub = MagicMock()
-    ecs_manager_stub.delete_user_service = AsyncMock(return_value=None)
-    # The replica-delete step drains first — delete_user_service only SUBMITS
-    # the teardown, so an in-flight litestream upload could otherwise land
-    # after the prefix delete and be restored on the next provision.
-    ecs_manager_stub.wait_until_drained = AsyncMock(return_value=True)
-    get_ecs_manager_fn = MagicMock(return_value=ecs_manager_stub)
-
-    workspace_stub = MagicMock()
-    workspace_stub.delete_user_dir = MagicMock(return_value=None)
-    workspace_stub.user_path.return_value.exists.return_value = True
-    get_workspace_fn = MagicMock(return_value=workspace_stub)
+    delete_workspace_runtime_fn = AsyncMock(return_value=None)
 
     bedrock_aips_delete = AsyncMock(
         return_value=["arn:aws:bedrock:us-east-1:877352799272:inference-profile/sonnet-aip"]
@@ -247,11 +233,10 @@ def wipe_mocks():
         ("core.services.account_wipe._archive_paperclip_member_call", paperclip_archive_member),
         ("core.services.account_wipe.clerk_admin.get_organization", clerk_get_organization),
         ("core.services.account_wipe.delete_paperclip_user", paperclip_user_delete_fn),
-        ("core.services.account_wipe.get_ecs_manager", get_ecs_manager_fn),
-        ("core.services.account_wipe.get_workspace", get_workspace_fn),
+        ("core.services.account_wipe.delete_workspace_runtime", delete_workspace_runtime_fn),
         # Patched on the bedrock_aip module, not on account_wipe: the wipe no
         # longer calls these itself. They stay stubbed as a safety net — the
-        # reaper runs inside delete_user_service, which is stubbed here, so a
+        # reaper runs inside delete_workspace_runtime, which is stubbed here, so a
         # real AWS call from this suite would mean the seam wiring broke.
         ("core.billing.bedrock_aip.delete_owner_aips", bedrock_aips_delete),
         ("core.billing.bedrock_aip.delete_owner_bedrock_role", bedrock_role_delete),
@@ -304,8 +289,7 @@ def wipe_mocks():
             billing_delete=billing_delete,
             paperclip_company_delete=paperclip_company_delete,
             paperclip_user_delete_fn=paperclip_user_delete_fn,
-            ecs_manager_stub=ecs_manager_stub,
-            workspace_stub=workspace_stub,
+            delete_workspace_runtime=delete_workspace_runtime_fn,
             bedrock_aips_delete=bedrock_aips_delete,
             bedrock_role_delete=bedrock_role_delete,
             metronome_archive=metronome_archive,
@@ -355,8 +339,7 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     wipe_mocks.paperclip_user_delete_fn.assert_awaited_once_with(
         paperclip_user_id="pc_user_abc", email="owner@example.com", env="dev"
     )
-    wipe_mocks.ecs_manager_stub.delete_user_service.assert_awaited_once_with(OWNER_ID, delete_hermes_profiles=True)
-    wipe_mocks.workspace_stub.delete_user_dir.assert_called_once_with(OWNER_ID)
+    wipe_mocks.delete_workspace_runtime.assert_awaited_once_with(OWNER_ID, delete_profiles=True)
     # The Bedrock footprint is NOT the wipe's job any more — delete_user_service
     # reaps it at the seam. Stubbing that method (above) is what stops these.
     wipe_mocks.bedrock_aips_delete.assert_not_awaited()
@@ -484,7 +467,7 @@ async def test_the_wipe_delegates_the_bedrock_footprint_to_the_seam(wipe_mocks):
     wipe_mocks.bedrock_role_delete.assert_not_awaited()
 
     # The seam is reached exactly once, and it is what carries the reap.
-    wipe_mocks.ecs_manager_stub.delete_user_service.assert_awaited_once_with(OWNER_ID, delete_hermes_profiles=True)
+    wipe_mocks.delete_workspace_runtime.assert_awaited_once_with(OWNER_ID, delete_profiles=True)
 
     # The containers row is still read exactly TWICE for the whole wipe: the
     # upfront identifier snapshot, and the gate-token step's strongly-consistent
@@ -498,16 +481,16 @@ async def test_early_step_failure_does_not_abort_later_steps(wipe_mocks):
     """(b) THE key property: a collaborator raising leaves that one step
     "failed" but every later step -- especially the Clerk delete, last --
     still runs."""
-    wipe_mocks.ecs_manager_stub.delete_user_service.side_effect = RuntimeError("ECS API down")
+    wipe_mocks.delete_workspace_runtime.side_effect = RuntimeError("ECS API down")
 
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
     by_system = {s.system: s for s in report.steps}
-    assert by_system["ecs_service"].status == "failed"
-    assert "ECS API down" in (by_system["ecs_service"].error or "")
+    assert by_system["runtime"].status == "failed"
+    assert "ECS API down" in (by_system["runtime"].error or "")
 
     # Every step after the failure still ran and succeeded.
-    for system in ("efs_workspace_dir", "metronome", "usage_counters", "messaging"):
+    for system in ("metronome", "usage_counters", "messaging"):
         assert by_system[system].status == "ok", f"{system} should still have run: {by_system[system]}"
 
     # "stripe" covers two steps (Step 8 delete_stripe_customer, Step 8b
@@ -619,7 +602,7 @@ async def test_skips_paperclip_steps_when_no_paperclip_row(wipe_mocks):
     wipe_mocks.paperclip_user_delete_fn.assert_not_awaited()
     wipe_mocks.paperclip_row_delete.assert_not_awaited()
     wipe_mocks.pending_brief_delete.assert_awaited_once_with(OWNER_ID)
-    assert by_system["ecs_service"].status == "ok"
+    assert by_system["runtime"].status == "ok"
     assert by_system["clerk_user"].status == "ok"
 
 
@@ -663,7 +646,7 @@ async def test_skips_container_dependent_steps_when_no_containers_row(wipe_mocks
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
     by_system = {s.system: s for s in report.steps}
-    assert by_system["ecs_service"].status == "skipped"
+    assert by_system["runtime"].status == "skipped"
     # No containers row means the seam never runs, so nothing reaps the Bedrock
     # footprint either — there is no row naming one.
     assert "bedrock_aips" not in by_system
@@ -673,11 +656,10 @@ async def test_skips_container_dependent_steps_when_no_containers_row(wipe_mocks
     assert by_system["bedrock_gate_tokens"].status == "ok"
     assert by_system["bedrock_gate_tokens"].detail == "no bedrock-gate token hash on containers row"
     wipe_mocks.gate_tokens_delete.assert_not_awaited()
-    wipe_mocks.ecs_manager_stub.delete_user_service.assert_not_awaited()
+    wipe_mocks.delete_workspace_runtime.assert_not_awaited()
     wipe_mocks.bedrock_aips_delete.assert_not_awaited()
     wipe_mocks.bedrock_role_delete.assert_not_awaited()
     # EFS workspace-dir delete is unconditional -- not gated on the containers row.
-    assert by_system["efs_workspace_dir"].status == "ok"
 
 
 @pytest.mark.asyncio
@@ -700,8 +682,7 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     Clerk delete must still run and the report must still be returned."""
     wipe_mocks.paperclip_company_delete.side_effect = RuntimeError("paperclip down")
     wipe_mocks.paperclip_user_delete_fn.side_effect = RuntimeError("aurora down")
-    wipe_mocks.ecs_manager_stub.delete_user_service.side_effect = RuntimeError("ecs down")
-    wipe_mocks.workspace_stub.delete_user_dir.side_effect = RuntimeError("efs down")
+    wipe_mocks.delete_workspace_runtime.side_effect = RuntimeError("ecs down")
     wipe_mocks.bedrock_aips_delete.side_effect = RuntimeError("bedrock aip down")
     wipe_mocks.bedrock_role_delete.side_effect = RuntimeError("bedrock role down")
     wipe_mocks.metronome_archive.side_effect = RuntimeError("metronome down")
@@ -722,14 +703,7 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.slug_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.messaging_list_rooms.side_effect = RuntimeError("ddb down")
 
-    with (
-        patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"),
-        patch(
-            "core.services.litestream_replicas.delete_replica_prefix",
-            new=AsyncMock(return_value=False),  # helper never raises; False => step failed
-        ),
-    ):
-        report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
     assert [s.system for s in report.steps] == EXPECTED_ORDER
     assert all(s.status == "failed" for s in report.steps[:-1])
@@ -880,8 +854,7 @@ async def test_preview_wipe_calls_no_delete_method(wipe_mocks):
 
     wipe_mocks.paperclip_company_delete.assert_not_awaited()
     wipe_mocks.paperclip_user_delete_fn.assert_not_awaited()
-    wipe_mocks.ecs_manager_stub.delete_user_service.assert_not_awaited()
-    wipe_mocks.workspace_stub.delete_user_dir.assert_not_called()
+    wipe_mocks.delete_workspace_runtime.assert_not_awaited()
     wipe_mocks.bedrock_aips_delete.assert_not_awaited()
     wipe_mocks.bedrock_role_delete.assert_not_awaited()
     wipe_mocks.metronome_archive.assert_not_awaited()
@@ -914,15 +887,14 @@ async def test_preview_wipe_skips_absent_resources(wipe_mocks):
     wipe_mocks.container_get.return_value = None
     wipe_mocks.billing_get.return_value = None
     wipe_mocks.user_get.return_value = None
-    wipe_mocks.workspace_stub.user_path.return_value.exists.return_value = False
 
     report = await preview_wipe(OWNER_ID)
 
     by_system = {s.system: s for s in report.steps}
     assert by_system["paperclip_company"].status == "skipped"
     assert by_system["paperclip_aurora_user"].status == "skipped"
-    assert by_system["ecs_service"].status == "skipped"
-    assert by_system["efs_workspace_dir"].status == "skipped"
+    assert by_system["runtime"].status == "skipped"
+
     assert by_system["bedrock_gate_tokens"].status == "skipped"
     assert "bedrock_aips" not in by_system
     assert "bedrock_role" not in by_system
@@ -1011,8 +983,7 @@ async def test_wipe_account_refuses_bootstrap_admin_before_any_teardown(wipe_moc
 
     wipe_mocks.paperclip_company_delete.assert_not_awaited()
     wipe_mocks.paperclip_user_delete_fn.assert_not_awaited()
-    wipe_mocks.ecs_manager_stub.delete_user_service.assert_not_awaited()
-    wipe_mocks.workspace_stub.delete_user_dir.assert_not_called()
+    wipe_mocks.delete_workspace_runtime.assert_not_awaited()
     wipe_mocks.bedrock_aips_delete.assert_not_awaited()
     wipe_mocks.bedrock_role_delete.assert_not_awaited()
     wipe_mocks.metronome_archive.assert_not_awaited()
@@ -1085,54 +1056,6 @@ def test_wipe_report_to_dict_shape():
             },
         ],
     }
-
-
-@pytest.mark.asyncio
-async def test_replica_delete_waits_for_drain(wipe_mocks):
-    """Ordering matters: a still-running container's litestream can upload
-    after the prefix delete, and the next provision would restore the state
-    the wipe reported as erased."""
-    order: list[str] = []
-    wipe_mocks.ecs_manager_stub.wait_until_drained = AsyncMock(
-        side_effect=lambda *a, **k: order.append("drain") or True
-    )
-
-    async def _del(owner_id, *, agent_id=None):
-        order.append("delete_replicas")
-        return True
-
-    with (
-        patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"),
-        patch("core.services.litestream_replicas.delete_replica_prefix", new=_del),
-    ):
-        await wipe_account(OWNER_ID, actor_admin_id="admin_1")
-
-    assert order == ["drain", "delete_replicas"], order
-
-
-@pytest.mark.asyncio
-async def test_replica_delete_refuses_when_drain_times_out(wipe_mocks):
-    """A drain timeout must FAIL the step, not delete anyway: deleting while a
-    writer may still be live lets a late upload repopulate the prefix, and the
-    next provision restores state the wipe reported as erased."""
-    wipe_mocks.ecs_manager_stub.wait_until_drained = AsyncMock(return_value=False)
-    deleted = False
-
-    async def _del(owner_id, *, agent_id=None):
-        nonlocal deleted
-        deleted = True
-        return True
-
-    with (
-        patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"),
-        patch("core.services.litestream_replicas.delete_replica_prefix", new=_del),
-    ):
-        report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
-
-    step = {s.system: s for s in report.steps}["litestream_replicas"]
-    assert step.status == "failed"
-    assert "did not drain" in (step.error or "")
-    assert deleted is False, "must not delete replicas while a writer may be live"
 
 
 # ---------------------------------------------------------------------------
@@ -1230,10 +1153,10 @@ async def test_gate_tokens_are_gone_before_delete_user_service_runs(wipe_mocks, 
         _put_gate_row(real_ddb, h)
     surviving_at_ecs_teardown: list[str] = []
 
-    async def _delete_user_service(owner_id, delete_hermes_profiles=False):
+    async def _delete_user_service(owner_id, *, delete_profiles=False):
         surviving_at_ecs_teardown.extend(sorted(_gate_rows(real_ddb)))
 
-    wipe_mocks.ecs_manager_stub.delete_user_service = AsyncMock(side_effect=_delete_user_service)
+    wipe_mocks.delete_workspace_runtime.side_effect = _delete_user_service
 
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
@@ -1241,7 +1164,7 @@ async def test_gate_tokens_are_gone_before_delete_user_service_runs(wipe_mocks, 
         f"gate-token rows still live when the containers row was destroyed: {surviving_at_ecs_teardown}"
     )
     systems = [s.system for s in report.steps]
-    assert systems.index("bedrock_gate_tokens") < systems.index("ecs_service")
+    assert systems.index("bedrock_gate_tokens") < systems.index("runtime")
 
 
 @pytest.mark.asyncio
@@ -1283,23 +1206,23 @@ async def test_final_sweep_deletes_a_hash_minted_after_the_gate_token_step(wipe_
     gate-token step's re-read and the containers row's death; at that point the
     row is the only thing naming the new hash and the next instruction destroys
     it. ``delete_user_service`` hands back the DELETE's own ALL_OLD image, and
-    the ecs_service step sweeps whatever it still named."""
+    the runtime step sweeps whatever it still named."""
     _put_gate_row(real_ddb, "hash-current")
     _put_gate_row(real_ddb, "hash-minted-after-the-step")
     _put_gate_row(real_ddb, "hash-someone-else", owner_id="user_other")
 
-    async def _delete_user_service(owner_id, delete_hermes_profiles=False):
+    async def _delete_user_service(owner_id, *, delete_profiles=False):
         return _container_row(
             bedrock_gate_token_hash="hash-minted-after-the-step",
             bedrock_gate_superseded_hashes=["hash-current"],
         )
 
-    wipe_mocks.ecs_manager_stub.delete_user_service = AsyncMock(side_effect=_delete_user_service)
+    wipe_mocks.delete_workspace_runtime.side_effect = _delete_user_service
 
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
     assert _gate_rows(real_ddb) == {"hash-someone-else"}
-    ecs_step = {s.system: s for s in report.steps}["ecs_service"]
+    ecs_step = {s.system: s for s in report.steps}["runtime"]
     assert ecs_step.status == "ok", ecs_step
     assert "swept 1 gate-token row(s)" in ecs_step.detail
 
@@ -1350,10 +1273,10 @@ async def test_wipe_deletes_a_pending_brief_written_after_the_snapshot(wipe_mock
 
     # The submission lands mid-wipe — hung off the container teardown, which is
     # simply a step known to run after the up-front snapshot and before this one.
-    async def _teardown_that_races_a_submission(owner_id, delete_hermes_profiles=False):
+    async def _teardown_that_races_a_submission(owner_id, *, delete_profiles=False):
         _put_pending_brief(real_ddb, OWNER_ID)
 
-    wipe_mocks.ecs_manager_stub.delete_user_service = AsyncMock(side_effect=_teardown_that_races_a_submission)
+    wipe_mocks.delete_workspace_runtime.side_effect = _teardown_that_races_a_submission
 
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 

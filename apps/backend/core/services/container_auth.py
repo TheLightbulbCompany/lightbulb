@@ -1,124 +1,47 @@
-"""Revoke a provider's auth credential from a RUNNING OpenClaw container.
+"""Stage / revoke the owner's ChatGPT (Codex) OAuth grant for their workspace.
 
-On 6.6, the live credential lives in the container's per-agent SQLite auth
-store (imported from ``credentials/oauth.json`` on first boot). Deleting the
-EFS seed file does NOT clear that store, so a disconnect / switch-away must
-also tell the running gateway to drop the credential — otherwise the already
-imported refresh token stays usable until the container is reprovisioned.
+The grant is a FILE: the root ``auth.json`` under ``<owner>/hermes/`` in S3, written by
+``hermes_profiles.stage_codex_auth`` and read by the bridge's ``restore_root_auth`` at the
+start of each turn (it compares ``auth.revision``, so a warm microVM re-pulls a freshly staged
+grant before its NEXT turn rather than picking it up implicitly -- Hermes itself only reads
+``auth.json`` at process start). Deleting that file IS the revoke.
 
-The gateway exposes a built-in ``models.authLogout`` RPC (scope
-``operator.admin``) that removes the provider's auth profiles across the owner
-stores, invalidates the provider-auth cache, and aborts in-flight runs using
-that provider (``stopReason: "auth-revoked"``) — a true revoke with no restart.
-
-``operator.admin`` REQUIRES the signed operator-device handshake (the gateway
-strips self-declared scopes from clients that present only the shared token —
-see core/crypto/operator_device.py). The request itself goes over
-``core.services.container_rpc.call``, the HTTP route to the container's baked
-``lightbulb-channel`` plugin, like any other gateway RPC.
+Both doors are therefore AUTHORITATIVE, not best-effort: a failure raises so the caller keeps
+retry ownership. The OpenClaw shape this replaced was the opposite -- a live
+``models.authLogout`` RPC into a running gateway's SQLite auth store, which silently no-op'd on
+a cold container and let a disconnect report success while the agents kept using the revoked
+account (task-14 row 3).
 """
 
-import asyncio
 import logging
 
-from core.containers import get_ecs_manager
-from core.repositories import container_repo
-from core.services import container_rpc, runtime_transport
+from core.dynamodb import run_in_thread
+from core.services.hermes_profiles import stage_codex_auth, unstage_codex_auth
 
 logger = logging.getLogger(__name__)
 
-_WS_TIMEOUT = 10
-
-
-async def _logout_provider_via_gateway(owner_id: str, provider: str) -> None:
-    """``models.authLogout`` — drop ``provider``'s credential from the running
-    gateway's live auth store. Raises on any failure (the caller treats
-    failure as best-effort)."""
-    await container_rpc.call(owner_id, "models.authLogout", {"provider": provider}, timeout_s=_WS_TIMEOUT)
-
 
 async def revoke_provider_auth_in_container(owner_id: str, *, provider: str = "openai") -> bool:
-    """Best-effort: clear ``provider``'s credential from the owner's RUNNING
-    container via ``models.authLogout``, so disconnect / switch-away revokes the
-    live token immediately without a restart.
-
-    ECS is best-effort: ``True`` if the live RPC succeeded, ``False`` when no live store could be
-    cleared. AgentCore is authoritative: a successful no-grant retry returns ``True`` and any
-    container-row/S3/configuration failure raises so the caller keeps retry ownership.
-
-    On an AgentCore workspace there is no live gateway auth store and no
-    ``models.authLogout`` on the bridge — the grant is a file, staged into the
-    ROOT ``auth.json`` in S3 by ``hermes_profiles.stage_codex_auth``. Deleting
-    it there IS the revoke, so this branch is authoritative rather than
-    best-effort (task-14 row 3: without it a disconnect reported success while
-    the agents kept using the revoked account).
-    """
-    container_row = await container_repo.get_by_owner_id(owner_id, consistent=True)
-    if runtime_transport.host_for(container_row or {}) == "agentcore":
-        from core.dynamodb import run_in_thread
-        from core.services.hermes_profiles import unstage_codex_auth
-
-        removed = await run_in_thread(unstage_codex_auth, owner_id)
-        logger.info(
-            "revoke_provider_auth: AgentCore ChatGPT grant is absent",
-            extra={"owner_id": owner_id, "provider": provider, "removed": removed},
-        )
-        # An already-absent grant is a successful idempotent retry. S3/config/read failures raise
-        # above; unlike the ECS leg, there is no reprovision fallback for authoritative root auth.
-        return True
-
-    try:
-        container, ip = await get_ecs_manager().resolve_running_container(owner_id)
-    except Exception as exc:  # noqa: BLE001 — best-effort
-        logger.warning("revoke_provider_auth: resolve container failed for %s: %s", owner_id, exc)
-        return False
-
-    if not container or not ip:
-        return False  # cold container — nothing live to clear
-    token = container.get("gateway_token")
-    enc_seed = container.get("operator_priv_key_enc")
-    if not token or not enc_seed:
-        # Pre-4.5 row without a paired operator device — we can't sign the
-        # operator.admin connect, so the live logout isn't possible. The EFS
-        # seed delete + the eventual reprovision are the fallback cleanup.
-        logger.warning(
-            "revoke_provider_auth: missing gateway_token/operator seed for %s — "
-            "skipping live logout (EFS delete + reprovision will clear)",
-            owner_id,
-        )
-        return False
-
-    try:
-        await _logout_provider_via_gateway(owner_id, provider)
-        logger.info(
-            "revoked_provider_auth_in_container",
-            extra={"owner_id": owner_id, "provider": provider},
-        )
-        return True
-    except Exception as exc:  # noqa: BLE001 — best-effort
-        logger.warning("revoke_provider_auth: models.authLogout failed for %s: %s", owner_id, exc)
-        return False
+    """Delete the owner's staged grant. ``True`` on success, including the idempotent retry
+    where it was already absent; S3/config failures raise."""
+    removed = await run_in_thread(unstage_codex_auth, owner_id)
+    logger.info(
+        "revoke_provider_auth: ChatGPT grant removed",
+        extra={"owner_id": owner_id, "provider": provider, "removed": removed},
+    )
+    return True
 
 
 async def push_oauth_credential_to_container(*, owner_id: str, connector_id: str) -> bool:
-    """Stage the connector's CURRENT ChatGPT token onto ``owner_id``'s container
-    and force the running container to re-import it (clear the default agent's
-    auth row so the store-row-absent import gate re-fires).
+    """Stage the connector's CURRENT ChatGPT token for ``owner_id``.
 
-    Call ONLY on a genuine credential-change event — reconnect
-    (``routers/oauth.py`` ``/poll``) or provider switch — where the token is
-    freshly minted/unspent. NEVER call from reprovision / config-rewrite: those
-    must not overwrite the container's live, rotated token (see
-    ``ecs_manager._pre_stage_oauth_for_user``).
+    Call ONLY on a genuine credential-change event — reconnect (``routers/oauth.py``
+    ``/poll``) or a provider switch — where the token is freshly minted and unspent. NEVER from
+    a reprovision or config rewrite: those must not overwrite a token the runtime has since
+    rotated.
 
-    Best-effort: returns ``True`` if a credential was staged, ``False`` if there
-    are no active tokens or the owner has no container/workspace yet. NEVER
-    raises.
+    ``False`` when there are no active tokens to stage. Never raises.
     """
-    from core.containers.workspace import (
-        clear_default_agent_auth_profile_row,
-        pre_stage_auth_profile_store,
-    )
     from core.services import oauth_service
 
     try:
@@ -128,44 +51,6 @@ async def push_oauth_credential_to_container(*, owner_id: str, connector_id: str
         return False
     if not tokens:
         return False
-    if await runtime_transport.is_agentcore_owner(owner_id):
-        # No EFS stage, no clear-auth sentinel, no forced bounce: stage_codex_auth bumps
-        # auth.revision, and the bridge's restore_root_auth compares it per turn (C3, fix round
-        # 1 continuation) -- a warm microVM re-pulls the staged grant before its NEXT turn
-        # rather than picking it up implicitly (Hermes itself only re-reads auth.json at process
-        # start, not per credential resolution).
-        from core.dynamodb import run_in_thread
-        from core.services.hermes_profiles import stage_codex_auth
-
-        await run_in_thread(stage_codex_auth, owner_id, tokens)
-        logger.info("push_oauth_credential: staged fresh ChatGPT token (agentcore)", extra={"owner_id": owner_id})
-        return True
-    try:
-        await pre_stage_auth_profile_store(user_id=owner_id, oauth_tokens=tokens)
-        cleared = await clear_default_agent_auth_profile_row(user_id=owner_id)
-    except Exception as exc:  # noqa: BLE001 — best-effort (no workspace/container yet)
-        logger.warning("push_oauth_credential: stage/clear failed for owner=%s: %s", owner_id, exc)
-        return False
-    if cleared == "restart_required":
-        # local-sqlite layout: the auth row lives on container-local disk;
-        # the clear left a boot sentinel on EFS, and only a task replacement
-        # applies it. Bounce a RUNNING container asynchronously — this path
-        # backs /oauth/poll, whose response must stay fast, and a cold or
-        # never-booted container consumes the sentinel on its next boot anyway.
-        asyncio.create_task(_restart_for_sentinel_apply(owner_id))
+    await run_in_thread(stage_codex_auth, owner_id, tokens)
     logger.info("push_oauth_credential: staged fresh ChatGPT token", extra={"owner_id": owner_id})
     return True
-
-
-async def _restart_for_sentinel_apply(owner_id: str) -> None:
-    """Bounce a RUNNING container so its boot script applies the clear-auth
-    sentinel and the staged oauth.json re-imports. No-op when the container is
-    cold. Never raises — a failed bounce self-heals on the next boot."""
-    try:
-        container, ip = await get_ecs_manager().resolve_running_container(owner_id)
-        if not container or not ip:
-            return
-        await get_ecs_manager().force_redeploy_user_service(owner_id)
-        logger.info("o6 auth-reimport: forced redeploy", extra={"owner_id": owner_id})
-    except Exception as exc:  # noqa: BLE001 — best-effort
-        logger.warning("o6 auth-reimport restart failed for %s: %s", owner_id, exc)

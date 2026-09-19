@@ -53,8 +53,8 @@ async def main(*, env: str, apply: bool, revert: bool, owner: str | None) -> int
     os.environ["ENVIRONMENT"] = env
 
     from core.billing import bedrock_aip
-    from core.containers import get_ecs_manager
     from core.repositories import billing_repo, container_repo
+    from core.services.provision_dispatch import dispatch_provision
 
     # Resolve targets: one owner, or every Bedrock-path owner with a container.
     if owner:
@@ -89,7 +89,6 @@ async def main(*, env: str, apply: bool, revert: bool, owner: str | None) -> int
         print("DRY RUN — pass --apply to mutate IAM and reprovision")
         return 0
 
-    ecs_manager = get_ecs_manager()
     failures: list[str] = []
     for owner_id, _plan in targets:
         try:
@@ -104,8 +103,8 @@ async def main(*, env: str, apply: bool, revert: bool, owner: str | None) -> int
                 regions=bedrock_aip.aip_fan_out_regions(),
             )
             await bedrock_aip.put_owner_bedrock_policy(owner_id, policy)
-            # Re-render openclaw.json + task env for the current SSM mode.
-            await ecs_manager.reprovision_for_user(owner_id)
+            # Re-render the owner's agent profiles + boot secret for the current SSM mode.
+            await dispatch_provision(owner_id)
             print(f"  OK   {owner_id}")
         except Exception as e:  # noqa: BLE001 — one owner's failure must not abort the fleet
             print(f"  ERR  {owner_id}: {e}")

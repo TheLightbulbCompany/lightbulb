@@ -17,10 +17,9 @@ import httpx
 from boto3.dynamodb.types import TypeDeserializer
 
 from core.config import settings
-from core.containers import get_ecs_manager
 from core.observability.metrics import gauge, put_metric
 from core.services import runtime_transport
-from core.repositories import messaging_repo
+from core.repositories import container_repo, messaging_repo
 from core.services import runtime_rpc
 from core.services.live_events import get_live_event_publisher
 from core.services.messaging import (
@@ -46,22 +45,6 @@ _AGENTCORE_INGRESS_TIMEOUT_S = runtime_transport.AGENTCORE_INGRESS_TIMEOUT_S
 _OPERATION_LEASE_SECONDS = 300
 _MAX_CONCURRENT_GROUPS = 8
 _DESERIALIZER = TypeDeserializer()
-# Every value request_wake_silent can return (container_wake.py). The
-# allowlist is the point: an unmapped string becomes "unknown" rather than
-# opening an unbounded dimension, and a new return value shows up as
-# "unknown" instead of silently inflating a real bucket.
-_WAKE_OUTCOMES = frozenset(
-    {
-        "dispatched",
-        "blocked",
-        "operator_stopped",
-        "no_row",
-        "error",
-        "already_running",
-        "in_flight",
-        "converting",
-    }
-)
 
 
 class WorkRetry(RuntimeError):
@@ -393,17 +376,13 @@ class OpenClawWorkWorker:
             # traffic its agent will never answer.
             put_metric("messaging.ambient_gate", dimensions={"outcome": "plan_gate", "event_kind": event_kind})
             return
-        manager = get_ecs_manager()
-        container, ip = await manager.resolve_running_container(owner_id)
-        if not container or not ip:
-            from core.services.container_wake import request_wake_silent
-
-            wake = await request_wake_silent(owner_id)
-            put_metric(
-                "messaging.wake.outcome",
-                dimensions={"outcome": wake if wake in _WAKE_OUTCOMES else "unknown"},
-            )
-            raise WorkRetry("runtime is waking")
+        container = await container_repo.get_by_owner_id(owner_id)
+        if not container or not container.get("agentcore_runtime_arn"):
+            # Nothing to wake: AgentCore starts the microVM on the invoke below, so the only
+            # reason there is no addressable runtime is that provisioning has not finished.
+            # Retry rather than drop -- the queue's own backoff is the wait.
+            put_metric("messaging.wake.outcome", dimensions={"outcome": "no_runtime"})
+            raise WorkRetry("runtime is not provisioned yet")
         token = container.get("gateway_token")
         if not isinstance(token, str) or not token:
             raise WorkRetry("gateway token unavailable")
@@ -459,7 +438,7 @@ class OpenClawWorkWorker:
         ingress_path = f"/plugins/lightbulb-channel/inbound/{member['id']}"
         started = time.perf_counter()
         try:
-            response = await self._post(container, ip, ingress_path, body, token, invocation)
+            response = await self._post(container, ingress_path, body, token, invocation)
             put_metric(
                 "messaging.ingress.post",
                 dimensions={"status_class": _ingress_status_class(response.status_code), "event_kind": event_kind},
@@ -505,11 +484,10 @@ class OpenClawWorkWorker:
         token: str,
         invocation: str | None = None,
     ):
-        """Deliver one ingress to the owner's gateway, whichever platform hosts it.
+        """Deliver one ingress to the owner's gateway.
 
-        The 1 MiB cap is enforced here for BOTH transports: AgentCore's own invoke payload
-        ceiling is far higher, but the plugin's contract is the same either way, and a body
-        that would be refused on ECS must not silently succeed on AgentCore.
+        The 1 MiB cap is the plugin's own contract, enforced here rather than relying on
+        AgentCore's far higher invoke-payload ceiling.
         """
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         if invocation is not None:
@@ -517,24 +495,18 @@ class OpenClawWorkWorker:
         content = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(content) > _INGRESS_MAX_BYTES:
             raise ValueError("Lightbulb ingress exceeds 1 MiB")
-        if runtime_transport.host_for(container) == "agentcore":
-            return await runtime_transport.request(
-                container,
-                path,
-                method="POST",
-                json_body=body,
-                headers=headers,
-                # This is the call that wakes a parked workspace: AgentCore holds the invoke
-                # through the microVM start (~35s) and the gateway boot (measured 54-57s end
-                # to end on 2026-09-16), so the budget must outlast a cold start. A warm
-                # session acks in milliseconds; the queue's visibility is 300s.
-                timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
-            )
-        url = f"http://{ip}:{runtime_transport.GATEWAY_PORT}{path}"
-        if self._http is not None:
-            return await self._http.post(url, content=content, headers=headers)
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-            return await client.post(url, content=content, headers=headers)
+        return await runtime_transport.request(
+            container,
+            path,
+            method="POST",
+            json_body=body,
+            headers=headers,
+            # This is the call that wakes a parked workspace: AgentCore holds the invoke
+            # through the microVM start (~35s) and the gateway boot (measured 54-57s end
+            # to end on 2026-09-16), so the budget must outlast a cold start. A warm
+            # session acks in milliseconds; the queue's visibility is 300s.
+            timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
+        )
 
     async def _runtime_operation(self, pointer: dict[str, Any]) -> None:
         owner_id = pointer["ownerId"]

@@ -201,6 +201,13 @@ const nextConfig: NextConfig = {
       })),
       afterFiles: [
         ...localDevApiProxy,
+        // DCV 1.14 resolves its worker base relative to the /chat document,
+        // even though BrowserLiveView supplies a leading slash. Keep decoder
+        // requests on the copied SDK assets instead of returning the app 404.
+        {
+          source: "/chat/nice-dcv-web-client-sdk/:path*",
+          destination: "/nice-dcv-web-client-sdk/:path*",
+        },
         {
           source: "/ingest/static/:path*",
           destination: "https://us-assets.i.posthog.com/static/:path*",

@@ -156,12 +156,10 @@ export interface FleetGridItem {
   owner_id: string;
   /** Best-effort human label (user email / org name); null when unresolved. */
   display_name?: string | null;
-  service_name: string;
+  /** The workspace's AgentCore runtime ARN; null while unprovisioned. */
+  runtime_arn: string | null;
+  /** The row's own status, unmapped. "unknown" when there is no runtime yet. */
   status: string;
-  desired_count: number;
-  running_count: number;
-  pending_count: number;
-  rollout_state: string | null;
 }
 
 export interface FleetData {
@@ -459,7 +457,7 @@ export interface AdminProvisioning {
     onboarded_at?: string | null;
     bedrock_revoked?: boolean | null;
     stop_reason?: string | null;
-    service_name?: string | null;
+    agentcore_runtime_arn?: string | null;
     created_at?: string | null;
     updated_at?: string | null;
     /**

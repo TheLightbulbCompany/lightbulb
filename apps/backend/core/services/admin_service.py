@@ -289,7 +289,9 @@ _CONTAINER_PROVISION_FIELDS = (
     "onboarded_at",
     "bedrock_revoked",
     "stop_reason",
-    "service_name",
+    # The runtime's own handle, in place of the ECS service name: it is what an operator
+    # pastes into `aws bedrock-agentcore get-agent-runtime` when a workspace misbehaves.
+    "agentcore_runtime_arn",
     "created_at",
     "updated_at",
 )

@@ -7,7 +7,6 @@ import { OrgBanner } from "@/components/admin/OrgBanner";
 import { StatusChip } from "@/components/admin/StatusChip";
 import { getOverview } from "@/app/admin/_lib/api";
 import { formatRelativeTime } from "@/app/admin/_lib/time";
-import { buildEcsConsoleUrl } from "@/lib/aws";
 
 export const metadata = { title: "Overview · Admin" };
 
@@ -41,10 +40,7 @@ interface BillingRow extends ErrorPayload {
 
 interface ContainerRow extends ErrorPayload {
   status?: string;
-  task_arn?: string | null;
-  service_name?: string | null;
-  cluster_name?: string | null;
-  cluster_arn?: string | null;
+  agentcore_runtime_arn?: string | null;
   subscription_status?: string | null;
   created_at?: number | string | null;
 }
@@ -247,12 +243,6 @@ function ContainerCard({ container }: { container: unknown }) {
   }
 
   const data = container as ContainerRow;
-  const ecsUrl = buildEcsConsoleUrl({
-    task_arn: data.task_arn ?? undefined,
-    service_name: data.service_name ?? undefined,
-    cluster_name: data.cluster_name ?? undefined,
-    cluster_arn: data.cluster_arn ?? undefined,
-  });
   return (
     <Card title="Container">
       <Rows>
@@ -261,13 +251,10 @@ function ContainerCard({ container }: { container: unknown }) {
           value={<StatusChip status={data.status ?? "unknown"} />}
         />
         <DefRow label="Plan" value={data.subscription_status ?? <None />} />
-        <DefRow label="Service" value={data.service_name ?? <None />} mono />
-        <DefRow
-          label="Task ARN"
-          value={data.task_arn ?? <None />}
-          mono
-          href={ecsUrl ?? undefined}
-        />
+        {/* No console deep-link: an AgentCore runtime has no per-workspace console page the
+            way an ECS service did, so the ARN is what an operator pastes into
+            `aws bedrock-agentcore get-agent-runtime`. */}
+        <DefRow label="Runtime" value={data.agentcore_runtime_arn ?? <None />} mono />
         <DefRow label="Created" value={<RelativeTimestamp value={data.created_at} />} />
       </Rows>
     </Card>

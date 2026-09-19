@@ -43,7 +43,7 @@ export default async function AdminOverviewPage() {
     ...grid
       .filter((g) => g.status === "error" || g.status === "unknown")
       .map((g) => ({
-        key: `container:${g.service_name}`,
+        key: `container:${g.owner_id}`,
         title: g.display_name ?? g.owner_id,
         label: g.status,
         tone: (g.status === "error" ? "error" : "unknown") as "error" | "unknown",
@@ -131,9 +131,9 @@ export default async function AdminOverviewPage() {
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {grid.map((g) => (
               <Link
-                key={g.service_name}
+                key={g.owner_id}
                 href={`/admin/users/${encodeURIComponent(g.owner_id)}`}
-                title={`${g.owner_id} · ${g.service_name}`}
+                title={g.owner_id}
                 className="flex items-center justify-between rounded-sm border border-border p-2 hover:bg-accent"
               >
                 <span className="truncate text-xs text-muted-foreground">

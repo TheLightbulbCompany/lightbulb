@@ -151,6 +151,19 @@ describe("panelRegistry", () => {
     expect(describePanel("file-viewer", {})?.params).toEqual({});
   });
 
+  it("describes the browser panel as a paramless singleton", () => {
+    // An owner has ONE AgentCore Browser profile, so a second open focuses the
+    // existing panel instead of double-viewing the same live stream.
+    expect(describePanel("browser", {})).toEqual({
+      panelId: "browser",
+      component: "browser",
+      title: "Browser",
+      params: {},
+    });
+    expect(describePanel("browser", { path: "/ignored" })?.params).toEqual({});
+    expect(durableParamsFor("browser")).toEqual(["panel"]);
+  });
+
   it("describes the money panel with a durable ?day deep link", () => {
     expect(describePanel("teams-money", { day: "2026-09-05" })).toEqual({
       panelId: "teams-money", component: "teams", title: "Money", params: { teamsKey: "money", day: "2026-09-05" },
@@ -266,7 +279,7 @@ describe("panelRegistry", () => {
 
   it("registers exactly the component keys the shell's components map will have", () => {
     expect([...PANEL_COMPONENT_KEYS].sort()).toEqual(
-      ["chat", "control", "file-viewer", "missing", "teams"].sort(),
+      ["browser", "chat", "control", "file-viewer", "missing", "teams"].sort(),
     );
   });
 

@@ -2,8 +2,9 @@
 
 import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
-import { Bell, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Plug, Search, Settings } from "lucide-react";
+import { Bell, Chrome, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Plug, Search, Settings } from "lucide-react";
 import Link from "next/link";
+import { useRuntimeHost } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
 import { useSupport } from "@/components/support/SupportProvider";
@@ -17,6 +18,7 @@ const DESTINATIONS = [
   { panel: "teams-dashboard", label: "Home", Icon: Home },
   { panel: "teams-inbox", label: "Activity", Icon: Bell },
   { panel: "teams-issues", label: "Tasks", Icon: ListTodo },
+  { panel: "browser", label: "Browser", Icon: Chrome },
   { panel: "file-viewer", label: "Browse workspace files", Icon: FolderOpen },
   { panel: "connections", label: "Connections", Icon: Plug },
 ] as const;
@@ -27,12 +29,18 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
   const { setOpen } = useCommandPalette();
   const { activePanelId } = useWorkspaceState();
   const activeTeamRunCount = useActiveTeamRunCount();
+  // The Browser panel watches an AgentCore Browser session, so the rail offers
+  // it only once this workspace's runtime host is KNOWN — `undefined` (no
+  // status body has landed) hides it rather than offering a panel that can
+  // only render its empty state.
+  const browserShown = useRuntimeHost() === "agentcore";
+  const destinations = browserShown ? DESTINATIONS : DESTINATIONS.filter((d) => d.panel !== "browser");
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <button type="button" className="workspace-rail__search" aria-label="Search agents, issues, and projects" title="Search (⌘/Ctrl K)" onClick={() => setOpen(true)}>
         <Search size={20} aria-hidden="true" />
       </button>
-      {DESTINATIONS.map(({ panel, label, Icon }) => {
+      {destinations.map(({ panel, label, Icon }) => {
         // The panel KEY is not always the panel ID — a control-key destination
         // (Connections) opens as `control:connections`. Resolve through the
         // registry so the active marker follows the id the dock actually uses.
@@ -47,6 +55,7 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
           aria-current={activePanelId === panelId ? "page" : undefined}
           onClick={() => {
             if (panel === "file-viewer") capture("file_browser_opened");
+            if (panel === "browser") capture("browser_view_opened");
             if (panel === MESSAGES_PANEL_ID) activateMessagesPanel();
             else openPanel(panel, {}, { pushUrl: true });
           }}>

@@ -8,6 +8,7 @@ import { ChatPanel } from "./panels/ChatPanel";
 import { TeamsDockPanel } from "./panels/TeamsDockPanel";
 import { ControlDockPanel } from "./panels/ControlDockPanel";
 import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
+import { BrowserDockPanel } from "./panels/BrowserDockPanel";
 import { MissingPanel } from "./panels/MissingPanel";
 
 export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
@@ -15,6 +16,7 @@ export const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewP
   teams: TeamsDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   control: ControlDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   "file-viewer": FileViewerDockPanel as React.FunctionComponent<IDockviewPanelProps>,
+  browser: BrowserDockPanel as React.FunctionComponent<IDockviewPanelProps>,
   missing: MissingPanel as React.FunctionComponent<IDockviewPanelProps>,
   unknown: MissingPanel as React.FunctionComponent<IDockviewPanelProps>, // deserializer default key
 };

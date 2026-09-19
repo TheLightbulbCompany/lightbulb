@@ -192,6 +192,7 @@ function canonicalPanelTitle(
       break;
     }
     case "file-viewer":
+    case "browser":
       key = component;
       break;
     default:
@@ -212,14 +213,17 @@ function canonicalPanelTitle(
 // target to the default while keeping Messages and all valid auxiliary panels.
 // An omitted or empty roster is unknown, so preserve the requested agent.
 /**
- * Panel ids whose SURFACE was deleted (not renamed, not absorbed): the browser
- * live view, the Brain memory wiki, and the dreams/sessions/channels control
- * panels. A saved layout holding one must lose it on restore — see the drop in
- * `sanitizeLayout`. Distinct from `RETIRED_PANEL_ALIASES`, which renames a key
- * whose surface still exists.
+ * Panel ids whose SURFACE was deleted (not renamed, not absorbed): the Brain
+ * memory wiki and the dreams/sessions/channels control panels. A saved layout
+ * holding one must lose it on restore — see the drop in `sanitizeLayout`.
+ * Distinct from `RETIRED_PANEL_ALIASES`, which renames a key whose surface
+ * still exists.
+ *
+ * `browser` is NOT here: #2779 dropped it with the container VNC panel, and the
+ * AgentCore live view took the same id back. Leaving it listed would silently
+ * delete the new panel from every restored layout.
  */
 const RETIRED_PANEL_IDS: ReadonlySet<string> = new Set([
-  "browser",
   "teams-brain",
   "control:dreams",
   "control:sessions",
@@ -259,11 +263,8 @@ export function sanitizeLayout(
       continue;
     }
     // Same shape, same reason: panels whose surface was deleted outright with
-    // the OpenClaw runtime. `browser` is the one that matters in practice — it
-    // shipped in the DEFAULT mission-control layout, so nearly every returning
-    // desktop user has it in their saved blob, and without this it remaps to
-    // 'missing' and restores as a dead "Browser" tab. The rest would restore
-    // as an "Unknown panel" (teams-brain) or silently render Overview through
+    // the OpenClaw runtime. Without this they would restore as an "Unknown
+    // panel" (teams-brain) or silently render Overview through
     // ControlPanelRouter's fallback (the three control keys).
     if (RETIRED_PANEL_IDS.has(id)) {
       dropped.add(id);

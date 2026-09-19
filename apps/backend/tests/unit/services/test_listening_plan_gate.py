@@ -171,32 +171,32 @@ async def test_the_free_tier_cannot_create_a_channel_with_a_listening_agent(monk
 
 
 @pytest.mark.asyncio
-async def test_ambient_work_never_wakes_a_free_tier_container(monkeypatch):
+async def test_ambient_work_never_reaches_the_runtime_for_a_free_tier_owner(monkeypatch):
     """A row that still says ``active`` on a free-tier room (seeded before
     the gate) must not wake the container for traffic its agent will never
     answer."""
     _billing(monkeypatch, TRIAL)
-    manager = MagicMock()
-    manager.resolve_running_container = AsyncMock(return_value=(None, None))
-    monkeypatch.setattr(work, "get_ecs_manager", lambda: manager)
+    row = AsyncMock(return_value={"gateway_token": "gw", "agentcore_runtime_arn": "arn:r1"})
+    monkeypatch.setattr(work.container_repo, "get_by_owner_id", row)
     metric = MagicMock()
     monkeypatch.setattr(work, "put_metric", metric)
     worker = OpenClawWorkWorker(sqs_client=MagicMock())
 
     await worker._dispatch_message({"ownerId": OWNER, "roomId": ROOM}, {"id": AGENT}, {"messageId": "m1"}, "room_event")
 
-    manager.resolve_running_container.assert_not_awaited()
+    # The gate is ahead of the row read, so an ambient message for a free-tier owner costs
+    # nothing at all -- no read, and above all no ingress invoke (which is what starts the
+    # microVM and the metered inference behind it).
+    row.assert_not_awaited()
     assert metric.call_args.kwargs["dimensions"] == {"outcome": "plan_gate", "event_kind": "room_event"}
 
 
 @pytest.mark.asyncio
-async def test_ambient_work_still_wakes_a_paid_container(monkeypatch):
+async def test_ambient_work_still_reaches_the_runtime_for_a_paid_owner(monkeypatch):
     _billing(monkeypatch, PAID)
-    manager = MagicMock()
-    manager.resolve_running_container = AsyncMock(return_value=(None, None))
-    monkeypatch.setattr(work, "get_ecs_manager", lambda: manager)
+    row = AsyncMock(return_value=None)  # not provisioned yet -> WorkRetry, past the gate
+    monkeypatch.setattr(work.container_repo, "get_by_owner_id", row)
     monkeypatch.setattr(work, "put_metric", MagicMock())
-    monkeypatch.setattr("core.services.container_wake.request_wake_silent", AsyncMock(return_value="requested"))
     worker = OpenClawWorkWorker(sqs_client=MagicMock())
 
     with pytest.raises(WorkRetry):
@@ -204,4 +204,4 @@ async def test_ambient_work_still_wakes_a_paid_container(monkeypatch):
             {"ownerId": OWNER, "roomId": ROOM}, {"id": AGENT}, {"messageId": "m1"}, "room_event"
         )
 
-    manager.resolve_running_container.assert_awaited_once()
+    row.assert_awaited_once()

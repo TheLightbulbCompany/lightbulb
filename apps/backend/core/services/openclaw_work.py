@@ -478,7 +478,6 @@ class OpenClawWorkWorker:
     async def _post(
         self,
         container: dict[str, Any],
-        ip: str | None,
         path: str,
         body: dict[str, Any],
         token: str,

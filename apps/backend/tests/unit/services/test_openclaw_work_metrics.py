@@ -41,10 +41,6 @@ async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted,
     ledger.setdefault("created", [])
     ledger.setdefault("ended", [])
 
-    class FakeManager:
-        async def resolve_running_container(self, _owner):
-            return {"gateway_token": "gw"}, "10.0.0.9"
-
     async def fake_create_run(owner_id, run_id, **fields):
         ledger["created"].append((owner_id, run_id, fields))
         return True
@@ -54,7 +50,7 @@ async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted,
         return {"runId": run_id}
 
     async def fake_post(*args):
-        posted["body"] = args[3]
+        posted["body"] = args[2]
         if isinstance(answer, Exception):
             raise answer
         return answer
@@ -68,7 +64,11 @@ async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted,
     async def fake_body(**_kwargs):
         return {"version": 1}
 
-    monkeypatch.setattr(work, "get_ecs_manager", lambda: FakeManager())
+    monkeypatch.setattr(
+        work.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"gateway_token": "gw", "agentcore_runtime_arn": "arn:r1"}),
+    )
     monkeypatch.setattr(work, "listening_available", AsyncMock(return_value=True))
     monkeypatch.setattr(work.messaging_repo, "get_member", fake_get_member)
     monkeypatch.setattr(work.messaging_repo, "list_members", fake_list_members)
@@ -305,37 +305,22 @@ async def test_no_answer_is_counted_without_a_latency_sample(monkeypatch, error,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("wake_result", "expected"),
-    [
-        ("dispatched", "dispatched"),
-        ("operator_stopped", "operator_stopped"),
-        # A benign race with another waker is a real outcome, not "unknown".
-        ("already_running", "already_running"),
-        ("in_flight", "in_flight"),
-        ("converting", "converting"),
-        # Only a value container_wake.py does not return folds into unknown.
-        ("something_new", "unknown"),
-    ],
-)
-async def test_wake_outcome_is_recorded_when_the_runtime_is_down(monkeypatch, wake_result, expected):
+@pytest.mark.parametrize("row", [None, {"gateway_token": "gw"}, {"gateway_token": "gw", "agentcore_runtime_arn": ""}])
+async def test_a_workspace_with_no_runtime_retries_and_records_the_outcome(monkeypatch, row):
+    """There is no wake step left to measure: the ingress invoke itself starts the microVM, so
+    the ONLY reason a workspace has no addressable runtime is that provisioning has not finished.
+    That must RETRY (the queue's backoff is the wait), never drop the message -- and it has to be
+    visible, or a whole workspace silently never answers.
+
+    The three rows are the shapes provisioning passes through: no row at all, a row before the
+    runtime is created, and a row whose field was written empty.
+    """
     metrics = _capture_metrics(monkeypatch)
-    seen: list[str] = []
-
-    class FakeManager:
-        async def resolve_running_container(self, _owner):
-            return None, None
-
-    async def fake_wake(owner_id):
-        seen.append(owner_id)
-        return wake_result
-
-    monkeypatch.setattr(work, "get_ecs_manager", lambda: FakeManager())
+    monkeypatch.setattr(work.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
     monkeypatch.setattr(work, "listening_available", AsyncMock(return_value=True))
-    monkeypatch.setattr("core.services.container_wake.request_wake_silent", fake_wake)
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
 
-    with pytest.raises(WorkRetry, match="runtime is waking"):
+    with pytest.raises(WorkRetry, match="not provisioned"):
         await worker._dispatch_message(
             {"ownerId": "owner-1", "roomId": _ROOM, "kind": "channel", "revision": 1},
             {"kind": "agent", "id": "a1"},
@@ -343,8 +328,38 @@ async def test_wake_outcome_is_recorded_when_the_runtime_is_down(monkeypatch, wa
             "user_request",
         )
 
-    assert seen == ["owner-1"]
-    assert _dimension_sets(metrics, "messaging.wake.outcome") == [{"outcome": expected}]
+    assert _dimension_sets(metrics, "messaging.wake.outcome") == [{"outcome": "no_runtime"}]
+
+
+@pytest.mark.asyncio
+async def test_the_ingress_post_passes_the_path_not_the_body(monkeypatch):
+    """Regression guard on ``_post``'s signature. It used to take an ``ip`` between the container
+    and the path; dropping that parameter without dropping it from the ONE call site shifted every
+    argument by a position -- the request went out with the body dict as its PATH, the bearer
+    token as its JSON, and the local-session token as its bearer. Every ingress in the fleet, and
+    nothing in these tests catches it, because they all stub ``_post``."""
+    seen = {}
+
+    async def fake_request(container, path, **kwargs):
+        seen.update(container=container, path=path, **kwargs)
+
+        class _R:
+            status_code = 200
+
+            def json(self):
+                return {"accepted": True}
+
+        return _R()
+
+    monkeypatch.setattr(work.runtime_transport, "request", fake_request)
+    worker = OpenClawWorkWorker(sqs_client=FakeSqs())
+
+    await worker._post({"agentcore_runtime_arn": "arn:r1"}, "/plugins/lightbulb-channel/inbound/a1", {"x": 1}, "tok")
+
+    assert seen["path"] == "/plugins/lightbulb-channel/inbound/a1"
+    assert seen["json_body"] == {"x": 1}
+    assert seen["headers"]["Authorization"] == "Bearer tok"
+    assert "X-Lightbulb-Local-Session-Token" not in seen["headers"]
 
 
 @pytest.mark.asyncio

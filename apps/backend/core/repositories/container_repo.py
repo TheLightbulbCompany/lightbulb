@@ -1351,10 +1351,9 @@ async def release_provision_to_error(
     so a failed provision self-heals on the next ~3s poll.
 
     SINGLE OWNER of the provision-path ``status="error"`` transition. Every
-    synchronous provision failure funnels here (``provision_user_container``'s
-    except); the scattered pre-emptive ``status="error"`` writes inside
-    ``ecs_manager`` that used to fire first — and no-op this release's
-    ``status = provisioning`` condition, dropping the cause — were removed, and
+    synchronous provision failure funnels here; the scattered pre-emptive
+    ``status="error"`` writes the ECS provisioner used to fire first — which no-op'd this
+    release's ``status = provisioning`` condition, dropping the cause — were removed, and
     ``_update_container`` now rejects a ``status="error"`` field to keep it that
     way. ``_await_running_transition``'s rolloutState=FAILED write now ALSO
     routes through here (when called with a ``claim_id``, i.e. the runner's
@@ -1557,9 +1556,8 @@ def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
     ``release_provision_to_error``.
 
     Lives here (not in a service) because it is shared by both callers of that
-    release — ``services.provision_dispatch.dispatch_provision`` (the
-    poll-driven path) and ``containers.ecs_manager.provision_user_container``
-    (the deliberate-reprovision doors) — and this repository already owns the
+    release — ``services.provision_dispatch.dispatch_provision`` (the poll-driven path) and
+    the deliberate-reprovision doors — and this repository already owns the
     error transition + fields, so both can import it without an import cycle.
 
     ``retryable`` answers whether re-running the identical provision could

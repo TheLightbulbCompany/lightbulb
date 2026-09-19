@@ -464,11 +464,14 @@ async def test_main_emit_prints_python_literals(capsys):
 
     out = capsys.readouterr().out
     assert rc == 0
-    # Emitted block carries the snake_case _RATES literal AND the camelCase
-    # cost block, ready to paste into a human's review.
+    # The emitted block is the snake_case _RATES literal, ready to paste into a human's review.
+    # The camelCase per-model "cost" blocks it also printed went with the openclaw.json model
+    # catalog they were pasted into -- a Hermes profile's config.yaml carries no rates.
     assert "anthropic.claude-sonnet-4-6" in out
     assert '"cache_read"' in out
-    assert '"cacheWrite"' in out
+    # The camelCase per-model "cost" blocks it used to also print are gone (see above), so the
+    # emitted LITERAL carries only the snake_case field names.
+    assert '"cacheWrite"' not in out
 
 
 # --------------------------------------------------------------------------- #

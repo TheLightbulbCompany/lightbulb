@@ -18,8 +18,8 @@ This script is the escape hatch. Full procedure — BOTH steps are required — 
 
      For each Bedrock-path owner it PUTS the pre-gateway direct-invoke inline
      policy (``build_owner_bedrock_direct_policy``) on the owner role, then
-     reprovisions so openclaw.json/task env re-render in direct mode (they read
-     the SSM parameter via ``bedrock_gate_url.gate_url``).
+     reprovisions so the owner's agent profiles + boot secret re-render in direct
+     mode (they read the SSM parameter via ``bedrock_gate_url.gate_url``).
 
 REVERT (gate healthy again): put the real URL back into the SSM parameter and
 re-run this script with ``--revert`` — it re-puts the fence policy

@@ -122,8 +122,8 @@ def build_runtime_env(
 ) -> dict[str, str]:
     """The gateway's environment on AgentCore.
 
-    On ECS this arrives from two places: a static block in the CDK task definition and a
-    per-owner list built in ecs_manager. A runtime has no task definition, so both sets are
+    On ECS this arrived from two places: a static block in the CDK task definition and a
+    per-owner list the provisioner built. A runtime has no task definition, so both sets are
     supplied here or the gateway boots unable to call back, publish, or reach a model. The
     first dev flip answered a turn only after ``AWS_BEARER_TOKEN_BEDROCK`` /
     ``AWS_BEDROCK_FORCE_HTTP1`` were patched in by hand: the bedrock-gate is a Lambda function
@@ -161,8 +161,8 @@ def build_runtime_env(
         # EFS/NFS workaround for the config watcher -- openclaw.json is still on EFS.
         "CHOKIDAR_USEPOLLING": "true",
         # Tells boot `doctor --fix` that litestream owns the gateway process, so it skips its
-        # native service-ownership inspection (see ecs_manager / CLAUDE.md "Config Patching
-        # Notes") -- without it every ChatGPT-OAuth connect throws on every turn.
+        # native service-ownership inspection (see CLAUDE.md "Config Patching Notes") --
+        # without it every ChatGPT-OAuth connect throws on every turn.
         "OPENCLAW_SERVICE_REPAIR_POLICY": "external",
         "AWS_REGION": settings.AWS_REGION,
         "CLAUDE_CODE_USE_BEDROCK": "1",

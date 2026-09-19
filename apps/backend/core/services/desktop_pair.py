@@ -278,8 +278,7 @@ def build_paired_entry(
     tokens.node is load-bearing — listEffectivePairedDeviceRoles returns []
     for tokenless paired records, leaving the device connected but stripped
     of effective commands like system.run. The ``role``/``scopes`` inside
-    tokens.node mirror the canonical shape ensure_node_paired_entry's
-    in-container counterpart writes (core/containers/config.py).
+    tokens.node mirror the canonical shape the in-container counterpart writes.
     """
     if client_id not in ALLOWED_CLIENT_IDS:
         raise ValueError(f"clientId must be one of {ALLOWED_CLIENT_IDS}; got {client_id!r}")

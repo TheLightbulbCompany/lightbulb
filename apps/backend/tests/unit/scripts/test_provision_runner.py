@@ -1,9 +1,8 @@
 """Tests for scripts/provision_runner.py exit-code ABI + fencing plumbing.
 
-Every run() here takes the AgentCore/Hermes leg: ``runtime_transport.host_for`` is a constant
-("agentcore") since the ECS runtime was deleted, so ``hermes`` in ``run()`` is unconditionally
-True. The ECS-only coverage (provision_user_container / wait_for_running / the post-wait row
-status mapping — all unreachable now) went with that leg.
+There is ONE leg: prepare the workspace, create the AgentCore runtime. The ECS-only coverage
+(provision_user_container / wait_for_running / the post-wait row status mapping) went with that
+runtime, and so did the ``runtime_host`` hint step 0 used to carry.
 """
 
 import subprocess
@@ -20,21 +19,15 @@ from scripts import provision_runner
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _explodes_if_called(*args, **kwargs):
-    raise AssertionError(f"the ECS leg is deleted; must not be called: args={args!r} kwargs={kwargs!r}")
-
-
 @pytest.fixture
 def hermes(monkeypatch):
-    """run()'s only leg. ``_get_manager`` explodes on contact: the AgentCore leg has no ECS
-    service to manage, so a manager double that raises proves the dead leg is never entered.
+    """run()'s only leg.
 
     Step 0 (the owner Paperclip seed) is unconditional, so every run() test traverses it.
     Neutralize it here so the runtime-work tests below stay about the runtime work; the step-0
     tests re-patch it with their own double, and the _seed_owner_paperclip helper tests never
     take this fixture (they call the real function directly).
     """
-    monkeypatch.setattr(provision_runner, "_get_manager", _explodes_if_called)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", AsyncMock(return_value=provision_runner.EXIT_OK))
     prepare = AsyncMock()
     provision = AsyncMock(return_value="arn:hermes-1")
@@ -195,7 +188,7 @@ async def test_seed_step_0_always_runs_then_provisions_runtime(monkeypatch, herm
     seed = AsyncMock(return_value=provision_runner.EXIT_OK)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
     assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_OK
-    seed.assert_awaited_once_with("org_a", runtime_host="agentcore")
+    seed.assert_awaited_once_with("org_a")
     repo.claim_attempt.assert_awaited_once()
     hermes.provision.assert_awaited_once()
 

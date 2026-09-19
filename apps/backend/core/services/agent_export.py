@@ -1314,7 +1314,7 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str, container: dict | No
 
 async def _default_fetch_paperclip_agents(*, owner_id: str) -> list[dict]:
     """Production-path Paperclip agent fetch — constructs the httpx client,
-    repo, and admin_client the same way ``ecs_manager`` does, then delegates
+    repo, and admin_client the same way every other Paperclip caller does, then delegates
     to ``fetch_paperclip_agents_for_owner``. Raises
     ``PaperclipUnavailableError`` if anything fails (network, auth, Paperclip
     down): the Friday guard consumes this, and an empty return there means

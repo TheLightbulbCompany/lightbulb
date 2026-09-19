@@ -721,7 +721,7 @@ async def change_provider(
         # Scoped to owner_id, NOT clerk_user_id. BYOK secrets are stored
         # per-OWNER: every route in routers/settings_keys.py (list/set/delete)
         # keys them on resolve_owner_id(auth), and the provisioner reads them
-        # back the same way (ecs_manager._build_byo_secrets_for_user). For a
+        # back the same way at provision time. For a
         # personal owner the two ids are identical, which is why this went
         # unnoticed — but for an ORG they diverge (org_... vs user_...), so an
         # org admin who had just saved a key hit a spurious `byo_key_missing`

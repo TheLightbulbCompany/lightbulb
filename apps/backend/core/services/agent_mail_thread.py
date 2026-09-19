@@ -26,16 +26,14 @@ from it would have split one conversation into several.
 The key is hashed rather than embedding the Message-ID: session keys are
 lowercased upstream, and a raw Message-ID carries ``<>``, ``@`` and arbitrary
 punctuation. The prefix below must remain covered by the container's
-``hooks.allowedSessionKeyPrefixes`` (``core/containers/config.py``) — a key
-outside that allowlist is rejected by the gateway, so inbound mail would stop
-reaching a session at all.
+``hooks.allowedSessionKeyPrefixes`` — a key outside that allowlist is rejected by the
+gateway, so inbound mail would stop reaching a session at all.
 """
 
 import hashlib
 
-# Prefix must stay inside `hooks.allowedSessionKeyPrefixes` (see
-# core/containers/config.py) — that allowlist is what bounds a leaked hook
-# token to email threads instead of arbitrary session ownership.
+# Prefix must stay inside `hooks.allowedSessionKeyPrefixes` — that allowlist is what
+# bounds a leaked hook token to email threads instead of arbitrary session ownership.
 _PREFIX = "lightbulb-email:"
 
 # 16 hex chars of SHA-256. Collisions would merge two unrelated threads into

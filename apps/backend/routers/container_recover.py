@@ -117,9 +117,8 @@ async def container_recover(
 
     # 2. Container is stopped or error -> full re-provision
     if status in ("stopped", "error"):
-        # This is a WAKE, and it is customer-reachable, so it passes the same
-        # two guards ``ecs_manager.start_user_service`` applies to every other
-        # start. It cannot inherit them: it wakes the container through the
+        # This is a WAKE, and it is customer-reachable, so it passes the same two guards every
+        # other start path applies. It cannot inherit them: it wakes the workspace through the
         # PROVISION executor (dispatch_provision), whose runner starts with
         # force=True (that call IS a provision — the trial->paid conversion's
         # reprovision runs through it and would otherwise deadlock against its

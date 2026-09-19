@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 #     the stop and the status path stands down while the stamp is live.
 #
 #     The stamp is a TIMESTAMP, not just the substatus, and that is load-
-#     bearing: `ecs_manager.stop_user_service` writes
+#     bearing: a stop writes
 #     `update_status(owner, "stopped")` whose substatus defaults to None, so it
 #     clobbers `substatus="converting"` the instant the drain begins. The
 #     substatus is the human-readable label (and what the UI renders);

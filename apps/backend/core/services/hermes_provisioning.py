@@ -30,8 +30,7 @@ builder, the SFN watchdog and the long ``wait_for_running`` ECS-boot poll (``Cre
 one synchronous call; the only wait here is the runtime's own short startup to ``READY``).
 
 Fencing (M4-R28): the terminal row write goes through ``container_repo.update_container_leased`` —
-the exact fenced primitive ``ecs_manager.wait_for_running`` uses for its own terminal write — so a
-straggler from a superseded attempt can never clobber a takeover's row; a lost fence raises
+the same fenced primitive every other terminal provision write uses — so a straggler from a superseded attempt can never clobber a takeover's row; a lost fence raises
 ``ProvisionSuperseded`` and writes nothing (``provision_runner.run``'s existing handler for that
 exception, from Task 18, already covers both call sites). No ``generation`` fence: that concept is
 ECS-incarnation-specific (a container recreate mid-provision) and has no Hermes analogue.
@@ -82,9 +81,9 @@ from core.services.agentcore_runtime import (
 logger = logging.getLogger(__name__)
 
 #: Bounded poll for AgentCore's OWN startup — CreateAgentRuntime returns immediately, but the
-#: runtime itself takes some seconds to reach READY. This is NOT a substitute for
-#: ecs_manager.wait_for_running's SFN-watched, many-minutes ECS boot wait: it lives entirely
-#: inside the single-shot provision runner's own execution (mirrors the dev spike's own
+#: runtime itself takes some seconds to reach READY. Unlike the SFN-watched, many-minutes ECS
+#: boot wait it replaced, this lives entirely inside the single-shot provision runner's own
+#: execution (mirrors the dev spike's own
 #: 40 x 10s ceiling — a real flip there resolved in well under that window).
 _READY_POLL_ATTEMPTS = 40
 _READY_POLL_INTERVAL_S = 10.0
@@ -438,8 +437,7 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
     Every teardown in the system reaches AWS through this function -- entitlement
     cancellation, the admin account wipe, ``DELETE /debug/provision``,
     ``DELETE /debug/user-data`` -- which is what makes the Bedrock reap below structural:
-    no caller can forget it, and none needs its own copy. (It replaces
-    ``ecs_manager.delete_user_service``, whose docstring carried the same rule.)
+    no caller can forget it, and none needs its own copy.
 
     Steps:
       1. ``teardown_hermes_runtime`` -- stop the session, delete the runtime, revoke the
@@ -512,9 +510,9 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
     still carries the field it would have refused a reprovision forever.
 
     ``hook_token``/``gateway_token`` are re-minted only when the row does not already carry one —
-    mirrors ``ecs_manager``'s own "reuse if present" convention (``container.get("hook_token") or
-    secrets.token_urlsafe(32)``) — so a retry never orphans a token some other seam already handed
-    out.
+    the same "reuse if present" convention the ECS provisioner had (``container.get("hook_token")
+    or secrets.token_urlsafe(32)``) — so a retry never orphans a token some other seam already
+    handed out.
 
     Fenced the same way as the terminal write (M4-R28), but NON-terminal: ``release_lease=False``,
     since the provision is not done yet.
@@ -954,9 +952,9 @@ async def write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
 
 
 async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: ProfileInputs) -> None:
-    """Fix round 1, Important 2: a freshly provisioned AgentCore workspace never runs
-    ``ecs_manager.write_user_configs`` (the ONLY caller of ``owner_facts.write_owner_facts``
-    today), so it had NO ``lightbulb-facts.json`` at all while the bundled skill tells every
+    """Fix round 1, Important 2: a freshly provisioned workspace never ran the ECS config
+    writer (the only caller ``owner_facts.write_owner_facts`` ever had), so it had NO
+    ``lightbulb-facts.json`` at all while the bundled skill tells every
     agent to read it. Stages the SAME facts file directly into every roster profile instead of
     calling ``write_owner_facts`` itself: at this point in provisioning the row's
     ``runtime_host`` has NOT yet flipped to ``"agentcore"`` (``write_profiles`` runs BEFORE
@@ -964,8 +962,8 @@ async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: Profil
     a host check would take the wrong branch here and write nothing
     anyone will ever read.
 
-    Sources plan/provider the same way ``ecs_manager.write_user_configs``'s own
-    ``write_owner_facts`` call does (as ``account_overrides``): this provision's OWN
+    Sources plan/provider the way that writer's own ``write_owner_facts`` call did
+    (as ``account_overrides``): this provision's OWN
     just-resolved ``inputs.provider_choice``/``inputs.byo_provider``, not a re-read that could
     race an in-flight billing write. Email + provisioning-workflow lookups reuse
     ``owner_facts``'s own private helpers so this can never diverge from what the ECS path
@@ -1116,8 +1114,8 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         raise
 
     # `running` from here: AgentCore wakes on invoke, so every "stopped -> start" door must see a
-    # live workspace, and the ECS manager's start/stop chokepoints already no-op for this row.
-    # Fenced write (M4-R28) — mirrors ecs_manager.wait_for_running's terminal transition. A lost
+    # live workspace.
+    # Fenced write (M4-R28) — the same terminal transition every provision write takes. A lost
     # fence raises ProvisionSuperseded here and writes NOTHING (DynamoDB's conditional write is
     # atomic); provision_runner.run's existing handler for that exception covers this call.
     # hook_token/gateway_token are NOT repeated here -- prepare_hermes_workspace already wrote

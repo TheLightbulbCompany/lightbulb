@@ -20,11 +20,8 @@ container leg is a NO-OP when the owner's box is already up and healthy (see
 for callers whose container is already running: they get the seed reconcile
 without a force-redeploy.
 
-The runner owns the provisioning -> running transition in the FOREGROUND
-(wait_for_running) — the detached create_task pollers ecs_manager fires
-internally for non-provisioning paths (wake, resize) never run inside this
-process; the foreground wait is the one that matters here, and every row
-write is condition-guarded (claim + generation + per-attempt token).
+The runner owns the provisioning -> running transition in the FOREGROUND, and every row write
+is condition-guarded (claim + generation + per-attempt token).
 
 PROVISION_ATTEMPT_TOKEN (env, set by the state machine's containerOverrides
 from ``$.attempt_token``) is this ATTEMPT's fencing token — fresh every SFN

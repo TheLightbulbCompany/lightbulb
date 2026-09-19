@@ -648,9 +648,9 @@ def write_agent_profile(
     ``byo_provider``/``byo_api_key`` are OWNER-level keywords (fix round 1, C2) — never read off
     the Paperclip roster row (``agent``), whose documented shape is
     ``{"id","name","role","title","capabilities","icon"}`` and carries no such field. The provider
-    choice is threaded next to ``provider_choice`` everywhere else in the codebase
-    (``ecs_manager.py``); reading it from the roster row silently pinned every BYO owner to
-    Anthropic with no key delivered anywhere.
+    choice is threaded next to ``provider_choice`` everywhere else in the codebase; reading it
+    from the roster row silently pinned every BYO owner to Anthropic with no key delivered
+    anywhere.
 
     ``soul_md_override`` (M6 lane R1): when given, replaces the generated ``build_soul_md``
     identity outright — the one hook the ECS-to-Hermes workspace migration job needs to carry

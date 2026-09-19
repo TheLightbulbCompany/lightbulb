@@ -6,7 +6,7 @@
 Atlas, scaffolded specialists, marketplace hires — can read the owner's
 CURRENT plan/provider state instead of trusting seed files rendered once at
 provision time. The backend is the sole writer; writes happen at provision
-(``ecs_manager.write_user_configs``), on provider switches
+(``hermes_provisioning._stage_owner_facts``), on provider switches
 (``billing_service.change_provider``), and on subscription-state webhooks
 (``stripe_webhook_handlers.handle_subscription_state``). Best-effort by
 design: a facts write must never block any of those callers.

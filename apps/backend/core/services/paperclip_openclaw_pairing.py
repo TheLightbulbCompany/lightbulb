@@ -169,9 +169,8 @@ async def fetch_paperclip_agents_for_owner(
 async def count_paperclip_agents_for_owner(owner_id: str) -> int:
     """Live Paperclip agent count for ``owner_id``, or 0 if it can't be fetched.
 
-    Constructs the httpx client + repo + admin_client itself so callers that
-    only want a number don't have to (``ecs_manager._size_for_owner``,
-    ``stripe_webhook_handlers``). Delegates to
+    Constructs the httpx client + repo + admin_client itself so callers that only want a
+    number don't have to (``stripe_webhook_handlers``). Delegates to
     ``fetch_paperclip_agents_for_owner``, which returns [] rather than raising
     when the owner has no company yet or Paperclip is unreachable.
 

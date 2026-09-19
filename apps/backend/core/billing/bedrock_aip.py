@@ -713,9 +713,9 @@ async def delete_owner_aips(owner_id: str, *, aip_arns: list[str] | None = None)
 
     ``aip_arns``, if provided (not None), is used DIRECTLY instead of
     re-reading the containers row via read_owner_aips. This matters because
-    the wipe orchestrator's `ecs_service` step (which runs before this one)
+    the wipe orchestrator's `runtime` step (which runs before this one)
     deletes the containers row as a side effect of
-    ``ecs_manager.delete_user_service`` — a live re-read at this point would
+    ``hermes_provisioning.delete_workspace_runtime`` — a live re-read at this point would
     see no row and silently no-op, orphaning both the Bedrock inference
     profile and the reverse-table row while still reporting success. Callers
     that already hold the ARNs (e.g. the wipe orchestrator's upfront
@@ -837,7 +837,7 @@ async def reap_owner_bedrock_resources(owner_id: str, row_image: dict | None) ->
     """SHARED CONTRACT (every teardown path): destroy the per-owner Bedrock
     footprint that the containers row was the only handle on.
 
-    Called from ``ecs_manager.delete_user_service`` — the seam EVERY teardown
+    Called from ``hermes_provisioning.delete_workspace_runtime`` — the seam EVERY teardown
     crosses (entitlement cancellation, admin account-wipe, ``DELETE
     /debug/provision``, ``DELETE /debug/user-data``) — so no path can forget it
     and none needs its own copy. It runs immediately after the containers row is

@@ -450,7 +450,6 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:CreateBrowserProfile",
           "bedrock-agentcore:GetBrowserProfile",
           "bedrock-agentcore:ListBrowserProfiles",
-          "bedrock-agentcore:DeleteBrowserProfile",
         ],
         resources: [agentcoreArn("browser-profile/*")],
       }),

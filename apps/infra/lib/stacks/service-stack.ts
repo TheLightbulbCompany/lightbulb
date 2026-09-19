@@ -450,6 +450,9 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:CreateBrowserProfile",
           "bedrock-agentcore:GetBrowserProfile",
           "bedrock-agentcore:ListBrowserProfiles",
+          // Account wipe must delete the profile along with the cookies/localStorage it holds
+          // (backend PR #2793's reap_owner_bedrock_resources is the caller).
+          "bedrock-agentcore:DeleteBrowserProfile",
         ],
         resources: [agentcoreArn("browser-profile/*")],
       }),

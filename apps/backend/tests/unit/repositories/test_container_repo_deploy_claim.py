@@ -381,34 +381,6 @@ async def test_claim_on_an_owner_with_no_container_row_is_refused(dynamodb_table
     assert dynamodb_table.get_item(Key={"owner_id": "org_none"}).get("Item") is None
 
 
-def test_lease_outlives_the_worst_case_pairing_budget():
-    """DRIFT FENCE. The lease MUST be longer than the deploy it fences.
-
-    It briefly was not: the lease was cut 900 -> 300 sized against a measured
-    ~85s deploy, and the pairing RPC timeout was then raised 30 -> 90s in a
-    separate commit. That put ``pair_with_openclaw``'s own worst case (2
-    attempts x 2 RPCs x 90s) at ~361s — ABOVE the lease — while pairing is only
-    one step of a deploy that also does an S3 GET, a tar extract, a Paperclip
-    mint, device pairing, routine recreation and an integration reconcile.
-
-    A lease that expires mid-deploy is WORSE than no lease: the owner's next
-    hire takes it over and runs concurrently (the incident), the first deploy's
-    ``finally`` release is correctly no-op'd by its now-dead fencing token, and
-    nothing logs the overlap. This test fails if either constant moves without
-    the other.
-    """
-    from core.repositories.container_repo import DEPLOY_CLAIM_STALE_S
-    from core.services.paperclip_openclaw_pairing import PAIR_WORST_CASE_S
-
-    assert DEPLOY_CLAIM_STALE_S > PAIR_WORST_CASE_S, (
-        f"deploy lease ({DEPLOY_CLAIM_STALE_S}s) must outlive the worst-case pairing "
-        f"budget ({PAIR_WORST_CASE_S}s) — raise DEPLOY_CLAIM_STALE_S or lower the pairing constants"
-    )
-    # Pairing is one step of many; keep real headroom for the rest of the deploy
-    # rather than a lease that only just clears it.
-    assert DEPLOY_CLAIM_STALE_S >= PAIR_WORST_CASE_S + 120
-
-
 # ---------------------------------------------------------------------------
 # extend_owner_deploy_claim — the company-deploy lease heartbeat
 # ---------------------------------------------------------------------------

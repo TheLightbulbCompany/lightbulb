@@ -1,8 +1,14 @@
-"""Raw WebSocket relay for machine clients (desktop node hosts, Paperclip operators) -> the owner's OpenClaw gateway.
+"""Raw WebSocket door for a desktop node host.
 
-One backend task owns both sockets for the connection's life; nothing about the connection
-lives anywhere else except a TTL presence row. The OpenClaw handshake is the client's and
-the container's business - frames are forwarded verbatim except the two hooks below.
+The BACKEND is the gateway for this workspace (spec §4.4): ``_serve_node_protocol`` terminates
+the node protocol in-process -- challenge, signed ``connect``, ``hello-ok``, then frame pumping
+for the socket's life. Nothing about the connection lives anywhere else except a TTL presence
+row.
+
+There is no second socket and no operator leg. A Paperclip operator used to dial here and be
+piped to the container's OpenClaw gateway; its adapter is now Paperclip's native
+``hermes_gateway`` over the authenticated HTTP facade, so an operator token arriving here is
+refused rather than piped to a runtime that has no WebSocket.
 """
 
 from __future__ import annotations
@@ -15,16 +21,12 @@ import uuid
 
 from fastapi import APIRouter, WebSocket
 from starlette.websockets import WebSocketDisconnect
-from websockets import connect as ws_connect
 from websockets.exceptions import ConnectionClosed
 
-from core.containers import get_ecs_manager
 from core.observability.metrics import put_metric
+from core.repositories import container_repo
 from core.services import desktop_pair, machine_auth, node_broker, relay_hooks
 from core.services.connection_service import ConnectionService
-from core.services.container_rpc import GATEWAY_PORT
-from core.services.container_wake import request_wake_silent
-from core.services.desktop_pair_live import heal_desktop_device_not_paired
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -138,23 +140,26 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
         return
     owner_id, kind = identity.owner_id, identity.kind
 
+    if kind != "node":
+        # Only a node terminates here. Every other machine client (the Paperclip operator) is
+        # on the HTTP facade now; piping it to a runtime with no WebSocket would hang.
+        put_metric("relay.connect", dimensions={"kind": kind, "outcome": "unsupported"})
+        await websocket.close(code=1008, reason="Unsupported client")
+        return
+
     try:
-        container, ip = await get_ecs_manager().resolve_running_container(owner_id)
+        container = await container_repo.get_by_owner_id(owner_id)
     except Exception:  # noqa: BLE001
-        logger.warning("relay container resolve error owner=%s", owner_id, exc_info=True)
+        logger.warning("relay workspace read error owner=%s", owner_id, exc_info=True)
         put_metric("relay.connect", dimensions={"kind": kind, "outcome": "error"})
         await websocket.close(code=1011, reason="Internal error")
         return
-    if container is None or ip is None:
-        # RULING D14: only an operator connect wakes a stopped container. A
-        # node's own reconnect (a laptop coming back from sleep) never did
-        # before this relay and must not start now — it would re-provision a
-        # parked trial container forever.
-        outcome = await request_wake_silent(owner_id, door="relay") if kind == "operator" else "skipped_node"
-        if kind == "operator":
-            await relay_hooks.maybe_disarm_expired_trial(owner_id)
-        put_metric("relay.connect", dimensions={"kind": kind, "outcome": f"wake_{outcome}"})
-        await websocket.close(code=1013, reason="Container not running")
+    if not container:
+        # RULING D14: a node's own reconnect (a laptop coming back from sleep) never started a
+        # workspace and must not now. There is nothing to wake either -- AgentCore starts the
+        # microVM on invoke -- so an unprovisioned owner is simply refused.
+        put_metric("relay.connect", dimensions={"kind": kind, "outcome": "no_workspace"})
+        await websocket.close(code=1013, reason="Workspace not provisioned")
         return
 
     connections = ConnectionService()
@@ -162,193 +167,38 @@ async def gateway_relay_ws(websocket: WebSocket) -> None:
     try:
         await connections.put_relay_presence(connection_id=connection_id, identity=identity)
     except Exception:  # noqa: BLE001
-        # Fail CLOSED, not best-effort: a connection with no presence row is
-        # invisible to count_relay_nodes() (the first-node deny-list patch
-        # never fires) and to revoke (nothing to delete, nothing to notice
-        # gone). The client's own reconnect loop retries.
+        # Fail CLOSED, not best-effort: a connection with no presence row is invisible to
+        # revoke (nothing to delete, nothing to notice gone). The client's own reconnect loop
+        # retries.
         logger.warning("relay presence write failed kind=%s", kind, exc_info=True)
         put_metric("relay.presence", dimensions={"outcome": "error"})
         await websocket.close(code=1011, reason="Internal error")
         return
 
     close_code = 1000
-    node_ready = False
-    not_paired_healed = False
-    legs: set[asyncio.Task] = set()
-    refresher: asyncio.Task | None = None
     try:
-        if kind == "node":
-            # No second socket: the BACKEND is the gateway for this workspace, terminating
-            # the node protocol itself (spec §4.4) instead of dialling a container that does
-            # not exist. `_serve_node_protocol` owns the connection end to end (including its
-            # own accept(), presence-refresh leg, and on_node_ready/on_node_closed calls), so
-            # none of `node_ready`/`legs`/`refresher` below ever get set on this path — the
-            # shared `finally` skips the ECS-shaped on_node_closed dispatch as a result.
-            #
-            # Fix round 1, item 1 (critical): do NOT `await websocket.accept()` here too --
-            # starlette raises RuntimeError on a second accept() once the socket is already
-            # CONNECTED, which used to close 1011 before the challenge frame ever went out.
-            put_metric("relay.connect", dimensions={"kind": kind, "outcome": "ok"})
-            close_code = await _serve_node_protocol(
-                websocket, identity, container, connections=connections, connection_id=connection_id
-            )
-        else:
-            async with ws_connect(
-                f"ws://{ip}:{GATEWAY_PORT}", max_size=_WS_MAX_FRAME_SIZE, open_timeout=10, close_timeout=5
-            ) as upstream:
-                await websocket.accept()
-                put_metric("relay.connect", dimensions={"kind": kind, "outcome": "ok"})
-
-                async def client_to_upstream() -> None:
-                    try:
-                        while True:
-                            msg = await websocket.receive()
-                            if msg.get("type") == "websocket.disconnect":
-                                return
-                            if msg.get("bytes") is not None:
-                                await upstream.send(msg["bytes"])
-                                continue
-                            text = msg.get("text")
-                            if text is None:
-                                continue
-                            if kind == "operator":
-                                body = _parse(text)
-                                if (
-                                    body
-                                    and body.get("type") == "req"
-                                    and body.get("method") in relay_hooks.WAKE_GATED_METHODS
-                                ):
-                                    refusal = await relay_hooks.admit_operator_wake(
-                                        user_id=identity.user_id, owner_id=owner_id, body=body
-                                    )
-                                    if refusal is not None:
-                                        await websocket.send_text(json.dumps(refusal))
-                                        continue
-                            await upstream.send(text)
-                    except (WebSocketDisconnect, ConnectionClosed):
-                        return
-
-                async def upstream_to_client() -> None:
-                    nonlocal node_ready, not_paired_healed
-                    try:
-                        async for frame in upstream:
-                            if isinstance(frame, bytes):
-                                await websocket.send_bytes(frame)
-                                continue
-                            await websocket.send_text(frame)
-                            body = _parse(frame)
-                            if not body or body.get("type") != "res":
-                                continue
-                            error = body.get("error") if isinstance(body.get("error"), dict) else None
-                            if error and error.get("code") == "NOT_PAIRED":
-                                # Once per connection (spec §4.5): a looping client
-                                # that keeps getting rejected must not hammer the
-                                # self-heal RPCs on every retry.
-                                if not not_paired_healed:
-                                    not_paired_healed = True
-                                    details = error.get("details") if isinstance(error.get("details"), dict) else {}
-                                    request_id = (
-                                        details.get("requestId") if isinstance(details.get("requestId"), str) else None
-                                    )
-                                    device_id = identity.device_id or (
-                                        details.get("deviceId") if isinstance(details.get("deviceId"), str) else None
-                                    )
-                                    if device_id:
-                                        await _self_heal(kind, owner_id, device_id, request_id)
-                            elif (
-                                kind == "node"
-                                and not node_ready
-                                and body.get("ok") is True
-                                and isinstance(body.get("payload"), dict)
-                                and body["payload"].get("type") == "hello-ok"
-                            ):
-                                node_ready = True
-                                try:
-                                    await relay_hooks.on_node_ready(
-                                        owner_id, identity.user_id, identity.device_id or ""
-                                    )
-                                except Exception:  # noqa: BLE001 — a hook failure must not kill the leg
-                                    logger.warning("relay on_node_ready hook failed owner=%s", owner_id, exc_info=True)
-                    except (WebSocketDisconnect, ConnectionClosed):
-                        return
-
-                legs = {asyncio.create_task(client_to_upstream()), asyncio.create_task(upstream_to_client())}
-                refresher = asyncio.create_task(_refresh_presence_loop(connections, connection_id))
-                done, pending = await asyncio.wait(legs | {refresher}, return_when=asyncio.FIRST_COMPLETED)
-                decided = _pick_close_code(done, refresher)
-                if decided is not None:
-                    close_code = decided
-                for task in done:
-                    if task is refresher or task.cancelled():
-                        continue
-                    exc = task.exception()
-                    if exc is not None:
-                        logger.warning("relay leg failed kind=%s", kind, exc_info=exc)
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*legs, refresher, return_exceptions=True)
-
-                # Propagate the container's own close code (e.g. a deploy/restart
-                # closing 4401/1001) to the client instead of always reporting our
-                # generic 1000 — spec §4.4/§6 "same code". 1005/1006 are the
-                # websockets library's synthetic "no close frame at all" markers
-                # and must never be forwarded as if the peer sent them. Only
-                # overwrite the DEFAULT 1000 — a 1011 (leg failure) or 1008
-                # (presence revoked) already decided above is a stronger signal
-                # than whatever the upstream container happened to close with.
-                code = upstream.close_code
-                if close_code == 1000 and code and 1000 <= code < 5000 and code not in (1005, 1006):
-                    close_code = code
+        # `_serve_node_protocol` owns the connection end to end -- its own accept(), its
+        # presence-refresh leg, and its on_node_ready/on_node_closed calls. Do NOT accept()
+        # here too: starlette raises RuntimeError on a second accept() once the socket is
+        # CONNECTED, which used to close 1011 before the challenge frame ever went out.
+        put_metric("relay.connect", dimensions={"kind": kind, "outcome": "ok"})
+        close_code = await _serve_node_protocol(
+            websocket, identity, container, connections=connections, connection_id=connection_id
+        )
     except Exception:  # noqa: BLE001 — never let a relay error take the worker down
         logger.warning("relay error kind=%s", kind, exc_info=True)
         close_code = 1011
     finally:
-        # A drain/shutdown cancellation can interrupt this coroutine at any
-        # await above, before the normal pending-task cancel+gather runs —
-        # leaving the legs/refresher orphaned. Cancel them unconditionally
-        # here first so the presence delete + relay.close below still run on
-        # a bounded, predictable path regardless of how we got here.
-        for task in (*legs, *((refresher,) if refresher is not None else ())):
-            if not task.done():
-                task.cancel()
-        delete_failed = False
         try:
             await asyncio.to_thread(connections.delete_connection, connection_id)
         except Exception:  # noqa: BLE001
-            delete_failed = True
             logger.warning("relay presence delete failed kind=%s", kind, exc_info=True)
             put_metric("relay.presence", dimensions={"outcome": "delete_error"})
-        if kind == "node" and node_ready:
-            try:
-                # This row may still be sitting in DDB if the delete above
-                # failed — tell the hook so its last-node count doesn't count
-                # the connection that is, in fact, closing right now.
-                await relay_hooks.on_node_closed(owner_id, identity.user_id, stale_row_undeleted=delete_failed)
-            except Exception:  # noqa: BLE001
-                logger.warning("relay node-closed hook failed", exc_info=True)
         put_metric("relay.close", dimensions={"kind": kind, "code": _close_code_bucket(close_code)})
         try:
             await websocket.close(code=close_code)
         except Exception:  # noqa: BLE001 — already closed by the client
             pass
-
-
-async def _self_heal(kind: str, owner_id: str, device_id: str, request_id: str | None) -> None:
-    # Both kinds share the same gate and the same approve call —
-    # heal_desktop_device_not_paired requires the deviceId to already be in
-    # the owner's backend-written devices/paired.json (the artifact of the
-    # Clerk-authed /desktop/pair flow) before approving anything. That gate
-    # matters just as much for an operator: the operator's MachineIdentity
-    # carries no device_id of its own (machine_auth._operator always sets
-    # device_id=None), so this deviceId comes entirely from the container's
-    # own NOT_PAIRED frame — untrusted input a compromised or buggy container
-    # could use to mint trust for an arbitrary device id if it weren't gated.
-    try:
-        healed = await heal_desktop_device_not_paired(owner_id=owner_id, device_id=device_id, request_id=request_id)
-        put_metric("relay.not_paired_selfheal", dimensions={"kind": kind, "outcome": "healed" if healed else "failed"})
-    except Exception:  # noqa: BLE001
-        put_metric("relay.not_paired_selfheal", dimensions={"kind": kind, "outcome": "error"})
-        logger.warning("relay NOT_PAIRED self-heal failed kind=%s", kind, exc_info=True)
 
 
 def _reject_node_connect(owner_id: str, reason: str) -> int:
@@ -411,7 +261,7 @@ async def _serve_node_protocol(
     await websocket.send_text(json.dumps(node_broker.hello_ok(str(body.get("id")), str(uuid.uuid4()))))
     node_sessions[key] = session
     try:
-        await relay_hooks.on_node_ready(identity.owner_id, identity.user_id, device_id)
+        await relay_hooks.on_node_ready(identity.owner_id, identity.user_id)
     except Exception:  # noqa: BLE001 — a hook failure must not kill the leg
         logger.warning("relay on_node_ready hook failed owner=%s", identity.owner_id, exc_info=True)
     refresher = (
@@ -454,7 +304,7 @@ async def _pump(websocket: WebSocket, session: node_broker.NodeSession, refreshe
     """Three legs plus the presence refresher when one is wired: read+ack, drain outbound
     invokes, and tick. The tick is not optional — the CLI closes 4000 at twice the interval
     we promised in hello-ok. A refresher ending (presence row revoked) closes 1008, same as
-    the ECS relay's own `_pick_close_code`."""
+    the same `_pick_close_code` the shared close-code decision uses."""
 
     async def reader() -> None:
         try:
@@ -508,7 +358,7 @@ async def _pump(websocket: WebSocket, session: node_broker.NodeSession, refreshe
                 task.cancel()
         await asyncio.gather(*waitable, return_exceptions=True)
 
-    # Reuses the ECS relay's own `_pick_close_code` (revoke wins over any same-batch leg
+    # Reuses `_pick_close_code` (revoke wins over any same-batch leg
     # failure) and its "relay leg failed" logging pattern; a `_FrameTooLarge` refines the
     # generic 1011 down to the more specific 1009, but never overrides a 1008 revoke.
     close_code = _pick_close_code(done, refresher) or 1000

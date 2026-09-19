@@ -67,9 +67,7 @@ from core.services import service_token
 from core.services.company_identity import generate_company_name
 from core.services.paperclip_adapter_config import (
     HERMES_GATEWAY_TYPE,
-    adapter_type_for,
     build_hermes_gateway_adapter_config,
-    synthesize_openclaw_adapter,
 )
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 
@@ -207,23 +205,6 @@ async def close_paperclip_provisioning(provisioning) -> None:
         await http.aclose()
     except Exception:
         logger.exception("paperclip httpx client close failed")
-
-
-def _ws_gateway_url(env_name: str) -> str:
-    """Pick the right WS gateway URL for a seeded agent's
-    openclaw-gateway adapter.
-
-    In a deployed env this is ``settings.GATEWAY_RELAY_URL`` — the raw
-    WebSocket relay on the `bv-` door (``wss://bv.<apex>/api/v1/gateway/ws``
-    in prod, ``wss://bv-{env}.<apex>/api/v1/gateway/ws`` elsewhere) that one
-    backend task pipes end-to-end, not the API Gateway relay the local-session
-    door still uses. ``env_name`` only distinguishes "deployed" from "local",
-    where no custom domain exists.
-    """
-    if not env_name:
-        # Empty env (local dev) — fall back to local WS endpoint.
-        return "ws://localhost:8000"
-    return settings.GATEWAY_RELAY_URL
 
 
 class OrgNotProvisionedError(RuntimeError):
@@ -652,16 +633,11 @@ class PaperclipProvisioning:
             #    for org members.
             svc_token = service_token.mint(owner_id)
 
-            # Which adapter carries these seeded runs. AgentCore owners use the deployed native
-            # Hermes adapter through the hook-token-authenticated backend facade. Absent/unknown
-            # ``runtime_host`` remains the ECS default because a fresh provision normally seeds
-            # Paperclip before the container row exists. Only the native branch below needs a
-            # second read for the hook token embedded as its ``apiKey``.
-            seed_adapter_type = await adapter_type_for(owner_id, runtime_host=runtime_host)
-            seed_hook_token = ""
-            if seed_adapter_type == HERMES_GATEWAY_TYPE:
-                owner_container = await container_repo.get_by_owner_id(owner_id)
-                seed_hook_token = (owner_container or {}).get("hook_token") or ""
+            # Which adapter carries these seeded runs: the deployed native Hermes adapter
+            # through the hook-token-authenticated backend facade, whose ``apiKey`` is that
+            # token -- so the seed needs the owner's container row.
+            owner_container = await container_repo.get_by_owner_id(owner_id)
+            seed_hook_token = (owner_container or {}).get("hook_token") or ""
 
             starter_agent_ids = dict(existing.starter_agent_ids or {}) if reconciling_company else {}
             for starter_key, name, role, title, parent_key in STARTER_ROSTER:
@@ -671,26 +647,17 @@ class PaperclipProvisioning:
                 if parent_key and not reports_to:
                     continue
                 try:
-                    if seed_adapter_type == HERMES_GATEWAY_TYPE:
-                        # Paperclip gets the authenticated backend facade, not a private runtime
-                        # address. Its native session header supplies the final agent id after
-                        # Paperclip assigns it.
-                        adapter_config = build_hermes_gateway_adapter_config(owner_id, hook_token=seed_hook_token)
-                    else:
-                        # Synthesis mints a device key when none is supplied.
-                        # Each starter needs a distinct paired.json identity.
-                        adapter_config = synthesize_openclaw_adapter(
-                            gateway_url=_ws_gateway_url(self._env_name),
-                            service_token=svc_token,
-                            user_id=owner_user_id,
-                        )
+                    # Paperclip gets the authenticated backend facade, not a private runtime
+                    # address. Its native session header supplies the final agent id after
+                    # Paperclip assigns it.
+                    adapter_config = build_hermes_gateway_adapter_config(owner_id, hook_token=seed_hook_token)
                     agent = await self._admin.create_agent(
                         company_id=company_id,
                         name=name,
                         role=role,
                         title=title,
                         reports_to=reports_to,
-                        adapter_type=seed_adapter_type,
+                        adapter_type=HERMES_GATEWAY_TYPE,
                         adapter_config=adapter_config,
                         session_cookie=new_user_session_cookie,
                         idempotency_key=f"seed:starter:{starter_key}:v1",

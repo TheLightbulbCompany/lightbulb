@@ -433,6 +433,63 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
             logger.warning("hermes teardown: could not delete S3 profiles for owner=%s", owner_id, exc_info=True)
 
 
+async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = False) -> dict | None:
+    """THE TEARDOWN SEAM. Tear a workspace's runtime down and delete its containers row.
+
+    Every teardown in the system reaches AWS through this function -- entitlement
+    cancellation, the admin account wipe, ``DELETE /debug/provision``,
+    ``DELETE /debug/user-data`` -- which is what makes the Bedrock reap below structural:
+    no caller can forget it, and none needs its own copy. (It replaces
+    ``ecs_manager.delete_user_service``, whose docstring carried the same rule.)
+
+    Steps:
+      1. ``teardown_hermes_runtime`` -- stop the session, delete the runtime, revoke the
+         gate-token hash, delete the boot secret; delete every object under
+         ``<owner>/hermes/`` only when ``delete_profiles=True``.
+      2. Delete the containers row. UNCONDITIONAL, and after the teardown: the read above
+         is eventually consistent, so gating on it would leave a racing provision's row
+         behind along with everything only it names. The DELETE's ``ALL_OLD`` image is the
+         authoritative answer to "what did this row say when it died".
+      3. Reap the owner's Bedrock footprint (gate-token rows, AIPs, IAM role) off that
+         image -- the row was the only handle on it. Raises on a partial reap rather than
+         reporting success: the runtime is already gone, so a raise honestly means
+         "teardown incomplete, retry me", and every step is idempotent.
+      4. Sweep the owner's ``channel_links`` rows (non-fatal).
+
+    ``delete_profiles`` (M6-R42) defaults to **False** and must stay that way: this
+    function is shared by NON-terminal callers -- ``entitlement_teardown`` (a lapsed or
+    past-due subscription) and ``routers/debug.py``'s ``DELETE /debug/provision`` (a
+    routine reprovision) -- and passing ``True`` from those destroyed a migrated owner's
+    memory / skills / SOUL.md / auth.json. Exactly TWO terminal callers pass ``True``:
+    ``account_wipe`` and ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
+    empty-slate reset; debug is 403 in prod). Do not re-broaden it.
+
+    Returns the containers row as it was at the instant it was deleted, or None when
+    there was none.
+    """
+    container = await container_repo.get_by_owner_id(owner_id)
+    if container:
+        await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=delete_profiles)
+
+    deleted = await container_repo.delete(owner_id)
+
+    from core.billing.bedrock_aip import reap_owner_bedrock_resources
+
+    reaped = await reap_owner_bedrock_resources(owner_id, deleted)
+    logger.info("Bedrock reap for owner %s: %s", owner_id, reaped)
+
+    try:
+        from core.repositories import channel_link_repo
+
+        link_count = await channel_link_repo.sweep_by_owner(owner_id)
+        if link_count:
+            logger.info("Swept %d channel_link rows for deleted workspace (owner=%s)", link_count, owner_id)
+    except Exception:  # noqa: BLE001 — the runtime is already gone; orphan link rows are cheap
+        logger.exception("Failed to sweep channel_link rows for owner %s after teardown", owner_id)
+
+    return deleted
+
+
 async def prepare_hermes_workspace(
     owner_id: str, *, claim_id: str, attempt_token: str | None = None, migrate: bool = False
 ) -> None:

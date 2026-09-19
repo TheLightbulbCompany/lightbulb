@@ -703,23 +703,19 @@ async def try_claim_pass(name: str, *, interval_s: int, now: int | None = None) 
 # a wedged claim blocks every hire the owner tries, not just one listing's.
 #
 # **The lease MUST outlive the deploy it fences.** It briefly did not: a 300s
-# lease was sized against a measured ~85s deploy, then the pairing RPC timeout
-# was raised to 90s, putting ``pair_with_openclaw``'s own worst case
-# (``PAIR_WORST_CASE_S`` = 2 attempts x 2 RPCs x 90s ≈ 361s) ABOVE the lease.
-# A lease that expires mid-deploy is worse than no lease: the second hire takes
-# it over and runs concurrently, the first hire's ``finally`` release is
-# correctly no-op'd by the fencing token, and nothing logs the overlap.
+# lease was sized against a measured ~85s deploy, then the gateway pairing RPC
+# timeout was raised to 90s, putting the worst-case pairing above the lease. A
+# lease that expires mid-deploy is worse than no lease: the second hire takes it
+# over and runs concurrently, the first hire's ``finally`` release is correctly
+# no-op'd by the fencing token, and nothing logs the overlap.
 #
-# 720 = PAIR_WORST_CASE_S (~546s: 2 attempts x 2 RPCs x 90s, plus the bounded
-# runtime-snapshot-lag rename retries) + headroom for everything stacked on top
-# of pairing in one deploy: the S3 GET, the tar extract to EFS, the Paperclip
-# mint, ``ensure_operator_device_paired``, routine recreation, integration
-# reconcile and the ACP enable. Kept a literal rather than importing the pairing
-# module (a repository must not import a service that drags in the
-# gateway/websockets);
-# ``tests/unit/repositories/test_container_repo_deploy_claim.py`` asserts the
-# ``DEPLOY_CLAIM_STALE_S > PAIR_WORST_CASE_S`` relationship so the two can never
-# drift apart silently again.
+# 720 is kept at its ECS-era value. The pairing RPCs it was sized against
+# (``pair_with_openclaw``, ~546s worst case) are gone with the OpenClaw gateway,
+# so what the lease now fences is strictly shorter: the S3 artifact GET, the
+# profile write, the Paperclip mint, routine recreation and the integration
+# reconcile. It stays a generous ceiling rather than being re-derived downward —
+# the failure mode of a too-SHORT lease is a concurrent-write incident, and of a
+# too-long one is a wedged claim the owner waits out.
 DEPLOY_CLAIM_STALE_S = 720
 
 # Fixed map key for the owner-wide deploy claim. The listing that triggered a
@@ -1013,21 +1009,15 @@ async def release_owner_deploy_claim(
     be the settling period: nothing else touches this owner's container until
     ``DEPLOY_CLAIM_STALE_S`` (600s) has elapsed since the claim was taken.
 
-    That is a real bound, not a hope. The only step in a deploy that raises a
-    bare ``TimeoutError`` is the pairing RPC pair (``pair_with_openclaw``;
-    every later step — device pairing, integration reconcile, ACP — swallows
-    its own errors, and the Paperclip/httpx calls raise
-    ``httpx.TimeoutException``, which is NOT a builtin ``TimeoutError``).
-    Pairing can burn at most ``PAIR_WORST_CASE_S`` = 361s, and everything ahead
-    of it under the claim (S3 GET, the ~15s-timeout Paperclip mint, the
-    container resolve, the tar extract) is tens of seconds — so the timeout
-    lands around T+400s of a 600s lease, leaving ~200s of quiet before another
-    deploy can take it over. The container-side ``agents.create`` that provoked
-    the timeout measured 39-51s even under 3-way contention, so the settling
-    window is ~4x its worst observed run. The sidecar-plus-``agents.list``
-    cross-check in ``_live_install_of`` is the belt to this brace: if the
-    container did finish that create, the next hire resolves to it as
-    ``already_installed`` rather than minting a duplicate.
+    That is a real bound, not a hope. The step that used to raise a bare
+    ``TimeoutError`` was the gateway pairing RPC pair, which is gone with the
+    OpenClaw runtime; every step a deploy has left swallows its own errors or
+    raises ``httpx.TimeoutException`` (NOT a builtin ``TimeoutError``), and the
+    whole sequence under the claim — the S3 artifact GET, the ~15s-timeout
+    Paperclip mint, the profile write — is tens of seconds against a 720s lease.
+    The sidecar cross-check in ``_live_install_of`` is the belt to this brace: if
+    the deploy did land, the next hire resolves to it as ``already_installed``
+    rather than minting a duplicate.
 
     The condition on the write is the point: a deploy that hung past
     ``DEPLOY_CLAIM_STALE_S`` was taken over, and an unconditional REMOVE here

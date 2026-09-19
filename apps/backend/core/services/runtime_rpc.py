@@ -16,7 +16,7 @@ from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
-from core.services import container_rpc, hermes_profiles, runtime_transport
+from core.services import container_rpc, hermes_profiles
 from core.services.live_events import publish_owner_users
 from core.services.messaging import (
     ApiProblem,
@@ -40,8 +40,6 @@ from core.services.paperclip_agent_lifecycle import (
 )
 from core.services.paperclip_meta import read_from_agent_entry
 from core.services.paperclip_openclaw_pairing import (
-    ensure_operator_device_paired,
-    pair_with_openclaw,
     resolve_company_id_for_owner,
 )
 
@@ -131,14 +129,12 @@ _MUTATING_METHODS = frozenset(
 )
 _PAPERCLIP_MIRROR_MAX_ATTEMPTS = 3
 _RPC_TIMEOUT_S = 30.0
-#: M4-R1 (Task 13a): served from the profile in S3 + the Paperclip roster for an AgentCore row,
-#: never forwarded to a live gateway socket. ECS rows are untouched — see _is_agentcore below.
+#: M4-R1 (Task 13a): served from the profile in S3 + the Paperclip roster, never forwarded to
+#: the runtime.
 _HERMES_PROFILE_METHODS = frozenset({"config.get", "config.patch", "config.set", "agents.list"})
 # A mutating method that lands here invalidates the named resource for every
 # open frontend tab (the prior per-connection `*.changed` broadcast is gone).
 _INVALIDATES = {
-    # "agents.create" is only ever passed to _invalidate from _create_agent's AgentCore branch
-    # (Q9a row #1) -- the ECS branch stays byte-identical and never invalidates here.
     "agents.create": "agents",
     "agents.update": "agents",
     "agents.delete": "agents",
@@ -237,13 +233,6 @@ def _config_patch_dict(params: dict[str, Any]) -> dict[str, Any]:
         return decoded if isinstance(decoded, dict) else {}
     patch = params.get("patch")
     return patch if isinstance(patch, dict) else {}
-
-
-async def _is_agentcore(owner_id: str) -> bool:
-    """Whether this owner's runtime is AgentCore. Reuses ``runtime_transport``'s own
-    owner-id-only helper (built for exactly this call shape — see its docstring) instead of a
-    second copy of the ``container_repo`` fetch + ``host_for`` check."""
-    return await runtime_transport.is_agentcore_owner(owner_id)
 
 
 async def _invalidate(owner_id: str, method: str) -> None:
@@ -497,35 +486,32 @@ async def execute_sync(
                 details={"method": method},
             ) from exc
     if method == "agents.update":
-        is_agentcore_owner = await _is_agentcore(owner_id)
-        if is_agentcore_owner:
-            # BEFORE any mirror work: refuse the fields this intercept cannot persist rather
-            # than answering {"ok": True} to a write that never happened (M6 task 10, row 12).
-            _reject_unsupported_agentcore_update(params)
+        # BEFORE any mirror work: refuse the fields this intercept cannot persist rather than
+        # answering {"ok": True} to a write that never happened (M6 task 10, row 12).
+        _reject_unsupported_agentcore_update(params)
         try:
-            await _mirror_agent_update(owner_id, params, agentcore=is_agentcore_owner)
+            await _mirror_agent_update(owner_id, params, agentcore=True)
         except AgentLifecycleConflict as exc:
             raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
-        if is_agentcore_owner:
-            # Q9a fix round 1: _mirror_agent_update above already applied every AgentCore-side
-            # patch (model-block re-derivation, SOUL.md refresh) -- there is no AgentCore
-            # bridge RPC for agents.update, so this never falls through to container_rpc.call.
-            await _invalidate(owner_id, "agents.update")
-            return {"ok": True}
-    if method == "models.list" and await _is_agentcore(owner_id):
+        # _mirror_agent_update already applied every profile-side patch (model-block
+        # re-derivation, SOUL.md refresh) -- there is no bridge RPC for agents.update, so this
+        # never falls through to container_rpc.call.
+        await _invalidate(owner_id, "agents.update")
+        return {"ok": True}
+    if method == "models.list":
         # M6 task 10-C: the owner's REAL model list. Bedrock-managed workspaces are answered from
         # their own AIP set with no microVM wake; a BYO-key / ChatGPT-OAuth workspace falls
         # through to the bridge below, which holds Hermes's own provider catalog.
         listing = await _agentcore_models_list(owner_id)
         if listing is not None:
             return listing
-    if method in _HERMES_PROFILE_METHODS and await _is_agentcore(owner_id):
+    if method in _HERMES_PROFILE_METHODS:
         # M4-R1/M4-R43 (fix round 1 continuation): an AgentCore row's Hermes profile lives in
         # S3, not behind a live gateway socket — the backend is the ONLY writer of a profile
         # (spec §4.5), so these are served/rewritten here with no microVM wake for a settings
         # read. config.get NEVER returns .env content (it reads config.yaml alone).
         # config.set/config.patch bump .revision on write, and the bridge re-pulls before the
-        # agent's next turn (Task 13b). ECS rows fall straight through to container_rpc.call.
+        # agent's next turn (Task 13b).
         #
         # The wire shape below is NOT bridge/server.py's own config.get/config.patch/agents.list
         # (that spike stand-in requires an agentId and returns no hash at all) — it is what the
@@ -610,7 +596,7 @@ async def execute_sync(
         result = _filter_sessions_for_user(result, user_id)
     elif method == "sessions.search":
         result = _filter_search_hits_for_user(result, user_id)
-    elif method == "skills.status" and await _is_agentcore(owner_id):
+    elif method == "skills.status":
         # The bridge answers the skill ROWS (it has to -- they come from Hermes's own loaders
         # inside the image). The disabled LIST is the half that gets written back, so it is
         # owned here: see agentcore_disabled_skill_names.
@@ -649,37 +635,14 @@ async def _create_agent(owner_id: str, user_id: str, params: dict[str, Any], con
         model=model,
         meta=meta,
     )
-    if runtime_transport.host_for(container) == "agentcore":
-        # Row #1 (Q9a fix round 1, M6-R27): no OpenClaw gateway exists on this transport for
-        # pair_with_openclaw to reach -- its agents.create/agents.update RPCs have no bridge
-        # handler (bridge/server.py has no such method) and would 500 loudly before
-        # write_profile_for_agent ever ran. Skip it AND ensure_operator_device_paired (a
-        # device-pairing concept this transport has no equivalent of) entirely --
-        # write_profile_for_agent below IS this transport's pairing: it gives the agent its
-        # config, its Paperclip key, and its SOUL (the identity-staging gap scan row #16
-        # flagged), and there is no openclaw.json for apply_paperclip_meta to write into.
-        from core.services.hermes_provisioning import write_profile_for_agent
+    # write_profile_for_agent IS this transport's pairing: it gives the agent its config, its
+    # Paperclip key and its SOUL (the identity-staging gap scan row #16 flagged). There is no
+    # gateway `agents.create` RPC and no openclaw.json for `apply_paperclip_meta` to write into
+    # (Q9a fix round 1, M6-R27) -- the meta rides the Paperclip row itself.
+    from core.services.hermes_provisioning import write_profile_for_agent
 
-        await write_profile_for_agent(owner_id, paperclip_agent, container_row=container)
-        await _invalidate(owner_id, "agents.create")
-    else:
-        await pair_with_openclaw(owner_id=owner_id, paperclip_agent=paperclip_agent)
-        # pair_with_openclaw above also registers the agent's Lightbulb channel
-        # account + binding — see its docstring.
-        await ensure_operator_device_paired(
-            owner_id=owner_id,
-            paperclip_agent=paperclip_agent,
-            gateway_token=container["gateway_token"],
-        )
-        if meta is not None:
-            from core.services.config_patcher import apply_paperclip_meta
-
-            block = {"role": meta.role}
-            for key in ("title", "capabilities", "icon"):
-                value = getattr(meta, key)
-                if value:
-                    block[key] = value
-            await apply_paperclip_meta(owner_id, agent_id=paperclip_agent["id"], meta=block)
+    await write_profile_for_agent(owner_id, paperclip_agent, container_row=container)
+    await _invalidate(owner_id, "agents.create")
     from routers.teams.agents import _redact_agent
 
     return {"agentId": paperclip_agent["id"], "agent": _redact_agent(paperclip_agent)}
@@ -801,7 +764,7 @@ async def _agentcore_models_list(owner_id: str) -> dict[str, Any] | None:
         return {"models": [], "defaultId": ""}
     if not aip_arns.get("sonnet"):
         # `model_block` requires sonnet (it is the standard tier and every fresh profile's
-        # default, so provisioning raises loudly without it -- see core.containers.config). A
+        # default, so provisioning raises loudly without it -- see hermes_profiles.model_block). A
         # READ must not 500 on the same fact: report the first model the owner does hold as the
         # default instead (fix round 1, M3).
         return {"models": models, "defaultId": models[0]["id"]}

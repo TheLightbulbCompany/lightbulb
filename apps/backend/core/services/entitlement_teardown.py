@@ -110,12 +110,14 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
         return False
 
     try:
-        from core.containers import get_ecs_manager
+        from core.services.hermes_provisioning import delete_workspace_runtime
 
         # Reaps the owner's Bedrock footprint (gate-token rows, AIPs, IAM role)
         # internally — that is the seam every teardown path shares, so there is
         # nothing to duplicate here. See reap_owner_bedrock_resources.
-        await get_ecs_manager().delete_user_service(owner_id)
+        # NOT delete_profiles: a lapsed or past-due subscription must not destroy the
+        # owner's memory/skills/SOUL.md (M6-R42).
+        await delete_workspace_runtime(owner_id)
     except Exception:
         logger.exception("entitlement.teardown container delete failed for owner %s", owner_id)
 

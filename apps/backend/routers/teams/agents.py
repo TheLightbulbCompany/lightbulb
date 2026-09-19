@@ -20,7 +20,6 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.containers import get_ecs_manager, get_workspace
 from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import (
@@ -43,7 +42,6 @@ from core.services.paperclip_agent_lifecycle import (
     ensure_root_ceo_survives,
     resolve_agent_adapter,
 )
-from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
 from core.services.provision_gate import evaluate_provision_gate
 from core.services.user_provision import ensure_user_ready, ensure_workspace_trial_default
@@ -106,18 +104,15 @@ def _mark_seeded(agent, seeded_ids, sidecar=None, starter_ids=()):
 
 
 async def _load_agent_sidecars(owner_id: str, agent_ids: list[str]) -> dict[str, dict]:
-    """Read marketplace sidecars off the event loop in one worker call."""
+    """The marketplace install sidecars for these agents.
 
-    def _read() -> dict[str, dict]:
-        workspace = get_workspace()
-        found: dict[str, dict] = {}
-        for agent_id in agent_ids:
-            sidecar = workspace.read_template_sidecar(owner_id, agent_id)
-            if sidecar is not None:
-                found[agent_id] = sidecar
-        return found
-
-    return await asyncio.to_thread(_read)
+    Always empty: the sidecar was a ``.template`` file in the agent's EFS workspace and the
+    profile transport writes no equivalent yet, so a marketplace-installed agent reads as
+    Custom in Teams. KNOWN GAP (already empty for a migrated workspace before this deletion) --
+    see ``catalog_service``'s module docstring. Kept as the named seam so provenance stamping
+    has one place to become truthful again.
+    """
+    return {}
 
 
 def _redact_agent(agent):
@@ -212,36 +207,23 @@ async def _user_session(ctx) -> str:
     return ctx.session_cookie
 
 
-async def _container_is_reachable(
-    owner_id: str,
-) -> tuple[bool, str | None, str | None]:
-    """Return (reachable, ip, gateway_token) for the owner's container.
+async def _container_is_reachable(owner_id: str) -> tuple[bool, str | None, str | None]:
+    """Return ``(reachable, address, gateway_token)`` for the owner's workspace.
 
-    Uses ``ecs_manager.resolve_running_container`` to discover the
-    container's task IP via ECS DescribeTasks (we do NOT store
-    ``private_ip`` on the container DDB row — it's discovered fresh).
-    The gateway_token IS stored on the DDB row.
-
-    Reachable means: container row exists in provisioning/running
-    status, ECS reports a running task, and a gateway_token is
-    present. We don't ping the gateway — pair_with_openclaw will
-    fail gracefully if the task isn't actually serving yet, and the
-    next reprovision will pick up the new agent via list_agents.
+    Reachable means the containers row exists and carries a minted runtime ARN plus a gateway
+    token. Nothing is pinged and nothing is discovered: any ``InvokeAgentRuntime`` wakes the
+    microVM, so there is no task IP and no "is the task serving yet" question to answer.
     """
+    from core.repositories import container_repo
+
     try:
-        ecs = get_ecs_manager()
-        container, ip = await ecs.resolve_running_container(owner_id)
-    except Exception:  # noqa: BLE001 — defensive, treat as unreachable.
-        # Defensive: in unit-test contexts without AWS creds, ECS calls
-        # raise. Treat as not reachable; pairing falls back to next
-        # reprovision via list_agents.
+        container = await container_repo.get_by_owner_id(owner_id)
+    except Exception:  # noqa: BLE001 — defensive: a DDB blip reads as not reachable.
         return False, None, None
-    if container is None or not ip:
+    token = (container or {}).get("gateway_token")
+    if not container or not container.get("agentcore_runtime_arn") or not token:
         return False, None, None
-    token = container.get("gateway_token")
-    if not token:
-        return False, None, None
-    return True, ip, token
+    return True, "agentcore", token
 
 
 async def _write_hermes_profile_or_rollback(ctx, owner_id: str, paperclip_agent: dict, container: dict) -> None:
@@ -557,10 +539,9 @@ def _primary_email(user: dict) -> str | None:
 async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx)):
     """Create an agent in Paperclip and write its Hermes profile.
 
-    Spec §5 security invariant: the ``adapter_type`` + ``adapter_config``
-    fields passed to the admin client are synthesized HERE, server-side,
-    using ``synthesize_openclaw_adapter``. The client body never carries
-    them — ``CreateAgentBody`` rejects extra keys with 422.
+    Spec §5 security invariant: the ``adapter_type`` + ``adapter_config`` fields passed to the
+    admin client are resolved HERE, server-side, through ``resolve_agent_adapter``. The client
+    body never carries them — ``CreateAgentBody`` rejects extra keys with 422.
 
     The agent's S3 Hermes profile is what makes it runnable, so a failure to
     write one is fatal + rolled back (see ``_write_hermes_profile_or_rollback``).

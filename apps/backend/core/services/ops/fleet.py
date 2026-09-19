@@ -1,8 +1,15 @@
-"""Live-ECS fleet reads for the operator console.
+"""Fleet reads for the operator console.
 
-Enumerates the fleet from the DDB container index, enriches with live
-describe_services (≤10/call), maps to health, and serves from a short
-in-process TTL cache. Replaces the DDB-derived counts in system_health.
+Enumerates the fleet from the DDB container index, enriches each row with the owner's
+display name, and serves from a short in-process TTL cache.
+
+The row IS the state now. This used to enrich each row with a live
+``describe_services`` (batched 10/call) and derive health from desired/running/pending
+counts and the rollout state; there are no per-user services left to describe, and a
+workspace's status lives on the row the provisioner writes. Idleness is deliberately NOT
+reported here: AWS parks a microVM invisibly, so `wake_policy.is_parked_trial` (elapsed
+time since `last_interactive_at`) is the only honest signal and it is per-owner, not a
+fleet column.
 """
 
 from __future__ import annotations
@@ -10,14 +17,10 @@ from __future__ import annotations
 import asyncio
 import time
 
-import boto3
-
-from core.config import settings
 from core.repositories import container_repo, user_repo
 from core.services import clerk_admin
 
 _FLEET_CACHE_TTL_S = 20
-_DESCRIBE_SERVICES_BATCH = 10
 
 # Owner display names come from DDB/Clerk, both slower and rate-limited
 # relative to the 20s overview auto-refresh — so resolutions live in a long
@@ -32,48 +35,6 @@ _name_cache: dict[str, tuple[float, str | None]] = {}
 _fleet_cache: tuple[float, list[dict]] | None = None  # (expires_at_monotonic, grid)
 
 _client = None
-
-
-def _ecs():
-    global _client
-    if _client is None:
-        _client = boto3.client("ecs", region_name=settings.AWS_REGION)
-    return _client
-
-
-def _classify(svc: dict, ddb_status: str) -> str:
-    desired = svc.get("desiredCount", 0)
-    running = svc.get("runningCount", 0)
-    pending = svc.get("pendingCount", 0)
-    primary = next(
-        (d for d in svc.get("deployments", []) if d.get("status") == "PRIMARY"),
-        None,
-    )
-    rollout = primary.get("rolloutState") if primary else None
-    if ddb_status == "error" or rollout == "FAILED":
-        return "error"
-    if desired == 0:
-        return "stopped"
-    if rollout == "IN_PROGRESS" or pending > 0:
-        return "provisioning"
-    if rollout == "COMPLETED" and running >= desired >= 1:
-        return "running"
-    return "unknown"
-
-
-async def _describe(service_names: list[str]) -> dict[str, dict]:
-    """Return {service_name: service_dict} via batched describe_services."""
-    out: dict[str, dict] = {}
-    for i in range(0, len(service_names), _DESCRIBE_SERVICES_BATCH):
-        batch = service_names[i : i + _DESCRIBE_SERVICES_BATCH]
-        resp = await asyncio.to_thread(
-            _ecs().describe_services,
-            cluster=settings.ECS_CLUSTER_ARN,
-            services=batch,
-        )
-        for svc in resp.get("services", []):
-            out[svc.get("serviceName")] = svc
-    return out
 
 
 def _clerk_user_email(user: dict) -> str | None:
@@ -141,37 +102,21 @@ async def _display_names(owner_ids: list[str]) -> dict[str, str | None]:
 
 
 async def _build_grid() -> list[dict]:
-    rows = await container_repo.scan_all()
-    named = [r for r in rows if r.get("service_name")]
-    services = await _describe([r["service_name"] for r in named])
-    display_names = await _display_names([r.get("owner_id") for r in named])
-    grid: list[dict] = []
-    for r in named:
-        svc = services.get(r["service_name"], {})
-        # An indexed service absent from describe_services' returned services{}
-        # (deleted, or in the ignored failures[]) is a describe gap, not real
-        # state — classify it "unknown" rather than letting _classify read the
-        # empty dict's desiredCount=0 and mask the gap as "stopped".
-        if r["service_name"] not in services:
-            status = "unknown"
-        else:
-            status = _classify(svc, r.get("status", ""))
-        grid.append(
-            {
-                "owner_id": r.get("owner_id"),
-                "display_name": display_names.get(r.get("owner_id")),
-                "service_name": r["service_name"],
-                "status": status,
-                "desired_count": svc.get("desiredCount", 0),
-                "running_count": svc.get("runningCount", 0),
-                "pending_count": svc.get("pendingCount", 0),
-                "rollout_state": next(
-                    (d.get("rolloutState") for d in svc.get("deployments", []) if d.get("status") == "PRIMARY"),
-                    None,
-                ),
-            }
-        )
-    return grid
+    rows = [r for r in await container_repo.scan_all() if r.get("owner_id")]
+    display_names = await _display_names([r["owner_id"] for r in rows])
+    return [
+        {
+            "owner_id": r["owner_id"],
+            "display_name": display_names.get(r["owner_id"]),
+            "runtime_arn": r.get("agentcore_runtime_arn"),
+            # The row's own status, unmapped: the provisioner writes
+            # provisioning/running/error/stopped and nothing else can observe a truer
+            # value. An unprovisioned row (no runtime ARN yet) reads "unknown" rather
+            # than borrowing "stopped" from an absent service.
+            "status": (r.get("status") or "unknown") if r.get("agentcore_runtime_arn") else "unknown",
+        }
+        for r in rows
+    ]
 
 
 async def fleet_grid() -> list[dict]:

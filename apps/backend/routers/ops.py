@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from core.auth import AuthContext, require_platform_admin
 from core.services.admin_audit import audit_admin_action
-from core.services.ops import alarms, deploys, ecs_ops
+from core.services.ops import alarms, deploys, fleet
 from core.services.ops import envelope as env
 from schemas.launch import (
     LaunchCloseRequest,
@@ -26,8 +26,8 @@ async def get_fleet(_auth: AuthContext = Depends(require_platform_admin)):
     # so read the grid ONCE and compute counts locally — avoids a redundant
     # second ECS/scan fan-out and a compound timeout. On failure the whole read
     # degrades together (grid is None -> counts None -> source_state != ok).
-    grid, state, errors = await env.read_source("ecs", ecs_ops.fleet_grid)
-    counts = ecs_ops.counts_from_grid(grid) if grid is not None else None
+    grid, state, errors = await env.read_source("ecs", fleet.fleet_grid)
+    counts = fleet.counts_from_grid(grid) if grid is not None else None
     return env.envelope({"counts": counts, "grid": grid}, source_state=state, errors=errors)
 
 

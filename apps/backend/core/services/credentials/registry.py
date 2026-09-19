@@ -15,9 +15,7 @@ from core.config import settings
 
 _YAML = Path(__file__).parent / "providers.yaml"
 
-Acquisition = Literal[
-    "paste_token", "direct_oauth", "nango", "agentcore", "aws_sts", "secrets_manager", "container_login"
-]
+Acquisition = Literal["paste_token", "direct_oauth", "nango", "agentcore", "aws_sts", "secrets_manager"]
 Actor = Literal["cli", "mcp", "skill", "nango_proxy"]
 RefreshOwner = Literal["none", "actor", "nango_proxy"]
 

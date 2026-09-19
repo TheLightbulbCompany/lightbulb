@@ -22,7 +22,7 @@ import httpx
 import yaml
 
 from core.config import settings
-from core.services.credentials.materializers.base import NODE_GID, NODE_UID, owner_efs_root
+from core.services.credentials.materializers.base import NODE_GID, NODE_UID, materializer_root
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ _XURL_USERS_ME_URL = "https://api.x.com/2/users/me"
 
 
 def _xurl_path(owner_id: str) -> Path:
-    return owner_efs_root(owner_id) / ".xurl"
+    return materializer_root() / ".xurl"
 
 
 def _default_redirect_uri(provider_key: str) -> str:
@@ -60,8 +60,8 @@ def _locked_update(path: Path, mutate) -> None:
     ``~/.xurl`` is a SHARED file: it also holds user-created xurl apps, and the
     owner's own in-container ``xurl`` invocations rewrite it (xurl persists
     refreshed tokens there). An unlocked read-then-overwrite lets a racing
-    writer's apps vanish — so this uses the same NFS-safe ``fcntl.lockf``
-    read-modify-write as ``mcporter_vault._locked_update`` and ``config_patcher``.
+    writer's apps vanish — so this uses the same ``fcntl.lockf``
+    read-modify-write as ``mcporter_vault._locked_update``.
 
     ``mutate`` receives the parsed store and returns the store to persist, or
     ``None`` to delete the file. The write is in place rather than via

@@ -18,7 +18,6 @@ import enum
 from collections.abc import Iterable
 from typing import Any
 
-from core import openclaw_version
 from core.services.agent_roster import roster_entries
 
 _STRIPPED_KEYS = frozenset({"model", "channels", "workspace", "id", "agentDir"})
@@ -99,15 +98,12 @@ _REMOVED_AT_2026_8_1 = frozenset({"runRetries", "memorySearch", "contextTokens"}
 
 
 def _allowed_agent_entry_keys() -> frozenset[str]:
-    """Whitelist narrowed to what the DEPLOYED image's schema still accepts.
+    """Whitelist for an agent entry in a marketplace slice.
 
-    Resolved per call, not at import: the gate flips per environment as each tag
-    is promoted, and a module-level constant would freeze whichever value the
-    process happened to start with.
+    The 2026.8.1 image gate is gone with the image pin it read: every key
+    ``_REMOVED_AT_2026_8_1`` names is dropped unconditionally now.
     """
-    if openclaw_version.deployed_upstream_at_least("2026.8.1"):
-        return ALLOWED_AGENT_ENTRY_KEYS - _REMOVED_AT_2026_8_1
-    return ALLOWED_AGENT_ENTRY_KEYS
+    return ALLOWED_AGENT_ENTRY_KEYS - _REMOVED_AT_2026_8_1
 
 
 # Provider plugins are user-config (the buyer picked a provider at signup),

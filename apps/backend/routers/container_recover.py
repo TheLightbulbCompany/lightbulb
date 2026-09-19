@@ -19,7 +19,6 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.containers import get_ecs_manager
 from core.repositories import container_repo
 from core.services import container_rpc, provision_gate, trial_cap
 from core.services.provision_dispatch import dispatch_provision
@@ -73,35 +72,20 @@ async def container_recover(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
-    ecs_manager = get_ecs_manager()
 
-    # 1. Try to resolve a running container
-    container, ip = await ecs_manager.resolve_running_container(owner_id)
-
-    if not container:
-        container = await ecs_manager.get_service_status(owner_id)
-
+    # 1. The row is the only state there is: an invoke wakes a parked microVM, so there is no
+    #    task IP to discover and no "running but unreachable" shape to detect up front.
+    container = await container_repo.get_by_owner_id(owner_id)
     if not container:
         raise HTTPException(status_code=404, detail="No container found")
 
     status = container.get("status", "unknown")
 
-    # A trial->paid conversion owns this row and is mid-drain. Its reprovision
-    # is already in flight; a second one from here would put a task on the
-    # EFS-WAL SQLite next to the draining one — the documented corruption mode.
-    #
-    # Checked BEFORE the status split, not inside the stopped/error branch,
-    # because the drain is not instantaneous: ``reprovision_for_user`` scales
-    # the service to zero while the row still reads "running", so a poll
-    # landing in that window fell through to the gateway branches below —
-    # which probe a gateway that is *supposed* to be gone, fail, and write
-    # ``status="error"`` + "Gateway restart failed — reprovisioning" over a row
-    # the conversion owns. That write is not just noise: it renders the
-    # terminal "Setup failed" card to a customer who just paid, and it
-    # dispatches a provision competing with the conversion's own. Observed on
-    # prod 2026-08-06 (conversion 16:53:46 -> recover-written error 17:09:03 ->
-    # self-healed 17:32). The guard is status-agnostic (a timestamp window), so
-    # hoisting it costs nothing and closes all three branches at once.
+    # A trial->paid conversion owns this row and its reprovision is already in flight; a
+    # second one from here would compete with it and can render the terminal "Setup failed"
+    # card to a customer who just paid. Observed on prod 2026-08-06. The guard is
+    # status-agnostic (a timestamp window), so it sits before the status split and covers
+    # every branch below at once.
     if conversion_guard_active(container):
         logger.info("Recover for owner %s stood down: conversion reprovision in flight", owner_id)
         return {
@@ -166,36 +150,7 @@ async def container_recover(
             "reason": reason,
         }
 
-    # 3. Container is running -> check gateway health
-    if not ip:
-        # Same trial predicate the stopped/error wake enforces above: this
-        # branch reprovisions too (a force=True start), and the meter
-        # Lambda's cap kill transiently leaves exactly this shape — a
-        # "running" row whose task is gone — so without the gate this door
-        # is the one way a capped/expired trial owner can wake the box.
-        # (Bedrock stays denied for a revoked owner, so no spend — but the
-        # container-stays-down invariant must hold at every door.)
-        trial_gate = provision_gate.gate_for_trial_reason(
-            await trial_cap.trial_block_reason(owner_id), _owner_role(auth)
-        )
-        if trial_gate is not None:
-            raise HTTPException(status_code=402, detail=trial_gate.to_payload())
-        logger.warning("Owner %s: running container but no IP, reprovisioning", owner_id)
-        # Make the row claimable BEFORE dispatching: the dispatch's claim
-        # (try_claim_provision) admits only missing/error/stopped/stale
-        # rows — a "running" row would lose the claim and no execution
-        # would start, while this endpoint still answered "reprovision".
-        # The row IS in an error state (task gone / unreachable), so the
-        # honest write is also the enabling one.
-        await container_repo.update_status(owner_id, "error")
-        await container_repo.update_error(owner_id, "Container running but unreachable")
-        await dispatch_provision(owner_id)
-        return {
-            "action": "reprovision",
-            "state": "CONTAINER_DOWN",
-            "reason": "Container running but unreachable",
-        }
-
+    # 3. Running -> check gateway health.
     # Try gateway health check
     try:
         health = await _call_gateway_rpc(owner_id, "health")
@@ -216,25 +171,22 @@ async def container_recover(
                 "reason": "System is healthy",
             }
 
-    # 4. Gateway is down -> try restart via update.run RPC
-    logger.info("Recovering owner %s: gateway restart", owner_id)
-    try:
-        await _call_gateway_rpc(owner_id, "update.run")
-        return {
-            "action": "gateway_restart",
-            "state": "GATEWAY_DOWN_DEAD",
-            "reason": "Gateway not responding — restarting",
-        }
-    except Exception:
-        logger.warning("Owner %s: gateway restart failed, escalating to reprovision", owner_id)
-        # Status flip first — same claimability requirement as the no-IP
-        # branch above (update_error writes only last_error fields; a
-        # "running" row would make the dispatch's claim stand down).
-        await container_repo.update_status(owner_id, "error")
-        await container_repo.update_error(owner_id, "Gateway restart failed — reprovisioning")
-        await dispatch_provision(owner_id)
-        return {
-            "action": "reprovision",
-            "state": "GATEWAY_DOWN_DEAD",
-            "reason": "Gateway restart failed — reprovisioning",
-        }
+    # 4. Gateway is down -> reprovision.
+    #
+    # There is no in-place restart step any more. It was an ``update.run`` RPC into the
+    # OpenClaw gateway, and the Hermes bridge serves no such method -- so on every migrated
+    # workspace it raised and fell straight through to this same escalation. Calling it was
+    # one guaranteed-failing invoke (and, against a parked microVM, one cold start) buying a
+    # log line.
+    logger.warning("Owner %s: gateway unhealthy, reprovisioning", owner_id)
+    # Status flip first: `update_error` writes only the last_error fields, and the dispatch's
+    # claim (try_claim_provision) admits only missing/error/stopped/stale rows -- a "running"
+    # row would make it stand down while this endpoint answered "reprovision".
+    await container_repo.update_status(owner_id, "error")
+    await container_repo.update_error(owner_id, "Gateway unhealthy — reprovisioning")
+    await dispatch_provision(owner_id)
+    return {
+        "action": "reprovision",
+        "state": "GATEWAY_DOWN_DEAD",
+        "reason": "Gateway unhealthy — reprovisioning",
+    }

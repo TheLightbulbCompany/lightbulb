@@ -1,17 +1,14 @@
 """Materializer for the AWS STS rail: writes the owner's ``.aws`` bundle so the
 baked ``aws`` CLI pulls short-lived connector credentials on demand.
 
-Three files under ``{EFS_MOUNT_PATH}/{owner}/.aws/`` (in-container:
-``/home/node/.openclaw/.aws/`` — the per-user EFS access point roots
-``/users/{owner}`` at ``/home/node/.openclaw``, and the task env
-``AWS_CONFIG_FILE`` already points at ``config`` there):
+Three files under the profile's ``home/.aws/`` (``$HOME/.aws/`` for the turn's shell,
+which is what ``AWS_CONFIG_FILE`` points at):
 
-* ``config`` — ``[profile lightbulb-connector]`` whose ``credential_process`` runs
-  the helper below. The profile is **named**, never ``[default]``: a default
-  profile would be picked up by the in-process Bedrock SDK's default chain.
-  It carries NO ``role_arn``/``credential_source``/``external_id`` — a profile
-  mixing ``role_arn`` with other credential sources flips botocore into
-  assume-role mode, and the ExternalId must never touch EFS.
+* ``config`` — a ``[default]`` section whose ``credential_process`` runs the helper
+  below (see ``_HERMES_SECTION``). It carries NO
+  ``role_arn``/``credential_source``/``external_id`` — a profile mixing ``role_arn``
+  with other credential sources flips botocore into assume-role mode, and the
+  ExternalId must never leave the backend.
 * ``lightbulb-creds.mjs`` — zero-dependency node ESM helper the CLI executes once
   per invocation: serves the cached credential while >10 min validity remains,
   else fetches from the backend credentials endpoint with the bearer token and
@@ -30,20 +27,13 @@ from __future__ import annotations
 import json
 
 from core.config import settings
-from core.services.credentials.materializers.base import atomic_write, is_projecting, owner_efs_root
+from core.services.credentials.materializers.base import atomic_write, materializer_root
 
-# Must match the baked aws-exec-profile plugin's AWS_CONNECTOR_PROFILE
-# (apps/infra/openclaw/plugins/aws-exec-profile/dist/resolve.js): the plugin
-# injects AWS_PROFILE by name only when it finds this exact section header.
-AWS_CONNECTOR_PROFILE = "lightbulb-connector"
 HELPER_FILENAME = "lightbulb-creds.mjs"
 TOKEN_FILENAME = "token"
 CACHE_FILENAME = "cache.json"
 
-# In-container absolute path of the .aws dir (see module docstring).
-_CONTAINER_AWS_DIR = "/home/node/.openclaw/.aws"
-
-# The AgentCore/Hermes form of the same line. botocore runs credential_process through
+# botocore runs credential_process through
 # ``shlex.split`` + ``Popen`` with NO shell and NO variable expansion, so an expansion has to be
 # asked for explicitly; ``exec`` keeps it to one process. `node` is in the Hermes base image
 # (/usr/local/bin/node), so the rail is otherwise unchanged.
@@ -63,11 +53,7 @@ _CONTAINER_AWS_DIR = "/home/node/.openclaw/.aws"
 # absolute per-profile path instead.
 _HERMES_CREDENTIAL_PROCESS = f"""sh -c 'exec /usr/bin/env node "$HOME/.aws/{HELPER_FILENAME}"'"""
 
-# On AgentCore the projected profile is ``[default]``, NOT the named one the module docstring
-# above insists on for ECS -- and the reason that rule exists does not carry here. On ECS the
-# fear is "a default profile would be picked up by the in-process Bedrock SDK's default chain":
-# the OpenClaw process's own $HOME IS the EFS root holding this file, so a [default] section
-# would silently re-credential OpenClaw's own Bedrock calls. In the microVM the bridge process's
+# The projected profile is ``[default]``. In the microVM the bridge process's
 # $HOME is ``/`` (verified in the pinned image) and only the CHILD shell's HOME is rewritten to
 # ``<profile>/home`` -- so no in-process SDK can ever read this file, and there is nothing for a
 # [default] section to capture. Making it the default is what lets the shell work with NO
@@ -158,11 +144,10 @@ emit(creds);
 
 
 def write(owner_id: str, provider_key: str, credential: dict) -> None:
-    aws_dir = owner_efs_root(owner_id) / ".aws"
-    projecting = is_projecting()
-    process = _HERMES_CREDENTIAL_PROCESS if projecting else f"/usr/bin/env node {_CONTAINER_AWS_DIR}/{HELPER_FILENAME}"
-    section = _HERMES_SECTION if projecting else f"profile {AWS_CONNECTOR_PROFILE}"
-    config = f"[{section}]\nregion = {credential['region']}\ncredential_process = {process}\n"
+    aws_dir = materializer_root() / ".aws"
+    config = (
+        f"[{_HERMES_SECTION}]\nregion = {credential['region']}\ncredential_process = {_HERMES_CREDENTIAL_PROCESS}\n"
+    )
     helper = _HELPER_TEMPLATE.replace("__API_BASE__", settings.PUBLIC_API_BASE)
     token = json.dumps({"owner_id": owner_id, "token": credential["cli_token"]})
     atomic_write(aws_dir / "config", config.encode())
@@ -171,6 +156,6 @@ def write(owner_id: str, provider_key: str, credential: dict) -> None:
 
 
 def remove(owner_id: str, provider_key: str, credential: dict) -> None:
-    aws_dir = owner_efs_root(owner_id) / ".aws"
+    aws_dir = materializer_root() / ".aws"
     for name in ("config", HELPER_FILENAME, TOKEN_FILENAME, CACHE_FILENAME):
         (aws_dir / name).unlink(missing_ok=True)

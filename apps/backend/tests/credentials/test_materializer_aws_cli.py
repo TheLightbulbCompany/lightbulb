@@ -21,7 +21,9 @@ def _cred() -> dict:
 
 
 def _write(tmp_path, monkeypatch, owner="o") -> Path:
-    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+    # Materializers only run inside a projection (credentials/hermes_cli.py), whose scratch root
+    # stands for one owner's home -- so the root is the ContextVar's, never a settings path.
+    monkeypatch.setattr(aws_cli, "materializer_root", lambda: tmp_path / owner)
     monkeypatch.setattr("core.config.settings.PUBLIC_API_BASE", "https://api-test.isol8.co")
     aws_cli.write(owner, "aws", _cred())
     return Path(tmp_path) / owner / ".aws"
@@ -30,29 +32,30 @@ def _write(tmp_path, monkeypatch, owner="o") -> Path:
 def test_config_uses_credential_process_and_no_secrets(tmp_path, monkeypatch):
     aws_dir = _write(tmp_path, monkeypatch)
     body = (aws_dir / "config").read_text()
-    # Exactly ONE section, named for the profile the baked aws-exec-profile
-    # plugin injects. A second (legacy) section would be a silently-accepted
-    # second name the plugin's HEADER_RE no longer looks for.
-    from core.services.credentials.materializers.aws_cli import AWS_CONNECTOR_PROFILE
-
+    # Exactly ONE section, and it resolves the helper through the SHELL's $HOME -- the only
+    # path that works when the file is a per-profile projection rather than a fixed mount.
     assert body == (
-        f"[profile {AWS_CONNECTOR_PROFILE}]\n"
+        "[default]\n"
         "region = us-east-1\n"
-        "credential_process = /usr/bin/env node /home/node/.openclaw/.aws/lightbulb-creds.mjs\n"
+        "credential_process = sh -c 'exec /usr/bin/env node \"$HOME/.aws/lightbulb-creds.mjs\"'\n"
     )
     assert "isol8" not in body
     # The config must carry no assume-role or secret material: a profile mixing
     # role_arn with credential_process would flip botocore into assume-role mode,
-    # and external_id must never touch EFS again.
+    # and external_id must never leave the backend.
     for forbidden in ("role_arn", "external_id", "credential_source", "cli_token", "aws_access_key_id"):
         assert forbidden not in body
 
 
-def test_named_profile_not_default_so_bedrock_chain_is_unaffected(tmp_path, monkeypatch):
-    aws_dir = _write(tmp_path, monkeypatch)
-    body = (aws_dir / "config").read_text()
-    assert body.startswith(f"[profile {aws_cli.AWS_CONNECTOR_PROFILE}]\n")
-    assert "[default]" not in body
+def test_profile_is_default_because_no_in_process_sdk_can_read_it(tmp_path, monkeypatch):
+    """The ECS rail needed a NAMED profile: the gateway process's own $HOME was the mount
+    holding this file, so a [default] section would have re-credentialled its Bedrock calls.
+    In the microVM only the CHILD shell's HOME is rewritten to the profile, so nothing
+    in-process can read it -- and [default] is what lets the shell work with no AWS_PROFILE
+    to deliver at all."""
+    body = (_write(tmp_path, monkeypatch) / "config").read_text()
+    assert body.startswith("[default]\n")
+    assert "[profile " not in body
 
 
 def test_file_modes(tmp_path, monkeypatch):
@@ -119,7 +122,7 @@ def test_helper_end_to_end_fetch_then_cache(tmp_path, monkeypatch):
     server = http.server.HTTPServer(("127.0.0.1", 0), _StubHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+        monkeypatch.setattr(aws_cli, "materializer_root", lambda: tmp_path / "org_x")
         monkeypatch.setattr("core.config.settings.PUBLIC_API_BASE", f"http://127.0.0.1:{server.server_port}")
         aws_cli.write("org_x", "aws", _cred())
         helper = Path(tmp_path) / "org_x" / ".aws" / aws_cli.HELPER_FILENAME
@@ -150,7 +153,7 @@ def test_helper_rejects_malformed_200_body(tmp_path, monkeypatch):
     server = http.server.HTTPServer(("127.0.0.1", 0), _StubHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+        monkeypatch.setattr(aws_cli, "materializer_root", lambda: tmp_path / "org_x")
         monkeypatch.setattr("core.config.settings.PUBLIC_API_BASE", f"http://127.0.0.1:{server.server_port}")
         aws_cli.write("org_x", "aws", _cred())
         aws_dir = Path(tmp_path) / "org_x" / ".aws"
@@ -167,7 +170,7 @@ def test_helper_rejects_malformed_200_body(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
 def test_helper_clear_error_when_backend_unreachable_and_no_cache(tmp_path, monkeypatch):
-    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+    monkeypatch.setattr(aws_cli, "materializer_root", lambda: tmp_path / "org_x")
     # Unroutable port — connection refused immediately.
     monkeypatch.setattr("core.config.settings.PUBLIC_API_BASE", "http://127.0.0.1:9")
     aws_cli.write("org_x", "aws", _cred())

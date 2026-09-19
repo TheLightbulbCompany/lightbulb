@@ -675,14 +675,11 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     Returns ``"current"`` (nothing to do), ``"would-update"`` (dry run), ``"updated"``, or
     ``"updated-session-busy"`` -- the runtime IS on the new image but a turn was still running
     at the deadline, so the warm session was left alone and picks the image up when it next
-    starts. Raises ``ValueError`` for a row that is not an AgentCore workspace -- ECS rows roll
-    through the container image pin, not here."""
-    from core.services import runtime_transport
-
+    starts. Raises ``ValueError`` for a row with no provisioned runtime."""
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     arn = row.get("agentcore_runtime_arn")
-    if not arn or runtime_transport.host_for(row) != "agentcore":
-        raise ValueError(f"roll_runtime_image: owner={owner_id} is not an AgentCore workspace")
+    if not arn:
+        raise ValueError(f"roll_runtime_image: owner={owner_id} has no provisioned runtime")
     if not settings.AGENTCORE_HERMES_IMAGE:
         raise RuntimeError("AGENTCORE_HERMES_IMAGE is not configured for this environment")
     current = await run_in_thread(_runtime_image_uri, arn)
@@ -696,7 +693,9 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     idle = await _wait_for_idle_session(owner_id)
     if idle:
         try:
-            await run_in_thread(_stop_runtime_session, arn, runtime_transport.session_id_for(owner_id))
+            from core.services.runtime_transport import session_id_for
+
+            await run_in_thread(_stop_runtime_session, arn, session_id_for(owner_id))
         except Exception as exc:  # noqa: BLE001 -- no warm session is the common case
             logger.info("roll_runtime_image: no live session to stop for owner=%s (%s)", owner_id, type(exc).__name__)
     else:
@@ -981,7 +980,7 @@ async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: Profil
     calling ``write_owner_facts`` itself: at this point in provisioning the row's
     ``runtime_host`` has NOT yet flipped to ``"agentcore"`` (``write_profiles`` runs BEFORE
     ``CreateAgentRuntime`` records the ARN -- N4/M4-R42, above), so ``write_owner_facts``'s own
-    ``is_agentcore_owner`` check would take the wrong (EFS) branch here and write nothing
+    a host check would take the wrong branch here and write nothing
     anyone will ever read.
 
     Sources plan/provider the same way ``ecs_manager.write_user_configs``'s own
@@ -1031,7 +1030,7 @@ async def provision_hermes_runtime(
     already makes (see its docstring) — this function is the OTHER half of that guard. Without it, a
     dispatch that reached here for an owner with a live ECS service would still create a runtime and
     flip the row to ``runtime_host="agentcore"``/``status="running"`` — pointing
-    ``runtime_transport.host_for`` at a runtime whose boot secret was never written (``prepare``
+    a runtime whose boot secret was never written (``prepare``
     already refused to mint it), while the ECS task keeps serving traffic underneath it. Raises
     ``ValueError`` (not a bare ``RuntimeError``) so ``classify_provision_error`` maps it to
     deterministic/``EXIT_DETERMINISTIC`` unconditionally, running C2's release-to-error path instead

@@ -447,8 +447,6 @@ async def execute_sync(
     if method == "agents.update":
         params = _sanitize_agent_update(params)
     if method == "agents.delete":
-        from core.services.config_patcher import ConfigPatchError
-
         agent_id = params.get("agentId")
         if not isinstance(agent_id, str) or not agent_id:
             raise ApiProblem("INVALID_REQUEST", "Agent ID is required.")
@@ -456,17 +454,6 @@ async def execute_sync(
             result = await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
         except AgentLifecycleConflict as exc:
             raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
-        except ConfigPatchError as exc:
-            # Row #3 (Q9a): an ECS EFS failure (e.g. a stale lock) must be a clean RPC error,
-            # not a 500 -- the AgentCore branch never reaches this (it deletes the S3 profile
-            # prefix instead, see delete_agent_everywhere), so this only ever fires for ECS.
-            raise ApiProblem(
-                "RUNTIME_UNAVAILABLE",
-                "The runtime configuration could not be updated.",
-                retryable=True,
-                retry_after=3,
-                details={"method": method},
-            ) from exc
         await _invalidate(owner_id, method)
         return result
     if method == "agents.create":
@@ -1004,21 +991,10 @@ async def _mirror_agent_update(owner_id: str, params: dict[str, Any], *, agentco
 
             await refresh_agent_soul(owner_id, agent_id)
         return
-    if not isinstance(paperclip, dict):
-        return
-    try:
-        from core.services.config_patcher import apply_paperclip_meta
-
-        block: dict[str, str] = {"role": meta.role}
-        for key in ("title", "capabilities", "icon"):
-            value = paperclip.get(key)
-            if isinstance(value, str):
-                block[key] = value.strip()
-        await apply_paperclip_meta(owner_id, agent_id=agent_id, meta=block)
-    except Exception:
-        logger.warning(
-            "EFS Paperclip agent metadata mirror failed owner=%s agent=%s", owner_id, agent_id, exc_info=True
-        )
+    # No metadata mirror: the role/title/capabilities/icon block used to be written into the
+    # agent's `openclaw.json` entry so the runtime could read it back. The Paperclip row IS
+    # the record on this transport, and `refresh_agent_soul` above is what carries an identity
+    # change into the profile the agent actually reads.
     params.pop("params", None)
 
 

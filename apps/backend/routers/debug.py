@@ -12,8 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.auth import AuthContext, get_current_user, get_owner_type, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.containers import get_ecs_manager
-from core.containers.ecs_manager import EcsManagerError
+from core.services.hermes_provisioning import delete_workspace_runtime
 from core.repositories import (
     billing_repo,
     channel_link_repo,
@@ -165,9 +164,11 @@ async def remove_container(
         require_org_admin(auth)
 
     try:
-        await get_ecs_manager().delete_user_service(owner_id)
+        # NOT delete_profiles: this is a routine reprovision door, and destroying a migrated
+        # owner's memory/skills/SOUL.md is /debug/user-data's job, not this one (M6-R42).
+        await delete_workspace_runtime(owner_id)
         return {"status": "removed"}
-    except EcsManagerError as e:
+    except Exception as e:  # noqa: BLE001 — surfaced to the dev caller as a 503
         logger.error("Dev remove failed for owner %s: %s", owner_id, e)
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -217,16 +218,16 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # ---- Runtime teardown ---------------------------------------------------
     # NOT gated on the row's existence — if a previous partial run failed here but
     # successfully wiped the DDB row, every subsequent retry would skip teardown and
-    # orphan the runtime forever. ``delete_user_service`` derives everything it needs
+    # orphan the runtime forever. ``delete_workspace_runtime`` derives everything it needs
     # from owner_id and treats "already gone" as idempotent success.
     #
-    # ``delete_hermes_profiles=True`` is this endpoint's answer to the EFS ``rm -rf``
-    # it replaces: the owner's S3 profile prefix IS their workspace content, and the
-    # e2e harness's empty-slate contract breaks silently if the next provision restores
-    # it. Only a terminal wipe passes True (see ``delete_user_service``'s docstring).
+    # ``delete_profiles=True`` is this endpoint's answer to the EFS ``rm -rf`` it replaces:
+    # the owner's S3 profile prefix IS their workspace content, and the e2e harness's
+    # empty-slate contract breaks silently if the next provision restores it. This and
+    # ``account_wipe`` are the ONLY two terminal callers that pass True (M6-R42).
     runtime_succeeded = False
     try:
-        await get_ecs_manager().delete_user_service(owner_id, delete_hermes_profiles=True)
+        await delete_workspace_runtime(owner_id, delete_profiles=True)
         deleted["runtime"] = True
         runtime_succeeded = True
     except Exception as e:

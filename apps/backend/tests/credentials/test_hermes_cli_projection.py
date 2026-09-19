@@ -122,7 +122,7 @@ async def test_gog_projection_carries_the_keyring_password_for_the_shell(s3, ros
     def _fake_run(argv, **kw):
         seen.append(argv[:3])
         # gog writes the keyring itself; stand in for the binary.
-        root = base.owner_efs_root("org_1")  # == <scratch>/home while projecting
+        root = base.materializer_root()  # == <scratch>/home while projecting
         (root / ".local" / "share" / "gogcli").mkdir(parents=True, exist_ok=True)
         (root / ".local" / "share" / "gogcli" / "keyring").write_bytes(b"\x00jwe-blob")
         return None
@@ -142,23 +142,26 @@ async def test_gog_projection_carries_the_keyring_password_for_the_shell(s3, ros
 
 
 @pytest.mark.asyncio
-async def test_instagram_projection_never_patches_openclaw_json(s3, roster, monkeypatch):
-    """An AgentCore owner has no openclaw.json; patching EFS from the materializer would write
-    into a dead config (and can raise, failing the connect)."""
+async def test_instagram_projection_lands_only_the_skill_dir(s3, roster, monkeypatch):
+    """Landing the skill dir IS the install -- Hermes finds a skill by scanning the profile.
+    The materializer's old openclaw.json ``skills.entries`` switch went with the ECS runtime,
+    so nothing but the projected tree may be written."""
     from core.services.credentials.materializers import instagram_cli
 
     monkeypatch.setattr(instagram_cli, "_fetch_identity", lambda token: {"user_id": "1", "username": "ig"})
-
-    def _must_not_patch(*a, **k):
-        raise AssertionError("openclaw.json must not be touched for an AgentCore owner")
-
-    monkeypatch.setattr(instagram_cli.config_patcher, "set_openclaw_config_path", _must_not_patch)
 
     await hermes_cli.project("org_1", "instagram", "instagram_cli", {"access_token": "IGtok"})
 
     creds = json.loads(s3["org_1/hermes/ceo/skills/instagram/credentials.json"].decode())
     assert creds["access_token"] == "IGtok"
     assert "org_1/hermes/ceo/skills/instagram/SKILL.md" in s3
+    # Only the skill dir (plus the per-profile .revision the write bumps) -- no config object.
+    assert {k.split("/", 3)[3] for k in s3} == {
+        "skills/instagram/SKILL.md",
+        "skills/instagram/credentials.json",
+        "skills/instagram/token.sh",
+        ".revision",
+    }
 
 
 def test_every_projected_materializer_has_a_remover():
@@ -175,12 +178,15 @@ async def test_clear_is_a_no_op_for_an_unprojected_materializer(s3, roster):
 
 
 def test_projection_root_is_scoped_and_restored(tmp_path):
-    assert not base.is_projecting()
+    """Outside a projection there is no root at all -- ``materializer_root`` raises rather than
+    falling back to a mount path, so a materializer dispatched by mistake cannot write a
+    credential nothing reads."""
+    with pytest.raises(RuntimeError):
+        base.materializer_root()
     with base.materialize_into(tmp_path):
-        assert base.is_projecting()
-        assert base.owner_efs_root("org_1") == tmp_path
-    assert not base.is_projecting()
-    assert base.owner_efs_root("org_1") != tmp_path
+        assert base.materializer_root() == tmp_path
+    with pytest.raises(RuntimeError):
+        base.materializer_root()
 
 
 @pytest.mark.asyncio
@@ -200,7 +206,7 @@ async def test_a_full_google_disconnect_leaves_no_cli_env_json(s3, roster, monke
             (),
             {
                 "run": staticmethod(
-                    lambda argv, **kw: (base.owner_efs_root("org_1") / ".local" / "share" / "gogcli").mkdir(
+                    lambda argv, **kw: (base.materializer_root() / ".local" / "share" / "gogcli").mkdir(
                         parents=True, exist_ok=True
                     )
                 )

@@ -11,24 +11,21 @@ from core.services.credentials.materializers import qbo_dotenv  # noqa: E402
 CRED = {"refresh_token": "AB11700000000aBcDeF", "realm_id": "9341457861985034"}
 APP = {"client_id": "ABCuTiwBs0Dnwwqt", "client_secret": "THtXBeGwaxKYJUMhXsxl"}
 
-_SET = "core.services.credentials.materializers.qbo_dotenv.config_patcher.set_openclaw_config_path"
-_DEL = "core.services.credentials.materializers.qbo_dotenv.config_patcher.delete_openclaw_config_path"
 _APP_GET = "core.services.credentials.materializers.qbo_dotenv.platform_oauth_app_store.get"
-_EFS = "core.services.credentials.materializers.qbo_dotenv.owner_efs_root"
+_EFS = "core.services.credentials.materializers.qbo_dotenv.materializer_root"
 
 
 def _write(tmp_path, cred=CRED, app=APP):
     with (
-        patch(_SET, new_callable=AsyncMock) as mock_set,
         patch(_APP_GET, new_callable=AsyncMock, return_value=app),
         patch(_EFS, return_value=tmp_path),
     ):
         identity = qbo_dotenv.write("org_1", "quickbooks", cred)
-    return identity, mock_set, (tmp_path / "quickbooks" / ".env")
+    return identity, (tmp_path / "quickbooks" / ".env")
 
 
-def test_write_seeds_store_and_publishes_path_only_block(tmp_path):
-    identity, mock_set, store = _write(tmp_path)
+def test_write_seeds_the_store_and_nothing_else(tmp_path):
+    identity, store = _write(tmp_path)
 
     assert identity == "9341457861985034"
     body = store.read_text()
@@ -41,22 +38,18 @@ def test_write_seeds_store_and_publishes_path_only_block(tmp_path):
     # 60-minute access token would only leave a dead secret on disk.
     assert "ACCESS_TOKEN" not in body
     assert store.stat().st_mode & 0o777 == 0o600
-
-    # The published block must carry the store PATH and no credential — that is
-    # what lets a reprovision rebuild it from the registry alone.
-    (_owner, path, block), _ = mock_set.call_args
-    assert path == ["mcp", "servers", "quickbooks"]
-    assert block["env"] == {"QUICKBOOKS_TOKEN_STORE_PATH": "/home/node/.openclaw/quickbooks/.env"}
-    assert "THtXBeGwaxKYJUMhXsxl" not in str(block)
+    # The materializer writes the store ONLY. The mcp_servers entry is published by the
+    # reconcile pass, which rebuilds the whole block from the connected set.
+    assert sorted(p.name for p in tmp_path.rglob("*") if p.is_file()) == [".env"]
 
 
-def test_rehydrated_block_matches_what_the_materializer_publishes(tmp_path):
-    """The reprovision path builds the block independently; a drift between the two
-    silently points the server at a store that isn't there."""
-    _identity, mock_set, _store = _write(tmp_path)
-    (_owner, _path, written), _ = mock_set.call_args
+def test_published_block_carries_the_store_path_and_no_credential(tmp_path):
+    """What the reconcile publishes must point at the store this materializer writes, and
+    carry no secret -- that is what lets a reprovision rebuild it from the registry alone."""
     stdio = registry.get_provider("quickbooks").mcp_stdio
-    assert stdio.server_block(qbo_dotenv.container_store_path()) == written
+    block = stdio.server_block(qbo_dotenv.container_store_path())
+    assert block["env"] == {"QUICKBOOKS_TOKEN_STORE_PATH": qbo_dotenv.container_store_path()}
+    assert "THtXBeGwaxKYJUMhXsxl" not in str(block)
 
 
 def test_write_refuses_without_realm_id(tmp_path):
@@ -76,13 +69,11 @@ def test_write_refuses_values_dotenv_would_mangle(tmp_path):
         _write(tmp_path, cred={"refresh_token": 'tok"\nQUICKBOOKS_REALM_ID=evil', "realm_id": "93414"})
 
 
-def test_remove_drops_store_and_server_block(tmp_path):
-    _identity, _set, store = _write(tmp_path)
+def test_remove_drops_the_store_and_is_idempotent(tmp_path):
+    _identity, store = _write(tmp_path)
     assert store.exists()
-    with patch(_DEL, new_callable=AsyncMock) as mock_del, patch(_EFS, return_value=tmp_path):
+    with patch(_EFS, return_value=tmp_path):
         qbo_dotenv.remove("org_1", "quickbooks", CRED)
         qbo_dotenv.remove("org_1", "quickbooks", CRED)  # idempotent
 
     assert not store.exists()
-    (_owner, path), _ = mock_del.call_args
-    assert path == ["mcp", "servers", "quickbooks"]

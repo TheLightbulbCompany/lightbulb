@@ -5,7 +5,7 @@ from core.services.credentials.materializers import toml_cli
 
 
 def test_writes_0600_toml(tmp_path, monkeypatch):
-    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+    monkeypatch.setattr(toml_cli, "materializer_root", lambda: tmp_path / "org_1")
     cred = {
         "cli": "outlook-email-pp-cli",
         "access_token": "a",
@@ -23,7 +23,7 @@ def test_writes_0600_toml(tmp_path, monkeypatch):
 
 
 def test_omits_empty_fields(tmp_path, monkeypatch):
-    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+    monkeypatch.setattr(toml_cli, "materializer_root", lambda: tmp_path / "org_1")
     toml_cli.write("org_1", "x", {"cli": "x-pp-cli", "access_token": "a"})
     p = Path(tmp_path) / "org_1" / ".config" / "x-pp-cli" / "config.toml"
     data = tomllib.loads(p.read_text())
@@ -31,7 +31,7 @@ def test_omits_empty_fields(tmp_path, monkeypatch):
 
 
 def test_remove_unlinks_config(tmp_path, monkeypatch):
-    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+    monkeypatch.setattr(toml_cli, "materializer_root", lambda: tmp_path / "org_1")
     cred = {"cli": "outlook-email-pp-cli", "access_token": "a"}
     toml_cli.write("org_1", "outlook", cred)
     p = Path(tmp_path) / "org_1" / ".config" / "outlook-email-pp-cli" / "config.toml"
@@ -41,12 +41,12 @@ def test_remove_unlinks_config(tmp_path, monkeypatch):
 
 
 def test_remove_is_idempotent_when_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+    monkeypatch.setattr(toml_cli, "materializer_root", lambda: tmp_path / "org_1")
     # No file written first — remove must not raise.
     toml_cli.remove("org_1", "outlook", {"cli": "outlook-email-pp-cli"})
 
 
 def test_remove_no_cli_is_noop(tmp_path, monkeypatch):
-    monkeypatch.setattr("core.config.settings.EFS_MOUNT_PATH", str(tmp_path))
+    monkeypatch.setattr(toml_cli, "materializer_root", lambda: tmp_path / "org_1")
     # Missing "cli" key — guard prevents an exception.
     toml_cli.remove("org_1", "outlook", {})

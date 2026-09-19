@@ -1028,9 +1028,8 @@ async def deploy_listing(
         # exception triggers the orphan-Paperclip rollback. That includes
         # container resolution (DDB/ECS can throw transient errors), the
         # 503-on-unreachable-container short-circuit, and the catalog deploy
-        # itself. Without this envelope a transient DDB outage on
-        # ``resolve_running_container`` leaves a phantom Paperclip agent on
-        # every failed deploy.
+        # itself. Without this envelope a transient DDB outage on the row read
+        # leaves a phantom Paperclip agent on every failed deploy.
         try:
             container = await container_repo.get_by_owner_id(owner_id)
             if not container or not container.get("agentcore_runtime_arn"):

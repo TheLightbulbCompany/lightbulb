@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from core.containers.config import BEDROCK_TRIAL_CHOICE
+from core.services.hermes_profiles import _BEDROCK_TRIAL_CHOICE as BEDROCK_TRIAL_CHOICE
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)

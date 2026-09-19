@@ -17,7 +17,6 @@ import gzip
 import io
 import json
 import logging
-import os
 import re
 import tarfile
 import tempfile
@@ -26,16 +25,12 @@ from pathlib import Path, PurePosixPath
 from typing import Awaitable, Callable
 
 from core.config import settings
-from core.containers import get_workspace
-from core.containers.workspace import WorkspaceError
-from core.observability.metrics import put_metric
-from core.services import marketplace_safety, runtime_transport
+from core.services import marketplace_safety
 from core.services.catalog_package import CatalogPackage
 from core.services.catalog_slice import (
     _agents_list,
     classify_skill,
     extract_agent_slice,
-    filter_cron_jobs_for_agent,
 )
 from core.services.inbound_triggers import automation_from_title
 from core.services.marketplace.requirements import (
@@ -372,114 +367,6 @@ def _slugify(name: str) -> str:
     return _SLUG_RE.sub("-", (name or "").strip().lower()).strip("-")
 
 
-def _resolve_workspace_id(seller_id: str, agent_id: str, config: dict | None) -> str:
-    """Map a stored ``agent_id`` to the live ``workspace-{id}`` dir name.
-
-    Resolution order:
-      1. ``agent_id`` is itself a live workspace dir → return as-is. Covers
-         every current UUID-keyed listing — zero behavior change.
-      2. Legacy slug: scan the seller's ``agents.list`` for an entry whose
-         display-name (or own id) slugifies to ``agent_id`` AND whose ``id``
-         is a live workspace dir; return that ``id`` (the UUID).
-
-    Marketplace listings created before agent workspaces became UUID-keyed
-    persisted ``agent_id`` as a slug (e.g. ``"vera"``) that no longer names a
-    directory, so their republish/export 404s. Resolving the slug forward lets
-    those listings self-heal: the export keys its slice + manifest off the
-    resolved UUID, which ``replace_artifact`` then persists onto the row.
-
-    On an ambiguous slug (>1 live agent slugifies the same way) raises
-    AgentNotFoundError rather than guessing. On a clean miss, returns
-    ``agent_id`` UNCHANGED so the caller's existing ``_build_tarball``
-    existence check raises the familiar ``agent dir not found`` error — no
-    behavior change for genuinely-missing agents.
-    """
-    workspace = get_workspace()
-    live_dirs = set(workspace.list_workspace_agent_dirs(seller_id))
-
-    # Path 1 — direct hit (UUIDs and any still-valid id).
-    if agent_id in live_dirs:
-        return agent_id
-
-    # Path 2 — slug fallback over the seller's openclaw.json agents.list.
-    candidates: set[str] = set()
-    if config:
-        for entry in _agents_list(config):
-            if not isinstance(entry, dict):
-                continue
-            eid = entry.get("id")
-            if not isinstance(eid, str) or eid not in live_dirs:
-                continue
-            ident = entry.get("identity")
-            display = entry.get("name") or (ident.get("name") if isinstance(ident, dict) else None) or ""
-            if _slugify(display) == agent_id or _slugify(eid) == agent_id:
-                candidates.add(eid)
-
-    if len(candidates) == 1:
-        return next(iter(candidates))
-    if len(candidates) > 1:
-        raise AgentNotFoundError(
-            f"agent_id {agent_id!r} is ambiguous: {sorted(candidates)} all match; "
-            "re-select the agent in the publish wizard"
-        )
-
-    # No resolution — hand back the original id so the existence check
-    # downstream raises the same AgentNotFoundError it always did.
-    return agent_id
-
-
-def _resolve_agent_dir(seller_id: str, agent_id: str, *, config: dict | None = None) -> Path:
-    """Resolve the seller's agent WORKSPACE directory on EFS.
-
-    The OpenClaw EFS layout splits each agent across two sibling roots
-    under the seller's user dir:
-
-      agents/{id}/      — OpenClaw runtime state (sessions/ logs,
-                          agent/ auth tokens). Internal; not seller content.
-      workspace-{id}/  — the seller's actual workspace: persona files
-                          (IDENTITY.md / SOUL.md / USER.md / HEARTBEAT.md /
-                          TOOLS.md), bundled skills (skills/), MCP server
-                          code, memory, etc. This is what buyers need.
-
-    The export tars the WORKSPACE dir. Pointing at agents/{id}/ instead
-    would only capture OpenClaw's internal state — the resulting tarball
-    would be either runtime junk or empty after filtering. Buyers need
-    workspace-{id}/; the existing filter list strips node_modules, .git,
-    dotfiles, etc. so the published artifact stays clean.
-
-    ``config`` (the seller's openclaw.json) is used to resolve a legacy slug
-    ``agent_id`` forward to its live workspace UUID (see ``_resolve_workspace_id``).
-    Pass it whenever available; ``None`` keeps direct-only resolution.
-
-    Emits ``marketplace.path_traversal_attempt`` and raises
-    InvalidAgentIdError on any traversal attempt.
-    """
-    if not _AGENT_ID_RE.match(agent_id):
-        raise InvalidAgentIdError(f"agent_id must be alphanumeric (with . _ -), 3-64 chars: {agent_id!r}")
-
-    workspace = get_workspace()
-    try:
-        seller_root = workspace.user_path(seller_id).resolve()
-    except WorkspaceError as exc:
-        raise InvalidAgentIdError(str(exc)) from exc
-
-    # Resolve legacy slug → live workspace UUID before building the path. The
-    # resolver only ever returns names that are members of
-    # ``list_workspace_agent_dirs`` (or the original ``agent_id`` on a miss),
-    # so the traversal guard below still holds on the resolved name.
-    resolved_id = _resolve_workspace_id(seller_id, agent_id, config)
-
-    candidate = (seller_root / f"workspace-{resolved_id}").resolve()
-
-    try:
-        candidate.relative_to(seller_root.resolve())
-    except ValueError:
-        put_metric("marketplace.path_traversal_attempt")
-        raise InvalidAgentIdError(f"agent_id resolves outside the seller's user root: {agent_id!r}")
-
-    return candidate
-
-
 # ---------------------------------------------------------------------------
 # AgentCore (Hermes) sellers: the agent's content lives in an S3 profile
 # prefix, not an EFS workspace-{id}/ dir.
@@ -516,14 +403,18 @@ def _is_excluded_profile_key(rel: str) -> bool:
     return False
 
 
-def _download_s3_profile(prefix: str, dest: Path) -> None:
-    """Download an AgentCore seller's Hermes profile (S3 key prefix
-    ``"<owner>/hermes/<agent_id>"``, see ``bridge/sync.py``'s
-    ``default_s3_prefix`` + ``_profile_dir``) into ``dest``, skipping
-    runtime/secret keys per ``_is_excluded_profile_key`` -- they never reach
-    local disk, so the existing EFS-oriented ``_build_tarball`` filter never
-    has to reason about them. Once this returns, every caller treats
-    ``dest`` exactly like a resolved EFS ``agent_dir``.
+def _download_s3_profile(prefix: str, dest: Path) -> set[str]:
+    """Download a seller's Hermes profile (S3 key prefix
+    ``"<owner>/hermes/<agent_id>"``, see ``bridge/sync.py``'s ``default_s3_prefix`` +
+    ``_profile_dir``) into ``dest``, skipping runtime/secret keys per
+    ``_is_excluded_profile_key`` -- they never reach local disk, so ``_build_tarball``'s own
+    filter never has to reason about them.
+
+    Returns the profile-relative directories that hold a nested ``.git``, read off the S3
+    LISTING. That has to happen here: ``.git`` is a dotdir, so the skip above means it never
+    lands locally and a filesystem check in ``_build_tarball`` (the shape this replaced) could
+    never fire. Those dirs are repos the agent CLONED to work on -- the company's codebase, a
+    dependency -- and the working tree is what leaks into a public artifact.
     """
     import boto3
 
@@ -534,51 +425,59 @@ def _download_s3_profile(prefix: str, dest: Path) -> None:
     # disagree with what the writer used.
     bucket = settings.OWNER_STATE_BUCKET
     key_prefix = f"{prefix}/"
+    repo_dirs: set[str] = set()
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=key_prefix):
         for obj in page.get("Contents", []):
             rel = obj["Key"][len(key_prefix) :]
-            if not rel or _is_excluded_profile_key(rel):
+            if not rel:
+                continue
+            parts = PurePosixPath(rel).parts
+            # A ``<dir>/.git/...`` key marks <dir> as a checkout. The profile ROOT's own
+            # ``.git`` (a seller versioning their agent) is index 0 and deliberately does not
+            # prune the whole export.
+            for index, part in enumerate(parts):
+                if part == ".git" and index > 0:
+                    repo_dirs.add("/".join(parts[:index]))
+                    break
+            if _is_excluded_profile_key(rel):
                 continue
             target = dest / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             s3.download_file(bucket, obj["Key"], str(target))
+    return repo_dirs
 
 
 def _resolve_agent_location(
     *, seller_id: str, agent_id: str, container: dict | None = None, config: dict | None = None
-) -> tuple[str, Path] | tuple[str, str]:
-    """``("efs", Path)`` or ``("s3", key_prefix)`` depending on the seller's
-    ``runtime_host``.
+) -> tuple[str, str]:
+    """``("s3", key_prefix)`` — the seller agent's Hermes profile prefix.
 
-    During the migration window BOTH kinds of seller exist -- this is the one
-    function export/preview call sites branch on instead of assuming EFS.
-    ``container`` absent/``None`` means ECS (``runtime_transport.host_for``'s
-    own default for a missing/unknown ``runtime_host``), so every call site
-    that doesn't yet have a container row in hand keeps today's EFS behavior
-    byte-for-byte.
+    The id format check is HOISTED here from the deleted EFS resolver, which was the only
+    thing validating it: the S3 branch built a key from ``agent_id`` unchecked, so a
+    malformed or traversal-shaped id reached ``list_objects_v2`` as a prefix. There is no
+    filesystem to escape, but an unvalidated id is still how one seller's prefix gets
+    addressed with another's fragment.
+
+    ``container``/``config`` are accepted and unused: the former chose between this and the
+    EFS root, and the latter resolved a legacy slug against the seller's openclaw.json.
     """
-    if runtime_transport.host_for(container or {}) == "agentcore":
-        return ("s3", f"{seller_id}/hermes/{agent_id}")
-    return ("efs", _resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config))
+    if not _AGENT_ID_RE.match(agent_id):
+        raise InvalidAgentIdError(f"agent_id must be alphanumeric (with . _ -), 3-64 chars: {agent_id!r}")
+    return ("s3", f"{seller_id}/hermes/{agent_id}")
 
 
 def resolve_workspace_agent_id(seller_id: str, agent_id: str) -> str:
-    """Resolve a (possibly legacy-slug) ``agent_id`` to its live workspace dir
-    name (the UUID), using the same regex + slug fallback as the export path.
+    """Validate ``agent_id`` and return it.
 
-    The router calls this BEFORE the Friday guard + routine capture so those run
-    against the resolved agent, not a slug that would slip past them (a slug like
-    ``"friday"`` resolves to the CEO's UUID, which the guard then matches). Returns
-    the resolved id, or the original ``agent_id`` unchanged on a clean miss (the
-    downstream export then 404s as before). Raises ``InvalidAgentIdError`` /
-    ``AgentNotFoundError`` on a bad id or an ambiguous slug.
+    It used to also resolve a legacy SLUG (``"friday"``) forward to the live
+    ``workspace-{uuid}`` dir name by reading the seller's ``openclaw.json``. There are no
+    workspace dirs and no slugs on a profile: a Hermes profile prefix IS the canonical agent
+    id. Kept as the named seam because the router calls it BEFORE the Friday guard and the
+    routine capture, so both run against a validated id rather than arbitrary caller input.
     """
-    workspace = get_workspace()
-    try:
-        config = workspace.read_openclaw_config(seller_id)
-    except WorkspaceError:
-        config = None
-    return _agent_id_from_dir_name(_resolve_agent_dir(seller_id=seller_id, agent_id=agent_id, config=config).name)
+    if not _AGENT_ID_RE.match(agent_id):
+        raise InvalidAgentIdError(f"agent_id must be alphanumeric (with . _ -), 3-64 chars: {agent_id!r}")
+    return agent_id
 
 
 def _validate_export_paths(agent_dir: Path, paths: list[str]) -> list[str]:
@@ -615,14 +514,18 @@ def _validate_export_paths(agent_dir: Path, paths: list[str]) -> list[str]:
     return kept
 
 
-def _build_tarball(agent_dir: Path, *, paths: list[str] | None = None) -> tuple[bytes, list[str], list[str]]:
+def _build_tarball(
+    agent_dir: Path, *, paths: list[str] | None = None, repo_dirs: set[str] | None = None
+) -> tuple[bytes, list[str], list[str]]:
     """Tar (gzip) an agent directory, skipping junk dirs and dotfiles at the
     top level. File mtimes are zeroed so two snapshots of unchanged content
     produce identical bytes (deterministic SHA-256).
 
-    ``paths`` (workspace-relative files or dirs) restricts the export to
-    exactly those entries; ``None`` walks the whole dir, pruning nested repo
-    checkouts. Returns ``(gzip_bytes, shipped_files, pruned_dirs)``.
+    ``paths`` (profile-relative files or dirs) restricts the export to exactly those entries;
+    ``None`` walks the whole dir, pruning nested repo checkouts. ``repo_dirs`` names those
+    checkouts -- ``_download_s3_profile`` reads them off the S3 listing, because ``.git`` is a
+    dotdir and never lands on local disk for a filesystem check to find.
+    Returns ``(gzip_bytes, shipped_files, pruned_dirs)``.
     """
     if not agent_dir.exists() or not agent_dir.is_dir():
         raise AgentNotFoundError(f"agent dir not found: {agent_dir}")
@@ -672,14 +575,13 @@ def _build_tarball(agent_dir: Path, *, paths: list[str] | None = None) -> tuple[
             ):
                 pruned.append("/".join(parts[1:]))
                 return None
-            # A nested ``.git`` marks a repo the agent cloned to work on (the
-            # company's codebase, a dependency) — not the agent. Prune the
-            # whole subtree: ``.git`` itself is already skipped above, it's
-            # the working tree that leaks. The agent dir's own ``.git`` (a
-            # seller versioning their agent) doesn't prune the root.
-            if tarinfo.isdir() and include is None and len(parts) > 1:
-                if os.path.lexists(os.path.join(agent_dir, tarinfo.name, ".git")):
-                    pruned.append("/".join(parts[1:]))
+            # A nested repo checkout (see ``repo_dirs``) is the company's codebase or a
+            # dependency, not the agent -- and the WORKING TREE is what leaks. Only on the
+            # default walk: an explicit ``paths`` entry means the seller chose it.
+            if tarinfo.isdir() and include is None and len(parts) > 1 and repo_dirs:
+                rel = "/".join(parts[1:])
+                if rel in repo_dirs:
+                    pruned.append(rel)
                     return None
             # Filename-based credential-leak guard. The seller may have
             # plopped a credentials JSON (resy-credentials.json,
@@ -897,41 +799,33 @@ def export_agent_from_efs(
         InvalidExportPathsError: a ``paths`` entry is invalid or missing.
         ExportTooLargeError: the walk crossed the export cap.
     """
-    workspace = get_workspace()
-    try:
-        config = workspace.read_openclaw_config(seller_id)
-    except WorkspaceError:
-        # Bad seller_id — let _resolve_agent_dir surface it as InvalidAgentIdError.
-        config = None
-    kind, location = _resolve_agent_location(seller_id=seller_id, agent_id=agent_id, container=container, config=config)
+    # KNOWN GAP (M6), stated at the top rather than three steps in: the slice this publish
+    # builds is an ``openclaw.json`` projection (``extract_agent_slice``), and a Hermes
+    # workspace has no such file -- its per-agent state is ``config.yaml`` + ``.env`` in the
+    # profile. The check below is where publishing already failed for every migrated seller,
+    # after downloading the profile and building a tarball; raising first just stops paying
+    # for that. Re-shaping the slice onto the profile is Task 10 remap work.
+    config = None
+    _kind, location = _resolve_agent_location(
+        seller_id=seller_id, agent_id=agent_id, container=container, config=config
+    )
     tmp_dir: tempfile.TemporaryDirectory | None = None
     try:
-        if kind == "s3":
-            # AgentCore seller: no EFS workspace-{id}/ dir exists. Download the
-            # Hermes S3 profile into a scratch dir and treat it exactly like a
-            # resolved EFS agent_dir for the rest of this function -- tarball
-            # build, safety scan, requirements scan are all unchanged below.
-            # agent_id IS the canonical id here; there is no legacy-slug layer
-            # for S3 profiles. Fix round 1, item 3: the download itself is
-            # inside this try/finally so a raising downloader still cleans up
-            # the scratch dir instead of leaking it.
-            tmp_dir = tempfile.TemporaryDirectory()
-            agent_dir = Path(tmp_dir.name)
-            _download_s3_profile(location, agent_dir)
-            resolved_agent_id = agent_id
-        else:
-            agent_dir = location
-            # The dir name is ``workspace-{uuid}`` — strip the layout prefix to get
-            # the live workspace UUID. For legacy slug-keyed listings this differs
-            # from the requested agent_id — key the slice, MCP-arg rewrite, cron
-            # filter, and manifest off the resolved UUID so the snapshot self-heals
-            # (replace_artifact then persists the UUID onto the row).
-            resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
-        tarball_bytes, contents, pruned = _build_tarball(agent_dir, paths=paths)
+        # Download the Hermes S3 profile into a scratch dir; the tarball build, safety scan
+        # and requirements scan below all read it as a plain directory. `agent_id` IS the
+        # canonical id -- there is no legacy-slug layer for S3 profiles. Fix round 1, item 3:
+        # the download is inside this try/finally so a raising downloader still cleans up the
+        # scratch dir instead of leaking it.
+        tmp_dir = tempfile.TemporaryDirectory()
+        agent_dir = Path(tmp_dir.name)
+        repo_dirs = _download_s3_profile(location, agent_dir)
+        resolved_agent_id = agent_id
+        tarball_bytes, contents, pruned = _build_tarball(agent_dir, paths=paths, repo_dirs=repo_dirs)
 
         if not config:
             raise AgentNotInConfigError(
-                f"seller {seller_id!r} has no openclaw.json — publish the agent from a container that has been provisioned"
+                f"publishing agent {agent_id!r} is unavailable on this runtime: the marketplace slice is an "
+                "openclaw.json projection and a Hermes workspace has none"
             )
         workspace_skill_names = _enumerate_workspace_skill_names(agent_dir)
         try:
@@ -947,7 +841,9 @@ def export_agent_from_efs(
                 f"agent {agent_id!r} is not registered in seller's openclaw.json agents.list"
             ) from exc
         _rewrite_mcp_args_paths(slice_, seller_agent_id=resolved_agent_id)
-        slice_["cron_jobs"] = filter_cron_jobs_for_agent(workspace.read_cron_jobs(seller_id), resolved_agent_id)
+        # No cron/jobs.json on this runtime: agent scheduling lives in Paperclip routines,
+        # which a marketplace artifact carries as ``manifest["routines"]``, not in the slice.
+        slice_["cron_jobs"] = []
 
         # Post-scrub credential-leak gate. The slice is a separate S3 artifact
         # the tarball safety scan never walks, so re-inspect it here: if any
@@ -1097,19 +993,16 @@ def export_built_agent_from_staging(
     # dir, so the legacy slug-forwarding the seller path needs doesn't apply
     # here. An AgentCore owner's staging build instead lives under the same
     # Hermes S3 profile prefix convention (see _resolve_agent_location).
-    kind, location = _resolve_agent_location(
+    _kind, location = _resolve_agent_location(
         seller_id=owner_id, agent_id=staging_agent_id, container=container, config=None
     )
     tmp_dir: tempfile.TemporaryDirectory | None = None
     try:
         # Fix round 1, item 3: the download itself is inside this try/finally
         # so a raising downloader still cleans up the scratch dir.
-        if kind == "s3":
-            tmp_dir = tempfile.TemporaryDirectory()
-            staging_dir = Path(tmp_dir.name)
-            _download_s3_profile(location, staging_dir)
-        else:
-            staging_dir = location
+        tmp_dir = tempfile.TemporaryDirectory()
+        staging_dir = Path(tmp_dir.name)
+        _download_s3_profile(location, staging_dir)
         # The shippable files live under workspace/ (see atlas-skeleton-generator.js
         # draftToFastIo). Tar that subdir so files land at the tarball root; this
         # also leaves build-manifest.json (staging root) out of the tarball. Fall
@@ -1287,31 +1180,24 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str, container: dict | No
     Raises the same errors as ``export_agent_from_efs``:
     InvalidAgentIdError / AgentNotFoundError / AgentNotInConfigError.
     """
-    workspace = get_workspace()
-    try:
-        config = workspace.read_openclaw_config(seller_id) or {}
-    except WorkspaceError:
-        # Bad seller_id — let _resolve_agent_dir surface it as InvalidAgentIdError.
-        config = {}
-    kind, location = _resolve_agent_location(seller_id=seller_id, agent_id=agent_id, container=container, config=config)
+    # See ``export_agent_from_efs``: the seller's global ``openclaw.json`` is gone with the
+    # runtime, so the config-derived halves of this preview (declared skills, the agent's
+    # registration check) read as empty. The profile-derived halves -- the file list, the
+    # safety scan, the workspace skills -- are unaffected.
+    config = {}
+    _kind, location = _resolve_agent_location(
+        seller_id=seller_id, agent_id=agent_id, container=container, config=config
+    )
     tmp_dir: tempfile.TemporaryDirectory | None = None
     try:
         # Fix round 1, item 3: the download itself is inside this try/finally
         # so a raising downloader still cleans up the scratch dir.
-        if kind == "s3":
-            # AgentCore seller: download the Hermes S3 profile into a scratch dir
-            # and treat it exactly like a resolved EFS agent_dir for the rest of
-            # this function. agent_id IS the canonical id -- no legacy-slug layer
-            # for S3 profiles.
-            tmp_dir = tempfile.TemporaryDirectory()
-            agent_dir = Path(tmp_dir.name)
-            _download_s3_profile(location, agent_dir)
-            resolved_agent_id = agent_id
-        else:
-            agent_dir = location
-            # Resolved workspace UUID (dir name minus the ``workspace-`` layout
-            # prefix) — differs from agent_id only for legacy slug listings.
-            resolved_agent_id = _agent_id_from_dir_name(agent_dir.name)
+        # Download the Hermes S3 profile into a scratch dir and read it as a plain directory.
+        # `agent_id` IS the canonical id -- no legacy-slug layer for S3 profiles.
+        tmp_dir = tempfile.TemporaryDirectory()
+        agent_dir = Path(tmp_dir.name)
+        repo_dirs = _download_s3_profile(location, agent_dir)
+        resolved_agent_id = agent_id
         # Validate the agent is registered in the seller's config; the entry
         # itself is NOT used as a skills source (no per-agent skill scoping
         # exists at runtime — see the addable-skills note below).
@@ -1353,7 +1239,7 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str, container: dict | No
         # Build the tarball + scan for safety_flags. We don't return the
         # tarball itself — just the flags. ``contents`` (the shipped-file list)
         # scopes the requirements scan below to exactly what ships.
-        tarball_bytes, contents, _ = _build_tarball(agent_dir)
+        tarball_bytes, contents, _ = _build_tarball(agent_dir, repo_dirs=repo_dirs)
         # Snippets stay ON here and ONLY here: the preview is an authenticated,
         # seller-scoped response showing the seller their OWN workspace lines so
         # they can fix a finding before submit. It is never persisted.

@@ -250,10 +250,9 @@ async def ensure_user_ready(auth: AuthContext) -> None:
         )
         return
 
-    # Paperclip (Teams) seed is a SEPARATE concern from the container (ECS)
-    # dispatch below. A seed/join failure must NOT abort provisioning: the box
-    # still boots and serves chat because ecs_manager falls back to the legacy
-    # `main` agent when no Paperclip company exists. The failure is recorded on
+    # The Paperclip (Teams) seed is a SEPARATE concern from the runtime dispatch below. A
+    # seed/join failure must NOT abort provisioning: the workspace still provisions and serves
+    # chat with no Paperclip roster. The failure is recorded on
     # the paperclip-companies row (by _mark_failed) and surfaced via
     # /container/status; here we only guarantee it never wedges the container.
     # Best-effort — mirrors the ensure_metronome_customer guard above; the next
@@ -335,11 +334,9 @@ async def _provision_or_reconcile(auth: AuthContext, owner_id: str) -> None:
     * **Deliberately parked trial box → NO dispatch, seed HERE.** Both passive
       -read doors (``/container/status``'s auto-retry and the ``/teams``
       reconcile) must consult ``wake_policy`` and never wake a parked trial box
-      — see that module's docstring. ``ensure_user_ready`` is only ever called
-      from those passive doors (explicit intent goes through
-      ``container_wake.request_wake`` / ``request_wake_silent``), so the
-      suppression belongs here, once, instead of being re-derived per caller.
-      Paperclip seeding needs no container, so the seed still runs.
+      — see that module's docstring. ``ensure_user_ready`` is only ever called from those
+      passive doors, so the suppression belongs here, once, instead of being re-derived per
+      caller. Paperclip seeding needs no runtime, so the seed still runs.
 
     The extra containers-row read is the price of making the decision from
     state; ``ensure_user_ready`` always runs off the request path (a background

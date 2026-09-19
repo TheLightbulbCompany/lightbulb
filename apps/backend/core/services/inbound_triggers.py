@@ -135,7 +135,6 @@ carries none.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -147,12 +146,12 @@ import httpx
 from core.auth import is_org_owner_id
 from core.config import settings
 from core.observability.product_analytics import capture_product_event
+from core.dynamodb import run_in_thread
 from core.repositories import google_accounts_repo, integrations_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import google_watch
 from core.services.agent_routine_provisioning import _build_routine_body
 from core.services.credentials import integration_secret_store, registry
-from core.services.credentials.materializers.base import atomic_write, owner_efs_root
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.trigger_fire_url import trigger_fire_url
@@ -187,10 +186,11 @@ _INSTAGRAM_GRAPH_BASE = "https://graph.instagram.com"
 # into the subscribed_apps URL path.
 _META_ASSET_RE = re.compile(r"^\d{1,32}$")
 
-# Where instagram_cli materialized the owner's IG token. The backend does not
-# retain that credential (refresh_owner: actor — the container renews it in
-# place), so EFS is the only place to read it from.
-_INSTAGRAM_CREDENTIALS_REL = ("skills", "instagram", "credentials.json")
+# Where instagram_cli projects the owner's IG token — profile-relative, identical in every
+# roster profile (credentials/hermes_cli.py's OWNED_PATHS["instagram_cli"]). The backend does
+# not retain that credential (refresh_owner: actor — the agent renews it in place), so the
+# profile is the only place to read it from.
+_INSTAGRAM_CREDENTIALS_REL = "skills/instagram/credentials.json"
 
 # A fully-qualified Pub/Sub topic ("projects/<proj>/topics/<name>") — the only
 # topic shape owner_setup (gmail.message) accepts. GCP's own naming rules for
@@ -211,11 +211,14 @@ _GMAIL_POLL_CRON = "*/10 * * * *"
 _GOOGLE_RENEWAL_CRON = "0 6 * * 1,4"
 _GOOGLE_RENEWAL_TRIGGER_LABEL = "Keep the Google watch alive"
 
-# Where the container sees the seeded watch state file: the per-user EFS
-# access point (rooted at the owner's EFS dir, = owner_efs_root) mounts at
-# /home/node/.openclaw, so owner_efs_root/google-watch/{trigger_public_id}.json
-# is this path in every agent-facing prompt.
-_WATCH_STATE_CONTAINER_DIR = "/home/node/.openclaw/google-watch"
+# Where the AGENT sees the seeded watch state file, and where the backend writes it inside a
+# Hermes profile. ``$HOME`` for a turn's shell is ``<profile>/home`` (the bridge's
+# ``PROFILE_HOME`` under ``TERMINAL_HOME_MODE: profile``), so the profile-relative key and the
+# agent-facing path are the same file. Unlike the CLI-credential rail this one is NOT
+# backend-owned: the maintenance clause REWRITES it after re-arming, and the bridge's
+# recency pull/push carries that rewrite both ways.
+_WATCH_STATE_AGENT_DIR = "~/google-watch"
+_WATCH_STATE_PROFILE_DIR = "home/google-watch"
 
 # Maintenance clauses prepended to the google starter prompts. The routine
 # wakes from BOTH triggers (webhook delivery and renewal schedule) with the
@@ -256,17 +259,24 @@ _GMAIL_MAINTENANCE_CLAUSE = (
 )
 
 
-def _write_watch_state(owner_id: str, public_id: str, state: dict[str, Any]) -> None:
-    """Seed the agent-side watch state file the maintenance clause reads —
-    ``owner_efs_root/google-watch/{public_id}.json``, which the container
-    mounts at ``{_WATCH_STATE_CONTAINER_DIR}/{public_id}.json``. atomic_write
-    is the materializer idiom exactly: mkdir parents, atomic replace, 0600,
-    chown to node so the routine's own runs can read AND rewrite it after
-    re-arming."""
-    atomic_write(
-        owner_efs_root(owner_id) / "google-watch" / f"{public_id}.json",
-        (json.dumps(state, indent=2) + "\n").encode(),
-    )
+async def _write_watch_state(owner_id: str, public_id: str, state: dict[str, Any]) -> None:
+    """Seed the agent-side watch state file the maintenance clause reads, at
+    ``{_WATCH_STATE_PROFILE_DIR}/{public_id}.json`` in EVERY roster profile —
+    ``{_WATCH_STATE_AGENT_DIR}/{public_id}.json`` to the agent.
+
+    Fanned across the roster because the trigger names a routine, not an agent, and the file
+    is owner-level state (one Google watch per account). Each profile gets an identical seed;
+    whichever agent's routine actually runs re-arms and rewrites ITS copy, and the bridge's
+    recency sync carries that rewrite back to S3. Siblings then hold a stale expiration they
+    never read.
+    """
+    from core.services import hermes_profiles
+    from core.services.messaging import load_agent_roster
+
+    body = (json.dumps(state, indent=2) + "\n").encode()
+    rel = f"{_WATCH_STATE_PROFILE_DIR}/{public_id}.json"
+    for agent in await load_agent_roster(owner_id):
+        await run_in_thread(hermes_profiles.write_profile_subtree, owner_id, agent["id"], {rel: body}, ())
 
 
 # `inbound.signing_mode` in the registry IS a native Paperclip signingMode
@@ -664,8 +674,25 @@ async def _meta_pages(owner_id: str) -> list[dict[str, str]]:
     return pages
 
 
-def _read_instagram_credentials(owner_id: str) -> dict:
-    return json.loads(owner_efs_root(owner_id).joinpath(*_INSTAGRAM_CREDENTIALS_REL).read_text())
+async def _read_instagram_credentials(owner_id: str) -> dict:
+    """The projected IG credential, read from the first roster profile that carries it.
+
+    Every profile holds a byte-identical copy (hermes_cli fans one ``files`` dict out to the
+    whole roster), so the first hit is the answer; the loop only covers a profile created AFTER
+    the connect, which has no copy at all. ``FileNotFoundError`` when no profile has one — the
+    caller maps it to "not connected"."""
+    from core.services import hermes_profiles
+    from core.services.messaging import load_agent_roster
+
+    for agent in await load_agent_roster(owner_id):
+        try:
+            info = await run_in_thread(
+                hermes_profiles.read_profile_file, owner_id, agent["id"], _INSTAGRAM_CREDENTIALS_REL
+            )
+        except FileNotFoundError:
+            continue
+        return json.loads(info["content"])
+    raise FileNotFoundError(_INSTAGRAM_CREDENTIALS_REL)
 
 
 async def _instagram_accounts(owner_id: str) -> list[dict[str, str]]:
@@ -674,15 +701,15 @@ async def _instagram_accounts(owner_id: str) -> list[dict[str, str]]:
     Business Login for Instagram grants exactly ONE account and issues a
     ``graph.instagram.com`` token — there is no ``/me/accounts`` there to fan
     out over, and the backend never retains the token (``refresh_owner:
-    actor``). The materializer already wrote the id, username and token to EFS,
-    so this is a file read.
+    actor``). The projection already wrote the id, username and token into every roster
+    profile, so this is one S3 read of the first profile that has the file.
 
-    Raises ``LookupError`` when Instagram isn't connected — no materialized
-    credentials file, or one missing the token/id (the router maps it to 404).
+    Raises ``LookupError`` when Instagram isn't connected — no projected credentials file in
+    any profile, or one missing the token/id (the router maps it to 404).
     """
     try:
-        creds = await asyncio.to_thread(_read_instagram_credentials, owner_id)
-    except (OSError, ValueError) as exc:
+        creds = await _read_instagram_credentials(owner_id)
+    except (FileNotFoundError, ValueError) as exc:
         raise LookupError("Instagram is not connected") from exc
     token = creds.get("access_token")
     account_id = str(creds.get("user_id") or "")
@@ -1544,7 +1571,7 @@ async def _seed_trigger_routine(
             assert resource and webhook_secret  # narrowed by the pre-checks above
             is_calendar = event.id == google_watch.CALENDAR_EVENT
             clause = (_CALENDAR_MAINTENANCE_CLAUSE if is_calendar else _DRIVE_MAINTENANCE_CLAUSE).format(
-                path=f"{_WATCH_STATE_CONTAINER_DIR}/{public_id}.json",
+                path=f"{_WATCH_STATE_AGENT_DIR}/{public_id}.json",
                 address=proxy_url,
                 account=resource,
             )
@@ -1600,7 +1627,7 @@ async def _seed_trigger_routine(
                 }
                 if channel.get("page_token"):
                     state["page_token"] = channel["page_token"]
-                await asyncio.to_thread(_write_watch_state, owner_id, public_id, state)
+                await _write_watch_state(owner_id, public_id, state)
                 # Attach: the owner's own instructions stay first and whole —
                 # the renewal step is appended as a delimited block, LAST, so
                 # a failure anywhere above never half-writes their body.
@@ -1637,7 +1664,7 @@ async def _seed_trigger_routine(
         if registration == "owner_setup":
             assert resource and topic and webhook_secret  # narrowed by the pre-checks above
             clause = _GMAIL_MAINTENANCE_CLAUSE.format(
-                path=f"{_WATCH_STATE_CONTAINER_DIR}/{public_id}.json",
+                path=f"{_WATCH_STATE_AGENT_DIR}/{public_id}.json",
                 account=resource,
             )
             if not attach:
@@ -1674,8 +1701,7 @@ async def _seed_trigger_routine(
                         body=_build_schedule_trigger_body(_GOOGLE_RENEWAL_CRON, label=_GOOGLE_RENEWAL_TRIGGER_LABEL),
                     )
                 )
-                await asyncio.to_thread(
-                    _write_watch_state,
+                await _write_watch_state(
                     owner_id,
                     public_id,
                     {

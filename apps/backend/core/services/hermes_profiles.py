@@ -782,12 +782,11 @@ def delete_profile(owner_id: str, agent_id: str) -> None:
             client.delete_objects(Bucket=bucket, Delete={"Objects": keys})
 
 
-# ---- Task 13a: config.get/config.patch/config.set on an AgentCore row --------------------------
+# ---- Task 13a: config.get/config.patch/config.set on a profile ---------------------------------
 # Spec §4.5: "Config is read once per AIAgent construction and cached on file mtime, so rewriting
 # profiles/<id>/config.yaml takes effect on the agent's next turn. No watcher, no restart." The
 # backend is the ONLY writer of a Hermes profile, so a hot patch is an S3 rewrite plus a revision
-# bump — never a round trip to a live microVM. This is what deletes config_patcher.py's EFS locks
-# for an AgentCore row (the ECS path is untouched and keeps using them).
+# bump — never a round trip to a live microVM, and no file lock at all.
 #
 # M4-R49 audit (fix round 2 continuation): every sync-boto3 writer in this module reached from a
 # coroutine, and how it stays off the event loop --

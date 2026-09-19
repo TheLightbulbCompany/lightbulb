@@ -17,9 +17,8 @@ layers, and getting either wrong silently drops concurrent writers:
    one-time transition it participates in pinned OpenClaw's ephemeral
    ``O_EXCL`` sidecar protocol.
 
-``config_patcher`` (openclaw.json, cron/jobs.json) and ``desktop_pair``
-(devices/nodes paired.json) go through these helpers so each protocol lives in
-one place. Key on the absolute ``.lock`` path so each file gets its own
+Every backend writer of a shared owner-scoped file goes through these helpers so
+each protocol lives in one place. Key on the absolute ``.lock`` path so each file gets its own
 in-process lock (different owners and different files never contend).
 """
 

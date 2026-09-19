@@ -785,7 +785,17 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
     owner_id = resolve_owner_id(auth)
     # Teardown deliberately skips the availability gate — see
     # _get_provider_for_teardown. Revocation must outlive a gate change.
-    p = _get_provider_for_teardown(provider)
+    try:
+        p = _get_provider_for_teardown(provider)
+    except HTTPException:
+        # The provider ROW is gone from the registry (Shopify's `container_login` rail was
+        # deleted with the runtime that ran the CLI inside a container). An owner who
+        # connected before that must still be able to disconnect, so drop our copies
+        # directly. Same reasoning as the availability gate above: revocation must outlive
+        # the provider definition, and a credential the UI cannot delete is the worse state.
+        await integration_secret_store.delete(owner_id, provider)
+        await integrations_repo.delete(owner_id, provider)
+        return {"status": "disconnected", "provider": provider}
     # ?account= scopes the disconnect to one Google account. It is Google-specific
     # (one provider, many accounts), so reject it on any other provider rather
     # than silently honoring it.
@@ -867,10 +877,10 @@ async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provide
     # there's nothing to refresh.
     if apply_connection.is_mcp_shaped(p):
         try:
-            await reconcile_integrations(owner_id, agentcore=True)
+            await reconcile_integrations(owner_id)
         except Exception:  # noqa: BLE001 — a disconnect must never fail because the refresh did
             logger.exception(
-                "agentcore: profile refresh after disconnect failed for owner=%s provider=%s",
+                "hermes: profile refresh after disconnect failed for owner=%s provider=%s",
                 owner_id,
                 provider,
             )

@@ -1,9 +1,15 @@
 """Materializer for Intuit's OFFICIAL QuickBooks MCP server (stdio, vendor build).
 
-Writes the token store their client reads (``src/clients/quickbooks-client.ts``)
-onto the owner's EFS and publishes the live ``mcp.servers.quickbooks`` block. The
-block carries only the PATH to that store, never a secret, so a reprovision can
-rebuild it from the registry alone — the same reason ``mcp_remote`` exists.
+Writes the token store their client reads (``src/clients/quickbooks-client.ts``). The
+``mcp_servers.quickbooks`` block is published by ``mcp_server`` /
+``hermes_profiles.refresh_integrations`` from the registry + this store's PATH — never a
+secret — so a reprovision rebuilds it from the registry alone.
+
+NOT DISPATCHED TODAY. The one materializer dispatch is ``credentials.hermes_cli.project``,
+which gates on ``OWNED_PATHS``; this rail is absent from it, so ``materializer_root()`` raises
+if anything ever calls ``write``/``remove``. That is deliberate — a silent write to a path no
+runtime reads is worse. Wiring it up means adding it to ``hermes_cli.OWNED_PATHS``/``ROOT_DIR``
+and giving the credential a delivery the microVM's shell actually reads.
 
 WHY THE CLIENT SECRET IS IN THIS FILE, when oauth_dance deliberately blanks it
 ------------------------------------------------------------------------------
@@ -40,15 +46,15 @@ from __future__ import annotations
 
 import re
 
-from core.services import config_patcher
 from core.services.credentials import platform_oauth_app_store, registry
-from core.services.credentials.materializers.base import atomic_write, owner_efs_root, run_sync
+from core.services.credentials.materializers.base import atomic_write, materializer_root, run_sync
 
 _STORE_DIR = "quickbooks"
 _STORE_FILE = ".env"
-# containers/config.py:133 — the per-user EFS access point chroots
-# /users/{owner_id} to /home/node/.openclaw inside the container, so the path the
-# backend writes and the path the server reads are the same file.
+# KNOWN GAP (carried by deletion PR-5, not introduced by it): this is the ECS container's
+# state dir. Nothing writes the store under it any more (see the module note), so the
+# published block points at a file the microVM does not have. Fixing it means projecting the
+# store into the profile and deriving this from the profile home.
 _CONTAINER_STATE_DIR = "/home/node/.openclaw"
 
 # Their client parses the store with dotenv. Rather than guess at dotenv's quoting
@@ -60,7 +66,7 @@ _SAFE_VALUE = re.compile(r"^[A-Za-z0-9._~+/=*-]+$")
 
 
 def _store_path(owner_id: str):
-    return owner_efs_root(owner_id) / _STORE_DIR / _STORE_FILE
+    return materializer_root() / _STORE_DIR / _STORE_FILE
 
 
 def container_store_path() -> str:
@@ -121,25 +127,13 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
     # 0600, owned by node uid/gid 1000 in-container — same posture as every other
     # materialized credential file.
     atomic_write(_store_path(owner_id), body, mode=0o600)
-
-    run_sync(
-        config_patcher.set_openclaw_config_path(
-            owner_id, ["mcp", "servers", stdio.key], stdio.server_block(container_store_path())
-        )
-    )
     return realm_id
 
 
 def remove(owner_id: str, provider_key: str, credential: dict) -> None:
-    """Delete the token store AND drop the live mcp.servers.<key> block.
-
-    Idempotent: a missing file or absent server block is a success, so a repeat
-    disconnect never raises."""
-    p = registry.get_provider(provider_key)
-    stdio = p.mcp_stdio
-    if stdio is None:
+    """Delete the token store. Idempotent: a missing file is a success, so a repeat
+    disconnect never raises. The ``mcp_servers`` entry is dropped by the reconcile pass,
+    which rebuilds the whole block from the connected set."""
+    if registry.get_provider(provider_key).mcp_stdio is None:
         return
     _store_path(owner_id).unlink(missing_ok=True)
-    # Remove the whole server entry rather than blanking a leaf — a command-less
-    # server is invalid config, matching the mcp_server/mcp_oauth disconnect.
-    run_sync(config_patcher.delete_openclaw_config_path(owner_id, ["mcp", "servers", stdio.key]))

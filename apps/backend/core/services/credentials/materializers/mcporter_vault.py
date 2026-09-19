@@ -9,11 +9,11 @@ store (for the LLM) and the two mcporter files here (for the workflows).
 
 mcporter splits its files across two locations: it reads the server CONFIG from
 ``~/.mcporter/mcporter.json`` (the container symlinks ``~/.mcporter`` ->
-``<stateDir>/mcporter``, so we write ``mcporter.json`` under ``owner_efs_root/mcporter``),
+``<stateDir>/mcporter``, so we write ``mcporter.json`` under ``materializer_root/mcporter``),
 but it reads/writes the OAuth VAULT from ``$XDG_DATA_HOME/mcporter/credentials.json``.
 The container sets ``XDG_DATA_HOME`` to ``<stateDir>/.local/share`` (on EFS, so creds
 survive restarts), so we write ``credentials.json`` under
-``owner_efs_root/.local/share/mcporter``. Writing the vault under ``~/.mcporter`` does
+``materializer_root/.local/share/mcporter``. Writing the vault under ``~/.mcporter`` does
 NOT work — mcporter ignores it (``mcporter list`` reports "auth required" / 401 "No token
 provided"); its own ``mcporter vault set`` writes to the XDG path.
 The vault entry carries ``{tokens, clientInfo}`` — the SAME MCP-SDK snake_case shapes
@@ -23,8 +23,8 @@ rewrites the vault (verified against mcporter 0.12 ``oauth-persistence``). Omitt
 clientInfo silently disables refresh, so both MUST be seeded.
 
 Both files are SHARED across all hosted-MCP providers (one vault, one ``mcpServers``
-map), so a write MERGES this server's entry under an ``fcntl`` lock (NFS-safe, like
-config_patcher) rather than overwriting a sibling provider's entry.
+map), so a write MERGES this server's entry under an ``fcntl`` lock rather than
+overwriting a sibling provider's entry.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from core.services.credentials.materializers.base import NODE_GID, NODE_UID, owner_efs_root
+from core.services.credentials.materializers.base import NODE_GID, NODE_UID, materializer_root
 from core.dynamodb import utc_now_iso
 
 _MCPORTER_DIR = "mcporter"
@@ -45,14 +45,14 @@ _MCPORTER_DIR = "mcporter"
 def _vault_path(owner_id: str) -> Path:
     # mcporter reads/writes its OAuth vault from $XDG_DATA_HOME/mcporter, NOT
     # ~/.mcporter. The container sets XDG_DATA_HOME=<stateDir>/.local/share (on EFS),
-    # so the vault lives under owner_efs_root/.local/share/mcporter.
-    return owner_efs_root(owner_id) / ".local" / "share" / _MCPORTER_DIR / "credentials.json"
+    # so the vault lives under materializer_root/.local/share/mcporter.
+    return materializer_root() / ".local" / "share" / _MCPORTER_DIR / "credentials.json"
 
 
 def _config_path(owner_id: str) -> Path:
     # Server config, by contrast, is read from ~/.mcporter (symlinked to
     # <stateDir>/mcporter by the container startup command).
-    return owner_efs_root(owner_id) / _MCPORTER_DIR / "mcporter.json"
+    return materializer_root() / _MCPORTER_DIR / "mcporter.json"
 
 
 def _mcporter_url(server_url: str) -> str:

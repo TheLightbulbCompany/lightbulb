@@ -6,7 +6,7 @@ binary can produce) — we cannot shell out to `gh auth login`. Instead we hand-
 gh's own `hosts.yml`, which is plain YAML gh reads verbatim at runtime. gh resolves
 its auth from `$GH_CONFIG_DIR/hosts.yml`, else `$XDG_CONFIG_HOME/gh/hosts.yml`, else
 `~/.config/gh/hosts.yml`. The container sets `XDG_CONFIG_HOME=/home/node/.openclaw/.config`,
-which is the per-user EFS access point — so writing to `owner_efs_root/.config/gh/hosts.yml`
+which is the per-user EFS access point — so writing to `materializer_root/.config/gh/hosts.yml`
 lands exactly where the container's `gh` looks (the same EFS mapping gog relies on).
 
 On-disk, `hosts.yml`'s top level is the hostname directly (no `hosts:` wrapper — gh
@@ -30,7 +30,7 @@ from __future__ import annotations
 import httpx
 import yaml
 
-from core.services.credentials.materializers.base import atomic_write, owner_efs_root
+from core.services.credentials.materializers.base import atomic_write, materializer_root
 
 # The PAT has no embedded username, so resolve the GitHub login from the same endpoint
 # the registry validates against. The `login` field is the account's username.
@@ -38,7 +38,7 @@ _GITHUB_USER_URL = "https://api.github.com/user"
 
 
 def _hosts_path(owner_id: str):
-    return owner_efs_root(owner_id) / ".config" / "gh" / "hosts.yml"
+    return materializer_root() / ".config" / "gh" / "hosts.yml"
 
 
 def _fetch_login(token: str) -> str:

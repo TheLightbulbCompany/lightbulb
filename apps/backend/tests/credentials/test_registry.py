@@ -617,17 +617,3 @@ def test_meta_providers_stay_waitlisted_off_prod():
     as trigger sources must not be the thing that un-gates them in prod."""
     for key in ("meta_ads", "instagram"):
         assert registry.get_provider(key).environments == ["local", "dev"]
-
-
-def test_shopify_is_a_container_login_row():
-    # Shopify left the paste-key rail on 2026-09-16: Shopify stopped issuing the
-    # permanent `shpat_` admin-app token the rail validated against, so the box
-    # could never connect. The row stays so a human can start the login from
-    # Connections, but the CONTAINER runs the CLI and keeps the session; the
-    # backend validates nothing, stores nothing, and delivers nothing.
-    p = registry.get_provider("shopify")
-    assert p.acquisition == "container_login"
-    assert p.actor == "skill"
-    assert p.refresh_owner == "actor"
-    assert p.wiring.backend_only
-    assert p.validation is None and p.oauth is None and p.skill is None

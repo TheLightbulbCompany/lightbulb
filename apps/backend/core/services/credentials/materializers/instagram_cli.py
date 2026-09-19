@@ -2,7 +2,7 @@
 
 ``write`` validates the freshly-exchanged token against the Graph API (also
 resolving the account's username for the identity line in Settings), then:
-  (a) seeds ``skills/instagram/SKILL.md`` onto the owner's EFS — the agent-facing
+  (a) seeds ``skills/instagram/SKILL.md`` into the profile — the agent-facing
       instructions for publish/comments/DMs via ``curl``;
   (b) writes ``skills/instagram/credentials.json`` (0600) next to it — the
       long-lived IG token + account ids the SKILL.md tells the agent to read.
@@ -13,26 +13,22 @@ resolving the account's username for the identity line in Settings), then:
       every other materialized artifact), which renews the 60-day token in place
       whenever the agent reads it. Instagram's refresh needs only the token
       itself, so renewal belongs in the container next to the one thing that
-      uses it — there is no backend sweep and no scheduler;
-  (d) enables ``skills.entries.instagram`` via the config patcher (hot-reload).
+      uses it — there is no backend sweep and no scheduler.
 
-``remove`` reverses (d) then deletes the seeded dir. Re-connects simply call
-``write`` again — every artifact is replaced atomically.
+Hermes finds a skill by SCANNING the profile, so there is no config entry to enable:
+landing the three files above is the whole install. ``remove`` deletes the seeded dir.
+Re-connects simply call ``write`` again — every artifact is replaced atomically.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import shutil
-from collections.abc import Coroutine
 from pathlib import Path
-from typing import Any
 
 import httpx
 
-from core.services import config_patcher
-from core.services.credentials.materializers.base import atomic_write, is_projecting, owner_efs_root
+from core.services.credentials.materializers.base import atomic_write, materializer_root
 
 _SKILL_KEY = "instagram"
 _SKILL_DIR = Path(__file__).resolve().parents[1] / "skills" / _SKILL_KEY
@@ -41,18 +37,8 @@ _TOKEN_SCRIPT = _SKILL_DIR / "token.sh"
 _GRAPH_ME_URL = "https://graph.instagram.com/v23.0/me"
 
 
-def _run_sync(coro: Coroutine[Any, Any, Any]) -> Any:
-    # Mirrors skill_cli: materializers run in a worker thread via run_in_thread,
-    # where a bare asyncio.run drives the config-patcher coroutine.
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    raise RuntimeError("instagram_cli materializer must run off the request loop (use run_in_thread)")
-
-
 def _skill_dir(owner_id: str) -> Path:
-    return owner_efs_root(owner_id) / "skills" / _SKILL_KEY
+    return materializer_root() / "skills" / _SKILL_KEY
 
 
 def _fetch_identity(token: str) -> dict:
@@ -89,18 +75,8 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
         "token_expiry": credential.get("token_expiry", ""),
     }
     atomic_write(_skill_dir(owner_id) / "credentials.json", json.dumps(creds, indent=2).encode())
-
-    # (d) is an openclaw.json switch, and an AgentCore owner has no openclaw.json: Hermes finds
-    # a skill by scanning the profile the three files above have just landed in. Patching EFS
-    # from here would write into a dead (or missing) config for that owner and can raise.
-    if not is_projecting():
-        _run_sync(
-            config_patcher.set_openclaw_config_path(owner_id, ["skills", "entries", _SKILL_KEY], {"enabled": True})
-        )
     return username
 
 
 def remove(owner_id: str, provider_key: str, credential: dict) -> None:
-    if not is_projecting():  # see write(): no openclaw.json exists on the Hermes side
-        _run_sync(config_patcher.delete_openclaw_config_path(owner_id, ["skills", "entries", _SKILL_KEY]))
     shutil.rmtree(_skill_dir(owner_id), ignore_errors=True)

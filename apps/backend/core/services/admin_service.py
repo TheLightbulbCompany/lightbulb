@@ -5,10 +5,8 @@ Read-side aggregation for /api/v1/admin/* endpoints. Covers:
 - get_overview (Clerk + Stripe DDB row + container DDB row + usage)
 - get_provisioning (readiness contract + containers row + Paperclip company +
   provision-gate + SFN execution, all allowlist-narrowed)
-- list_user_agents (gateway RPC, with timeout + stopped detection; AgentCore owners
-  are answered from the Paperclip roster instead -- see runtime_transport.host_for)
-- get_agent_detail (4-way gateway parallel + S3 redaction; AgentCore owners skip the
-  gateway entirely -- see _get_agentcore_agent_detail)
+- list_user_agents (the Paperclip roster + Hermes profile metadata, no runtime invoke)
+- get_agent_detail (the roster + the agent's S3 profile -- see _get_agentcore_agent_detail)
 - get_logs (delegates to cloudwatch_logs)
 - get_cloudwatch_url (delegates to cloudwatch_url)
 - get_posthog_timeline (delegates to posthog_admin)
@@ -23,24 +21,19 @@ _with_timeout. Slow Stripe doesn't starve other panels.
 """
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from core import openclaw_version
-from core.containers import get_ecs_manager
 from core.dynamodb import run_in_thread
 from core.repositories import admin_actions_repo, billing_repo, container_repo, usage_repo
 from core.services import (
     clerk_admin,
     cloudwatch_logs,
     cloudwatch_url,
-    container_rpc,
     hermes_profiles,
     posthog_admin,
     runtime_rpc,
-    runtime_transport,
 )
 from core.services.admin_redact import redact_openclaw_config
 from core.services.provision_dispatch import describe_dispatch_execution
@@ -51,7 +44,6 @@ logger = logging.getLogger(__name__)
 
 
 _PARALLEL_TIMEOUT_S = 2.0
-_GATEWAY_RPC_TIMEOUT_S = 3.0
 
 
 async def resolve_admin_owner_id(user_id: str) -> tuple[str, dict | None]:
@@ -480,56 +472,16 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
             "org": org_context,
         }
 
-    if runtime_transport.host_for(container_row) == "agentcore":
-        # Parity audit row 80: an AgentCore invoke wakes a parked microVM and floors the RPC
-        # budget at 90s (container_rpc.call). Answer from the Paperclip roster + Hermes profile
-        # metadata instead -- the same source `runtime_rpc.execute_sync`'s own agents.list
-        # branch already uses for the live app -- with zero runtime invokes.
-        listing = await runtime_rpc.agentcore_agents_list(owner_id)
-        return {
-            "agents": listing.get("agents", []),
-            "cursor": None,
-            "container_status": "running",
-            "org": org_context,
-        }
-
-    ecs = get_ecs_manager()
-    container, ip = await ecs.resolve_running_container(owner_id)
-    if not container or not ip:
-        return {"agents": [], "cursor": None, "container_status": "unreachable", "org": org_context}
-
-    # OpenClaw's agents.list schema rejects unknown keys (INVALID_REQUEST on
-    # cursor/limit). Match the main-app call site (useAgents.ts →
-    # useGatewayRpc("agents.list")) which passes no params and receives the
-    # full list. cursor/limit remain on the service signature / router query
-    # for forward compatibility but aren't forwarded upstream.
+    # Parity audit row 80: an invoke wakes a parked microVM and floors the RPC budget at 90s
+    # (container_rpc.call). Answer from the Paperclip roster + Hermes profile metadata instead
+    # -- the same source `runtime_rpc.execute_sync`'s own agents.list branch already uses for
+    # the live app -- with zero runtime invokes. `cursor`/`limit` stay on the signature for
+    # forward compatibility; the listing is not paginated.
     _ = (cursor, limit)
-    try:
-        result = await asyncio.wait_for(
-            container_rpc.call(owner_id, "agents.list", {}),
-            timeout=_GATEWAY_RPC_TIMEOUT_S,  # read at call time so tests can monkeypatch
-        )
-    except asyncio.TimeoutError:
-        return {
-            "agents": [],
-            "cursor": None,
-            "container_status": "timeout",
-            "error": "gateway_rpc_timeout",
-            "org": org_context,
-        }
-    except Exception as e:  # noqa: BLE001
-        logger.warning("admin_service.list_user_agents gateway error: %s", e)
-        return {
-            "agents": [],
-            "cursor": None,
-            "container_status": "error",
-            "error": str(e),
-            "org": org_context,
-        }
-
+    listing = await runtime_rpc.agentcore_agents_list(owner_id)
     return {
-        "agents": result.get("agents", []) if isinstance(result, dict) else [],
-        "cursor": result.get("cursor") if isinstance(result, dict) else None,
+        "agents": listing.get("agents", []),
+        "cursor": None,
         "container_status": "running",
         "org": org_context,
     }
@@ -538,15 +490,12 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
 async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     """Per-agent detail: identity + sessions + skills + redacted config.
 
-    Four parallel gateway RPCs with a single shared timeout. CEO S3
-    redaction applied to the openclaw.json config slice before return.
+    Answered by ``_get_agentcore_agent_detail`` from the roster + the agent's S3 profile
+    (parity audit row 80) -- see its docstring for what that trades away against the four
+    gateway RPCs it replaced.
 
-    Resolves org context first so org-keyed containers are found. ``org`` in
-    the response is null for personal-mode users and {id, slug, name, role}
-    otherwise.
-
-    An AgentCore owner is answered by ``_get_agentcore_agent_detail`` instead of the four
-    gateway RPCs below (parity audit row 80) -- see its docstring for what that trades away.
+    Resolves org context first so org-keyed workspaces are found. ``org`` in the response is
+    null for personal-mode users and {id, slug, name, role} otherwise.
     """
     owner_id, org_context = await resolve_admin_owner_id(user_id)
 
@@ -558,114 +507,7 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
             "org": org_context,
         }
 
-    if runtime_transport.host_for(container_row) == "agentcore":
-        return await _get_agentcore_agent_detail(owner_id, agent_id, org_context)
-
-    ecs = get_ecs_manager()
-    container, ip = await ecs.resolve_running_container(owner_id)
-    if not container or not ip:
-        return {"error": "container_unreachable", "org": org_context}
-
-    async def _rpc(method: str, params: dict) -> Any:
-        return await container_rpc.call(owner_id, method, params)
-
-    # RPC method names + param shapes are anchored to the main-app call sites
-    # so admin and main-app always speak the same wire contract to OpenClaw.
-    # Two gotchas that bit us in prod (OpenClaw returned
-    # `{"code":"INVALID_REQUEST","message":"unknown method: agents.get"}`):
-    #   1. Method names: the correct RPCs are `agent.identity.get` (NOT
-    #      `agents.get`) and `skills.status` (NOT `skills.list`). See
-    #      AgentOverviewTab.tsx and SkillsTab.tsx.
-    #   2. Wire format: OpenClaw's schemas use camelCase (`agentId`), not
-    #      snake_case. Main app always sends camelCase — we must too.
-    #   3. `sessions.list` IS filterable by agent: `agentId` is a first-class
-    #      param and narrows the container's store load, not just the rows it
-    #      returns. (The "agentId requires sessionKeys" rule belongs to
-    #      `sessions.search`.) An earlier comment here claimed the opposite and
-    #      had this call pull every agent's store, forcing a transcript
-    #      projection per foreign row on a 1-vCPU box. `config.get` takes no
-    #      params (AgentOverviewTab.tsx).
-    try:
-        identity, sessions_raw, skills, config = await asyncio.wait_for(
-            asyncio.gather(
-                _rpc("agent.identity.get", {"agentId": agent_id}),
-                _rpc(
-                    "sessions.list",
-                    {
-                        "agentId": agent_id,
-                        "includeGlobal": True,
-                        "includeUnknown": True,
-                        "includeDerivedTitles": True,
-                        "includeLastMessage": True,
-                    },
-                ),
-                _rpc("skills.status", {"agentId": agent_id}),
-                _rpc("config.get", {}),
-            ),
-            timeout=_GATEWAY_RPC_TIMEOUT_S,  # read at call time so tests can monkeypatch
-        )
-    except asyncio.TimeoutError:
-        return {"error": "gateway_rpc_timeout", "org": org_context}
-    except Exception as e:  # noqa: BLE001
-        logger.warning("admin_service.get_agent_detail gateway error: %s", e)
-        return {"error": str(e), "org": org_context}
-
-    # The `agentId` param above already narrowed rows to this agent (plus the
-    # `global` row, which `includeGlobal` asks for and which carries no
-    # agentId). The client-side pass below is kept as the belt-and-braces
-    # filter that drops `global`/`unknown`, not as a substitute for a
-    # server-side filter that does not exist.
-    #
-    # Two shape normalizations, both mirroring main-app SessionsPanel:
-    # - envelope: response is either {sessions: [...]} or a raw array
-    #   (Session[] | {sessions: Session[]}) depending on OpenClaw version.
-    # - agent key: sessions may carry "agentId" (canonical) or "agent_id"
-    #   (older payload shapes) — accept either.
-    if isinstance(sessions_raw, dict):
-        all_sessions = sessions_raw.get("sessions", [])
-    elif isinstance(sessions_raw, list):
-        all_sessions = sessions_raw
-    else:
-        all_sessions = []
-    agent_sessions = [
-        s
-        for s in all_sessions
-        if isinstance(s, dict) and (s.get("agentId") == agent_id or s.get("agent_id") == agent_id)
-    ]
-
-    # OpenClaw's skills.status response is either {skills: [...]} or a raw
-    # array depending on version (the main-app SkillsPanel handles both
-    # shapes). Normalize so the admin detail page doesn't silently show "no
-    # skills" on array-returning environments.
-    if isinstance(skills, dict):
-        skills_list = skills.get("skills", [])
-    elif isinstance(skills, list):
-        skills_list = skills
-    else:
-        skills_list = []
-
-    # config.get returns either a plain config dict OR the envelope
-    # {raw: "<openclaw.json as string>", hash} used by the raw-config
-    # editor surfaces. redact_openclaw_config only walks
-    # dict/list nodes and passes strings through, so a raw-envelope
-    # response would leak BYOK secrets verbatim in config_redacted.raw.
-    # Parse+redact the envelope before returning.
-    if isinstance(config, dict) and isinstance(config.get("raw"), str):
-        try:
-            config_to_redact = json.loads(config["raw"])
-        except json.JSONDecodeError:
-            # Malformed raw — drop rather than leak the unparseable blob.
-            config_to_redact = {"error": "malformed_config_raw"}
-    else:
-        config_to_redact = config
-
-    return {
-        "agent": identity,
-        "sessions": agent_sessions,
-        "skills": skills_list,
-        "config_redacted": redact_openclaw_config(config_to_redact),
-        "org": org_context,
-    }
+    return await _get_agentcore_agent_detail(owner_id, agent_id, org_context)
 
 
 async def _get_agentcore_agent_detail(owner_id: str, agent_id: str, org_context: dict | None) -> dict:
@@ -731,109 +573,3 @@ async def get_actions_audit(
 
 _OPENCLAW_EXTENDED_REPO = "lightbulb/openclaw-extended"
 _OPENCLAW_EXTENDED_REGISTRY = "877352799272"
-
-# Current dev/prod extended-image tags, surfaced to the admin image-update
-# dropdown so each row can render "(current dev)" / "(current prod)" badges.
-# Resolved from the single source of truth (openclaw-version.json) via
-# core.openclaw_version — the CDK-injected env vars in deployed containers, the
-# repo JSON in local dev / CI. No hand-sync; bump openclaw-version.json only.
-CURRENT_DEV_TAG = openclaw_version.dev_tag()
-CURRENT_PROD_TAG = openclaw_version.prod_tag()
-
-
-async def list_extended_image_tags(*, limit: int = 25) -> list[dict[str, Any]]:
-    """Return recently-pushed tags from the openclaw-extended ECR repo.
-
-    Sorted newest-first by imagePushedAt. Each row carries the full ECR URI
-    plus the bare tag, so the frontend can drop a fully-qualified value into
-    the queue-image-update form without string-concat.
-
-    Failures degrade to an empty list so the admin UI falls back to free
-    text rather than blocking on an ECR outage.
-    """
-    import boto3
-    from botocore.exceptions import BotoCoreError, ClientError
-
-    from core.config import settings
-
-    client = boto3.client("ecr", region_name=settings.AWS_REGION)
-
-    # ECR's describe_images doesn't guarantee ordering across pages, so we
-    # must paginate the whole tagged set before sorting — otherwise the
-    # actually-newest tag can land on page 2 and we'd silently default the
-    # dropdown to an older image. Bounded at MAX_PAGES so a
-    # misconfigured filter can't loop forever; the openclaw-extended repo is
-    # small enough that we expect <= 2 pages in practice.
-    MAX_PAGES = 10
-    images: list[dict[str, Any]] = []
-    next_token: str | None = None
-    for _ in range(MAX_PAGES):
-        kwargs: dict[str, Any] = {
-            "repositoryName": _OPENCLAW_EXTENDED_REPO,
-            "maxResults": 100,
-            "filter": {"tagStatus": "TAGGED"},
-        }
-        if next_token:
-            kwargs["nextToken"] = next_token
-        try:
-            resp = await asyncio.to_thread(client.describe_images, **kwargs)
-        except (BotoCoreError, ClientError) as exc:
-            logger.warning("list_extended_image_tags: ECR call failed: %s", exc)
-            return []
-        images.extend(resp.get("imageDetails", []) or [])
-        next_token = resp.get("nextToken")
-        if not next_token:
-            break
-
-    images.sort(key=lambda d: d.get("imagePushedAt") or 0, reverse=True)
-
-    # Build the FULL newest-first row set before capping. The pin-or-newer
-    # truncation below needs to find the pinned tag, and the pin can sit
-    # outside the newest `limit` images once several builds land after a
-    # promotion — capping first would hide it and defeat the filter.
-    rows: list[dict[str, Any]] = []
-    seen_tags: set[str] = set()
-    for img in images:
-        digest = img.get("imageDigest")
-        pushed = img.get("imagePushedAt")
-        pushed_iso = pushed.isoformat() if hasattr(pushed, "isoformat") else None
-        for tag in img.get("imageTags", []) or []:
-            if tag in seen_tags:
-                continue
-            seen_tags.add(tag)
-            rows.append(
-                {
-                    "image_uri": f"{_OPENCLAW_EXTENDED_REGISTRY}.dkr.ecr.{settings.AWS_REGION}.amazonaws.com/{_OPENCLAW_EXTENDED_REPO}:{tag}",
-                    "tag": tag,
-                    "digest": digest,
-                    "pushed_at": pushed_iso,
-                }
-            )
-
-    # PIN OR NEWER. Rolling one owner BACKWARDS is not a per-owner action --
-    # a rollback is a pin flip in openclaw-version.json, applied fleet-wide --
-    # so older tags are only noise here, and noise on a force-roll control is
-    # how an admin picks the wrong image. Rows are newest-first, so everything
-    # up to and including the pinned prod tag is "pin or newer".
-    #
-    # If the pin is NOT in the listing (expired, deleted, or an ECR page
-    # bound), keep the full list rather than truncating to nothing: losing the
-    # lever entirely is worse than showing extra tags.
-    pin_index = next((i for i, r in enumerate(rows) if r["tag"] == CURRENT_PROD_TAG), None)
-    if pin_index is not None:
-        rows = rows[: pin_index + 1]
-    else:
-        logger.warning(
-            "list_extended_image_tags: pinned prod tag %s not found in ECR listing; returning unfiltered tags",
-            CURRENT_PROD_TAG,
-        )
-
-    # The pinned row must SURVIVE the cap. It is the frontend's default
-    # selection, and if `limit` is smaller than the number of builds pushed
-    # since the promotion the pin would be capped out -- the picker would then
-    # fall back to defaulting to the newest image, reintroducing exactly the
-    # accidental-version-change this filter exists to prevent.
-    capped = min(max(limit, 1), 100)
-    if pin_index is not None and pin_index >= capped:
-        return rows[: capped - 1] + [rows[pin_index]]
-    return rows[:capped]

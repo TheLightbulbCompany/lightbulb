@@ -1,6 +1,11 @@
-"""Materializers write a CLI's own credential file onto the owner's EFS workspace
-(0600, owned by uid/gid 1000, atomic) so a baked CLI reads it at runtime. This
-generalizes core/containers/workspace.py:700-786 (the ChatGPT auth-profile rail).
+"""Materializers write a CLI's own credential file (0600, owned by uid/gid 1000,
+atomic) so the CLI reads it at runtime.
+
+Nothing writes to a live filesystem the runtime shares any more: the ONE dispatch is
+``credentials.hermes_cli.project``, which points ``materializer_root`` at a throwaway
+directory, runs the materializer verbatim, and uploads whatever landed into every
+Hermes profile in S3. A materializer reached outside that context has nowhere to write
+and says so — ``materializer_root`` raises rather than inventing a path.
 
 The shape every materializer module implements is
 ``write(owner_id, provider_key, credential)`` plus a mirroring ``remove(...)``,
@@ -21,22 +26,18 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-from core.config import settings
-
 NODE_UID = 1000
 NODE_GID = 1000
 
-#: An AgentCore owner has no EFS at all. ``credentials.hermes_cli`` runs these same
-#: materializers verbatim against a throwaway directory and then uploads the tree into every
-#: Hermes profile in S3, so the one thing that has to change is where ``owner_efs_root``
-#: points. A ContextVar rather than a settings/env swap because the backend serves many owners
-#: concurrently: the override must be scoped to the one call that set it.
+#: Where the materializers in this context write. A ContextVar rather than a settings/env swap
+#: because the backend serves many owners concurrently: the root must be scoped to the one call
+#: that set it.
 _PROJECTION_ROOT: ContextVar[Path | None] = ContextVar("materializer_projection_root", default=None)
 
 
 @contextlib.contextmanager
 def materialize_into(root: Path) -> Iterator[None]:
-    """Point every materializer in this context at ``root`` instead of the owner's EFS home."""
+    """Point every materializer in this context at ``root``."""
     token = _PROJECTION_ROOT.set(root)
     try:
         yield
@@ -44,18 +45,17 @@ def materialize_into(root: Path) -> Iterator[None]:
         _PROJECTION_ROOT.reset(token)
 
 
-def is_projecting() -> bool:
-    """True while ``materialize_into`` is active — i.e. the files are bound for a Hermes
-    profile, not EFS. The two materializers that do something other than write files under
-    the owner's home (aws_cli's in-container helper path, instagram_cli's openclaw.json
-    skills switch) branch on it; nothing else needs to care."""
-    return _PROJECTION_ROOT.get() is not None
+def materializer_root() -> Path:
+    """The root the current materializer writes into — the scratch tree ``materialize_into``
+    set, which stands for exactly one owner's home.
 
-
-def owner_efs_root(owner_id: str) -> Path:
+    Raises outside a projection: there is no fallback path. A materializer dispatched without
+    one would write a credential nothing ever reads, which is worse than a 500 on the connect.
+    """
     root = _PROJECTION_ROOT.get()
-    # The scratch root already stands for exactly this owner's home, so owner_id is spent.
-    return root if root is not None else Path(settings.EFS_MOUNT_PATH) / owner_id
+    if root is None:
+        raise RuntimeError("materializers run only inside materialize_into() — see credentials/hermes_cli.py")
+    return root
 
 
 def atomic_write(path: Path, data: bytes, *, mode: int = 0o600) -> None:

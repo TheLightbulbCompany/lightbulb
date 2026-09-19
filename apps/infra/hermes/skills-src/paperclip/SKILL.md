@@ -127,7 +127,7 @@ directory (`/app/skills/paperclip/`).
 | `references/attention-decisions-search.md` | Company search / literal extraction, governed decisions and `ruleKey` policy, decision queues and triage. Access matrix, effect schemas, staleness rules. |
 | `references/cases.md` | Creating, upserting, documenting, attaching to, or linking cases through the agent-facing cases API (experimental; company-scoped work records for durable outputs). **Disabled on this instance** (`enableCases` is false in both envs) — calls 403; check before you burn a run on it. |
 | `references/artifacts.md` | Technical upload instructions for attachments and work products. |
-| `references/workflows.md` | Niche playbooks: new project + workspace (CEO/Manager), OpenClaw invite prompt (CEO), setting an agent's `instructions-path`, CEO-safe company import/export, the app-level self-test. |
+| `references/workflows.md` | Niche playbooks: new project + workspace (CEO/Manager), setting an agent's `instructions-path`, CEO-safe company import/export, the app-level self-test. |
 | `references/api-reference.md` | The full reference: API tables, JSON response schemas, worked IC and Manager heartbeats, governance/approvals, cross-team delegation, error codes, the issue lifecycle diagram, and the common-mistakes table. |
 
 ## Critical Rules

@@ -93,11 +93,6 @@ def test_register_happy_path(
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": "new-agent-uuid"})
     mock_get_catalog.return_value = catalog
-    count_agents = AsyncMock(return_value=11)
-    monkeypatch.setattr(
-        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
-        count_agents,
-    )
     monkeypatch.setattr(
         "core.repositories.billing_repo.get_by_owner_id",
         AsyncMock(return_value={"plan": "standard"}),
@@ -123,7 +118,6 @@ def test_register_happy_path(
     assert mock_create_pc.await_args.kwargs["reports_to"] == "friday-uuid"
     assert mock_create_pc.await_args.kwargs["idempotency_key"].startswith("lightbulb-agent-create:v1:agent-builder:")
     assert "idempotency_replay_only" not in mock_create_pc.await_args.kwargs
-    count_agents.assert_not_awaited()
 
 
 @patch("routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock)

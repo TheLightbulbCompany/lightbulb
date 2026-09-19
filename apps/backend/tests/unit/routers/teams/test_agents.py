@@ -160,11 +160,6 @@ def test_create_agent_on_agentcore_owner_gets_the_native_hermes_adapter(client, 
     # can't). Its own behaviour is pinned in test_teams_agents_pairing.py; stub it out here.
     write_profile = AsyncMock()
     monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", write_profile)
-    count_agents = AsyncMock(return_value=11)
-    monkeypatch.setattr(
-        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
-        count_agents,
-    )
     monkeypatch.setattr(
         "core.repositories.billing_repo.get_by_owner_id",
         AsyncMock(return_value={"plan": "standard"}),

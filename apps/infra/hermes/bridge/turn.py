@@ -960,8 +960,7 @@ def _history(body: dict, agent_id: str, image_paths: dict[str, list[str]] | None
 
 
 def lightbulb_session_key(agent_id: str, room_id: str) -> str:
-    """Bridge-side port of the backend's own `openclaw_work.lightbulb_session_key` — kept
-    byte-identical so `session_keys.parse_lightbulb_session_key` still parses it."""
+    """Canonical room session key, parsed by backend `session_keys.parse_lightbulb_session_key`."""
     return f"agent:{agent_id}:lightbulb:channel:{room_id}"
 
 

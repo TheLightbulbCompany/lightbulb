@@ -567,11 +567,3 @@ async def get_actions_audit(
         return await admin_actions_repo.query_by_admin(admin_user_id, limit=limit, cursor=cursor)
     # No filter: the platform-wide audit view lists recent rows newest-first.
     return await admin_actions_repo.scan_recent(limit=limit, cursor=cursor)
-
-
-# ---------------------------------------------------------------------------
-# ECR image listing (powers the admin queue-image-update dropdown)
-# ---------------------------------------------------------------------------
-
-_OPENCLAW_EXTENDED_REPO = "lightbulb/openclaw-extended"
-_OPENCLAW_EXTENDED_REGISTRY = "877352799272"

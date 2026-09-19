@@ -136,12 +136,6 @@ async def scan_all() -> list[dict]:
         kwargs["ExclusiveStartKey"] = last
 
 
-async def delete_by_address(address: str) -> None:
-    """Delete one address row by primary key. Used by the orphan sweep, which
-    has the row in hand and must not re-derive it from a dead owner id."""
-    await run_in_thread(_get_table().delete_item, Key={"address": normalize(address)})
-
-
 _UNSET = object()
 
 

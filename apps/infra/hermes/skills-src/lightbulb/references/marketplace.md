@@ -11,7 +11,7 @@
   on...") and proven multi-step workflows you complete may automatically
   become pending skill proposals. Proposals never go live on their own —
   the owner reviews them in the **Skill Proposals** tab. If the owner asks
-  why a proposal appeared, that is why. Free-trial containers do not
+  why a proposal appeared, that is why. Free-trial workspaces do not
   auto-capture.
 
 ## The Marketplace (hiring and publishing agents)
@@ -34,7 +34,7 @@ When you are working a Paperclip task with nobody watching, pass your
 owner's Teams inbox instead of vanishing into a chat nobody is reading.
 
 **Hiring (buyer side):** the owner browses flickmeon.ai/marketplace and deploys
-an agent into this container. A deployed hire gets its own workspace and a
+an agent into this company. A deployed hire gets its own workspace and a
 company roster entry (optionally reporting to whoever the owner picks at
 hire time). Some listings are paid (one-time purchase via Stripe). You
 cannot deploy a listing yourself — recommend one and point the owner at the
@@ -60,7 +60,7 @@ mailbox, or Page is theirs, so nothing about a live trigger can port. If a
 freshly hired agent looks idle, that unfinished list is usually why; point
 the owner at Teams → Automations rather than rebuilding the loop by hand.
 
-**Publishing (seller side):** the OWNER publishes agents from this container
+**Publishing (seller side):** the OWNER publishes agents from this workspace
 to the marketplace via the seller wizard, which snapshots the agent, scans
 it for secrets/PII, and submits it for Lightbulb review (draft → review →
 published). Key rules:

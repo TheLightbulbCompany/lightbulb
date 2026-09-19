@@ -44,7 +44,7 @@ list reflects the live session catalog; if an MCP server failed to start
 the connection is healthy. So a missing tool means "not connected OR the
 server didn't come up this session" — before telling the owner it's
 disconnected, have them check Connections; if it shows Connected
-there, the fix is a config regen or container restart, not reconnecting.
+there, the fix is a profile refresh or a new runtime session, not reconnecting.
 
 **How to talk about an integration.** Check your own toolset/shell first (per
 rail, above): if it's there, use it. Otherwise read the two flags each
@@ -93,8 +93,7 @@ here's the draft for you to publish yourself"). Never imply you did something
 the platform can't do.
 
 - **What you observe:** once the owner connects an MCP-rail service, its
-  tools appear in your toolset after the container picks up the config change
-  (no restart needed); a CLI-rail service becomes usable in your shell with
+  tools appear in your toolset after your agent picks up the refreshed profile; a CLI-rail service becomes usable in your shell with
   no toolset change at all. If an expected MCP tool is missing, the service
   is unconnected, disconnected, OR its server failed to start this session —
   distinguish via Connections before declaring it disconnected.
@@ -122,6 +121,6 @@ the platform can't do.
   workspace rail at flickmeon.ai/chat), describing the row per its catalog
   flags above — never assert it's one click without checking.
 - Some capabilities ship as **click-to-connect skills** that sit disabled in
-  the container config until the owner connects the backing service — same
+  the agent profile until the owner connects the backing service — same
   redirect applies.
 

@@ -1,7 +1,6 @@
 """Tests for pending-updates DynamoDB repository."""
 
 import os
-from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import boto3
@@ -42,13 +41,6 @@ def dynamodb_table():
             BillingMode="PAY_PER_REQUEST",
         )
         table.meta.client.get_waiter("table_exists").wait(TableName="test-pending-updates")
-        containers = client.create_table(
-            TableName="test-containers",
-            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        containers.meta.client.get_waiter("table_exists").wait(TableName="test-containers")
 
         with (
             patch("core.dynamodb._table_prefix", "test-"),
@@ -109,229 +101,6 @@ async def test_create_scheduled_is_atomic(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_get_pending(dynamodb_table):
-    from core.repositories import update_repo
-
-    await update_repo.create("user_1", "config_patch", "Update A", {"a": 1})
-    await update_repo.create("user_1", "config_patch", "Update B", {"b": 2})
-    await update_repo.create("user_2", "config_patch", "Update C", {"c": 3})
-
-    results = await update_repo.get_pending("user_1")
-    assert len(results) == 2
-    descriptions = {r["description"] for r in results}
-    assert descriptions == {"Update A", "Update B"}
-
-
-@pytest.mark.asyncio
-async def test_get_pending_filters_applied(dynamodb_table):
-    from core.repositories import update_repo
-
-    item = await update_repo.create("user_1", "config_patch", "Update A", {"a": 1})
-    # Mark as applied -- should be filtered out
-    await update_repo.mark_applied("user_1", item["update_id"])
-
-    results = await update_repo.get_pending("user_1")
-    assert len(results) == 0
-
-
-@pytest.mark.asyncio
-async def test_get_pending_empty(dynamodb_table):
-    from core.repositories import update_repo
-
-    results = await update_repo.get_pending("nonexistent_user")
-    assert results == []
-
-
-@pytest.mark.asyncio
-async def test_get_in_flight_includes_applying_excludes_terminal(dynamodb_table):
-    """get_in_flight is a superset of get_pending: pending + scheduled + the
-    transient 'applying' state. Terminal rows (applied/failed) and other owners
-    are excluded. Used by the admin force-apply guard for per-owner exclusion."""
-    from core.repositories import update_repo
-
-    await update_repo.create("user_1", "image_update", "P", {"a": 1})  # pending
-    applying = await update_repo.create("user_1", "image_update", "AP", {"b": 2})
-    await update_repo.claim_apply("user_1", applying["update_id"], "claim-ap")
-    applied = await update_repo.create("user_1", "image_update", "AD", {"c": 3})
-    await update_repo.mark_applied("user_1", applied["update_id"])
-    await update_repo.create("user_2", "image_update", "other-owner", {"d": 4})
-
-    results = await update_repo.get_in_flight("user_1")
-    assert {r["description"] for r in results} == {"P", "AP"}
-
-
-@pytest.mark.asyncio
-async def test_get_in_flight_empty(dynamodb_table):
-    from core.repositories import update_repo
-
-    assert await update_repo.get_in_flight("nonexistent_user") == []
-
-
-@pytest.mark.asyncio
-async def test_get_in_flight_paginates_across_pages(monkeypatch):
-    """Follows LastEvaluatedKey so a newer in-flight row on a later page (pushed
-    there by historical terminal rows the FilterExpression drops post-read) isn't
-    missed by the guard. First page is strongly consistent + carries no
-    ExclusiveStartKey; the second reuses page 1's key."""
-    from unittest.mock import MagicMock
-
-    from core.repositories import update_repo
-
-    pages = [
-        {
-            "Items": [{"update_id": "a", "status": "pending"}],
-            "LastEvaluatedKey": {"owner_id": "u", "update_id": "a"},
-        },
-        {"Items": [{"update_id": "b", "status": "applying"}]},
-    ]
-    seen: list[dict] = []
-
-    def fake_query(**kwargs):
-        seen.append(kwargs)
-        return pages[len(seen) - 1]
-
-    fake_table = MagicMock()
-    fake_table.query = fake_query
-    monkeypatch.setattr(update_repo, "_get_table", lambda: fake_table)
-
-    results = await update_repo.get_in_flight("u")
-
-    assert len(seen) == 2
-    assert seen[0].get("ConsistentRead") is True
-    assert "ExclusiveStartKey" not in seen[0]
-    assert seen[1].get("ExclusiveStartKey") == {"owner_id": "u", "update_id": "a"}
-    assert {r["update_id"] for r in results} == {"a", "b"}
-
-
-@pytest.mark.asyncio
-async def test_set_scheduled(dynamodb_table):
-    from core.repositories import update_repo
-
-    item = await update_repo.create("user_1", "config_patch", "Test", {"x": 1})
-    scheduled_at = "2026-04-01T03:00:00+00:00"
-    ok = await update_repo.set_scheduled("user_1", item["update_id"], scheduled_at)
-    assert ok is True
-
-    # Verify it shows up in pending (scheduled is included)
-    results = await update_repo.get_pending("user_1")
-    assert len(results) == 1
-    assert results[0]["status"] == "scheduled"
-    assert results[0]["scheduled_at"] == scheduled_at
-
-
-@pytest.mark.asyncio
-async def test_set_scheduled_fails_if_not_pending(dynamodb_table):
-    from core.repositories import update_repo
-
-    item = await update_repo.create("user_1", "config_patch", "Test", {"x": 1})
-    # Apply it first
-    await update_repo.mark_applied("user_1", item["update_id"])
-    ok = await update_repo.set_scheduled("user_1", item["update_id"], "2026-04-01T03:00:00+00:00")
-    assert ok is False
-
-
-@pytest.mark.asyncio
-async def test_set_snoozed(dynamodb_table):
-    from core.repositories import update_repo
-
-    item = await update_repo.create("user_1", "config_patch", "Test", {"x": 1})
-    ok = await update_repo.set_snoozed("user_1", item["update_id"])
-    assert ok is True
-
-
-@pytest.mark.asyncio
-async def test_get_due_scheduled(dynamodb_table):
-    from core.repositories import update_repo
-
-    # Create and schedule an update in the past
-    item = await update_repo.create("user_1", "config_patch", "Due update", {"x": 1})
-    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-    await update_repo.set_scheduled("user_1", item["update_id"], past)
-
-    # Create and schedule an update in the future
-    item2 = await update_repo.create("user_2", "config_patch", "Future update", {"y": 2})
-    future = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
-    await update_repo.set_scheduled("user_2", item2["update_id"], future)
-
-    due = await update_repo.get_due_scheduled()
-    assert len(due) == 1
-    assert due[0]["description"] == "Due update"
-
-
-@pytest.mark.asyncio
-async def test_get_due_scheduled_empty(dynamodb_table):
-    from core.repositories import update_repo
-
-    due = await update_repo.get_due_scheduled()
-    assert due == []
-
-
-@pytest.mark.asyncio
-async def test_apply_claim_takeover_fences_target_and_terminal_writes(dynamodb_table):
-    from core.repositories import update_repo
-
-    item = await update_repo.create(
-        "user_1",
-        "task_definition_refresh",
-        "Refresh",
-        {"refresh_from_base": True},
-        scheduled_at="2026-08-15T00:00:00+00:00",
-    )
-    first = await update_repo.claim_apply("user_1", item["update_id"], "claim-old")
-    assert first is not None
-    assert first["status"] == "applying"
-
-    # Fresh claims are exclusive.
-    assert await update_repo.claim_apply("user_1", item["update_id"], "claim-rival") is None
-
-    dynamodb_table.update_item(
-        Key={"owner_id": "user_1", "update_id": item["update_id"]},
-        UpdateExpression="SET apply_claimed_at = :stale",
-        ExpressionAttributeValues={":stale": 1},
-    )
-    stale = await update_repo.list_stale_applying("task_definition_refresh", stale_before_epoch=2)
-    assert [row["update_id"] for row in stale] == [item["update_id"]]
-
-    claimed = await update_repo.claim_stale_apply(
-        "user_1",
-        item["update_id"],
-        "claim-new",
-        stale_before_epoch=2,
-    )
-    assert claimed is not None
-    assert claimed["apply_claim_id"] == "claim-new"
-    assert await update_repo.heartbeat_apply("user_1", item["update_id"], "claim-old") is False
-    assert (
-        await update_repo.finish_claimed_apply(
-            "user_1", item["update_id"], "claim-old", status="failed", failure_reason="late"
-        )
-        is False
-    )
-    assert await update_repo.finish_claimed_apply("user_1", item["update_id"], "claim-new", status="applied") is True
-
-    stored = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": item["update_id"]})["Item"]
-    assert stored["status"] == "applied"
-
-
-@pytest.mark.asyncio
-async def test_list_stale_applying_includes_legacy_row_without_lease(dynamodb_table):
-    from core.repositories import update_repo
-
-    dynamodb_table.put_item(
-        Item={
-            "owner_id": "legacy",
-            "update_id": "refresh-1",
-            "update_type": "task_definition_refresh",
-            "status": "applying",
-            "changes": {"refresh_from_base": True},
-        }
-    )
-
-    stale = await update_repo.list_stale_applying("task_definition_refresh", stale_before_epoch=2)
-    assert [row["update_id"] for row in stale] == ["refresh-1"]
-
-
-@pytest.mark.asyncio
 async def test_mark_applied(dynamodb_table):
     from core.repositories import update_repo
 
@@ -339,9 +108,9 @@ async def test_mark_applied(dynamodb_table):
     ok = await update_repo.mark_applied("user_1", item["update_id"])
     assert ok is True
 
-    # Should no longer show in pending
-    results = await update_repo.get_pending("user_1")
-    assert len(results) == 0
+    stored = await update_repo.get_by_id("user_1", item["update_id"])
+    assert stored["status"] == "applied"
+    assert "ttl" in stored
 
 
 @pytest.mark.asyncio
@@ -356,16 +125,19 @@ async def test_mark_applied_from_applying_state(dynamodb_table):
     item = await update_repo.create("user_1", "image_update", "Img", {"new_image": "repo:tag"})
 
     # Mirror apply_update step 1: pending -> applying.
-    acquired = await update_repo.claim_apply("user_1", item["update_id"], "claim-1")
-    assert acquired is not None
+    dynamodb_table.update_item(
+        Key={"owner_id": "user_1", "update_id": item["update_id"]},
+        UpdateExpression="SET #s = :status",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":status": "applying"},
+    )
 
     # mark_applied must now succeed from "applying" (the bug returned False here).
     ok = await update_repo.mark_applied("user_1", item["update_id"])
     assert ok is True
 
-    # Row is finalized: status "applied", no longer pending.
-    results = await update_repo.get_pending("user_1")
-    assert len(results) == 0
+    stored = await update_repo.get_by_id("user_1", item["update_id"])
+    assert stored["status"] == "applied"
 
 
 @pytest.mark.asyncio
@@ -381,13 +153,6 @@ async def test_mark_applied_from_applying_state(dynamodb_table):
 @pytest.mark.parametrize(
     ("mutation", "status"),
     [
-        ("claim_apply", "pending"),
-        ("claim_stale_apply", "applying"),
-        ("heartbeat_apply", "applying"),
-        ("finish_claimed_apply_applied", "applying"),
-        ("finish_claimed_apply_failed", "applying"),
-        ("set_scheduled", "pending"),
-        ("set_snoozed", "pending"),
         ("mark_applied", "applying"),
         ("mark_failed", "applying"),
     ],
@@ -406,33 +171,12 @@ async def test_release_owned_updates_refuse_every_ordinary_mutation(dynamodb_tab
     }
     dynamodb_table.put_item(Item=item)
 
-    if mutation == "claim_apply":
-        result = await update_repo.claim_apply(item["owner_id"], item["update_id"], "new-claim")
-    elif mutation == "claim_stale_apply":
-        result = await update_repo.claim_stale_apply(
-            item["owner_id"], item["update_id"], "new-claim", stale_before_epoch=2
-        )
-    elif mutation == "heartbeat_apply":
-        result = await update_repo.heartbeat_apply(item["owner_id"], item["update_id"], "claim")
-    elif mutation.startswith("finish_claimed_apply"):
-        terminal_status = mutation.rsplit("_", 1)[-1]
-        result = await update_repo.finish_claimed_apply(
-            item["owner_id"],
-            item["update_id"],
-            "claim",
-            status=terminal_status,
-            failure_reason="must-not-land",
-        )
-    elif mutation == "set_scheduled":
-        result = await update_repo.set_scheduled(item["owner_id"], item["update_id"], "2026-09-09T00:00:00+00:00")
-    elif mutation == "set_snoozed":
-        result = await update_repo.set_snoozed(item["owner_id"], item["update_id"])
-    elif mutation == "mark_applied":
+    if mutation == "mark_applied":
         result = await update_repo.mark_applied(item["owner_id"], item["update_id"])
     else:
         result = await update_repo.mark_failed(item["owner_id"], item["update_id"], "must-not-land")
 
-    assert result is None if mutation in {"claim_apply", "claim_stale_apply"} else result is False
+    assert result is False
     stored = dynamodb_table.get_item(Key={"owner_id": item["owner_id"], "update_id": item["update_id"]})["Item"]
     assert stored == item
 

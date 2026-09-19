@@ -1,4 +1,4 @@
-"""FIFO SQS worker that drains canonical room pointers into OpenClaw."""
+"""FIFO SQS worker that sends canonical room pointers to the Hermes bridge."""
 
 from __future__ import annotations
 
@@ -116,10 +116,6 @@ def _emit_queue_wait(message: dict, kind: str) -> None:
         unit="Milliseconds",
         dimensions={"kind": kind},
     )
-
-
-def lightbulb_session_key(agent_id: str, room_id: str) -> str:
-    return f"agent:{agent_id}:lightbulb:channel:{room_id}"
 
 
 def _public_message(row: dict[str, Any]) -> dict[str, Any]:

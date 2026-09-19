@@ -1,9 +1,7 @@
-"""Owner-facts file: per-owner dynamic platform state on EFS.
+"""Owner-facts file: per-owner dynamic platform state in S3 Hermes profiles.
 
-``lightbulb-facts.json`` sits at the EFS user root (in-container:
-``~/.openclaw/lightbulb-facts.json`` — the access point chroots
-``/users/{user_id}`` to ``/home/node/.openclaw``) so every agent — Friday,
-Atlas, scaffolded specialists, marketplace hires — can read the owner's
+``lightbulb-facts.json`` is written to each agent's S3 profile and restored at
+``$HERMES_HOME/lightbulb-facts.json`` so every agent can read the owner's
 CURRENT plan/provider state instead of trusting seed files rendered once at
 provision time. The backend is the sole writer; writes happen at provision
 (``hermes_provisioning._stage_owner_facts``), on provider switches
@@ -27,10 +25,6 @@ from core.dynamodb import run_in_thread, utc_now_iso
 logger = logging.getLogger(__name__)
 
 FACTS_FILENAME = "lightbulb-facts.json"
-# Pre-rename name. Deleted on every write so nothing can read frozen facts; the
-# fleet reroll that ships this change puts every container on an image that only
-# ever looks for FACTS_FILENAME.
-_LEGACY_FACTS_FILENAME = "isol8-facts.json"
 
 
 def format_provider_label(provider_choice: str | None, byo_provider: str | None) -> str:

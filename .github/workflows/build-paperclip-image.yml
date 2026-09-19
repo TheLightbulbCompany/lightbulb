@@ -96,8 +96,7 @@ jobs:
 
       # We deliberately do NOT `docker push` here. The ECR repo has tag
       # immutability enabled and the SOCI v2 step below pushes the SOCI-enabled
-      # manifest under the same tag — a single ECR push, no immutability conflict
-      # (same rationale as build-openclaw-image.yml).
+      # manifest under the same tag — a single ECR push, no immutability conflict.
 
       - name: Set up containerd
         uses: crazy-max/ghaction-setup-containerd@v3
@@ -135,9 +134,8 @@ jobs:
       # container stores there are NOT discarded at job end, so the three
       # copies the SOCI path leaves behind (docker's, plus IMAGE_REF and
       # IMAGE_REF-soci-staging in nerdctl's `default` namespace) accumulate
-      # forever. That is what filled the box's disk for the OpenClaw build —
-      # see the same step in build-openclaw-image.yml. On hosted runners it is
-      # merely harmless. It is still NOT what keeps the convert from running
+      # forever, which is what filled the box's disk once already. On hosted
+      # runners it is merely harmless. It is still NOT what keeps the convert from running
       # out of space: that is `Reclaim disk` up top, which runs before
       # anything allocates.
       - name: Reclaim container storage

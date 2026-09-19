@@ -12,10 +12,10 @@
 # are therefore not subject to the org Actions budget); `ubuntu-latest` targets
 # GitHub-hosted runners.
 #
-# ONE job deliberately does not follow CI_RUNNER: `build-and-push` in
-# build-openclaw-image.yml is hardcoded to [self-hosted, isol8-wsl] because it
-# OOM-kills a hosted runner. `hosted` therefore means "everything that can run
-# either way", not "everything".
+# Some jobs deliberately do not follow CI_RUNNER: `runner-maintenance.yml` is
+# hardcoded to [self-hosted, isol8-wsl] (it maintains that box), and the
+# desktop/mobile builds need a macOS runner. `hosted` therefore means
+# "everything that can run either way", not "everything".
 #
 # Usage:
 #   scripts/switch-ci-runner.sh hosted             # both -> ubuntu-latest

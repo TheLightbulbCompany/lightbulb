@@ -1,8 +1,0 @@
-{
-  "manifest_version": 3,
-  "name": "Isol8 popups-to-tabs",
-  "version": "1.0",
-  "description": "Every new Chrome window (window.open popups included) becomes a tab in the main window, so the live view never hides a window behind another.",
-  "background": { "service_worker": "background.js" },
-  "permissions": ["tabs"]
-}

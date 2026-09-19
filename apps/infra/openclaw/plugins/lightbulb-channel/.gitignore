@@ -1,4 +1,0 @@
-# The image bakes committed build output; dev dependencies never ship.
-!dist/
-!dist/**
-node_modules/

@@ -317,15 +317,16 @@ describe("ContainerStack — prod", () => {
 
   test("declares none of the retired per-user resources", () => {
     // Same invariant as the dev case, asserted separately because prod is where
-    // the RemovalPolicy asymmetry lives: ENV_CONFIG gives prod RETAIN, so the
-    // live prod template carries DeletionPolicy: Retain on the filesystem.
+    // the RemovalPolicy asymmetry lived: ENV_CONFIG gives prod RETAIN, and the
+    // filesystem used to inherit it.
     //
-    // ⚠️ REMOVING A RESOURCE DOES NOT OVERRIDE THAT. CloudFormation reads
-    // DeletionPolicy from the DEPLOYED template when a resource is absent from
-    // the new one, so this stack's prod update ORPHANS fs-07640461cc0f09b14
-    // rather than deleting it (`cdk diff` renders it `orphan`, against `destroy`
-    // in dev). Flipping it has to happen in a deploy where the filesystem is
-    // still declared — i.e. #2784/#2785, not here. See the PR body's Rollout.
+    // ⚠️ REMOVING A RESOURCE DOES NOT OVERRIDE THE DEPLOYED POLICY. CloudFormation
+    // reads DeletionPolicy from the DEPLOYED template when a resource is absent
+    // from the new one, so the flip to Delete had to ship while the filesystem
+    // was still declared. It did: #2784 (d780e55a6) set the construct to DESTROY,
+    // and the deployed prod template read Delete/Delete on 2026-09-19 before this
+    // PR's dispatch. Precondition for the prod deploy of THIS PR: `cdk diff`
+    // renders fs-07640461cc0f09b14 as `destroy`, never `orphan`. See Rollout.
     template.resourceCountIs("AWS::EFS::FileSystem", 0);
     template.resourceCountIs("AWS::EC2::SecurityGroup", 1);
     template.resourceCountIs("AWS::ServiceDiscovery::Service", 0);

@@ -293,6 +293,25 @@ class TestDeleteOwnerBedrockRole:
         fake.delete_role.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_an_already_deleted_role_enumerates_to_nothing(self, aip_tables, monkeypatch):
+        """The enumeration is the FIRST call now, so a re-run after a partial wipe hits
+        NoSuchEntity there rather than on a delete — and the docstring's "safe to re-run"
+        promise depends on that reading as an empty list, not as a raise."""
+        import core.billing.bedrock_aip as mod
+
+        fake = MagicMock()
+        fake.list_role_policies.side_effect = _no_such_entity("ListRolePolicies")
+        fake.list_attached_role_policies.return_value = {"AttachedPolicies": []}
+        fake.delete_role.side_effect = _no_such_entity("DeleteRole")
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+
+        await mod.delete_owner_bedrock_role("org_abc")  # must not raise
+
+        fake.delete_role_policy.assert_not_called()
+        fake.delete_role.assert_called_once()  # the rest of the teardown still runs
+
+    @pytest.mark.asyncio
     async def test_reraises_unexpected_client_error_from_delete_role_policy(self, aip_tables, monkeypatch):
         import core.billing.bedrock_aip as mod
 
@@ -373,9 +392,9 @@ class TestReapOwnerBedrockResources:
 
     @pytest.mark.asyncio
     async def test_a_failing_browser_profile_delete_never_fails_the_reap(self, reaper):
-        """The backend task role has no DeleteBrowserProfile until the infra PR deploys.
-        Until then this leg returns 0 and the rest of the teardown must still report
-        success."""
+        """The browser leg is best-effort by design: whatever makes it return 0 -- a
+        throttle, a Conflict on an already-DELETING profile, an AccessDenied -- the rest of
+        the teardown must still run and still report its own result."""
         reaper.browser.return_value = 0
 
         detail = await _reap(ROW)

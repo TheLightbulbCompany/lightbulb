@@ -158,16 +158,18 @@ async def delete_browser_profiles(owner_id: str) -> int:
     the same argument ``reap_owner_bedrock_resources`` uses to reap the IAM role
     unconditionally, so this needs nothing from the row image.
 
-    **Never raises**, like every other leg of the reap's best-effort set. It returns 0 and
-    logs until ``bedrock-agentcore:DeleteBrowserProfile`` is back on the backend task role
-    (dropped in #2790's review round; a separate infra PR restores it).
+    **Never raises**, like every other leg of the reap's best-effort set: a wipe must not
+    fail on the browser leg, whatever the reason. It returns 0 and logs a WARNING — and
+    that warning means a real failure worth reading (a throttle, a ``ConflictException`` on
+    an already-``DELETING`` profile, a genuine ``AccessDenied``), not an expected one: the
+    backend task role's ``bedrock-agentcore:DeleteBrowserProfile`` grant is #2794, merged.
     """
     try:
         return await run_in_thread(_delete_profiles, owner_id)
     except Exception:  # noqa: BLE001 — a wipe must not fail on the browser leg
         logger.warning(
-            "browser profile delete failed for owner=%s (expected until the backend task role "
-            "regains bedrock-agentcore:DeleteBrowserProfile)",
+            "browser profile delete FAILED for owner=%s -- the workspace's cookies/local "
+            "storage may survive the wipe; delete it by hand if this persists",
             owner_id,
             exc_info=True,
         )

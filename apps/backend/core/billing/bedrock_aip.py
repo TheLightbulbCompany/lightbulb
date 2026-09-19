@@ -1013,8 +1013,9 @@ async def reap_owner_bedrock_resources(owner_id: str, row_image: dict | None) ->
     # The AgentCore Browser profile. Deterministic name (== owner_id), same as the role, so
     # it needs nothing from the row image. It holds the workspace's COOKIES and local
     # storage, which makes leaving it behind a data-deletion gap rather than a quota one.
-    # Never contributes to `failure`: it 403s until the backend task role regains
-    # DeleteBrowserProfile, and that must not fail every owner's teardown meanwhile.
+    # Never contributes to `failure`: a wipe must not fail on the browser leg, whatever
+    # the reason. The task role's DeleteBrowserProfile grant is #2794 (merged), so a
+    # failure here is a real one and logs as such.
     from core.services.browser_sessions import delete_browser_profiles
 
     deleted_profiles = await delete_browser_profiles(owner_id)

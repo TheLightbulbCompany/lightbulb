@@ -342,9 +342,10 @@ async def test_delete_browser_profiles_removes_only_this_workspaces_profile(stub
 
 
 @pytest.mark.asyncio
-async def test_delete_browser_profiles_swallows_the_403_until_the_grant_lands(stub_control):
-    """The backend task role has no DeleteBrowserProfile until the infra PR deploys. The wipe
-    must log and carry on, not fail the teardown for every owner in the meantime."""
+async def test_delete_browser_profiles_survives_a_delete_failure(stub_control):
+    """A wipe must never fail on the browser leg, whatever the reason -- an AccessDenied, a
+    throttle, or a ConflictException on an already-DELETING profile. It logs and carries on;
+    every other teardown step still reports its own result."""
     stub_control.add_response(
         "list_browser_profiles",
         {"profileSummaries": [_summary(OWNER, PROFILE_ID)]},

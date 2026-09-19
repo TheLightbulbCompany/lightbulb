@@ -87,25 +87,32 @@ async def get_by_status(status: str) -> list[dict]:
     return items
 
 
+#: Every non-owner row in this table keys on ``__<what>__#…``. A Clerk owner id is ``org_…``
+#: or ``user_…`` and never starts with ``_``, so ``scan_all`` can exclude all of them with one
+#: ``begins_with`` -- and a reserved row added later is excluded by construction rather than by
+#: remembering to widen a list. ``PASS_KEY_PREFIX`` and ``LIFECYCLE_KEY_PREFIX`` both start here.
+RESERVED_KEY_PREFIX = "__"
+
+
 async def scan_all(*, consistent: bool = False) -> list[dict]:
-    """Return every container row. Paginates via DDB LastEvaluatedKey.
+    """Return every OWNER row. Paginates via DDB LastEvaluatedKey.
 
-    Used by fleet-wide ops tools (ecs_ops, bedrock_gate_break_glass).
-    Not for hot paths -- DDB Scan is expensive at scale.
+    Used by fleet-wide ops tools (the operator console's fleet grid, the break-glass and
+    runtime-roll scripts). Not for hot paths -- DDB Scan is expensive at scale.
 
-    Filters out pass-admission rows (``try_claim_pass``'s reserved
-    ``__pass__#<name>`` keys) so no fleet consumer -- update_service's
-    task-definition-refresh queuing, ecs_ops, the break-glass and
-    litestream-policy scripts -- ever mistakes one for an owner's container.
-    One guard here instead of one per caller.
+    Filters out every RESERVED-KEY row (``RESERVED_KEY_PREFIX``: pass admission, the
+    owner-lifecycle lease) so no fleet consumer ever mistakes one for an owner's workspace --
+    a lease row would otherwise render as a fleet tile and be handed to a roll script. ONE
+    guard here instead of one per caller, and one prefix so a new reserved row is covered by
+    construction rather than by remembering to widen a list.
     """
     table = _get_table()
     items: list[dict] = []
     last_evaluated_key: dict | None = None
     while True:
         kwargs: dict = {"ConsistentRead": True} if consistent else {}
-        kwargs["FilterExpression"] = "NOT begins_with(owner_id, :pass_prefix)"
-        kwargs["ExpressionAttributeValues"] = {":pass_prefix": PASS_KEY_PREFIX}
+        kwargs["FilterExpression"] = "NOT begins_with(owner_id, :reserved_prefix)"
+        kwargs["ExpressionAttributeValues"] = {":reserved_prefix": RESERVED_KEY_PREFIX}
         if last_evaluated_key is not None:
             kwargs["ExclusiveStartKey"] = last_evaluated_key
         response = await run_in_thread(table.scan, **kwargs)
@@ -631,9 +638,7 @@ async def try_claim_daily_system_notice(owner_id: str, *, day: str, kind: str = 
         return True  # fail open — see docstring
 
 
-# Reserved owner_id prefix for pass-admission rows (see try_claim_pass). Never a
-# real owner_id (Clerk ids never contain "#"), so scan_all's filter cannot
-# collide with an owner row.
+# Reserved owner_id prefix for pass-admission rows (see try_claim_pass).
 PASS_KEY_PREFIX = "__pass__#"
 
 

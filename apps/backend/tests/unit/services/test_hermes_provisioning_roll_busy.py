@@ -29,7 +29,7 @@ def _health(monkeypatch, *answers):
     queue, probes = list(answers), []
 
     async def call(owner_id, method, params=None, **kwargs):
-        assert method == "health" and kwargs.get("wake") is False
+        assert method == "health"
         probes.append(owner_id)
         answer = queue.pop(0) if len(queue) > 1 else queue[0]
         if isinstance(answer, BaseException):

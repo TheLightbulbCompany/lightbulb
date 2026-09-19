@@ -113,6 +113,22 @@ async def test_a_ddb_fault_refuses_rather_than_admitting_everyone(dynamodb_table
 
 
 @pytest.mark.asyncio
+async def test_a_lease_row_is_never_mistaken_for_a_workspace(dynamodb_table):
+    """It rides the containers table on its own reserved key, so every fleet consumer -- the
+    operator console's grid, the break-glass script, the runtime rolls -- would otherwise hand
+    a lease row around as somebody's workspace."""
+    from core.repositories import container_repo
+
+    await container_repo.try_claim_owner_lifecycle("org_1")
+    dynamodb_table.put_item(Item={"owner_id": "org_real", "status": "running"})
+
+    rows = await container_repo.scan_all()
+
+    assert [r["owner_id"] for r in rows] == ["org_real"]
+    assert container_repo.LIFECYCLE_KEY_PREFIX.startswith(container_repo.RESERVED_KEY_PREFIX)
+
+
+@pytest.mark.asyncio
 async def test_an_owner_with_no_container_row_can_still_be_fenced(dynamodb_table):
     """A connect can precede provisioning, so the lease rides its OWN reserved-key row rather
     than the owner's containers row -- which does not exist yet for a first-time owner."""

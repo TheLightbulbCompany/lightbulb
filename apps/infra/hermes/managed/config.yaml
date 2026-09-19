@@ -22,3 +22,11 @@ nous:
   # HERMES_GUEST_ONBOARDING=1, which this platform never sets), but the managed overlay wins
   # after env expansion and cannot be undone from inside a profile's own config.yaml.
   guest: false
+browser:
+  # REQUIRED, not cosmetic -- see the test in test_hermes_managed_overlay.py. Hermes 0.21.3
+  # defaults to the Browser-Use CLI harness whenever uvx is runnable (our base image ships
+  # /usr/local/bin/uvx); that harness cannot SigV4-sign the AgentCore CDP handshake and dies
+  # with a 403. "off" is Hermes's own documented value for "keep the built-in browser_*
+  # tools". The overlay is the permanent home because it wins over every profile's own
+  # config.yaml and needs no backfill.
+  backend: "off"

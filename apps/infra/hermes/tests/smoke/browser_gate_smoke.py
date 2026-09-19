@@ -15,38 +15,50 @@ the gate is a bare ``os.path.isfile`` on ``AGENT_BROWSER_EXECUTABLE_PATH``
 (``browser_tool_install.py:227-242``) with no real Chromium check, so a zero-byte sentinel file
 satisfies it.
 
-**Verified 2026-09-19, an amendment to the original design assumption**: the ORIGINAL version of
-this smoke also asserted the base image has NO Chromium without the sentinel (i.e. that the
-sentinel is what flips tool advertisement on). That assertion is FALSE against the pinned base
-image (digest in ``hermes-version.json#base.image``) -- it already bundles a Playwright
-``chromium_headless_shell`` build under ``/opt/hermes/.playwright`` (``PLAYWRIGHT_BROWSERS_PATH``
-points there), which alone satisfies ``_chromium_installed()``'s third branch
-(``any(... _has_chromium_build(root) for root in _chromium_search_roots())``), with no sentinel
-and no ``AGENT_BROWSER_PROVIDER`` set. Confirmed live:
-``docker run --rm --entrypoint python3 <image> -c "import tools.browser_tool_install as m; print(m._chromium_search_roots())"``
-lists ``/opt/hermes/.playwright``, and that directory contains ``chromium_headless_shell-1243``.
-So ``check_browser_requirements()``'s final fallback branch (no provider, no CDP override, no
-camofox, Browser-Use-CLI off) is ALREADY True in this base image, sentinel or not -- the "no
-profile => no gate var => no Chromium => tools not advertised" chain design.md Sec2a describes
-does not hold at the image layer alone for a profile-less workspace. Also: ``_chromium_installed``
-memoizes its result on the origin module for the PROCESS LIFETIME (`` cached``), so a same-process
-before/after comparison would silently read a stale cached value regardless -- not just wrong, but
-untestable that way. **What this leaves gated is Task 4's job, not this image's**: whether
-``AGENT_BROWSER_PROVIDER=agentcore`` is set is what determines whether an advertised call to
-``browser_*`` actually reaches AgentCore versus the bundled local Chromium -- the image can no
-longer be relied on to hide the tool for a profile-less owner, only to route a *used* tool
-correctly. Flagged for the PR and for whoever picks up Task 4/6.
+**Split by image (ruling R13, 2026-09-19).** ``hermes-image-smokes`` (#2760) always runs this
+smoke against the pinned BASE image (``hermes-version.json#base.image``), never our built
+extended one -- and the base image bundles a 269 MB Playwright ``chromium_headless_shell`` under
+``PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright`` (its own local-automation fallback), which
+alone satisfies ``_chromium_installed()`` with no sentinel and no ``AGENT_BROWSER_PROVIDER`` set
+(confirmed live 2026-09-19 -- the base's own ``_chromium_search_roots()`` lists that path and it
+contains ``chromium_headless_shell-1243``). So a "no Chromium without the sentinel" assertion can
+NEVER pass here -- the base always has one, no matter what our Dockerfile does.
+
+Ruling R13 ("browser means AgentCore Browser only, never a silent local Chromium in the microVM")
+answers that by deleting the bundle from OUR image and asserting the negative half itself, at
+BUILD TIME, against the image it actually applies to (``apps/infra/hermes/Dockerfile``, two
+separate ``python3 -c`` processes -- ``_chromium_installed()`` memoizes per process, so a
+same-process before/after would just read a stale cached value from the first call, not a fresh
+answer). This smoke, run against the unmodified base, therefore asserts only:
+
+1. the POSITIVE half -- the sentinel still satisfies ``_chromium_installed()`` (in a fresh
+   subprocess, so no cache from this process leaks in), and
+2. a canary -- the base still bundles Playwright. If upstream ever drops that bundle, the
+   Dockerfile's ``rm -rf`` silently becomes a no-op and ruling R13 needs re-checking; this line is
+   what catches that instead of nobody noticing.
 """
 import os
+import subprocess
 import sys
 
-sys.path.insert(0, "/opt/hermes")
-from tools.browser_tool_install import _chromium_installed  # noqa: E402
+PROBE = ("import sys; sys.path.insert(0,'/opt/hermes');"
+         " from tools.browser_tool_install import _chromium_installed; print(_chromium_installed())")
+
+
+def probe(env: dict) -> str:
+    return subprocess.run(
+        [sys.executable, "-c", PROBE], capture_output=True, text=True, env={**os.environ, **env}
+    ).stdout.strip()
+
 
 sentinel = "/tmp/_gate_probe"
 open(sentinel, "w").close()
-os.environ["AGENT_BROWSER_EXECUTABLE_PATH"] = sentinel
 
-assert _chromium_installed() is True, "the executable-path gate no longer satisfies _chromium_installed"
+assert probe({"AGENT_BROWSER_EXECUTABLE_PATH": sentinel}) == "True", (
+    "the executable-path gate stopped satisfying _chromium_installed"
+)
+assert os.path.isdir(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/opt/hermes/.playwright")), (
+    "the base no longer bundles Playwright -- the Dockerfile's rm is now a no-op, re-check ruling R13"
+)
 
 print("browser gate OK")

@@ -89,11 +89,36 @@ RUN npm i -g --allow-scripts=agent-browser agent-browser@0.38.1 && agent-browser
  && ( AGENT_BROWSER_PROVIDER=nosuchprovider AGENT_BROWSER_SOCKET_DIR=/tmp/ab-smoke HOME=/tmp \
       agent-browser --json open about:blank 2>&1 || true ) | grep -q agentcore
 
-# Hermes advertises browser_* only when _chromium_installed() is true, and that check is a bare
-# os.path.isfile on AGENT_BROWSER_EXECUTABLE_PATH (browser_tool_install.py:227-242). This zero-byte
-# file is that gate. A provider connection never launches a local engine, so it is never exec'd --
-# and if the provider path ever fails, exec'ing it errors loudly with this path in the message.
+# Hermes advertises browser_* only when _chromium_installed() is true (browser_tool_install.py:227-242):
+# AGENT_BROWSER_EXECUTABLE_PATH is an existing file (a bare os.path.isfile), OR chrome/chromium is on
+# PATH, OR a Playwright build is cached. The upstream base BUNDLES one -- a 269 MB
+# chromium_headless_shell-1243 under PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright -- so without this
+# rm the gate passes on its own and a workspace with NO browser profile (hence no AGENT_BROWSER_PROVIDER)
+# would browse with a LOCAL headless Chromium in the microVM: no live view, microVM CPU and storage, and
+# a silent departure from "browser means AgentCore Browser". Ruling R13: delete it, so the zero-byte
+# sentinel below is the ONLY way the gate passes and "no profile => no browser tools" holds in the image.
+# Verified 2026-09-19: nothing else in the image needs the bundle. The `playwright` PYTHON package
+# itself is not even installed in the base image (checked live), so every other mention of it --
+# hermes_cli/doctor_live.py's live-browser probe (opt-in `hermes doctor --live`, never called by our
+# bridge), the google_meet plugin's Playwright-driven meet bot, the har-derived-api-client optional
+# skill -- already fails soft on a missing import today, independent of this directory. Only
+# tools/browser_tool_install.py's own directory scan (and agent-browser's own LOCAL-mode discovery,
+# which R13 exists to make unreachable) ever reads it.
+RUN test -d /opt/hermes/.playwright && rm -rf /opt/hermes/.playwright \
+ && test ! -d /opt/hermes/.playwright
+
+# The sentinel. A provider connection never launches a local engine, so it is never exec'd -- and if the
+# provider path ever fails, exec'ing a zero-byte file errors loudly with this path in the message.
 RUN mkdir -p /opt/lightbulb && : > /opt/lightbulb/no-local-browser && test -f /opt/lightbulb/no-local-browser
+
+# The gate, both ways, in TWO processes: _chromium_installed() memoizes per process, so a single-process
+# before/after proves nothing -- it would just return the first call's cached answer. This fails the
+# build if the bundle above ever comes back (e.g. a base image bump) or the sentinel above goes missing.
+RUN python3 -c "import sys; sys.path.insert(0,'/opt/hermes'); \
+from tools.browser_tool_install import _chromium_installed; assert not _chromium_installed()" \
+ && AGENT_BROWSER_EXECUTABLE_PATH=/opt/lightbulb/no-local-browser python3 -c "import sys, os; \
+sys.path.insert(0,'/opt/hermes'); from tools.browser_tool_install import _chromium_installed; \
+assert _chromium_installed()"
 
 COPY bridge /opt/bridge/bridge
 COPY plugins/ /opt/hermes/plugins/

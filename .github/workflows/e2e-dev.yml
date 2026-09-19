@@ -39,7 +39,7 @@ jobs:
       # system libraries. On the self-hosted box that write is permanent
       # rather than discarded with the VM, so the first run installs and
       # every run after it is a no-op. Passwordless sudo is already a
-      # requirement of the box (build-openclaw-image.yml installs soci and
+      # requirement of the box (build-paperclip-image.yml installs soci and
       # nerdctl into /usr/local/bin the same way).
       - name: Install Playwright browsers
         run: cd apps/frontend && npx playwright install chromium --with-deps

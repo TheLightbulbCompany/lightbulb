@@ -2,7 +2,7 @@
 
 This directory builds an **extended Paperclip image**: the official upstream image
 (`ghcr.io/paperclipai/paperclip`, pinned by digest) with **one patch** layered on
-top. It mirrors the `apps/infra/openclaw/` (`openclaw-extended`) pattern.
+top.
 
 It is **temporary** — it exists only until upstream ships the fix, at which point
 we delete it and point back at the official image (see [Reverting](#reverting)).

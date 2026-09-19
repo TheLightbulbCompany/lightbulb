@@ -40,3 +40,24 @@ describe("AuthStack — gog file-keyring password secret", () => {
     expect(rendered).not.toContain("PlatformOpsTokenKey");
   });
 });
+
+describe("AuthStack — the pinned cloudflare-warp export", () => {
+  test("keeps the exact logical id AND export name the live stack has", () => {
+    // container-stack's retired per-user ECS task-execution role was this
+    // secret's only consumer. CloudFormation refuses to delete an Output
+    // another stack still imports, so the Output is declared by hand rather
+    // than dropped — and BOTH halves are load-bearing. A drifting export name
+    // deletes the imported one; a drifting logical id publishes a second
+    // Output under a name that is already taken, which CloudFormation rejects.
+    for (const environment of ["dev", "prod"] as const) {
+      const outputs = (buildStack(environment).toJSON() as Record<string, any>)
+        .Outputs;
+      expect(
+        outputs.ExportsOutputRefCloudflareWarpEnrollmentLightbulb6CFC576893D2B67B
+          ?.Export?.Name,
+      ).toBe(
+        `lightbulb-${environment}-auth:ExportsOutputRefCloudflareWarpEnrollmentLightbulb6CFC576893D2B67B`,
+      );
+    }
+  });
+});

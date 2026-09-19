@@ -274,6 +274,35 @@ export class AuthStack extends cdk.Stack {
     // via a Lambda-backed Custom Resource. Idempotent: if the current value
     // already decodes to 32 bytes via urlsafe_b64decode, the Lambda no-ops.
     this.bootstrapFernetKey(encryptionKey, env);
+
+    // Pinned export. The retired per-user ECS task-execution role in
+    // container-stack was this secret's ONLY consumer, so dropping that role
+    // orphans the Output CDK generated for it. CloudFormation refuses to delete
+    // an Output another stack still imports, and after that same change the
+    // container job no longer `needs:` this one — so the two update
+    // CONCURRENTLY, and an auth-first ordering would fail with
+    //
+    //   Cannot delete export lightbulb-{env}-auth:ExportsOutputRefCloudflareWarp…
+    //   as it is in use by lightbulb-{env}-container
+    //
+    // Unlike container-stack's own transitional pins, this one holds no
+    // resource alive — the secret exists either way — so there is no second
+    // deploy owed. Drop it in any later infra change, once every environment's
+    // deployed container template has stopped importing it.
+    // Declared by hand rather than via `this.exportValue(...)`: the export NAME
+    // is not enough, the logical ID has to match too. CDK's helper would emit a
+    // second Output carrying the same export name, and CloudFormation rejects
+    // a create whose export name is already published. Both are the values CDK
+    // itself generated for the container-stack reference — `Ref` on a Secret is
+    // its ARN — and the name is verified against `aws cloudformation
+    // list-exports` in both environments.
+    const warpExport = new cdk.CfnOutput(this, "CloudflareWarpEnrollmentArnPin", {
+      value: this.cloudflareWarpEnrollment.secretArn,
+      exportName: `lightbulb-${env}-auth:ExportsOutputRefCloudflareWarpEnrollmentLightbulb6CFC576893D2B67B`,
+    });
+    warpExport.overrideLogicalId(
+      "ExportsOutputRefCloudflareWarpEnrollmentLightbulb6CFC576893D2B67B",
+    );
   }
 
   private bootstrapFernetKey(secret: secretsmanager.Secret, env: string): void {

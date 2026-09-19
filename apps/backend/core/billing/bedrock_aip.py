@@ -130,6 +130,72 @@ def build_owner_litestream_s3_policy(owner_id: str, bucket: str) -> dict:
     }
 
 
+#: AWS's built-in managed browser. Its ARN sits under the literal ``aws`` pseudo-account
+#: (research 01 §5, from a live AccessDenied), not ours — see the resources below.
+BUILTIN_BROWSER_ID = "aws.browser.v1"
+
+
+async def ensure_owner_browser_policy(owner_id: str, profile_id: str) -> None:
+    """Per-owner AgentCore Browser grant, inline on the owner's runtime role.
+
+    Its OWN ``PolicyName`` for the same reason ``owner-litestream-s3`` has one: the
+    break-glass script swaps the ``owner-bedrock`` document wholesale, and folding
+    anything else in would strip it mid-incident.
+
+    Two statements. The first is the built-in browser, whose ARN lives under the literal
+    ``aws`` pseudo-account; the second is **this workspace's own profile**, and it repeats
+    ``StartBrowserSession`` deliberately — a start carrying ``profileConfiguration``
+    authorizes against the PROFILE ARN as well as the browser ARN (a live 403 named it).
+
+    Deliberately absent: ``ListBrowserSessions`` (the fence that stops a rogue runtime
+    learning another tenant's session ids — only the backend discovers sessions) and every
+    control-plane action (a runtime minting profiles would eat the 100/account quota).
+
+    A no-op for an empty ``profile_id``: ``browser_sessions.ensure_browser_profile``
+    returns ``""`` when AWS refused, and an unscoped grant must not be written in its place.
+    """
+    from core.dynamodb import run_in_thread
+
+    if not profile_id:
+        return
+    region = settings.AWS_REGION
+    account_id = await _caller_account_id()
+    doc = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "AgentCoreBrowserSessions",
+                "Effect": "Allow",
+                "Action": [
+                    "bedrock-agentcore:StartBrowserSession",
+                    "bedrock-agentcore:GetBrowserSession",
+                    "bedrock-agentcore:StopBrowserSession",
+                    "bedrock-agentcore:ConnectBrowserAutomationStream",
+                ],
+                "Resource": [
+                    f"arn:aws:bedrock-agentcore:{region}:aws:browser/{BUILTIN_BROWSER_ID}",
+                    f"arn:aws:bedrock-agentcore:{region}:{account_id}:browser/*",
+                ],
+            },
+            {
+                "Sid": "AgentCoreBrowserOwnProfile",
+                "Effect": "Allow",
+                "Action": [
+                    "bedrock-agentcore:StartBrowserSession",
+                    "bedrock-agentcore:SaveBrowserSessionProfile",
+                ],
+                "Resource": f"arn:aws:bedrock-agentcore:{region}:{account_id}:browser-profile/{profile_id}",
+            },
+        ],
+    }
+    await run_in_thread(
+        _iam_client().put_role_policy,
+        RoleName=_owner_role_name(owner_id),
+        PolicyName="owner-browser",
+        PolicyDocument=json.dumps(doc),
+    )
+
+
 def build_owner_bedrock_policy(
     *,
     owner_id: str,
@@ -794,10 +860,11 @@ async def delete_owner_bedrock_role(owner_id: str) -> None:
     client = _iam_client()
     role_name = _owner_role_name(owner_id)
 
-    # BOTH inline policies must go: IAM refuses DeleteRole while any inline
-    # policy remains, so leaving owner-litestream-s3 behind would make the
-    # account-wipe bedrock_role step fail for every local-sqlite owner and leak the role.
-    for policy_name in ("owner-bedrock", "owner-litestream-s3"):
+    # EVERY inline policy must go: IAM refuses DeleteRole while any inline
+    # policy remains, so leaving owner-litestream-s3 (or owner-browser, on an
+    # AgentCore Browser workspace) behind would make the account-wipe
+    # bedrock_role step fail for that owner and leak the role.
+    for policy_name in ("owner-bedrock", "owner-litestream-s3", "owner-browser"):
         try:
             await run_in_thread(
                 client.delete_role_policy,

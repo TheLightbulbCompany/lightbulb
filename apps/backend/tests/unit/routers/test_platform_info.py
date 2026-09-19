@@ -19,7 +19,7 @@ import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from core.containers.config import CHANNEL_PROVIDER_IDS  # noqa: E402
+from core.constants import CHANNEL_PROVIDER_IDS  # noqa: E402
 from core.services.credentials import registry  # noqa: E402
 from routers import platform_info  # noqa: E402
 

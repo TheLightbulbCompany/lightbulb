@@ -9,6 +9,7 @@ import logging
 import uuid
 from typing import Any
 
+import botocore.exceptions
 import httpx
 
 from core.auth import AuthContext, resolve_owner_id
@@ -454,6 +455,14 @@ async def execute_sync(
             result = await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
         except AgentLifecycleConflict as exc:
             raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
+        except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError) as exc:
+            # Q9a row #3: the profile delete is an S3 call, and a transport fault on it must
+            # surface as a clean retryable RPC error rather than an unhandled 500. It runs
+            # BEFORE Paperclip removal on purpose (see delete_agent_everywhere), so the row
+            # stays visible and a retry reconciles instead of stranding a half-deleted agent.
+            raise ApiProblem(
+                "RUNTIME_UNAVAILABLE", str(exc), retryable=True, retry_after=3, details={"method": method}
+            ) from exc
         await _invalidate(owner_id, method)
         return result
     if method == "agents.create":

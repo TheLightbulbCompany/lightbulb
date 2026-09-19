@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from botocore.exceptions import ClientError
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Base64Bytes, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
 from core.auth import AuthContext, resolve_owner_id
@@ -64,6 +64,8 @@ ATTACHMENT_MAX_BYTES_BY_TYPE = {
     "application/zip": ZIP_MAX_BYTES,
 }
 ATTACHMENT_MAX_BYTES = max(ATTACHMENT_MAX_BYTES_BY_TYPE.values())
+# Base64 is exactly 4 characters per 3 bytes: the ENCODED ceiling for that largest cap.
+ATTACHMENT_MAX_BASE64_CHARS = -(-ATTACHMENT_MAX_BYTES // 3) * 4
 ATTACHMENT_MAX_COUNT = 4
 ROOM_NAME_MAX_CHARS = 200
 ROOM_TOPIC_MAX_CHARS = 250
@@ -405,6 +407,23 @@ class CreateMessageRequest(ContractModel):
         return self
 
 
+class InlineAttachment(ContractModel):
+    """One file an agent sends with its reply, base64 on the POST it is already making.
+
+    The runtime has no attachment-upload route of its own and needs none: a screenshot is a
+    couple of hundred KB inside a request that is happening anyway.
+    """
+
+    file_name: str = Field(min_length=1, max_length=256)
+    content_type: str = Field(min_length=1, max_length=128)
+    # The bound is in ENCODED characters and fires BEFORE the decode, so nothing unbounded is
+    # ever decoded -- the list's own ``max_length`` runs after item validation, and the gateway
+    # in front of this route is not a bound to depend on. Same reason the human upload route
+    # reads to an explicit ceiling rather than to EOF (routers/messaging.py). The real
+    # per-content-type cap still fires in :func:`store_attachment`.
+    data_base64: Base64Bytes = Field(max_length=ATTACHMENT_MAX_BASE64_CHARS)
+
+
 class AgentMessageRequest(ContractModel):
     event_id: str
     room_id: uuid.UUID
@@ -413,6 +432,7 @@ class AgentMessageRequest(ContractModel):
     reply_to_message_id: uuid.UUID | None
     thread_root_message_id: uuid.UUID | None
     run_id: uuid.UUID | None = None
+    attachments: list[InlineAttachment] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
 
     @field_validator("event_id")
     @classmethod
@@ -422,7 +442,17 @@ class AgentMessageRequest(ContractModel):
     @field_validator("text")
     @classmethod
     def validate_text(cls, value: str) -> str:
-        return validate_message_text(value)
+        # Blank text is judged by ``require_content`` below, not here.
+        return validate_message_text(value) if value.strip() else value
+
+    @model_validator(mode="after")
+    def require_content(self) -> "AgentMessageRequest":
+        # The same rule the human path has always had (``CreateMessageRequest``): the
+        # emptiness check moved off the field because a reply whose only line was
+        # ``MEDIA:<path>`` strips to empty text and arrives as a pure attachment.
+        if not self.text.strip() and not self.attachments:
+            raise ValueError("message requires text or an attachment")
+        return self
 
 
 class AgentMessageReceiptResponse(ContractModel):
@@ -2349,6 +2379,20 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         run = await messaging_repo.get_run(owner_id, run_id)
         if run is None or run.get("roomId") != room_id or run.get("agentId") != agent_id:
             raise ApiProblem("RUN_NOT_FOUND", "runId does not name this owner's run for this room and agent.")
+    # Stored before the write, exactly as the human upload route stores them, and
+    # deliberately NOT part of ``req_hash``: every store mints a fresh id, so hashing them
+    # would turn the container's own retry of the same reply into an idempotency CONFLICT and
+    # lose it. A retry therefore replays the first message and leaves its freshly stored twin
+    # unreferenced -- an owner-scoped object the account wipe already collects.
+    attachments: list[dict[str, Any]] = []
+    for item in request.attachments:
+        try:
+            stored = await run_in_thread(
+                store_attachment, owner_id, room_id, item.file_name, item.content_type, item.data_base64
+            )
+        except ValueError as exc:
+            raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
+        attachments.append(stored.model_dump(mode="json", by_alias=True))
     req_hash = messaging_repo.request_hash(
         room_id,
         agent_id,
@@ -2372,7 +2416,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             dispatch_targets=targets,
             source_agent_id=agent_id,
             client_message_id=None,
-            attachments=[],
+            attachments=attachments,
         )
     except messaging_repo.IdempotencyConflict as exc:
         raise ApiProblem("IDEMPOTENCY_CONFLICT", "eventId was already used with a different request.") from exc

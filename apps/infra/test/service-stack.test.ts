@@ -319,13 +319,16 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
   });
 
   test("backend role's wildcard table statement admits the launch tables without a new grant", () => {
-    // allTableArns(env) → table/*-{env}-* — any table under the prefix is covered.
+    // allTableArns(env) → table/lightbulb-{env}-* plus its indexes.
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
             Action: Match.arrayWith(["dynamodb:PutItem", "dynamodb:Query"]),
-            Resource: Match.arrayWith([Match.stringLikeRegexp("table/\\*-dev-\\*$")]),
+            Resource: Match.arrayWith([
+              Match.stringLikeRegexp("table/lightbulb-dev-\\*$"),
+              Match.stringLikeRegexp("table/lightbulb-dev-\\*/index/\\*$"),
+            ]),
           }),
         ]),
       }),

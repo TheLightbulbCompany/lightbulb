@@ -129,6 +129,9 @@ describe("DatabaseStack — integrations status table", () => {
       SSESpecification: Match.objectLike({ SSEEnabled: true, SSEType: "KMS" }),
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
     });
+    const json = JSON.stringify(template.toJSON());
+    expect(json).not.toContain(":table/*-dev-");
+    expect(json).not.toContain(":table/lightbulb-prod-");
   });
 });
 
@@ -164,7 +167,7 @@ describe("ServiceStack — integration secret + DDB IAM (dev)", () => {
     });
   });
 
-  test("DynamoDbOwnedTables statement covers the isol8-dev-integrations table", () => {
+  test("DynamoDbOwnedTables statement covers the lightbulb-dev-integrations table and its indexes", () => {
     // The by-name DynamoDbIntegrations statement was deleted 2026-09: exactly
     // subsumed by DynamoDbOwnedTables, which grants a superset of actions on
     // every table under the env-prefixed wildcard — integrations included.
@@ -179,15 +182,16 @@ describe("ServiceStack — integration secret + DDB IAM (dev)", () => {
               "dynamodb:Query",
             ]),
             Resource: Match.arrayWith([
-              // `*-dev-*` — the env-prefixed wildcard covers every table
-              // under this env's namespace, both isol8-dev- and
-              // lightbulb-dev- prefixed. Narrows at step D.
-              Match.stringLikeRegexp(".*:table/\\*-dev-\\*$"),
+              Match.stringLikeRegexp(".*:table/lightbulb-dev-\\*$"),
+              Match.stringLikeRegexp(".*:table/lightbulb-dev-\\*/index/\\*$"),
             ]),
           }),
         ]),
       },
     });
+    const json = JSON.stringify(template.toJSON());
+    expect(json).not.toContain(":table/*-dev-");
+    expect(json).not.toContain(":table/lightbulb-prod-");
   });
 });
 
@@ -210,7 +214,7 @@ describe("ServiceStack — integration secret + DDB IAM (prod)", () => {
     });
   });
 
-  test("DynamoDbOwnedTables statement covers the isol8-prod-integrations table", () => {
+  test("DynamoDbOwnedTables statement covers the lightbulb-prod-integrations table and its indexes", () => {
     // The by-name DynamoDbIntegrations statement was deleted 2026-09: exactly
     // subsumed by DynamoDbOwnedTables, which grants a superset of actions on
     // every table under the env-prefixed wildcard — integrations included.
@@ -220,14 +224,15 @@ describe("ServiceStack — integration secret + DDB IAM (prod)", () => {
           Match.objectLike({
             Sid: "DynamoDbOwnedTables",
             Resource: Match.arrayWith([
-              // `*-prod-*` — the env-prefixed wildcard covers every table
-              // under this env's namespace, both isol8-prod- and
-              // lightbulb-prod- prefixed. Narrows at step D.
-              Match.stringLikeRegexp(".*:table/\\*-prod-\\*$"),
+              Match.stringLikeRegexp(".*:table/lightbulb-prod-\\*$"),
+              Match.stringLikeRegexp(".*:table/lightbulb-prod-\\*/index/\\*$"),
             ]),
           }),
         ]),
       },
     });
+    const json = JSON.stringify(template.toJSON());
+    expect(json).not.toContain(":table/*-prod-");
+    expect(json).not.toContain(":table/lightbulb-dev-");
   });
 });

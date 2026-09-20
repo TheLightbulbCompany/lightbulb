@@ -19,7 +19,6 @@ import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import {
   allTableArns,
-  bothTableArns,
   alertTopicArn,
   resourcePrefix,
   tableName,

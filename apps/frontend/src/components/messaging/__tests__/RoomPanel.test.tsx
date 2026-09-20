@@ -913,3 +913,24 @@ it("offers Listening normally when the workspace is subscribed", async () => {
   expect(within(details.getByRole("combobox", { name: "Response for Friday" })).getByRole("option", { name: "Listening" })).toBeEnabled();
   expect(details.queryByRole("link", { name: "See plans" })).not.toBeInTheDocument();
 });
+
+
+it("exposes a working thread before its first reply, then keeps unique responder avatars", async () => {
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "thread-run", threadRootMessageId: message.messageId,
+    state: "running", text: "", thinking: "", tools: [] };
+  const view = render(<RoomPanel {...props} runs={[run]} />);
+  const activity = screen.getByRole("button", { name: "Reply in thread, Friday is working…" });
+  expect(within(activity).getByRole("img", { name: "Friday" })).toBeInTheDocument();
+  await userEvent.click(activity);
+  expect(within(screen.getByRole("complementary", { name: "Thread" })).getByRole("article", { name: "Live run from Friday" })).toBeInTheDocument();
+  view.rerender(<RoomPanel {...props} runs={[]} messages={[message,
+    { ...message, messageId: "reply-a", messageSeq: 2, threadRootMessageId: message.messageId },
+    { ...message, messageId: "reply-b", messageSeq: 3, threadRootMessageId: message.messageId },
+    { ...message, messageId: "reply-c", messageSeq: 4, author: { kind: "human", id: "owner", displayName: "Owner" }, threadRootMessageId: message.messageId },
+  ]} />);
+  const replies = screen.getByRole("button", { name: /^Reply in thread, 3 replies/ });
+  expect(within(replies).getAllByRole("img")).toHaveLength(2);
+  expect(within(replies).getByRole("img", { name: "Friday" })).toBeInTheDocument();
+  expect(within(replies).getByRole("img", { name: "Owner" })).toBeInTheDocument();
+  expect(replies).not.toHaveTextContent("working");
+});

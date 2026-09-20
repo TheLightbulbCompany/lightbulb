@@ -459,6 +459,18 @@ async def list_messages_before(room_id: str, before_seq: int, limit: int) -> lis
     return list(reversed(rows))
 
 
+async def list_messages_before_page(room_id: str, before_seq: int, limit: int) -> tuple[list[dict], int | None]:
+    """Return a newest-first window plus the cursor for older rows."""
+    if not 1 <= limit <= 100:
+        raise ValueError("limit must be 1..100")
+    if before_seq <= 1:
+        return [], None
+    rows = await _query(room_pk(room_id), between=(msg_sk(1), msg_sk(before_seq - 1)), ascending=False, limit=limit + 1)
+    page = list(reversed(rows[:limit]))
+    next_before = page[0]["messageSeq"] if len(rows) > limit else None
+    return page, next_before
+
+
 async def list_rooms_for_member(owner_id: str, kind: str, member_id: str) -> list[dict]:
     """DISCOVERY ONLY: membership rows from the ``by-member`` GSI, joined with a
     strongly consistent batch read of each room's ``META``. Callers must still

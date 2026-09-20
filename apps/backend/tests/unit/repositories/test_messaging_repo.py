@@ -359,6 +359,22 @@ async def test_messages_use_20_digit_seq_and_page_in_order(table):
 
 
 @pytest.mark.asyncio
+async def test_newest_page_and_older_cursor_are_exclusive(table):
+    room_id, _ = await _room()
+    for i in range(5):
+        await _post(room_id, text=f"t{i}", client_id=f"newest-{i}")
+    page, before = await repo.list_messages_before_page(room_id, 6, 2)
+    assert [m["messageSeq"] for m in page] == [4, 5] and before == 4
+    page, before = await repo.list_messages_before_page(room_id, before, 2)
+    assert [m["messageSeq"] for m in page] == [2, 3] and before == 2
+    page, before = await repo.list_messages_before_page(room_id, before, 2)
+    assert [m["messageSeq"] for m in page] == [1] and before is None
+    assert await repo.list_messages_before_page(room_id, 1, 2) == ([], None)
+    with pytest.raises(ValueError):
+        await repo.list_messages_before_page(room_id, 6, 101)
+
+
+@pytest.mark.asyncio
 async def test_message_transaction_writes_idemp_and_one_work_row_per_target(table):
     room_id, _ = await _room(
         members=[_member("human", USER_A, "owner"), _member("agent", FRIDAY), _member("agent", GAUGE)]

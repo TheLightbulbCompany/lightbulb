@@ -176,3 +176,34 @@ def test_secret_arn_paginates_secrets_manager():
 
     assert arn == "arn:target"
     fake_sm.get_paginator.assert_called_once_with("list_secrets")
+
+
+@pytest.mark.parametrize("membership_count", [1, 2])
+def test_refuses_identity_with_existing_company_memberships(membership_count):
+    with pytest.raises(SystemExit, match="membership"):
+        plan_recovery(
+            email="member@example.com",
+            aurora_rows=[{"id": "pc_existing", "email": "member@example.com", "membership_count": membership_count}],
+            ddb_failed_rows=[{"user_id": "new_clerk", "status": "failed"}],
+            member_user_id="new_clerk",
+        )
+
+
+def test_apply_aborts_before_ddb_delete_if_identity_gains_membership(monkeypatch):
+    import scripts.recover_orphan_paperclip_member as mod
+
+    client = MagicMock()
+    client.execute_statement.return_value = {"numberOfRecordsUpdated": 0}
+    monkeypatch.setattr(mod, "_aurora", lambda env: (client, "db", "secret"))
+    monkeypatch.setattr(mod, "_aurora_users", lambda *args: [{"id": "pc_existing", "email": "m@example.com"}])
+    monkeypatch.setattr(mod, "_ddb_failed_rows", lambda *args: [{"user_id": "user_m", "status": "failed"}])
+    monkeypatch.setattr(
+        mod.sys, "argv", ["recovery", "--env", "dev", "--email", "m@example.com", "--user-id", "user_m", "--apply"]
+    )
+    ddb = MagicMock()
+    monkeypatch.setattr(mod.boto3, "client", lambda *args, **kwargs: ddb)
+    with pytest.raises(SystemExit, match="REFUSING"):
+        mod.main()
+    assert "NOT EXISTS" in client.execute_statement.call_args.kwargs["sql"]
+    assert "company_memberships" in client.execute_statement.call_args.kwargs["sql"]
+    ddb.delete_item.assert_not_called()

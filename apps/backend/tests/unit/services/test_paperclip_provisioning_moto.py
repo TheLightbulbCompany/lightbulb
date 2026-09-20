@@ -1632,3 +1632,94 @@ async def test_provision_member_repoints_personal_row_when_already_a_paperclip_m
     # Adopted, not re-signed-up: the member already had a Better Auth account.
     admin.sign_up_user.assert_not_awaited()
     assert persisted.paperclip_user_id == "pc_user_member"
+
+
+@pytest.mark.parametrize("member", [False, True], ids=["owner", "member"])
+@pytest.mark.parametrize("crashed", [False, True], ids=["lost-response", "crashed"])
+async def test_signup_retry_authenticates_with_credentials_saved_before_request(repo, member, crashed):
+    """The remote account can exist even when its creation never returns."""
+    from core.encryption import decrypt
+
+    if member:
+        await _seed_owner(repo)
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    user_id = "user_member" if member else "user_owner"
+    email = "new@acme.test"
+    signup_password = None
+
+    async def signup(**kwargs):
+        nonlocal signup_password
+        if signup_password is None:
+            signup_password = kwargs["password"]
+            pending = await repo.get(user_id, consistent_read=True)
+            assert decrypt(pending.paperclip_password_encrypted) == signup_password
+            assert pending.paperclip_email == email
+            if crashed:
+                raise KeyboardInterrupt("process died after remote account creation")
+            raise TimeoutError("response lost after remote account creation")
+        assert kwargs["password"] == signup_password
+        assert kwargs["email"] == email
+        raise PaperclipApiError("duplicate", 422, {"code": "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL"})
+
+    async def signin(**kwargs):
+        if kwargs["email"] == email:
+            assert kwargs["password"] == signup_password
+            return {"user": {"id": "pc_recovered"}, "_session_cookie": "member-cookie"}
+        return {"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-cookie"}
+
+    admin.sign_up_user.side_effect = signup
+    admin.sign_in_user.side_effect = signin
+
+    async def run(current_email):
+        if member:
+            return await prov.provision_member(
+                owner_id="org_acme", user_id=user_id, email=current_email, owner_email="owner@acme.test"
+            )
+        return await prov.provision_org(owner_id="org_acme", owner_user_id=user_id, owner_email=current_email)
+
+    with pytest.raises(KeyboardInterrupt if crashed else TimeoutError):
+        await run(email)
+    if crashed:
+        repo._table().update_item(
+            Key={"user_id": user_id},
+            UpdateExpression="SET seeding_claimed_at = :old",
+            ExpressionAttributeValues={":old": (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()},
+        )
+    # A Clerk email change during the retry must not discard the staged identity.
+    result = await run("changed@acme.test")
+    assert result.status == "active"
+    assert result.paperclip_user_id == "pc_recovered"
+    assert result.paperclip_email == email
+    assert decrypt(result.paperclip_password_encrypted) == signup_password
+    assert (await repo.get(user_id)).paperclip_user_id == "pc_recovered"
+    assert admin.accept_invite.await_args.kwargs["session_cookie"] == "member-cookie"
+    await run("changed@acme.test")
+    assert admin.sign_up_user.await_count == 2
+
+
+@pytest.mark.parametrize("member", [False, True], ids=["owner", "member"])
+async def test_duplicate_email_without_matching_staged_password_stays_failed(repo, member):
+    if member:
+        await _seed_owner(repo)
+    admin = _make_admin_mock()
+    admin.sign_up_user.side_effect = PaperclipApiError(
+        "duplicate", 422, {"code": "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL"}
+    )
+    admin.sign_in_user.side_effect = PaperclipApiError("wrong password", 401, {"code": "INVALID_EMAIL_OR_PASSWORD"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    user_id = "user_member" if member else "user_owner"
+    with pytest.raises(PaperclipApiError) as error:
+        if member:
+            await prov.provision_member(
+                owner_id="org_acme", user_id=user_id, email="collision@acme.test", owner_email="owner@acme.test"
+            )
+        else:
+            await prov.provision_org(owner_id="org_acme", owner_user_id=user_id, owner_email="collision@acme.test")
+    assert error.value.status_code == 422
+    row = await repo.get(user_id)
+    assert row.status == "failed"
+    assert not row.paperclip_user_id
+    admin.sign_in_user.assert_awaited_once()
+    admin.create_company.assert_not_awaited()
+    admin.create_invite.assert_not_awaited()

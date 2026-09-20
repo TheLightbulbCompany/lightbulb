@@ -141,3 +141,21 @@ async def test_changed_oauth_client_requires_reconnect_without_replacing_grant(s
     with pytest.raises(access_token.ReconnectRequired):
         await access_token.get("org_1", "sentry")
     assert saved == []
+
+
+@pytest.mark.asyncio
+async def test_malformed_successful_refresh_never_replaces_grant(stores, monkeypatch):
+    from core.services.credentials import access_token
+
+    row, credential, saved = stores
+    credential["token_expiry"] = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+
+    async def post(self, url, **kwargs):
+        return httpx.Response(200, request=httpx.Request("POST", url), json={"error": "invalid_grant"})
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+
+    with pytest.raises(access_token.ReconnectRequired):
+        await access_token.get("org_1", "sentry")
+    assert saved == []
+    assert row["status"] == "reconnect_required"

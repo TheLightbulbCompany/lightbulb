@@ -177,6 +177,8 @@ async def refresh(owner_id: str, provider_key: str, credential: dict) -> dict:
         resp = await http.post(p.oauth.token_url, data=data, headers={"Accept": "application/json"}, auth=auth)
         resp.raise_for_status()
         token = resp.json()
+    if not isinstance(token, dict) or not isinstance(token.get("access_token"), str) or not token["access_token"]:
+        raise ValueError(f"{provider_key} refresh returned no access token")
     expires_in = token.get("expires_in") or credential.get("expires_in")
     return {
         **credential,

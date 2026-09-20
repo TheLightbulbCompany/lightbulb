@@ -1,19 +1,22 @@
 // @vitest-environment jsdom
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 
 const get = vi.fn();
+const post = vi.fn();
 const state = vi.hoisted(() => ({
+  scope: "org-one",
   host: "agentcore" as "agentcore" | undefined,
   participants: [] as { agentActivity: string }[],
   runs: [] as { state: string }[],
 }));
 
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ orgId: state.scope, userId: "human" }) }));
 vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => state.host }));
 // Identity-stable, like the real `useApi()` (a `useMemo` over the Clerk token
 // getter) — a fresh object per render would re-fire the panel's mount fetch.
-const apiClient = { get };
+const apiClient = { get, post };
 vi.mock("@/lib/api", () => ({
   ApiError: class extends Error { constructor(public status: number) { super(); } },
   useApi: () => apiClient,
@@ -55,7 +58,9 @@ const RUNNING = [{ state: "running" }];
 beforeEach(() => {
   vi.useFakeTimers();
   get.mockReset();
+  post.mockReset();
   state.host = "agentcore";
+  state.scope = "org-one";
   state.runs = [];
   state.participants = [];
 });
@@ -84,6 +89,10 @@ describe("BrowserDockPanel", () => {
     get.mockResolvedValue({
       active: true,
       url: "https://signed",
+      sessionId: "s1",
+      generation: "g1",
+      mode: "agent",
+      canControl: true,
       expiresAt: "2026-09-19T00:05:00Z",
       remoteWidth: 1280,
       remoteHeight: 720,
@@ -109,23 +118,111 @@ describe("BrowserDockPanel", () => {
     render(<BrowserDockPanel />);
     await flush();
 
-    expect(screen.getByText(/no browser session running/i)).toBeInTheDocument();
+    expect(screen.getByText(/no shared browser session is running/i)).toBeInTheDocument();
     expect(screen.queryByTestId("dcv-live-view")).toBeNull();
+  });
+
+  it("explicitly starts an inactive shared browser and never starts on mount", async () => {
+    get.mockResolvedValue({ active: false, mode: "idle" });
+    render(<BrowserDockPanel />);
+    await flush();
+    expect(post).not.toHaveBeenCalled();
+    post.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: 1, mode: "human", isController: true, canControl: true });
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: 1, mode: "human", isController: true, canControl: true });
+    await act(async () => { screen.getByRole("button", { name: /start browser/i }).click(); });
+    expect(post).toHaveBeenCalledWith("/browser/start", {});
+    expect(screen.getByRole("button", { name: /done & stop/i })).toBeInTheDocument();
+  });
+
+  it("merges fresh control metadata while retaining the current signed URL", async () => {
+    get.mockResolvedValueOnce({ active: true, url: "https://signed/one", sessionId: "s1", generation: 1, mode: "agent", canControl: true })
+      .mockResolvedValue({ active: true, url: "https://signed/one?new", sessionId: "s1", generation: 2, mode: "human", isController: false, canControl: true });
+    render(<BrowserDockPanel />);
+    await flush();
+    await flush(5_000);
+    expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-signed-url", "https://signed/one");
+    expect(screen.getByRole("button", { name: /take control/i })).toBeInTheDocument();
+  });
+
+  it("does not let an older poll overwrite a newer controller mutation", async () => {
+    let resolvePoll!: (value: unknown) => void;
+    get.mockResolvedValueOnce({ active: true, url: "https://signed/one", sessionId: "s1", generation: 1, mode: "agent", canControl: true })
+      .mockReturnValueOnce(new Promise((resolve) => { resolvePoll = resolve; }));
+    render(<BrowserDockPanel />);
+    await flush();
+    post.mockResolvedValue({ active: true, url: "https://signed/one", sessionId: "s1", generation: 2, mode: "human", isController: true, canControl: true });
+    await flush(5_000);
+    await act(async () => { screen.getByRole("button", { name: /take control/i }).click(); });
+    resolvePoll({ active: true, url: "https://signed/one", sessionId: "s1", generation: 1, mode: "agent", canControl: true });
+    get.mockResolvedValue({ active: true, url: "https://signed/one", sessionId: "s1", generation: 2, mode: "human", isController: true, canControl: true });
+    await flush();
+    expect(screen.getByRole("button", { name: /done & stop/i })).toBeInTheDocument();
+  });
+
+  it("offers restart recovery for an errored browser and does not offer take control", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: 4, mode: "error", error: "session unavailable" });
+    render(<BrowserDockPanel />);
+    await flush();
+    expect(screen.getByRole("alert")).toHaveTextContent("session unavailable");
+    expect(screen.queryByRole("button", { name: /take control/i })).toBeNull();
+    post.mockResolvedValue({ active: true, url: "https://signed/new", sessionId: "s2", generation: 1, mode: "human", isController: true, canControl: true });
+    await act(async () => { screen.getByRole("button", { name: /restart browser/i }).click(); });
+    expect(post).toHaveBeenCalledWith("/browser/start", {});
+  });
+
+  it("keeps a legacy session visible without starting a second browser", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", generation: null });
+    render(<BrowserDockPanel />);
+    await flush();
+    expect(screen.getByTestId("dcv-live-view")).toBeInTheDocument();
+    expect(screen.getByText(/after this existing session finishes/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("navigates controller input with a normalized absolute URL", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true });
+    post.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true });
+    render(<BrowserDockPanel />);
+    await flush();
+    fireEvent.change(screen.getByRole("textbox", { name: /website address/i }), { target: { value: "example.com" } });
+    await act(async () => { fireEvent.submit(screen.getByRole("form", { name: /navigate shared browser/i })); });
+    await flush();
+    expect(post).toHaveBeenCalledWith("/browser/navigate", { generation: "g1", url: "https://example.com/" });
+  });
+
+  it("shows validation errors and makes no request for unsupported navigation URLs", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true });
+    render(<BrowserDockPanel />);
+    await flush();
+    fireEvent.change(screen.getByRole("textbox", { name: /website address/i }), { target: { value: "javascript:alert(1)" } });
+    await act(async () => { fireEvent.submit(screen.getByRole("form", { name: /navigate shared browser/i })); });
+    await flush();
+    expect(screen.getByRole("alert")).toHaveTextContent(/http/i);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("does not expose navigation controls to a noncontroller", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: false, canControl: false });
+    render(<BrowserDockPanel />);
+    await flush();
+    expect(screen.queryByRole("textbox", { name: /website address/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Go" })).toBeNull();
   });
 
   it("keeps a session connected between polls and reauthenticates for a new session", async () => {
     state.runs = RUNNING;
     const url = "https://browser.test/sessions/one/live-view?signature=first";
-    get.mockResolvedValue({ active: true, url });
+    get.mockResolvedValue({ active: true, url, sessionId: "s1", generation: "g1", mode: "agent", canControl: true });
     render(<BrowserDockPanel />);
     await flush();
-    get.mockResolvedValue({ active: true, url: url.replace("first", "second") });
+    get.mockResolvedValue({ active: true, url: url.replace("first", "second"), sessionId: "s1", generation: "g1", mode: "human", isController: false, canControl: true });
     await flush(5_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-signed-url", url);
     await flush(235_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", url.replace("first", "second"));
     const nextUrl = url.replace("/one/", "/two/");
-    get.mockResolvedValue({ active: true, url: nextUrl });
+    get.mockResolvedValue({ active: true, url: nextUrl, sessionId: "s2", generation: "g2", mode: "agent", canControl: true });
     await flush(5_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", nextUrl);
   });
@@ -139,20 +236,20 @@ describe("BrowserDockPanel", () => {
   });
 
   it("keeps discovering the end of a session found outside known runs", async () => {
-    get.mockResolvedValue({ active: true, url: "https://browser.test/sessions/other/live-view" });
+    get.mockResolvedValue({ active: true, url: "https://browser.test/sessions/other/live-view", sessionId: "s2", generation: "g2", mode: "agent", canControl: true });
     render(<BrowserDockPanel />);
     await flush();
     get.mockResolvedValue({ active: false });
     await flush(5_000);
-    expect(screen.getByText(/no browser session running/i)).toBeInTheDocument();
+    expect(screen.getByText(/no shared browser session is running/i)).toBeInTheDocument();
     await flush(30_000);
     expect(get).toHaveBeenCalledTimes(2);
   });
 
   it("retries a transient failure for a known session without losing the viewer", async () => {
-    get.mockResolvedValueOnce({ active: true, url: "https://browser.test/sessions/one/live-view" })
+    get.mockResolvedValueOnce({ active: true, url: "https://browser.test/sessions/one/live-view", sessionId: "s1", generation: "g1", mode: "agent", canControl: true })
       .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValue({ active: true, url: "https://browser.test/sessions/two/live-view" });
+      .mockResolvedValue({ active: true, url: "https://browser.test/sessions/two/live-view", sessionId: "s2", generation: "g2", mode: "agent", canControl: true });
     render(<BrowserDockPanel />);
     await flush(5_000);
     expect(screen.getByTestId("dcv-live-view")).toBeInTheDocument();
@@ -175,7 +272,7 @@ describe("BrowserDockPanel", () => {
   });
 
   it("clears the viewer and stops polling when access is revoked", async () => {
-    get.mockResolvedValueOnce({ active: true, url: "https://browser.test/sessions/one/live-view" })
+    get.mockResolvedValueOnce({ active: true, url: "https://browser.test/sessions/one/live-view", sessionId: "s1", generation: "g1", mode: "agent", canControl: true })
       .mockRejectedValue(new ApiError(403, {}));
     render(<BrowserDockPanel />);
     await flush(5_000);
@@ -184,10 +281,8 @@ describe("BrowserDockPanel", () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 
-  it("offers no take-control affordance", async () => {
-    // Take-control destroys the agent's automation session
-    // (aws/bedrock-agentcore-sdk-python#518), so the panel is watch-only.
-    get.mockResolvedValue({ active: true, url: "https://signed", expiresAt: null, remoteWidth: 1280, remoteHeight: 720 });
+  it("offers no take-control affordance when the backend denies control", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "agent", canControl: false, expiresAt: null, remoteWidth: 1280, remoteHeight: 720 });
 
     render(<BrowserDockPanel />);
     await flush();
@@ -206,4 +301,45 @@ describe("BrowserDockPanel", () => {
     expect(get).not.toHaveBeenCalled();
     expect(container).toBeEmptyDOMElement();
   });
+  it("refreshes the generation after a failed save and preserves the viewer for retry", async () => {
+    const human = { active: true, url: "https://browser.test/sessions/one/live-view", sessionId: "one", generation: "g1", mode: "human", isController: true, canControl: true };
+    get.mockResolvedValueOnce(human).mockResolvedValue({ ...human, generation: "g2" });
+    post.mockRejectedValue(new Error("Could not save"));
+    render(<BrowserDockPanel />);
+    await flush();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /done & hand back/i })); });
+    await flush();
+    expect(screen.getByTestId("dcv-live-view")).toBeInTheDocument();
+    expect(screen.getByText(/^Could not save/)).toBeInTheDocument();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /done & hand back/i })); });
+    expect(post).toHaveBeenLastCalledWith("/browser/control", { action: "release", generation: "g2" });
+  });
+
+  it("keeps a late pre-handoff poll from restoring the old controller", async () => {
+    const agent = { active: true, url: "https://browser.test/sessions/one/live-view", sessionId: "one", generation: "g1", mode: "agent", isController: false, canControl: true };
+    const human = { ...agent, generation: "g2", mode: "human", isController: true };
+    let resolveOld!: (value: typeof agent) => void;
+    get.mockResolvedValueOnce(agent).mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; })).mockResolvedValue(human);
+    post.mockResolvedValue(human);
+    render(<BrowserDockPanel />);
+    await flush(5_000);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /take control/i })); });
+    await flush();
+    await act(async () => { resolveOld(agent); });
+    expect(screen.getByRole("button", { name: /done & hand back/i })).toBeInTheDocument();
+    expect(screen.getByTestId("dcv-live-view").parentElement).not.toHaveAttribute("inert");
+  });
+
+  it("drops the previous workspace view even when the API client identity is unchanged", async () => {
+    get.mockResolvedValueOnce({ active: true, url: "https://browser.test/one", sessionId: "one", generation: "g1", mode: "human", isController: true }).mockResolvedValue({ active: false });
+    const panel = render(<BrowserDockPanel />);
+    await flush();
+    expect(screen.getByTestId("dcv-live-view")).toBeInTheDocument();
+    state.scope = "org-two";
+    panel.rerender(<BrowserDockPanel />);
+    await flush();
+    expect(screen.queryByTestId("dcv-live-view")).toBeNull();
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
 });

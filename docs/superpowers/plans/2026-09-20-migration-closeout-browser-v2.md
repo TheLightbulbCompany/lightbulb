@@ -82,7 +82,7 @@ Do not sweep live identifiers such as `X-Isol8-Public-Host`, existing session co
 
 ### 5. Browser v2 feasibility
 
-Proposed experience: a human can open a browser without an active agent turn, navigate and sign in, hand it to an agent, take it back, and retain supported authentication across sessions. Workspace-shared identity is a provisional assumption pending the user's answer; do not implement a sharing policy based on silence.
+Proposed experience: a human can open a browser without an active agent turn, navigate and sign in, hand it to an agent, take it back, and retain supported authentication across sessions. Workspace-shared browser sessions and saved sign-ins were approved by the user on 2026-09-20. Per-human isolation is deferred to the backlog; see `../specs/2026-09-20-browser-v2-design.md`. Cross-workspace authorization and control handoffs remain required.
 
 Current constraints: released `agent-browser` binary, no fork/custom provider; preserve profile-based ownership checks and short-lived live-view authorization. Current v1 ends sessions with the agent turn, so user-owned lifetime is a real lifecycle change.
 

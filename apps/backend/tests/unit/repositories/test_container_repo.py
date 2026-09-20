@@ -58,6 +58,26 @@ async def test_upsert_creates_new(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_browser_state_cas_fences_stale_writers_and_survives_upsert(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("org_browser", {"status": "running"})
+    first = {"generation": "first", "mode": "human"}
+    second = {"generation": "second", "mode": "idle"}
+    assert await container_repo.compare_browser_state("org_browser", None, first)
+    assert not await container_repo.compare_browser_state("org_browser", None, second)
+    assert await container_repo.compare_browser_state("org_browser", first, second)
+    assert not await container_repo.compare_browser_state("org_browser", first, {"mode": "idle"})
+    await container_repo.upsert("org_browser", {"status": "running"})
+    assert await container_repo.get_browser_state("org_browser") == second
+    await container_repo.delete("org_browser")
+    assert not await container_repo.compare_browser_state("org_browser", second, first)
+    await container_repo.upsert("org_browser", {"status": "running"})
+    assert await container_repo.get_browser_state("org_browser") == second
+    assert not await container_repo.compare_browser_state("org_missing", None, first)
+
+
+@pytest.mark.asyncio
 async def test_upsert_preserves_id_and_created_at(dynamodb_table):
     from core.repositories import container_repo
 

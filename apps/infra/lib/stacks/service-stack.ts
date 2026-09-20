@@ -438,10 +438,9 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // AgentCore Browser: the backend mints/reads the per-workspace profile and discovers the
-    // live session itself (design §2c -- nothing in the runtime reports one). No
-    // StopBrowserSession and no UpdateBrowserStream: the backend never stops a session and
-    // human takeover ships in no version of this plan.
+    // AgentCore Browser: the backend mints/reads the per-workspace profile, drives the
+    // workspace-owned session handoff, and discovers live sessions itself. Browser-profile
+    // state snapshots use the released agent-browser CLI; no SaveBrowserSessionProfile grant.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "AgentCoreBrowserManage",
@@ -463,6 +462,28 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:GetBrowserSession",
           "bedrock-agentcore:ListBrowserSessions",
           "bedrock-agentcore:ConnectBrowserLiveViewStream",
+        ],
+        resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
+      }),
+    );
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AgentCoreBrowserSessionStart",
+        actions: ["bedrock-agentcore:StartBrowserSession"],
+        resources: [
+          agentcoreArn("browser/*"),
+          `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`,
+          agentcoreArn("browser-profile/*"),
+        ],
+      }),
+    );
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AgentCoreBrowserSessionControl",
+        actions: [
+          "bedrock-agentcore:StopBrowserSession",
+          "bedrock-agentcore:UpdateBrowserStream",
+          "bedrock-agentcore:ConnectBrowserAutomationStream",
         ],
         resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
       }),
@@ -822,6 +843,7 @@ export class ServiceStack extends cdk.Stack {
         resources: [
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/hermes/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/marketplace-installs/*`,
+          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/browser-state/*`,
         ],
       }),
     );

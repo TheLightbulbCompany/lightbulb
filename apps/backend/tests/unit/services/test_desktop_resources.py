@@ -277,6 +277,41 @@ def test_archive_header_decompression_is_bounded():
 
 
 @pytest.mark.parametrize(
+    "name,kind,count",
+    [
+        ("../outside", tarfile.REGTYPE, 1),
+        ("link", tarfile.SYMTYPE, 1),
+        ("private/secret", tarfile.REGTYPE, 1),
+        ("extra", tarfile.REGTYPE, 1001),
+    ],
+)
+def test_archive_rejects_nonzero_headers_after_first_tar_eof(name, kind, count):
+    import gzip
+    from core.services.desktop_resources import validate_archive
+
+    def tar_bytes(prefix, entry_kind, entries):
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            for index in range(entries):
+                entry = tarfile.TarInfo(f"{prefix}-{index}")
+                entry.type = entry_kind
+                if entry_kind == tarfile.SYMTYPE:
+                    entry.linkname = "/outside"
+                archive.addfile(entry)
+        return buffer.getvalue()
+
+    first = tar_bytes("safe", tarfile.REGTYPE, 1)
+    second = tar_bytes(name, kind, count)
+    policy = {"readRoots": ["/approved"], "writeRoots": [], "denyRoots": ["/approved/private"]}
+    # Ordinary zero padding remains legal, including BSD tar's padded gzip.
+    validate_archive(gzip.compress(first + b"\0" * 1024) + b"\0" * 1024, "/approved", policy)
+    with tarfile.open(fileobj=io.BytesIO(first + second), mode="r:", ignore_zeros=True) as reader:
+        assert len(reader.getmembers()) == count + 1
+    with pytest.raises(execution.DesktopError, match="file_archive_invalid"):
+        validate_archive(gzip.compress(first + second), "/approved", policy)
+
+
+@pytest.mark.parametrize(
     "command,params",
     [
         ("file.fetch", {"path": "/approved/../secret"}),

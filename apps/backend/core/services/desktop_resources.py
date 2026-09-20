@@ -161,6 +161,10 @@ def validate_archive(data, root, policy):
                 ):
                     raise DesktopError("file_archive_invalid")
                 seen.add(path)
+            # Tar readers can resume past zero EOF blocks (ignore_zeros / tar -i).
+            # Only padding may follow the last validated member's padded boundary.
+            if unpacked[archive.offset :].strip(b"\0"):
+                raise DesktopError("file_archive_invalid")
     except (tarfile.TarError, OSError, EOFError, ValueError, zlib.error):
         raise DesktopError("file_archive_invalid") from None
 

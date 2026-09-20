@@ -40,9 +40,47 @@ answer). This smoke, run against the unmodified base, therefore asserts only:
 import os
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 PROBE = ("import sys; sys.path.insert(0,'/opt/hermes');"
          " from tools.browser_tool_install import _chromium_installed; print(_chromium_installed())")
+MODE_PROBE = r'''
+import os
+import sys
+from pathlib import Path
+
+sys.path[:0] = ["/opt/bridge", "/opt/hermes"]
+base = Path(os.environ["HERMES_HOME"])
+profile = base / "profiles" / "probe"
+profile.mkdir(parents=True)
+
+from bridge import sync
+sync.HOME = base
+from hermes_constants import set_hermes_home_override
+set_hermes_home_override(profile)
+
+# The standalone probe has no turn-scoped secret scope. Disable the multiplexer guard so this
+# checks only Browser Use's raw config selector, exactly as the first tool-catalog read does.
+from agent.secret_scope import set_multiplex_active
+set_multiplex_active(False)
+from tools.browser_use_cli import is_browser_use_cli_mode
+import yaml
+
+assert is_browser_use_cli_mode() is True  # absent raw browser key + uvx => original bug
+sync.normalize_profile_backends("probe")
+config = yaml.safe_load((profile / "config.yaml").read_text())
+assert config["browser"]["backend"] == "off"
+assert is_browser_use_cli_mode() is False
+
+(profile / "config.yaml").write_text(
+    "browser:\n  backend: browser-use\n  cloud_provider: agentcore\n"
+)
+sync.normalize_profile_backends("probe")
+config = yaml.safe_load((profile / "config.yaml").read_text())
+assert config["browser"] == {"backend": "off", "cloud_provider": "agentcore"}
+assert is_browser_use_cli_mode() is False
+'''
 
 
 def probe(env: dict) -> str:
@@ -60,5 +98,13 @@ assert probe({"AGENT_BROWSER_EXECUTABLE_PATH": sentinel}) == "True", (
 assert os.path.isdir(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/opt/hermes/.playwright")), (
     "the base no longer bundles Playwright -- the Dockerfile's rm is now a no-op, re-check ruling R13"
 )
+
+with tempfile.TemporaryDirectory() as home:
+    Path(home, "config.yaml").write_text("browser:\n  backend: off\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-c", MODE_PROBE], capture_output=True, text=True,
+        env={**os.environ, "HERMES_HOME": home},
+    )
+    assert result.returncode == 0, result.stderr
 
 print("PASS: browser gate")

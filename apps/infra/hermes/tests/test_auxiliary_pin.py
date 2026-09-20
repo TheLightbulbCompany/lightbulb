@@ -115,3 +115,18 @@ def test_pin_profile_defaults_leaves_local_or_missing_terminal_backend_as_local(
     monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
     config = sync.pin_profile_defaults("ceo", "aip-aux")
     assert config.get("terminal", {}).get("backend", "local") == "local"
+
+
+@pytest.mark.parametrize("browser", [None, {"backend": "browser-use", "cloud_provider": "agentcore", "engine": "auto"}])
+def test_pin_profile_defaults_enforces_managed_browser_backend_and_preserves_siblings(home, monkeypatch, browser):
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    sync.write_profile_config("ceo", {"browser": browser, "model": {"default": "aip-main"}})
+    monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
+
+    config = sync.pin_profile_defaults("ceo", "aip-aux")
+
+    assert config["browser"]["backend"] == "off"
+    assert config["model"] == {"default": "aip-main"}
+    if browser:
+        assert config["browser"]["cloud_provider"] == "agentcore"
+        assert config["browser"]["engine"] == "auto"

@@ -915,9 +915,13 @@ def plugins_pin(existing: dict) -> dict:
     return {"plugins": {"enabled": enabled}}
 
 
-def normalize_legacy_terminal_backend(agent_id: str) -> dict:
-    """Rewrite a legacy ``terminal.backend: lightbulb_node`` to ``local`` on disk, right now,
-    and return the (possibly rewritten) config.
+def normalize_profile_backends(agent_id: str) -> dict:
+    """Normalize legacy terminal config and enforce the managed browser backend on disk.
+
+    Hermes's Browser Use selector reads ``config.yaml`` through ``read_raw_config`` instead of
+    the managed-overlay-aware effective loader. Persisting ``browser.backend: off`` here keeps
+    that raw reader aligned with the platform policy before Hermes builds its tool catalog.
+    Other browser keys and all unrelated profile config remain unchanged.
 
     Pulled out of ``pin_profile_defaults`` (fix round, first-turn-after-an-image-roll bug) so a
     caller can run JUST this normalization -- no ``hermes_cli`` import, unlike the rest of
@@ -939,9 +943,16 @@ def normalize_legacy_terminal_backend(agent_id: str) -> dict:
     shell command at a Mac node that isn't attached.
     """
     existing = read_profile_config(agent_id)
+    changed = False
     terminal = existing.get("terminal")
     if isinstance(terminal, dict) and terminal.get("backend") == "lightbulb_node":
         existing = {**existing, "terminal": {**terminal, "backend": "local"}}
+        changed = True
+    browser = existing.get("browser")
+    if not isinstance(browser, dict) or browser.get("backend") != "off":
+        existing = {**existing, "browser": {**(browser if isinstance(browser, dict) else {}), "backend": "off"}}
+        changed = True
+    if changed:
         write_profile_config(agent_id, existing)
     return existing
 
@@ -968,12 +979,12 @@ def pin_profile_defaults(agent_id: str, model: str) -> dict:
     ``plugins.enabled`` stays a UNION regardless of merge direction: ``plugins_pin`` already
     computes it from whatever ``existing`` holds, and this second merge line is unchanged.
 
-    A legacy ``terminal.backend: lightbulb_node`` is normalized to ``local`` before ``existing``
-    is read by anything else -- see ``normalize_legacy_terminal_backend``'s own docstring for
+    Legacy terminal and managed browser backends are normalized before ``existing``
+    is read by anything else -- see ``normalize_profile_backends``'s own docstring for
     why that normalization is ALSO its own standalone function, called separately (and earlier)
     by ``bridge.turn._run_hermes``/``_run_native_paperclip``.
     """
-    existing = normalize_legacy_terminal_backend(agent_id)
+    existing = normalize_profile_backends(agent_id)
     config = deep_merge(auxiliary_pin(_aux_defaults(), model), existing)
     config = deep_merge(config, plugins_pin(existing))
     write_profile_config(agent_id, config)

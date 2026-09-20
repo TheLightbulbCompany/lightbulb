@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -51,15 +52,20 @@ def _valid_navigation_url(value: object) -> str:
     return value
 
 
-def _operation_env(cdp_url: str) -> dict[str, str]:
-    return {
-        key: value
-        for key in ("PATH", "HOME", "TMPDIR")
-        if isinstance((value := os.environ.get(key)), str) and value
-    } | {
-        "AGENT_BROWSER_CDP": cdp_url,
-        "AGENT_BROWSER_NAMESPACE": f"lb-{secrets.token_hex(3)}",
-    }
+@contextmanager
+def _operation_env(cdp_url: str):
+    # AgentCore runs UID 1000 with HOME=/; the CLI cannot create /.agent-browser.
+    # A private operation directory also keeps daemon files out of saved profiles.
+    with tempfile.TemporaryDirectory(prefix="lb-") as socket_dir:
+        yield {
+            key: value
+            for key in ("PATH", "HOME", "TMPDIR")
+            if isinstance((value := os.environ.get(key)), str) and value
+        } | {
+            "AGENT_BROWSER_CDP": cdp_url,
+            "AGENT_BROWSER_SOCKET_DIR": socket_dir,
+            "AGENT_BROWSER_NAMESPACE": f"lb-{secrets.token_hex(3)}",
+        }
 
 
 def _remaining(deadline: float, cap: float = COMMAND_TIMEOUT_S) -> float:
@@ -153,64 +159,64 @@ def checkpoint(params: dict) -> dict:
     state_url = _valid_url(params.get("stateUrl"), "https")
     previous_url = params.get("previousStateUrl")
     path: str | None = None
-    env = _operation_env(cdp_url)
-    deadline = time.monotonic() + OPERATION_TIMEOUT_S
-    load_body: bytes | None = None
-    origins: list[str] = []
-    try:
-        if action == "load":
-            load_body = _download(state_url, deadline)
-            origins = _state_origins(_valid_state(load_body))
-    except ValueError:
-        raise
-    except Exception:
-        raise RuntimeError("browser state checkpoint failed") from None
-    try:
-        with tempfile.NamedTemporaryFile(prefix="lightbulb-browser-", suffix=".json", mode="w+b", delete=False) as tmp:
-            path = tmp.name
-        os.chmod(path, 0o600)
-        if action == "save":
-            _run(env, "connect", cdp_url, deadline=deadline)
-            _run(env, "state", "save", path, deadline=deadline)
-            body = Path(path).read_bytes()
-            current = _valid_state(body)
-            # ponytail: this fresh client exports its visible origins; merging retains prior
-            # checkpoints. A persistent observer is needed for unsaved, closed-origin changes.
-            if previous_url:
-                previous = _valid_state(_download(_valid_url(previous_url, "https"), deadline))
-                current = _merge_state(current, previous)
-                body = json.dumps(current, separators=(",", ":")).encode()
-                if len(body) > MAX_STATE_BYTES:
-                    raise ValueError("browser state is too large")
-            _upload(state_url, body, deadline)
-            return {"ok": True, "bytes": len(body)}
-        if action == "load":
-            Path(path).write_bytes(load_body or b"")
-            _run(env, "connect", cdp_url, deadline=deadline)
-            # agent-browser 0.38.1's state load only adds cookies when the file has any;
-            # an empty saved jar must still replace, rather than inherit, profile cookies.
-            _run(env, "cookies", "clear", deadline=deadline)
-            # State load only sets listed keys. Clear every saved origin first so an empty
-            # localStorage snapshot remains an authoritative logout rather than a no-op.
-            for origin in origins:
-                _run(env, "open", origin, deadline=deadline)
-                _run(env, "storage", "local", "clear", deadline=deadline)
-            _run(env, "state", "load", path, deadline=deadline)
-            _run(env, "reload", deadline=deadline)
-            return {"ok": True, "bytes": 0}
-    except ValueError:
-        raise
-    except Exception as exc:
-        raise RuntimeError("browser state checkpoint failed") from None
-    finally:
-        if path:
-            try:
-                Path(path).unlink(missing_ok=True)
-            finally:
+    with _operation_env(cdp_url) as env:
+        deadline = time.monotonic() + OPERATION_TIMEOUT_S
+        load_body: bytes | None = None
+        origins: list[str] = []
+        try:
+            if action == "load":
+                load_body = _download(state_url, deadline)
+                origins = _state_origins(_valid_state(load_body))
+        except ValueError:
+            raise
+        except Exception:
+            raise RuntimeError("browser state checkpoint failed") from None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="lightbulb-browser-", suffix=".json", mode="w+b", delete=False) as tmp:
+                path = tmp.name
+            os.chmod(path, 0o600)
+            if action == "save":
+                _run(env, "connect", cdp_url, deadline=deadline)
+                _run(env, "state", "save", path, deadline=deadline)
+                body = Path(path).read_bytes()
+                current = _valid_state(body)
+                # ponytail: this fresh client exports its visible origins; merging retains prior
+                # checkpoints. A persistent observer is needed for unsaved, closed-origin changes.
+                if previous_url:
+                    previous = _valid_state(_download(_valid_url(previous_url, "https"), deadline))
+                    current = _merge_state(current, previous)
+                    body = json.dumps(current, separators=(",", ":")).encode()
+                    if len(body) > MAX_STATE_BYTES:
+                        raise ValueError("browser state is too large")
+                _upload(state_url, body, deadline)
+                return {"ok": True, "bytes": len(body)}
+            if action == "load":
+                Path(path).write_bytes(load_body or b"")
+                _run(env, "connect", cdp_url, deadline=deadline)
+                # agent-browser 0.38.1's state load only adds cookies when the file has any;
+                # an empty saved jar must still replace, rather than inherit, profile cookies.
+                _run(env, "cookies", "clear", deadline=deadline)
+                # State load only sets listed keys. Clear every saved origin first so an empty
+                # localStorage snapshot remains an authoritative logout rather than a no-op.
+                for origin in origins:
+                    _run(env, "open", origin, deadline=deadline)
+                    _run(env, "storage", "local", "clear", deadline=deadline)
+                _run(env, "state", "load", path, deadline=deadline)
+                _run(env, "reload", deadline=deadline)
+                return {"ok": True, "bytes": 0}
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("browser state checkpoint failed") from None
+        finally:
+            if path:
                 try:
-                    _run(env, "close", deadline=time.monotonic() + CLEANUP_TIMEOUT_S)
-                except Exception:
-                    pass
+                    Path(path).unlink(missing_ok=True)
+                finally:
+                    try:
+                        _run(env, "close", deadline=time.monotonic() + CLEANUP_TIMEOUT_S)
+                    except Exception:
+                        pass
 
 
 def navigate(params: dict) -> dict:
@@ -219,18 +225,18 @@ def navigate(params: dict) -> dict:
         raise ValueError("browser navigation params are required")
     cdp_url = _valid_url(params.get("cdpUrl"), "wss")
     url = _valid_navigation_url(params.get("url"))
-    env = _operation_env(cdp_url)
-    deadline = time.monotonic() + OPERATION_TIMEOUT_S
-    try:
-        _run(env, "connect", cdp_url, deadline=deadline)
-        _run(env, "open", url, deadline=deadline)
-        return {"ok": True}
-    except ValueError:
-        raise
-    except Exception:
-        raise RuntimeError("browser navigation failed") from None
-    finally:
+    with _operation_env(cdp_url) as env:
+        deadline = time.monotonic() + OPERATION_TIMEOUT_S
         try:
-            _run(env, "close", deadline=time.monotonic() + CLEANUP_TIMEOUT_S)
+            _run(env, "connect", cdp_url, deadline=deadline)
+            _run(env, "open", url, deadline=deadline)
+            return {"ok": True}
+        except ValueError:
+            raise
         except Exception:
-            pass
+            raise RuntimeError("browser navigation failed") from None
+        finally:
+            try:
+                _run(env, "close", deadline=time.monotonic() + CLEANUP_TIMEOUT_S)
+            except Exception:
+                pass

@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     "system.run.approve.v1",
+    "file.access.policy.v1",
     "system.notify",
     "screen.snapshot",
     "device.info",
@@ -199,6 +200,8 @@ class DesktopPermissionGrant:
             allowed.add("screen.snapshot")
         if self.shell:
             allowed.add("system.run.approve.v1")
+        if self.files:
+            allowed.add("file.access.policy.v1")
         return tuple(command for command in DESKTOP_MAC_COMMANDS if command in allowed)
 
     def cli_commands(self) -> tuple[str, ...]:

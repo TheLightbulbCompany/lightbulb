@@ -48,6 +48,41 @@ async def test_route_does_not_trust_hook_token_alone_or_member_headers(app):
             assert response.status_code == 403
 
 
+async def test_file_write_public_binary_boundary_and_internal_policy_secret(app):
+    import base64
+    import hashlib
+    from tests.unit.services.test_desktop_resources import Files
+    from tests.unit.services.test_desktop_execution import REQUEST
+
+    h = Files()
+    data = b"binary\x00" * 20000
+    digest = hashlib.sha256(data).hexdigest()
+    h.preflight["binding"] = {"kind": "write", "anchorPath": "/approved", "anchorDevice": "1", "anchorInode": "2"}
+    h.reply = {"ok": True, "path": "/approved/file.bin", "size": len(data), "sha256": digest, "overwritten": False}
+    request = REQUEST | {
+        "command": "file.write",
+        "params": {"path": "/approved/file.bin", "contentBase64": base64.b64encode(data).decode(), "sha256": digest},
+    }
+    with (
+        patch.object(service, "_operations", h.store),
+        patch.object(routes.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "hook"})),
+        patch.object(service, "authorize_run", AsyncMock(return_value=AUTH)),
+        patch.object(routes.settings, "WS_INTERNAL_SECRET", "internal"),
+    ):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/desktop-execution/operations",
+                json=request,
+                headers=HEADERS | {"X-Desktop-Admission": h.token()},
+            )
+            assert response.status_code == 200, response.text
+            await h.finish()
+            assert (await h.store.get(AUTH, response.json()["id"]))["state"] == "succeeded"
+            assert (
+                await client.post("/api/v1/desktop-execution/internal/file-policy", json={}, headers=HEADERS)
+            ).status_code == 403
+
+
 async def test_browser_upload_public_boundary_and_receipt_artifact_auth(app):
     import asyncio
     import base64

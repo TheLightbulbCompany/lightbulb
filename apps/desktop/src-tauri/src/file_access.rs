@@ -143,36 +143,22 @@ static STORE: OnceLock<Mutex<FileAccessStore>> = OnceLock::new();
 /// `~/Lightbulb/` seed entry on first run. Safe to call multiple times —
 /// only the first call does I/O.
 pub fn init() -> Result<(), FileAccessError> {
-    STORE.get_or_init(|| {
-        let initial = match load_from_disk() {
-            Ok(s) => s,
-            Err(e) => {
-                crate::log(&format!(
-                    "[file-access] load failed, seeding fresh: {}",
-                    e
-                ));
-                FileAccessStore::default()
-            }
-        };
-        Mutex::new(initial)
-    });
-    // Even if load succeeded, ensure the seed exists so a brand-new
-    // user doesn't see an empty allowlist and a confusing "no paths
-    // configured" error on first agent run.
-    ensure_default_seed()?;
+    if STORE.get().is_some() { return Ok(()); }
+    let (initial, seed) = load_initial_store(&store_file()?)?;
+    if STORE.set(Mutex::new(initial)).is_ok() && seed { ensure_default_seed()?; }
     Ok(())
 }
 
-fn load_from_disk() -> Result<FileAccessStore, FileAccessError> {
-    let p = store_file()?;
-    if !p.exists() {
-        return Ok(FileAccessStore {
+fn load_initial_store(path: &Path) -> Result<(FileAccessStore, bool), FileAccessError> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((FileAccessStore {
             version: STORE_VERSION,
             allowed_paths: Vec::new(),
-        });
-    }
-    let bytes = std::fs::read(&p)?;
-    Ok(serde_json::from_slice(&bytes)?)
+        }, true)),
+        Err(error) => return Err(error.into()),
+    };
+    Ok((serde_json::from_slice(&bytes)?, false))
 }
 
 fn save_to_disk(store: &FileAccessStore) -> Result<(), FileAccessError> {
@@ -210,6 +196,46 @@ pub fn list_paths() -> Vec<String> {
         return Vec::new();
     };
     arc.lock().expect("store poisoned").allowed_paths.clone()
+}
+
+/// Current local standing consent; never seed or repair while answering a remote call.
+pub fn execution_policy() -> Result<serde_json::Value, FileAccessError> {
+    read_execution_policy(&store_file()?)
+}
+
+fn read_execution_policy(path: &Path) -> Result<serde_json::Value, FileAccessError> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(FileAccessError::InvalidPath("policy must be a regular file".into()));
+    }
+    let mut bytes = Vec::new();
+    file.take(65537).read_to_end(&mut bytes)?;
+    if bytes.len() > 65536 {
+        return Err(FileAccessError::InvalidPath("policy too large".into()));
+    }
+    policy_from_store(&serde_json::from_slice(&bytes)?)
+}
+
+fn policy_from_store(store: &FileAccessStore) -> Result<serde_json::Value, FileAccessError> {
+    if store.version != STORE_VERSION || store.allowed_paths.is_empty() || store.allowed_paths.len() > 64 {
+        return Err(FileAccessError::InvalidPath("no current folder consent".into()));
+    }
+    for path in &store.allowed_paths {
+        let root = Path::new(path);
+        if !root.is_absolute() || root.parent().is_none() || !root.is_dir()
+            || std::fs::canonicalize(root)? != root {
+            return Err(FileAccessError::InvalidPath("approved root changed".into()));
+        }
+    }
+    Ok(serde_json::json!({"readRoots": store.allowed_paths, "writeRoots": store.allowed_paths, "denyRoots": []}))
 }
 
 /// Adds `path` to the allowlist (canonicalized). Returns the canonical
@@ -269,6 +295,43 @@ pub fn ensure_inside_allowlist(target: &Path) -> Result<(), FileAccessError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_policy_uses_current_grants_and_rejects_swapped_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("allowed");
+        std::fs::create_dir(&root).unwrap();
+        let canonical = std::fs::canonicalize(&root).unwrap().to_string_lossy().to_string();
+        let store = FileAccessStore { version: 1, allowed_paths: vec![canonical.clone()] };
+        let policy = policy_from_store(&store).unwrap();
+        assert_eq!(policy["readRoots"], serde_json::json!([canonical]));
+        assert_eq!(policy["writeRoots"], policy["readRoots"]);
+        let policy_file = dir.path().join("policy.json");
+        std::fs::write(&policy_file, serde_json::to_vec(&store).unwrap()).unwrap();
+        assert_eq!(read_execution_policy(&policy_file).unwrap(), policy);
+        std::fs::write(&policy_file, r#"{"version":1,"allowed_paths":[]}"#).unwrap();
+        assert!(read_execution_policy(&policy_file).is_err());
+        std::fs::write(&policy_file, "malformed").unwrap();
+        assert!(read_execution_policy(&policy_file).is_err());
+        assert!(policy_from_store(&FileAccessStore { version: 1, allowed_paths: vec![] }).is_err());
+        std::fs::remove_dir(&root).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.path(), &root).unwrap();
+        assert!(policy_from_store(&store).is_err());
+    }
+
+    #[test]
+    fn restart_does_not_restore_revoked_or_corrupt_folder_grants() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file_access.json");
+        assert!(load_initial_store(&path).unwrap().1);
+        std::fs::write(&path, r#"{"version":1,"allowed_paths":[]}"#).unwrap();
+        let (store, seed) = load_initial_store(&path).unwrap();
+        assert!(!seed);
+        assert!(store.allowed_paths.is_empty());
+        std::fs::write(&path, "corrupt").unwrap();
+        assert!(load_initial_store(&path).is_err());
+    }
 
     #[test]
     fn is_inside_basics() {

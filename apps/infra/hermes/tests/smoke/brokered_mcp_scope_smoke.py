@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from bridge import sync, turn
-from tools.mcp_tool import _load_mcp_config
+from tools.mcp_tool_config import _load_mcp_config
 
 
 with tempfile.TemporaryDirectory() as root:

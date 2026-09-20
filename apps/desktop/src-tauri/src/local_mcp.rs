@@ -42,6 +42,85 @@ pub fn config_path(state_dir: &Path) -> PathBuf {
     state_dir.join("openclaw.json")
 }
 
+/// Explicit local setup; preserve unrelated profiles, MCP and network policy.
+pub fn configure_browser(state_dir: &Path, extension: bool) -> Result<(), String> {
+    let mut config = read_config(state_dir)?;
+    let browser = entry_object(&mut config, "browser")?;
+    browser.insert("enabled".into(), Value::Bool(true));
+    let profiles = entry_object(browser, "profiles")?;
+    for (name, driver, port) in [("lightbulb", "openclaw", 18810), ("chrome", "extension", 18811)] {
+        if name == "chrome" && !extension { continue; }
+        if let Some(existing) = profiles.get(name) {
+            if existing.get("driver").and_then(Value::as_str).unwrap_or("openclaw") != driver {
+                return Err(format!("Existing {name} profile uses another driver; its settings were preserved."));
+            }
+        } else {
+            profiles.insert(name.into(), serde_json::json!({"driver":driver,"cdpPort":port,"headless":false}));
+        }
+    }
+    let proxy = entry_object(entry_object(&mut config, "nodeHost")?, "browserProxy")?;
+    let mut allowed = match proxy.get("allowProfiles") {
+        Some(Value::Array(list)) => list.clone(),
+        Some(_) => return Err("Browser profile allowlist is malformed; settings were preserved.".into()),
+        None => Vec::new(),
+    };
+    allowed.retain(|value| value.as_str() != Some("chrome"));
+    if !allowed.iter().any(|value| value.as_str() == Some("lightbulb")) {
+        allowed.push(Value::String("lightbulb".into()));
+    }
+    if extension { allowed.push(Value::String("chrome".into())); }
+    proxy.insert("enabled".into(), Value::Bool(true));
+    proxy.insert("allowProfiles".into(), Value::Array(allowed));
+    write_config(state_dir, &config)
+}
+
+pub fn browser_setup_status(state_dir: &Path) -> Result<Value, String> {
+    let config = Value::Object(read_config(state_dir)?);
+    let allowed = config.pointer("/nodeHost/browserProxy/allowProfiles").and_then(Value::as_array);
+    Ok(serde_json::json!({
+        "configured": config.pointer("/browser/profiles/lightbulb").is_some(),
+        "extensionEnabled": allowed.is_some_and(|list| list.iter().any(|v| v.as_str() == Some("chrome")))
+    }))
+}
+
+/// Reveal only the existing app-private relay pairing, after explicit local setup.
+/// The optional gateway hint is intentionally absent: our relay is node-local.
+pub fn browser_pairing(state_dir: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let config = Value::Object(read_config(state_dir)?);
+    if browser_setup_status(state_dir)?["extensionEnabled"] != true {
+        return Err("Enable the Chrome extension profile first.".into());
+    }
+    if config.pointer("/browser/profiles/chrome/driver").and_then(Value::as_str) != Some("extension") {
+        return Err("The Chrome profile is not an extension profile.".into());
+    }
+    let port = config.pointer("/browser/profiles/chrome/cdpPort").and_then(Value::as_u64)
+        .filter(|port| (1024..=65535).contains(port)).ok_or("Chrome relay port is not configured.")?;
+    let credentials = state_dir.join("credentials");
+    if std::fs::symlink_metadata(&credentials).map_err(|_| "Ask your agent for browser status on the chrome profile, then try again.")?.file_type().is_symlink() {
+        return Err("Refusing linked credentials directory.".into());
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(credentials.join("browser-extension-relay.secret"))
+        .map_err(|_| "Ask your agent for browser status on the chrome profile, then try again.")?;
+    if !file.metadata().map_err(|_| "Cannot inspect relay secret.")?.is_file() {
+        return Err("Invalid relay secret file.".into());
+    }
+    let mut secret = String::new();
+    file.take(66).read_to_string(&mut secret).map_err(|_| "Cannot read relay secret.")?;
+    let secret = secret.trim();
+    if secret.len() != 64 || !secret.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return Err("Invalid relay secret.".into());
+    }
+    Ok(format!("ws://127.0.0.1:{port}/extension#{secret}"))
+}
+
 /// Keep the app-private execution node separate from opt-in session sharing.
 /// OpenClaw 9.3 advertises these plugin commands by default, exceeding the
 /// paired device grant. Never widen that grant to approve local transcripts.
@@ -562,3 +641,29 @@ mod tests {
         );
     }
 }
+    #[test]
+    fn browser_setup_preserves_config_and_requires_explicit_extension_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = serde_json::json!({"browser":{"ssrfPolicy":{"allowedHostnames":["localhost"]}},
+            "nodeHost":{"mcp":{"servers":{"local":{"command":"hello"}}}}, "custom":true});
+        std::fs::write(config_path(dir.path()), original.to_string()).unwrap();
+        configure_browser(dir.path(), false).unwrap();
+        let config = Value::Object(read_config(dir.path()).unwrap());
+        assert_eq!(config["browser"]["ssrfPolicy"], original["browser"]["ssrfPolicy"]);
+        assert_eq!(config["nodeHost"]["mcp"], original["nodeHost"]["mcp"]);
+        assert_eq!(config["nodeHost"]["browserProxy"]["allowProfiles"], serde_json::json!(["lightbulb"]));
+        assert_eq!(config["browser"]["profiles"]["lightbulb"]["headless"], false);
+        configure_browser(dir.path(), true).unwrap();
+        let config = Value::Object(read_config(dir.path()).unwrap());
+        assert_eq!(config["nodeHost"]["browserProxy"]["allowProfiles"], serde_json::json!(["lightbulb", "chrome"]));
+        assert_eq!(config["browser"]["profiles"]["chrome"]["driver"], "extension");
+        assert_eq!(config["custom"], true);
+        let secret = "a".repeat(64);
+        assert!(browser_pairing(dir.path()).is_err());
+        let credentials = dir.path().join("credentials");
+        std::fs::create_dir(&credentials).unwrap();
+        std::fs::write(credentials.join("browser-extension-relay.secret"), &secret).unwrap();
+        assert_eq!(browser_pairing(dir.path()).unwrap(), format!("ws://127.0.0.1:18811/extension#{secret}"));
+        configure_browser(dir.path(), false).unwrap();
+        assert!(browser_pairing(dir.path()).is_err());
+    }

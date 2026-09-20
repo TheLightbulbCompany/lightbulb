@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from core.config import settings
 from core.repositories import container_repo
 from core.services import desktop_execution as service
+from core.services.desktop_browser import MAX_UPLOAD_REQUEST
 
 router = APIRouter()
 
@@ -47,18 +48,28 @@ async def _auth(request: Request, *, active: bool) -> dict:
     )
 
 
-async def _body(request: Request) -> dict:
+async def _body(request: Request, limit=service.MAX_REQUEST_BYTES) -> dict:
     data = bytearray()
     async for chunk in request.stream():
-        if len(data) + len(chunk) > service.MAX_REQUEST_BYTES:
+        if len(data) + len(chunk) > limit:
             raise service.DesktopError("request_too_large", 413)
         data.extend(chunk)
     try:
         body = json.loads(data)
     except ValueError:
+        if len(data) > service.MAX_REQUEST_BYTES:
+            raise service.DesktopError("request_too_large", 413) from None
         raise service.DesktopError("invalid_request") from None
     if not isinstance(body, dict):
         raise service.DesktopError("invalid_request")
+    candidate = body.get("request", body) if body.get("action") == "submit" else body
+    if len(data) > service.MAX_REQUEST_BYTES and not (
+        isinstance(candidate, dict)
+        and candidate.get("command") == "browser.proxy"
+        and isinstance(candidate.get("params"), dict)
+        and candidate["params"].get("action") == "upload"
+    ):
+        raise service.DesktopError("request_too_large", 413)
     return body
 
 
@@ -73,7 +84,9 @@ async def submit(request: Request):
     async with _boundary():
         # Existing duplicate receipts remain readable even after the run ends.
         auth = await _auth(request, active=False)
-        return await service.submit_desktop(auth, request.headers.get("x-desktop-admission", ""), await _body(request))
+        return await service.submit_desktop(
+            auth, request.headers.get("x-desktop-admission", ""), await _body(request, MAX_UPLOAD_REQUEST)
+        )
 
 
 @router.get("/operations/{receipt_id}")
@@ -88,6 +101,18 @@ async def cancel(receipt_id: str, request: Request):
         return await service.cancel_desktop(await _auth(request, active=False), receipt_id)
 
 
+@router.get("/operations/{receipt_id}/artifacts/{index}")
+async def artifact(receipt_id: str, index: int, request: Request, offset: int = 0):
+    async with _boundary():
+        return await service.route_operation(
+            "artifact",
+            await _auth(request, active=False),
+            receipt_id=receipt_id,
+            artifact_index=index,
+            artifact_offset=offset,
+        )
+
+
 @router.post("/internal")
 async def internal(request: Request):
     async with _boundary():
@@ -95,10 +120,10 @@ async def internal(request: Request):
         presented = request.headers.get("x-lightbulb-ws-internal", "")
         if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
             raise HTTPException(403, detail="forbidden")
-        body = await _body(request)
+        body = await _body(request, MAX_UPLOAD_REQUEST + 8192)
         action, auth = body.get("action"), body.get("auth")
         if (
-            action not in {"admit", "submit", "status", "cancel"}
+            action not in {"admit", "submit", "status", "cancel", "artifact"}
             or not isinstance(auth, dict)
             or set(auth) != service.AUTH_FIELDS
         ):
@@ -112,6 +137,8 @@ async def internal(request: Request):
                 else {"action", "auth", "receiptId"}
             )
         )
+        if action == "artifact":
+            allowed |= {"artifactIndex", "artifactOffset"}
         if set(body) != allowed:
             raise service.DesktopError("invalid_request")
         current = await service.authorize_run(
@@ -135,6 +162,8 @@ async def internal(request: Request):
             request=body.get("request"),
             receipt_id=body.get("receiptId", ""),
             forwarded=True,
+            artifact_index=body.get("artifactIndex"),
+            artifact_offset=body.get("artifactOffset"),
         )
 
 

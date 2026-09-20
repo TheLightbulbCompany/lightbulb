@@ -160,24 +160,37 @@ class NodeSession:
     def __init__(self, node_id: str, commands: set[str]) -> None:
         self.node_id, self.commands = node_id, set(commands)
         self.pending: dict[str, asyncio.Future] = {}
+        self.result_limits: dict[str, int] = {}
         self.send: asyncio.Queue[dict] = asyncio.Queue(maxsize=16)
         self.generation = ""
 
     async def invoke(
-        self, command: str, params: dict, timeout_ms: int, *, invoke_id: str | None = None, result_grace_ms: int = 0
+        self,
+        command: str,
+        params: dict,
+        timeout_ms: int,
+        *,
+        invoke_id: str | None = None,
+        result_grace_ms: int = 0,
+        browser_media: bool = False,
     ) -> dict:
         if command not in self.commands:
             raise CommandNotAllowed(command)
+        if browser_media and command != "browser.proxy":
+            raise ValueError("media budget is private to browser proxy")
         if len(self.pending) >= 8 or self.send.full():
             raise NodeCapacity()
         invoke_id = invoke_id or str(uuid.uuid4())
         if invoke_id in self.pending:
             raise NodeCapacity()
         frame = invoke_request(invoke_id, self.node_id, command, params, timeout_ms)
-        if len(frame["payload"]["paramsJSON"].encode()) > 16_384:
+        if len(frame["payload"]["paramsJSON"].encode()) > (
+            768 * 1024 if command == "browser.proxy.upload.v1" else 16_384
+        ):
             raise NodeCapacity()
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self.pending[invoke_id] = future
+        self.result_limits[invoke_id] = 6 * 1024 * 1024 if browser_media else 1024 * 1024
         self.send.put_nowait(frame)
         interrupted = False
         try:
@@ -190,6 +203,7 @@ class NodeSession:
             raise
         finally:
             self.pending.pop(invoke_id, None)
+            self.result_limits.pop(invoke_id, None)
             was_queued = self._drop_queued(invoke_id)
             if interrupted and not was_queued and not self.send.full():
                 self.send.put_nowait(
@@ -236,6 +250,7 @@ class NodeSession:
             if not future.done():
                 future.set_exception(exc)
         self.pending.clear()
+        self.result_limits.clear()
         while not self.send.empty():
             self.send.get_nowait()
 
@@ -250,7 +265,7 @@ class NodeSession:
                 # Bound every retained field together, even when payloadJSON and
                 # payload/error coexist. Check before nested decoding/resolution.
                 size = len(json.dumps(params).encode())
-                if size > 1024 * 1024:
+                if size > self.result_limits.get(str(params.get("id") or ""), 1024 * 1024):
                     future.set_exception(NodeResultTooLarge())
                     return ack(str(frame.get("id") or ""))
                 payload = params.get("payload")

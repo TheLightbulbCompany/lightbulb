@@ -1,7 +1,7 @@
 """Finite, process-local desktop receipts. Losing the process never authorizes replay.
 
-Native probes, notifications, bounded snapshots and explicitly approved shell commands.
-Files, browser and MCP still require their own policy; grants alone are not policy.
+Native probes, notifications, bounded snapshots, explicitly approved shell commands
+and scoped browser actions. General files and MCP still require their own policy.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ MAX_BODY_BYTES = 8 * MAX_RESULT_BYTES
 MAX_REQUEST_BYTES = 16_384
 SAFE_COMMANDS = frozenset({"device.info", "device.status", "device.health", "device.permissions"})
 APPROVAL_COMMAND = "system.run.approve.v1"
-PUBLIC_COMMANDS = SAFE_COMMANDS | {"system.run", "system.notify", "screen.snapshot"}
+PUBLIC_COMMANDS = SAFE_COMMANDS | {"system.run", "system.notify", "screen.snapshot", "browser.proxy"}
 ACTIVE = frozenset({"queued", "pending_approval", "running", "cancel_requested"})
 AUTH_FIELDS = {"ownerId", "memberId", "runId", "agentId", "family", "roomId"}
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
@@ -73,7 +73,14 @@ def validate_request(request: dict) -> dict:
             raise DesktopError("invalid_request")
     try:
         request["requestId"] = str(uuid.UUID(request["requestId"]))
-        if len(_json(request)) > MAX_REQUEST_BYTES:
+        from core.services.desktop_browser import MAX_UPLOAD_REQUEST
+
+        upload = (
+            request.get("command") == "browser.proxy"
+            and isinstance(request.get("params"), dict)
+            and request["params"].get("action") == "upload"
+        )
+        if len(_json(request)) > (MAX_UPLOAD_REQUEST if upload else MAX_REQUEST_BYTES):
             raise ValueError()
     except (ValueError, TypeError, AttributeError, OverflowError):
         raise DesktopError("invalid_request") from None
@@ -83,6 +90,10 @@ def validate_request(request: dict) -> dict:
     command = request["command"]
     if not isinstance(command, str):
         raise DesktopError("unsupported_command", 422)
+    if command == "browser.proxy":
+        from core.services.desktop_browser import validate
+
+        return json.loads(_json(request | {"params": validate(request["params"])}))
     if command in {"system.notify", "screen.snapshot"}:
         params = request["params"]
         if not isinstance(params, dict):
@@ -163,6 +174,9 @@ class DesktopOperations:
         self.cancel_dispatch, self.authorize, self.clock, self.enabled = cancel, authorize, clock, enabled
         self.epoch = str(uuid.uuid4())
         self.companion = companion
+        from core.services.desktop_browser import BrowserScopes
+
+        self.browser = BrowserScopes()
         self.records: dict[str, dict] = {}
         self.tasks: dict[str, asyncio.Task] = {}
 
@@ -265,6 +279,7 @@ class DesktopOperations:
                         completed=now,
                     )
             if row.get("completed") is not None and now > row["completed"] + BODY_SECONDS:
+                row.pop("_artifacts", None)
                 if "result" in row:
                     row.pop("result")
                     row.update(state="unknown", error={"code": "result_expired"})
@@ -307,6 +322,7 @@ class DesktopOperations:
         if (
             len(retained) >= MAX_IDENTITIES
             or sum(r["state"] in ACTIVE or r["id"] in self.tasks for r in retained) >= MAX_ACTIVE
+            or sum(self._retained_bytes(r) for r in retained) + len(_json(request)) > MAX_BODY_BYTES
         ):
             raise DesktopError("desktop_capacity", 429)
         row = {
@@ -351,6 +367,11 @@ class DesktopOperations:
                 },
             )
         finally:
+            if row["request"]["command"] == "browser.proxy":
+                for file in row["request"]["params"].get("args", {}).get("files", []):
+                    file.pop("contentBase64", None)
+            if row["state"] != "succeeded":
+                row.pop("_artifacts", None)
             if row.get("pendingInvoke"):
                 target, invoke_id = row["pendingInvoke"]
                 try:
@@ -376,6 +397,8 @@ class DesktopOperations:
             raise DesktopError("admission_expired", 409)
         if row["request"]["command"] == "system.run":
             result = await self._shell(row, target)
+        elif row["request"]["command"] == "browser.proxy":
+            result = await self.browser.execute(self, row, target)
         else:
             row.update(state="running", dispatched=True)
             result = await self._phase(row, target, row["request"], row["invokeId"])
@@ -392,13 +415,40 @@ class DesktopOperations:
         else:
             row.update(state="failed", error={"code": "node_failed"}, result=result.get("error"))
         # Evict result bodies, never accepted identities, to meet the socket budget.
-        bodies = [r for r in self.records.values() if r["socket"] == row["socket"] and "result" in r]
-        total = sum(len(_json(r["result"])) for r in bodies)
+        self.trim_bodies(row["socket"])
+
+    def trim_bodies(self, socket):
+        retained = [r for r in self.records.values() if r["socket"] == socket]
+        bodies = [r for r in retained if "result" in r]
+        total = sum(self._retained_bytes(r) for r in retained)
         for old in bodies:
             if total <= MAX_BODY_BYTES:
                 break
-            total -= len(_json(old.pop("result")))
+            total -= len(_json(old.pop("result"))) + sum(len(v) for v in old.pop("_artifacts", []))
             old.update(state="unknown", error={"code": "result_expired"})
+        return total
+
+    @staticmethod
+    def _retained_bytes(row):
+        return (
+            len(_json(row["request"])) + len(_json(row.get("result"))) + sum(len(v) for v in row.get("_artifacts", []))
+        )
+
+    async def artifact(self, auth, receipt_id, index, offset):
+        from core.services.desktop_browser import CHUNK_BYTES
+
+        self.receipt_claims(auth, receipt_id)
+        self._prune()
+        row = self.records.get(receipt_id)
+        if not row or row["state"] != "succeeded" or "_artifacts" not in row:
+            raise DesktopError("artifact_expired", 410)
+        if type(index) is not int or not 0 <= index < len(row["_artifacts"]) or type(offset) is not int:
+            raise DesktopError("invalid_artifact_request")
+        binary = row["_artifacts"][index]
+        if not 0 <= offset <= len(binary) or offset % CHUNK_BYTES:
+            raise DesktopError("invalid_artifact_request")
+        chunk = binary[offset : offset + CHUNK_BYTES]
+        return {"id": index, "offset": offset, "bytes": len(binary), "base64": base64.b64encode(chunk).decode()}
 
     async def _phase(self, row, target, request, invoke_id):
         if row["state"] in {"cancel_requested", "unknown"}:
@@ -693,6 +743,12 @@ async def _dispatch(target, request, invoke_id):
             request["executionDeadlineMs"],
             invoke_id=invoke_id,
             result_grace_ms=RESULT_GRACE_SECONDS * 1000,
+            **(
+                {"browser_media": True}
+                if request["command"] == "browser.proxy"
+                and request["params"].get("path") in {"/screenshot", "/pdf", "/download"}
+                else {}
+            ),
         )
     except NodeResultTooLarge:
         raise DesktopError("result_too_large", 413) from None
@@ -860,7 +916,15 @@ async def _forward(address: str, body: dict, *, forwarded=False) -> dict:
 
 
 async def route_operation(
-    action: str, auth: dict, *, admission_token="", request=None, receipt_id="", forwarded=False
+    action: str,
+    auth: dict,
+    *,
+    admission_token="",
+    request=None,
+    receipt_id="",
+    forwarded=False,
+    artifact_index=None,
+    artifact_offset=None,
 ) -> dict:
     if action == "submit":
         request = validate_request(request)
@@ -871,6 +935,8 @@ async def route_operation(
     else:
         claims = store.receipt_claims(auth, receipt_id)
         body = {"action": action, "auth": auth, "receiptId": receipt_id}
+        if action == "artifact":
+            body |= {"artifactIndex": artifact_index, "artifactOffset": artifact_offset}
     if claims["address"] != store.address:
         return await _forward(claims["address"], body, forwarded=forwarded)
     if action == "submit":
@@ -879,6 +945,8 @@ async def route_operation(
         return await store.get(auth, receipt_id)
     if action == "cancel":
         return await store.cancel(auth, receipt_id)
+    if action == "artifact":
+        return await store.artifact(auth, receipt_id, artifact_index, artifact_offset)
     raise DesktopError("invalid_action")
 
 

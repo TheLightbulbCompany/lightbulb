@@ -31,6 +31,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx;
                                  apps/backend/core/services/browser_sessions.py; apps/infra/hermes/Dockerfile (agent-browser pin).
   - Control Panel tabs ...... references/surfaces.md
+  - Paired Mac browser ...... references/surfaces.md
+                              <- apps/backend/core/services/{desktop_execution,desktop_browser}.py;
+                                 apps/infra/hermes/plugins/lightbulb/desktop_browser.py;
+                                 apps/desktop/src-tauri/src/local_mcp.rs;
+                                 apps/frontend/src/components/desktop/LocalBrowserSetup.tsx.
   - Shared local sessions ... references/platform-primitives.md + references/surfaces.md
                               <- apps/infra/hermes/bridge/ + apps/infra/hermes/plugins/lightbulb/__init__.py
                                  (lightbulb_local_sessions); apps/backend/core/services/{local_session_grants,local_sessions,local_session_relay,openclaw_work}.py;

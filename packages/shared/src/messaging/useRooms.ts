@@ -418,6 +418,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
             roomId: activeRoomId,
             agentId: seed.agentId,
             runId: seed.runId,
+            triggerMessageId: seed.triggerMessageId,
             threadRootMessageId: null,
             text: "",
             thinking: "",
@@ -544,6 +545,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
           roomId: payload.roomId,
           agentId: payload.agentId,
           runId: payload.runId,
+          triggerMessageId: previous?.triggerMessageId,
           threadRootMessageId: payload.threadRootMessageId ?? previous?.threadRootMessageId ?? null,
           text: frame.type === "chunk" ? accumulateStreamText(previous?.text ?? "", frame) : previous?.text ?? "",
           thinking: frame.type === "thinking" ? accumulateStreamText(previous?.thinking ?? "", frame) : previous?.thinking ?? "",
@@ -892,10 +894,15 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
    * was re-running on every render of the surface, including every keystroke in
    * the composer and every streamed chunk.
    */
-  const visibleRuns = useMemo(() => [...runs.values()].filter((run) => !messages.some((message) =>
+  const messagesById = useMemo(() => new Map(messages.map(message => [message.messageId, message])), [messages]);
+  const visibleRuns = useMemo(() => [...runs.values()].filter((run) => run.state === "running" || !messages.some((message) =>
     message.runId === run.runId ||
-    (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim()))),
-  [runs, messages]);
+    (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim()))).map(run => {
+    // Recover thread placement from history already loaded, without another HTTP/DB read.
+    if (run.threadRootMessageId || !run.triggerMessageId || activeRoom?.kind === "dm") return run;
+    const trigger = messagesById.get(run.triggerMessageId);
+    return { ...run, threadRootMessageId: trigger?.threadRootMessageId ?? run.triggerMessageId };
+  }), [runs, messages, messagesById, activeRoom?.kind]);
   const abortRun = useCallback((runId: string) => messaging.abortRun(runId), [messaging]);
   const steerRun = useCallback((runId: string, text: string) => messaging.steerRun(runId, { text }), [messaging]);
 

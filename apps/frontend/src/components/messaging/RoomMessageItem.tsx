@@ -13,7 +13,7 @@ import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomImageAttachments } from "./RoomImageAttachments";
 import { RoomMessageContent } from "./RoomMessageContent";
-import type { RoomMessage, RoomParticipant } from "./types";
+import type { DirectoryParticipant, RoomMessage, RoomParticipant } from "./types";
 import type { RoomPanelProps } from "./RoomPanel";
 
 interface RoomMessageItemProps {
@@ -30,6 +30,8 @@ interface RoomMessageItemProps {
   replyCount: number;
   /** The newest reply's `createdAt`, for "N replies · last reply {relative}". */
   lastReplyAt?: string;
+  threadParticipants?: readonly DirectoryParticipant[];
+  workingNames?: readonly string[];
   highlighted: boolean;
   mentionsViewer: boolean;
   markdown: Partial<Components>;
@@ -46,10 +48,13 @@ interface RoomMessageItemProps {
   menuExtras?: ReactNode;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+  const working = workingNames.length ? `${workingNames.join(", ")} ${workingNames.length === 1 ? "is" : "are"} working…` : "";
+  const replyLabel = replyCount > 0 ? `${replyCount} ${replyCount === 1 ? "reply" : "replies"}` : "";
+  const threadLabel = [replyLabel, working || (lastReplyAt ? `last reply ${timeAgo(lastReplyAt)}` : "")].filter(Boolean).join(" · ");
   const appliedReactions = Object.entries(message.reactions ?? {}).filter(([, users]) => users.length > 0);
   const actions = ((!message.deletedAt && onToggleReaction) || !inThread || toolbarExtras) ? <>
     {!message.deletedAt && onToggleReaction && <>
@@ -86,9 +91,15 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       </div>}
       {reactionError && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
       {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} />}
-      {!inThread && replyCount > 0 && onOpenThread && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
-        aria-label={`Reply in thread, ${replyCount} ${replyCount === 1 ? "reply" : "replies"}${lastReplyAt ? ` · last reply ${timeAgo(lastReplyAt)}` : ""}`}
-        onClick={(event) => onOpenThread(event.currentTarget)}>{replyCount} {replyCount === 1 ? "reply" : "replies"}{lastReplyAt && ` · last reply ${timeAgo(lastReplyAt)}`}</Button>}
+      {!inThread && (replyCount > 0 || working) && onOpenThread && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
+        aria-label={`Reply in thread, ${threadLabel}`}
+        onClick={(event) => onOpenThread(event.currentTarget)}>
+        <span className="room-reply-avatars">{threadParticipants.slice(0, 4).map(member =>
+          <ParticipantAvatar key={`${member.kind}:${member.id}`} participant={{ ...member, agentActivity: undefined }} size="xs" showPresence={false} />)}
+          {threadParticipants.length > 4 && <span className="text-xs text-muted-foreground">+{threadParticipants.length - 4}</span>}
+        </span>
+        <span role={working ? "status" : undefined}>{threadLabel}</span>
+      </Button>}
     </div>
   </article>;
 }

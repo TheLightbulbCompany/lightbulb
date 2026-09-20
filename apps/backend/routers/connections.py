@@ -261,6 +261,7 @@ def _connection_row(
     """
     live = connected.get(key)
     requestable = not live and not registry.available_for(v, owner_id)
+    runtime_unavailable = not live and not apply_connection.runtime_supported(v)
     return {
         "provider": key,
         "display_name": v.display_name,
@@ -271,7 +272,7 @@ def _connection_row(
         # bundled skill. The UI badges the row with it so a connected CLI
         # integration isn't mistaken for a broken MCP one.
         "actor": v.actor,
-        "status": "unavailable" if requestable else (live or "disconnected"),
+        "status": "unavailable" if requestable or runtime_unavailable else (live or "disconnected"),
         "requestable": requestable,
         # byo_required: provider has no managed app, owner must bring one.
         # byo_configured: whether THIS owner has stored their own app.
@@ -999,6 +1000,8 @@ async def _start_oauth(owner_id: str, provider: str, *, origin: str | None = Non
     p = _get_provider_or_404(provider, owner_id)
     if p.acquisition != "direct_oauth":
         raise HTTPException(status_code=400, detail=f"{provider} is not an OAuth integration")
+    if not apply_connection.runtime_supported(p):
+        raise HTTPException(status_code=503, detail=f"{p.display_name} is not available on this runtime yet")
     if p.byo_required and not await _byo_active(owner_id, provider):
         raise HTTPException(status_code=400, detail=f"Set up your own {p.display_name} app before connecting")
     # The OAuth dance hits the provider's endpoints (incl. Dynamic Client

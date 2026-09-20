@@ -1,6 +1,6 @@
 # Hermes Integration Credentials Design
 
-**Status:** Proposed for owner review
+**Status:** Approved by owner; implementation in progress
 
 **Goal:** Make every advertised integration verifiably usable from the pinned Hermes runtime while giving every credential one explicit owner, storage location, delivery path, lifetime, and deletion path.
 
@@ -98,13 +98,22 @@ The repository gets one provider-independent contract harness plus the smallest 
 - Stop marking a provider connected when projection or adapter support is missing.
 - Hide Vercel and QuickBooks from new connections until their Hermes adapters pass verification.
 
-### 2. Add the broker boundary
+### 2. Run the AgentCore Identity decision spike
+
+- Use one dev-only bearer-token OAuth provider to prove consent, token retrieval, refresh, workspace binding, scheduled/background retrieval, disconnect, and deletion.
+- Confirm whether an existing Lightbulb refresh token can be imported without reconnecting.
+- Confirm a single workspace grant can be deleted without deleting the shared provider configuration or leaving AWS-held credential material behind.
+- Record the tested API behavior and quotas. If import or individual deletion is unsupported, keep Secrets Manager as the authority and use Identity only after AWS closes those lifecycle gaps.
+
+The spike happens before provider migrations so Lightbulb does not build two provider-specific refresh implementations. It does not block the fail-closed fixes and it does not make Identity the system of record before the complete lifecycle passes.
+
+### 3. Add the broker boundary
 
 - Add the runtime credential endpoint with workspace, roster-agent, provider, and connection checks.
 - Add bridge materialization and cleanup around a turn.
 - Add redaction and tests proving secrets never enter logs, room messages, profile uploads, or exports.
 
-### 3. Move existing rails
+### 4. Move existing rails
 
 - Remote OAuth MCP: backend-owned refresh token, ephemeral bearer access token.
 - Static/stdio MCP: canonical secret in Secrets Manager, ephemeral env/file delivery.
@@ -115,19 +124,19 @@ The repository gets one provider-independent contract harness plus the smallest 
 
 After a provider passes, delete its old credential objects from every S3 agent profile and force the next turn to restore without them. Migration scripts are one-shot and are deleted with their tests after the backfill, per repository policy.
 
-### 4. Make readiness visible
+### 5. Make readiness visible
 
 - Drive Connections UI from the new state model.
 - Add the provider lifecycle harness and dev smoke run.
 - Update the bundled Lightbulb integration reference to describe Hermes rails and remove OpenClaw-era paths.
 
-### 5. Connect onboarding
+### 6. Connect onboarding
 
 After the first message establishes the brief, identify only the capabilities the selected agent needs. Ask an admin to authorize those capabilities, verify them through that agent, then resume the original work. Do not add a connect-everything wizard.
 
-### 6. Pilot AgentCore Identity
+### 7. Expand AgentCore Identity
 
-Pilot one bearer-token OAuth provider after the broker contract passes using Secrets Manager. Keep the same runtime-facing broker interface and replace only the authority behind it. Verify consent binding, workspace sharing, scheduled work, refresh, revocation, runtime replacement, and disconnect. Expand only if the Identity implementation reduces custody code without weakening deletion or audit behavior.
+If the decision spike passed the complete lifecycle, use Identity as the authority for new grants from that provider behind the same runtime-facing broker interface. Expand provider by provider only when the adapter and lifecycle contract pass. If the spike failed, retain its evidence and do not add an Identity abstraction that has no production implementation.
 
 ## Google
 

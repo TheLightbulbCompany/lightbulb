@@ -38,6 +38,12 @@ Read the current catalog live:
   their tools in your toolset, CLI integrations by the binary's own auth
   check in your shell.
 
+The catalog omits integrations whose credential delivery is unsupported by
+the current Hermes runtime. An older connection can still appear Connected
+in Connections so its owner can disconnect it; that status alone does not
+prove your tool or CLI can use it. If it is absent from the catalog, do not
+ask the owner to reconnect it as a workaround.
+
 **A connected MCP integration's tools can be temporarily missing.** The tool
 list reflects the live session catalog; if an MCP server failed to start
 (e.g. a connect timeout under load), its tools drop out silently even though
@@ -123,4 +129,3 @@ the platform can't do.
 - Some capabilities ship as **click-to-connect skills** that sit disabled in
   the agent profile until the owner connects the backing service — same
   redirect applies.
-

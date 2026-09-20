@@ -47,6 +47,12 @@ def hermes_clear(monkeypatch):
     return mock
 
 
+@pytest.fixture(autouse=True)
+def _no_real_byo_secret_reads(monkeypatch):
+    """Catalog tests should not fetch a real OAuth app from Secrets Manager."""
+    monkeypatch.setattr(connections.oauth_app_store, "get", AsyncMock(return_value=None))
+
+
 class TestValidateToken:
     """``_validate_token`` builds the Authorization header from the per-provider
     validate ``auth_scheme`` (vercel_cli = ``Bearer <key>``) and sends the
@@ -496,6 +502,28 @@ class TestEnvGatedProvider:
         row = connections._connection_row("instagram", p, connected={}, byo=False, owner_id="org_other")
         assert row["requestable"] is True
         assert row["status"] == "unavailable"
+
+    @pytest.mark.parametrize("provider", ("stripe", "vercel_cli"))
+    def test_unsupported_hermes_provider_is_unavailable_for_new_connections(self, provider):
+        p = registry.get_provider(provider)
+        row = connections._connection_row(provider, p, connected={}, byo=False, owner_id="org_1")
+        assert row["requestable"] is False
+        assert row["status"] == "unavailable"
+
+    def test_existing_unsupported_connection_remains_visible_for_disconnect(self):
+        p = registry.get_provider("stripe")
+        row = connections._connection_row("stripe", p, connected={"stripe": "connected"}, byo=False, owner_id="org_1")
+        assert row["requestable"] is False
+        assert row["status"] == "connected"
+
+    @pytest.mark.asyncio
+    async def test_unsupported_oauth_does_not_start_provider_consent(self, monkeypatch):
+        started = AsyncMock()
+        monkeypatch.setattr(connections.oauth_dance, "start", started)
+        with pytest.raises(connections.HTTPException) as exc:
+            await connections._start_oauth("org_1", "stripe")
+        assert exc.value.status_code == 503
+        started.assert_not_awaited()
 
     def test_allowlisted_owner_is_not_requestable(self, monkeypatch):
         monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")

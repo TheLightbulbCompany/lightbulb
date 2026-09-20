@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1190" height="825" viewBox="0 0 1190 825" role="img" aria-labelledby="title desc">
+<title id="title">Lightbulb current architecture</title><desc id="desc">Messages pass through FastAPI, DynamoDB, a FIFO work queue, and a workspace Hermes runtime. S3 stores agent files, Step Functions handles provisioning, and AWS hosts the remote browser separately.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#52637a"/></marker></defs>
+<rect width="1190" height="825" fill="#f6f8fb"/>
+<g stroke="#52637a" stroke-width="2" fill="none" marker-end="url(#arrow)">
+<path d="M595 125 V175"/>
+<path d="M595 255 V305"/>
+<path d="M595 385 V435"/>
+<path d="M595 515 V565"/>
+<path d="M595 645 V695"/>
+<path d="M365 215 H440"/>
+<path d="M365 345 H440"/>
+<path d="M365 475 H440"/>
+<path d="M440 605 H365" marker-start="url(#arrow)"/>
+<path d="M750 345 H825"/>
+<path d="M750 605 H825"/>
+</g>
+<rect x="440" y="45" width="310" height="80" rx="12" fill="#ffffff" stroke="#a7b5c6"/>
+<text x="595" y="77" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" fill="#172b45" font-weight="600">Web · desktop · mobile</text>
+<text x="595" y="102" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#172b45" font-weight="400">Human workspace</text>
+<rect x="440" y="175" width="310" height="80" rx="12" fill="#e8f1ff" stroke="#a7b5c6"/>
+<text x="595" y="207" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" fill="#172b45" font-weight="600">FastAPI platform backend</text>
+<text x="595" y="232" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#172b45" font-weight="400">API Gateway → ALB → shared ECS</text>
+<rect x="440" y="305" width="310" height="80" rx="12" fill="#ffffff" stroke="#a7b5c6"/>
+<text x="595" y="337" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" fill="#172b45" font-weight="600">DynamoDB</text>
+<text x="595" y="362" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#172b45" font-weight="400">Messages + WORK outbox</text>
+<rect x="440" y="435" width="310" height="80" rx="12" fill="#ffffff" stroke="#a7b5c6"/>
+<text x="595" y="467" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" fill="#172b45" font-weight="600">EventBridge Pipe → FIFO SQS</text>
+<text x="595" y="492" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#172b45" font-weight="400">Backend work consumer</text>
+<rect x="440" y="565" width="310" height="80" rx="12" fill="#e8f1ff" stroke="#a7b5c6"/>
+<text x="595" y="597" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" fill="#172b45" font-weight="600">AgentCore Runtime</text>
+<text x="595" y="622" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#172b45" font-weight="400">Hermes + bridge · per workspace</text>
+<rect x="440" y="695" width="310" height="80" rx="12" fill="#ffffff" stroke="#a7b5c6"/>
+<text x="595" y="727" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" fill="#172b45" font-weight="600">Model provider</text>
+<text x="595" y="752" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#172b45" font-weight="400">Bedrock · ChatGPT OAuth · BYO</text>
+<rect x="55" y="175" width="310" height="80" rx="12" fill="#ffffff" stroke="#a7b5c6"/>
+<text x="210" y="207" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" fill="#172b45" font-weight="600">Clerk</text>
+<text x="210" y="232" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#172b45" font-weight="400">Identity + workspace access</text>
+<rect x="55" y="305" width="310" height="80" rx="12" fill="#ffffff" stroke="#a7b5c6"/>
+<text x="210" y="337" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" fill="#172b45" font-weight="600">Paperclip + Aurora</text>
+<text x="210" y="362" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#172b45" font-weight="400">Team coordination</text>
+<rect x="55" y="435" width="310" height="80" rx="12" fill="#ffffff" stroke="#a7b5c6"/>
+<text x="210" y="467" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" fill="#172b45" font-weight="600">Step Functions</text>
+<text x="210" y="492" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#172b45" font-weight="400">Provisioning watchdog</text>
+<rect x="55" y="565" width="310" height="80" rx="12" fill="#ffffff" stroke="#a7b5c6"/>
+<text x="210" y="597" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" fill="#172b45" font-weight="600">S3 profiles</text>
+<text x="210" y="622" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#172b45" font-weight="400">Per-agent memory + files</text>
+<rect x="825" y="305" width="310" height="80" rx="12" fill="#ffffff" stroke="#a7b5c6"/>
+<text x="980" y="337" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" fill="#172b45" font-weight="600">AppSync Events</text>
+<text x="980" y="362" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#172b45" font-weight="400">Live updates to clients</text>
+<rect x="825" y="565" width="310" height="80" rx="12" fill="#ffffff" stroke="#a7b5c6"/>
+<text x="980" y="597" text-anchor="middle" font-family="Arial, sans-serif" font-size="17" fill="#172b45" font-weight="600">AgentCore Browser</text>
+<text x="980" y="622" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#172b45" font-weight="400">Separate Chromium sandbox</text>
+<text x="825" y="410" font-family="Arial, sans-serif" font-size="14" fill="#52637a">AppSync returns events to clients.</text>
+<text x="825" y="675" font-family="Arial, sans-serif" font-size="14" fill="#52637a">DCV video goes directly to the client.</text>
+<text x="55" y="785" font-family="Arial, sans-serif" font-size="13" fill="#52637a">Source + AWS verification: 2026-09-20 · Provisioning is separate from the normal message path · No active EFS mounts</text>
+</svg>

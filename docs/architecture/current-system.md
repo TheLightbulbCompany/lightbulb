@@ -4,6 +4,11 @@ Verified against source `0bc33fb6a1569e63f781f69dc14fe2655e73edab` and read-only
 
 ## The system at a glance
 
+![Lightbulb architecture](current-system.svg)
+
+<details>
+<summary>Detailed Mermaid diagram source</summary>
+
 ```mermaid
 flowchart TD
     Human[Human: web / desktop / mobile]
@@ -11,6 +16,7 @@ flowchart TD
     API[API Gateway → VPC Link → ALB → FastAPI on shared ECS]
     DDB[(DynamoDB: messages and platform metadata)]
     Events[AppSync Events: live delivery]
+    Work[EventBridge Pipe → FIFO SQS → backend work consumer]
     SFN[Step Functions: provisioning watchdog]
     Provision[Provision runner: backend child process or recovery ECS task]
     Paperclip[Paperclip: team coordination]
@@ -33,7 +39,9 @@ flowchart TD
     Provision --> Runtime
     API <--> Paperclip
     Paperclip <--> Aurora
-    API -->|InvokeAgentRuntime| Runtime
+    DDB -->|WORK outbox rows| Work
+    Work -->|InvokeAgentRuntime| Runtime
+    API -->|runtime commands| Runtime
     Runtime -->|reply / lifecycle / usage hooks| API
     Runtime <--> S3
     Runtime <--> Model
@@ -42,15 +50,19 @@ flowchart TD
     Browser -.->|direct DCV live view| Human
 ```
 
+</details>
+
 ## What happens when you send a message
 
 1. The client sends a Clerk-authenticated command. FastAPI derives workspace ownership and checks access; the client cannot nominate an arbitrary owner.
 2. DynamoDB is the canonical ordered message store. AppSync delivers live updates to subscribed clients. Chat clients do not connect directly to Hermes.
-3. The backend invokes the workspace's AgentCore runtime. The bridge restores the target agent's profile and runs Hermes with that agent's context and credentials.
+3. Work outbox rows feed an EventBridge Pipe and FIFO SQS queue. The backend work consumer invokes the workspace's AgentCore runtime. The bridge restores the target agent's profile and runs Hermes with that agent's context and credentials.
 4. Hermes calls the selected model and tools. AgentCore hosts execution; it is not the model provider. Friday's verified production path used ChatGPT OAuth with `gpt-5.6-sol`.
 5. Replies, attachments, lifecycle and usage travel back through authenticated backend hooks. Mutable agent profile state is synchronized to S3.
 
 Source: [runtime transport](../../apps/backend/core/services/runtime_transport.py), [bridge turn](../../apps/infra/hermes/bridge/turn.py), [profile synchronization](../../apps/infra/hermes/bridge/sync.py).
+
+The queue separates accepting a message from executing it. The message projector and work dispatcher independently consume DynamoDB changes; live delivery does not wait for the agent to finish. The worker is still named [`openclaw_work.py`](../../apps/backend/core/services/openclaw_work.py), but it dispatches to Hermes.
 
 ## Isolation and durable state
 
@@ -92,6 +104,14 @@ Live checks in `us-east-1` found two backend tasks and one Paperclip task in eac
 One retained filesystem, `fs-0d6e8fc1351dce5c8`, remains with 24,576 reported bytes, zero mount targets and zero access points. It is not an active mount in those workloads. This is a scoped observation, not an all-region inventory or approval to discard historical data.
 
 OpenClaw-shaped module names and stored identifiers can remain live compatibility contracts. Their names alone do not imply an old agent runtime is still running.
+
+## Billing, credentials, and other entry points
+
+Stripe handles subscriptions and marketplace payments. Subscription/provider/credit gates decide whether a turn may run. Runtime usage callbacks update DynamoDB analytics counters; metered Bedrock billing flows through the meter Lambda and Metronome, not those analytics counters. ChatGPT OAuth and BYO-key inference use their configured provider paths.
+
+AWS Secrets Manager holds BYO keys and platform secrets. Credential materializers project the owner's permitted credentials into the appropriate agent profile. Paperclip owns team coordination, while DynamoDB remains the platform's message and metadata store; neither database replaces the other.
+
+Scheduled work and external integrations enter through their existing backend services and eventually the runtime transport. The paired-device gateway is a separate machine protocol, not a human chat connection or the new DCV browser stream. Restoring desktop-node execution is separately assigned backlog work; retained gateway infrastructure alone does not establish end-to-end desktop execution readiness.
 
 ## Delivery and remaining work
 

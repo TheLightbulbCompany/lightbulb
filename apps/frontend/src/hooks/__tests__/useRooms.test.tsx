@@ -534,7 +534,7 @@ describe("useRooms canonical reconciliation", () => {
     // channel only ever delivered future messages, and any gap is closed by the
     // afterSeq reconciliation exercised further down this test.
     await waitFor(() => expect(result.current.messages.map((message) => message.messageSeq)).toEqual([1]));
-    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, { signal: expect.any(AbortSignal) });
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, { beforeSeq: 2, signal: expect.any(AbortSignal) });
 
     live.liveConnected = true;
     live.liveChannels = [`/users/private`, `/rooms/${room.roomId}/${room.deliveryKey}`];

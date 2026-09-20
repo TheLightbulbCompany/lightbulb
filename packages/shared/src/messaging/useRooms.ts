@@ -83,6 +83,8 @@ export interface UseRoomsOptions {
   subscribeToRoom?: boolean;
   /** Select rooms[0] when nothing is active (the web sidebar's behaviour). */
   autoSelect?: boolean;
+  /** Web's older-page control opts in; mobile keeps full history until its UI supports paging. */
+  boundedHistory?: boolean;
 }
 
 export type UseRoomsResult = ReturnType<typeof useRooms>;
@@ -96,7 +98,7 @@ const failureMessage = (error: unknown, fallback: string): string =>
   error instanceof Error && error.message ? error.message : fallback;
 
 export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {}) {
-  const { initialAgentId = null, subscribeToRoom = true, autoSelect = true } = options;
+  const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, boundedHistory = false } = options;
   const { userId, orgId, live, isVisible, onVisibilityChange, uuid } = platform;
   const {
     messaging,
@@ -417,7 +419,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     try {
       const page = await messaging.listMessages(roomId, 0, 100, { beforeSeq: messagesRef.current[0].messageSeq, signal: controller.signal });
       if (generation.current !== runGeneration || pageAbort.current !== controller) return;
-      applyMessages(roomId, mergeCanonicalMessages(messagesRef.current, page.messages), page.nextBeforeSeq === null);
+      applyMessages(roomId, mergeCanonicalMessages(messagesRef.current, page.messages.filter((message) => message.roomId === roomId)), page.nextBeforeSeq === null);
       setHistoryComplete(page.nextBeforeSeq === null);
     } catch (error) {
       if (generation.current === runGeneration && pageAbort.current === controller) setHistoryErrorMessage(failureMessage(error, HISTORY_FAILED));
@@ -530,6 +532,11 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       void reconcile(lastSequence(cached.messages)).catch(() => {});
       return;
     }
+    if (!boundedHistory) {
+      initialStarted.current = activeRoomId;
+      void reconcile(0).catch(() => {});
+      return;
+    }
     const summary = rooms.find((room) => room.roomId === activeRoomId);
     const newest = summary?.lastMessageSeq ?? activeRoom?.lastMessageSeq;
     if (newest === undefined) return;
@@ -542,11 +549,12 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     setHistoryLoading(true);
     void messaging.listMessages(activeRoomId, 0, 100, { beforeSeq: newest + 1, signal: controller.signal }).then((page) => {
       if (generation.current !== runGeneration || initialRequest.current !== request) return;
-      applyMessages(activeRoomId, mergeCanonicalMessages(page.messages, messagesRef.current), page.nextBeforeSeq === null);
+      const valid = page.messages.filter((message) => message.roomId === activeRoomId);
+      applyMessages(activeRoomId, mergeCanonicalMessages(valid, messagesRef.current), page.nextBeforeSeq === null);
       setHistoryComplete(page.nextBeforeSeq === null);
       pageAbort.current = null;
       initialPending.current = false;
-      const after = editDuringInitial.current ? 0 : lastSequence(page.messages);
+      const after = editDuringInitial.current ? 0 : lastSequence(valid);
       editDuringInitial.current = false;
       void reconcile(after).catch(() => {});
     }).catch((error) => {
@@ -562,7 +570,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     // user or workspace change empties the cache above, and without re-running
     // this the timeline would stay empty until some unrelated event happened to
     // re-trigger it.
-  }, [scope, activeRoomId, accessRemoved, reconcile, rooms, activeRoom?.lastMessageSeq, messaging, applyMessages]);
+  }, [scope, activeRoomId, accessRemoved, boundedHistory, reconcile, rooms, activeRoom?.lastMessageSeq, messaging, applyMessages]);
 
   // Preserve socket/user-channel reconnect catch-up, including offline reads.
   useEffect(() => {

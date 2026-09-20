@@ -94,7 +94,9 @@ Long rooms start with the newest 100 canonical messages; the Load older
 messages control pages backward and preserves the visible row while prepending.
 Search, old permalinks, and thread opening can request full history. A pending
 reaction disables controls across the loaded room, while Markdown message bodies
-remain memoized. The legacy
+remain memoized. The shared hook applies this bound only when the web adapter
+opts in; native mobile retains full history until its own room UI supports
+older-page loading. The legacy
 `.chat-transcript` containment rule does not cover `.room-history`; applying it
 without checking scroll geometry and hover-toolbar clipping is unverified.
 

@@ -8,7 +8,10 @@ import type { CanonicalRoomMessage, LiveEvent, MessagePage, RoomDetail, RoomSect
 import { createMessagingClient } from "./client";
 import type { ApiCallOptions, ApiMethods } from "../api/client";
 import { ApiError } from "../api/error";
-import { useRooms, type RoomsLiveSource, type RoomsPlatform } from "./useRooms";
+import { useRooms as useSharedRooms, type RoomsLiveSource, type RoomsPlatform, type UseRoomsOptions } from "./useRooms";
+
+const useRooms = (platform: RoomsPlatform, options: UseRoomsOptions = {}) =>
+  useSharedRooms(platform, { boundedHistory: true, ...options });
 
 const room: RoomDetail = {
   roomId: "room-1", workspaceId: "ws-1", name: "Launch", kind: "channel", roomRevision: 1, deliveryKey: "key-1",

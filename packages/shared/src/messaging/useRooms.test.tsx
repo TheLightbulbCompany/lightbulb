@@ -4,7 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
 import type { ReactNode } from "react";
 import type { CanonicalRoomMessage, LiveEvent, MessagePage, RoomDetail, RoomSection, RunStatusResponse } from "../index";
-import { useRooms, type RoomsLiveSource, type RoomsPlatform } from "./useRooms";
+import type { ApiCallOptions } from "../api/client";
+import { useRooms as useSharedRooms, type RoomsLiveSource, type RoomsPlatform, type UseRoomsOptions } from "./useRooms";
+
+const useRooms = (platform: RoomsPlatform, options: UseRoomsOptions = {}) =>
+  useSharedRooms(platform, { boundedHistory: true, ...options });
 
 const room: RoomDetail = {
   roomId: "room-1", name: "Launch", kind: "channel", roomRevision: 1, deliveryKey: "key-1",
@@ -24,7 +28,7 @@ const handlers = new Set<(event: LiveEvent) => void>();
 const messaging = {
   listRooms: vi.fn(async () => ({ rooms: [room], sections: [] as RoomSection[] })),
   getRoom: vi.fn<(roomId: string) => Promise<RoomDetail>>(async () => room),
-  listMessages: vi.fn<(roomId: string, afterSeq: number, limit?: number) => Promise<MessagePage>>(
+  listMessages: vi.fn<(roomId: string, afterSeq: number, limit?: number, options?: ApiCallOptions & { beforeSeq?: number }) => Promise<MessagePage>>(
     async () => ({ messages: [message], nextAfterSeq: null, nextBeforeSeq: null }),
   ),
   markRead: vi.fn<(roomId: string, request: { lastReadSeq: number }) => Promise<{ roomId: string; lastReadSeq: number }>>(
@@ -83,6 +87,13 @@ beforeEach(() => {
 });
 
 describe("useRooms platform seams", () => {
+  it("keeps full history for callers without an older-page control", async () => {
+    const { result } = renderHook(() => useSharedRooms(platform()), { wrapper });
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, { signal: expect.any(AbortSignal) });
+    expect(messaging.listMessages.mock.calls.some(([, , , options]) => options?.beforeSeq !== undefined)).toBe(false);
+  });
+
   it("marks read only while the platform reports itself visible", async () => {
     visible = false;
     const { result } = renderHook(() => useRooms(platform()), { wrapper });

@@ -632,6 +632,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     }
     if (event.type === "room.member.updated") { refreshRoomsSoon(); return; }
     if (event.type === "room.message.reactions.changed" && event.payload.roomId === activeRoomId) {
+      // Reactions must not extend the paged window and move its older cursor.
+      if (boundedHistory && !messagesRef.current.some((message) => message.messageId === event.payload.messageId)) return;
       applyMessages(activeRoomId, mergeCanonicalMessages(messagesRef.current, [event.payload]));
       return;
     }
@@ -678,7 +680,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
         return new Map(current).set(key, next);
       });
     }
-  }), [activeRoomId, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon, clearPersistedOptimistic, removeActiveAccess]);
+  }), [activeRoomId, boundedHistory, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon, clearPersistedOptimistic, removeActiveAccess]);
 
   useEffect(() => {
     if (typing.size === 0) return;

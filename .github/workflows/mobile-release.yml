@@ -98,7 +98,11 @@ jobs:
             --non-interactive \
             --output "$RUNNER_TEMP/lightbulb.ipa"
 
-      - name: Submit to TestFlight
+      # EAS accepted the 0.4.3 archive in 11s, then its remote submission sat
+      # "Submitting" until this job's 90-minute timeout killed the runner. The
+      # upload is already durable once scheduled; Apple/TestFlight processing is
+      # asynchronous, so do not hold the signed-build runner open waiting for it.
+      - name: Schedule TestFlight submission
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
@@ -107,7 +111,8 @@ jobs:
             --platform ios \
             --profile production \
             --path "$RUNNER_TEMP/lightbulb.ipa" \
-            --non-interactive
+            --non-interactive \
+            --no-wait
 
       # Persistent runner: never leave the ASC key or a signed .ipa on disk.
       - name: Clean up API key + artifact

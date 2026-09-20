@@ -364,3 +364,39 @@
 /* Below 860px the column is full width (see the .room-panel.room-has-context
    > .room-context rule at max-width: 859px) -- nothing left to drag against. */
 @media (max-width: 859px) { .room-column-grip { display: none; } }
+
+/* ── Onboarding setup band ──────────────────────────────────────────────────
+   Sits beside .room-intro in the timeline's leading slot, in the starter
+   channel only. Cards are plain buttons so keyboard and screen-reader
+   behaviour is the platform's, not ours. */
+.onboarding-band { display: grid; gap: 12px; padding: 8px 0 24px; max-width: 72ch; }
+.onboarding-band-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.onboarding-band-head h3 { font-size: 0.9375rem; font-weight: 700; }
+.onboarding-band-head p { margin-top: 2px; color: var(--muted-foreground); font-size: 0.875rem; }
+.onboarding-band-dismiss { flex: none; color: var(--muted-foreground); }
+
+.onboarding-band-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.onboarding-band-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+/* One column under ~640px — four cards at phone width are unreadable. */
+@media (max-width: 640px) {
+  .onboarding-band-grid, .onboarding-band-actions { grid-template-columns: minmax(0, 1fr); }
+}
+
+.onboarding-card {
+  display: grid; gap: 4px; padding: 12px; text-align: left;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--card);
+  transition: border-color 120ms var(--ease-out), background 120ms var(--ease-out);
+}
+.onboarding-card:hover:not(:disabled) { border-color: var(--ring); background: var(--accent); }
+.onboarding-card:disabled { opacity: 0.6; }
+.onboarding-card[data-done="true"] { opacity: 1; border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+.onboarding-card-label { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 0.875rem; }
+.onboarding-card[data-done="true"] .onboarding-card-label { color: var(--ok); }
+.onboarding-card-detail { color: var(--muted-foreground); font-size: 0.8125rem; }
+
+.onboarding-names { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+.onboarding-names p { color: var(--muted-foreground); font-size: 0.875rem; max-width: 60ch; }
+.onboarding-names ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.onboarding-names li { display: grid; gap: 4px; }
+.onboarding-names label { color: var(--muted-foreground); font-size: 0.75rem; }
+@media (max-width: 640px) { .onboarding-names ul { grid-template-columns: minmax(0, 1fr); } }

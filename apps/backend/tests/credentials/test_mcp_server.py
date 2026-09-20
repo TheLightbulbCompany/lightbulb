@@ -390,6 +390,21 @@ async def test_build_connected_map_pending_is_a_noop_when_row_already_exists(mon
 
 
 @pytest.mark.asyncio
+async def test_reconnect_required_row_is_projected_during_owner_reauthorization(monkeypatch):
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(return_value=[{"provider": "sentry", "status": "reconnect_required"}]),
+    )
+
+    servers = await m.build_connected_integration_servers("org_1", pending="sentry")
+
+    assert servers["sentry"]["headers"] == {"Authorization": "Bearer ${MCP_SENTRY_ACCESS_TOKEN}"}
+
+
+@pytest.mark.asyncio
 async def test_build_connected_map_no_pending_is_unaffected(monkeypatch):
     """Every existing caller (manual-MCP writes, marketplace deploy) passes no
     `pending` at all -- must behave exactly as before this parameter existed."""

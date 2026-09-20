@@ -66,8 +66,9 @@ async def build_connected_integration_servers(owner_id: str, *, pending: str | N
     FIRST connect's profile rewrite runs one beat too early: it never sees
     its own new row, so every profile gets rewritten WITHOUT the provider
     actually being connected. Treated as an extra connected row for THIS
-    build only — never persisted, and a no-op if the row already exists
-    (e.g. a reconnect, or the manual-MCP caller that never passes it).
+    build only — never persisted. It also includes an existing row marked
+    ``reconnect_required`` while the owner reauthorizes it, before the caller
+    restores ``connected`` status.
     """
     servers: dict[str, dict] = dict(await integrations_repo.get_manual_mcp_servers(owner_id))
     rows = await integrations_repo.list_for_owner(owner_id)
@@ -75,7 +76,7 @@ async def build_connected_integration_servers(owner_id: str, *, pending: str | N
         rows = [*rows, {"provider": pending, "status": "connected"}]
     for row in rows:
         provider = row.get("provider")
-        if not provider or row.get("status", "connected") != "connected":
+        if not provider or (row.get("status", "connected") != "connected" and provider != pending):
             continue
         try:
             prov = registry.get_provider(provider)

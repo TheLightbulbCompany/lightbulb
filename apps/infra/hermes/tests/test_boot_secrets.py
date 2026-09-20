@@ -34,6 +34,7 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
     monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
     monkeypatch.setenv("LIGHTBULB_SECRET_ID", "lightbulb/dev/hermes/org_test")
     monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.delenv("OPENCODE_ZEN_API_KEY", raising=False)
 
     # Force a real re-import of the whole package graph -- a cached `bridge` module (from
     # an earlier test file's `from bridge import server`) would never re-run the boot-fetch.
@@ -50,6 +51,7 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
         assert turn.HOOK_TOKEN == "boot-hook", "turn.py captured a stale value, not the boot fetch"
         assert server.GATEWAY_TOKEN == "boot-gw", "server.py captured a stale value, not the boot fetch"
         assert os.environ["AWS_BEARER_TOKEN_BEDROCK"] == "boot-bearer"
+        assert os.environ["OPENCODE_ZEN_API_KEY"] == "boot-bearer"
         # M2-R12: lightbulb_node reads OPENCLAW_HOOK_TOKEN off the process env directly (it has
         # no per-turn context file -- exec isn't turn-scoped), so the boot fetch must reach that
         # env var too, not just the `bridge.HOOK_TOKEN` module attribute.
@@ -63,5 +65,6 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
             if mod is not None:
                 sys.modules[name] = mod
         os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+        os.environ.pop("OPENCODE_ZEN_API_KEY", None)
         os.environ.pop("OPENCLAW_HOOK_TOKEN", None)
         os.environ.pop("GATEWAY_TOKEN", None)

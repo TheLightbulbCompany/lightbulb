@@ -183,9 +183,9 @@ export function BrowserDockPanel(): React.ReactElement | null {
   if (view.mode === "error") {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
-        <p role="alert" className="text-red-400">{view.error || "The shared browser needs to restart."}</p>
+        <p role="alert" className="text-err">{view.error || "The shared browser needs to restart."}</p>
         <p className="max-w-sm text-xs">Restarting restores the last saved sign-in state. Any page currently open may be lost.</p>
-        <button type="button" disabled={pending} onClick={() => void mutate("/browser/start")} className="rounded-md bg-[var(--midnight-accent)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50">
+        <button type="button" disabled={pending} onClick={() => void mutate("/browser/start")} className="rounded-md bg-midnight px-3 py-2 text-xs font-medium text-cream disabled:opacity-50">
           {pending ? "Restarting…" : "Restart browser"}
         </button>
         {controlError && <p role="alert">{controlError}</p>}
@@ -207,10 +207,10 @@ export function BrowserDockPanel(): React.ReactElement | null {
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
         <p>No shared browser session is running.</p>
         <p className="max-w-sm text-xs">Sign-in state is shared with your workspace. Starting the browser gives you control so you can sign in once for the team.</p>
-        <button type="button" disabled={pending} onClick={() => void mutate("/browser/start")} className="rounded-md bg-[var(--midnight-accent)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50">
+        <button type="button" disabled={pending} onClick={() => void mutate("/browser/start")} className="rounded-md bg-midnight px-3 py-2 text-xs font-medium text-cream disabled:opacity-50">
           {pending ? "Starting…" : "Start browser"}
         </button>
-        {(controlError || view.error) && <p role="alert" className="text-xs text-red-400">{controlError || view.error}</p>}
+        {(controlError || view.error) && <p role="alert" className="text-xs text-err">{controlError || view.error}</p>}
       </div>
     );
   }
@@ -233,21 +233,21 @@ export function BrowserDockPanel(): React.ReactElement | null {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center justify-between gap-3 border-b border-white/10 px-3 py-2 text-xs">
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--edge)] px-3 py-2 text-xs">
         <span className="text-[var(--midnight-muted)]">Shared workspace browser · {view.mode === "idle" ? "Ready" : view.mode === "human" ? (isController ? "You control it" : "A teammate controls it") : "Agent controls it"}</span>
         <div className="flex items-center gap-2">
-          {isController ? <button type="button" disabled={busy} onClick={release} className="rounded-md border border-white/15 px-2 py-1 disabled:opacity-50">Done &amp; hand back</button> : canTake && <button type="button" disabled={busy} onClick={take} className="rounded-md bg-[var(--midnight-accent)] px-2 py-1 text-white disabled:opacity-50">Take control</button>}
-          {isController && <button type="button" disabled={busy} onClick={stop} className="rounded-md border border-red-400/30 px-2 py-1 text-red-300 disabled:opacity-50">Done &amp; stop</button>}
+          {isController ? <button type="button" disabled={busy} onClick={release} className="rounded-md border border-[var(--edge)] px-2 py-1 disabled:opacity-50">Done &amp; hand back</button> : canTake && <button type="button" disabled={busy} onClick={take} className="rounded-md bg-midnight px-2 py-1 text-cream disabled:opacity-50">Take control</button>}
+          {isController && <button type="button" disabled={busy} onClick={stop} className="rounded-md border border-err px-2 py-1 text-err disabled:opacity-50">Done &amp; stop</button>}
         </div>
       </div>
-      {controlError && <p role="alert" className="px-3 py-2 text-xs text-red-400">{controlError} Try the action again; your current browser session is still open.</p>}
+      {controlError && <p role="alert" className="px-3 py-2 text-xs text-err">{controlError} Try the action again; your current browser session is still open.</p>}
       <div className="px-3 py-1 text-[11px] text-[var(--midnight-muted)]">
         {isController ? "Done saves your sign-in and returns control to automation." : "Closing this panel only hides it; the shared browser keeps running."}
         {view.savedAt && <> Last saved {new Date(view.savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.</>}
       </div>
       {isController && <form onSubmit={navigate} className="flex gap-2 px-3 pb-2" aria-label="Navigate shared browser">
-        <input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Enter website address" disabled={busy} aria-label="Website address" className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/10 px-2 py-1 text-xs text-[var(--midnight-foreground)] outline-none focus:border-white/30 disabled:opacity-50" />
-        <button type="submit" disabled={busy} className="rounded-md border border-white/15 px-2 py-1 text-xs disabled:opacity-50">Go</button>
+        <input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Enter website address" disabled={busy} aria-label="Website address" className="min-w-0 flex-1 rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1 text-xs text-[var(--midnight)] outline-none focus:border-[var(--midnight)] disabled:opacity-50" />
+        <button type="submit" disabled={busy} className="rounded-md border border-[var(--edge)] px-2 py-1 text-xs disabled:opacity-50">Go</button>
       </form>}
       <div className="relative min-h-0 flex-1">
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
@@ -257,7 +257,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
         </Suspense>
         {!isController && <div aria-label="Read-only browser view" role="region" tabIndex={0} onKeyDown={(event) => event.preventDefault()} onPointerDown={(event) => event.preventDefault()} className="absolute inset-0 z-10 cursor-default" />}
       </div>
-      {view.error && <p role="alert" className="px-3 py-2 text-xs text-red-400">{view.error}</p>}
+      {view.error && <p role="alert" className="px-3 py-2 text-xs text-err">{view.error}</p>}
     </div>
   );
 }

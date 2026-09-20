@@ -19,7 +19,7 @@ uv run python tests/manual/desktop_execution_probe.py --help
 uv run python tests/manual/desktop_execution_probe.py \
   --loopback --policy restrictive \
   --node-bin /absolute/path/to/bin/node-aarch64-apple-darwin \
-  --openclaw-dir /absolute/path/to/bin/openclaw-host-aarch64-apple-darwin/node_modules/openclaw \
+  --host-dir /absolute/path/to/bin/openclaw-host-aarch64-apple-darwin \
   --output /private/tmp/desktop-probe-restrictive.json
 ```
 
@@ -50,11 +50,13 @@ It contains temporary keys' public identities, never private keys or real tokens
 | Node version | `v22.23.2` |
 | Node SHA-256 | `18e387c90ab8a8400183e8bdd396376e1e875b91b4c874b894dcade7b35bf572` |
 | CLI version | `OpenClaw 2026.8.1 (ea80657)` |
-| OpenClaw package-tree SHA-256 | `59d7e1ea38628ea8f8691a6ba721849c3d433c537a00b081b8a9f5a73c1f75af` |
+| Complete OpenClaw host-tree SHA-256 | `3651326affc936c3b2d6bc2acbc4ce84a6d07f349281dffe776ae9c2eaced8ad` |
 
-The package digest hashes each sorted package-relative file path, NUL, file
-SHA-256 and newline. It binds the installed OpenClaw package contents, **not its
-sibling npm dependencies**. Version labels alone do not identify a build.
+The host digest hashes each sorted host-relative file path, NUL, file SHA-256
+and newline across the complete vendored `openclaw-host-<triple>` directory,
+including sibling npm dependencies, native modules and package manifests/locks.
+The CLI path is derived from that directory's `node_modules/openclaw/openclaw.mjs`.
+Version labels alone do not identify a build.
 
 ## Recorded wire contract
 
@@ -129,6 +131,12 @@ actually stops execution; the envelope timeout is not a substitute.
 The test shows that adding one does not create expiry enforcement. The returned
 plan has no runId, expiry or device binding; Lightbulb must enforce those itself.
 The probe does not prove one-time consumption or replay resistance.
+
+All marker cases require the documented result as well as the marker outcome:
+exact denial/invalid-request code and message, or exit 0/success true/timedOut
+false for execution (including the runId/expiry diagnostics). The execution
+timeout requires exit 124/timedOut true/success false plus process termination.
+A missing result fails these checks; it cannot count as denial or timeout proof.
 
 Process tests record PID/PPID/PGID, observe beyond the leaf's 3-second marker
 deadline, and check `kill(pid,0)` fails for each observed PID **before** harness

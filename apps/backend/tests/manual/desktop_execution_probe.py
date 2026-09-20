@@ -34,8 +34,8 @@ def digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def package_digest(root: Path) -> str:
-    """Bind every shipped package file, not only its version label or entry point."""
+def host_digest(root: Path) -> str:
+    """Bind all host files, including sibling dependencies and native modules."""
     result = hashlib.sha256()
     for path in sorted(root.rglob("*")):
         if path.is_file():
@@ -159,13 +159,14 @@ async def probe(args, evidence, root):
     config = {} if args.policy == "default" else {"tools": {"exec": {"security": "allowlist", "ask": "always"}}}
     (root / "config.json").write_text(json.dumps(config))
     evidence["syntheticConfig"] = config
-    base = [str(args.node_bin), str(args.openclaw_dir / "openclaw.mjs")]
+    openclaw_dir = args.host_dir / "node_modules/openclaw"
+    base = [str(args.node_bin), str(openclaw_dir / "openclaw.mjs")]
     evidence["artifacts"] = {
         "node": str(args.node_bin),
         "nodeSha256": digest(args.node_bin),
-        "openclaw": str(args.openclaw_dir),
-        "packageSha256": package_digest(args.openclaw_dir),
-        "packageVersion": json.loads((args.openclaw_dir / "package.json").read_text())["version"],
+        "host": str(args.host_dir),
+        "hostSha256": host_digest(args.host_dir),
+        "packageVersion": json.loads((openclaw_dir / "package.json").read_text())["version"],
     }
     evidence["inspection"] = []
     for argv in ([str(args.node_bin), "--version"], [*base, "--version"], [*base, "node", "run", "--help"]):
@@ -240,11 +241,22 @@ async def probe(args, evidence, root):
                     result = await gateway.invoke("system.run", params)
                     evidence["cases"][name] = {"prepared": prepared, "result": result, "markerExists": marker.exists()}
                     if name in ("changed-argv", "changed-cwd"):
-                        assert result.get("ok") is False and not marker.exists(), evidence["cases"][name]
-                    if name == "allow-once":
-                        assert result.get("ok") and marker.exists(), result
-                    if name in ("unapproved", "deny"):
-                        assert marker.exists() == (args.policy == "default"), evidence["cases"][name]
+                        assert result.get("ok") is False and result.get("error") == {
+                            "code": "INVALID_REQUEST",
+                            "message": "explicit approval requires matching systemRunPlan",
+                        }, result
+                        assert not marker.exists(), evidence["cases"][name]
+                    elif name in ("unapproved", "deny") and args.policy == "restrictive":
+                        assert result.get("ok") is False and result.get("error") == {
+                            "code": "SYSTEM_RUN_DENIED",
+                            "message": "SYSTEM_RUN_DENIED: approval required",
+                        }, result
+                        assert not marker.exists(), evidence["cases"][name]
+                    else:
+                        payload = result.get("payload", {})
+                        assert result.get("ok") is True and payload.get("exitCode") == 0, result
+                        assert payload.get("success") is True and payload.get("timedOut") is False, result
+                        assert marker.exists() and marker.read_text() == "ran", evidence["cases"][name]
 
                 # Child + grandchild write PID files before waiting and a late marker after 3s.
                 # Observe beyond that deadline before cleanup; harness cleanup cannot fake a pass.
@@ -332,6 +344,11 @@ async def probe(args, evidence, root):
                             with contextlib.suppress(ProcessLookupError):
                                 os.kill(pid, signal.SIGKILL)
                     assert case["terminationProven"], case
+                    if name == "timeout-grandchild":
+                        result = case["result"]
+                        payload = result.get("payload", {})
+                        assert result.get("ok") is True and payload.get("exitCode") == 124, result
+                        assert payload.get("timedOut") is True and payload.get("success") is False, result
             finally:
                 for pid in tracked_pids:
                     if alive(pid):
@@ -359,7 +376,7 @@ def main():
     )
     parser.add_argument("--node-bin", type=Path, required=True, help="Existing vendored Node binary (read only)")
     parser.add_argument(
-        "--openclaw-dir", type=Path, required=True, help="Existing node_modules/openclaw directory (read only)"
+        "--host-dir", type=Path, required=True, help="Complete vendored openclaw-host-<triple> directory (read only)"
     )
     parser.add_argument("--output", type=Path, required=True, help="New JSON evidence file; refuses overwrite")
     parser.add_argument(
@@ -370,7 +387,7 @@ def main():
     )
     args = parser.parse_args()
     args.node_bin = args.node_bin.resolve(strict=True)
-    args.openclaw_dir = args.openclaw_dir.resolve(strict=True)
+    args.host_dir = args.host_dir.resolve(strict=True)
     evidence = {
         "schemaVersion": 1,
         "scope": "isolated-loopback-simulated-gateway-approval",

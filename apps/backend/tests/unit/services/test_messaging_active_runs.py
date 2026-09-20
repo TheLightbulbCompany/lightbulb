@@ -58,6 +58,7 @@ def _run(agent_id: str) -> dict:
         "roomId": ROOM,
         "agentId": agent_id,
         "status": "started",
+        "triggerMessageId": "trigger",
         "startedAt": "2026-09-16T18:03:00Z",
         "lastHeartbeatAt": "2026-09-16T18:22:00Z",
     }
@@ -84,6 +85,7 @@ async def test_room_detail_carries_the_rooms_open_runs(open_runs):
         {
             "runId": _run(FORGE)["runId"],
             "agentId": FORGE,
+            "triggerMessageId": "trigger",
             "startedAt": "2026-09-16T18:03:00Z",
             "lastHeartbeatAt": "2026-09-16T18:22:00Z",
         }

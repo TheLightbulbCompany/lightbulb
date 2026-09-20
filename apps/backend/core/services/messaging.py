@@ -207,6 +207,7 @@ class ActiveRun(ContractModel):
 
     run_id: str
     agent_id: str
+    trigger_message_id: str | None = None
     started_at: datetime | None = None
     last_heartbeat_at: datetime | None = None
 
@@ -1228,6 +1229,7 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
             ActiveRun(
                 run_id=row["runId"],
                 agent_id=row["agentId"],
+                trigger_message_id=row.get("triggerMessageId"),
                 started_at=row.get("startedAt"),
                 last_heartbeat_at=row.get("lastHeartbeatAt"),
             )

@@ -137,7 +137,7 @@ describe("desktop-build.yml prod promotion gate", () => {
   it("runs the Rust tests on pull requests without building", () => {
     expect(jobs.has("test-desktop")).toBe(true);
     expect(jobLevelIf(jobs.get("test-desktop")!)).toBe("if: github.event_name == 'pull_request'");
-    expect(jobs.get("test-desktop")).toMatch(/cargo test --manifest-path\n\s+apps\/desktop\/src-tauri\/Cargo.toml --lib local_sessions/);
+    expect(jobs.get("test-desktop")).toMatch(/cargo test --manifest-path\n\s+apps\/desktop\/src-tauri\/Cargo.toml --lib(?:\r?\n|$)/);
     expect(jobs.get("test-desktop")).toMatch(/--example local_session_probe/);
     // The workflow-level token is `contents: write` for the signing/publishing
     // build jobs; a PR-triggered job running fork-authored code on the

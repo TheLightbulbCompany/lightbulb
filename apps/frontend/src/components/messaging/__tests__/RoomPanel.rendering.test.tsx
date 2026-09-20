@@ -63,3 +63,15 @@ it("uses replacement callbacks when a message action is clicked", () => {
   expect(newSelect).toHaveBeenCalledWith(message.messageId);
   expect(oldSelect).not.toHaveBeenCalled();
 });
+
+
+it("updates thread working membership without rerendering history for streamed tokens", () => {
+  const run: RoomRunView = { roomId: "room", agentId: "agent", runId: "run", threadRootMessageId: message.messageId, text: "", thinking: "", state: "running", tools: [] };
+  const view = render(<RoomPanel {...props} runs={[run]} />);
+  expect(screen.getByRole("button", { name: "Reply in thread, Agent is working…" })).toBeInTheDocument();
+  renders.mockClear();
+  view.rerender(<RoomPanel {...props} runs={[{ ...run, text: "Progress" }]} />);
+  expect(renders).not.toHaveBeenCalled();
+  view.rerender(<RoomPanel {...props} runs={[{ ...run, state: "completed" }]} />);
+  expect(screen.queryByRole("button", { name: /Agent is working/ })).not.toBeInTheDocument();
+});

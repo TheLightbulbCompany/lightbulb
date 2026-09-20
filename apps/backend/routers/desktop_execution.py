@@ -124,7 +124,7 @@ async def internal(request: Request):
             if (
                 not isinstance(params, dict)
                 or set(params) != {"deviceId", "expectedConnectionGeneration", "command"}
-                or params["command"] not in service.SAFE_COMMANDS
+                or params["command"] not in service.PUBLIC_COMMANDS
             ):
                 raise service.DesktopError("invalid_request")
             return await service.admit_device(auth, params, forwarded=True)
@@ -136,3 +136,18 @@ async def internal(request: Request):
             receipt_id=body.get("receiptId", ""),
             forwarded=True,
         )
+
+
+@router.post("/internal/approval")
+async def approval_peer(request: Request):
+    secret = settings.WS_INTERNAL_SECRET
+    presented = request.headers.get("x-lightbulb-ws-internal", "")
+    if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
+        raise HTTPException(403, detail="forbidden")
+    try:
+        async with asyncio.timeout(service.APPROVAL_SECONDS + 5):
+            return await service.handle_approval_peer(await _body(request))
+    except service.DesktopError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code}) from None
+    except TimeoutError:
+        raise HTTPException(409, detail={"code": "shell_approval_expired"}) from None

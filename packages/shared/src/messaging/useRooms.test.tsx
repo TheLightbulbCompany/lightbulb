@@ -395,7 +395,7 @@ describe("runs already in progress when the room opens", () => {
   const RUN = "run-open";
   const withRun = (over: Partial<RoomDetail> = {}): RoomDetail => ({
     ...room,
-    activeRuns: [{ runId: RUN, agentId: AGENT, startedAt: "2026-09-16T18:03:00Z", lastHeartbeatAt: "2026-09-16T18:22:00Z" }],
+    activeRuns: [{ runId: RUN, agentId: AGENT, triggerMessageId: message.messageId, startedAt: "2026-09-16T18:03:00Z", lastHeartbeatAt: "2026-09-16T18:22:00Z" }],
     ...over,
   });
   const frame = (body: Record<string, unknown>): LiveEvent => ({
@@ -410,8 +410,30 @@ describe("runs already in progress when the room opens", () => {
 
     await waitFor(() => expect(result.current.runs).toHaveLength(1));
     expect(result.current.runs[0]).toMatchObject({
-      roomId: room.roomId, agentId: AGENT, runId: RUN, state: "running", text: "", thinking: "", frames: [],
+      roomId: room.roomId, agentId: AGENT, runId: RUN, threadRootMessageId: message.messageId, state: "running", text: "", thinking: "", frames: [],
     });
+  });
+
+  it.each(["channel", "group-dm", "dm"] as const)("recovers nested thread placement for %s", async (kind) => {
+    messaging.getRoom.mockResolvedValue(withRun({ kind }));
+    messaging.listMessages.mockResolvedValue({ messages: [{ ...message, threadRootMessageId: "root" }], nextAfterSeq: null });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.runs[0]?.threadRootMessageId).toBe(kind === "dm" ? null : "root"));
+  });
+
+  it("keeps a working indicator after an intermediate reply is saved", async () => {
+    messaging.getRoom.mockResolvedValue(withRun());
+    messaging.listMessages.mockResolvedValue({ messages: [message, { ...message, messageId: "progress", messageSeq: 2, runId: RUN,
+      author: { kind: "agent", id: AGENT, displayName: "Forge" }, text: "Working on it", threadRootMessageId: message.messageId }], nextAfterSeq: null });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.messages).toHaveLength(2));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    act(() => { for (const handler of handlers) handler(frame({ type: "chunk", runId: RUN, content: "Working on it" })); });
+    expect(result.current.runs[0].text).toBe("");
+    act(() => { for (const handler of handlers) handler(frame({ type: "run_ended", outcome: "done" })); });
+    expect(result.current.runs).toHaveLength(0);
   });
 
   it("merges a frame that arrives after the seed instead of dropping it", async () => {

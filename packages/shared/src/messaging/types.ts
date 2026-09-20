@@ -50,6 +50,7 @@ export interface RoomSummary {
 }
 
 export interface ActiveRoomRun {
+  triggerMessageId?: string | null;
   runId: string;
   agentId: string;
   startedAt?: string | null;

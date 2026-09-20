@@ -63,7 +63,9 @@
 .room-message-content pre { max-width: 100%; }
 .room-mention { display: inline-block; padding: 0 4px; border-radius: 4px; font-weight: 600; color: var(--info); background: color-mix(in srgb, var(--info) 12%, transparent); }
 .room-message-mentions-me { background: color-mix(in srgb, var(--info) 8%, transparent); border-radius: 6px; }
-.room-reply { margin-top: 2px; margin-left: -12px; color: var(--info); font-size: .875rem; height: 28px; }
+.room-reply { margin-top: 2px; margin-left: -12px; color: var(--info); font-size: .875rem; min-height: 28px; height: auto; max-width: 100%; white-space: normal; text-align: left; }
+.room-reply-avatars [role="img"] > .overflow-hidden { width: 20px; height: 20px; border-radius: 4px; font-size: .625rem; }
+.room-reply-avatars { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; }
 .room-work-link { margin: 8px 8px 0 0; max-width: 100%; white-space: normal; height: auto; min-height: 36px; text-align: left; overflow-wrap: anywhere; }
 .room-typing { min-height: 20px; padding: 0 24px; overflow-wrap: anywhere; }
 .room-composer { position: relative; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; margin: 0 20px 16px; padding: 8px 10px; border: 1px solid var(--input); border-radius: 8px; background: var(--plane-raised); }

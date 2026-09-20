@@ -788,6 +788,7 @@ def delete_profile(owner_id: str, agent_id: str) -> None:
         keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
         if keys:
             client.delete_objects(Bucket=bucket, Delete={"Objects": keys})
+    client.delete_object(Bucket=bucket, Key=f"marketplace-installs/{owner_id}/{agent_id}.json")
 
 
 # ---- Task 13a: config.get/config.patch/config.set on a profile ---------------------------------

@@ -1,11 +1,10 @@
 # AGENTS.md
 
-> Codex-facing mirror of `CLAUDE.md`, regenerated from it on 2026-09-19 (post
-> Hermes-on-AgentCore deletion chain). `CLAUDE.md` is the maintained original —
-> if the two disagree, `CLAUDE.md` wins; regenerate this file from it rather
-> than editing here.
+> Codex-facing mirror of `CLAUDE.md`, regenerated from it on 2026-09-20.
+> `CLAUDE.md` is the maintained original — if the two disagree, `CLAUDE.md` wins;
+> regenerate this file from it rather than editing here.
 
-This file provides guidance to Codex when working with code in this repository.
+This file provides guidance to Codex (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
@@ -551,8 +550,9 @@ skip.)
 
 ## Knowledge Graph (graphify)
 
-`graphify-out/` (gitignored — `graph.json` is ~57MB and must never be committed) holds an
-**single-repo** knowledge graph: ~29.5k nodes / 63k edges / 1,018 communities over `apps/`,
+`graphify-out/` (gitignored — the raw graph/cache must never be committed) holds a
+**single-repo** knowledge graph: 32,303 nodes / 83,072 edges after the 2026-09-20
+code refresh; existing community labels are older. Its source scope includes `apps/`,
 `packages/`, `docs/`, `.github/` (excludes `.playwright-cli/`, `.codex/`, `.agents/`, images).
 Deliberately NOT cross-repo: a merged three-repo (this repo + OpenClaw + Paperclip) graph was built and deleted
 2026-08-19 — `merge-graphs` produces disjoint per-repo islands (zero cross-repo edges), and
@@ -565,9 +565,11 @@ the fork bulk (5×) buries this repo in every ranking. Keep it single-repo.
 - Structural hubs by degree (verified 2026-08-19, orientation only): backend `AuthContext` /
   `get_current_user`, `run_in_thread()`, `PaperclipAdminClient`, `TeamsContext`,
   `put_metric()`; frontend `components/teams/shared/types.ts`, `useTeamsApi()`, `cn()`.
-  ⚠️ **The graph predates the Hermes deletion chain and has not been rebuilt** — one
-  hub it used to list (`GatewayConnection`) no longer exists, and roughly a hundred
-  backend files went with it. Run `/graphify . --update` before trusting a ranking.
+  Refreshed on 2026-09-20 with `graphify update . --no-cluster`: 32,303 nodes /
+  83,072 edges. Code AST relationships are refreshed; document semantics and community
+  labels were not recomputed. The tracked code-only export and exact coverage limits
+  are in `docs/architecture/graphify/README.md`; do not use old community rankings
+  as evidence of current runtime behavior.
 
 ---
 
@@ -856,9 +858,10 @@ that will mislead you otherwise:
   the `chat` panel is `panels/ChatPanel.tsx` → `MessagingConversation`);
   mobile `ChatLayout` via `MobileChatShell`, wrapping `MessagingWorkspace`. Teams
   and control are in-shell panels, **not routes** — the legacy `/teams/*` URL tree
-  was removed and 404s. There is no browser panel: `PanelKind` is
-  `chat | teams | control | file-viewer | missing`, and the live-view WS it used
-  to open is gone along with `routers/browser_view.py`.
+  was removed and 404s. The AgentCore browser panel is `panels/BrowserDockPanel.tsx`: it
+  gets a workspace-authorized signed URL from `/api/v1/browser/live-view` and connects
+  directly to AWS DCV. It does not use the retired OpenClaw live-view WS or
+  `routers/browser_view.py`. See `docs/architecture/current-system.md`.
 - **`/admin`** only resolves on allowed admin hosts (`admin.flickmeon.ai`,
   `admin.dev.flickmeon.ai`, `admin.localhost:3000`; overridable via
   `NEXT_PUBLIC_ADMIN_HOSTS`) and 404s everywhere else. Allowlist lives in
@@ -871,7 +874,7 @@ touching. The load-bearing structure:
 
 - `components/workspace/` — the dockable desktop shell: `panelRegistry.ts` /
   `panelComponents.ts` map panel keys → components (`PanelKind = chat | teams |
-  control | file-viewer | missing`); `workspaceController.ts` +
+  control | browser | file-viewer | missing`); `workspaceController.ts` +
   `layoutStorage.ts` own layout state. Start here for anything "where does X
   render on desktop".
 - `components/messaging/` — **the live chat surface**: `MessagingWorkspace`

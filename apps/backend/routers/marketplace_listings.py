@@ -39,6 +39,7 @@ from core.services import (
     seller_profile,
 )
 from core.services.agent_routine_provisioning import create_agent_routines
+from core.services.agent_provenance import marketplace_provenance, write_marketplace_provenance
 from core.services.inbound_triggers import automation_requirement
 from core.services.messaging import ApiProblem
 from core.services.hermes_provisioning import HermesProfileError
@@ -541,14 +542,30 @@ async def my_installed_templates(
 ):
     """Templates the caller has already deployed.
 
-    Used by the chat sidebar gallery to filter out rows the user has already hired. Always
-    EMPTY: the install record was the ``.template`` sidecar on the buyer's EFS workspace and
-    the profile transport writes no equivalent yet, so every listing renders as deployable.
-    KNOWN GAP (already empty for a migrated workspace before this deletion) -- see
-    ``catalog_service``'s module docstring.
+    Used by the chat sidebar gallery to filter out rows the user has already hired. Records are
+    backend-authored markers outside the runtime-writable profile prefixes; seller metadata
+    and purchase rows are not treated as install evidence.
     """
-    resolve_owner_id(auth)
-    return {"installed": []}
+    owner_id = resolve_owner_id(auth)
+    from core.services.agent_provenance import _load_agent_sidecars
+    from core.services.messaging import load_agent_roster
+
+    roster = await load_agent_roster(owner_id)
+    agent_ids = [a["id"] for a in roster if isinstance(a, dict) and a.get("id")]
+    sidecars = await _load_agent_sidecars(owner_id, agent_ids)
+    installed = []
+    for agent_id, sidecar in sidecars.items():
+        provenance = marketplace_provenance(sidecar)
+        if provenance:
+            installed.append(
+                {
+                    "agent_id": agent_id,
+                    "template_slug": provenance["slug"],
+                    "template_version": provenance["version"],
+                    "listing_id": provenance["listingId"],
+                }
+            )
+    return {"installed": installed}
 
 
 @router.get("/me/agents-summary")
@@ -1005,6 +1022,14 @@ async def deploy_listing(
                 owner_id=owner_id,
                 new_agent_id=new_agent_id,
                 manifest_routines=manifest.get("routines") or [],
+            )
+            await write_marketplace_provenance(
+                owner_id=owner_id,
+                agent_id=new_agent_id,
+                listing_id=listing["listing_id"],
+                slug=listing.get("slug") or "",
+                version=int(listing.get("version", 1) or 1),
+                seller_id=listing.get("seller_id") or "",
             )
         except Exception as exc:
             # Catalog or container-resolution failed after Paperclip create

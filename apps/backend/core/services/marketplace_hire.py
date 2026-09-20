@@ -112,16 +112,15 @@ def hired_agent_id_of(payload: dict | None) -> str | None:
     return agent_id if isinstance(agent_id, str) and agent_id else None
 
 
-def _has_committed_marketplace_install(*, owner_id: str, agent_id: str) -> bool:
+async def _has_committed_marketplace_install(*, owner_id: str, agent_id: str) -> bool:
     """Whether this Paperclip agent already finished its install.
 
-    Always False: the install RECORD was the ``.template`` sidecar on the buyer's EFS
-    workspace, and nothing on the profile transport writes an equivalent yet (see
-    ``catalog_service``'s module docstring -- it was already always False for a migrated
-    workspace before the runtime was deleted). Kept as the named predicate so the
-    "a completed install is terminal" rule below has one place to become true again.
+    The marker is backend-authored and written after the full install envelope commits.
     """
-    return False
+    from core.services.agent_provenance import _load_agent_sidecars, marketplace_provenance
+
+    marker = (await _load_agent_sidecars(owner_id, [agent_id])).get(agent_id)
+    return bool(marker and marker.get("agent_id") == agent_id and marketplace_provenance(marker))
 
 
 async def create_hire_approval(
@@ -261,10 +260,10 @@ async def create_hire_approval(
         # Paperclip's approval list contains pending rows only. Once the owner
         # approves the first request, that row disappears while the native
         # idempotency key continues to replay the same now-live agent. The
-        # explicit completion marker plus agents.list registration is the
+        # explicit completion marker plus a live Paperclip agent is the
         # durable boundary; status alone cannot distinguish it from a fresh
         # idle agent.
-        if _has_committed_marketplace_install(owner_id=owner_id, agent_id=agent_id):
+        if await _has_committed_marketplace_install(owner_id=owner_id, agent_id=agent_id):
             return None
 
         # We have now proved there is neither a pending approval nor a complete
@@ -360,6 +359,7 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
     from core.repositories import container_repo, marketplace_repo
     from core.services import marketplace_service
     from core.services.catalog_service import emit_agent_deployed, get_catalog_service
+    from core.services.agent_provenance import write_marketplace_provenance
 
     listing = await marketplace_service.get_published_by_id(listing_id=listing_id)
     if not listing or listing.get("status") != "published":
@@ -430,6 +430,14 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
                 new_agent_id=agent_id,
                 listing_id=listing.get("listing_id"),
                 seller_id=listing.get("seller_id"),
+            )
+            await write_marketplace_provenance(
+                owner_id=owner_id,
+                agent_id=agent_id,
+                listing_id=listing["listing_id"],
+                slug=listing.get("slug") or "",
+                version=int(listing.get("version", 1) or 1),
+                seller_id=listing.get("seller_id") or "",
             )
         except Exception as exc:
             logger.exception(

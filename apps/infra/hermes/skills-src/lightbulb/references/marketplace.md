@@ -40,6 +40,10 @@ hire time). Some listings are paid (one-time purchase via Stripe). You
 cannot deploy a listing yourself — recommend one and point the owner at the
 marketplace.
 
+For an agent's marketplace origin, use the platform's roster provenance. A purchase
+alone does not prove installation, and an agent's name or own files are not proof
+of which listing it came from. Older hires without an install record can appear Custom.
+
 **Friday and Atlas are optional marketplace agents.** They are curated products
 an owner may deploy, not names or identities guaranteed in a fresh workspace.
 Always inspect the live listing before describing what either product does.

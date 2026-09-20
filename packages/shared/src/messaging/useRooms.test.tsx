@@ -430,6 +430,8 @@ describe("runs already in progress when the room opens", () => {
     act(() => result.current.selectRoom(room.roomId));
     await waitFor(() => expect(result.current.messages).toHaveLength(2));
     await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    act(() => { for (const handler of handlers) handler(frame({ type: "chunk", runId: RUN, content: "Working on it" })); });
+    expect(result.current.runs[0].text).toBe("");
     act(() => { for (const handler of handlers) handler(frame({ type: "run_ended", outcome: "done" })); });
     expect(result.current.runs).toHaveLength(0);
   });

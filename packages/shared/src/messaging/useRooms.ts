@@ -895,13 +895,16 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
    * the composer and every streamed chunk.
    */
   const messagesById = useMemo(() => new Map(messages.map(message => [message.messageId, message])), [messages]);
-  const visibleRuns = useMemo(() => [...runs.values()].filter((run) => run.state === "running" || !messages.some((message) =>
-    message.runId === run.runId ||
-    (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim()))).map(run => {
+  const visibleRuns = useMemo(() => [...runs.values()].flatMap((run) => {
+    const persisted = messages.some(message => message.runId === run.runId ||
+      (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim()));
+    if (persisted && run.state !== "running") return [];
+    // Keep activity/controls after an interim reply without painting that reply twice.
+    const visible = persisted ? { ...run, text: "" } : run;
     // Recover thread placement from history already loaded, without another HTTP/DB read.
-    if (run.threadRootMessageId || !run.triggerMessageId || activeRoom?.kind === "dm") return run;
+    if (run.threadRootMessageId || !run.triggerMessageId || activeRoom?.kind === "dm") return [visible];
     const trigger = messagesById.get(run.triggerMessageId);
-    return { ...run, threadRootMessageId: trigger?.threadRootMessageId ?? run.triggerMessageId };
+    return [{ ...visible, threadRootMessageId: trigger?.threadRootMessageId ?? run.triggerMessageId }];
   }), [runs, messages, messagesById, activeRoom?.kind]);
   const abortRun = useCallback((runId: string) => messaging.abortRun(runId), [messaging]);
   const steerRun = useCallback((runId: string, text: string) => messaging.steerRun(runId, { text }), [messaging]);

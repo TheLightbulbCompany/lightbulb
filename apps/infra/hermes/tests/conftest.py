@@ -8,7 +8,7 @@ os.environ.setdefault("OPENCLAW_HOOK_TOKEN", "hook-test")
 os.environ.setdefault("S3_BUCKET", "")          # sync is a no-op without a bucket
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def home(tmp_path, monkeypatch):
     """A throwaway HERMES_HOME, re-pointed on the already-imported modules."""
     from bridge import sync

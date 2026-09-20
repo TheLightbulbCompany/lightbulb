@@ -36,6 +36,7 @@ def test_an_error_kind_is_only_set_for_an_error_outcome():
 ])
 def test_hermes_prose_from_a_dead_model_is_never_posted(api_calls, final, expect, monkeypatch):
     monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: _FakeAgent(api_calls, final))
+    monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: None)
     outcome, kind, reply, usage = turn._run_hermes(
         "ceo", {"message": {"text": "hi"}, "room": {"id": "x"}, "sender": {"displayName": "Prez"},
                 "participants": []}, None)
@@ -51,10 +52,27 @@ def test_hermes_failed_result_is_not_completed_even_with_prose(monkeypatch):
             failed=True, completed=False,
         ),
     )
+    monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: None)
     outcome, kind, reply, _usage = turn._run_hermes(
         "ceo", {"message": {"text": "hi"}, "room": {"id": "x"}, "participants": []}, None
     )
     assert (outcome, kind, reply) == ("error", "model_unavailable", "")
+
+
+def test_hermes_normalizes_profile_backends_before_construction(monkeypatch):
+    order = []
+    monkeypatch.setattr(turn.sync, "ensure_profile", lambda _agent: None)
+    monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: order.append("normalize"))
+    monkeypatch.setattr(turn, "_terminal_scope", lambda _agent: nullcontext())
+    monkeypatch.setattr(turn, "_secret_scope", lambda _agent: nullcontext())
+    monkeypatch.setattr(turn, "_hermes_home_scope", lambda _agent: nullcontext())
+
+    def construct(*_args, **_kwargs):
+        assert order == ["normalize"]
+        return _FakeAgent(1, "ok")
+
+    monkeypatch.setattr(turn, "_construct_agent", construct)
+    assert turn._run_hermes("ceo", {"message": {"text": "hi"}, "room": {"id": "x"}, "participants": []}, None)[0] == "completed"
 
 
 def test_native_paperclip_failed_result_is_not_completed_even_with_prose(monkeypatch):
@@ -64,18 +82,17 @@ def test_native_paperclip_failed_result_is_not_completed_even_with_prose(monkeyp
         session_cache_read_tokens = session_cache_write_tokens = 0
 
     monkeypatch.setattr(turn.sync, "ensure_profile", lambda _agent: None)
-    monkeypatch.setattr(turn.sync, "normalize_legacy_terminal_backend", lambda _agent: None)
+    order = []
+    monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: order.append("normalize"))
     monkeypatch.setattr(turn, "_hermes_home_scope", lambda _agent: nullcontext())
     monkeypatch.setattr(turn, "_secret_scope", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(turn, "_terminal_scope", lambda _agent: nullcontext())
     monkeypatch.setattr(turn, "paperclip_run_aborted", lambda _run_id: False)
-    monkeypatch.setattr(
-        turn, "_construct_agent",
-        lambda *a, **k: Agent(
-            3, "This model doesn't support the image content block.",
-            failed=True, completed=False,
-        ),
-    )
+    def construct(*_args, **_kwargs):
+        assert order == ["normalize"]
+        return Agent(3, "This model doesn't support the image content block.", failed=True, completed=False)
+
+    monkeypatch.setattr(turn, "_construct_agent", construct)
     outcome, kind, reply, _usage = turn._run_native_paperclip(
         {"agentId": "ceo", "runId": "run-1", "sessionId": "session-1", "paperclipApiUrl": "url",
          "companyId": "company-1"},

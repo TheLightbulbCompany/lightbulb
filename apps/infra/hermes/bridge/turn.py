@@ -1333,9 +1333,9 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
         # after an image roll). _terminal_scope's install_profile_terminal_scope snapshots
         # config.yaml at INSTALL time; pin_profile_defaults does this same normalization, but
         # only when _construct_agent calls it, by which point the scope below would already
-        # have installed against the stale value. See normalize_legacy_terminal_backend's
+        # have installed against the stale value. See normalize_profile_backends's
         # docstring.
-        sync.normalize_legacy_terminal_backend(agent_id)
+        sync.normalize_profile_backends(agent_id)
         with _hermes_home_scope(agent_id), _secret_scope(agent_id), _terminal_scope(agent_id):
             agent = _construct_agent(agent_id, body, frames, session_key)
             attach_agent(run_id, agent)
@@ -1377,7 +1377,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
         pass
     sync.ensure_profile(agent_id)
     # See _run_hermes's own call: normalize BEFORE _terminal_scope below installs, not after.
-    sync.normalize_legacy_terminal_backend(agent_id)
+    sync.normalize_profile_backends(agent_id)
     env = {
         "PAPERCLIP_API_URL": identity["paperclipApiUrl"],
         "PAPERCLIP_AGENT_ID": agent_id,

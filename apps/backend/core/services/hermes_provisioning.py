@@ -1021,6 +1021,42 @@ async def write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
         await write_profile_for_agent(owner_id, agent, container_row=container_row, inputs=inputs)
 
 
+async def refresh_provider_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
+    """Replace only provider settings; preserve custom SOUL, tools, MCPs and other env keys."""
+    from core.services import hermes_profiles
+    from core.services.messaging import load_agent_roster
+
+    inputs = await resolve_profile_inputs(owner_id, container_row={"bedrock_aip_arns": aip_arns})
+    roster = await load_agent_roster(owner_id)
+    for agent in roster:
+        config = hermes_profiles.build_profile_config(
+            agent_role=agent.get("role", ""),
+            provider_choice=inputs.provider_choice,
+            byo_provider=inputs.byo_provider,
+            aip_arns=inputs.aip_arns,
+            is_ceo=agent.get("role") == "ceo",
+        )
+        env = {"ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": ""}
+        if inputs.byo_api_key:
+            key = "OPENAI_API_KEY" if inputs.byo_provider == "openai" else "ANTHROPIC_API_KEY"
+            env[key] = inputs.byo_api_key
+        await run_in_thread(
+            hermes_profiles.patch_profile_env_and_config,
+            owner_id,
+            agent["id"],
+            env,
+            {
+                "model": config["model"],
+                "auxiliary": config["auxiliary"],
+                "bedrock": config.get("bedrock", {}),
+                "delegation": config.get("delegation", {}),
+                "fallback_providers": config.get("fallback_providers", []),
+            },
+            replace_blocks=True,
+        )
+    await _stage_owner_facts(owner_id, [agent["id"] for agent in roster], inputs)
+
+
 async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: ProfileInputs) -> None:
     """Fix round 1, Important 2: a freshly provisioned workspace never ran the ECS config
     writer (the only caller ``owner_facts.write_owner_facts`` ever had), so it had NO
@@ -1108,7 +1144,9 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         await container_repo.update_container_leased(
             owner_id, claim_id, {}, attempt_token=attempt_token, release_lease=False
         )
-    if not arn or row.get("needs_provision"):
+    if arn and row.get("needs_provision"):
+        await refresh_provider_profiles(owner_id, aip_arns)
+    if not arn:
         # N4/M4-R42: write_profiles runs BEFORE CreateAgentRuntime, so a row that already
         # carries an ARN has its profiles in S3 already. Idempotence now keys on
         # status == "running" (M4-R35/C1), so an ARN row sitting in error/stopped -- which C2's

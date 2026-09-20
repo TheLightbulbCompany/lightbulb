@@ -103,3 +103,35 @@ def test_empty_value_clears_the_key_instead_of_leaving_it_stale(monkeypatch):
     env_body = puts[0][1]
     assert "PARALLEL_API_KEY" not in env_body
     assert "OTHER=1" in env_body
+
+
+def test_provider_patch_preserves_custom_settings_and_removes_old_transport(monkeypatch):
+    import yaml
+    from core.services import hermes_profiles as profiles
+
+    monkeypatch.setattr(profiles.settings, "OWNER_STATE_BUCKET", "bucket")
+    monkeypatch.setattr(
+        profiles,
+        "read_profile_config",
+        lambda *a, **k: {
+            "model": {"provider": "opencode-zen", "base_url": "old", "api_mode": "codex_responses"},
+            "terminal": {"backend": "local", "timeout": 42},
+            "custom": {"keep": True},
+        },
+    )
+    monkeypatch.setattr(profiles, "_require_text", lambda *a: "CUSTOM_KEY=keep\nOPENAI_API_KEY=old\n")
+    writes = {}
+    monkeypatch.setattr(profiles, "_s3_put", lambda bucket, key, value: writes.__setitem__(key, value))
+    profiles.patch_profile_env_and_config(
+        "org_a",
+        "agent",
+        {"OPENAI_API_KEY": ""},
+        {"model": {"provider": "bedrock"}},
+        replace_blocks=True,
+    )
+    config = yaml.safe_load(writes["org_a/hermes/agent/config.yaml"])
+    assert config["model"] == {"provider": "bedrock"}
+    assert config["terminal"] == {"backend": "local", "timeout": 42}
+    assert config["custom"] == {"keep": True}
+    assert writes["org_a/hermes/agent/.env"] == "CUSTOM_KEY=keep\n"
+    assert not any(key.endswith("SOUL.md") for key in writes)

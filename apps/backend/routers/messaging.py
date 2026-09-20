@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Res
 from core.dynamodb import run_in_thread
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.repositories import container_repo, messaging_repo
+from core.repositories import billing_repo, container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import chat_gate
 from core.services import messaging as service
@@ -616,6 +616,7 @@ async def create_paperclip_hermes_run(owner_id: str, body: dict, request: Reques
     container = await _require_hook_token(owner_id, request)
     identity = _paperclip_hermes_identity(request, body=body)
     await _verify_paperclip_hermes_identity(owner_id, identity, full=True)
+    await _require_execution_entitlement(owner_id)
     return await _paperclip_hermes_runtime_response(
         container,
         "/internal/paperclip/v1/runs",
@@ -788,6 +789,15 @@ async def _paperclip_hermes_runtime_response(
     )
 
 
+async def _require_execution_entitlement(owner_id: str) -> None:
+    from core.services.provision_gate import execution_block_reason
+
+    account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+    reason = await execution_block_reason(owner_id, account)
+    if reason is not None:
+        raise HTTPException(status_code=402, detail={"code": reason, "message": "Workspace execution is unavailable."})
+
+
 def _paperclip_hermes_status_or_lost(response: runtime_transport.RuntimeResponse, run_id: str, session_id: str):
     """A run the microVM no longer knows about FAILS; it does not poll forever.
 
@@ -823,6 +833,7 @@ async def post_paperclip_run(owner_id: str, body: PaperclipRunRequest, request: 
     patches it; unlike the native route, its 202 receipt cannot represent terminal completion.
     """
     container = await _require_hook_token(owner_id, request)
+    await _require_execution_entitlement(owner_id)
     context = body.context or {}
     # Free-form record straight off Paperclip's run row -- read defensively, never assume a
     # type: a non-string here must not turn a run trigger into a 500.

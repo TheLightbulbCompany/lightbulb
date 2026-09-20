@@ -19,7 +19,7 @@ from boto3.dynamodb.types import TypeDeserializer
 from core.config import settings
 from core.observability.metrics import gauge, put_metric
 from core.services import runtime_transport
-from core.repositories import container_repo, messaging_repo
+from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services import runtime_rpc
 from core.services.live_events import get_live_event_publisher
 from core.services.messaging import (
@@ -423,6 +423,16 @@ class OpenClawWorkWorker:
             "messaging.run.dispatched",
             dimensions={"outcome": "new" if created else "redelivered", "event_kind": event_kind},
         )
+        from core.services.provision_gate import execution_block_reason
+
+        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+        blocked = await execution_block_reason(owner_id, account)
+        if blocked == "trial_unarmed":
+            raise WorkRetry("trial is not armed yet")
+        if blocked is not None:
+            await messaging_repo.end_run(owner_id, run_id, outcome="gate_error", error_kind=blocked)
+            put_metric("messaging.ambient_gate", dimensions={"outcome": blocked, "event_kind": event_kind})
+            return
         from core.services import local_session_grants
         from core.services.messaging import ApiProblem
 

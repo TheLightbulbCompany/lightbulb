@@ -1,9 +1,10 @@
 """Hook-token gate + wiring for the Paperclip `http`-adapter run-trigger door
 (mirrors test_messaging_run_events.py)."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 
 from core.services import runtime_transport
 from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S
@@ -17,6 +18,24 @@ BODY = {
     "companyId": "company_1",
     "context": {"taskId": "task_9", "wakeReason": "New comment on your task"},
 }
+
+
+@pytest.fixture(autouse=True)
+def _quiet_lifespan(monkeypatch):
+    worker = MagicMock(run=AsyncMock())
+    monkeypatch.setattr("main.run_scheduled_worker", AsyncMock())
+    monkeypatch.setattr("main._running_count_gauge_loop", AsyncMock())
+    monkeypatch.setattr("core.services.openclaw_work.get_openclaw_work_worker", lambda: worker)
+    monkeypatch.setattr("core.services.durable_activity.run_trial_idle_sweeper", AsyncMock())
+    monkeypatch.setattr("core.services.run_ledger.run_ledger_sweeper", AsyncMock())
+
+
+@pytest.fixture(autouse=True)
+def _active_billing(monkeypatch):
+    monkeypatch.setattr(
+        "routers.messaging.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active"}),
+    )
 
 
 def _container():

@@ -205,3 +205,11 @@ async def test_ambient_work_still_reaches_the_runtime_for_a_paid_owner(monkeypat
         )
 
     row.assert_awaited_once()
+
+
+@pytest.fixture(autouse=True)
+def _active_billing(monkeypatch):
+    monkeypatch.setattr(
+        "core.services.openclaw_work.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active"}),
+    )

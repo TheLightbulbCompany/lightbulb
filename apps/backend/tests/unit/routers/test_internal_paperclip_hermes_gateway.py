@@ -2,9 +2,10 @@
 
 from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 
 from core.config import settings
 from core.services import runtime_transport
@@ -29,6 +30,16 @@ BODY = {
     "session_id": SESSION,
     "wake_payload": {"reason": "comment", "nested": [1, 2]},
 }
+
+
+@pytest.fixture(autouse=True)
+def _quiet_lifespan(monkeypatch):
+    worker = MagicMock(run=AsyncMock())
+    monkeypatch.setattr("main.run_scheduled_worker", AsyncMock())
+    monkeypatch.setattr("main._running_count_gauge_loop", AsyncMock())
+    monkeypatch.setattr("core.services.openclaw_work.get_openclaw_work_worker", lambda: worker)
+    monkeypatch.setattr("core.services.durable_activity.run_trial_idle_sweeper", AsyncMock())
+    monkeypatch.setattr("core.services.run_ledger.run_ledger_sweeper", AsyncMock())
 
 
 @contextmanager
@@ -57,6 +68,12 @@ def _dependencies(*, company_id=COMPANY, agent_company=COMPANY, issue_company=CO
         stack.enter_context(patch("routers.messaging.PaperclipRepo", return_value=repo))
         stack.enter_context(patch("routers.messaging.shared_admin_client", return_value=admin))
         stack.enter_context(patch("routers.messaging.get_admin_session_cookie", AsyncMock(return_value="admin-cookie")))
+        stack.enter_context(
+            patch(
+                "routers.messaging.billing_repo.get_by_owner_id",
+                AsyncMock(return_value={"subscription_status": "active"}),
+            )
+        )
         yield container, repo, admin
 
 
@@ -119,6 +136,25 @@ def test_create_preserves_native_body_and_uses_validated_identity_for_routing(cl
     admin.get_issue.assert_awaited_once_with(session_cookie="admin-cookie", issue_id=ISSUE)
 
 
+def test_create_blocks_an_expired_trial_without_invoking_agentcore_but_poll_remains_available(client):
+    runtime = AsyncMock(return_value=_runtime_response(200, {"run_id": RUN, "status": "running"}))
+    with (
+        _dependencies(),
+        patch(
+            "routers.messaging.billing_repo.get_by_owner_id",
+            AsyncMock(return_value={"subscription_status": "trial_local", "trial_end": 1}),
+        ),
+        patch("routers.messaging.runtime_transport.request", runtime),
+    ):
+        blocked = client.post(BASE, json=BODY, headers=HEADERS)
+        polled = client.get(f"{BASE}/{RUN}", headers=HEADERS)
+
+    assert blocked.status_code == 402
+    assert blocked.json()["detail"]["code"] == "trial_expired"
+    assert polled.status_code == 200
+    runtime.assert_awaited_once()
+
+
 def test_a_poll_rechecks_the_company_binding_without_a_paperclip_admin_round_trip(client):
     """The adapter polls this facade for the WHOLE run. The company binding is the security
     boundary and is re-read every time (one DynamoDB get), but agent/issue membership is a
@@ -131,6 +167,10 @@ def test_a_poll_rechecks_the_company_binding_without_a_paperclip_admin_round_tri
 
     with (
         _dependencies() as (_container, repo, admin),
+        patch(
+            "routers.messaging.billing_repo.get_by_owner_id",
+            AsyncMock(side_effect=AssertionError("poll and stop must not read billing")),
+        ),
         patch("routers.messaging.runtime_transport.request", fake_request),
     ):
         assert client.get(f"{BASE}/{RUN}", headers=HEADERS).status_code == 200

@@ -162,6 +162,17 @@ def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
     return not is_trial_expired(dict(account))
 
 
+async def execution_block_reason(owner_id: str, account: Mapping[str, Any] | None) -> str | None:
+    """Return why new work may not execute; an unarmed trial is not ready yet."""
+    if not is_subscription_active(account):
+        return "subscription_inactive"
+    if account and account.get("subscription_status") == "trial_local":
+        if account.get("trial_end") is None:
+            return "trial_unarmed"
+        return await trial_cap.reason_for_account(owner_id, dict(account))
+    return None
+
+
 def should_arm_nightly_ceo(account: Mapping[str, Any] | None) -> bool:
     """Whether the nightly CEO routine should be ARMED for this owner.
 

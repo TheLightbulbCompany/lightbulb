@@ -16,6 +16,17 @@ WS = "44444444-4444-4444-8444-444444444444"
 KEY = "55555555-5555-4555-8555-555555555555"
 
 
+@pytest.fixture(autouse=True)
+def _active_billing(monkeypatch):
+    from core.services import openclaw_work as work
+
+    monkeypatch.setattr(
+        work.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active"}),
+    )
+
+
 @pytest.mark.asyncio
 async def test_canonical_ingress_mints_optional_room_grant_after_membership_check(monkeypatch):
     from core.services import local_session_grants
@@ -53,6 +64,42 @@ async def test_canonical_ingress_mints_optional_room_grant_after_membership_chec
     monkeypatch.delenv("PAPERCLIP_SERVICE_TOKEN_KEY")
     await worker._dispatch_message(meta, member, {"messageId": event}, "user_request")
     assert post.call_args.args[4] is None
+
+
+@pytest.mark.asyncio
+async def test_expired_trial_room_dispatch_closes_the_run_without_invoking_agentcore(monkeypatch):
+    from core.services import openclaw_work as work
+
+    monkeypatch.setattr(
+        work.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"gateway_token": "dummy", "agentcore_runtime_arn": "arn:r1"}),
+    )
+    monkeypatch.setattr(work.messaging_repo, "list_members", AsyncMock(return_value=[]))
+    monkeypatch.setattr(work.messaging_repo, "get_member", AsyncMock(return_value={"id": "friday"}))
+    monkeypatch.setattr(work, "build_ingress_body", AsyncMock(return_value={"eventId": "message-1"}))
+    monkeypatch.setattr(work.messaging_repo, "create_run", AsyncMock(return_value=True))
+    ended = AsyncMock(return_value={"runId": "run-1"})
+    monkeypatch.setattr(work.messaging_repo, "end_run", ended)
+    monkeypatch.setattr(
+        work.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "trial_local", "trial_end": 1}),
+    )
+    worker = OpenClawWorkWorker(sqs_client=FakeSqs())
+    post = AsyncMock()
+    monkeypatch.setattr(worker, "_post", post)
+
+    await worker._dispatch_message(
+        {"ownerId": "owner_test", "roomId": _ROOM, "workspaceId": WS, "deliveryKey": KEY},
+        {"id": "friday"},
+        {"messageId": "message-1"},
+        "user_request",
+    )
+
+    ended.assert_awaited_once()
+    assert ended.call_args.kwargs == {"outcome": "gate_error", "error_kind": "trial_expired"}
+    post.assert_not_awaited()
 
 
 class FakeSqs:

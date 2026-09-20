@@ -561,3 +561,11 @@ async def test_dispatch_sends_no_summary_into_a_room_with_a_foreign_member(monke
         members=foreign_members,
     )
     assert seen["sessions"] == []
+
+
+@pytest.fixture(autouse=True)
+def _active_billing(monkeypatch):
+    monkeypatch.setattr(
+        "core.services.openclaw_work.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active"}),
+    )

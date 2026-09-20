@@ -1423,7 +1423,9 @@ def _rewrite_named_env_lines(dotenv_text: str, keys_to_drop: set[str], live: dic
     return out + "\n" if out and trailing_newline else out
 
 
-def patch_profile_env_and_config(owner_id: str, agent_id: str, env_updates: dict[str, str], config_patch: dict) -> None:
+def patch_profile_env_and_config(
+    owner_id: str, agent_id: str, env_updates: dict[str, str], config_patch: dict, *, replace_blocks: bool = False
+) -> None:
     """Merge named ``key=value`` ``env_updates`` into a profile's stored ``.env`` AND deep-merge
     ``config_patch`` into its ``config.yaml``, bumping ``.revision`` ONCE after BOTH have landed
     -- the combined write for a provider whose Hermes equivalent is a bare environment variable
@@ -1450,7 +1452,10 @@ def patch_profile_env_and_config(owner_id: str, agent_id: str, env_updates: dict
     if not bucket:
         return
     prefix = profile_prefix(owner_id, agent_id)
-    config = _deep_merge(read_profile_config(owner_id, agent_id, required=True), config_patch or {})
+    config = read_profile_config(owner_id, agent_id, required=True)
+    # Provider switches replace complete transport blocks so old base URLs and
+    # API modes cannot survive; ordinary connector patches retain deep-merge semantics.
+    config = {**config, **(config_patch or {})} if replace_blocks else _deep_merge(config, config_patch or {})
     dotenv_text = _require_text(bucket, f"{prefix}.env", ".env")
     live = {k: v for k, v in env_updates.items() if v}
     new_dotenv = _rewrite_named_env_lines(dotenv_text, set(env_updates), live)

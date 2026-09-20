@@ -84,7 +84,7 @@ async def test_provider_refresh_rewrites_existing_runtime_then_stops_warm_sessio
     )
     monkeypatch.setattr(hp, "_load_role_and_aips", AsyncMock(return_value=("role", {})))
     monkeypatch.setattr(hp, "_wait_for_idle_session", AsyncMock(return_value=True))
-    monkeypatch.setattr(hp, "write_profiles", AsyncMock(side_effect=lambda *a: calls.append("profiles")))
+    monkeypatch.setattr(hp, "refresh_provider_profiles", AsyncMock(side_effect=lambda *a: calls.append("profiles")))
     monkeypatch.setattr(hp.browser_sessions, "ensure_browser_profile", AsyncMock(return_value=""))
     monkeypatch.setattr(hp, "_runtime_image_uri", lambda _: "image:new")
     monkeypatch.setattr(hp, "build_runtime_request_for_owner", lambda *a, **k: {})
@@ -109,3 +109,47 @@ async def test_provider_projection_reads_committed_billing_choice(monkeypatch):
 
     monkeypatch.setattr(container_provision.billing_repo, "get_by_owner_id", billing_read)
     assert await container_provision.resolve_provider_choice("org_one") == ("opencode_zen", None)
+
+
+@pytest.mark.asyncio
+async def test_provider_refresh_preserves_owner_content_and_pins_delegation(monkeypatch):
+    import yaml
+    from types import SimpleNamespace
+    from core.services import hermes_provisioning as hp, hermes_profiles, messaging
+
+    monkeypatch.setattr(settings, "OWNER_STATE_BUCKET", "bucket")
+    monkeypatch.setattr(
+        hp,
+        "resolve_profile_inputs",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                provider_choice="opencode_zen",
+                byo_provider=None,
+                byo_api_key=None,
+                aip_arns={},
+            )
+        ),
+    )
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": "agent", "role": "engineer"}]))
+    monkeypatch.setattr(hp, "_stage_owner_facts", AsyncMock())
+    monkeypatch.setattr(
+        hermes_profiles,
+        "read_profile_config",
+        lambda *a, **k: {
+            "model": {"provider": "openai"},
+            "mcp_servers": {"custom": {"command": "mine"}},
+            "terminal": {"timeout": 42},
+        },
+    )
+    monkeypatch.setattr(hermes_profiles, "_require_text", lambda *a: "CUSTOM=keep\nOPENAI_API_KEY=old\n")
+    writes = {}
+    monkeypatch.setattr(hermes_profiles, "_s3_put", lambda bucket, key, value: writes.__setitem__(key, value))
+    await hp.refresh_provider_profiles("org_one", {})
+    config = yaml.safe_load(writes["org_one/hermes/agent/config.yaml"])
+    assert config["model"]["provider"] == "opencode-zen"
+    assert config["delegation"]["api_mode"] == "codex_responses"
+    assert config["fallback_providers"] == []
+    assert config["mcp_servers"] == {"custom": {"command": "mine"}}
+    assert config["terminal"] == {"timeout": 42}
+    assert writes["org_one/hermes/agent/.env"] == "CUSTOM=keep\n"
+    assert not any(key.endswith("SOUL.md") for key in writes)

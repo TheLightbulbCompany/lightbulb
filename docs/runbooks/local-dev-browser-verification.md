@@ -69,3 +69,9 @@ Private verification captures are temporary local artifacts; do not commit conso
 Direct browser calls from an arbitrary local origin fail the deployed dev API's CORS policy, so bypassing the proxy is not a valid test. Teams-related API surfaces may currently return `503`; record that separately from Browser/DCV results. Cookie persistence across AgentCore browser sessions is not established by this procedure and requires its own two-turn measurement.
 
 For DCV asset failures, inspect the requested worker URL. The SDK may request `/chat/nice-dcv-web-client-sdk/...` while copied assets are served at `/nice-dcv-web-client-sdk/...`; the checked-in Next rewrite maps the former prefix to the latter. Keep StrictMode enabled and treat duplicate-connection logs separately when the canvas renders.
+
+## Check a profile without a raw browser override
+
+Include an existing or fresh profile whose raw `config.yaml` omits `browser.backend` in browser acceptance. A test account already carrying `browser.backend: off` can hide a migration failure: Hermes 0.21.3's Browser Use selector reads raw profile config instead of the managed overlay. It then chooses the Browser Use harness, whose unsigned AgentCore CDP connection returns 403.
+
+The bridge's `normalize_profile_backends` projects the platform's `browser.backend: off` policy into the local raw profile before either room or native Paperclip agent construction. This preserves the configured model/provider and other profile values, and selects the released agent-browser path. The backend-owned S3 config is not rewritten by the runtime's profile save; verify the actual tool selection and live page, not an S3 backfill. The pinned-image browser smoke covers missing and conflicting raw settings.

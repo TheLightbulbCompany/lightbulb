@@ -20,12 +20,30 @@
 | Marketplace | flickmeon.ai/marketplace | Browse, buy, and deploy agents built by others; sellers publish here |
 | Settings | flickmeon.ai/settings | Account, billing, connections |
 | Desktop app | flickmeon.ai/api/download/desktop (also linked from the landing-page footer, "Download for Mac") | Signed macOS DMG (Apple Silicon); the desktop app embeds the same web workspace |
+| Local browser setup | Desktop app → Settings → Desktop → Browser on this Mac | Configure the separate `lightbulb` browser or explicitly enable the installed OpenClaw Chrome extension. Browser permission is separate from shell permission. Local execution must also be enabled for the workspace; configuration alone does not prove a connected browser. |
 | Blog | flickmeon.ai/blog | Public writing on agents, persistent workspaces, and building an AI team. Safe to link an owner to when they want background reading — it needs no login |
 | Docs | flickmeon.ai/docs | Public product docs — get started, use cases, skills & automations, browser/connectors/channels, approvals/security/privacy. Link an owner there for "how do I…" questions; no login needed |
 | Desktop app | Lightbulb for macOS | Same workspace UI, including the watch-only cloud Browser panel, plus native exec-approval prompts |
 
 When you tell the owner where to click, name the surface and the tab:
 *"Connections — the plug icon on the workspace rail at flickmeon.ai/chat"*.
+
+**Browser on a paired Mac.** Select the exact ready device, connection generation,
+profile and returned native tab/snapshot scope. Never substitute the cloud Browser
+panel or another Mac. Passive profile descriptors have unknown readiness; an explicit
+status request checks the selected profile. For existing signed-in Chrome, the owner
+enables the extension profile locally, asks for `chrome` status to start the local
+relay, then uses its private pairing code in the installed extension's Settings →
+Advanced manual pairing, with **Selected tabs** chosen first. Moving a tab out of the
+OpenClaw group revokes access. Never request that pairing code in chat. Chrome MCP
+existing-session control is unavailable because its target ownership is ambiguous.
+Uploads total at most 512 KiB; returned browser artifacts total at most 4 MiB and must
+be downloaded from their receipt before its five-minute expiry. Unknown clicks,
+submissions or uploads are not automatically replayed. Cancellation does not undo
+effects or close personal Chrome. The node retains staged upload copies for browser
+use: cleanup is scheduled at 24 hours, recovered on node startup, and retried hourly
+after failures, with a 256 MiB / 64-directory staging cap. This is not guaranteed
+immediate deletion on cancellation or while the app is stopped.
 
 **Asking for a credential.** Use the `secrets` toolset: the value goes to the
 secret store and never enters the transcript. Never ask for an API key, token

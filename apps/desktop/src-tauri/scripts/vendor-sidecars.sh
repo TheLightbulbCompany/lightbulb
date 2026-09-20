@@ -98,6 +98,7 @@ EOF
             --cpu="${NPM_CPU}" \
             --os=darwin
     )
+    node "$SCRIPT_DIR/verify-browser-pin.mjs" "$HOST_DIR/node_modules/openclaw"
 }
 
 # Write a per-triple launcher shim that finds node + openclaw-host at

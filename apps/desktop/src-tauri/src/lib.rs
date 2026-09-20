@@ -535,6 +535,24 @@ async fn local_mcp_list(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
     local_mcp::list_servers(&openclaw_state_dir(&app)?)
 }
 
+#[tauri::command]
+async fn local_browser_status(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    local_mcp::browser_setup_status(&openclaw_state_dir(&app)?)
+}
+
+#[tauri::command]
+async fn local_browser_configure(app: tauri::AppHandle, extension: bool) -> Result<(), String> {
+    let state = app.try_state::<AuthState>().ok_or("AuthState not managed")?;
+    let _serialized = state.node_host_mutation.lock().await;
+    local_mcp::configure_browser(&openclaw_state_dir(&app)?, extension)?;
+    restart_node_host_subprocess_locked(&app).await
+}
+
+#[tauri::command]
+async fn local_browser_pairing(app: tauri::AppHandle) -> Result<String, String> {
+    local_mcp::browser_pairing(&openclaw_state_dir(&app)?)
+}
+
 /// Replace the whole servers map, then bounce the sidecar so it takes effect.
 ///
 /// The lock spans the read-modify-write AND the restart. Guarding only the
@@ -1509,6 +1527,9 @@ end tell"#,
             file_access_remove_path,
             file_access_default_path,
             local_mcp_list,
+            local_browser_status,
+            local_browser_configure,
+            local_browser_pairing,
             local_mcp_set,
             local_mcp_remove,
             claude_export::export_claude_context,

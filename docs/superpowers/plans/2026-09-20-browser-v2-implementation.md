@@ -15,7 +15,7 @@ Use the existing Browser profile, containers row, S3 bucket, runtime RPC, releas
 
 ## Interface contract
 
-`GET /browser/live-view` and human mutations return the v1 fields plus `sessionId`, `generation`, `mode`, `controllerId`, `isController`, `canControl`, `savedAt`, `error`. Modes: idle, agent, human, transition, error. Start has an empty body; control takes `{action: take|release, generation}`; stop takes `{generation}`.
+`GET /browser/live-view` and human mutations return the v1 fields plus `sessionId`, `generation`, `mode`, `controllerId`, `isController`, `canControl`, `savedAt`, `error`. Modes: idle, agent, human, transition, error. Start has an empty body; navigation takes `{generation,url}` at `/browser/navigate`; control takes `{action: take|release, generation}`; stop takes `{generation}`.
 
 Internal `/internal/browser/{owner}/acquire` accepts `{runId}` and returns `{generation, cdpUrl}`. Release accepts `{runId,generation}`. The hook token binds the owner; clients never choose a session/profile or S3 key.
 

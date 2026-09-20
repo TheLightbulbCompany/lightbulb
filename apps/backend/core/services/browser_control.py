@@ -259,6 +259,52 @@ async def take(owner: str, user: str, generation: str) -> dict:
     return await view(owner, user)
 
 
+async def navigate(owner: str, user: str, generation: str, url: str) -> dict:
+    row = await _row(owner)
+    old = row.get("browser_state") or {}
+    if old.get("mode") != "human" or old.get("controller_id") != user or old.get("generation") != generation:
+        raise BrowserError("Browser control changed. Refresh and try again.")
+    if not await _owned(owner, row, old):
+        raise BrowserError("The browser session expired. Start restores the last completed save.")
+    state = await _begin(owner, old)
+    error = None
+    try:
+        await _stream(state["session_id"], True, state["generation"])
+        result = await container_rpc.call(
+            owner,
+            "browser.navigate",
+            {
+                "cdpUrl": await _cdp(state["session_id"]),
+                "url": url,
+            },
+            timeout_s=180,
+        )
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            error = "Could not open that website. Try again."
+    except Exception:
+        error = "Could not open that website. Try again."
+    if await container_repo.get_browser_state(owner) != state:
+        raise BrowserError("Browser control changed. Refresh and try again.")
+    try:
+        await _stream(state["session_id"], False, secrets.token_hex(32))
+    except Exception:
+        await _fail(owner, state, "Browser control recovery is required.")
+        raise BrowserError("Could not restore human browser control. Try restarting from the panel.") from None
+    await _publish(
+        owner,
+        state,
+        {
+            **state,
+            "mode": "human",
+            "error": error,
+            "lease_until": int(time.time()) + LEASE_SECONDS,
+        },
+    )
+    if error:
+        raise BrowserError(error)
+    return await view(owner, user)
+
+
 async def acquire_agent(owner: str, run_id: str) -> dict:
     state = await _claim(owner, run_id, False)
     return {"generation": state["generation"], "cdpUrl": await _cdp(state["session_id"])}

@@ -90,7 +90,8 @@ to save and stop the shared session; the v1 CLI cannot adopt a v2-owned session.
 On the dedicated dev account, verify this complete sequence after rollout:
 
 1. Open Browser: no session is created by opening or polling the panel.
-2. Click **Start browser**, use a controlled test website, and set a synthetic
+2. Click **Start browser**, enter a controlled test website address and click **Go**,
+   then set a synthetic
    persistent cookie and localStorage value. Website sign-ins are workspace-shared.
 3. Click **Done & hand back**. Confirm the saved timestamp and that the same AWS
    session stays active. Ask an agent to take a fresh snapshot and browse.
@@ -119,3 +120,10 @@ client before checkpointing (AWS permits one automation connection); explicitly
 connect the helper before `state save`; use explicit `state load` followed by reload;
 and sign S3 PUT with the same `Content-Type: application/json` the helper sends.
 Never record signed URLs, browser-state JSON, cookies, or Clerk tickets in logs.
+
+
+Checkpoint scope: cookies plus the localStorage origins exported by the CLI, merged
+with previously saved origins. For a newly signed-in site, use Done while that site
+is open. Uncheckpointed localStorage changes on a site that has already been closed
+or navigated away from are not guaranteed to be captured. Full closed-origin history
+collection would need a separate browser observer; it is not part of this release.

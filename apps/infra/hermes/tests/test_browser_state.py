@@ -171,3 +171,40 @@ def test_subprocess_failure_cleans_up_and_does_not_claim_success(monkeypatch):
     with pytest.raises(RuntimeError, match="browser state"):
         browser_state.checkpoint(_params())
     assert any("close" in c for c in calls)
+
+
+def test_navigate_connects_opens_and_cleans_up(monkeypatch):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    assert browser_state.navigate({"cdpUrl": _params()["cdpUrl"], "url": "https://example.com/path?q=1"}) == {"ok": True}
+    assert [argv[3:] for argv, _ in calls] == [
+        ["connect", _params()["cdpUrl"]],
+        ["open", "https://example.com/path?q=1"],
+        ["close"],
+    ]
+    assert calls[0][1]["env"]["AGENT_BROWSER_CDP"] == _params()["cdpUrl"]
+    assert calls[-1][1]["timeout"] <= browser_state.CLEANUP_TIMEOUT_S
+
+
+@pytest.mark.parametrize("url", [
+    "relative/path",
+    "file:///tmp/secret",
+    "https://user:password@example.com/",
+    "https://example.com:invalid/",
+])
+def test_navigate_rejects_unsafe_urls_before_running_cli(monkeypatch, url):
+    called = False
+
+    def run(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    with pytest.raises(ValueError, match="navigation URL"):
+        browser_state.navigate({"cdpUrl": _params()["cdpUrl"], "url": url})
+    assert called is False

@@ -38,6 +38,19 @@ def _valid_url(value: object, scheme: str) -> str:
     return value
 
 
+def _valid_navigation_url(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("browser navigation URL is required")
+    parsed = urlparse(value)
+    try:
+        parsed.port
+    except ValueError:
+        raise ValueError("browser navigation URL is invalid") from None
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("browser navigation URL is invalid")
+    return value
+
+
 def _operation_env(cdp_url: str) -> dict[str, str]:
     return {
         key: value
@@ -161,6 +174,8 @@ def checkpoint(params: dict) -> dict:
             _run(env, "state", "save", path, deadline=deadline)
             body = Path(path).read_bytes()
             current = _valid_state(body)
+            # ponytail: this fresh client exports its visible origins; merging retains prior
+            # checkpoints. A persistent observer is needed for unsaved, closed-origin changes.
             if previous_url:
                 previous = _valid_state(_download(_valid_url(previous_url, "https"), deadline))
                 current = _merge_state(current, previous)
@@ -196,3 +211,26 @@ def checkpoint(params: dict) -> dict:
                     _run(env, "close", deadline=time.monotonic() + CLEANUP_TIMEOUT_S)
                 except Exception:
                     pass
+
+
+def navigate(params: dict) -> dict:
+    """Open one validated web URL through an existing AgentCore Browser session."""
+    if not isinstance(params, dict):
+        raise ValueError("browser navigation params are required")
+    cdp_url = _valid_url(params.get("cdpUrl"), "wss")
+    url = _valid_navigation_url(params.get("url"))
+    env = _operation_env(cdp_url)
+    deadline = time.monotonic() + OPERATION_TIMEOUT_S
+    try:
+        _run(env, "connect", cdp_url, deadline=deadline)
+        _run(env, "open", url, deadline=deadline)
+        return {"ok": True}
+    except ValueError:
+        raise
+    except Exception:
+        raise RuntimeError("browser navigation failed") from None
+    finally:
+        try:
+            _run(env, "close", deadline=time.monotonic() + CLEANUP_TIMEOUT_S)
+        except Exception:
+            pass

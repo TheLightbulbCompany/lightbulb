@@ -8,7 +8,7 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 from typing import Literal
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
@@ -469,6 +469,10 @@ class BrowserControlRequest(BrowserGeneration):
     action: Literal["take", "release"]
 
 
+class BrowserNavigateRequest(BrowserGeneration):
+    url: HttpUrl
+
+
 class BrowserRun(BaseModel):
     runId: str = Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9:_-]+$")
 
@@ -511,6 +515,18 @@ async def browser_change_control(
 async def browser_stop(body: BrowserGeneration, response: Response, auth: AuthContext = Depends(get_current_user)):
     response.headers["Cache-Control"] = "no-store"
     return await _browser_result(browser_control.stop(resolve_owner_id(auth), auth.user_id, body.generation))
+
+
+@browser_router.post("/navigate")
+async def browser_navigate(
+    body: BrowserNavigateRequest, response: Response, auth: AuthContext = Depends(get_current_user)
+):
+    response.headers["Cache-Control"] = "no-store"
+    if body.url.username or body.url.password:
+        raise HTTPException(status_code=422, detail="Website addresses cannot include credentials.")
+    return await _browser_result(
+        browser_control.navigate(resolve_owner_id(auth), auth.user_id, body.generation, str(body.url))
+    )
 
 
 browser_internal_router = APIRouter()

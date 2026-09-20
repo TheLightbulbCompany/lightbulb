@@ -180,6 +180,36 @@ describe("BrowserDockPanel", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
+  it("navigates controller input with a normalized absolute URL", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true });
+    post.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true });
+    render(<BrowserDockPanel />);
+    await flush();
+    fireEvent.change(screen.getByRole("textbox", { name: /website address/i }), { target: { value: "example.com" } });
+    await act(async () => { fireEvent.submit(screen.getByRole("form", { name: /navigate shared browser/i })); });
+    await flush();
+    expect(post).toHaveBeenCalledWith("/browser/navigate", { generation: "g1", url: "https://example.com/" });
+  });
+
+  it("shows validation errors and makes no request for unsupported navigation URLs", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true });
+    render(<BrowserDockPanel />);
+    await flush();
+    fireEvent.change(screen.getByRole("textbox", { name: /website address/i }), { target: { value: "javascript:alert(1)" } });
+    await act(async () => { fireEvent.submit(screen.getByRole("form", { name: /navigate shared browser/i })); });
+    await flush();
+    expect(screen.getByRole("alert")).toHaveTextContent(/http/i);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("does not expose navigation controls to a noncontroller", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: false, canControl: false });
+    render(<BrowserDockPanel />);
+    await flush();
+    expect(screen.queryByRole("textbox", { name: /website address/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Go" })).toBeNull();
+  });
+
   it("keeps a session connected between polls and reauthenticates for a new session", async () => {
     state.runs = RUNNING;
     const url = "https://browser.test/sessions/one/live-view?signature=first";

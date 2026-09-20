@@ -113,3 +113,23 @@ async def test_blocked_workspace_cannot_start_billed_browser(async_client_org_ad
             response = await async_client_org_admin.post("/api/v1/browser/start", json={})
     assert response.status_code == 402
     start.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_navigation_uses_clerk_owner_and_validated_web_url(async_client_org_admin):
+    with patch("routers.container.browser_control.navigate", return_value=INACTIVE) as navigate:
+        response = await async_client_org_admin.post(
+            "/api/v1/browser/navigate", json={"generation": "g1", "url": "https://example.com", "owner_id": "org_other"}
+        )
+    assert response.status_code == 200
+    navigate.assert_awaited_once_with("org_test_456", "user_test_123", "g1", "https://example.com/")
+
+
+@pytest.mark.asyncio
+async def test_navigation_rejects_embedded_credentials(async_client_org_admin):
+    with patch("routers.container.browser_control.navigate") as navigate:
+        response = await async_client_org_admin.post(
+            "/api/v1/browser/navigate", json={"generation": "g1", "url": "https://name:password@example.com"}
+        )
+    assert response.status_code == 422
+    navigate.assert_not_called()

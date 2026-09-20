@@ -212,3 +212,28 @@ async def test_retry_reuses_start_token_after_aws_timeout(workspace, monkeypatch
     assert first.kwargs["clientToken"] == retry.kwargs["clientToken"]
     assert first.kwargs == retry.kwargs
     assert workspace["browser_state"]["session_id"] == "original"
+
+
+@pytest.mark.asyncio
+async def test_human_navigation_returns_control_after_success(workspace, monkeypatch):
+    streams = AsyncMock()
+    monkeypatch.setattr(control, "_stream", streams)
+    monkeypatch.setattr(control, "_cdp", AsyncMock(return_value="wss://signed"))
+    monkeypatch.setattr(control.container_rpc, "call", AsyncMock(return_value={"ok": True}))
+    monkeypatch.setattr(control, "view", AsyncMock(return_value={"active": True}))
+    await control.navigate("org_browser", "human", "current", "https://example.com/")
+    assert [call.args[1] for call in streams.await_args_list] == [True, False]
+    assert workspace["browser_state"]["mode"] == "human"
+    assert "current_url" not in workspace["browser_state"]
+
+
+@pytest.mark.asyncio
+async def test_navigation_failure_keeps_browser_and_human_control(workspace, monkeypatch):
+    monkeypatch.setattr(control, "_stream", AsyncMock())
+    monkeypatch.setattr(control, "_cdp", AsyncMock(return_value="wss://signed"))
+    monkeypatch.setattr(control.container_rpc, "call", AsyncMock(side_effect=RuntimeError("sensitive URL")))
+    with pytest.raises(control.BrowserError, match="Could not open"):
+        await control.navigate("org_browser", "human", "current", "https://example.com/")
+    assert workspace["browser_state"]["mode"] == "human"
+    assert workspace["browser_state"]["session_id"] == "session"
+    assert "sensitive" not in workspace["browser_state"]["error"]

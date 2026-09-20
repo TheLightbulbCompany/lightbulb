@@ -278,7 +278,15 @@ def _browser_state(params: dict, **_kwargs) -> dict:
         return {"ok": False, "error": {"code": "UNAVAILABLE", "message": "browser checkpoint failed"}}
 
 
-RPC_METHODS.update({"browser.state": _browser_state})
+def _browser_navigate(params: dict, **_kwargs) -> dict:
+    from bridge.browser_state import navigate
+    try:
+        return {"ok": True, "payload": navigate(params)}
+    except Exception:
+        return {"ok": False, "error": {"code": "BROWSER_UNAVAILABLE", "message": "Browser navigation failed"}}
+
+
+RPC_METHODS.update({"browser.state": _browser_state, "browser.navigate": _browser_navigate})
 
 
 def _unavailable(method: str) -> dict:

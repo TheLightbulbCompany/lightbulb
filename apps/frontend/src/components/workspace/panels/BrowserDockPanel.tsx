@@ -56,6 +56,18 @@ function Notice({ children }: { children: React.ReactNode }): React.ReactElement
   );
 }
 
+function normalizeBrowserUrl(value: string): string {
+  const raw = value.trim();
+  if (!raw) throw new Error("Enter a website address.");
+  const hasScheme = /^[a-z][a-z\d+.-]*:/i.test(raw);
+  const parsed = new URL(hasScheme ? raw : `https://${raw}`);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Use an http:// or https:// address.");
+  }
+  if (parsed.username || parsed.password) throw new Error("Website addresses cannot include credentials.");
+  return parsed.toString();
+}
+
 export function BrowserDockPanel(): React.ReactElement | null {
   const api = useApi();
   const { orgId, userId } = useAuth();
@@ -75,6 +87,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
   const [pending, setPending] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
   const [pollNonce, setPollNonce] = useState(0);
+  const [address, setAddress] = useState("");
   const viewEpoch = useRef(0);
   const mutationSeq = useRef(0);
   const alive = useRef(true);
@@ -86,6 +99,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
     setView(null);
     setPending(false);
     setControlError(null);
+    setAddress("");
     knownSession.current = false;
   }, [api, ready, scope]);
 
@@ -207,6 +221,15 @@ export function BrowserDockPanel(): React.ReactElement | null {
   const take = () => void mutate("/browser/control", { action: "take", generation: view.generation });
   const release = () => void mutate("/browser/control", { action: "release", generation: view.generation });
   const stop = () => void mutate("/browser/stop", { generation: view.generation });
+  const navigate = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    try {
+      const url = normalizeBrowserUrl(address);
+      void mutate("/browser/navigate", { generation: view.generation, url });
+    } catch (error) {
+      setControlError(error instanceof Error ? error.message : "Enter a valid website address.");
+    }
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -222,6 +245,10 @@ export function BrowserDockPanel(): React.ReactElement | null {
         {isController ? "Done saves your sign-in and returns control to automation." : "Closing this panel only hides it; the shared browser keeps running."}
         {view.savedAt && <> Last saved {new Date(view.savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.</>}
       </div>
+      {isController && <form onSubmit={navigate} className="flex gap-2 px-3 pb-2" aria-label="Navigate shared browser">
+        <input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Enter website address" disabled={busy} aria-label="Website address" className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/10 px-2 py-1 text-xs text-[var(--midnight-foreground)] outline-none focus:border-white/30 disabled:opacity-50" />
+        <button type="submit" disabled={busy} className="rounded-md border border-white/15 px-2 py-1 text-xs disabled:opacity-50">Go</button>
+      </form>}
       <div className="relative min-h-0 flex-1">
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
           <div aria-disabled={!isController} inert={!isController || busy} className="h-full">

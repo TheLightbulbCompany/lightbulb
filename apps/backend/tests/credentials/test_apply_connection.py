@@ -200,9 +200,8 @@ async def test_apply_agentcore_cli_skill_materializer_is_projected(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_apply_agentcore_materializer_with_no_projection_is_still_skipped(monkeypatch, caplog):
-    """A materializer outside hermes_cli.OWNED_PATHS keeps the old skip -- the branch is
-    narrowed, not deleted."""
+async def test_apply_agentcore_materializer_with_no_projection_is_rejected(monkeypatch):
+    """An unsupported materializer cannot produce a connected status row."""
     from core.services.credentials import apply_connection as ac
     from core.services.credentials.registry import Provider, Wiring
 
@@ -215,23 +214,42 @@ async def test_apply_agentcore_materializer_with_no_projection_is_still_skipped(
         wiring=Wiring(materializer="toml_cli"),
     )
     monkeypatch.setattr(ac.registry, "get_provider", lambda key: provider)
-    from core.services.credentials.materializers import MATERIALIZERS
-
-    mat_called = []
-    monkeypatch.setitem(MATERIALIZERS, "toml_cli", lambda *a: mat_called.append(a))
-
-    with caplog.at_level("INFO"):
-        result = await ac.apply_connection("org_1", "synth", {"token": "t"})
-
-    assert result is None
-    assert mat_called == []
-    assert "synth" in caplog.text
+    with pytest.raises(ac.RuntimeUnsupportedError):
+        await ac.apply_connection("org_1", "synth", {"token": "t"})
 
 
 @pytest.mark.asyncio
-async def test_apply_agentcore_never_raises_when_refresh_fails(monkeypatch):
-    """M6-R24: the AgentCore projection must never raise, even if the profile
-    refresh itself blows up (e.g. a profile not written yet)."""
+@pytest.mark.parametrize(
+    "provider",
+    ("stripe", "notion", "sentry", "linear", "attio", "intercom", "apollo", "cloudflare", "quickbooks"),
+)
+async def test_actor_owned_mcp_without_retained_credential_is_rejected(monkeypatch, provider):
+    """A missing canonical token must not become a working-looking empty Hermes token file."""
+    from core.services.credentials import apply_connection as ac
+    from core.services.credentials import mcp_server as mcp_server_mod
+
+    calls = []
+
+    async def fake_reconcile(owner_id, *, pending=None):
+        calls.append((owner_id, pending))
+
+    monkeypatch.setattr(mcp_server_mod, "reconcile_integrations", fake_reconcile)
+
+    with pytest.raises(ac.RuntimeUnsupportedError):
+        await ac.apply_connection("org_1", provider, {"access_token": "fresh", "refresh_token": "rotating"})
+    assert calls == []
+
+
+@pytest.mark.parametrize("provider", ("google", "github", "posthog", "meta_ads", "parallel"))
+def test_existing_hermes_rails_remain_supported(provider):
+    from core.services.credentials import apply_connection as ac
+
+    assert ac.runtime_supported(ac.registry.get_provider(provider))
+
+
+@pytest.mark.asyncio
+async def test_apply_agentcore_raises_when_refresh_fails(monkeypatch):
+    """A failed profile write must not let the caller mark the provider connected."""
     from core.services.credentials import apply_connection as ac
     from core.services.credentials import mcp_server as mcp_server_mod
     from core.services.credentials.registry import McpServer, Provider, Wiring
@@ -251,8 +269,8 @@ async def test_apply_agentcore_never_raises_when_refresh_fails(monkeypatch):
 
     monkeypatch.setattr(mcp_server_mod, "reconcile_integrations", fake_reconcile)
 
-    result = await ac.apply_connection("org_1", "acme", {"token": "x"})  # must not raise
-    assert result is None
+    with pytest.raises(FileNotFoundError):
+        await ac.apply_connection("org_1", "acme", {"token": "x"})
 
 
 @pytest.mark.asyncio
@@ -296,9 +314,9 @@ async def test_apply_agentcore_first_connect_projects_pending_provider(monkeypat
 
     monkeypatch.setattr(mcp_server_mod, "reconcile_integrations", fake_reconcile)
 
-    await ac.apply_connection("org_1", "stripe", {"access_token": "at"})
+    await ac.apply_connection("org_1", "posthog", {"access_token": "at"})
 
-    assert calls == [("org_1", "stripe")]
+    assert calls == [("org_1", "posthog")]
 
 
 @pytest.mark.asyncio

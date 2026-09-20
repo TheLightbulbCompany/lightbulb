@@ -5,14 +5,13 @@ turn context. No retry is performed after a possibly dispatched browser effect.
 """
 
 import base64
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
-import tempfile
 import urllib.request
 import urllib.error
 import uuid
@@ -78,7 +77,62 @@ def upload_files(paths, root):
     return files
 
 
+@contextmanager
+def _artifact_directory(profile):
+    """Keep creation and failure cleanup anchored to opened profile directories."""
+    profile = Path(profile)
+    with ExitStack() as stack:
+
+        def directory(path, parent=None):
+            fd = os.open(
+                path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
+            )
+            stack.callback(os.close, fd)
+            return fd
+
+        profile_fd = directory(profile)
+        try:
+            os.mkdir("downloads", mode=0o700, dir_fd=profile_fd)
+        except FileExistsError:
+            pass
+        downloads_fd = directory("downloads", profile_fd)
+        name = "desktop-browser-" + uuid.uuid4().hex
+        os.mkdir(name, mode=0o700, dir_fd=downloads_fd)
+        staging_fd = directory(name, downloads_fd)
+        created = []
+        try:
+            yield profile / "downloads" / name, staging_fd, created
+            # Do not publish a pathname whose directory was replaced during I/O.
+            for path, parent, fd in (
+                (profile, None, profile_fd),
+                ("downloads", profile_fd, downloads_fd),
+                (name, downloads_fd, staging_fd),
+            ):
+                if not os.path.samestat(
+                    os.stat(path, dir_fd=parent, follow_symlinks=False), os.fstat(fd)
+                ):
+                    raise ValueError("Browser artifact directory changed")
+        except BaseException:
+            # Only unlink files this operation created, relative to the original
+            # opened directory. Never follow a replacement downloads/staging link.
+            for filename in created:
+                try:
+                    os.unlink(filename, dir_fd=staging_fd)
+                except FileNotFoundError:
+                    pass
+            try:
+                if os.path.samestat(
+                    os.stat(name, dir_fd=downloads_fd, follow_symlinks=False),
+                    os.fstat(staging_fd),
+                ):
+                    os.rmdir(name, dir_fd=downloads_fd)
+            except FileNotFoundError:
+                pass
+            raise
+
+
 def materialize(receipt, fetch_chunk, root):
+    """Materialize receipt artifacts under the trusted Hermes profile root."""
     artifacts = (receipt.get("result") or {}).get("artifacts", [])
     if receipt.get("state") != "succeeded" or not artifacts:
         return receipt
@@ -99,15 +153,20 @@ def materialize(receipt, fetch_chunk, root):
         total += meta["bytes"]
     if total > MEDIA_BYTES:
         raise ValueError("Browser media exceeds 4 MiB total")
-    root = Path(root)
-    root.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix="desktop-browser-", dir=root))
-    try:
+    with _artifact_directory(root) as (staging, staging_fd, created):
         ready = []
         for meta in artifacts:
-            destination = staging / f"{meta['id']}-{meta['name']}"
+            filename = f"{meta['id']}-{meta['name']}"
+            destination = staging / filename
             digest = hashlib.sha256()
-            with destination.open("xb") as output:
+            descriptor = os.open(
+                filename,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                mode=0o600,
+                dir_fd=staging_fd,
+            )
+            created.append(filename)
+            with os.fdopen(descriptor, "wb") as output:
                 for offset in range(0, meta["bytes"], CHUNK_BYTES):
                     chunk = fetch_chunk(meta["id"], offset)
                     encoded = chunk.get("base64")
@@ -130,9 +189,6 @@ def materialize(receipt, fetch_chunk, root):
                 {**meta, "path": str(destination), "media": f"MEDIA:{destination}"}
             )
         return {**receipt, "result": {**receipt["result"], "artifacts": ready}}
-    except BaseException:
-        shutil.rmtree(staging)
-        raise
 
 
 def _http(ctx, method, path, body=None, admission=""):
@@ -241,5 +297,5 @@ def receipt_status(receipt_id, *, ctx):
         lambda index, offset: _http(
             ctx, "GET", f"operations/{receipt_id}/artifacts/{index}?offset={offset}"
         ),
-        turn_context._home() / "downloads",
+        turn_context._home(),
     )

@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 use tokio::{io::AsyncReadExt, process::Command, sync::watch};
 
 // The native node uses the raw relay; base64 plus protocol overhead must fit
-// the broker's 1 MiB result budget. Oversized images fail instead of truncating.
+// the broker's 1 MiB result budget. Oversized images are normalized, never truncated.
 const MAX_IMAGE_BYTES: usize = 512 * 1024;
 
 pub fn permission() -> &'static str {
@@ -51,14 +51,80 @@ impl Drop for TempImage {
 }
 
 async fn capture(
-    mut command: Command,
+    command: Command,
     path: PathBuf,
     mut cancel: watch::Receiver<bool>,
     timeout: std::time::Duration,
 ) -> Result<Vec<u8>, String> {
     let _cleanup = TempImage(path.clone());
+    let normalized = path.with_extension("bounded.jpg");
+    let _normalized_cleanup = TempImage(normalized.clone());
+    let deadline = tokio::time::Instant::now() + timeout;
+    run_capture_process(command, &mut cancel, deadline).await?;
+    let mut selected = path.clone();
+    if tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| e.to_string())?
+        .len()
+        > MAX_IMAGE_BYTES as u64
+    {
+        // Keep desktop text readable at the first size that fits. JPEG handles
+        // detailed/photo-heavy screens much better than shrinking a large PNG.
+        for size in ["1600", "1200", "800"] {
+            let mut normalize = Command::new("/usr/bin/sips");
+            normalize
+                .args([
+                    "-Z",
+                    size,
+                    "-s",
+                    "format",
+                    "jpeg",
+                    "-s",
+                    "formatOptions",
+                    "65",
+                ])
+                .arg(&path)
+                .arg("--out")
+                .arg(&normalized);
+            run_capture_process(normalize, &mut cancel, deadline).await?;
+            selected = normalized.clone();
+            if tokio::fs::metadata(&selected)
+                .await
+                .map_err(|e| e.to_string())?
+                .len()
+                <= MAX_IMAGE_BYTES as u64
+            {
+                break;
+            }
+        }
+    }
+    if *cancel.borrow() || tokio::time::Instant::now() >= deadline {
+        return Err("capture cancelled or timed out".into());
+    }
+    let mut bytes = Vec::new();
+    tokio::fs::File::open(&selected)
+        .await
+        .map_err(|e| e.to_string())?
+        .take((MAX_IMAGE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err("snapshot exceeds transport limit".into());
+    }
+    Ok(bytes)
+}
+
+async fn run_capture_process(
+    mut command: Command,
+    cancel: &mut watch::Receiver<bool>,
+    deadline: tokio::time::Instant,
+) -> Result<(), String> {
     if *cancel.borrow() {
         return Err("capture cancelled".into());
+    }
+    if tokio::time::Instant::now() >= deadline {
+        return Err("capture timed out".into());
     }
     let mut child = command
         .kill_on_drop(true)
@@ -69,7 +135,7 @@ async fn capture(
     let status = tokio::select! {
         biased;
         _ = cancel.changed() => None,
-        _ = tokio::time::sleep(timeout) => None,
+        _ = tokio::time::sleep_until(deadline) => None,
         status = child.wait() => Some(status),
     };
     let Some(status) = status else {
@@ -83,18 +149,14 @@ async fn capture(
     if *cancel.borrow() {
         return Err("capture cancelled".into());
     }
-    let mut bytes = Vec::new();
-    tokio::fs::File::open(&path)
-        .await
-        .map_err(|e| e.to_string())?
-        .take((MAX_IMAGE_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|e| e.to_string())?;
-    if bytes.len() > MAX_IMAGE_BYTES {
-        return Err("snapshot exceeds transport limit".into());
-    }
-    Ok(bytes)
+    Ok(())
+}
+
+fn snapshot_command(path: &std::path::Path, format: &str) -> Command {
+    let mut command = Command::new("/usr/sbin/screencapture");
+    // A single explicit display produces exactly the owned output path.
+    command.args(["-x", "-D", "1", "-t", format]).arg(path);
+    command
 }
 
 fn err(code: &str, message: impl Into<String>) -> Value {
@@ -133,11 +195,16 @@ pub async fn handle_screen_snapshot(params: &Value, cancel: watch::Receiver<bool
         Some(p) => p,
         None => return err("READ_ERROR", "could not derive tempfile path"),
     };
-    let mut command = Command::new("/usr/sbin/screencapture");
-    command.args(["-x", "-t", format]).arg(&tmp);
+    let command = snapshot_command(&tmp, format);
     let bytes = match capture(command, tmp, cancel, std::time::Duration::from_secs(10)).await {
         Ok(bytes) => bytes,
         Err(e) => return err("CAPTURE_FAILED", e),
+    };
+    // Normalization may turn a requested PNG into JPEG; report the actual bytes.
+    let format = if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        "jpg"
+    } else {
+        "png"
     };
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
@@ -170,17 +237,109 @@ mod lifecycle_tests {
     use super::*;
     use std::time::Duration;
 
+    #[test]
+    fn snapshot_selects_exactly_the_primary_display() {
+        let command = snapshot_command(std::path::Path::new("/tmp/owned.png"), "png");
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_str().unwrap())
+            .collect();
+        assert_eq!(args, ["-x", "-D", "1", "-t", "png", "/tmp/owned.png"]);
+    }
+
+    #[tokio::test]
+    async fn retina_desktop_fixture_becomes_a_usable_bounded_image_and_cleans_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("desktop.bmp");
+        let output = dir.path().join("capture.png");
+        // 4K desktop: dark sidebar, fine horizontal text rows, and a large
+        // detailed image panel. Runtime fixture avoids a checked-in megabyte blob.
+        let (width, height) = (3840usize, 2160usize);
+        let mut bmp = vec![0u8; 54 + width * height * 3];
+        let len = bmp.len() as u32;
+        bmp[..2].copy_from_slice(b"BM");
+        for (offset, value) in [
+            (2, len),
+            (10, 54),
+            (14, 40),
+            (18, width as u32),
+            (22, height as u32),
+        ] {
+            bmp[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
+        let mut noise = 1u32;
+        for y in 0..height {
+            for x in 0..width {
+                let pixel = 54 + (y * width + x) * 3;
+                noise = noise.wrapping_mul(1664525).wrapping_add(1013904223);
+                let rgb = if x < 640 {
+                    [40, 40, 40]
+                } else if x < 3200 && y < 1600 {
+                    [noise as u8, (noise >> 8) as u8, (noise >> 16) as u8]
+                } else if y % 32 < 3 {
+                    [50, 50, 50]
+                } else {
+                    [245, 245, 245]
+                };
+                bmp[pixel..pixel + 3].copy_from_slice(&rgb);
+            }
+        }
+        std::fs::write(&source, bmp).unwrap();
+        assert!(std::process::Command::new("/usr/bin/sips")
+            .args(["-s", "format", "png"])
+            .arg(&source)
+            .arg("--out")
+            .arg(&output)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::fs::metadata(&output).unwrap().len() > MAX_IMAGE_BYTES as u64);
+        let (_tx, rx) = watch::channel(false);
+        let bytes = capture(
+            Command::new("/usr/bin/true"),
+            output.clone(),
+            rx,
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+        assert!(bytes.len() <= MAX_IMAGE_BYTES);
+        assert!(
+            bytes.starts_with(&[0xff, 0xd8, 0xff]),
+            "oversized PNG falls back to JPEG"
+        );
+        assert!(!output.exists());
+        assert!(!output.with_extension("bounded.jpg").exists());
+        let normalized = dir.path().join("result.jpg");
+        std::fs::write(&normalized, bytes).unwrap();
+        let dimensions = std::process::Command::new("/usr/bin/sips")
+            .args(["-g", "pixelWidth", "-g", "pixelHeight"])
+            .arg(normalized)
+            .output()
+            .unwrap();
+        let dimensions = String::from_utf8(dimensions.stdout).unwrap();
+        assert!(dimensions.contains("pixelWidth: 1600"), "{dimensions}");
+        assert!(dimensions.contains("pixelHeight: 900"), "{dimensions}");
+    }
+
     #[tokio::test]
     async fn cancellation_before_spawn_and_during_capture_reaps_and_cleans() {
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("capture.png");
         let (tx, rx) = tokio::sync::watch::channel(true);
+        std::fs::write(&output, "partial").unwrap();
+        std::fs::write(output.with_extension("bounded.jpg"), "partial").unwrap();
         let mut command = tokio::process::Command::new("/bin/sh");
         command.args(["-c", "exit 99"]);
         assert!(capture(command, output.clone(), rx, Duration::from_secs(1))
             .await
             .is_err());
         assert!(!output.exists());
+        assert!(!output.with_extension("bounded.jpg").exists());
         tx.send_replace(false);
         let rx = tx.subscribe();
         let mut command = tokio::process::Command::new("/bin/sh");
@@ -203,6 +362,7 @@ mod lifecycle_tests {
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("capture.png");
         std::fs::write(&output, vec![0u8; MAX_IMAGE_BYTES + 1]).unwrap();
+        std::fs::write(output.with_extension("bounded.jpg"), "partial").unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(false);
         let result = capture(
             tokio::process::Command::new("/usr/bin/true"),
@@ -213,6 +373,7 @@ mod lifecycle_tests {
         .await;
         assert!(result.is_err());
         assert!(!output.exists());
+        assert!(!output.with_extension("bounded.jpg").exists());
     }
 
     #[tokio::test]

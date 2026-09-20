@@ -1,6 +1,6 @@
 # Migration closeout and browser v2 research plan
 
-Status: research and design; not an implementation-ready browser specification.
+Status: marketplace/IAM closeout implemented in PR #2808; browser v2 remains a feasibility/design task. No production deployment from this PR yet.
 
 ## Scope
 
@@ -40,7 +40,7 @@ Completed: `graphify update . --no-cluster` processed 1,431 uncached code files,
 
 ### 2. Marketplace install tracking
 
-Confirmed gap: `apps/backend/routers/marketplace_listings.py::my_installed_templates` returns an empty list. `apps/frontend/src/hooks/useCatalog.ts` consumes this list to hide installed templates. `apps/backend/core/services/catalog_service.py` documents the missing replacement for the old EFS install marker.
+Confirmed gap: `apps/backend/routers/marketplace_listings.py::my_installed_templates` returns an empty list. The historical `apps/frontend/src/hooks/useCatalog.ts` reads this list, but a repository-wide search found no application callers of that hook. Do not claim a currently mounted sidebar filter is restored. The live Teams roster does consume marketplace provenance. `apps/backend/core/services/catalog_service.py` documents the missing replacement for the old EFS install marker.
 
 Correction to the initial audit: deploy retry idempotency is not absent. The router's stable Paperclip create key (listing, placement, version) and owner-wide deploy claim remain. The missing record affects installed-template discovery, marketplace-origin badges, and the early completed-install shortcut. A retry can fetch the artifact and emit another deployment event without minting a second agent. Preserve the working creation and locking mechanisms.
 
@@ -127,3 +127,14 @@ Browser implementation begins only after these probes determine a supported inte
 Retained-resource deletion remains a separately reviewable action. Production verification must cover the deployed artifact and runtime version, not just a green local test or a successful workflow.
 
 Delete this working plan once its scoped work ships; preserve results in PR descriptions and maintained runbooks.
+
+
+## Execution results
+
+- Published the source-reviewed architecture walkthrough, rendered SVG and filtered Graphify export in PR #2808. Opened and visually verified the diagram in the user's Chrome browser.
+- Implemented protected marketplace install records, live-roster reads, approval completion checks, and agent/account cleanup. Runtime roles cannot write the record prefix. Existing migrated agents without authoritative records are not backfilled by guessing from names or purchases.
+- Narrowed the live DynamoDB wildcard to the current Lightbulb environment namespace and removed unused migration helpers.
+- Corrected maintained architecture documentation and regenerated AGENTS.md from CLAUDE.md.
+- Local checks: 74 focused backend tests plus 2 storefront commit-order/rollback tests; 402 full infrastructure tests; exporter regression/determinism; Ruff lint and formatting. The supplementary default `tsc --noEmit` command is not a supported check for this package (infra-ci.yml documents its test-global/dependency-type problems); infrastructure verification uses the repository's synth/test workflow.
+- Infrastructure CI at commit 25107c5ee passed all jobs, including image smokes. Backend CI is monitored separately; local focused results are not a claim that the whole backend suite passed.
+- Browser probe refinement: the first raw-CDP/standalone-viewer results had harness/viewport uncertainty. A subsequent exact released-CLI probe, with AWS-reported viewport 1456×819 and matching session identity, did display the correct form. Automated keyboard input still was not observed in the remote form. Native UpdateBrowserStream disable/enable calls succeeded in a separate probe, but that run lacked a visible form, so takeover was not proven. These observations do not establish that the deployed v1 viewer is broken: its prior production screenshot visibly showed Example Domain. No browser-v2 controls are shipped by this PR.

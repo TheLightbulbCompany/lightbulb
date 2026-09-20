@@ -501,8 +501,8 @@ async def _rollback_agent(*, owner_id: str, agent_id: str, cause: BaseException 
     """Best-effort removal; a cleanup failure must not replace the real error.
 
     Deletes the Paperclip row. The S3 profile objects a failed install may have written are
-    left in place: a re-run overwrites them, and there is no install record keyed on them that
-    a later hire could resolve to (see ``_has_committed_marketplace_install``). ``cause`` is
+    left in place: a re-run overwrites them, while provenance reads require a live agent.
+    Full account teardown also removes any remaining install metadata. ``cause`` is
     accepted and unused -- it steered the ECS unwind's skip-on-TimeoutError, which had to keep
     the Paperclip row alive so a half-written EFS workspace stayed deletable from Teams.
     """

@@ -202,7 +202,7 @@ describe("useRooms canonical reconciliation", () => {
     await waitFor(() => expect(result.current.historyComplete).toBe(true));
     expect(result.current.historyError).toBe(false);
     expect(result.current.historyLoading).toBe(false);
-    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 1, 100);
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 1, 100, { signal: expect.any(AbortSignal) });
   });
   it("reconciles edits from history and retains them against delayed creation events", async () => {
     const { result } = renderHook(() => useRooms(), { wrapper });
@@ -213,7 +213,7 @@ describe("useRooms canonical reconciliation", () => {
     act(() => { for (const handler of handlers) handler({ schemaVersion: 1, eventId: "edit", type: "room.message.updated", occurredAt: "now", roomId: room.roomId,
       payload: { roomId: room.roomId, messageId: firstMessage.messageId, messageSeq: 1 } }); });
     await waitFor(() => expect(result.current.messages[0]?.text).toBe("corrected"));
-    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100);
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, { signal: expect.any(AbortSignal) });
     act(() => { for (const handler of handlers) handler(messageEvent(firstMessage)); });
     expect(result.current.messages[0].text).toBe("corrected");
   });
@@ -534,7 +534,7 @@ describe("useRooms canonical reconciliation", () => {
     // channel only ever delivered future messages, and any gap is closed by the
     // afterSeq reconciliation exercised further down this test.
     await waitFor(() => expect(result.current.messages.map((message) => message.messageSeq)).toEqual([1]));
-    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100);
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, { signal: expect.any(AbortSignal) });
 
     live.liveConnected = true;
     live.liveChannels = [`/users/private`, `/rooms/${room.roomId}/${room.deliveryKey}`];
@@ -547,7 +547,7 @@ describe("useRooms canonical reconciliation", () => {
       for (const handler of handlers) handler(messageEvent(third));
     });
     await waitFor(() => expect(result.current.messages.map((message) => message.messageSeq)).toEqual([1, 2, 3]));
-    expect(messaging.listMessages).toHaveBeenLastCalledWith(room.roomId, 1, 100);
+    expect(messaging.listMessages).toHaveBeenLastCalledWith(room.roomId, 1, 100, { signal: expect.any(AbortSignal) });
     act(() => {
       for (const handler of handlers) handler(messageEvent(third));
     });

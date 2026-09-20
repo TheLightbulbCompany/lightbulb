@@ -22,6 +22,10 @@ interface RoomTimelineProps {
   empty: ReactNode;
   /** Sits above the oldest message once history is complete — the channel intro. */
   leading?: ReactNode;
+  historyComplete?: boolean;
+  historyLoading?: boolean;
+  historyError?: string | null;
+  onLoadOlder?: () => void;
 }
 
 const BOTTOM_THRESHOLD_PX = 48;
@@ -29,7 +33,7 @@ const HIGHLIGHT_MS = 2000;
 
 const escapeSelector = (value: string) => typeof CSS !== "undefined" && "escape" in CSS ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
 
-export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, targetMessageId, targetToken, renderMessage, children, empty, leading }: RoomTimelineProps): ReactElement {
+export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, targetMessageId, targetToken, renderMessage, children, empty, leading, historyComplete = true, historyLoading = false, historyError, onLoadOlder }: RoomTimelineProps): ReactElement {
   const region = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const lastSeq = useRef<number>(messages.at(-1)?.messageSeq ?? 0);
@@ -40,6 +44,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
   const live = useRef<HTMLDivElement>(null);
   const [unseen, setUnseen] = useState(0);
   const [highlighted, setHighlighted] = useState<string | null>(null);
+  const olderAnchor = useRef<{ id: string; top: number } | null>(null);
   const items = useMemo(() => buildTimeline(messages, { readSeq }), [messages, readSeq]);
 
   function scrollToBottom() {
@@ -67,6 +72,15 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
     if (atBottom.current || (ownLastSentSeq !== null && newest === ownLastSentSeq)) scrollToBottom();
     else setUnseen((current) => current + added);
   }, [messages, ownLastSentSeq]);
+
+  useLayoutEffect(() => {
+    const anchor = olderAnchor.current;
+    const node = region.current;
+    if (!anchor || !node || historyLoading) return;
+    const row = node.querySelector<HTMLElement>(`[data-message-id="${escapeSelector(anchor.id)}"]`);
+    if (row) node.scrollTop += row.getBoundingClientRect().top - anchor.top;
+    olderAnchor.current = null;
+  }, [messages, historyLoading]);
 
   // Target message: scroll/focus/highlight once per target, so an unrelated
   // message arriving later doesn't re-trigger the same target. Keyed on
@@ -115,6 +129,16 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
 
   return <div className="room-timeline">
     <div ref={region} role="region" aria-label="Messages" className="room-history" tabIndex={0} onScroll={onScroll}>
+      {!historyComplete && onLoadOlder && <div className="room-older-history">
+        <Button type="button" variant="outline" disabled={historyLoading} onClick={() => {
+          const node = region.current;
+          const row = node && [...node.querySelectorAll<HTMLElement>("[data-message-id]")].find((candidate) =>
+            candidate.getBoundingClientRect().bottom > node.getBoundingClientRect().top);
+          if (row) olderAnchor.current = { id: row.dataset.messageId!, top: row.getBoundingClientRect().top };
+          onLoadOlder();
+        }}>{historyLoading ? "Loading…" : "Load older messages"}</Button>
+        {historyError && <p role="alert">Could not load older messages. Try again.</p>}
+      </div>}
       {leading}
       {items.length === 0 ? empty : <TimelineMessages items={items} highlighted={highlighted} renderMessage={renderMessage} />}
       <div ref={live} className="room-live-content">{children}</div>
@@ -132,11 +156,15 @@ const TimelineMessages = memo(function TimelineMessages({ items, highlighted, re
   highlighted: string | null;
   renderMessage: RoomTimelineProps["renderMessage"];
 }) {
-  return items.map((item) => {
+  // Highlighting changes the wrapper, not the message body or its actions.
+  const contents = useMemo(() => items.map((item) =>
+    item.kind === "message" ? renderMessage(item.message, item.collapsed) : null
+  ), [items, renderMessage]);
+  return items.map((item, index) => {
     if (item.kind === "date") return <div key={item.key} role="separator" aria-label={item.label} className="room-date-divider"><span>{item.label}</span></div>;
     if (item.kind === "new") return <div key={item.key} role="separator" aria-label="New messages" className="room-new-line"><span>New</span></div>;
     return <div key={item.key} data-message-id={item.message.messageId} data-highlight={highlighted === item.message.messageId ? "true" : undefined} tabIndex={-1} className="room-timeline-item">
-      {renderMessage(item.message, item.collapsed)}
+      {contents[index]}
     </div>;
   });
 });

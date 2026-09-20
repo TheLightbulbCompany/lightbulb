@@ -63,6 +63,7 @@ export interface RoomPanelProps {
   historyError?: boolean;
   historyErrorMessage?: string | null;
   onLoadHistory?: () => void;
+  onLoadOlder?: () => void;
   pendingMessages?: readonly PendingRoomMessage[];
   typingMembers?: readonly { userId: string; displayName: string }[];
   runs?: readonly RoomRunView[];
@@ -226,6 +227,7 @@ function RoomContent({
   historyError,
   historyErrorMessage,
   onLoadHistory,
+  onLoadOlder,
   pendingMessages = [],
   typingMembers = [],
   runs = [],
@@ -308,6 +310,13 @@ function RoomContent({
   const selection = useMemo(() => selectedThreadId === undefined ? localSelection
     : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
       : localSelection?.kind !== "thread" ? localSelection : null, [selectedThreadId, localSelection]);
+  const loadedThreadHistory = useRef<string | null>(null);
+  useEffect(() => {
+    if (selection?.kind !== "thread" || historyComplete || historyLoading || !onLoadHistory) return;
+    if (loadedThreadHistory.current === selection.id) return;
+    loadedThreadHistory.current = selection.id;
+    onLoadHistory();
+  }, [selection, historyComplete, historyLoading, onLoadHistory]);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement>(null);
   const contextHeading = useRef<HTMLHeadingElement>(null);
@@ -631,11 +640,12 @@ function RoomContent({
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
       <div ref={historyRef} className="contents">
         <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
+          historyComplete={historyComplete} historyLoading={historyLoading} historyError={historyErrorMessage} onLoadOlder={onLoadOlder}
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
           targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
           renderMessage={renderMainMessage}
           leading={historyComplete ? <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} /> : null}
-          empty={null}>
+          empty={!historyComplete ? <p className="room-empty">Load older messages to see the start of this conversation.</p> : null}>
           {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}

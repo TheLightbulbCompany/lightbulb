@@ -69,7 +69,7 @@ from core.services.paperclip_adapter_config import (
     HERMES_GATEWAY_TYPE,
     build_hermes_gateway_adapter_config,
 )
-from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
+from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError, _paperclip_error_code
 
 logger = logging.getLogger(__name__)
 
@@ -116,10 +116,10 @@ _SEED_WAIT_INTERVAL_S = 1.0
 
 
 def _is_credential_less_failed(existing: Optional[PaperclipCompany]) -> bool:
-    """A ``failed`` row with no ``paperclip_user_id`` — a claim that failed
-    before its sign-up, or the put-if-absent marker. Its retry re-runs the
-    sign-up, so it must go through the seed-claim fence like a fresh row;
-    a failed row WITH credentials is adopted instead and needs no fence
+    """A ``failed`` row with no confirmed ``paperclip_user_id``. Signup may
+    already have succeeded; any staged password is retained for recovery.
+    Its retry must go through the seed-claim fence like a fresh row;
+    a failed row WITH a confirmed identity is adopted and needs no fence
     (``try_acquire_seed_claim`` reclaims exactly this shape)."""
     return existing is not None and existing.status == "failed" and not existing.paperclip_user_id
 
@@ -455,10 +455,8 @@ class PaperclipProvisioning:
                 new_user_session_cookie = signin["_session_cookie"]
             else:
                 owner_auth_email = owner_email
-                signup = await self._admin.sign_up_user(
-                    email=owner_email,
-                    password=password,
-                    name=owner_email,
+                signup, owner_auth_email, password = await self._sign_up_with_staged_credentials(
+                    user_id=owner_user_id, claim_id=seed_claim_id, email=owner_email, password=password
                 )
                 paperclip_user_id = signup["user"]["id"]
                 new_user_session_cookie = signup["_session_cookie"]
@@ -898,10 +896,8 @@ class PaperclipProvisioning:
                 member_paperclip_user_id = existing.paperclip_user_id
                 member_session_cookie = member_signin["_session_cookie"]
             else:
-                member_signup = await self._admin.sign_up_user(
-                    email=email,
-                    password=member_password,
-                    name=email,
+                member_signup, member_auth_email, member_password = await self._sign_up_with_staged_credentials(
+                    user_id=user_id, claim_id=member_claim_id, email=email, password=member_password
                 )
                 member_paperclip_user_id = member_signup["user"]["id"]
                 member_session_cookie = member_signup["_session_cookie"]
@@ -1074,6 +1070,35 @@ class PaperclipProvisioning:
             # ``retryable`` is set on the exception itself (see provision_org
             # for the full rationale).
             raise
+
+    async def _sign_up_with_staged_credentials(
+        self, *, user_id: str, claim_id: str | None, email: str, password: str
+    ) -> tuple[dict, str, str]:
+        # A lost response can mean signup succeeded. Save the secret under
+        # the existing claim before making that external side effect.
+        if not claim_id:
+            raise RuntimeError("Paperclip signup requires a seed claim")
+        email, encrypted = await self._repo.stage_signup_credentials(
+            user_id, claim_id=claim_id, email=email, password_encrypted=encrypt(password)
+        )
+        password = decrypt(encrypted)
+        try:
+            account = await self._admin.sign_up_user(email=email, password=password, name=email)
+        except PaperclipApiError as duplicate:
+            if (
+                duplicate.status_code != 422
+                or _paperclip_error_code(duplicate.body) != "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL"
+            ):
+                raise
+            try:
+                account = await self._admin.sign_in_user(email=email, password=password)
+            except PaperclipApiError as signin_error:
+                if signin_error.status_code == 401:
+                    # An unrelated existing account is still a signup failure.
+                    # Never infer identity or membership from email alone.
+                    raise duplicate from signin_error
+                raise
+        return account, email, password
 
     async def archive_member(self, *, user_id: str, grace_days: int = 30) -> None:
         """Archive a member's Paperclip membership AND disable their DDB row.

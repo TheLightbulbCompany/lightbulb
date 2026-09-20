@@ -1,4 +1,4 @@
-import type { ApiMethods } from "../api/client";
+import type { ApiCallOptions, ApiMethods } from "../api/client";
 import type {
   AbortRunResponse,
   CanonicalRoomMessage,
@@ -55,6 +55,7 @@ const localSessionPath = (roomId: string, sessionId: string) => `${roomPath(room
  * uses the documented fallback.
  */
 const SEND_MESSAGE_TIMEOUT_MS = 30_000;
+const HISTORY_TIMEOUT_MS = 30_000;
 
 export interface MessagingClient {
   listResources(roomId: string, options?: { includeEnded?: boolean }): Promise<RoomResources>;
@@ -71,7 +72,7 @@ export interface MessagingClient {
   updateRoom(roomId: string, request: PatchRoomRequest): Promise<RoomDetail>;
   upsertMember(roomId: string, request: UpsertRoomMemberRequest): Promise<RoomDetail>;
   removeMember(roomId: string, kind: MemberKind, memberId: string): Promise<void>;
-  listMessages(roomId: string, afterSeq: number, limit?: number): Promise<MessagePage>;
+  listMessages(roomId: string, afterSeq: number, limit?: number, options?: ApiCallOptions & { beforeSeq?: number }): Promise<MessagePage>;
   sendMessage(roomId: string, request: CreateMessageRequest): Promise<CanonicalRoomMessage>;
   uploadAttachment(roomId: string, image: RoomAttachmentInput): Promise<MessageAttachment>;
   downloadAttachment(roomId: string, attachmentId: string): Promise<Blob>;
@@ -108,9 +109,36 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     async removeMember(roomId, kind, memberId) {
       await api.del(`${roomPath(roomId)}/members/${kind}/${encodeURIComponent(memberId)}`);
     },
-    listMessages: (roomId, afterSeq, limit = 100) => api.get(
-      `${roomPath(roomId)}/messages?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
-    ) as Promise<MessagePage>,
+    async listMessages(roomId, afterSeq, limit = 100, options) {
+      if (options?.signal?.aborted) throw new Error("History request cancelled");
+      const controller = new AbortController();
+      const cancel = () => controller.abort();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        cancel();
+      }, HISTORY_TIMEOUT_MS);
+      const aborted = new Promise<never>((_resolve, reject) => {
+        controller.signal.addEventListener("abort", () => reject(new Error(
+          timedOut ? "History request timed out. Try again." : "History request cancelled",
+        )), { once: true });
+      });
+      options?.signal?.addEventListener("abort", cancel, { once: true });
+      try {
+        // Race the whole API call: token acquisition can hang before fetch
+        // ever observes the signal. Late responses cannot settle this read.
+        return await Promise.race([
+          api.get(
+            `${roomPath(roomId)}/messages?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}${options?.beforeSeq === undefined ? "" : `&beforeSeq=${encodeURIComponent(String(options.beforeSeq))}`}`,
+            { signal: controller.signal },
+          ) as Promise<MessagePage>,
+          aborted,
+        ]);
+      } finally {
+        clearTimeout(timer);
+        options?.signal?.removeEventListener("abort", cancel);
+      }
+    },
     sendMessage: (roomId, request) => {
       // A timeout, not a retry: the caller (`useRooms.sendMessage`) already
       // treats a non-`ApiError` rejection as "uncertain" and offers

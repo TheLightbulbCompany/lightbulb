@@ -1357,6 +1357,8 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
              "cacheReadTokens": int(getattr(agent, "session_cache_read_tokens", 0) or 0),
              "cacheWriteTokens": int(getattr(agent, "session_cache_write_tokens", 0) or 0)}
     reply = result.get("final_response") or ""
+    if result.get("failed") is True:
+        return "error", "model_unavailable", "", usage
     if not result.get("api_calls"):  # Hermes answers a dead model with apologetic prose; never post it
         return "error", "model_unavailable", "", usage
     if not reply:
@@ -1408,6 +1410,8 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     if paperclip_run_aborted(run_id):
         return "cancelled", None, "", usage
     reply = result.get("final_response") or ""
+    if result.get("failed") is True:
+        return "failed", "model_unavailable", "", usage
     if not result.get("api_calls"):
         return "failed", "model_unavailable", "", usage
     if not reply:

@@ -122,7 +122,10 @@ def test_native_context_completes_with_real_output_usage_and_session(home, monke
 
         def run_conversation(self, **kwargs):
             seen["run_kwargs"] = kwargs
-            return {"api_calls": 1, "final_response": "actual terminal output"}
+            return {
+                "api_calls": 1, "final_response": "actual terminal output", "failed": False,
+                "completed": True, "tools": [{"name": "shell"}],
+            }
 
     def construct(agent_id, body, frames, session_key):
         seen["construct"] = (agent_id, body, frames, session_key)

@@ -47,8 +47,16 @@ pub fn config_path(state_dir: &Path) -> PathBuf {
 /// paired device grant. Never widen that grant to approve local transcripts.
 pub fn restrict_node_integrations(state_dir: &Path) -> Result<(), String> {
     let mut config = read_config(state_dir)?;
-    let entries = entry_object(entry_object(&mut config, "plugins")?, "entries")?;
+    let exec = entry_object(entry_object(&mut config, "tools")?, "exec")?;
     let mut changed = false;
+    for (key, value) in [("security", "allowlist"), ("ask", "always")] {
+        if key == "security" && exec.get(key).and_then(Value::as_str) == Some("deny") { continue; }
+        if exec.get(key).and_then(Value::as_str) != Some(value) {
+            exec.insert(key.into(), Value::String(value.into()));
+            changed = true;
+        }
+    }
+    let entries = entry_object(entry_object(&mut config, "plugins")?, "entries")?;
     for (plugin, feature) in [("anthropic", "sessionCatalog"), ("ollama", "nodeInference")] {
         let settings = entry_object(
             entry_object(entry_object(entries, plugin)?, "config")?,
@@ -309,6 +317,7 @@ mod tests {
         });
         std::fs::write(config_path(d.path()), expected.to_string()).unwrap();
         restrict_node_integrations(d.path()).unwrap();
+        expected["tools"] = json!({"exec": {"security": "allowlist", "ask": "always"}});
         expected["plugins"]["entries"]["anthropic"]["config"]["sessionCatalog"]["enabled"] =
             json!(false);
         expected["plugins"]["entries"]["ollama"]["config"]["nodeInference"]["enabled"] =
@@ -353,6 +362,16 @@ mod tests {
             assert!(restrict_node_integrations(d.path()).is_err());
             assert_eq!(std::fs::read_to_string(config_path(d.path())).unwrap(), bad);
         }
+    }
+
+    #[test]
+    fn restrictive_exec_preserves_explicit_deny_and_unrelated_rules() {
+        let d = dir();
+        let config = json!({"tools":{"exec":{"security":"deny","ask":"off","safeBins":["true"]}}});
+        std::fs::write(config_path(d.path()), config.to_string()).unwrap();
+        restrict_node_integrations(d.path()).unwrap();
+        let config = Value::Object(read_config(d.path()).unwrap());
+        assert_eq!(config["tools"]["exec"], json!({"security":"deny","ask":"always","safeBins":["true"]}));
     }
 
     #[cfg(unix)]

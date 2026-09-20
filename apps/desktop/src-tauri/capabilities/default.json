@@ -12,6 +12,7 @@
     ]
   },
   "permissions": [
+    "desktop-approval:deny-desktop-shell-answer",
     "core:default",
     "deep-link:default",
     "shell:allow-open",

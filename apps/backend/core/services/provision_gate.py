@@ -134,39 +134,45 @@ def is_paid_subscription(account: Mapping[str, Any] | None) -> bool:
     return status is None and bool(account.get("stripe_subscription_id"))
 
 
-def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
-    """Paid-only predicate for ALWAYS-ON features (webhooks, channels,
-    Paperclip routines, autonomous heartbeats).
+def provider_allowed(account: Mapping[str, Any] | None, provider: str) -> bool:
+    """Plan boundary shared by selection, credential activation and projection."""
+    from core.config import settings
 
-    Autonomy is what the $50/mo subscription buys, so this is exactly the
-    paid predicate: a ``trial_local`` owner is NEVER always-on entitled.
-    Kept as a distinct name because entitlement-to-autonomy and
-    rendered-billing-state are different questions that merely share an
-    answer today — call sites should keep saying which one they mean.
-    """
-    return is_paid_subscription(account)
+    if provider == "opencode_zen":
+        return settings.MUSE_ENABLED
+    return (account or {}).get("plan") != "entry"
+
+
+async def require_provider_access(owner_id: str, provider: str) -> None:
+    from fastapi import HTTPException
+
+    account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+    if not provider_allowed(account, provider):
+        raise HTTPException(status_code=403, detail="This provider is not available on your plan.")
+
+
+def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
+    """Whether paid or an armed, unexpired local trial may use ALWAYS-ON features."""
+    if is_paid_subscription(account):
+        return True
+    if not account or account.get("subscription_status") != "trial_local" or account.get("trial_end") is None:
+        return False
+    from core.services.trial_cap import is_trial_expired
+
+    return not is_trial_expired(dict(account))
 
 
 def should_arm_nightly_ceo(account: Mapping[str, Any] | None) -> bool:
     """Whether the nightly CEO routine should be ARMED for this owner.
 
-    Deliberately BROADER than ``has_always_on_entitlement`` (paid-only, for
-    webhooks / channels): the nightly CEO is a retention lever we also extend to
-    trials — but only while the trial is LIVE. Armed for paid (active/trialing)
-    OR an unexpired ``trial_local``. An EXPIRED trial is not armed; canceled /
-    past_due / no-row are not armed. Fail-closed on no account.
+    Uses the shared feature predicate: paid or an armed, unexpired local trial.
+    An unarmed trial fails closed until the durable ready transition starts its
+    clock; expired, canceled, past-due and missing rows are not armed.
 
     The nightly run for a trial is still cap-gated at the wake path and at the
     bedrock-gate, so arming an unexpired-but-capped trial is harmless (the run
     is refused that day and resumes at the UTC rollover)."""
-    if is_paid_subscription(account):
-        return True
-    if not account or account.get("subscription_status") != "trial_local":
-        return False
-    # Local import avoids a provision_gate <-> trial_cap import cycle.
-    from core.services.trial_cap import is_trial_expired
-
-    return not is_trial_expired(account)
+    return has_always_on_entitlement(account)
 
 
 def is_trial_blocked(account: Mapping[str, Any] | None) -> bool:
@@ -349,15 +355,15 @@ def gate_for_trial_reason(reason: str | None, owner_role: str) -> Gate | None:
 
 
 def trial_expired_gate(owner_role: str) -> Gate:
-    """The blocked-gate a trial_local owner sees once their 3-day window
-    (``trial_end``, armed by the first canonical ready status poll) has
+    """The blocked-gate a trial_local owner sees once their 30-day window
+    (``trial_end``, armed by the durable runtime-ready transition) has
     passed. Mirrors ``trial_daily_cap_gate`` field-for-field
     so the provision gate and gate_chat's Layer 2 render an identical
     'trial ended' card instead of a spinner or a generic error."""
     return Gate(
         code="trial_expired",
         title="Your free trial has ended",
-        message="Your 3-day free trial has ended. Pick a plan to keep your agent.",
+        message="Your 30-day free trial has ended. Pick a plan to keep your agent.",
         action_label="Upgrade",
         action_href="/settings?panel=billing",
         action_admin_only=False,
@@ -493,6 +499,21 @@ async def _evaluate_provision_gate_inner(
         # back to the workspace paywall; the checkout 409 guard excepts a
         # None-status row, so the retry from the paywall proceeds cleanly.
         return _team_billing_required_gate(owner_role)
+
+    from core.services.container_provision import provider_choice_from_row
+
+    if provider_choice_from_row(account)[0] == "opencode_zen":
+        if not provider_allowed(account, "opencode_zen"):
+            return Gate(
+                "muse_unavailable",
+                "Included Muse unavailable",
+                "Included Muse is not configured.",
+                "Manage plan",
+                "/settings?panel=billing",
+                True,
+                owner_role,
+            )
+        return gate_for_trial_reason(await trial_cap.reason_for_account(owner_id, account), owner_role)
 
     # trial_local short-circuit — a no-card local trial has NO
     # provider_choice on the row (its provider is a config-path mode resolved

@@ -281,3 +281,13 @@ async def test_save_raises_on_secrets_manager_failure_with_no_ddb_rollback():
         svc = KeyService()
         with pytest.raises(RuntimeError, match="secrets manager exploded"):
             await svc.set_key("u_rb", "openai", "sk-real")
+
+
+@pytest.fixture(autouse=True)
+def _paid_provider_entitlement(monkeypatch):
+    from unittest.mock import AsyncMock
+    from core.repositories import billing_repo
+
+    monkeypatch.setattr(
+        billing_repo, "get_by_owner_id", AsyncMock(return_value={"plan": "standard", "subscription_status": "active"})
+    )

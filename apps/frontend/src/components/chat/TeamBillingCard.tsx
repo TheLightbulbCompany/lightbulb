@@ -5,6 +5,9 @@ import { PROVIDER_CARDS } from "@/lib/providerCards";
 
 export interface TeamBillingCardProps {
   workspacePriceUsd?: number;
+  entryPriceUsd?: number;
+  museAvailable?: boolean;
+  onSubscribeEntry?: () => Promise<void>;
   ownerRole: "admin" | "member";
   /**
    * Mirrors the provision gate's `blocked.action.admin_only`. Combined with
@@ -38,6 +41,9 @@ export interface TeamBillingCardProps {
  */
 export function TeamBillingCard({
   workspacePriceUsd,
+  entryPriceUsd,
+  museAvailable = false,
+  onSubscribeEntry,
   ownerRole,
   adminOnly = true,
   isSubscribed = false,
@@ -91,11 +97,24 @@ export function TeamBillingCard({
         )}
       </p>
       <div className="mt-4 space-y-2 rounded-lg border border-[var(--edge)] bg-[var(--cream)] px-3.5 py-3 text-ui leading-snug text-[var(--midnight-muted)]">
-        <p className="font-semibold text-[var(--midnight)]">Inference costs are separate</p>
+        <p className="font-semibold text-[var(--midnight)]">{museAvailable ? "Muse included; other inference is separate" : "Inference costs are separate"}</p>
         {PROVIDER_CARDS.map((card) => (
           <p key={card.id}>{card.subtitle}</p>
         ))}
       </div>
+
+      {entryPriceUsd !== undefined && onSubscribeEntry && !isSubscribed && (
+        <div className="mt-4 rounded-lg border border-[var(--edge)] px-3.5 py-3 text-ui">
+          <p className="font-semibold text-[var(--midnight)]">Entry — ${entryPriceUsd}/mo</p>
+          <p className="mt-1 text-[var(--midnight-muted)]">Muse inference included, with listening and automation.</p>
+          {canAct && (
+            <button type="button" disabled={busy} onClick={() => run(onSubscribeEntry)}
+              className="mt-3 inline-flex min-h-11 items-center justify-center rounded-full border border-[var(--edge)] px-[18px] py-2.5 font-semibold text-[var(--midnight)] disabled:opacity-50">
+              Subscribe entry — ${entryPriceUsd}/mo
+            </button>
+          )}
+        </div>
+      )}
 
       {error && (
         <div

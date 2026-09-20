@@ -24,7 +24,13 @@ def provider_choice_from_row(row: dict | None) -> tuple[str, str | None]:
     persisted, matching the legacy default and keeping recovery working for
     owners onboarded before per-owner provider_choice storage.
     """
+    from core.config import settings
+
+    if (row or {}).get("plan") == "entry":
+        return "opencode_zen", None
     if (row or {}).get("subscription_status") == "trial_local":
+        if settings.MUSE_ENABLED:
+            return "opencode_zen", None
         # No-card local trial. `trial_local` is a subscription_status, never a
         # stored provider_choice, so the provider must never be read off the
         # row — a trial owner's row carries none, and this function never
@@ -48,7 +54,8 @@ async def resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
     routers/container_recover.py, catalog_service and the reapply script all
     import THIS function. Row-level semantics live in provider_choice_from_row.
     """
-    row = await billing_repo.get_by_owner_id(owner_id)
+    # A stale replica could project the old provider and then clear the new refresh marker.
+    row = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     return provider_choice_from_row(row)
 
 

@@ -293,7 +293,14 @@ async def container_status(
     # two polls can both enter here, exactly one wins the re-claim.
     retryable_states = ("error", "stopped")
     stale_provision = container_repo.is_provision_claim_stale(container)
-    if (container.get("status") in retryable_states or stale_provision) and not conversion_active:
+    provider_update_pending = (
+        container.get("status") == "running"
+        and bool(container.get("needs_provision"))
+        and not container.get("provision_claim_id")
+    )
+    if (
+        container.get("status") in retryable_states or stale_provision or provider_update_pending
+    ) and not conversion_active:
         # The FULL trial predicate, not just the cap. An over-cap or expired
         # trial owner gets the limit card rather than a silent re-provision.
         from core.services import provision_gate, trial_cap

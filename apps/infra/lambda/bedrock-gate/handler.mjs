@@ -5,9 +5,12 @@
 import {
   DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand, TransactWriteItemsCommand,
 } from "@aws-sdk/client-dynamodb";
+import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 import { handleRequest } from "./core.mjs";
 
 const client = new DynamoDBClient({});
+const secrets = new SecretsManagerClient({});
+const getZenKey = async () => (await secrets.send(new GetSecretValueCommand({SecretId: ENV.ZEN_SECRET_ID}))).SecretString;
 // Thin promise-returning facade so modules stay SDK-command-free and testable
 // (unit tests inject a fake with the same methods).
 const realDdb = {
@@ -18,6 +21,9 @@ const realDdb = {
 };
 
 const ENV = {
+  MUSE_ENABLED: process.env.MUSE_ENABLED,
+  MUSE_MAX_OUTPUT_TOKENS: process.env.MUSE_MAX_OUTPUT_TOKENS,
+  ZEN_SECRET_ID: process.env.ZEN_SECRET_ID,
   AWS_REGION: process.env.AWS_REGION || "us-east-1",
   GATE_ENV: process.env.GATE_ENV,
   TOKENS_TABLE: process.env.TOKENS_TABLE,
@@ -54,7 +60,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream,
     abortSignal: undefined,
   };
   try {
-    await handleRequest(event, responder, { ddb: realDdb, env: ENV });
+    await handleRequest(event, responder, { ddb: realDdb, env: ENV, getZenKey });
   } finally {
     if (!responseStream.writableEnded) { try { responseStream.end(); } catch { /* already ended */ } }
   }
@@ -64,7 +70,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream,
 // load-bearing (ACP). Drop hop-by-hop/transfer headers the Function URL manages.
 function pickHeaders(h = {}) {
   const out = {};
-  for (const k of ["content-type", "x-amzn-requestid", "x-amzn-bedrock-content-type"]) {
+  for (const k of ["content-type", "retry-after", "x-amzn-requestid", "x-amzn-bedrock-content-type"]) {
     if (h[k] != null) out[k] = h[k];
   }
   return out;

@@ -16,6 +16,10 @@ export interface BillingAccount {
   // free-tier users must see a Subscribe CTA, never "Active subscription".
   // Platform-use gating (which trial_local DOES pass) is server-side.
   is_subscribed: boolean;
+  listening_available?: boolean;
+  entry_available?: boolean;
+  entry_price_usd?: number;
+  muse_available?: boolean;
   current_spend: number;
   lifetime_spend: number;
   // Stripe-native subscription state. Both null until the user signs up.
@@ -30,7 +34,7 @@ export interface BillingAccount {
   // higher $150/mo tier that unlocks larger marketplace companies). Backend
   // defaults a plan-less row to "standard"; optional here so pre-plan
   // response shapes (and test fixtures) don't have to carry it.
-  plan?: "standard" | "ultra_pro";
+  plan?: "entry" | "standard" | "ultra_pro";
   // Workspace prices are server-owned so every client shows the deployed
   // catalog instead of a stale price baked into a release.
   workspace_price_usd: number;
@@ -102,7 +106,7 @@ export function useBilling() {
     window.location.href = portal_url;
   }, [api]);
 
-  const startCheckout = useCallback(async (plan: "workspace" | "ultra") => {
+  const startCheckout = useCallback(async (plan: "entry" | "workspace" | "ultra") => {
     const res = (await api.post("/billing/checkout", { plan })) as {
       checkout_url?: string;
       updated?: boolean;

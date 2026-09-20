@@ -29,6 +29,7 @@ from typing import Any, Awaitable, Callable
 
 import stripe
 from fastapi import Response
+from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import utc_now_iso
@@ -822,6 +823,8 @@ def _workspace_plan_from_subscription_items(event_data: dict[str, Any]) -> str |
         price_id = price.get("id")
         if not isinstance(price.get("recurring"), dict):
             reason = "non_recurring_item"
+        elif price_id == settings.STRIPE_ENTRY_PRICE_ID and price_id:
+            return "entry"
         elif price_id == settings.STRIPE_WORKSPACE_PRICE_ID and price_id:
             return "standard"
         elif price_id == settings.STRIPE_ULTRA_PRICE_ID and price_id:
@@ -835,6 +838,44 @@ def _workspace_plan_from_subscription_items(event_data: dict[str, Any]) -> str |
         reason,
     )
     return None
+
+
+async def _reconcile_entry_plan(account: dict, event_data: dict) -> tuple[dict, dict]:
+    """Use current Stripe pricing and CAS so a delayed event cannot undo a tier change."""
+    from botocore.exceptions import ClientError
+
+    for _ in range(3):
+        snapshot = await billing_repo.get_by_owner_id(account["owner_id"], consistent_read=True)
+        if not snapshot:
+            raise ValueError("Billing account disappeared during plan reconciliation")
+        current = await asyncio.to_thread(stripe.Subscription.retrieve, event_data["id"])
+        if current.get("customer") != snapshot.get("stripe_customer_id"):
+            raise ValueError("Subscription belongs to another billing customer")
+        plan = _workspace_plan_from_subscription_items(current)
+        if plan is None:
+            raise ValueError("Subscription has an unsupported recurring price")
+        try:
+            if plan == "entry" and snapshot.get("provider_choice") != "opencode_zen":
+                await billing_repo.set_provider_choice(
+                    account["owner_id"],
+                    provider_choice="opencode_zen",
+                    byo_provider=None,
+                    plan=plan,
+                    expected_updated_at=snapshot.get("updated_at"),
+                )
+                snapshot = {**snapshot, "provider_choice": "opencode_zen", "byo_provider": None}
+            elif (snapshot.get("plan") or "standard") != plan:
+                await billing_repo.set_plan(
+                    account["owner_id"],
+                    plan=plan,
+                    now_iso=utc_now_iso(),
+                    expected_updated_at=snapshot.get("updated_at"),
+                )
+            return current, snapshot
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] not in ("ConditionalCheckFailedException", "TransactionCanceledException"):
+                raise
+    raise billing_repo.CrossProviderWriteConflict("Subscription plan changed during reconciliation")
 
 
 async def handle_subscription_state(event: dict[str, Any], billing_service: BillingService) -> Response | None:
@@ -872,6 +913,9 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # Capture the prior status BEFORE persisting the new one, so the PostHog
     # bridge below can detect transitions (esp. trialing -> active, the
     # trial->paid moment).
+    entry_reconciled = account.get("plan") == "entry" or _workspace_plan_from_subscription_items(event_data) == "entry"
+    if entry_reconciled:
+        event_data, account = await _reconcile_entry_plan(account, event_data)
     old_status = account.get("subscription_status")
     new_status = event_data.get("status", "active")
     if new_status in ("incomplete", "incomplete_expired") and old_status in ("trial_local", "active", "trialing"):
@@ -917,6 +961,16 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     metadata = event_data.get("metadata") or {}
     metadata_provider = metadata.get("provider_choice")
     metadata_byo = metadata.get("byo_provider")
+    if new_plan == "entry":
+        metadata_provider = None  # Entry's atomic plan commit already selected Muse.
+    elif (
+        settings.MUSE_ENABLED
+        and old_status == "trial_local"
+        and not metadata_provider
+        and not account.get("provider_choice")
+    ):
+        metadata_provider = "opencode_zen"
+
     provider_persisted = False
     # The provider backup below runs only on the transition INTO a live paid
     # status — the first usable event of a new subscription. That is usually
@@ -944,7 +998,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     entering_live = new_status in ("active", "trialing") and (
         old_status in pre_live_statuses or (old_status is None and not account.get("stripe_subscription_id"))
     )
-    if entering_live and metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
+    if entering_live and metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude", "opencode_zen"):
         # provider_choice lives on billing_accounts (per-owner), not on
         # the user row. /trial-checkout writes synchronously before
         # creating the Stripe Checkout session; this webhook write is
@@ -1002,7 +1056,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # API calls. Same resolution the trial_converted telemetry uses —
         # metadata is only trusted when its row write actually committed.
         resolved_provider = (metadata_provider if provider_persisted else None) or account.get("provider_choice")
-        if resolved_provider not in ("chatgpt_oauth", "byo_key"):
+        if resolved_provider not in ("chatgpt_oauth", "byo_key", "opencode_zen"):
             dispatch_metronome_provisioning(account["owner_id"])
 
         # Launch Competition: this first-activation transition is what counts
@@ -1021,10 +1075,24 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # anything at all.
         dispatch_company_stripe_request(account["owner_id"])
 
-    plan_persisted = False
+    plan_persisted = entry_reconciled
     try:
-        await billing_repo.set_plan(account["owner_id"], plan=new_plan, now_iso=utc_now_iso())
+        if not entry_reconciled:
+            await billing_repo.set_plan(
+                account["owner_id"],
+                plan=new_plan,
+                now_iso=utc_now_iso(),
+                expected_plan=account.get("plan") or "standard",
+            )
         plan_persisted = True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # A sibling tier update won after our initial read. Re-read Stripe
+        # instead of restoring the stale event's more expensive entitlement.
+        event_data, account = await _reconcile_entry_plan(account, event_data)
+        new_plan = _workspace_plan_from_subscription_items(event_data)
+        entry_reconciled = plan_persisted = True
     except Exception:
         logger.exception("Failed to persist plan for owner %s", account["owner_id"])
     if old_status == "trial_local" and new_status in ("trialing", "active"):
@@ -1088,6 +1156,13 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 # (If the stamp DID land, the conversion_pending self-heal is
                 # the recovery path either way.)
                 await _rollback_conversion_entry(account["owner_id"], event_data["id"])
+
+    if entry_reconciled and new_status in _PAID_SUBSCRIPTION_STATUSES:
+        from core.services.provision_dispatch import dispatch_provision
+
+        runtime = await container_repo.get_by_owner_id(account["owner_id"], consistent=True)
+        if runtime and runtime.get("needs_provision"):
+            await dispatch_provision(account["owner_id"])
 
     # Refresh the owner-facts file (plan/provider snapshot the bundled isol8
     # skill points agents at). Subscription-state flips land HERE — not via

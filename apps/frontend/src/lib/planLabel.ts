@@ -38,7 +38,7 @@ export function planLabel(
  * `TrialBanner`/`OutOfCreditsBanner` on the very same screen already showed
  * the blocked/expired state. Same arithmetic as the pre-existing, separately
  * tested `isTrialExpired` local in `settings/page.tsx` (trial_end is the
- * OVERALL free-tier window expiry, stamped once at signup — see that file's
+ * OVERALL free-tier window expiry, stamped once at workspace readiness — see that file's
  * comment for the full rationale); left un-extracted there since it already
  * has its own coverage and this helper exists for the two NEW call sites.
  */
@@ -47,15 +47,15 @@ export function isFreeTierExpired(
   trialEndSec: number | null | undefined,
   nowMs: number,
 ): boolean {
-  return status === "trial_local" && trialEndSec != null && trialEndSec * 1000 < nowMs;
+  return status === "trial_local" && trialEndSec != null && trialEndSec * 1000 <= nowMs;
 }
 
 /**
  * Length of the free-tier window, in whole days. The backend stamps `trial_end`
- * as EXACTLY signup + this many days (`trial_cap._is_expired`), so the count
+ * as EXACTLY readiness + this many days (`trial_cap._is_expired`), so the count
  * below can never legitimately exceed it — see the clamp in `freeTierDaysLeft`.
  */
-export const FREE_TIER_DAYS = 3;
+export const FREE_TIER_DAYS = 30;
 
 /**
  * Whole days left in the free-tier window. Consumed by `FreeTierNote`, which is
@@ -68,10 +68,10 @@ export const FREE_TIER_DAYS = 3;
  * window to describe (not on the free tier, or no `trial_end` — legacy dev
  * rows have none, and the backend treats a missing stamp as NOT expired).
  *
- * Clamped to `FREE_TIER_DAYS`: `trial_end` is signup + exactly that many days,
+ * Clamped to `FREE_TIER_DAYS`: `trial_end` is readiness + exactly that many days,
  * but `nowMs` is the CLIENT clock — a machine a few minutes slow makes
- * `trial_end - now` exceed the true window and the ceil round to 4, so a fresh
- * signup read "4 days left" on a 3-day trial. The clamp caps it at the promise.
+ * `trial_end - now` exceed the true window and the ceil round to 31, so a fresh
+ * signup read "31 days left" on a 30-day trial. The clamp caps it at the promise.
  *
  * Because it rounds up, a 0 is only reachable at exact millisecond equality,
  * and callers check `isFreeTierExpired` first anyway — so there is no "last

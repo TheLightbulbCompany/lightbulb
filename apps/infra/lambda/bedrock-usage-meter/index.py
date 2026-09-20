@@ -740,7 +740,7 @@ def _deny_gate_token(owner_id):
                 # already-expired hash cannot resurrect it as a partial row.
                 UpdateExpression="SET #denied = :t",
                 ConditionExpression="attribute_exists(token_hash)",
-                ExpressionAttributeNames={"#denied": "denied"},
+                ExpressionAttributeNames={"#denied": "bedrock_denied"},
                 ExpressionAttributeValues={":t": {"BOOL": True}},
             )
         except ClientError as e:

@@ -9,7 +9,7 @@ export const resolvePlan = (billingRow) =>
 
 export function isTrialExpired(billingRow, nowSec) {
   const end = readN(billingRow?.trial_end);
-  return end !== undefined && nowSec > end;
+  return end !== undefined && nowSec >= end;
 }
 
 /**

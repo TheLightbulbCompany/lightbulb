@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 import { ChangeProviderModal } from "../ChangeProviderModal";
 
@@ -99,4 +99,12 @@ describe("ChangeProviderModal initialChoice", () => {
     );
     expect(screen.queryByPlaceholderText(/sk-proj-/)).toBeNull();
   });
+});
+
+
+it("offers included Muse without requesting credentials when enabled", async () => {
+  mockApiPost.mockReset().mockResolvedValue({});
+  render(<ChangeProviderModal open museAvailable currentProvider="bedrock_claude" onClose={vi.fn()} onCommitted={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: /Muse Spark/i }));
+  await waitFor(() => expect(mockApiPost).toHaveBeenCalledWith("/billing/provider", { provider_choice: "opencode_zen" }));
 });

@@ -109,20 +109,15 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
     without an email claim; passing it in avoids a redundant second lookup
     inside the helper.
 
-    After the seed, ``arm_nightly_ceo`` arms the nightly-CEO routine on the
-    freshly seeded CEO. It is gated INSIDE on ``should_arm_nightly_ceo`` — paid
-    OR an unexpired ``trial_local``; an expired trial is a no-op — and arming
-    here, not only on a UI poll, is what makes it deterministic for org
-    first-provisions and trial→paid conversions, both of which reach this
-    executor. Its failures classify exactly like the seed's.
-    ``trust_cache=False``: a retry of a run that died between the arm's claim
-    write and its routine create must not trust the claim cache.
+    The nightly CEO is armed after the runtime reaches ready, because local
+    trials deliberately fail closed for autonomous work until that transition
+    starts their clock.
     """
     from core.auth import is_org_owner_id
     from core.repositories.container_repo import classify_provision_error
     from core.services import clerk_admin
     from core.services.paperclip_owner_email import lookup_owner_email
-    from core.services.user_provision import _ensure_paperclip_for_org, arm_nightly_ceo
+    from core.services.user_provision import _ensure_paperclip_for_org
 
     if not is_org_owner_id(owner_id):
         logger.error("seed step 0: owner %s is not a workspace (org) — refusing to provision", owner_id)
@@ -149,7 +144,6 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
         # falls through to the JOIN path and no-ops on the creator's already
         # -active owner row.
         await _ensure_paperclip_for_org(org_id=owner_id, user_id=creator_user_id, email=owner_email, is_admin=True)
-        await arm_nightly_ceo(owner_id, trust_cache=False)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         logger.exception("seed step 0 (owner paperclip) failed for owner %s", owner_id)
         _, retryable = classify_provision_error(exc)
@@ -213,7 +207,7 @@ async def run(owner_id: str, claim_id: str) -> int:
                     last_error=(
                         "provision refused: owner is not a workspace (org)"
                         if not is_org_owner_id(owner_id)
-                        else "provision seed: owner paperclip seed or nightly-CEO arm failed (see log)"
+                        else "provision seed: owner paperclip seed failed (see log)"
                     ),
                     retryable=(seed_exit == EXIT_TRANSIENT),
                     attempt_token=attempt_token,
@@ -234,6 +228,7 @@ async def run(owner_id: str, claim_id: str) -> int:
             raise
         except Exception as exc:  # noqa: BLE001 — classified + released; see the helper's docstring
             return await _release_hermes_failure_to_error(owner_id, claim_id, attempt_token, exc, "runtime provision")
+        await _arm_nightly_ceo_after_ready(owner_id)
         return EXIT_OK
     except ProvisionSuperseded:
         return await _stand_down_superseded(owner_id)
@@ -245,6 +240,16 @@ async def run(owner_id: str, claim_id: str) -> int:
         logger.exception("provision failed for owner %s", owner_id)
         _, retryable = classify_provision_error(exc)
         return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC
+
+
+async def _arm_nightly_ceo_after_ready(owner_id: str) -> None:
+    """Best-effort post-ready arm; later readiness polls retry on failure."""
+    from core.services.user_provision import arm_nightly_ceo
+
+    try:
+        await arm_nightly_ceo(owner_id, trust_cache=False)
+    except Exception:
+        logger.exception("nightly CEO arm failed (non-fatal) owner=%s", owner_id)
 
 
 async def _release_hermes_failure_to_error(
@@ -327,6 +332,11 @@ async def _stand_down_superseded(owner_id: str) -> int:
         return EXIT_SUPERSEDED
 
     status = row.get("status")
+    if status == "running" and row.get("agentcore_runtime_arn"):
+        # A retry after readiness may have lost the lease only because the
+        # previous attempt committed it, then died while creating the routine.
+        await _arm_nightly_ceo_after_ready(owner_id)
+        return EXIT_SUPERSEDED
     if status == "stopped":
         released = False
         try:

@@ -9,11 +9,12 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@smithy/signature-v4": "^4.2.0",
-    "@smithy/protocol-http": "^4.1.0",
-    "@smithy/eventstream-codec": "^3.1.0",
-    "@smithy/util-utf8": "^3.0.0",
+    "@aws-sdk/client-dynamodb": "^3.716.0",
+    "@aws-sdk/client-secrets-manager": "^3.1136.0",
     "@aws-sdk/credential-providers": "^3.716.0",
-    "@aws-sdk/client-dynamodb": "^3.716.0"
+    "@smithy/eventstream-codec": "^3.1.0",
+    "@smithy/protocol-http": "^4.1.0",
+    "@smithy/signature-v4": "^4.2.0",
+    "@smithy/util-utf8": "^3.0.0"
   }
 }

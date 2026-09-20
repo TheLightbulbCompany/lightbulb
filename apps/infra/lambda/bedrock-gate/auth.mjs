@@ -25,16 +25,17 @@ function bearerFrom(headers) {
  * @returns {{ownerId: string, aipTiers: Record<string,string>}}
  * @throws {GateError} 401 missing/unknown, 403 denied
  */
-export async function authenticate(headers, ddb, env) {
+export async function authenticate(headers, ddb, env, { bedrock = true } = {}) {
   const token = bearerFrom(headers);
   if (!token) throw unauthorized();
   const res = await ddb.getItem({
     TableName: env.TOKENS_TABLE,
+    ConsistentRead: true,
     Key: { token_hash: { S: hashToken(token) } },
   });
   const item = res?.Item;
   if (!item) throw unauthorized();
-  if (readBool(item.denied)) throw denied();
+  if (readBool(item.denied) || (bedrock && readBool(item.bedrock_denied))) throw denied();
   const ownerId = readS(item.owner_id);
   if (!ownerId) throw unauthorized();
   return { ownerId, aipTiers: readMapS(item.aip_tiers) };

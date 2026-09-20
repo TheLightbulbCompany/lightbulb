@@ -81,6 +81,8 @@ function providerLabel(account: BillingAccount): {
   detail: string | null;
 } {
   switch (account.provider_choice) {
+    case "opencode_zen":
+      return { title: "Muse Spark 1.3", detail: "Included — no inference credits required" };
     case "chatgpt_oauth":
       return {
         title: "Sign in with ChatGPT",

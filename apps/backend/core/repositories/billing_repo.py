@@ -756,7 +756,17 @@ async def release_checkout_slot(owner_id: str, *, token: str) -> None:
         raise
 
 
-async def set_plan(owner_id: str, *, plan: str, now_iso: str) -> None:
+_PLAN_WRITE_UNSET = object()
+
+
+async def set_plan(
+    owner_id: str,
+    *,
+    plan: str,
+    now_iso: str,
+    expected_updated_at: object = _PLAN_WRITE_UNSET,
+    expected_plan: object = _PLAN_WRITE_UNSET,
+) -> None:
     """Persist the owner's pricing tier on the billing row.
 
     ``plan`` is ``"standard"`` (the implicit single $50/mo tier) or
@@ -768,13 +778,27 @@ async def set_plan(owner_id: str, *, plan: str, now_iso: str) -> None:
     phantom ``{owner_id, plan}`` row with no stripe_customer_id.
     """
     table = _get_table()
+    condition = "attribute_exists(owner_id)"
+    values = {":p": plan, ":t": now_iso}
+    if expected_updated_at is not _PLAN_WRITE_UNSET:
+        if expected_updated_at is None:
+            condition += " AND attribute_not_exists(updated_at)"
+        else:
+            condition += " AND updated_at = :expected"
+            values[":expected"] = expected_updated_at
+    if expected_plan is not _PLAN_WRITE_UNSET:
+        values[":expected_plan"] = expected_plan
+        condition += " AND (#p = :expected_plan"
+        if expected_plan == "standard":
+            condition += " OR attribute_not_exists(#p)"
+        condition += ")"
     await run_in_thread(
         table.update_item,
         Key={"owner_id": owner_id},
         UpdateExpression="SET #p = :p, updated_at = :t",
         ExpressionAttributeNames={"#p": "plan"},
-        ExpressionAttributeValues={":p": plan, ":t": now_iso},
-        ConditionExpression="attribute_exists(owner_id)",
+        ExpressionAttributeValues=values,
+        ConditionExpression=condition,
     )
 
 
@@ -814,7 +838,7 @@ async def create_if_not_exists(
     return item
 
 
-_TRIAL_LOCAL_DURATION_SECONDS = 3 * 24 * 60 * 60
+_TRIAL_LOCAL_DURATION_SECONDS = 30 * 24 * 60 * 60
 
 
 async def create_trial_local_if_absent(owner_id: str, owner_type: str, *, trial_end: int | None = None) -> bool:
@@ -944,7 +968,8 @@ async def set_subscription(
     return await _put_with_apple_cas(owner_id, _mutate)
 
 
-_VALID_PROVIDER_CHOICES = frozenset({"bedrock_claude", "byo_key", "chatgpt_oauth"})
+_PROVIDER_WRITE_UNSET = object()
+_VALID_PROVIDER_CHOICES = frozenset({"bedrock_claude", "byo_key", "chatgpt_oauth", "opencode_zen"})
 
 
 async def set_provider_choice(
@@ -954,6 +979,8 @@ async def set_provider_choice(
     byo_provider: str | None,
     connector_user_id: str | None = None,
     requires_reprovision: bool = True,
+    plan: str | None = None,
+    expected_updated_at: object = _PROVIDER_WRITE_UNSET,
 ) -> dict:
     """Persist the provider choice on a billing row.
 
@@ -975,21 +1002,11 @@ async def set_provider_choice(
     Raises:
         ValueError: unknown provider_choice.
     """
-    # Mark the container BEFORE committing the billing write, and only for
-    # switches that change the task-def shape (the cold path). Ordering is
-    # the failure-safety: a marked row with an UNCHANGED provider merely
-    # costs one unnecessary full provision on the next wake; an unmarked
-    # row with a CHANGED provider boots the stale task def — the dangerous
-    # state. The hot-swap path (task-def-neutral by construction) passes
-    # requires_reprovision=False and never marks.
-    # Lazy import: container_repo is a sibling; no cycle back here.
-    if requires_reprovision:
-        from core.repositories import container_repo
-
-        await container_repo.mark_needs_provision(owner_id)
-
     if provider_choice not in _VALID_PROVIDER_CHOICES:
         raise ValueError(f"unknown provider_choice: {provider_choice!r}")
+
+    if plan == "entry" and provider_choice != "opencode_zen":
+        raise ValueError("Entry includes only Muse")
 
     now = utc_now_iso()
     table = _get_table()
@@ -1018,15 +1035,71 @@ async def set_provider_choice(
     if removes:
         update_expr += " REMOVE " + ", ".join(removes)
 
-    response = await run_in_thread(
-        table.update_item,
-        Key={"owner_id": owner_id},
-        UpdateExpression=update_expr,
-        ExpressionAttributeValues=values,
-        ReturnValues="ALL_NEW",
-    )
+    guard = {}
+    conditions = []
+    names = {}
+    if plan is not None:
+        sets.append("#plan = :plan")
+        names["#plan"] = "plan"
+        values[":plan"] = plan
+        update_expr = "SET " + ", ".join(sets) + (" REMOVE " + ", ".join(removes) if removes else "")
+    if provider_choice != "opencode_zen" and plan is None:
+        values[":entry_plan"] = "entry"
+        names["#plan"] = "plan"
+        conditions.append("(attribute_not_exists(#plan) OR #plan <> :entry_plan)")
+    if expected_updated_at is not _PROVIDER_WRITE_UNSET:
+        if expected_updated_at is None:
+            conditions.append("attribute_not_exists(updated_at)")
+        else:
+            conditions.append("updated_at = :expected_updated_at")
+            values[":expected_updated_at"] = expected_updated_at
+    if conditions:
+        guard["ConditionExpression"] = " AND ".join(conditions)
+    if names:
+        guard["ExpressionAttributeNames"] = names
+    update = {
+        "Key": {"owner_id": owner_id},
+        "UpdateExpression": update_expr,
+        "ExpressionAttributeValues": values,
+        **guard,
+    }
+    if requires_reprovision:
+        from core.repositories import container_repo
+
+        # Commit the provider and its refresh marker atomically. A unique marker
+        # prevents an old executor clearing a newer provider change at completion.
+        container_table = container_repo._get_table()
+        container = await container_repo.get_by_owner_id(owner_id, consistent=True)
+        if container:
+            container_write = {
+                "Update": {
+                    "TableName": container_table.name,
+                    "Key": {"owner_id": owner_id},
+                    "UpdateExpression": "SET needs_provision = :revision",
+                    "ConditionExpression": "attribute_exists(owner_id)",
+                    "ExpressionAttributeValues": {":revision": str(uuid.uuid4())},
+                }
+            }
+        else:
+            container_write = {
+                "ConditionCheck": {
+                    "TableName": container_table.name,
+                    "Key": {"owner_id": owner_id},
+                    "ConditionExpression": "attribute_not_exists(owner_id)",
+                }
+            }
+        await run_in_thread(
+            table.meta.client.transact_write_items,
+            TransactItems=[
+                {"Update": {"TableName": table.name, **update}},
+                container_write,
+            ],
+        )
+        result = await get_by_owner_id(owner_id, consistent_read=True)
+    else:
+        result = (await run_in_thread(table.update_item, **update, ReturnValues="ALL_NEW"))["Attributes"]
     publish_status_changed(owner_id)
-    return response["Attributes"]
+    return result
 
 
 async def claim_oauth_connector(owner_id: str, *, connector_user_id: str) -> None:

@@ -13,8 +13,8 @@ import { freeTierDaysLeft, isFreeTierExpired } from "@/lib/planLabel";
  * trial — so it never renders for a `trial_local` owner, and its own header
  * says it is safe to delete once the last pre-cutover row converts. The plan
  * badge beside the user's name said "Free tier" and nothing else for the whole
- * window. Since that window is wall-clock from signup and burns down whether
- * or not anyone opens the app, an owner could lose all three days without a
+ * window. Since that window is wall-clock from workspace readiness and burns down whether
+ * or not anyone opens the app, an owner could lose the trial period without a
  * single surface mentioning a deadline, and then meet it as a paywall
  * mid-conversation.
  *

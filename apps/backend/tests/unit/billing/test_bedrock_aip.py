@@ -840,7 +840,7 @@ class TestKillSwitch:
 
         await mod.revoke_owner_bedrock("org_abc")
 
-        deny.assert_awaited_once_with("org_abc", True)
+        deny.assert_awaited_once_with("org_abc", True, bedrock_only=True)
 
     @pytest.mark.asyncio
     async def test_restore_also_clears_gate_deny_flag(self, aip_tables, monkeypatch):
@@ -863,7 +863,7 @@ class TestKillSwitch:
 
         await mod.restore_owner_bedrock("org_abc")
 
-        deny.assert_awaited_once_with("org_abc", False)
+        deny.assert_awaited_once_with("org_abc", False, bedrock_only=True)
 
     @pytest.mark.asyncio
     async def test_revoke_survives_deny_token_failure(self, aip_tables, monkeypatch):

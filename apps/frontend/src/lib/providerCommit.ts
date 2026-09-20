@@ -45,6 +45,7 @@ export function providerCommitErrorMessage(e: unknown): string {
 }
 
 export function readableProvider(choice: ProviderChoiceId, byo?: ByoProvider): string {
+  if (choice === "opencode_zen") return "Muse Spark 1.3";
   if (choice === "bedrock_claude") return "Bedrock-managed Claude";
   if (choice === "chatgpt_oauth") return "ChatGPT OAuth";
   if (choice === "byo_key" && byo) return `${byo === "openai" ? "OpenAI" : "Anthropic"} (BYO key)`;

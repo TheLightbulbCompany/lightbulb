@@ -24,7 +24,7 @@ from core.services.provision_gate import (
         ({"subscription_status": None, "stripe_subscription_id": "sub_1"}, True),  # legacy paid
         ({"subscription_status": "trial_local", "trial_end": int(time.time()) + 86400}, True),  # active trial
         ({"subscription_status": "trial_local", "trial_end": int(time.time()) - 86400}, False),  # expired trial
-        ({"subscription_status": "trial_local"}, True),  # no trial_end -> not expired -> armed
+        ({"subscription_status": "trial_local"}, False),  # unarmed trials fail closed for autonomy
         ({"subscription_status": "canceled"}, False),
         ({"subscription_status": "past_due"}, False),
         (None, False),
@@ -806,10 +806,16 @@ class TestHasAlwaysOnEntitlement:
     def test_stripe_trialing_row_is_entitled(self):
         assert has_always_on_entitlement({"subscription_status": "trialing"}) is True
 
-    def test_trial_local_is_not_entitled(self):
-        # trial_local passes is_subscription_active (chat is free) but must
-        # NEVER be always-on entitled — the two predicates are different axes.
+    def test_armed_live_trial_is_entitled(self, monkeypatch):
+        monkeypatch.setattr("core.services.trial_cap.time.time", lambda: 1_000)
+        assert has_always_on_entitlement({"subscription_status": "trial_local", "trial_end": 1_001}) is True
+
+    def test_unarmed_trial_is_not_entitled(self):
         assert has_always_on_entitlement({"subscription_status": "trial_local"}) is False
+
+    def test_trial_at_deadline_is_not_entitled(self, monkeypatch):
+        monkeypatch.setattr("core.services.trial_cap.time.time", lambda: 1_000)
+        assert has_always_on_entitlement({"subscription_status": "trial_local", "trial_end": 1_000}) is False
 
     def test_missing_row_is_not_entitled(self):
         assert has_always_on_entitlement(None) is False
@@ -835,7 +841,7 @@ class TestHasAlwaysOnEntitlement:
             is False
         )
 
-    def test_trial_local_with_stray_subscription_id_is_not_entitled(self):
+    def test_unarmed_trial_local_with_stray_subscription_id_is_not_entitled(self):
         # trial_local is definitionally unpaid — even a malformed row that
         # somehow carries a sub id must not become always-on entitled.
         assert (
@@ -922,7 +928,7 @@ class TestMaybeRestoreTrialBedrock:
     @pytest.mark.asyncio
     async def test_revoked_new_day_under_cap_restores_and_clears_flag(self):
         """The core case: the day rolled over, the owner is under today's cap
-        and their 3-day window hasn't expired -> restore fires, the flag
+        and their 30-day window hasn't expired -> restore fires, the flag
         clears on the row already in hand, and nothing else is touched (the
         normal provisioning/auto-retry path picks the container back up)."""
         from core.services.provision_gate import maybe_restore_trial_bedrock
@@ -972,7 +978,7 @@ class TestMaybeRestoreTrialBedrock:
 
     @pytest.mark.asyncio
     async def test_revoked_expired_trial_does_not_restore(self):
-        """Expiry is PERMANENT — a 3-day window that has elapsed must never be
+        """Expiry is PERMANENT — a 30-day window that has elapsed must never be
         restored, even though the daily-spend counter itself is at 0 (a fresh
         day). This is exactly the gap 802be591c closed for the start
         chokepoint; the restore trigger must not reopen it."""

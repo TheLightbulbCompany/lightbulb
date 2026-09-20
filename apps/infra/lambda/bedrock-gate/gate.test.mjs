@@ -100,6 +100,7 @@ test("resolvePlan trial vs paid", () => {
 });
 test("isTrialExpired", () => {
   assert.equal(isTrialExpired({ trial_end: { N: "100" } }, 200), true);
+  assert.equal(isTrialExpired({ trial_end: { N: "200" } }, 200), true);
   assert.equal(isTrialExpired({ trial_end: { N: "300" } }, 200), false);
   assert.equal(isTrialExpired({}, 200), false);
 });

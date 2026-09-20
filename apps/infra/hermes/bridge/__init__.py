@@ -1,4 +1,5 @@
 """Shared env config for the Hermes-on-AgentCore bridge. server/turn/sync import from here."""
+
 from __future__ import annotations
 
 import os
@@ -52,6 +53,7 @@ if _secret_id:
     os.environ["GATEWAY_TOKEN"] = GATEWAY_TOKEN
     if _boot_secrets.get("bedrockBearer"):
         os.environ["AWS_BEARER_TOKEN_BEDROCK"] = _boot_secrets["bedrockBearer"]
+        os.environ["OPENCODE_ZEN_API_KEY"] = _boot_secrets["bedrockBearer"]
 
 # Task 13b: mark this process as a profile multiplexer once, at boot -- agent.secret_scope's
 # get_secret() then fails CLOSED (raises) for any direct caller that reads a credential with no

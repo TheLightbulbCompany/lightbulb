@@ -302,3 +302,13 @@ class TestKeyServiceListKeys:
 
         for call in sm.describe_secret.call_args_list:
             assert "user_ks_list_5a" in call.kwargs["SecretId"]
+
+
+@pytest.fixture(autouse=True)
+def _paid_provider_entitlement(monkeypatch):
+    from unittest.mock import AsyncMock
+    from core.repositories import billing_repo
+
+    monkeypatch.setattr(
+        billing_repo, "get_by_owner_id", AsyncMock(return_value={"plan": "standard", "subscription_status": "active"})
+    )

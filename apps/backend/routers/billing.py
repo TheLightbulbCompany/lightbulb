@@ -22,10 +22,11 @@ from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
 from core.services import spend_service
 from core.services.billing_service import BillingService
-from core.services.container_provision import resolve_provider_choice
+from core.services.container_provision import provider_choice_from_row, resolve_provider_choice
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
     is_paid_subscription,
+    has_always_on_entitlement,
 )
 from core.services.usage_service import get_usage_summary
 from core.billing.bedrock_pricing import get_all_rates
@@ -119,11 +120,21 @@ async def get_billing_account(
 
     return BillingAccountResponse(
         is_subscribed=is_subscribed,
+        listening_available=has_always_on_entitlement(account),
+        entry_available=settings.MUSE_ENABLED and bool(settings.STRIPE_ENTRY_PRICE_ID),
+        muse_available=settings.MUSE_ENABLED,
+        entry_price_usd=settings.ENTRY_PRICE_USD,
         current_spend=current_spend,
         lifetime_spend=lifetime_spend,
         subscription_status=subscription_status,
         trial_end=int(trial_end) if trial_end is not None else None,
-        provider_choice=account.get("provider_choice") if account else None,
+        provider_choice=(
+            "opencode_zen"
+            if provider_choice_from_row(account)[0] == "opencode_zen"
+            else account.get("provider_choice")
+            if account
+            else None
+        ),
         byo_provider=account.get("byo_provider") if account else None,
         plan=(account.get("plan") or "standard") if account else "standard",
         workspace_price_usd=settings.WORKSPACE_PRICE_USD,
@@ -305,7 +316,7 @@ async def create_portal(
 
 
 class CheckoutRequest(BaseModel):
-    plan: Literal["workspace", "ultra"]
+    plan: Literal["entry", "workspace", "ultra"]
 
 
 @router.post(
@@ -362,7 +373,7 @@ _TOP_UP_MAX_CENTS = 100_000  # $1,000.00 — single-shot prepay ceiling
 
 class ChangeProviderRequest(BaseModel):
     # Pydantic validates choices before any DDB read or container side-effect.
-    provider_choice: Literal["chatgpt_oauth", "byo_key", "bedrock_claude"] = Field(
+    provider_choice: Literal["chatgpt_oauth", "byo_key", "bedrock_claude", "opencode_zen"] = Field(
         ...,
         description="chatgpt_oauth | byo_key | bedrock_claude",
     )

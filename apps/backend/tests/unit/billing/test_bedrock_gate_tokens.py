@@ -1357,3 +1357,27 @@ async def test_reconcile_tiers_updates_all_live_generations_without_rotating_or_
     await mod.reconcile_gate_token_tiers("org_abc", _AIPS)
     assert len(_token_row(client, "old")["aip_tiers"]["M"]) == 3
     assert _container_row(client)["bedrock_gate_token_hash"]["S"] == "current"
+
+
+@pytest.mark.asyncio
+async def test_scoped_monetary_restore_preserves_new_generic_kill_and_restores_legacy(gate_tables):
+    client = gate_tables
+    _put_container_row(client, "org_abc", bedrock_gate_token_hash="legacy")
+    _put_token_row(client, "legacy")
+    client.update_item(
+        TableName="test-gate-tokens",
+        Key={"token_hash": {"S": "legacy"}},
+        UpdateExpression="SET denied = :yes",
+        ExpressionAttributeValues={":yes": {"BOOL": True}},
+    )
+    await mod.deny_gate_token("org_abc", True, bedrock_only=True)
+    await mod.deny_gate_token("org_abc", False, bedrock_only=True)
+    row = _token_row(client, "legacy")
+    assert "denied" not in row
+    assert row["bedrock_denied"]["BOOL"] is False
+    await mod.deny_gate_token("org_abc", True)
+    await mod.deny_gate_token("org_abc", True, bedrock_only=True)
+    await mod.deny_gate_token("org_abc", False, bedrock_only=True)
+    row = _token_row(client, "legacy")
+    assert row["denied"]["BOOL"] is True
+    assert row["bedrock_denied"]["BOOL"] is False

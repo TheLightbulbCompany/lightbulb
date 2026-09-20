@@ -31,7 +31,7 @@ A threat guard runs inside every container and blocks commands, file writes, and
 
 ## Spend
 
-- Free tier: $3 a day, checked before a request is sent, within a 3-day window.
+- Free tier: $3 a day, checked before a request is sent, within a 30-day window.
 - Paid workspaces: credits are checked per request; set a monthly budget per agent in Teams and watch spend in **Usage**.
 - A coding harness running on your ChatGPT account shares that plan's usage window with the agent's own inference.
 

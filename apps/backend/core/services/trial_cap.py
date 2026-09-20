@@ -67,10 +67,10 @@ def utc_today() -> str:
 
 
 def _is_expired(account: dict) -> bool:
-    """Has this trial_local owner's 3-day window elapsed?
+    """Has this trial_local owner's 30-day window elapsed?
 
     ``trial_local``'s clock is OURS by construction — ``trial_end`` is armed
-    locally on the first canonical ready poll (ready + 3 days), never sourced
+    locally when provisioning durably reaches ready (ready + 30 days), never sourced
     from a Stripe Subscription. The "Stripe owns the trial clock" rule applies to Stripe
     trials ("trialing"), not this local one, so a plain read-time comparison is
     correct: no persisted status flip, no worker.
@@ -79,11 +79,11 @@ def _is_expired(account: dict) -> bool:
     its workspace runtime first becomes ready, and the daily cap still bounds it.
     """
     trial_end = account.get("trial_end")
-    return trial_end is not None and int(time.time()) > int(trial_end)
+    return trial_end is not None and int(time.time()) >= int(trial_end)
 
 
 def is_trial_expired(account: dict | None) -> bool:
-    """Public: True only for a ``trial_local`` owner whose 3-day window elapsed.
+    """Public: True only for a ``trial_local`` owner whose 30-day window elapsed.
 
     Expiry ONLY — the daily $3 cap is a separate, transient gate that resets at
     the UTC rollover, so it is deliberately not folded in here. Nightly-CEO
@@ -123,6 +123,10 @@ async def reason_for_account(owner_id: str, account: dict | None) -> str | None:
         return None
     if _is_expired(account):
         return TRIAL_EXPIRED
+    from core.services.container_provision import provider_choice_from_row
+
+    if provider_choice_from_row(account)[0] == "opencode_zen":
+        return None
     spent = await billing_repo.get_trial_daily_spend(owner_id, utc_today())
     # `>` (not `>=`) mirrors the gate's own inequality exactly, so spend of
     # precisely CAP - RESERVE still admits. `reserved` is deliberately NOT read

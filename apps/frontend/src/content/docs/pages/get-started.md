@@ -54,10 +54,10 @@ Both are chosen at sign-up. Change your plan in [Settings](/settings) and your p
 
 | Plan | Price | What you get |
 |---|---|---|
-| Free | $0, no card | Claude Sonnet via Lightbulb, a $3/day usage cap, and a 3-day window. The workspace sleeps when idle and wakes when you open it. |
-| Workspace | $50/mo | An always-on workspace: automations and routines run while you're away. Includes unlimited members; inference costs are separate. |
-| Ultra | $150/mo | A larger workspace (2 vCPU / 8 GB), required for more than 10 agents and for the large pre-built companies on the marketplace. Includes unlimited members; inference costs are separate. |
+| Free | $0, no card | 30 days with no card, including listening and automation. Included Muse is available where enabled; the legacy Bedrock trial has a $3/day allowance. |
+| Workspace | $50/mo | Unlimited members. Keep included Muse where available, purchase managed Claude credits, or bring your own supported provider. |
+| Ultra | $150/mo | The existing premium model tier and marketplace benefits, with unlimited members. AgentCore manages compute capacity. |
 
-Inference runs on one of three provider paths: **Lightbulb-managed Claude credits**, your own **ChatGPT** account, or a **bring-your-own** Anthropic or OpenAI API key. Coding work is delegated to a matching harness — Claude Code with credits or an Anthropic key, Codex with an OpenAI key, OpenCode with ChatGPT (after a one-time **Connect coding harness** in Model & Credits). The free tier has no coding harness.
+Included Muse is available where enabled, including on the Entry and Workspace plans. Other inference runs through **Lightbulb-managed Claude credits**, your own **ChatGPT** account, or a **bring-your-own** Anthropic or OpenAI API key. Coding work is delegated to a matching harness — Claude Code with credits or an Anthropic key, Codex with an OpenAI key, OpenCode with ChatGPT (after a one-time **Connect coding harness** in Model & Credits). The free tier has no coding harness.
 
 Next: [Use cases](/docs/use-cases) — the loops owners run today.

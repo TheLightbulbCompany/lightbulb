@@ -674,7 +674,7 @@ async def delete_gate_token_rows(token_hashes: list[str]) -> int:
     return deleted
 
 
-async def deny_gate_token(owner_id: str, denied: bool) -> None:
+async def deny_gate_token(owner_id: str, denied: bool, *, bedrock_only: bool = False) -> None:
     """Flip the ``denied`` flag on EVERY gate-token row the owner can present.
 
     That is the current hash (``bedrock_gate_token_hash``) **plus every hash
@@ -710,13 +710,30 @@ async def deny_gate_token(owner_id: str, denied: bool) -> None:
     failure: Exception | None = None
     for token_hash in hashes:
         try:
+            if bedrock_only and not denied:
+                # Preserve the old monetary restore contract only for pre-scope rows.
+                # A new generic kill stamps deny_scope_version and cannot be cleared here.
+                try:
+                    await run_in_thread(
+                        table.update_item,
+                        Key={"token_hash": token_hash},
+                        UpdateExpression="SET bedrock_denied = :d, deny_scope_version = :v REMOVE #legacy",
+                        ConditionExpression="attribute_exists(token_hash) AND attribute_not_exists(deny_scope_version)",
+                        ExpressionAttributeNames={"#legacy": "denied"},
+                        ExpressionAttributeValues={":d": False, ":v": 2},
+                    )
+                    continue
+                except ClientError as exc:
+                    if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                        raise
+
             await run_in_thread(
                 table.update_item,
                 Key={"token_hash": token_hash},
-                UpdateExpression="SET #d = :d",
+                UpdateExpression="SET #d = :d" + ("" if bedrock_only else ", deny_scope_version = :v"),
                 ConditionExpression="attribute_exists(token_hash)",
-                ExpressionAttributeNames={"#d": "denied"},
-                ExpressionAttributeValues={":d": bool(denied)},
+                ExpressionAttributeNames={"#d": "bedrock_denied" if bedrock_only else "denied"},
+                ExpressionAttributeValues={":d": bool(denied), **({} if bedrock_only else {":v": 2})},
             )
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":

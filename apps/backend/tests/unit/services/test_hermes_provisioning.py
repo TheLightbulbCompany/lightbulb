@@ -50,6 +50,7 @@ def _no_browser_profile(monkeypatch):
         return ""
 
     monkeypatch.setattr(hermes_provisioning.browser_sessions, "ensure_browser_profile", _none)
+    monkeypatch.setattr(hermes_provisioning.billing_repo, "arm_trial_if_unset", _noop_async)
 
 
 def _no_runtime_found_by_name(monkeypatch):
@@ -423,8 +424,12 @@ async def test_provision_writes_the_row_fields_every_existing_seam_reads(monkeyp
 
     async def _fake_update_container_leased(owner_id, claim_id, fields, **kwargs):
         updated.update(fields)
+        if fields.get("status") == "running":
+            assert kwargs["arm_trial"] is True
 
     monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _fake_update_container_leased)
+    armed = AsyncMock()
+    monkeypatch.setattr(hermes_provisioning.billing_repo, "arm_trial_if_unset", armed)
     arn = await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1", attempt_token="tok-1")
     assert arn == "arn:aws:bedrock-agentcore:...:runtime/r1"
     assert updated["runtime_host"] == "agentcore"
@@ -433,6 +438,7 @@ async def test_provision_writes_the_row_fields_every_existing_seam_reads(monkeyp
     # hook_token/gateway_token are prepare_hermes_workspace's job now -- not repeated here.
     assert "hook_token" not in updated
     assert "gateway_token" not in updated
+    armed.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -529,8 +535,11 @@ async def test_provision_is_idempotent_on_a_row_that_already_has_a_runtime(monke
     )
     created = {}
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: created.setdefault("x", 1))
+    armed = AsyncMock()
+    monkeypatch.setattr(hermes_provisioning.billing_repo, "arm_trial_if_unset", armed)
     assert await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1") == "arn:existing"
     assert created == {}
+    armed.assert_awaited_once_with("org_a")
 
 
 @pytest.mark.asyncio
@@ -1299,7 +1308,7 @@ def _patch_resolve_profile_inputs_collaborators(
     trial_local/byo_provider logic actually runs -- that logic is exactly
     what this function's own tests need to exercise."""
 
-    async def _fake_get_billing_row(owner_id):
+    async def _fake_get_billing_row(owner_id, *, consistent_read=False):
         return billing_row
 
     async def _fake_build_connected_integration_servers(owner_id):

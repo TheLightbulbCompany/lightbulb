@@ -152,6 +152,8 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
     // surfaces "STRIPE_WORKSPACE_PRICE_ID not configured" at the billing
     // checkout endpoint) but onboarding will fail until both secrets are populated.
     env: {
+      STRIPE_ENTRY_PRICE_ID_DEV: "${{ secrets.STRIPE_ENTRY_PRICE_ID_DEV }}",
+      STRIPE_ENTRY_PRICE_ID_PROD: "${{ secrets.STRIPE_ENTRY_PRICE_ID_PROD }}",
       STRIPE_WORKSPACE_PRICE_ID_DEV: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_DEV }}",
       STRIPE_WORKSPACE_PRICE_ID_PROD: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_PROD }}",
       // Stripe Ultra Price IDs — same synth-time bake + per-env live/test

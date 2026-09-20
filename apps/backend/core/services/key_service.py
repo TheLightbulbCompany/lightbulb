@@ -164,6 +164,9 @@ class KeyService:
     """Manages user-provided LLM API keys (Secrets Manager-backed)."""
 
     async def set_key(self, user_id: str, tool_id: str, api_key: str) -> dict:
+        from core.services.provision_gate import require_provider_access
+
+        await require_provider_access(user_id, "byo_key")
         if tool_id not in _allowed_ids():
             raise ValueError(f"Unsupported tool: {tool_id}")
         # Validate against the provider before storing anything.

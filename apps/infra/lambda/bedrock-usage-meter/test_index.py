@@ -1427,7 +1427,7 @@ def test_kill_denies_the_gate_token_row():
         index.handler(_awslogs_event(record), None)
         token_row = ddb.get_item(TableName=GATE_TOKENS_TABLE, Key={"token_hash": {"S": token_hash}})["Item"]
 
-    assert token_row["denied"]["BOOL"] is True
+    assert token_row["bedrock_denied"]["BOOL"] is True
 
 
 def test_kill_without_gate_token_hash_is_a_noop_and_other_steps_still_run():
@@ -1485,7 +1485,10 @@ def test_deny_gate_token_also_denies_the_superseded_rows():
 
         index._deny_gate_token("org_abc")
 
-        rows = {r["token_hash"]["S"]: r["denied"]["BOOL"] for r in ddb.scan(TableName=GATE_TOKENS_TABLE)["Items"]}
+        rows = {
+            r["token_hash"]["S"]: r["bedrock_denied"]["BOOL"]
+            for r in ddb.scan(TableName=GATE_TOKENS_TABLE)["Items"]
+        }
 
     assert rows == {pointer: True, live: True}
     # A tracked hash whose row already expired is not resurrected as a partial row.
@@ -1537,7 +1540,7 @@ def test_deny_gate_token_boto_core_error_on_first_hash_still_tries_the_rest():
 
     # The pointer's failure was re-raised, but only after the superseded hash
     # -- the one actually presentable in this incident -- was still denied.
-    assert live_row["denied"]["BOOL"] is True
+    assert live_row["bedrock_denied"]["BOOL"] is True
 
 
 def test_deny_gate_token_noop_when_containers_row_missing():

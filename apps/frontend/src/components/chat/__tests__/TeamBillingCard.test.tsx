@@ -102,3 +102,14 @@ describe("TeamBillingCard", () => {
   });
 
 });
+
+
+it("offers the configured entry plan with included Muse without changing workspace checkout", async () => {
+  const entry = vi.fn().mockResolvedValue(undefined);
+  const workspace = vi.fn().mockResolvedValue(undefined);
+  render(<TeamBillingCard workspacePriceUsd={50} entryPriceUsd={20} ownerRole="admin" onSubscribeEntry={entry} onSubscribe={workspace} />);
+  fireEvent.click(screen.getByRole("button", { name: /subscribe.*20/i }));
+  await waitFor(() => expect(entry).toHaveBeenCalledOnce());
+  expect(workspace).not.toHaveBeenCalled();
+  expect(screen.getByText(/Muse inference included/i)).toBeInTheDocument();
+});

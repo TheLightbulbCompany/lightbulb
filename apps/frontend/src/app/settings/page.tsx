@@ -259,21 +259,23 @@ function MembersPanel() {
 function UltraUpgradeRow({
   plan,
   ultraPriceUsd,
+  workspacePriceUsd,
   startCheckout,
 }: {
-  plan: "standard" | "ultra_pro" | undefined;
+  plan: "entry" | "standard" | "ultra_pro" | undefined;
   ultraPriceUsd?: number;
-  startCheckout: (plan: "workspace" | "ultra") => Promise<void>;
+  workspacePriceUsd?: number;
+  startCheckout: (plan: "entry" | "workspace" | "ultra") => Promise<void>;
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleUpgrade = useCallback(async () => {
-    capture("billing_ultra_upgrade_clicked");
+  const handleUpgrade = useCallback(async (target: "workspace" | "ultra" = "ultra") => {
+    if (target === "ultra") capture("billing_ultra_upgrade_clicked");
     setError(null);
     setLoading(true);
     try {
-      await startCheckout("ultra");
+      await startCheckout(target);
       // The fresh-checkout path redirects away and never returns here; the
       // in-place swap resolves and the refreshed account re-renders this row
       // as the Ultra badge — clear the spinner either way.
@@ -300,7 +302,12 @@ function UltraUpgradeRow({
 
   return (
     <div style={{ marginTop: 14 }}>
-      <button type="button" className="settings-btn-save" onClick={handleUpgrade} disabled={loading}>
+      {plan === "entry" && (
+        <button type="button" className="settings-btn-outline" disabled={loading} onClick={() => void handleUpgrade("workspace")} style={{ marginRight: 8 }}>
+          {workspacePriceUsd === undefined ? "Upgrade to Workspace" : `Upgrade to Workspace — $${workspacePriceUsd}/mo`}
+        </button>
+      )}
+      <button type="button" className="settings-btn-save" onClick={() => void handleUpgrade("ultra")} disabled={loading}>
         {loading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
         {ultraPriceUsd === undefined ? "Upgrade to Ultra" : `Upgrade to Ultra — $${ultraPriceUsd}/mo`}
       </button>
@@ -330,7 +337,7 @@ function BillingPanel() {
   const [portalLoading, setPortalLoading] = useState(false);
   // Mount-time snapshot for the trial-expired check below: render must stay
   // pure (the react-compiler lint rejects Date.now() during render), and the
-  // 3-day expiry granularity makes a per-mount timestamp plenty fresh.
+  // 30-day trial window makes a per-mount timestamp plenty fresh.
   const [nowMs] = useState(() => Date.now());
 
   const handlePortal = useCallback(async () => {
@@ -358,7 +365,7 @@ function BillingPanel() {
   const subscriptionStatus = account?.subscription_status ?? null;
   const workspacePriceUsd = account?.workspace_price_usd;
   const workspacePlanTitle =
-    workspacePriceUsd === undefined ? "Lightbulb plan" : `Lightbulb — $${workspacePriceUsd} / month`;
+    account?.plan === "entry" ? `Lightbulb Entry${account.entry_price_usd === undefined ? "" : ` — $${account.entry_price_usd} / month`}` : workspacePriceUsd === undefined ? "Lightbulb plan" : `Lightbulb — $${workspacePriceUsd} / month`;
   const workspaceRecurringPrice =
     workspacePriceUsd === undefined ? "your workspace rate" : `$${workspacePriceUsd}/mo`;
   // No-card free tier. is_subscribed is FALSE for these rows (paid
@@ -379,7 +386,7 @@ function BillingPanel() {
         })
       : null;
   // trial_local's `trial_end` is the OVERALL free-tier window expiry — stamped
-  // locally at signup as created + 3 days (backend trial_cap._is_expired), NOT
+  // once at workspace readiness plus 30 days (backend trial_cap._is_expired), NOT
   // the daily $3 reset boundary (which resets at UTC midnight and is tracked
   // separately). Once it elapses the backend blocks usage outright
   // (trial_block_reason -> TRIAL_EXPIRED) WITHOUT flipping subscription_status,
@@ -389,7 +396,7 @@ function BillingPanel() {
   const isTrialExpired =
     isTrialLocal &&
     account?.trial_end != null &&
-    account.trial_end * 1000 < nowMs;
+    account.trial_end * 1000 <= nowMs;
   // Display mapping for the status chip — the raw enum must never render
   // ("trial_local" would capitalize to "Trial_local"). Other statuses keep
   // the capitalize treatment. Shared with the two chat shells' plan-badge via
@@ -434,6 +441,9 @@ function BillingPanel() {
 
         <TeamBillingCard
             workspacePriceUsd={account?.workspace_price_usd}
+            entryPriceUsd={account?.entry_available ? account.entry_price_usd : undefined}
+            museAvailable={account?.muse_available}
+            onSubscribeEntry={account?.entry_available ? () => startCheckout("entry") : undefined}
           ownerRole={orgRole}
           isSubscribed={isSubscribed}
           onSubscribe={() => startCheckout("workspace")}
@@ -481,6 +491,7 @@ function BillingPanel() {
           <UltraUpgradeRow
             plan={account?.plan}
             ultraPriceUsd={account?.ultra_price_usd}
+            workspacePriceUsd={account?.workspace_price_usd}
             startCheckout={startCheckout}
           />
         </div>
@@ -520,7 +531,7 @@ function BillingPanel() {
                 : isTrialLocal
                   ? isTrialExpired
                     ? `Free tier ended${trialEndLabel ? ` on ${trialEndLabel}` : ""} — your agents are paused.`
-                    : "Free tier — $3/day of included usage."
+                    : account?.muse_available ? "30 days free with included Muse inference. No credit card required." : "30 days free — $3/day of included usage. No credit card required."
                   : isSubscribed
                     ? "Active subscription"
                     : "No active subscription"}
@@ -544,6 +555,7 @@ function BillingPanel() {
           <UltraUpgradeRow
             plan={account?.plan}
             ultraPriceUsd={account?.ultra_price_usd}
+            workspacePriceUsd={account?.workspace_price_usd}
             startCheckout={startCheckout}
           />
         )}

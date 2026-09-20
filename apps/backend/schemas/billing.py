@@ -7,6 +7,10 @@ from pydantic import BaseModel
 
 class BillingAccountResponse(BaseModel):
     is_subscribed: bool
+    listening_available: bool = False
+    muse_available: bool = False
+    entry_available: bool = False
+    entry_price_usd: int = 20
     current_spend: float
     lifetime_spend: float
     # Stripe-native subscription state. Frontend TrialBanner reads

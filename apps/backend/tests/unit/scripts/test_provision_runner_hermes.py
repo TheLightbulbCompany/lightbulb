@@ -36,6 +36,7 @@ def runner_env(monkeypatch):
     monkeypatch.setattr(_repo_module, "get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr(_repo_module, "release_stranded_stop_to_error", AsyncMock(return_value=True))
     monkeypatch.setattr(_repo_module, "release_provision_to_error", AsyncMock())
+    monkeypatch.setattr(provision_runner, "_arm_nightly_ceo_after_ready", AsyncMock())
 
 
 @pytest.mark.asyncio
@@ -50,6 +51,25 @@ async def test_step_1_provisions_the_agentcore_runtime(monkeypatch, runner_env):
     # PROVISION_ATTEMPT_TOKEN env var here, so attempt_token falls back to claim_id.
     prepare.assert_awaited_once_with("org_a", claim_id="claim-1", attempt_token="claim-1")
     provision.assert_awaited_once_with("org_a", claim_id="claim-1", attempt_token="claim-1")
+
+
+@pytest.mark.asyncio
+async def test_nightly_ceo_is_armed_only_after_the_runtime_is_ready(monkeypatch, runner_env):
+    events = []
+
+    async def provision(*args, **kwargs):
+        events.append("ready")
+
+    async def arm(*args, **kwargs):
+        events.append("armed")
+
+    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _ok)
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", AsyncMock())
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", provision)
+    monkeypatch.setattr(provision_runner, "_arm_nightly_ceo_after_ready", arm)
+
+    assert await provision_runner.run("org_a", "claim-1") == provision_runner.EXIT_OK
+    assert events == ["ready", "armed"]
 
 
 @pytest.mark.asyncio
@@ -198,3 +218,32 @@ async def test_a_superseded_hermes_leg_stands_down_quietly_not_as_an_error(monke
     exit_code = await provision_runner.run("org_a", "claim-1")
     assert exit_code == provision_runner.EXIT_SUPERSEDED
     release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_ready_nightly_arm_checks_the_actual_routine(monkeypatch):
+    from core.services import user_provision
+
+    arm = AsyncMock()
+    monkeypatch.setattr(user_provision, "arm_nightly_ceo", arm)
+    await provision_runner._arm_nightly_ceo_after_ready("org_test")
+    arm.assert_awaited_once_with("org_test", trust_cache=False)
+
+
+@pytest.mark.asyncio
+async def test_retry_after_ready_repairs_the_nightly_routine_without_reprovision(monkeypatch, runner_env):
+    from core.repositories import container_repo
+
+    monkeypatch.setattr(container_repo, "claim_attempt", AsyncMock(side_effect=container_repo.ProvisionSuperseded()))
+    monkeypatch.setattr(
+        container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"status": "running", "agentcore_runtime_arn": "arn:ready"}),
+    )
+    prepare = AsyncMock()
+    arm = AsyncMock()
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", prepare)
+    monkeypatch.setattr(provision_runner, "_arm_nightly_ceo_after_ready", arm)
+    assert await provision_runner.run("org_test", "finished-claim") == provision_runner.EXIT_SUPERSEDED
+    prepare.assert_not_awaited()
+    arm.assert_awaited_once_with("org_test")

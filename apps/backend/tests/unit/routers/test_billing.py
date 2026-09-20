@@ -566,3 +566,27 @@ class TestStripeWebhook:
         assert response.status_code == 200
         mock_repo.set_subscription.assert_awaited_once()
         assert mock_repo.set_subscription.await_args.kwargs["owner_id"] == "org_legacy"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "trial_end", "listening"),
+    [
+        ("active", None, True),
+        ("trial_local", 4_000_000_000, True),
+        ("trial_local", 1, False),
+        ("trial_local", None, False),
+        ("canceled", None, False),
+    ],
+)
+async def test_account_exposes_listening_separately_from_paid_billing(async_client, status, trial_end, listening):
+    account = {"owner_id": "org_test_456", "subscription_status": status, "trial_end": trial_end}
+    with (
+        patch("routers.billing.billing_repo.get_by_owner_id", new=AsyncMock(return_value=account)),
+        patch("routers.billing.get_usage_summary", new=AsyncMock(return_value={"total_spend": 0, "lifetime_spend": 0})),
+    ):
+        response = await async_client.get("/api/v1/billing/account")
+    assert response.status_code == 200
+    assert response.json()["listening_available"] is listening
+    assert response.json()["is_subscribed"] is (status == "active")
+    assert response.json()["entry_price_usd"] == 20

@@ -1,4 +1,5 @@
 """One Hermes turn: profile restore, run the agent, post run/reply callbacks to the backend."""
+
 from __future__ import annotations
 
 import base64
@@ -228,7 +229,9 @@ def _bedrock_converse(**kwargs):
     return client.converse(**kwargs)
 
 
-def gate_ambient(body: dict, agent_name: str, agent_role: str, *, converse=None) -> str:
+def gate_ambient(
+    body: dict, agent_name: str, agent_role: str, *, converse=None, provider="bedrock"
+) -> str:
     """The plugin's gateAmbientTurn, verbatim: one 16-token call before any context is built.
     Returns "dispatch" | "ignore" | "gate_error"."""
     if body.get("eventKind") != "room_event":
@@ -242,6 +245,46 @@ def gate_ambient(body: dict, agent_name: str, agent_role: str, *, converse=None)
     history = body.get("recentHistory", [])[-AMBIENT_GATE_HISTORY_LIMIT:]
     prompt = json.dumps({"agent": {"name": agent_name[:1000], "role": agent_role[:1000]}, "conversation": [row(m) for m in history] + [row(body.get("message") or {})]})
     try:
+        if provider == "opencode-zen":
+            endpoint = os.environ.get("LIGHTBULB_MUSE_BASE_URL", "")
+            bearer = os.environ.get("OPENCODE_ZEN_API_KEY", "")
+            if not endpoint or not bearer:
+                return "gate_error"
+            request = urllib.request.Request(
+                endpoint.rstrip("/") + "/responses",
+                data=json.dumps(
+                    {
+                        "model": "muse-spark-1.3",
+                        "instructions": AMBIENT_GATE_SYSTEM_PROMPT,
+                        "input": prompt,
+                        "store": False,
+                    }
+                ).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {bearer}",
+                },
+            )
+            with urllib.request.urlopen(
+                request, timeout=AMBIENT_GATE_TIMEOUT_S
+            ) as response:
+                payload = json.loads(response.read())
+            if payload.get("status") != "completed":
+                return "gate_error"
+            verdict = (
+                "".join(
+                    part.get("text", "")
+                    for item in payload.get("output", [])
+                    if item.get("type") == "message"
+                    for part in item.get("content", [])
+                    if part.get("type") == "output_text"
+                )
+                .strip()
+                .upper()
+            )
+            return {"DISPATCH": "dispatch", "IGNORE": "ignore"}.get(
+                verdict, "gate_error"
+            )
         res = (converse or _bedrock_converse)(
             modelId=os.environ.get("AMBIENT_MODEL") or MODEL,
             system=[{"text": AMBIENT_GATE_SYSTEM_PROMPT}],
@@ -1079,6 +1122,11 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
         # same dict every caller's scope is built from. The NAMES are in the fixed contract
         # above regardless, so a profile with no gog connected simply resolves them to nothing.
         secrets.update(sync.cli_credential_env(agent_id))
+        # Multiplexed Hermes resolves provider secrets in this scope, not os.environ.
+        # These are this runtime owner's revocable bearer and fixed gate URL, never the fleet key.
+        for name in ("OPENCODE_ZEN_API_KEY", "LIGHTBULB_MUSE_BASE_URL"):
+            if os.environ.get(name):
+                secrets[name] = os.environ[name]
         secrets.update(overlay or {})
         _declare_child_env_names(secrets)
         _allow_child_env_names(secrets)
@@ -1284,7 +1332,19 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
         callbacks = {"tool_start_callback": frames.tool_start, "tool_complete_callback": frames.tool_complete,
                      "tool_progress_callback": frames.activity,
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
+    transport = {}
+    if provider == "opencode-zen":
+        endpoint = os.environ.get("LIGHTBULB_MUSE_BASE_URL")
+        bearer = os.environ.get("OPENCODE_ZEN_API_KEY")
+        if not endpoint or not bearer:
+            raise RuntimeError("Included Muse credentials are missing")
+        transport = {
+            "base_url": endpoint,
+            "api_key": bearer,
+            "api_mode": "codex_responses",
+        }
     return AIAgent(
+        **transport,
         model=model,
         provider=provider,
         quiet_mode=True,
@@ -1525,11 +1585,25 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
                 "localSessionToken": local_session_token,
             })
             try:
-                if has_run and RUNS.get(run_id, {}).get("aborted"):  # dropped before it launched
+                if has_run and RUNS.get(run_id, {}).get(
+                    "aborted"
+                ):  # dropped before it launched
                     outcome, error_kind, reply, usage = "aborted", None, "", ZERO_USAGE
                 else:
                     me = next((p for p in body.get("participants", []) if p.get("id") == agent_id), {})
-                    verdict = gate_ambient(body, me.get("displayName") or "agent", me.get("role") or "")
+                    ambient_provider = profile_model(
+                        sync.read_profile_config(agent_id)
+                    )[1]
+                    verdict = gate_ambient(
+                        body,
+                        me.get("displayName") or "agent",
+                        me.get("role") or "",
+                        **(
+                            {"provider": ambient_provider}
+                            if ambient_provider == "opencode-zen"
+                            else {}
+                        ),
+                    )
                     if verdict != "dispatch":
                         outcome, error_kind, reply, usage = ("ignored" if verdict == "ignore" else "gate_error"), None, "", ZERO_USAGE
                     else:

@@ -95,3 +95,11 @@ describe("freeTierDaysLeft", () => {
     expect(freeTierDaysLeft("trial_local", undefined, now)).toBeNull();
   });
 });
+
+
+it("shows the full thirty-day window and expires at the exact deadline", () => {
+  const now = Date.UTC(2026, 8, 20);
+  const end = (now + 30 * 86_400_000) / 1000;
+  expect(freeTierDaysLeft("trial_local", end, now)).toBe(30);
+  expect(isFreeTierExpired("trial_local", end, end * 1000)).toBe(true);
+});

@@ -15,7 +15,7 @@ import { seoLandingPages } from "@/lib/seo";
  * Every factual claim below is verified against the product, not marketing
  * copy: plan prices are `WORKSPACE_PRICE_USD` / `ULTRA_PRICE_USD` in
  * `apps/backend/core/config.py` (50 / 150), and the free tier is the
- * `trial_local` path — a $3.00/day spend cap AND a 3-day window, enforced by
+ * `trial_local` path — a $3.00/day spend cap AND a 30-day window, enforced by
  * the bedrock-gate. There is no 14-day trial; it was removed 2026-07-17.
  */
 export const dynamic = "force-static";
@@ -41,9 +41,9 @@ export function GET() {
     "## Key facts",
     "",
     "- Product site: " + SITE_URL,
-    "- Free tier: no credit card, capped at $3.00 of inference per day within a 3-day window. The workspace sleeps when idle and wakes when opened.",
+    "- Free tier: 30 days from workspace readiness, no credit card, listening and automation included. No automatic charge at expiry.",
     "- Workspace plan: $50/month — an always-on workspace so channels, webhooks, routines and autonomous runs keep working while you are away. Unlimited members.",
-    "- Ultra plan: $150/month — a larger workspace (2 vCPU / 8 GB), required above 10 agents. Unlimited members.",
+    "- Ultra plan: $150/month — premium model and marketplace benefits. Unlimited members; AgentCore manages compute capacity.",
     "- Inference providers: Lightbulb-managed Claude credits, your own ChatGPT account via OAuth, or a bring-your-own Anthropic or OpenAI API key.",
     "- Surfaces: web app, a macOS desktop app, and an iOS app.",
     "",

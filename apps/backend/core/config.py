@@ -287,6 +287,8 @@ class Settings(BaseSettings):
     # Billing / Stripe
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
+    MUSE_ENABLED: bool = False  # Enable only after provider permission and image acceptance.
+    STRIPE_ENTRY_PRICE_ID: str = ""
     STRIPE_WORKSPACE_PRICE_ID: str = ""
     # Stripe price for the Ultra runtime tier. Empty default so the app boots
     # without it; CDK-wired in dev/prod. This is the billing source of truth
@@ -297,6 +299,7 @@ class Settings(BaseSettings):
     # amount in Stripe. The iOS paywall renders the web price from this, and
     # App Review requires a displayed external price to be accurate, so a
     # divergence here is a compliance bug rather than a cosmetic one.
+    ENTRY_PRICE_USD: int = 20
     WORKSPACE_PRICE_USD: int = 50
     ULTRA_PRICE_USD: int = 150
 

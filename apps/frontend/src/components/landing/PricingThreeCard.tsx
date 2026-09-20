@@ -33,19 +33,16 @@ export function PricingThreeCard() {
     <section id="pricing" className="lb-pricing">
       <div className="lb-wrap">
         <h2 className="lb-h2">
-          One price.{" "}
+          Start free.{" "}
           <br className="lb-brk" />
-          Three ways to power it.
+          Choose your plan when ready.
         </h2>
 
         <p className="lb-price-hero">
-          <b>
-            <sup>$</sup>50
-          </b>
-          <span>/mo</span>
+          Plans for your workspace
         </p>
         <p className="lb-price-free">
-          <strong>Start free for 3 days</strong> — no credit card.
+          <strong>Start free for 30 days</strong> — no credit card.
         </p>
 
         <div className="lb-plans">

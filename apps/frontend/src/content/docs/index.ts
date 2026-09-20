@@ -41,19 +41,19 @@ export const docsFaq = [
   },
   // Every answer below is verified against the product, not marketing copy:
   // prices are WORKSPACE_PRICE_USD / ULTRA_PRICE_USD in the backend settings,
-  // the free tier is the `trial_local` path (a $3.00/day cap AND a 3-day
+  // the free tier is the `trial_local` path (a $3.00/day cap AND a 30-day
   // window, both enforced by the bedrock-gate), and the starter roster is
   // STARTER_ROSTER in paperclip_provisioning.py. There is no 14-day trial —
   // it was removed in July 2026. Keep this block true or delete the entry.
   {
     question: "Is Lightbulb free to try?",
     answer:
-      "Yes. The free tier needs no credit card. It is capped at $3.00 of inference per day and runs for a 3-day window, and the workspace sleeps when idle and wakes when you open it. Paid plans are Workspace at $50 a month and Ultra at $150 a month, both with unlimited members.",
+      "Yes. The free tier needs no credit card. It runs for 30 days from workspace readiness, with listening and automation. No automatic charge occurs at expiry. Included Muse is available where enabled; legacy Bedrock trials retain a daily allowance. Paid plans are Workspace at $50 a month and Ultra at $150 a month, both with unlimited members.",
   },
   {
     question: "How much does Lightbulb cost?",
     answer:
-      "Workspace is $50 per month and Ultra is $150 per month. Both cover one workspace with unlimited members; Lightbulb does not charge per seat. Ultra provides a larger workspace and is required above 10 agents. A free tier with no credit card is available for evaluation.",
+      "Workspace is $50 per month and Ultra is $150 per month. Both cover one workspace with unlimited members; Lightbulb does not charge per seat. The Entry plan adds included Muse where available; see Settings for available plans. Ultra retains its premium model and marketplace benefits. A free tier with no credit card is available for evaluation.",
   },
   {
     question: "Which agents do I get when I sign up?",

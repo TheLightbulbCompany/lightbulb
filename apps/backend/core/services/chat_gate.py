@@ -85,6 +85,12 @@ async def gate_chat(*, user_id: str, owner_id: str, session_key: str) -> dict:
             "message": BUDGET_BLOCK_MESSAGES["subscription_inactive"],
         }
 
+    from core.services.container_provision import provider_choice_from_row
+    from core.services.provision_gate import provider_allowed
+
+    if provider_choice_from_row(account)[0] == "opencode_zen" and not provider_allowed(account, "opencode_zen"):
+        return {"blocked": True, "code": "muse_unavailable", "message": "Included Muse is not available."}
+
     # --- Layer 2: free-tier $3/day cost cap ----------------------
     # Keyed on subscription_status == "trial_local" — the single trial
     # predicate. The container row is NOT consulted: the counter is
@@ -148,7 +154,7 @@ async def gate_chat(*, user_id: str, owner_id: str, session_key: str) -> dict:
     # from one balance funded by the
     # admin. Keying on user_id meant org members saw balance=0 and
     # got blocked at chat with code=out_of_credits.
-    if account is None or account.get("provider_choice") != "bedrock_claude":
+    if account is None or account.get("provider_choice") != "bedrock_claude" or account.get("plan") == "entry":
         return {"blocked": False}
 
     if await is_owner_blocked(owner_id):

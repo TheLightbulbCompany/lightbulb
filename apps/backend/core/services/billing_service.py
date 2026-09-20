@@ -15,7 +15,7 @@ from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
 
-ProviderChoice = Literal["chatgpt_oauth", "byo_key", "bedrock_claude"]
+ProviderChoice = Literal["chatgpt_oauth", "byo_key", "bedrock_claude", "opencode_zen"]
 ByoProvider = Literal["openai", "anthropic"]
 
 
@@ -151,11 +151,22 @@ class BillingService:
         )
 
 
-async def create_workspace_checkout(*, owner_id: str, clerk_user_id: str, plan: Literal["workspace", "ultra"]) -> dict:
+async def create_workspace_checkout(
+    *, owner_id: str, clerk_user_id: str, plan: Literal["entry", "workspace", "ultra"]
+) -> dict:
     """Create or change the single recurring subscription for a workspace."""
     checkout_bucket = int(time.time() // 300)
     checkout_expires_at = (checkout_bucket * 300) + 36 * 60
-    price_id = settings.STRIPE_WORKSPACE_PRICE_ID if plan == "workspace" else settings.STRIPE_ULTRA_PRICE_ID
+    prices = {
+        "entry": settings.STRIPE_ENTRY_PRICE_ID,
+        "workspace": settings.STRIPE_WORKSPACE_PRICE_ID,
+        "ultra": settings.STRIPE_ULTRA_PRICE_ID,
+    }
+    if plan not in prices:
+        raise BillingServiceError("Unknown subscription plan")
+    if plan == "entry" and not settings.MUSE_ENABLED:
+        raise BillingServiceError("Included Muse is not available")
+    price_id = prices[plan]
     if not price_id:
         raise BillingServiceError(f"STRIPE_{plan.upper()}_PRICE_ID not configured")
 
@@ -626,7 +637,7 @@ async def change_provider(
     # signup picker rather than mutating provider state on a dead row.
     from core.services.provision_gate import is_subscription_active
 
-    account = await billing_repo.get_by_owner_id(owner_id)
+    account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     if not account:
         raise ChangeProviderError(
             "no_billing_account",
@@ -649,6 +660,13 @@ async def change_provider(
             "subscription_inactive",
             "Subscription is not active. Manage it in /settings/billing.",
             status_code=409,
+        )
+
+    from core.services.provision_gate import provider_allowed
+
+    if not provider_allowed(account, provider_choice):
+        raise ChangeProviderError(
+            "provider_not_available", "This provider is not available on your plan.", status_code=403
         )
 
     current_choice = account.get("provider_choice")

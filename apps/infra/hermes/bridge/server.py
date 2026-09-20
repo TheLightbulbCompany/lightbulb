@@ -369,6 +369,8 @@ def _provider_catalog(provider: str) -> list[str]:
     its `/model` picker uses). Empty outside the Hermes image (dev/tests) or when the catalog
     cannot be built -- the picker then shows the profile's current model alone, which is worse
     than a full list but never wrong."""
+    if provider == "opencode-zen":
+        return ["muse-spark-1.3"]
     try:
         from hermes_cli.models import curated_models_for_provider
 
@@ -428,6 +430,11 @@ def _dotenv_has(agent_id: str, key: str) -> bool:
 #: `openai-api`, `openai-codex` -- and they are what the frontend's `llm-auth-status.ts` already
 #: matches on (exactly, or by its `openai-` prefix rule), so no id is translated here.
 def _provider_credential(agent_id: str, provider: str) -> tuple[bool, str]:
+    if provider == "opencode-zen":
+        return bool(
+            os.environ.get("OPENCODE_ZEN_API_KEY")
+            and os.environ.get("LIGHTBULB_MUSE_BASE_URL")
+        ), "included-muse"
     if provider == "bedrock":
         return bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK")), "bedrock-gate"
     if provider == "anthropic":

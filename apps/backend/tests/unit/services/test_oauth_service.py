@@ -663,3 +663,13 @@ async def test_has_active_oauth_false_when_pending(oauth_table):
         Item={"user_id": {"S": "u_1"}, "state": {"S": "pending"}},
     )
     assert await oauth_service.has_active_oauth(user_id="u_1", bound_to="u_1") is False
+
+
+@pytest.fixture(autouse=True)
+def _paid_provider_entitlement(monkeypatch):
+    from unittest.mock import AsyncMock
+    from core.repositories import billing_repo
+
+    monkeypatch.setattr(
+        billing_repo, "get_by_owner_id", AsyncMock(return_value={"plan": "standard", "subscription_status": "active"})
+    )

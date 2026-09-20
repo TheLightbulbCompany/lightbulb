@@ -57,19 +57,18 @@ discover them from the live marketplace rather than assuming they exist.
 
 ## Plans, providers, and this owner's current state
 
-Lightbulb's paid plans are **Workspace, $50/month**
-and **Ultra, $150/month**. Both plans
-allow unlimited agent identities and unlimited members; agent identity count
-is not a plan entitlement, and membership and invitations do not change the
-subscription price. Runtime capacity remains finite. Upgrade lives in
-flickmeon.ai/settings. There is also a **free tier** (no card: Bedrock Claude
-Sonnet only, $3/day usage cap). Inference is a
-separate cost and runs on one of three provider paths chosen by the owner:
-**Bedrock managed** (Lightbulb-billed
-credits), **ChatGPT OAuth** (the owner's own OpenAI account — the workspace
-owner/admin who completed the connection is the only one who can manage it;
-one ChatGPT account per workspace), or **BYO API key** (owner's Anthropic/OpenAI
-key).
+Lightbulb has a **30-day free trial with no credit card**, starting when the
+workspace is ready. Listening and automation are available during a live trial.
+Expiry does not charge the owner automatically. Plans are per workspace with
+unlimited members; membership does not change the price.
+
+Where enabled, **Entry ($20/month)** includes Muse, and **Workspace ($50/month)**
+can keep included Muse or use the existing paid inference options: managed
+Claude credits, the owner's ChatGPT account, or an Anthropic/OpenAI API key.
+**Ultra ($150/month)** retains its premium benefits. Included Muse does not draw
+from purchased Claude credits. Legacy Bedrock trials retain a $3/day allowance.
+Runtime capacity is managed by AgentCore. Read the owner's facts below for the
+actual plan and provider, and Settings for currently available plans.
 
 **Never state the owner's plan or provider from memory.** Read
 `$HERMES_HOME/lightbulb-facts.json` — Lightbulb keeps it current:

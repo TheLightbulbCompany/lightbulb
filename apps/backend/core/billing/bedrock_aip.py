@@ -770,7 +770,7 @@ async def revoke_owner_bedrock(owner_id: str) -> None:
     from core.billing.bedrock_gate_tokens import deny_gate_token
 
     try:
-        await deny_gate_token(owner_id, True)
+        await deny_gate_token(owner_id, True, bedrock_only=True)
     except Exception as e:  # noqa: BLE001 — deny is a backstop, not the fence
         logger.warning("deny_gate_token(True) failed for %s: %s", owner_id, e)
 
@@ -1051,6 +1051,6 @@ async def restore_owner_bedrock(owner_id: str) -> None:
     from core.billing.bedrock_gate_tokens import deny_gate_token
 
     try:
-        await deny_gate_token(owner_id, False)
+        await deny_gate_token(owner_id, False, bedrock_only=True)
     except Exception as e:  # noqa: BLE001 — deny is a backstop, not the fence
         logger.warning("deny_gate_token(False) failed for %s: %s", owner_id, e)

@@ -33,6 +33,11 @@ def test_is_trial_expired(account, expected):
     assert trial_cap.is_trial_expired(account) is expected
 
 
+def test_trial_expires_at_the_exact_deadline(monkeypatch):
+    monkeypatch.setattr(trial_cap.time, "time", lambda: 1_000)
+    assert trial_cap.is_trial_expired({"subscription_status": "trial_local", "trial_end": 1_000}) is True
+
+
 @pytest.mark.asyncio
 async def test_trial_block_reason_true_for_trial_local_at_cap(monkeypatch):
     """A trial_local owner whose spend has reached exactly CAP_MICROCENTS is

@@ -261,11 +261,24 @@ def model_block(provider_choice, byo_provider, aip_arns, is_ceo, *, default_id=N
     can never invent a provider or silently drop the pin. Without it the caller could express
     only the two ``is_ceo`` tiers, so a paid owner could never pick their haiku profile.
     """
+    if provider_choice == "opencode_zen" and default_id not in (None, "muse-spark-1.3"):
+        raise ValueError("Included Muse supports only muse-spark-1.3")
     block, aux_model, aux_provider = _derive_model_block(provider_choice, byo_provider, aip_arns, is_ceo)
     return ({**block, "default": default_id} if default_id else block), aux_model, aux_provider
 
 
 def _derive_model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tuple[dict, str, str]:
+    if provider_choice == "opencode_zen":
+        return (
+            {
+                "default": "muse-spark-1.3",
+                "provider": "opencode-zen",
+                "base_url": "${LIGHTBULB_MUSE_BASE_URL}",
+                "api_key": "${OPENCODE_ZEN_API_KEY}",
+            },
+            "muse-spark-1.3",
+            "opencode-zen",
+        )
     if provider_choice in ("bedrock_claude", "bedrock_trial"):
         if not aip_arns:
             raise ValueError(f"{provider_choice} requires aip_arns")
@@ -302,7 +315,14 @@ def auxiliary_tasks_block(model_id: str, provider: str) -> dict:
     18-task list and the ``fallback_chain: []`` fence (see ``AUXILIARY_TASKS``' own note --
     it is the fence, not a preference) can never drift between them.
     """
-    return {task: {"provider": provider, "model": model_id, "fallback_chain": []} for task in AUXILIARY_TASKS}
+    transport = (
+        {"base_url": "${LIGHTBULB_MUSE_BASE_URL}", "api_key": "${OPENCODE_ZEN_API_KEY}", "api_mode": "codex_responses"}
+        if provider == "opencode-zen"
+        else {}
+    )
+    return {
+        task: {"provider": provider, "model": model_id, "fallback_chain": [], **transport} for task in AUXILIARY_TASKS
+    }
 
 
 def build_profile_config(
@@ -363,6 +383,16 @@ def build_profile_config(
         "mcp_servers": dict(mcp_servers or {}),
         "plugins": {"enabled": list(_LIGHTBULB_PLUGINS)},
     }
+    if model["provider"] == "opencode-zen":
+        config["delegation"] = {
+            "provider": "opencode-zen",
+            "model": "muse-spark-1.3",
+            "base_url": "${LIGHTBULB_MUSE_BASE_URL}",
+            "api_key": "${OPENCODE_ZEN_API_KEY}",
+            "api_mode": "codex_responses",
+            "fallback_providers": [],
+        }
+        config["fallback_providers"] = []
     if model["provider"] == _BEDROCK:
         # One source for the region (fix round 1, minor): settings.AWS_REGION, same as .env's
         # AWS_REGION used to read before C3 moved that var to Task 17's runtime environment.

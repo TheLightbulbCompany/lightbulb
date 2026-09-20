@@ -2,6 +2,8 @@
 // auth → AIP ownership → clamp → reserve → forward (verbatim) → settle, with a
 // finally-release that always runs. handler.mjs wraps this with
 // awslambda.streamifyResponse + the real DynamoDB client.
+import { handleZen } from "./zen.mjs";
+import { readS } from "./ddb.mjs";
 import { authenticate, tierForModel } from "./auth.mjs";
 import { resolvePlan, clampMaxTokens, reserveOrThrow } from "./preflight.mjs";
 import { settle, release } from "./debit.mjs";
@@ -39,6 +41,7 @@ export async function handleRequest(event, responder, deps) {
   const method = event.requestContext?.http?.method || event.httpMethod;
   const rawPath = event.rawPath || event.requestContext?.http?.path;
 
+  if (method === "POST" && rawPath === "/zen/v1/responses") return handleZen(event, responder, deps);
   const route = parseRoute(method, rawPath);
   if (!route) { emit("gate.not_found", env); return responder.error(notFound()); }
 
@@ -55,7 +58,9 @@ export async function handleRequest(event, responder, deps) {
     const bodyBuf = Buffer.from(JSON.stringify(body), "utf8");
 
     // Resolve plan + budget rows (billing always; fast-gate only for paid).
-    const billing = (await ddb.getItem({ TableName: env.BILLING_TABLE, Key: { owner_id: { S: ownerId } } }))?.Item;
+    const billing = (await ddb.getItem({ TableName: env.BILLING_TABLE, Key: { owner_id: { S: ownerId } }, ConsistentRead: true }))?.Item;
+    if (readS(billing?.plan) === "entry" || readS(billing?.provider_choice) === "opencode_zen" ||
+        (env.MUSE_ENABLED === "true" && readS(billing?.subscription_status) === "trial_local")) throw forbiddenOp();
     const plan = resolvePlan(billing);
     const fastGateRow = plan === "paid"
       ? (await ddb.getItem({ TableName: env.FAST_GATE_TABLE, Key: { owner_id: { S: ownerId } } }))?.Item

@@ -417,7 +417,7 @@ export function MessagingWorkspaceProvider({
   const { account: billingAccount } = useBilling();
   // Listening is paid (backend `listening_available`). Assume it until the
   // billing row loads so a paid room never flashes the lock.
-  const listeningAvailable = billingAccount?.is_subscribed ?? true;
+  const listeningAvailable = billingAccount?.listening_available ?? billingAccount?.is_subscribed ?? false;
   const composer: RoomComposerProps = {
     focusAgentId: rooms.activeRoom?.kind === "dm" && agentCounterparts.length === 1 ? agentCounterparts[0].id : undefined,
     text: draft,

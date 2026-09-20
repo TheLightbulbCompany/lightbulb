@@ -316,3 +316,40 @@ async def test_clear_provider_choice_existing_row_clears_fields(dynamodb_table):
     assert row.get("provider_choice") is None
     assert row.get("byo_provider") is None
     assert row.get("stripe_customer_id") == "cus_xyz"  # original fields preserved
+
+
+@pytest.mark.asyncio
+async def test_provider_commit_marks_running_runtime_and_old_refresh_cannot_clear_new_switch(dynamodb_table):
+    from core.repositories import container_repo
+    from core.repositories.container_repo import ProvisionSuperseded
+
+    await billing_repo.create_if_not_exists("org_switch", "cus_switch", owner_type="org")
+    container_repo._get_table().put_item(Item={"owner_id": "org_switch", "status": "running"})
+    await billing_repo.set_provider_choice("org_switch", provider_choice="opencode_zen", byo_provider=None)
+    first = (await container_repo.get_by_owner_id("org_switch"))["needs_provision"]
+    assert isinstance(first, str)
+    assert await container_repo.try_claim_provision("org_switch", claim_id="claim") == "claim"
+    await billing_repo.set_provider_choice("org_switch", provider_choice="bedrock_claude", byo_provider=None)
+    with pytest.raises(ProvisionSuperseded):
+        await container_repo.update_container_leased(
+            "org_switch", "claim", {"needs_provision": False}, expected_provider_revision=first, release_lease=True
+        )
+    assert (await container_repo.get_by_owner_id("org_switch"))["needs_provision"] != first
+
+
+@pytest.mark.asyncio
+async def test_running_provider_change_reaches_dispatch_executor(dynamodb_table, monkeypatch):
+    from unittest.mock import AsyncMock
+    from core.repositories import container_repo
+    from core.services import provision_dispatch
+
+    await billing_repo.create_if_not_exists("org_dispatch", "cus_dispatch", owner_type="org")
+    container_repo._get_table().put_item(Item={"owner_id": "org_dispatch", "status": "running"})
+    await billing_repo.set_provider_choice("org_dispatch", provider_choice="opencode_zen", byo_provider=None)
+    await container_repo.takeover_provision("org_dispatch")
+    monkeypatch.setattr(provision_dispatch, "_start", AsyncMock(return_value="ok"))
+    runner = AsyncMock(return_value=0)
+    monkeypatch.setattr(provision_dispatch, "_runner_subprocess", runner)
+    await provision_dispatch.dispatch_provision("org_dispatch")
+    await provision_dispatch._INLINE_ATTEMPTS["org_dispatch"].task
+    runner.assert_awaited_once()

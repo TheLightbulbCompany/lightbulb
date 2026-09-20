@@ -36,10 +36,15 @@ import { unregisterDevice } from "../../lib/pushDevice";
 
 interface BillingAccount {
   is_subscribed: boolean;
+  muse_available?: boolean;
+  plan?: "entry" | "standard" | "ultra_pro";
+  entry_price_usd?: number;
+  workspace_price_usd?: number;
+  ultra_price_usd?: number;
   subscription_status: string | null;
   /** Unix epoch SECONDS. Stripe owns the trial clock — render-only. */
   trial_end: number | null;
-  provider_choice: "chatgpt_oauth" | "byo_key" | "bedrock_claude" | null;
+  provider_choice: "chatgpt_oauth" | "byo_key" | "bedrock_claude" | "opencode_zen" | null;
   byo_provider: "openai" | "anthropic" | null;
   /**
    * Which channel took the money — "apple_iap", or absent for Stripe (every
@@ -195,9 +200,11 @@ export function providerLabel(
   // mode) but runs Claude Sonnet via Bedrock — "No provider selected"
   // would wrongly tell a free user to go pick one.
   if (account.subscription_status === "trial_local" && account.provider_choice == null) {
-    return { title: "Claude Sonnet", detail: "Included with the free plan" };
+    return { title: account.muse_available ? "Muse Spark 1.3" : "Claude Sonnet", detail: "Included with the free plan" };
   }
   switch (account.provider_choice) {
+    case "opencode_zen":
+      return { title: "Muse Spark 1.3", detail: "Included — no inference credits required" };
     case "chatgpt_oauth": {
       let detail = "Inference via your ChatGPT account";
       if (chatgpt != null) {
@@ -459,9 +466,9 @@ export default function Settings() {
       account.provider_choice === "bedrock_claude" ||
       credits?.balance_dollars != null;
     const provider = providerLabel(account, chatgpt);
-    const planName = isTrialLocal ? "Lightbulb Free plan" : "Lightbulb";
+    const planName = isTrialLocal ? "Lightbulb Free plan" : account.plan === "entry" ? "Lightbulb Entry" : account.plan === "ultra_pro" ? "Lightbulb Ultra" : account.plan === "standard" ? "Lightbulb Workspace" : "Lightbulb";
     const planNote = isTrialLocal
-      ? "Includes a daily free usage allowance."
+      ? `30 days free. No credit card required.${account.trial_end ? ` Trial ends ${trialEndLabel(account.trial_end)}.` : ""}`
       : trialing && account.trial_end != null
         ? `Trial ends ${trialEndLabel(account.trial_end)}`
         : null;

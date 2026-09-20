@@ -10,6 +10,7 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import { alertTopicArn, logGroupPath, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
@@ -163,6 +164,9 @@ export class BedrockGateStack extends cdk.Stack {
           // The env dimension on the gate's EMF metrics (namespace
           // Isol8/BedrockGate) and the env segment the alarms key off.
           GATE_ENV: gateEnv,
+          MUSE_ENABLED: String(this.node.tryGetContext(`museEnabled${outSuffix}`) ?? false),
+          MUSE_MAX_OUTPUT_TOKENS: String(this.node.tryGetContext("museMaxOutputTokens") ?? 16384),
+          ZEN_SECRET_ID: `lightbulb/gate/${gateEnv}/opencode-zen`,
           // Bearer-token table (this stack) — SHA-256(token) -> owner_id/denied.
           TOKENS_TABLE: tokensTable.tableName,
           // Plan + trial daily-spend/reserved counters (billing-accounts) and
@@ -192,6 +196,10 @@ export class BedrockGateStack extends cdk.Stack {
         }),
       });
       fns[gateEnv] = fn;
+      // Gate-only namespace: outside the platform backend's lightbulb/{env}/* grant.
+      secretsmanager.Secret.fromSecretNameV2(this, `ZenKey${idSuffix}`,
+        `lightbulb/gate/${gateEnv}/opencode-zen`).grantRead(fn);
+
 
       // Streaming Function URL. RESPONSE_STREAM so the eventstream body pipes to
       // the container as Bedrock emits it; auth NONE because bearer auth is

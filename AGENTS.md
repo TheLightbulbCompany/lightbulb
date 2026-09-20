@@ -1,10 +1,9 @@
 # AGENTS.md
 
-> Codex-facing mirror of `CLAUDE.md`, regenerated from it on 2026-09-20.
-> `CLAUDE.md` is the maintained original — if the two disagree, `CLAUDE.md` wins;
-> regenerate this file from it rather than editing here.
+> Codex-facing mirror of `CLAUDE.md`, regenerated on 2026-09-20.
+> `CLAUDE.md` is the maintained original; regenerate this file when it changes.
 
-This file provides guidance to Codex (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex when working with code in this repository.
 
 ## Project Overview
 
@@ -1021,7 +1020,7 @@ message as history on their next turn. A fresh workspace is seeded with a
 `#general` channel holding the whole starter roster plus one welcome message
 from the CEO: on a PAID workspace the CEO is `active` and the specialists
 `mentions`; on the free trial every agent is `mentions`. **Listening (`active`)
-is a paid feature** — `listening_available` (the `has_always_on_entitlement`
+is available to paid subscriptions and armed, unexpired trials** — `listening_available` (the `has_always_on_entitlement`
 predicate) gates the seed, `create_room`/`upsert_member` on non-DM rooms (403
 `PLAN_REQUIRED`), and the work consumer, which drops a `room_event` for a
 non-paid owner before invoking the runtime. DMs are exempt: every DM message
@@ -1110,7 +1109,7 @@ Key invariants:
 - **The Paperclip binding is on the Paperclip side, not in the profile** — each seeded agent's `hermes_gateway` `adapterConfig` points at `/api/v1/internal/paperclip/hermes/{owner}` with the owner's hook token as `apiKey`. That token is a **snapshot** (Paperclip persists it as a managed company secret), so rotating an owner's `hook_token` requires `repoint_agent_adapter`. An EMPTY hook token raises at WIRING time rather than minting a config, because the adapter would otherwise 401 on every run and Paperclip reports that per-run, not as a broken agent.
 - **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success.
 - **Fresh-provision Paperclip seeding is single-flight inside the executor** (`provision_runner.py` step 0) — deliberately, to kill the duplicate-company race a poll-thread seed allowed.
-- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with the CEO in `active` mode (paid workspaces only — a free trial seeds every agent on `mentions`) and the five specialists in `mentions` mode. Reconciliation never restores a removed member or resets a user's choice. Room owners/admins can set each agent's per-room mode to `active` (paid plans only), `mentions`, or `observe`; ordinary members see the mode but cannot change it.
+- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with the CEO in `active` mode (paid workspaces and armed, unexpired trials) and the five specialists in `mentions` mode. Reconciliation never restores a removed member or resets a user's choice. Room owners/admins can set each agent's per-room mode to `active` (paid plans or a live, armed trial), `mentions`, or `observe`; ordinary members see the mode but cannot change it.
 - **The first normal human message remains a normal dispatch.** Stored room modes choose its targets; a post-send capture then uses that first message once to create the initial goal/project and stage `BRIEF.md`. It does not force the CEO as the sole responder.
 
 ### Owners missing Paperclip state
@@ -1134,25 +1133,27 @@ sign up a Paperclip user, or seed agents. Config repair ≠ provisioning.
 
 ### Plan model
 
-The public billing contract is workspace-first: `GET /billing/account` exposes server-owned `workspace_price_usd` and `ultra_price_usd`, never membership counts or per-seat pricing. Public web/mobile copy must read those fields or use neutral/loading copy; do not bake a workspace price into a client release.
+The public billing contract is workspace-first: `GET /billing/account` exposes server-owned `entry_price_usd`, `workspace_price_usd`, and `ultra_price_usd`, never membership counts or per-seat pricing. Public web/mobile copy must read those fields or use neutral/loading copy; do not bake a workspace price into a client release.
 
 | plan | Stripe price | display amount | owner |
 |---|---|---|---|
+| **Entry** | `STRIPE_ENTRY_PRICE_ID` | `ENTRY_PRICE_USD` (currently 20), available only with configured price + Muse | one workspace, unlimited members |
 | **Workspace** | `STRIPE_WORKSPACE_PRICE_ID` | `WORKSPACE_PRICE_USD` (currently 50), echoed by `/billing/account` | one workspace, unlimited members |
 | **Ultra** | `STRIPE_ULTRA_PRICE_ID` | `ULTRA_PRICE_USD` (currently 150), echoed by `/billing/account` | one workspace, unlimited members |
 
-Workspace billing is seat-free: `STRIPE_WORKSPACE_PRICE_ID` and
-`STRIPE_ULTRA_PRICE_ID` are the only recurring Stripe subscription prices.
+Workspace billing is seat-free: `STRIPE_ENTRY_PRICE_ID`, `STRIPE_WORKSPACE_PRICE_ID`, and
+`STRIPE_ULTRA_PRICE_ID` identify the recurring Stripe subscription prices. Stored plans are
+`entry`, `standard`, and `ultra_pro`. A plan change does not create another subscription.
 
 **Apple IAP no longer accepts new purchases or restores.** The authenticated `POST /billing/apple/link` endpoint is a 410 tombstone that returns before verifier or repository work; there is no Apple/mobile checkout route. Keep `POST /webhooks/apple-iap`, StoreKit 2 JWS verification against pinned Apple root certificates, the configured Apple identifiers, `billing_repo` Apple fields, GSI `apple-original-transaction-index`, entitlement teardown, and cancellation/expiration mapping until App Store Connect proves there are zero active, grace-period, billing-retry, or refunded-but-unexpired subscriptions. The mobile app retains `expo-iap` only to open Apple's subscription-management UI for a hypothetical historical subscriber; it has no SKU, purchase, restore, or link action. `POST /billing/checkout` is the only subscription purchase API.
 
-**There is no per-owner compute size any more.** `CreateAgentRuntime` takes no cpu/memory field — the microVM spec is AgentCore's, not ours — so `_size_for_owner`, the `ULTRA_CPU`/`COMPANY_STANDARD_PLAN_MAX_AGENTS` reliability floor and the Fargate-Spot fallback are all gone with the ECS runtime, and a plan no longer buys a bigger box. What a plan still buys: always-on listening, the premium model tier reserved for the CEO (`hermes_profiles.premium_model_ref`), and the paid Bedrock credit path. Checkout bills the first month immediately through `POST /billing/checkout` for a workspace plan; the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
+**There is no per-owner compute size any more.** `CreateAgentRuntime` takes no cpu/memory field — the microVM spec is AgentCore's, not ours — so `_size_for_owner`, the `ULTRA_CPU`/`COMPANY_STANDARD_PLAN_MAX_AGENTS` reliability floor and the Fargate-Spot fallback are all gone with the ECS runtime, and a plan no longer buys a bigger box. Listening and automation are available to live, armed trials as well as paid subscriptions. Paid tiers retain the premium model tier reserved for the CEO (`hermes_profiles.premium_model_ref`), and the paid Bedrock credit path. Checkout bills the first month immediately through `POST /billing/checkout` for a workspace plan; the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
 
 ### Free tier (no card) — `trial_local`
 
 A first-time **workspace** (Clerk org) with no billing row gets a `trial_local` row and a workspace **provisioned exactly like a paid Bedrock one, except with a SINGLE per-owner application-inference profile (the `sonnet` tier)**. The AIP is the attribution + pricing unit; model pinning is enforced by the **bedrock-gate** (a request may only name an AIP in the owner's own token row). `bedrock_trial` is a **config-path mode**, never a stored `provider_choice`. Only a workspace can start a trial — `ensure_workspace_trial_default` 403s a `user_`-prefixed id, and no personal billing rows remain.
 
-The trial is bounded on TWO axes: a **$3.00/day spend cap** and a **3-day trial window** (`trial_end` stamped locally at signup; expiry → permanent `TRIAL_EXPIRED`). Daily spend resets on UTC day rollover (`provision_gate.maybe_restore_trial_bedrock`). There is deliberately **no cap-only check primitive** — a cap-only check once woke EXPIRED trials, so every door must call the full predicate (`trial_block_reason` / `reason_for_account`, cap AND expiry).
+For the Bedrock fallback, the trial is bounded on TWO axes: a **$3.00/day spend cap** and a **30-day trial window** (`trial_end` armed atomically with the fenced runtime-ready transition; expiry → permanent `TRIAL_EXPIRED`). Daily spend resets on UTC day rollover (`provision_gate.maybe_restore_trial_bedrock`). There is deliberately **no cap-only check primitive** — a cap-only check once woke EXPIRED trials, so every door must call the full predicate (`trial_block_reason` / `reason_for_account`, cap AND expiry).
 
 **The enforcement model — read this before changing anything here.** Every Bedrock inference call flows through the **bedrock-gate** (`apps/infra/lambda/bedrock-gate/`, a streaming Lambda fronting bedrock-runtime). A workspace runtime authenticates to it with a per-owner bearer token (minted into the boot secret, hash-stored in `lightbulb-{env}-bedrock-gate-tokens`); **owner roles carry NO `bedrock:Invoke`** (`build_owner_bedrock_policy` is a deny-only fence), so the agent's own shell AccessDenies — the gate is the only door. The runtime is pointed at it by env: `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` **and** `ANTHROPIC_BEDROCK_BASE_URL` both carry the gate URL, deliberately — the two docs disagree about which path Hermes takes and setting only one would silently pick a side; pointing either at the real bedrock-runtime endpoint AccessDenies fleet-wide. The gate discovers its own URL via SSM (`/lightbulb/{env}/bedrock-gate-url`, read by `core/billing/bedrock_gate_url.py`; the literal value `direct` is the fleet break-glass mode, paired with `scripts/bedrock_gate_break_glass.py` which re-grants direct IAM — see `docs/runbooks/bedrock-gate-break-glass.md`).
 
@@ -1164,6 +1165,22 @@ The trial is bounded on TWO axes: a **$3.00/day spend cap** and a **3-day trial 
 A parked trial workspace is woken by the **invoke**, not by a poll: AWS parks the microVM after `IDLE_TIMEOUT_S` and starts it again on the next `InvokeAgentRuntime`, so every gated door is a door onto an invoke rather than a `desiredCount` change. The row still reads `running` throughout (nothing observable changes), which is why `wake_policy` infers parking from `last_interactive_at` and treats its own answer as a report. Trial owners are never ingested to Metronome — they have no Stripe customer, and Metronome is a ledger, not a valve (its threshold alerts poll on a ≥3-minute tick and it never blocks usage); paid credit balances are gated per-request by the gate against the `metronome-fast-gate` row.
 
 **Load-bearing constraints (verified 2026-07-15/16; do not re-litigate without new facts):** the agent sends **no `maxTokens`** on the adaptive path — a small injected cap silently truncates thinking, so the gate clamps only ABOVE model-max (128K Sonnet/Opus, tamper ceiling). Bedrock invocation-log **text delivery cannot be disabled** without blinding the meter entirely (the modality flags gate whole records; bodies — which have leaked plaintext Paperclip keys/JWTs — are bounded by 3-day log retention + DLQ redaction instead). A streaming Lambda **cannot be a fence by itself** (not reliably notified of client aborts; can't guarantee its own final write) — which is why the meter backstop + deny-flag kill stay, per the staff-review + AWS-docs research in `docs/superpowers/specs/2026-07-15-bedrock-gate-design.md`.
+
+### Included Muse rollout
+
+`MUSE_ENABLED` defaults off. With it enabled, new trials and Entry use
+`opencode_zen` / `muse-spark-1.3`; Workspace/Ultra may also select it without
+purchased credits. Workspace's existing BYOK, ChatGPT OAuth, and paid Claude
+credit paths stay intact. The public account response separates `is_subscribed`
+from `listening_available`, and reports `muse_available` / `entry_available`.
+
+Muse uses `POST /zen/v1/responses` on the existing streaming inference gate.
+The vendor key remains in the gate-only Secrets Manager secret, never a tenant
+profile. Runtime profiles receive the existing owner-scoped boot bearer. The
+route checks owner entitlement and exact model, and does not debit Bedrock
+credits. Main, auxiliary, and ambient inference use the same provider path.
+See `docs/runbooks/muse-trial-rollout.md` for the disabled-by-default rollout,
+legacy-token handling, and required live verification.
 
 ### Paid provider paths
 

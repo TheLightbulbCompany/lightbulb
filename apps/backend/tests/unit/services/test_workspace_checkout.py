@@ -28,9 +28,11 @@ def checkout_slot(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("plan", "price_id"),
-    [("workspace", "price_workspace"), ("ultra", "price_ultra")],
+    [("entry", "price_entry"), ("workspace", "price_workspace"), ("ultra", "price_ultra")],
 )
 async def test_workspace_checkout_has_one_recurring_item_and_manual_promotion_codes(monkeypatch, plan, price_id):
+    monkeypatch.setattr(billing_service.settings, "MUSE_ENABLED", True)
+    monkeypatch.setattr(billing_service.settings, "STRIPE_ENTRY_PRICE_ID", "price_entry")
     monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
     monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
     monkeypatch.setattr(
@@ -439,3 +441,18 @@ async def test_workspace_customer_backfill_race_keeps_the_existing_row_winner(mo
 
     assert account == winner
     delete.assert_called_once_with("cus_loser", idempotency_key="delete_customer:cus_loser")
+
+
+@pytest.mark.parametrize(
+    ("price_id", "expected"),
+    [("price_entry", "entry"), ("price_workspace", "standard"), ("price_ultra", "ultra_pro"), ("price_unknown", None)],
+)
+def test_subscription_price_maps_to_the_correct_paid_tier(monkeypatch, price_id, expected):
+    from core.services.stripe_webhook_handlers import _workspace_plan_from_subscription_items
+
+    monkeypatch.setattr(billing_service.settings, "MUSE_ENABLED", True)
+    monkeypatch.setattr(billing_service.settings, "STRIPE_ENTRY_PRICE_ID", "price_entry")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+    event = {"items": {"data": [{"price": {"id": price_id, "recurring": {"interval": "month"}}}]}}
+    assert _workspace_plan_from_subscription_items(event) == expected

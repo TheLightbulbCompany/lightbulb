@@ -14,7 +14,7 @@
  * doesn't read like a different product.
  */
 
-export type ProviderChoiceId = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
+export type ProviderChoiceId = "chatgpt_oauth" | "byo_key" | "bedrock_claude" | "opencode_zen";
 
 export interface ProviderCard {
   id: ProviderChoiceId;
@@ -44,6 +44,7 @@ export interface ProviderSwitchCard {
 }
 
 export const PROVIDER_SWITCH_CARDS: ProviderSwitchCard[] = [
+  { id: "opencode_zen", title: "Muse Spark 1.3", subtitle: "Included inference — no credits or API key needed" },
   {
     id: "bedrock_claude",
     title: "Powered by Claude",
@@ -103,3 +104,10 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     highlighted: true,
   },
 ];
+
+/** Backend remains authoritative; unavailable choices should not invite a failed switch. */
+export function providerSwitchCards(museAvailable = false, entryPlan = false): ProviderSwitchCard[] {
+  return PROVIDER_SWITCH_CARDS.filter((card) =>
+    card.id === "opencode_zen" ? museAvailable : !entryPlan,
+  );
+}

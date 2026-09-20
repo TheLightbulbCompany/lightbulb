@@ -67,7 +67,7 @@ from dataclasses import dataclass
 
 from core.config import settings
 from core.dynamodb import run_in_thread
-from core.repositories import container_repo
+from core.repositories import billing_repo, container_repo
 from core.services import browser_sessions
 from core.services.agentcore_runtime import (
     IDLE_TIMEOUT_S,
@@ -136,6 +136,7 @@ def build_hermes_runtime_env(
         "ISOL8_API_URL": api_base.rstrip("/"),
         "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": gate_endpoint,
         "ANTHROPIC_BEDROCK_BASE_URL": gate_endpoint,
+        "LIGHTBULB_MUSE_BASE_URL": gate_endpoint.rstrip("/") + "/zen/v1" if gate_endpoint else "",
         "AWS_REGION": settings.AWS_REGION,
         "AWS_BEDROCK_FORCE_HTTP1": "1",
         "ANTHROPIC_MODEL": sonnet_aip_arn,
@@ -605,7 +606,7 @@ def build_runtime_request_for_owner(
             bucket=settings.OWNER_STATE_BUCKET,
             boot_secret_id=boot_secret_name(owner_id),
             gate_endpoint=gate_url(),
-            sonnet_aip_arn=aip_arns["sonnet"],
+            sonnet_aip_arn=aip_arns.get("sonnet", ""),
             browser_profile_id=browser_profile_id,
         ),
     )
@@ -743,7 +744,11 @@ async def reconcile_hermes_aips(owner_id: str) -> dict[str, str]:
     # row after checkout would narrow a paying workspace back to Sonnet.
     billing = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     provider, _ = provider_choice_from_row(billing)
-    aip_arns = await ensure_owner_aips(owner_id, tiers=["sonnet"] if provider == BEDROCK_TRIAL_CHOICE else None)
+    aip_arns = (
+        {}
+        if provider == "opencode_zen"
+        else await ensure_owner_aips(owner_id, tiers=["sonnet"] if provider == BEDROCK_TRIAL_CHOICE else None)
+    )
     await reconcile_gate_token_tiers(owner_id, aip_arns)
     return aip_arns
 
@@ -837,6 +842,11 @@ async def resolve_profile_inputs(owner_id: str, *, container_row: dict) -> Profi
     from core.services.provisioning_landing import build_provisioned_env
 
     provider_choice, byo_provider = await resolve_provider_choice(owner_id)
+    if provider_choice == "opencode_zen":
+        from core.billing.bedrock_gate_url import gate_url
+
+        if not settings.MUSE_ENABLED or not gate_url():
+            raise HermesProfileError("Included Muse is not configured")
     byo_api_key = await read_byo_key(owner_id, byo_provider or "anthropic") if provider_choice == "byo_key" else None
     if provider_choice == "byo_key" and not byo_api_key:
         raise HermesProfileError(f"hermes profile for owner={owner_id}: byo api key read failed")
@@ -1080,7 +1090,10 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         raise RuntimeError("OWNER_STATE_BUCKET is not configured for this environment")
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     arn = row.get("agentcore_runtime_arn")
-    if arn and row.get("status") == "running":
+    if arn and row.get("status") == "running" and not row.get("needs_provision"):
+        # Heal legacy unarmed workspaces. New ready transitions arm atomically;
+        # the compare-and-set never extends an existing deadline.
+        await billing_repo.arm_trial_if_unset(owner_id)
         return arn
 
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
@@ -1088,7 +1101,14 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
     # request is built: its id is what turns the browser env block on. Never raises -- ""
     # means the runtime simply advertises no browser tools this round.
     browser_profile_id = await browser_sessions.ensure_browser_profile(owner_id)
-    if not arn:
+    if arn and row.get("needs_provision"):
+        if not await _wait_for_idle_session(owner_id):
+            raise RuntimeError("Provider refresh deferred while the runtime is busy")
+        # Prove this generation still owns the lease before rewriting external state.
+        await container_repo.update_container_leased(
+            owner_id, claim_id, {}, attempt_token=attempt_token, release_lease=False
+        )
+    if not arn or row.get("needs_provision"):
         # N4/M4-R42: write_profiles runs BEFORE CreateAgentRuntime, so a row that already
         # carries an ARN has its profiles in S3 already. Idempotence now keys on
         # status == "running" (M4-R35/C1), so an ARN row sitting in error/stopped -- which C2's
@@ -1128,7 +1148,7 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
             await run_in_thread(_wait_for_runtime_gone, arn)
             arn = None
         else:
-            if current_image and current_image != settings.AGENTCORE_HERMES_IMAGE:
+            if row.get("needs_provision") or (current_image and current_image != settings.AGENTCORE_HERMES_IMAGE):
                 await run_in_thread(_update_runtime_image, arn, _build_request())
             if not row.get("agentcore_runtime_arn"):
                 # Found by name lookup only -- the row never got it. Record now, before polling,
@@ -1177,6 +1197,11 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         )
         raise
 
+    if row.get("needs_provision"):
+        from core.services.runtime_transport import session_id_for
+
+        await run_in_thread(_stop_runtime_session, arn, session_id_for(owner_id))
+
     # `running` from here: AgentCore wakes on invoke, so every "stopped -> start" door must see a
     # live workspace.
     # Fenced write (M4-R28) — the same terminal transition every provision write takes. A lost
@@ -1187,9 +1212,16 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
     await container_repo.update_container_leased(
         owner_id,
         claim_id,
-        {"runtime_host": "agentcore", "agentcore_runtime_arn": arn, "status": "running"},
+        {
+            "runtime_host": "agentcore",
+            "agentcore_runtime_arn": arn,
+            "status": "running",
+            **({"needs_provision": False} if row.get("needs_provision") else {}),
+        },
         attempt_token=attempt_token,
         release_lease=True,
+        arm_trial=True,
+        **({"expected_provider_revision": row["needs_provision"]} if row.get("needs_provision") else {}),
     )
     logger.info("hermes runtime created owner=%s arn=%s", owner_id, arn)
     return arn

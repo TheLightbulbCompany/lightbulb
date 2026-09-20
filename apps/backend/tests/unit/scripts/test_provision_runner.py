@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -33,6 +33,7 @@ def hermes(monkeypatch):
     provision = AsyncMock(return_value="arn:hermes-1")
     monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", prepare)
     monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", provision)
+    monkeypatch.setattr(provision_runner, "_arm_nightly_ceo_after_ready", AsyncMock())
     return SimpleNamespace(prepare=prepare, provision=provision)
 
 
@@ -244,10 +245,9 @@ async def test_seed_step_0_superseded_claim_stands_down_before_seeding(monkeypat
 
 @pytest.fixture(autouse=True)
 def _stub_arm_nightly_ceo(monkeypatch):
-    """Step 0 arms the nightly CEO routine right after the seed; stub it so the
-    seed tests exercise only seed + classification."""
+    """Run-level post-ready autonomy is covered separately."""
     arm = AsyncMock(return_value="armed")
-    monkeypatch.setattr("core.services.user_provision.arm_nightly_ceo", arm)
+    monkeypatch.setattr(provision_runner, "_arm_nightly_ceo_after_ready", arm)
     return arm
 
 
@@ -281,32 +281,11 @@ async def test_seed_helper_refuses_non_org_owner(monkeypatch, _stub_arm_nightly_
     _stub_arm_nightly_ceo.assert_not_awaited()
 
 
-async def test_seed_helper_arms_nightly_ceo_after_org_seed(monkeypatch, _stub_arm_nightly_ceo):
-    """The nightly CEO arm runs AFTER _ensure_paperclip_for_org, with the org_id."""
-    order = MagicMock()
-    order.attach_mock(_stub_org_seed(monkeypatch), "seed")
-    order.attach_mock(_stub_arm_nightly_ceo, "arm")
+async def test_seed_helper_seeds_org_without_arming_unclocked_trial(monkeypatch, _stub_arm_nightly_ceo):
+    seed = _stub_org_seed(monkeypatch)
     assert await provision_runner._seed_owner_paperclip("org_x") == provision_runner.EXIT_OK
-    assert [c[0] for c in order.mock_calls] == ["seed", "arm"]
-    _stub_arm_nightly_ceo.assert_awaited_once_with("org_x", trust_cache=False)
-
-
-async def test_seed_helper_arm_5xx_exits_11(monkeypatch, _stub_arm_nightly_ceo):
-    """An arm failure classifies like a seed failure: 5xx → EXIT_TRANSIENT."""
-    from core.services.paperclip_admin_client import PaperclipApiError
-
-    _stub_org_seed(monkeypatch)
-    _stub_arm_nightly_ceo.side_effect = PaperclipApiError("boom", status_code=503, body={})
-    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_TRANSIENT
-
-
-async def test_seed_helper_arm_4xx_exits_10(monkeypatch, _stub_arm_nightly_ceo):
-    """4xx → EXIT_DETERMINISTIC."""
-    from core.services.paperclip_admin_client import PaperclipApiError
-
-    _stub_org_seed(monkeypatch)
-    _stub_arm_nightly_ceo.side_effect = PaperclipApiError("bad", status_code=400, body={})
-    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_DETERMINISTIC
+    seed.assert_awaited_once()
+    _stub_arm_nightly_ceo.assert_not_awaited()
 
 
 async def test_seed_helper_org_resolves_creator_then_calls_ensure_paperclip_for_org(monkeypatch):

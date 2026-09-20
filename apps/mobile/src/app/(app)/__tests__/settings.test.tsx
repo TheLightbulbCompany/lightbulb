@@ -54,7 +54,7 @@ describe("Settings plan card", () => {
     };
     await render(<Settings />);
     expect(await screen.findByText("Lightbulb Free plan")).toBeTruthy();
-    expect(screen.getByText(/daily free usage allowance/i)).toBeTruthy();
+    expect(screen.getByText(/30 days free. No credit card required/i)).toBeTruthy();
     // Provider card: free tier runs Claude Sonnet — not "No provider selected".
     expect(screen.getByText("Claude Sonnet")).toBeTruthy();
     expect(screen.getByText("Included with the free plan")).toBeTruthy();

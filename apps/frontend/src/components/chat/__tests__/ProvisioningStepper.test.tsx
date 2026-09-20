@@ -447,7 +447,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     );
 
     // ProviderPicker headline + card titles confirm the picker rendered.
-    expect(screen.getByRole("heading", { name: /One workspace plan/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Choose your workspace plan/i })).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: /Sign in with ChatGPT/i }),
     ).toBeInTheDocument();
@@ -480,7 +480,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     );
 
     // Picker headline must be absent — the live container bypasses it.
-    expect(screen.queryByText(/One workspace plan/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Choose your workspace plan/i)).not.toBeInTheDocument();
     // Billing was re-fetched so the trial state can catch up.
     expect(billingMockRefresh).toHaveBeenCalled();
   });
@@ -570,7 +570,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     );
 
     // Must NOT render the ProviderPicker.
-    expect(screen.queryByText(/One workspace plan/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Choose your workspace plan/i)).not.toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: /Sign in with ChatGPT/i }),
     ).not.toBeInTheDocument();

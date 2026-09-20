@@ -53,7 +53,7 @@ import { Button } from "@/components/ui/button";
  */
 
 import {
-  PROVIDER_SWITCH_CARDS,
+  providerSwitchCards,
   type ProviderChoiceId as ProviderChoice,
 } from "@/lib/providerCards";
 
@@ -65,11 +65,13 @@ type Stage =
   | { kind: "error"; message: string };
 
 /** Paths that need a credential stage — the only valid `initialChoice` values. */
-export type CredentialProviderChoice = Exclude<ProviderChoice, "bedrock_claude">;
+export type CredentialProviderChoice = Exclude<ProviderChoice, "bedrock_claude" | "opencode_zen">;
 
 interface ChangeProviderModalProps {
   open: boolean;
   currentProvider?: ProviderChoice | null;
+  museAvailable?: boolean;
+  entryPlan?: boolean;
   currentByoProvider?: ByoProvider | null;
   /** Open past the picker, on this choice's credential stage. */
   initialChoice?: CredentialProviderChoice | null;
@@ -80,6 +82,8 @@ interface ChangeProviderModalProps {
 export function ChangeProviderModal({
   open,
   currentProvider,
+  museAvailable = false,
+  entryPlan = false,
   currentByoProvider,
   initialChoice = null,
   onClose,
@@ -103,6 +107,8 @@ export function ChangeProviderModal({
         {open && (
           <ChangeProviderBody
             currentProvider={currentProvider}
+          museAvailable={museAvailable}
+          entryPlan={entryPlan}
             currentByoProvider={currentByoProvider}
             initialChoice={initialChoice}
             onClose={onClose}
@@ -116,6 +122,8 @@ export function ChangeProviderModal({
 
 interface BodyProps {
   currentProvider?: ProviderChoice | null;
+  museAvailable?: boolean;
+  entryPlan?: boolean;
   currentByoProvider?: ByoProvider | null;
   initialChoice?: CredentialProviderChoice | null;
   onClose: () => void;
@@ -124,6 +132,8 @@ interface BodyProps {
 
 function ChangeProviderBody({
   currentProvider,
+  museAvailable = false,
+  entryPlan = false,
   currentByoProvider,
   initialChoice = null,
   onClose,
@@ -192,6 +202,8 @@ function ChangeProviderBody({
       {stage.kind === "picker" && (
         <PickerStage
           currentProvider={currentProvider}
+          museAvailable={museAvailable}
+          entryPlan={entryPlan}
           currentByoProvider={currentByoProvider}
           onPick={handlePick}
         />
@@ -243,11 +255,13 @@ function ChangeProviderBody({
 
 interface PickerStageProps {
   currentProvider?: ProviderChoice | null;
+  museAvailable?: boolean;
+  entryPlan?: boolean;
   currentByoProvider?: ByoProvider | null;
   onPick: (choice: ProviderChoice) => void;
 }
 
-function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStageProps) {
+function PickerStage({ currentProvider, currentByoProvider, onPick, museAvailable, entryPlan }: PickerStageProps) {
   const isCurrent = (id: ProviderChoice) => {
     if (id !== currentProvider) return false;
     // BYO is "current" only if the user is on byo_key today; sub-provider
@@ -258,7 +272,7 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
 
   return (
     <div className="grid grid-cols-1 gap-3 py-2 md:grid-cols-3">
-      {PROVIDER_SWITCH_CARDS.map((card) => {
+      {providerSwitchCards(museAvailable, entryPlan).map((card) => {
         const current = isCurrent(card.id);
         return (
           <button

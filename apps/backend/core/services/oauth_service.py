@@ -155,6 +155,9 @@ async def request_device_code(
     workspace — this workspace is not connected, so the caller must surface a
     real error rather than treating it as completion.
     """
+    from core.services.provision_gate import require_provider_access
+
+    await require_provider_access(bound_owner_id, "chatgpt_oauth")
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
         resp = await client.post(
             USER_CODE_URL,
@@ -256,6 +259,9 @@ async def poll_device_code(*, user_id: str, purpose: str = PURPOSE_PROVIDER) -> 
     # — an in-flight session at deploy time completes cleanly instead of
     # erroring or binding to an empty owner.
     bound_owner_id = row.get("bound_owner_id") or user_id
+    from core.services.provision_gate import require_provider_access
+
+    await require_provider_access(bound_owner_id, "chatgpt_oauth")
     # Legacy pending rows (from the pre-Codex-CLI flow) store `device_code`
     # instead of `device_auth_id`. Same for any partially-written row that
     # doesn't have user_code. Treat both as stale — the new flow can't

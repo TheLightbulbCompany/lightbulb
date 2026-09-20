@@ -31,11 +31,14 @@ import {
 } from "./llm-auth-status";
 
 import {
-  PROVIDER_SWITCH_CARDS,
+  providerSwitchCards,
   type ProviderChoiceId as ProviderChoice,
 } from "@/lib/providerCards";
 
 type UserData = {
+  muse_available?: boolean;
+  plan?: string;
+  subscription_status?: string;
   provider_choice?: ProviderChoice | null;
   byo_provider?: ByoProvider | null;
 };
@@ -329,6 +332,7 @@ function BedrockBlock({
 // byo_key spans OpenAI *and* Anthropic, so a vendor mark would misrepresent
 // it — a key glyph is the honest icon there.
 const PROVIDER_ICONS: Record<ProviderChoice, React.ReactNode> = {
+  opencode_zen: <span aria-hidden="true">M</span>,
   bedrock_claude: <AnthropicIcon size={24} />,
   chatgpt_oauth: <OpenAIIcon size={24} />,
   byo_key: <KeyRound size={20} className="text-[var(--midnight-muted)]" />,
@@ -349,15 +353,19 @@ function ProviderChoiceCards({
   onPick,
   committing,
   error,
+  museAvailable,
+  entryPlan,
 }: {
   onPick: (choice: ProviderChoice) => void;
   committing: ProviderChoice | null;
   error: string | null;
+  museAvailable?: boolean;
+  entryPlan?: boolean;
 }) {
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {PROVIDER_SWITCH_CARDS.map((card) => {
+        {providerSwitchCards(museAvailable, entryPlan).map((card) => {
           const busy = committing === card.id;
           return (
             <button
@@ -397,12 +405,16 @@ function EmptyStateCard({
   onPick,
   committing,
   error,
+  museAvailable,
+  entryPlan,
 }: {
   message?: string;
   /** Absent pre-subscription — nothing to commit against, so link to onboarding. */
   onPick?: (choice: ProviderChoice) => void;
   committing?: ProviderChoice | null;
   error?: string | null;
+  museAvailable?: boolean;
+  entryPlan?: boolean;
 }) {
   const prompt = message ?? "You haven’t picked a provider yet.";
 
@@ -420,6 +432,8 @@ function EmptyStateCard({
           onPick={onPick}
           committing={committing ?? null}
           error={error ?? null}
+          museAvailable={museAvailable}
+          entryPlan={entryPlan}
         />
       </div>
     );
@@ -453,7 +467,7 @@ export interface LLMPanelProps {
 export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelProps = {}) {
   const api = useApi();
   const { data: user, mutate } = useSWR<UserData | null>(
-    "/users/me",
+    "/billing/account",
     (p: string) => api.get(p) as Promise<UserData | null>,
   );
   // Auto-open the change-provider modal when the shell delivers the intent.
@@ -516,7 +530,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   const handlePick = useCallback(
     (choice: ProviderChoice) => {
       setPickError(null);
-      if (choice !== "bedrock_claude") {
+      if (choice !== "bedrock_claude" && choice !== "opencode_zen") {
         setModalChoice(choice);
         setModalOpen(true);
         return;
@@ -604,10 +618,21 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
       {user.provider_choice === "byo_key" && !user.byo_provider && (
         <EmptyStateCard
           message="Your bring-your-own-key configuration is incomplete. Pick a provider to finish setting up."
+          museAvailable={user.muse_available}
+          entryPlan={user.plan === "entry"}
           onPick={handlePick}
           committing={committing}
           error={pickError}
         />
+      )}
+
+      {user.provider_choice === "opencode_zen" && (
+        <div className="space-y-3">
+          <HeroCard icon={<span aria-hidden="true">M</span>} title="Muse Spark 1.3" subtitle="Included inference — no credits or API key needed" status="Included" dotColor={dotColor} />
+          {user.plan !== "entry" && user.subscription_status !== "trial_local" && (
+            <Button variant="outline" onClick={openModal}>Change provider</Button>
+          )}
+        </div>
       )}
 
       {user.provider_choice === "bedrock_claude" && (
@@ -616,6 +641,8 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
 
       {!user.provider_choice && (
         <EmptyStateCard
+          museAvailable={user.muse_available}
+          entryPlan={user.plan === "entry"}
           onPick={handlePick}
           committing={committing}
           error={pickError}
@@ -628,6 +655,8 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
       {user.provider_choice === "bedrock_claude" && <CreditsSection />}
 
       <ChangeProviderModal
+        museAvailable={user.muse_available}
+        entryPlan={user.plan === "entry"}
         open={modalOpen}
         currentProvider={user.provider_choice ?? null}
         currentByoProvider={user.byo_provider ?? null}

@@ -353,3 +353,15 @@ async def test_write_owner_facts_agentcore_write_failure_is_swallowed(monkeypatc
     monkeypatch.setattr(hermes_profiles, "write_facts_to_profiles", boom)
 
     await owner_facts.write_owner_facts("org_agentcore")  # must not raise
+
+
+def test_muse_entry_and_trial_facts_use_current_plan_terms(monkeypatch):
+    monkeypatch.setattr(owner_facts.settings, "MUSE_ENABLED", True)
+    monkeypatch.setattr(owner_facts.settings, "ENTRY_PRICE_USD", 23)
+    trial = owner_facts.build_owner_facts("org_a", {"subscription_status": "trial_local"})
+    assert "30-day" in trial["plan"] and "no card" in trial["plan"]
+    assert "$3" not in trial["plan"]
+    assert trial["provider"] == "Included Muse"
+    entry = owner_facts.build_owner_facts("org_a", {"subscription_status": "active", "plan": "entry"})
+    assert entry["plan"] == "Entry ($23/mo)"
+    assert entry["provider_choice"] == "opencode_zen"

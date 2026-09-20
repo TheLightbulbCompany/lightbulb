@@ -97,3 +97,18 @@ class TestAutoRetry:
                 await container_status(auth=_auth())
         assert exc.value.status_code == 402
         entered[6].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_running_workspace_recovers_a_committed_provider_change():
+    body, dispatch = await _call(_patches({"status": "running", "needs_provision": "provider-revision"}))
+    dispatch.assert_called_once()
+    assert body["container_status"] == "provisioning"
+
+
+@pytest.mark.asyncio
+async def test_running_workspace_leaves_a_claimed_provider_change_to_its_executor():
+    _, dispatch = await _call(
+        _patches({"status": "running", "needs_provision": "provider-revision", "provision_claim_id": "active-claim"})
+    )
+    dispatch.assert_not_called()

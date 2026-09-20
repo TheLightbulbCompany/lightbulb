@@ -1767,3 +1767,29 @@ class TestCompanyStripeRequestOnEnteringLive:
             await handlers._request_company_stripe("org_x")
 
         assert "company Stripe" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_standard_event_reconciles_if_an_entry_change_wins_the_plan_write(monkeypatch, mock_repo):
+    from botocore.exceptions import ClientError
+
+    account = {
+        "owner_id": "org_x",
+        "stripe_customer_id": "cus_x",
+        "subscription_status": "active",
+        "plan": "standard",
+        "provider_choice": "byo_key",
+    }
+    mock_repo.get_by_owner_id.return_value = account
+    mock_repo.set_plan.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+    monkeypatch.setattr(handlers.settings, "STRIPE_ENTRY_PRICE_ID", "price_entry")
+    event = _subscription_event(status="active", default_payment_method=None)
+    current = {
+        **event["data"]["object"],
+        "items": {"data": [{"price": {"id": "price_entry", "recurring": {"interval": "month"}}}]},
+    }
+    reconcile = AsyncMock(return_value=(current, {**account, "plan": "entry", "provider_choice": "opencode_zen"}))
+    monkeypatch.setattr(handlers, "_reconcile_entry_plan", reconcile)
+    await handlers.handle_subscription_state(event, MagicMock())
+    assert mock_repo.set_plan.await_args.kwargs["expected_plan"] == "standard"
+    reconcile.assert_awaited_once()

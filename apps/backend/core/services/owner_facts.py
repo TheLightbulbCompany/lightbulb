@@ -29,6 +29,8 @@ FACTS_FILENAME = "lightbulb-facts.json"
 
 def format_provider_label(provider_choice: str | None, byo_provider: str | None) -> str:
     """Map (provider_choice, byo_provider) to a human-readable label."""
+    if provider_choice == "opencode_zen":
+        return "Included Muse"
     if provider_choice == "chatgpt_oauth":
         return "ChatGPT (their own OpenAI account)"
     if provider_choice == "bedrock_claude":
@@ -62,10 +64,14 @@ def build_owner_facts(
 
     account = billing_account or {}
     status = account.get("subscription_status")
+    tier_name, tier_price = {
+        "entry": ("Entry", settings.ENTRY_PRICE_USD),
+        "ultra_pro": ("Ultra", settings.ULTRA_PRICE_USD),
+    }.get(account.get("plan"), ("Workspace", settings.WORKSPACE_PRICE_USD))
     if status == "trial_local":
-        plan = "Free tier (no card): Bedrock Claude Sonnet only, $3/day cap, container sleeps when idle"
+        plan = "Free 30-day trial (no card)"
     elif status in ("active", "trialing"):
-        plan = "Ultra ($150/mo)" if account.get("plan") == "ultra_pro" else "Workspace ($50/mo)"
+        plan = f"{tier_name} (${tier_price}/mo)"
     elif status:
         # canceled / past_due / unpaid / incomplete — do NOT tell agents the
         # owner is on a paid plan when the subscription has lapsed.
@@ -73,7 +79,7 @@ def build_owner_facts(
     elif account.get("stripe_subscription_id"):
         # Legacy rows whose status hasn't been backfilled yet — treated as
         # subscribed by provision_gate.is_subscription_active.
-        plan = "Ultra ($150/mo)" if account.get("plan") == "ultra_pro" else "Workspace ($50/mo)"
+        plan = f"{tier_name} (${tier_price}/mo)"
     else:
         plan = "No billing account yet"
 

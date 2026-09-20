@@ -76,6 +76,7 @@ function isProviderChoice(v: string | null): v is ProviderChoice {
 const PROVIDER_SETTLE_MS = 30_000;
 
 const PROVIDER_SETTLE_COPY: Record<ProviderChoice | "default", { title: string; desc: string }> = {
+  opencode_zen: { title: "Setting up Muse", desc: "Starting your included inference." },
   chatgpt_oauth: {
     title: "Finishing ChatGPT sign-in",
     desc: "Connecting your ChatGPT account — this only takes a moment.",
@@ -955,6 +956,9 @@ export function ProvisioningStepper({
           </div>
           <TeamBillingCard
             workspacePriceUsd={account?.workspace_price_usd}
+            entryPriceUsd={account?.entry_available ? account.entry_price_usd : undefined}
+            museAvailable={account?.muse_available}
+            onSubscribeEntry={account?.entry_available ? () => startCheckout("entry") : undefined}
             ownerRole={blocked.owner_role}
             adminOnly={blocked.action.admin_only}
             isSubscribed={false}
@@ -1778,7 +1782,7 @@ export function ProviderPicker({
       : `The $${workspacePriceUsd}/month workspace subscription covers your always-on agent infrastructure.`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const startWorkspaceCheckout = useCallback(async () => {
+  const startWorkspaceCheckout = useCallback(async (plan: "entry" | "workspace" = "workspace") => {
     setLoading(true);
     setError(null);
     capture("subscription_checkout_started", {
@@ -1788,7 +1792,7 @@ export function ProviderPicker({
     try {
       // Checkout does not carry a provider choice. The provider controls are
       // reached after entitlement, through the existing provider flow.
-      await startCheckout("workspace");
+      await startCheckout(plan);
     } catch (err) {
       capture("subscription_checkout_failed", {
         owner_type: isOrg ? "org" : "personal",
@@ -1821,7 +1825,7 @@ export function ProviderPicker({
             <LogoMark className="brand-mark--hero mb-4" />
           )}
           <h2 className="text-2xl font-semibold tracking-display text-[var(--midnight)] font-editorial-serif">
-            {heading ?? "One workspace plan"}
+            {heading ?? "Choose your workspace plan"}
           </h2>
           <p className={"text-[var(--midnight-muted)] text-sm max-w-md " + (embedded ? "" : "mx-auto")}>
             {subheading ??
@@ -1876,10 +1880,18 @@ export function ProviderPicker({
           ))}
         </div>
         <div className={embedded ? "" : "mx-auto max-w-sm"}>
+          {isOrg && account?.entry_available && account.entry_price_usd !== undefined && (
+            <div className="mb-4 space-y-2">
+              <p className="text-sm text-[var(--midnight-muted)]">Muse inference, listening, and automation included.</p>
+              <Button variant="outline" className="w-full rounded-full" disabled={loading} onClick={() => void startWorkspaceCheckout("entry")}>
+                Subscribe to Entry — ${account.entry_price_usd}/mo
+              </Button>
+            </div>
+          )}
           {isOrg ? (
             <Button
               className="w-full rounded-full bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-cream"
-              onClick={startWorkspaceCheckout}
+              onClick={() => void startWorkspaceCheckout()}
               disabled={loading}
             >
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Subscribe to workspace plan"}

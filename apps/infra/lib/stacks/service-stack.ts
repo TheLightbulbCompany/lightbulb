@@ -1362,6 +1362,11 @@ export class ServiceStack extends cdk.Stack {
       // Stripe live mode, dev in test mode, and they MUST NOT cross-pollinate
       // (a test-mode Price would silently create test subscriptions in prod).
       // Read per-env from the runner's secrets at synth time.
+      MUSE_ENABLED: String(this.node.tryGetContext(env === "prod" ? "museEnabledProd" : "museEnabledDev") ?? false),
+      STRIPE_ENTRY_PRICE_ID:
+        env === "prod"
+          ? (process.env.STRIPE_ENTRY_PRICE_ID_PROD ?? "")
+          : (process.env.STRIPE_ENTRY_PRICE_ID_DEV ?? ""),
       STRIPE_WORKSPACE_PRICE_ID:
         env === "prod"
           ? (process.env.STRIPE_WORKSPACE_PRICE_ID_PROD ?? "")

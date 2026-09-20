@@ -126,6 +126,7 @@ async def scan_all(*, consistent: bool = False) -> list[dict]:
 # Fields this whole-item put_item must carry over from the existing row when the
 # caller did not supply them. See ``upsert``'s docstring for why each is here.
 _UPSERT_PRESERVED_FIELDS = (
+    "needs_provision",
     "provision_claim_id",
     "provision_claimed_at",
     "provision_attempt_token",
@@ -232,6 +233,7 @@ _UPSERT_CAS_ATTEMPTS = 3
 _LEASE_CAS_FIELDS = ("provision_claim_id", "provision_attempt_token")
 _UPSERT_PRESERVED_FIELDS += _RELEASE_OWNED_FIELDS
 _UPSERT_CAS_FIELDS = (
+    "needs_provision",
     "bedrock_gate_token_hash",
     "last_interactive_at",
     *_LEASE_CAS_FIELDS,
@@ -520,6 +522,8 @@ async def try_claim_provision(
         ":iso": now_iso,
         ":newid": str(uuid.uuid4()),
         ":error": "error",
+        ":running": "running",
+        ":false": False,
         ":stopped": "stopped",
         ":stale": now_epoch - PROVISION_CLAIM_STALE_S,
     }
@@ -533,6 +537,7 @@ async def try_claim_provision(
             UpdateExpression=update_expr,
             ConditionExpression=(
                 "(attribute_not_exists(owner_id) OR #s = :error OR #s = :stopped "
+                "OR (#s = :running AND attribute_exists(needs_provision) AND needs_provision <> :false) "
                 "OR (#s = :prov AND (attribute_not_exists(provision_claimed_at) OR provision_claimed_at < :stale))) "
                 "AND attribute_not_exists(release_update_id)"
             ),
@@ -1253,6 +1258,8 @@ async def update_container_leased(
     generation: str | None = None,
     attempt_token: str | None = None,
     release_lease: bool = False,
+    arm_trial: bool = False,
+    expected_provider_revision: str | bool | None = None,
 ) -> None:
     """Scoped, fenced row write: applies ``fields`` (may be empty — a pure
     lease-refresh checkpoint) and refreshes the lease stamp, conditioned on
@@ -1291,6 +1298,8 @@ async def update_container_leased(
     the stamped claim/execution-name, which dispatch Branch A needs intact
     to re-issue the same execution.
     """
+    if arm_trial and not release_lease:
+        raise ValueError("Trial arming requires a terminal ready transition")
     # The third caller-supplied `fields` door. Its lease condition says nothing
     # about the gate pointer, so a caller naming the superseded list here would
     # replace it with no fence at all — the same shape _GATE_OWNED_FIELDS closes
@@ -1317,6 +1326,9 @@ async def update_container_leased(
     if attempt_token is not None:
         condition += " AND (attribute_not_exists(provision_attempt_token) OR provision_attempt_token = :atok)"
         values[":atok"] = attempt_token
+    if expected_provider_revision is not None:
+        condition += " AND needs_provision = :provider_revision"
+        values[":provider_revision"] = expected_provider_revision
     update_expr = "SET " + ", ".join(set_parts)
     if release_lease:
         update_expr += (
@@ -1335,6 +1347,44 @@ async def update_container_leased(
     if names:
         kwargs["ExpressionAttributeNames"] = names
     try:
+        if arm_trial:
+            from core.repositories import billing_repo
+
+            account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+            if account and account.get("subscription_status") == "trial_local":
+                # Commit the lease release and clock together: there must never be
+                # a running, lease-free row whose trial still needs a browser poll.
+                try:
+                    await run_in_thread(
+                        table.meta.client.transact_write_items,
+                        TransactItems=[
+                            {"Update": {"TableName": table.name, **kwargs}},
+                            {
+                                "Update": {
+                                    "TableName": billing_repo._get_table().name,
+                                    "Key": {"owner_id": owner_id},
+                                    "UpdateExpression": "SET trial_end = if_not_exists(trial_end, :end), updated_at = :iso",
+                                    "ConditionExpression": "subscription_status = :trial",
+                                    "ExpressionAttributeValues": {
+                                        ":end": int(time.time()) + billing_repo._TRIAL_LOCAL_DURATION_SECONDS,
+                                        ":iso": utc_now_iso(),
+                                        ":trial": "trial_local",
+                                    },
+                                }
+                            },
+                        ],
+                    )
+                    return
+                except ClientError as exc:
+                    if exc.response["Error"]["Code"] != "TransactionCanceledException":
+                        raise
+                    reasons = exc.response.get("CancellationReasons", [])
+                    if reasons and reasons[0].get("Code") == "ConditionalCheckFailed":
+                        raise ProvisionSuperseded(f"provision lease for {owner_id} no longer held") from exc
+                    # A concurrent paid conversion must keep its own billing state.
+                    current = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+                    if not current or current.get("subscription_status") == "trial_local":
+                        raise
         await run_in_thread(table.update_item, **kwargs)
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":

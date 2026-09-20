@@ -138,3 +138,16 @@ describe("BillingPanel — Ultra upgrade CTA", () => {
     expect(screen.getByRole("button", { name: /upgrade to ultra/i })).toBeInTheDocument();
   });
 });
+
+
+it("lets an entry subscriber upgrade to Workspace without forcing Ultra", async () => {
+  nav.panel = "billing";
+  clerk.membership = null;
+  billing.isLoading = false;
+  billing.isSubscribed = true;
+  billing.account = { plan: "entry", subscription_status: "active", entry_price_usd: 20, workspace_price_usd: 50, ultra_price_usd: 150 };
+  billing.startCheckout = vi.fn().mockResolvedValue(undefined);
+  render(<SettingsPage />);
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: /upgrade to workspace/i })));
+  expect(billing.startCheckout).toHaveBeenCalledWith("workspace");
+});

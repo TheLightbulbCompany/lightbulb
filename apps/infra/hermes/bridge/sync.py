@@ -16,6 +16,7 @@ Concurrency is last-writer-wins -- when the backend and the agent change the SAM
 one turn, whichever write reaches S3 last is the one that survives. Per-agent saves stay
 serialized (``_save_lock``) so two concurrent turns cannot interleave their uploads.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -60,6 +61,7 @@ _save_locks_guard = threading.Lock()
 def _save_lock(agent_id: str) -> threading.Lock:
     with _save_locks_guard:
         return _save_locks.setdefault(agent_id, threading.Lock())
+
 
 #: ``$HOME`` for a turn's shell. ``hermes_constants.get_subprocess_home`` returns
 #: ``{HERMES_HOME}/home`` under ``TERMINAL_HOME_MODE: profile`` (turn.py sets it), and
@@ -985,7 +987,23 @@ def pin_profile_defaults(agent_id: str, model: str) -> dict:
     by ``bridge.turn._run_hermes``/``_run_native_paperclip``.
     """
     existing = normalize_profile_backends(agent_id)
-    config = deep_merge(auxiliary_pin(_aux_defaults(), model), existing)
+    defaults = auxiliary_pin(_aux_defaults(), model)
+    model_config = existing.get("model")
+    if (
+        isinstance(model_config, dict)
+        and model_config.get("provider") == "opencode-zen"
+    ):
+        # New Hermes auxiliary tasks inherit Muse as well; never fall back to Bedrock.
+        for task in defaults["auxiliary"].values():
+            if isinstance(task, dict):
+                task.update(
+                    provider="opencode-zen",
+                    model="muse-spark-1.3",
+                    base_url="${LIGHTBULB_MUSE_BASE_URL}",
+                    api_key="${OPENCODE_ZEN_API_KEY}",
+                    api_mode="codex_responses",
+                )
+    config = deep_merge(defaults, existing)
     config = deep_merge(config, plugins_pin(existing))
     write_profile_config(agent_id, config)
     return config

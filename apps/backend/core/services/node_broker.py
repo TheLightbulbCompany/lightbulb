@@ -116,6 +116,14 @@ class NodeInvokeTimeout(Exception):
     pass
 
 
+class NodeCapacity(Exception):
+    """Admission must fail before enqueue when the socket is full."""
+
+
+class NodeResultTooLarge(Exception):
+    pass
+
+
 class NodeDetached(Exception):
     """Raised for every invoke still in flight when the node's socket closes -- the relay
     calls ``NodeSession.fail_pending`` with this so a caller learns immediately that no
@@ -152,21 +160,57 @@ class NodeSession:
     def __init__(self, node_id: str, commands: set[str]) -> None:
         self.node_id, self.commands = node_id, set(commands)
         self.pending: dict[str, asyncio.Future] = {}
-        self.send: asyncio.Queue[dict] = asyncio.Queue()
+        self.send: asyncio.Queue[dict] = asyncio.Queue(maxsize=16)
+        self.generation = ""
 
-    async def invoke(self, command: str, params: dict, timeout_ms: int) -> dict:
+    async def invoke(
+        self, command: str, params: dict, timeout_ms: int, *, invoke_id: str | None = None, result_grace_ms: int = 0
+    ) -> dict:
         if command not in self.commands:
             raise CommandNotAllowed(command)
-        invoke_id = str(uuid.uuid4())
+        if len(self.pending) >= 8 or self.send.full():
+            raise NodeCapacity()
+        invoke_id = invoke_id or str(uuid.uuid4())
+        if invoke_id in self.pending:
+            raise NodeCapacity()
+        frame = invoke_request(invoke_id, self.node_id, command, params, timeout_ms)
+        if len(frame["payload"]["paramsJSON"].encode()) > 16_384:
+            raise NodeCapacity()
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self.pending[invoke_id] = future
-        await self.send.put(invoke_request(invoke_id, self.node_id, command, params, timeout_ms))
+        self.send.put_nowait(frame)
         try:
-            return await asyncio.wait_for(future, timeout=timeout_ms / 1000)
+            return await asyncio.wait_for(future, timeout=(timeout_ms + result_grace_ms) / 1000)
         except asyncio.TimeoutError as exc:
             raise NodeInvokeTimeout(command) from exc
         finally:
             self.pending.pop(invoke_id, None)
+            self._drop_queued(invoke_id)
+
+    def _drop_queued(self, invoke_id: str) -> None:
+        retained = []
+        while not self.send.empty():
+            frame = self.send.get_nowait()
+            payload = frame.get("payload", {})
+            if payload.get("id") != invoke_id and payload.get("invokeId") != invoke_id:
+                retained.append(frame)
+        for frame in retained:
+            self.send.put_nowait(frame)
+
+    def cancel(self, invoke_id: str) -> bool:
+        """A queued request can be withdrawn; a sent request needs node confirmation.
+
+        Do not resolve the waiter: the pinned CLI's cancel has no terminal ACK.
+        """
+        if invoke_id not in self.pending:
+            return False
+        self._drop_queued(invoke_id)
+        if self.send.full():
+            raise NodeCapacity()
+        self.send.put_nowait(
+            {"type": "event", "event": "node.invoke.cancel", "payload": {"invokeId": invoke_id, "nodeId": self.node_id}}
+        )
+        return True
 
     def fail_pending(self, exc: Exception) -> None:
         """The socket is gone -- nothing will ever answer an in-flight invoke. Fail every
@@ -176,6 +220,8 @@ class NodeSession:
             if not future.done():
                 future.set_exception(exc)
         self.pending.clear()
+        while not self.send.empty():
+            self.send.get_nowait()
 
     def resolve(self, frame: dict) -> dict | None:
         """Answer a node->gateway req. Returns the ack to send, or None for a non-req frame."""
@@ -185,6 +231,12 @@ class NodeSession:
         if frame.get("method") == "node.invoke.result":
             future = self.pending.get(str(params.get("id") or ""))
             if future is not None and not future.done():
+                # Bound every retained field together, even when payloadJSON and
+                # payload/error coexist. Check before nested decoding/resolution.
+                size = len(json.dumps(params).encode())
+                if size > 1024 * 1024:
+                    future.set_exception(NodeResultTooLarge())
+                    return ack(str(frame.get("id") or ""))
                 payload = params.get("payload")
                 if payload is None and isinstance(params.get("payloadJSON"), str):
                     try:

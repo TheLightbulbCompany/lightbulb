@@ -12,7 +12,7 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as cr from "aws-cdk-lib/custom-resources";
-import { alertTopicArn, bothTableArns, logGroupPath, tablePrefix } from "../table-names";
+import { alertTopicArn, logGroupPath, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 
 // =============================================================================

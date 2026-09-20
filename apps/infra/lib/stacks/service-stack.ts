@@ -19,7 +19,6 @@ import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import {
   allTableArns,
-  bothTableArns,
   alertTopicArn,
   resourcePrefix,
   tableName,
@@ -820,7 +819,10 @@ export class ServiceStack extends cdk.Stack {
       new iam.PolicyStatement({
         sid: "HermesProfilesRW",
         actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/hermes/*`],
+        resources: [
+          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/hermes/*`,
+          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/marketplace-installs/*`,
+        ],
       }),
     );
 

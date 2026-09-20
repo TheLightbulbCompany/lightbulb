@@ -30,7 +30,7 @@ from core.services.paperclip_agent_idempotency import (
     build_agent_create_idempotency_key,
     paperclip_agent_intent,
 )
-from core.services.agent_provenance import stamp_agent_provenance
+from core.services.agent_provenance import _load_agent_sidecars, stamp_agent_provenance
 from core.services.agent_redaction import strip_agent_secrets
 from core.services.paperclip_openclaw_pairing import (
     get_seeded_agent_ids,
@@ -101,18 +101,6 @@ def _mark_seeded(agent, seeded_ids, sidecar=None, starter_ids=()):
         starter_ids=starter_ids,
         sidecar=sidecar,
     )
-
-
-async def _load_agent_sidecars(owner_id: str, agent_ids: list[str]) -> dict[str, dict]:
-    """The marketplace install sidecars for these agents.
-
-    Always empty: the sidecar was a ``.template`` file in the agent's EFS workspace and the
-    profile transport writes no equivalent yet, so a marketplace-installed agent reads as
-    Custom in Teams. KNOWN GAP (already empty for a migrated workspace before this deletion) --
-    see ``catalog_service``'s module docstring. Kept as the named seam so provenance stamping
-    has one place to become truthful again.
-    """
-    return {}
 
 
 def _redact_agent(agent):

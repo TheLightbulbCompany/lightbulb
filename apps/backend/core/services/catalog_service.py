@@ -6,12 +6,8 @@ What's left is ``deploy_from_artifact``: mint the buyer's Paperclip agent when t
 caller has not already, write its Hermes profile, and land the seller's tarball in
 that profile's S3 prefix. Called by /marketplace/listings/{slug}/deploy.
 
-**Known gap (M6):** the EFS install RECORD is gone with the runtime -- the
-``.template`` sidecar the buyer's workspace used to carry. Nothing on the profile
-transport writes an equivalent yet, so the "already installed" idempotency and the
-sidebar's installed-templates filter are inert (they were already inert for every
-migrated workspace before this deletion; it just makes that visible). A profile-side
-install record is Task 10 remap work, not deletion work.
+Marketplace completion provenance is written by the storefront and approval callers after
+their full rollback envelopes; this service only installs profile content.
 """
 
 from __future__ import annotations
@@ -227,7 +223,7 @@ def _s3_client():
 # only two of the five, so a tarball containing SOUL.md or lightbulb-facts.json
 # (agent_export's filter drops neither) silently overwrote the profile
 # writer's own copy in deploy_tarball_to_profile.
-_DEPLOY_PROFILE_SKIP_NAMES = BACKEND_OWNED_FILES
+_DEPLOY_PROFILE_SKIP_NAMES = BACKEND_OWNED_FILES | {".marketplace-install.json"}
 
 
 def _ensure_credential_rule(root: Path) -> None:

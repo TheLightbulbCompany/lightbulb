@@ -4,6 +4,8 @@ AgentCore row (``ecs_manager.delete_user_service``) shares the exact same teardo
 leaking the runtime/secret/S3 profiles the rollback path already knew to clean up.
 """
 
+import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -15,6 +17,52 @@ ROW = {
     "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1",
     "bedrock_gate_token_hash": "hash-1",
 }
+
+
+def test_delete_profile_prefix_objects_paginates_both_owner_scoped_prefixes(monkeypatch):
+    class Paginator:
+        def __init__(self):
+            self.prefixes = []
+
+        def paginate(self, *, Bucket, Prefix):
+            assert Bucket == "test-bucket"
+            self.prefixes.append(Prefix)
+            if Prefix == "org_a/hermes/":
+                return iter(
+                    [
+                        {"Contents": [{"Key": "org_a/hermes/agent_a/config.yaml"}]},
+                        {"Contents": [{"Key": "org_a/hermes/auth.json"}]},
+                    ]
+                )
+            if Prefix == "marketplace-installs/org_a/":
+                return iter([{"Contents": [{"Key": "marketplace-installs/org_a/agent_a.json"}]}])
+            raise AssertionError(f"unexpected prefix: {Prefix}")
+
+    class Client:
+        def __init__(self):
+            self.paginator = Paginator()
+            self.deleted = []
+
+        def get_paginator(self, name):
+            assert name == "list_objects_v2"
+            return self.paginator
+
+        def delete_objects(self, *, Bucket, Delete):
+            self.deleted.extend((Bucket, item["Key"]) for item in Delete["Objects"])
+
+    client = Client()
+    monkeypatch.setattr(hermes_provisioning.settings, "OWNER_STATE_BUCKET", "test-bucket")
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda _name: client))
+
+    hermes_provisioning._delete_profile_prefix_objects("org_a")
+
+    assert client.paginator.prefixes == ["org_a/hermes/", "marketplace-installs/org_a/"]
+    assert client.deleted == [
+        ("test-bucket", "org_a/hermes/agent_a/config.yaml"),
+        ("test-bucket", "org_a/hermes/auth.json"),
+        ("test-bucket", "marketplace-installs/org_a/agent_a.json"),
+    ]
+    assert all("org_b" not in key for _, key in client.deleted)
 
 
 @pytest.mark.asyncio
@@ -32,6 +80,7 @@ async def test_teardown_stops_session_deletes_runtime_revokes_hash_and_deletes_t
 
     assert calls == ["stop_session", "delete_runtime", "revoke_token", "delete_secret"]
     delete_hashes.assert_awaited_once_with(["hash-1"])
+    delete_profiles.assert_not_awaited()
 
 
 @pytest.mark.asyncio

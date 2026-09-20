@@ -150,12 +150,19 @@ def approval_install_state():
     """Most approval-creation tests model a new, not-yet-installed agent."""
     with patch(
         "core.services.marketplace_hire._has_committed_marketplace_install",
+        new_callable=AsyncMock,
         return_value=False,
     ) as m:
         yield m
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
+def _stub_marketplace_marker():
+    with patch("core.services.agent_provenance.write_marketplace_provenance", new_callable=AsyncMock):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def approval_create_claim(monkeypatch):
     """Give approval pre-creation a deterministic, held short-lived claim.
 
@@ -919,3 +926,25 @@ async def test_a_raising_claim_does_not_strand_the_approved_agent(get_listing, g
     rollback.assert_awaited_once()
     assert rollback.await_args.kwargs == {"owner_id": "user_x", "agent_id": _AGENT_ID}
     release.assert_not_awaited()  # never held it
+
+
+@pytest.mark.asyncio
+async def test_malformed_or_wrong_agent_marker_does_not_claim_completion(monkeypatch):
+    from core.services import marketplace_hire
+
+    monkeypatch.setattr(
+        "core.services.agent_provenance._load_agent_sidecars",
+        AsyncMock(
+            return_value={
+                _AGENT_ID: {
+                    "agent_id": "different-agent",
+                    "listing_id": "listing_1",
+                    "template_slug": "pulse",
+                    "template_version": 1,
+                    "seller_id": "seller_1",
+                }
+            }
+        ),
+    )
+
+    assert not await marketplace_hire._has_committed_marketplace_install(owner_id="user_x", agent_id=_AGENT_ID)

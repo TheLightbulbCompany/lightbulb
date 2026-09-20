@@ -17,6 +17,7 @@ class _FakeClient:
     def __init__(self, pages):
         self._paginator = _FakePaginator(pages)
         self.deleted: list[tuple[str, list[dict]]] = []
+        self.deleted_objects: list[tuple[str, str]] = []
 
     def get_paginator(self, name):
         assert name == "list_objects_v2"
@@ -24,6 +25,9 @@ class _FakeClient:
 
     def delete_objects(self, *, Bucket, Delete):
         self.deleted.append((Bucket, Delete["Objects"]))
+
+    def delete_object(self, *, Bucket, Key):
+        self.deleted_objects.append((Bucket, Key))
 
 
 def test_delete_profile_deletes_every_object_under_the_prefix_one_call_per_page(monkeypatch):
@@ -41,6 +45,7 @@ def test_delete_profile_deletes_every_object_under_the_prefix_one_call_per_page(
         ("test-bucket", [{"Key": "owner_1/hermes/agent_1/config.yaml"}, {"Key": "owner_1/hermes/agent_1/.env"}]),
         ("test-bucket", [{"Key": "owner_1/hermes/agent_1/SOUL.md"}]),
     ]
+    assert client.deleted_objects == [("test-bucket", "marketplace-installs/owner_1/agent_1.json")]
 
 
 def test_delete_profile_skips_empty_pages(monkeypatch):
@@ -51,6 +56,7 @@ def test_delete_profile_skips_empty_pages(monkeypatch):
     hermes_profiles.delete_profile("owner_1", "agent_1")
 
     assert client.deleted == []
+    assert client.deleted_objects == [("test-bucket", "marketplace-installs/owner_1/agent_1.json")]
 
 
 def test_delete_profile_noops_without_a_configured_bucket(monkeypatch):

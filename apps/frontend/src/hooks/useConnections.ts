@@ -23,7 +23,7 @@ export interface Connection {
   provider: string;
   display_name: string;
   acquisition: "paste_token" | "direct_oauth" | "aws_sts" | "container_login";
-  status: "connected" | "disconnected" | "unavailable";
+  status: "connected" | "disconnected" | "unavailable" | "reconnect_required";
   /**
    * BYO ("bring your own") OAuth app affordance:
    *   - `byo_required`   → this provider has no managed app; the owner MUST

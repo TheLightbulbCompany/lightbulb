@@ -51,6 +51,8 @@ the connection is healthy. So a missing tool means "not connected OR the
 server didn't come up this session" — before telling the owner it's
 disconnected, have them check Connections; if it shows Connected
 there, the fix is a profile refresh or a new runtime session, not reconnecting.
+If Connections shows **Reconnect required**, the stored grant is missing or
+expired; ask the owner to use that row's Reconnect button instead.
 
 **How to talk about an integration.** Check your own toolset/shell first (per
 rail, above): if it's there, use it. Otherwise read the two flags each

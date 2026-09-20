@@ -221,7 +221,7 @@ async def test_apply_agentcore_materializer_with_no_projection_is_rejected(monke
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "provider",
-    ("stripe", "notion", "sentry", "linear", "attio", "intercom", "apollo", "cloudflare", "quickbooks"),
+    ("stripe", "notion", "linear", "attio", "intercom", "apollo", "cloudflare", "quickbooks"),
 )
 async def test_actor_owned_mcp_without_retained_credential_is_rejected(monkeypatch, provider):
     """A missing canonical token must not become a working-looking empty Hermes token file."""
@@ -238,6 +238,22 @@ async def test_actor_owned_mcp_without_retained_credential_is_rejected(monkeypat
     with pytest.raises(ac.RuntimeUnsupportedError):
         await ac.apply_connection("org_1", provider, {"access_token": "fresh", "refresh_token": "rotating"})
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_sentry_first_connect_reconciles_brokered_profile(monkeypatch):
+    from core.services.credentials import apply_connection as ac
+    from core.services.credentials import mcp_server as mcp_server_mod
+
+    calls = []
+
+    async def reconcile(owner_id, *, pending=None):
+        calls.append((owner_id, pending))
+
+    monkeypatch.setattr(mcp_server_mod, "reconcile_integrations", reconcile)
+
+    await ac.apply_connection("org_1", "sentry", {"access_token": "fresh", "refresh_token": "rotating"})
+    assert calls == [("org_1", "sentry")]
 
 
 @pytest.mark.parametrize("provider", ("google", "github", "posthog", "meta_ads", "parallel"))

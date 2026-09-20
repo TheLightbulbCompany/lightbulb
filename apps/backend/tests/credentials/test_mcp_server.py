@@ -167,6 +167,27 @@ async def test_build_connected_map_emits_remote_block_without_retained_secret(mo
 
 
 @pytest.mark.asyncio
+async def test_backend_owned_sentry_uses_runtime_bearer_reference(monkeypatch):
+    from core.services.credentials import mcp_server as m
+
+    sentry = m.registry.get_provider("sentry").model_copy(update={"refresh_owner": "backend"})
+    monkeypatch.setattr(m.registry, "get_provider", lambda key: sentry)
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(return_value=[{"provider": "sentry", "status": "connected"}]),
+    )
+
+    assert await m.build_connected_integration_servers("org_1") == {
+        "sentry": {
+            "url": "https://mcp.sentry.dev/mcp",
+            "headers": {"Authorization": "Bearer ${MCP_SENTRY_ACCESS_TOKEN}"},
+            "requestTimeoutMs": 60000,
+        }
+    }
+
+
+@pytest.mark.asyncio
 async def test_build_connected_map_skips_disconnected_remote_provider(monkeypatch):
     # A disconnected mcp_remote row must not be re-published (no stale server block).
     from core.services.credentials import mcp_server as m

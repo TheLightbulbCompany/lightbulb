@@ -42,6 +42,18 @@ async def put_status(owner_id: str, provider: str, status: str = "connected", id
     await run_in_thread(_table().put_item, Item=item)
 
 
+async def set_status(owner_id: str, provider: str, status: str) -> None:
+    """Change readiness without replacing account identity or trigger metadata."""
+    await run_in_thread(
+        _table().update_item,
+        Key={"owner_id": owner_id, "provider": provider},
+        UpdateExpression="SET #status = :status, updated_at = :now",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":status": status, ":now": int(time.time())},
+        ConditionExpression="attribute_exists(owner_id)",
+    )
+
+
 async def get(owner_id: str, provider: str) -> dict | None:
     response = await run_in_thread(
         _table().get_item,

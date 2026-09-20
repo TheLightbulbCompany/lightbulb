@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+import re
 from typing import Literal
 
 import yaml
@@ -17,7 +18,7 @@ _YAML = Path(__file__).parent / "providers.yaml"
 
 Acquisition = Literal["paste_token", "direct_oauth", "nango", "agentcore", "aws_sts", "secrets_manager"]
 Actor = Literal["cli", "mcp", "skill", "nango_proxy"]
-RefreshOwner = Literal["none", "actor", "nango_proxy"]
+RefreshOwner = Literal["none", "actor", "backend", "nango_proxy"]
 
 
 class OpenclawPath(BaseModel):
@@ -83,15 +84,19 @@ class McpRemote(BaseModel):
     request_timeout_ms: int = Field(60_000, alias="requestTimeoutMs")
     model_config = {"populate_by_name": True}
 
-    def server_block(self) -> dict[str, object]:
-        """The mcp.servers.<key> block published into the live openclaw.json.
+    def server_block(self, *, brokered: bool = False) -> dict[str, object]:
+        """Hermes MCP config: native per-profile OAuth or brokered bearer auth.
 
-        ``auth: "oauth"`` is load-bearing: OpenClaw only attaches the MCP SDK's
-        OAuthClientProvider (which reads + self-refreshes the seeded token file)
-        when the raw server config carries ``auth === "oauth"`` — without it the
-        runtime treats the endpoint as a plain remote server, ignores the token
-        store, and the server 401s. The materializer write and the reprovision
-        rehydration both build the block from here, so they stay identical."""
+        A workspace-shared grant uses the bearer reference so Hermes never
+        refreshes copies of the same token in separate agent profiles.
+        """
+        if brokered:
+            env_key = f"MCP_{re.sub(r'[^A-Za-z0-9]', '_', self.key).upper()}_ACCESS_TOKEN"
+            return {
+                "url": self.url,
+                "headers": {"Authorization": f"Bearer ${{{env_key}}}"},
+                "requestTimeoutMs": self.request_timeout_ms,
+            }
         return {
             "transport": self.transport,
             "url": self.url,

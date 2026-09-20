@@ -107,6 +107,37 @@ async def test_refresh_moves_mcp_secrets_to_env_and_drops_a_disconnected_ones_ol
     assert "sk_new" not in config_yaml
 
 
+async def test_brokered_mcp_reference_never_writes_token_into_profile(monkeypatch):
+    puts, deletes = _setup(
+        monkeypatch,
+        stored_config={"mcp_servers": {"sentry": {"url": "https://mcp.sentry.dev/mcp", "auth": "oauth"}}},
+        connected={
+            "sentry": {
+                "url": "https://mcp.sentry.dev/mcp",
+                "headers": {"Authorization": "Bearer ${MCP_SENTRY_ACCESS_TOKEN}"},
+            }
+        },
+        existing_tokens={"a1:sentry"},
+    )
+
+    await hermes_profiles.refresh_integrations("org_a", ["a1"])
+
+    config = yaml.safe_load(_config_writes(puts, "a1")[0])
+    assert config["mcp_servers"]["sentry"]["headers"] == {"Authorization": "Bearer ${MCP_SENTRY_ACCESS_TOKEN}"}
+    assert "auth" not in config["mcp_servers"]["sentry"]
+    assert "MCP_SENTRY_ACCESS_TOKEN" not in next(v for k, v in puts if k.endswith("/.env"))
+    assert "org_a/hermes/a1/mcp-tokens/sentry.json" in deletes
+    assert "org_a/hermes/a1/mcp-tokens/sentry.client.json" in deletes
+
+
+def test_literal_secret_containing_placeholder_syntax_is_still_scrubbed():
+    config, secrets = hermes_profiles.translate_mcp_servers(
+        {"acme": {"command": "acme", "env": {"TOKEN": "sk_${not-an-env-reference}"}}}
+    )
+    assert config["acme"]["env"]["TOKEN"] == "${MCP_ACME_TOKEN}"
+    assert secrets == {"MCP_ACME_TOKEN": "sk_${not-an-env-reference}"}
+
+
 async def test_refresh_raises_when_the_profile_has_no_config_yaml_yet(monkeypatch):
     """C4: a reconcile onto a profile that was never provisioned is a defect, not something to
     merge onto {} and upload."""
@@ -243,7 +274,10 @@ def test_a_disconnected_servers_token_file_is_deleted(monkeypatch):
     monkeypatch.setattr(hermes_profiles, "_s3_delete", lambda bucket, key: deletes.append(key))
     monkeypatch.setattr(hermes_profiles.settings, "OWNER_STATE_BUCKET", "b")
     hermes_profiles._write_mcp_token_files("org_a", "a1", {}, {}, previously_oauth=frozenset({"stripe"}))
-    assert deletes == ["org_a/hermes/a1/mcp-tokens/stripe.json"]
+    assert deletes == [
+        "org_a/hermes/a1/mcp-tokens/stripe.json",
+        "org_a/hermes/a1/mcp-tokens/stripe.client.json",
+    ]
 
 
 async def test_refresh_seeds_once_deletes_on_disconnect_and_writes_a_newly_connected_server(monkeypatch):
@@ -271,7 +305,10 @@ async def test_refresh_seeds_once_deletes_on_disconnect_and_writes_a_newly_conne
     )
     await hermes_profiles.refresh_integrations("org_a", ["a1"])
     assert token_puts == ["acme"]  # stripe untouched (already seeded), only the new one is written
-    assert deletes == ["org_a/hermes/a1/mcp-tokens/posthog.json"]
+    assert deletes == [
+        "org_a/hermes/a1/mcp-tokens/posthog.json",
+        "org_a/hermes/a1/mcp-tokens/posthog.client.json",
+    ]
 
 
 def test_put_token_file_writes_under_mcp_tokens(monkeypatch):

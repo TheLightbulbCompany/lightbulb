@@ -155,6 +155,38 @@ def _expiry_iso(expires_in: int | None) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))).isoformat()
 
 
+async def refresh(owner_id: str, provider_key: str, credential: dict) -> dict:
+    """Refresh a workspace OAuth grant, preserving a token the provider did not rotate."""
+    p = registry.get_provider(provider_key)
+    if not p.oauth or not credential.get("refresh_token"):
+        raise ValueError(f"{provider_key} has no refreshable OAuth grant")
+    client_id, client_secret = await _oauth_client(owner_id, provider_key)
+    if client_id != credential.get("client_id"):
+        raise ValueError(f"{provider_key} OAuth client changed; reconnect required")
+    data = {"grant_type": "refresh_token", "refresh_token": credential["refresh_token"], "client_id": client_id}
+    auth = None
+    if client_secret:
+        if p.oauth.token_endpoint_auth_method == "client_secret_basic":
+            auth = httpx.BasicAuth(client_id, client_secret)
+            data.pop("client_id")
+        else:
+            data["client_secret"] = client_secret
+    if p.mcp_remote:
+        data["resource"] = p.mcp_remote.url
+    async with httpx.AsyncClient(timeout=15) as http:
+        resp = await http.post(p.oauth.token_url, data=data, headers={"Accept": "application/json"}, auth=auth)
+        resp.raise_for_status()
+        token = resp.json()
+    expires_in = token.get("expires_in") or credential.get("expires_in")
+    return {
+        **credential,
+        "access_token": token["access_token"],
+        "refresh_token": token.get("refresh_token") or credential["refresh_token"],
+        "expires_in": int(expires_in) if expires_in else None,
+        "token_expiry": _expiry_iso(expires_in),
+    }
+
+
 async def start(owner_id: str, provider_key: str, *, redirect_uri: str, origin: str | None = None) -> str:
     p = registry.get_provider(provider_key)
     if not p.oauth:

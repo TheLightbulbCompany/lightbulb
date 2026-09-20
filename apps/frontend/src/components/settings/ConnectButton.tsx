@@ -482,9 +482,19 @@ export function ConnectButton({
   // Connected → Disconnect, plus the BYO setup affordance when this owner still
   // needs to store their own app (non-destructive migration off the old
   // shared-app connection — no disconnect-first required).
-  if (status === "connected") {
+  if (status === "connected" || status === "reconnect_required") {
     return (
       <div className="flex flex-col items-end gap-1">
+        {status === "reconnect_required" && (
+          <Button
+            size="sm"
+            disabled={busy || !canManage}
+            onClick={() => run(() => startOAuth(provider))}
+            aria-label={`Reconnect ${display_name}`}
+          >
+            {busy ? oauthBusyLabel : "Reconnect"}
+          </Button>
+        )}
         <Button
           variant="outline"
           size="sm"

@@ -403,6 +403,11 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     rows = await integrations_repo.list_for_owner(owner_id)
     connected = {r["provider"]: r.get("status", "connected") for r in rows}
+    for provider, status in connected.items():
+        p = registry.all_providers().get(provider)
+        if status == "connected" and p and p.mcp_remote and p.refresh_owner == "backend":
+            if not await integration_secret_store.get(owner_id, provider):
+                connected[provider] = "reconnect_required"
     connections = []
     for k, v in registry.all_providers().items():
         # A gate still means HIDDEN unless the provider opts into being requested,

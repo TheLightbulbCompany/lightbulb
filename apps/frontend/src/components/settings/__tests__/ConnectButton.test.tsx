@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 
 import { ConnectButton } from "../ConnectButton";
@@ -44,6 +44,20 @@ function renderButton(overrides: Partial<React.ComponentProps<typeof ConnectButt
 }
 
 describe("ConnectButton", () => {
+  it("lets an owner reconnect a migrated OAuth grant while preserving Disconnect", async () => {
+    const startOAuth = vi.fn().mockResolvedValue(undefined);
+    const disconnect = vi.fn();
+    renderButton({
+      connection: { ...googleRow, provider: "sentry", display_name: "Sentry", status: "reconnect_required" },
+      startOAuth,
+      disconnect,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /reconnect sentry/i }));
+    await waitFor(() => expect(startOAuth).toHaveBeenCalledWith("sentry"));
+    expect(screen.getByRole("button", { name: /disconnect sentry/i })).toBeInTheDocument();
+  });
+
   it("renders Connect for an OAuth provider", () => {
     renderButton();
 

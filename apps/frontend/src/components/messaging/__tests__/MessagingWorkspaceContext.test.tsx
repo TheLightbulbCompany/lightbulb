@@ -935,3 +935,33 @@ it("stays out of focus when closeSession runs before a slow colleague DM resolve
 
   expect(workspaceValue.sessionFocus).toBeNull();
 });
+
+it("keeps history action inputs stable while the provider draft or live run changes", () => {
+  // The real provider makes these callbacks: a RoomPanel-only fixture with
+  // stable functions would miss provider churn that defeats history's memo.
+  renderComposer = true;
+  // Like the shared hook: a fresh result object, stable unchanged fields.
+  mocks.rooms.mockImplementation(() => ({ ...state }));
+  const view = compose();
+  const before = {
+    select: panel.onSelectParticipant,
+    unread: panel.onMarkUnreadFrom,
+    pins: panel.pinnedMessageIds,
+    participants: panel.participants,
+  };
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "typing a draft" } });
+  expect(panel.composer.text).toBe("typing a draft");
+  expect(panel.onSelectParticipant).toBe(before.select);
+  expect(panel.onMarkUnreadFrom).toBe(before.unread);
+  expect(panel.pinnedMessageIds).toBe(before.pins);
+  expect(panel.participants).toBe(before.participants);
+  state.runs = [{ roomId: room.roomId, agentId: "agent-friday", runId: "stream", text: "Streaming text", thinking: "", state: "running", frames: [] }];
+  view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <CaptureContext /><MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+  expect(panel.runs?.[0].text).toBe("Streaming text");
+  expect(panel.onSelectParticipant).toBe(before.select);
+  expect(panel.onMarkUnreadFrom).toBe(before.unread);
+  expect(panel.pinnedMessageIds).toBe(before.pins);
+  expect(panel.participants).toBe(before.participants);
+});

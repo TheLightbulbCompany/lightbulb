@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 /**
  * Shared pending/error plumbing for a header/details action that can fail
@@ -18,7 +18,7 @@ export function useAsyncAction() {
 
   function reset() { setError(undefined); }
 
-  async function run(action: () => Promise<void>, fallback: string, onDone?: () => void) {
+  const run = useCallback(async (action: () => Promise<void>, fallback: string, onDone?: () => void) => {
     setPending(true);
     setError(undefined);
     try {
@@ -29,7 +29,7 @@ export function useAsyncAction() {
     } finally {
       setPending(false);
     }
-  }
+  }, []);
 
   return { pending, error, setError, reset, run };
 }

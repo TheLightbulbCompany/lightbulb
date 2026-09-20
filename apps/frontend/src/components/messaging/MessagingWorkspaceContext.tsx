@@ -644,6 +644,13 @@ export function MessagingWorkspaceProvider({
     sessions: sidebarSessions,
     onSelectSession: (sessionId: string) => void openSession(sessionId, { from: "sidebar" }),
   };
+  const selectMessageParticipant = useCallback(async (participant: RoomParticipant) => {
+    await selectDm(participant);
+  }, [selectDm]);
+  const { activeRoomId: unreadRoomId, markUnread: markRoomUnread } = rooms;
+  const markUnreadFrom = useCallback(async (fromSeq: number) => {
+    if (unreadRoomId) await markRoomUnread(unreadRoomId, fromSeq);
+  }, [unreadRoomId, markRoomUnread]);
   const roomProps: RoomPanelProps | null = rooms.activeRoomId ? {
     ownerScopeId: scope,
     currentUserId: userId ?? "",
@@ -670,15 +677,15 @@ export function MessagingWorkspaceProvider({
     threadComposer,
     onSelectThread: setThreadId,
     selectedThreadId: threadId,
-    onSelectParticipant: async (participant) => { await rooms.selectDm(participant); },
+    onSelectParticipant: selectMessageParticipant,
     onRetry: () => void rooms.refreshRoom(),
     ...(canManageResponses ? { onListenModeChange: (agentId: string, mode: ListenMode) => void changeListenMode(agentId, mode) } : {}),
     listeningAvailable,
     onSetReaction: rooms.setReaction,
     onUpdateMessage: rooms.updateMessage,
-    pinnedMessageIds: rooms.activeRoom?.pinnedMessageIds ?? [],
+    pinnedMessageIds: rooms.activeRoom?.pinnedMessageIds,
     onSetPin: rooms.setPin,
-    onMarkUnreadFrom: async (fromSeq: number) => { if (rooms.activeRoomId) await rooms.markUnread(rooms.activeRoomId, fromSeq); },
+    onMarkUnreadFrom: markUnreadFrom,
     onSetPrefs: async (prefs) => { if (rooms.activeRoomId) await rooms.setRoomPrefs(rooms.activeRoomId, prefs); },
     onLeaveRoom: rooms.activeRoom?.kind === "channel" && viewerRole !== "owner"
       ? async () => { if (rooms.activeRoomId) await rooms.leaveRoom(rooms.activeRoomId); } : undefined,

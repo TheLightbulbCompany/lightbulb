@@ -166,7 +166,7 @@ def _stub_teams_status_repo():
 
 @pytest.fixture(autouse=True)
 def _stub_trial_armer(request):
-    if request.node.name == "test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll":
+    if request.node.name == "test_legacy_workspace_trial_clock_repairs_only_at_first_ready_poll":
         yield
     else:
         with patch("routers.container.arm_workspace_trial_if_unset", AsyncMock(return_value=None)):
@@ -174,8 +174,8 @@ def _stub_trial_armer(request):
 
 
 @pytest.mark.asyncio
-async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll():
-    """The trial clock arms exactly once, at the poll where the composed `runtime_phase`
+async def test_legacy_workspace_trial_clock_repairs_only_at_first_ready_poll():
+    """A legacy unarmed trial is repaired once, at the poll where the composed `runtime_phase`
     first reads "ready" -- never before, never twice. This used to cycle a RUNNING row
     through a "starting" (not-yet-gateway-connected) intermediate before "ready", but
     `resolve_runtime_phase` now reports "ready" for any running row unconditionally, with
@@ -214,10 +214,10 @@ async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll()
             with patch("core.repositories.billing_repo.time.time", return_value=1_000):
                 result = await container_status(_workspace_auth(), flow=None)
             assert result["runtime_phase"] == "ready"
-            assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 260_200
+            assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 2_593_000
             with patch("core.repositories.billing_repo.time.time", return_value=9_999):
                 await container_status(_workspace_auth(), flow=None)
-            assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 260_200
+            assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 2_593_000
 
 
 @pytest.mark.asyncio

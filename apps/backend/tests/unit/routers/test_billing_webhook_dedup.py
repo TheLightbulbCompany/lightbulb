@@ -60,6 +60,7 @@ async def test_replayed_stripe_webhook_processed_once(dedup_table_and_settings, 
     # Spy on the underlying repo write that the handler triggers via
     # billing_repo.set_subscription on customer.subscription.updated.
     with (
+        patch("core.repositories.billing_repo.set_plan", new=AsyncMock()),
         patch(
             "core.repositories.billing_repo.set_subscription",
             new=AsyncMock(return_value={}),

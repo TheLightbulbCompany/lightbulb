@@ -105,6 +105,10 @@ async def test_agent_mail_with_no_thread_key_is_still_a_conformant_ingress(monke
 
 
 def test_paperclip_run_is_a_conformant_gateway_authed_ingress(client, monkeypatch):
+    monkeypatch.setattr(
+        "routers.messaging.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active"}),
+    )
     captured = _patch_capturing_request(monkeypatch, runtime_transport)
     body = {
         "runId": "run_1",

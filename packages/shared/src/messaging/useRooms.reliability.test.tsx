@@ -220,6 +220,24 @@ describe("room history reliability with real live transport", () => {
     expect(result.current.historyComplete).toBe(true);
   });
 
+  it("keeps older paging contiguous when reactions arrive outside the loaded window", async () => {
+    const server = Array.from({ length: 201 }, (_, i) => numbered(i + 1));
+    longRoom(server);
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    await waitFor(() => expect(result.current.messages).toHaveLength(100));
+    await waitFor(() => expect(result.current.historyLoading).toBe(false));
+    for (const index of [0, 200]) {
+      server[index] = { ...server[index], reactions: { "👍": ["user-b"] }, reactionRevision: 1 };
+      act(() => dispatch({ ...created(server[index]), type: "room.message.reactions.changed", payload: server[index] }));
+    }
+    expect(result.current.messages.find(m => m.messageSeq === 201)?.reactions).toEqual({ "👍": ["user-b"] });
+    await act(async () => result.current.loadOlder());
+    await act(async () => result.current.loadOlder());
+    expect(result.current.messages.map(m => m.messageSeq)).toEqual(server.map(m => m.messageSeq));
+    expect(result.current.messages[0].reactions).toEqual({ "👍": ["user-b"] });
+    expect(result.current.historyComplete).toBe(true);
+  });
+
   it("falls back to full history while an older backend ignores beforeSeq", async () => {
     messaging.listMessages.mockResolvedValue({ messages: [message], nextAfterSeq: null });
     const { result } = renderHook(() => useRooms(platform()), { wrapper });

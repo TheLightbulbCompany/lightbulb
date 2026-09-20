@@ -62,7 +62,12 @@ pub struct InvokeError {
 // --- Node Client ---
 
 type PendingMap = Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>;
-type InvokeSender = mpsc::UnboundedSender<NodeInvokeRequest>;
+pub enum NodeEvent {
+    Invoke(NodeInvokeRequest),
+    Cancel { invoke_id: String, node_id: String },
+    Disconnected,
+}
+type InvokeSender = mpsc::Sender<NodeEvent>;
 type StatusCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Called on EVERY connect attempt to obtain the `$connect` token, mirroring
@@ -114,7 +119,7 @@ pub struct NodeClient {
     /// the next reconnect picks it up. Guard is never held across await.
     url: Arc<RwLock<String>>,
     display_name: String,
-    write_tx: Option<mpsc::UnboundedSender<Message>>,
+    write_tx: Option<mpsc::Sender<Message>>,
     pending: PendingMap,
     stop_tx: Option<oneshot::Sender<()>>,
     status_cb: Option<StatusCallback>,
@@ -184,10 +189,10 @@ impl NodeClient {
     }
 
     /// Start the client. Returns a receiver for invoke requests.
-    pub async fn start(&mut self) -> Result<mpsc::UnboundedReceiver<NodeInvokeRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let (invoke_tx, invoke_rx) = mpsc::unbounded_channel::<NodeInvokeRequest>();
+    pub async fn start(&mut self) -> Result<mpsc::Receiver<NodeEvent>, Box<dyn std::error::Error + Send + Sync>> {
+        let (invoke_tx, invoke_rx) = mpsc::channel::<NodeEvent>(32);
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
-        let (write_tx, write_rx) = mpsc::unbounded_channel::<Message>();
+        let (write_tx, write_rx) = mpsc::channel::<Message>(16);
 
         self.write_tx = Some(write_tx.clone());
         self.stop_tx = Some(stop_tx);
@@ -234,7 +239,7 @@ impl NodeClient {
     /// Send a JSON frame to the gateway.
     async fn send_frame(&self, frame: Value) -> Result<(), String> {
         if let Some(tx) = &self.write_tx {
-            tx.send(Message::Text(frame.to_string().into()))
+            tx.try_send(Message::Text(frame.to_string().into()))
                 .map_err(|e| format!("Send failed: {}", e))
         } else {
             Err("Not connected".into())
@@ -254,7 +259,7 @@ impl NodeClient {
 async fn connection_loop(
     url: Arc<RwLock<String>>,
     display_name: String,
-    mut write_rx: mpsc::UnboundedReceiver<Message>,
+    mut write_rx: mpsc::Receiver<Message>,
     invoke_tx: InvokeSender,
     pending: PendingMap,
     mut stop_rx: oneshot::Receiver<()>,
@@ -377,6 +382,7 @@ async fn connection_loop(
             tokio::select! {
                 // Clean shutdown.
                 _ = &mut stop_rx => {
+                    let _ = invoke_tx.send(NodeEvent::Disconnected).await;
                     let _ = ws_write.close().await;
                     emit_status("disconnected");
                     return;
@@ -410,6 +416,8 @@ async fn connection_loop(
         };
 
         crate::log(&format!("[node-client] Disconnected ({}); reconnecting", drop_reason));
+        let _ = invoke_tx.send(NodeEvent::Disconnected).await;
+        while write_rx.try_recv().is_ok() {} // never replay old results onto a new socket
         emit_status("reconnecting");
 
         // Backoff before the next reconnect, respecting stop.
@@ -716,6 +724,7 @@ fn build_signed_connect(
             "scopes": scopes,
             "caps": ["system"],
             "commands": [
+                "system.run.approve.v1",
                 "system.notify",
                 "screen.snapshot",
                 "device.info",
@@ -752,8 +761,16 @@ async fn handle_message(text: &str, invoke_tx: &InvokeSender, pending: &PendingM
             if event == "node.invoke.request" {
                 if let Some(payload) = frame.get("payload") {
                     if let Ok(req) = serde_json::from_value::<NodeInvokeRequest>(payload.clone()) {
-                        let _ = invoke_tx.send(req);
+                        if req.params_json.as_ref().map_or(0, String::len) <= 16_384 {
+                            let _ = invoke_tx.send(NodeEvent::Invoke(req)).await;
+                        }
                     }
+                }
+            }
+            if event == "node.invoke.cancel" {
+                if let (Some(id), Some(node)) = (frame.pointer("/payload/invokeId").and_then(Value::as_str),
+                                                frame.pointer("/payload/nodeId").and_then(Value::as_str)) {
+                    let _ = invoke_tx.send(NodeEvent::Cancel { invoke_id: id.into(), node_id: node.into() }).await;
                 }
             }
             // tick events — ignore (keepalive)

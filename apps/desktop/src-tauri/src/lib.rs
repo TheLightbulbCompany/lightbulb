@@ -12,6 +12,7 @@ pub mod pair_client;
 pub mod pair_state;
 pub mod proxy;
 pub mod screen;
+mod desktop_approval;
 pub mod subprocess;
 mod tray;
 
@@ -819,15 +820,12 @@ async fn start_node_host(
         update_node_status(&app_for_cb, status);
     });
 
-    let mut invoke_rx = client.start().await?;
+    let invoke_rx = client.start().await?;
     log("[node] Node client started, listening for invoke requests");
 
     let app_for_invoke = app.clone();
     tokio::spawn(async move {
-        while let Some(request) = invoke_rx.recv().await {
-            log(&format!("[node] Invoke: {} ({})", request.command, request.id));
-            node_invoke::handle_invoke(&client, app_for_invoke.clone(), request).await;
-        }
+        node_invoke::run(client, app_for_invoke, invoke_rx).await;
         log("[node] Invoke receiver closed");
     });
 
@@ -1432,6 +1430,14 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri::plugin::Builder::<tauri::Wry>::new("desktop-approval")
+            .invoke_handler(tauri::generate_handler![desktop_approval::desktop_shell_answer]).build())
+        .register_uri_scheme_protocol("desktop-approval", |_context, _request| {
+            tauri::http::Response::builder()
+                .header("Content-Type", "text/html; charset=utf-8")
+                .header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src ipc: http://ipc.localhost")
+                .body(desktop_approval::HTML.as_bytes().to_vec()).unwrap()
+        })
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("oauth-intercept")
                 .on_navigation(|_window, url| {

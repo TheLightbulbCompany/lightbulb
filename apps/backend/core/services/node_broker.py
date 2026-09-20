@@ -179,23 +179,39 @@ class NodeSession:
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self.pending[invoke_id] = future
         self.send.put_nowait(frame)
+        interrupted = False
         try:
             return await asyncio.wait_for(future, timeout=(timeout_ms + result_grace_ms) / 1000)
         except asyncio.TimeoutError as exc:
+            interrupted = True
             raise NodeInvokeTimeout(command) from exc
+        except asyncio.CancelledError:
+            interrupted = True
+            raise
         finally:
             self.pending.pop(invoke_id, None)
-            self._drop_queued(invoke_id)
+            was_queued = self._drop_queued(invoke_id)
+            if interrupted and not was_queued and not self.send.full():
+                self.send.put_nowait(
+                    {
+                        "type": "event",
+                        "event": "node.invoke.cancel",
+                        "payload": {"invokeId": invoke_id, "nodeId": self.node_id},
+                    }
+                )
 
-    def _drop_queued(self, invoke_id: str) -> None:
+    def _drop_queued(self, invoke_id: str) -> bool:
         retained = []
+        was_queued = False
         while not self.send.empty():
             frame = self.send.get_nowait()
             payload = frame.get("payload", {})
+            was_queued |= payload.get("id") == invoke_id
             if payload.get("id") != invoke_id and payload.get("invokeId") != invoke_id:
                 retained.append(frame)
         for frame in retained:
             self.send.put_nowait(frame)
+        return was_queued
 
     def cancel(self, invoke_id: str) -> bool:
         """A queued request can be withdrawn; a sent request needs node confirmation.

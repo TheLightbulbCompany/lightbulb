@@ -220,6 +220,14 @@ describe("room history reliability with real live transport", () => {
     expect(result.current.historyComplete).toBe(true);
   });
 
+  it("falls back to full history while an older backend ignores beforeSeq", async () => {
+    messaging.listMessages.mockResolvedValue({ messages: [message], nextAfterSeq: null });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    await waitFor(() => expect(result.current.historyComplete).toBe(true));
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, { beforeSeq: 2, signal: expect.any(AbortSignal) });
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, { signal: expect.any(AbortSignal) });
+  });
+
   it("merges live arrivals during initialization and catches the gap from the initial page watermark", async () => {
     const server = Array.from({ length: 201 }, (_, i) => numbered(i + 1));
     longRoom(server);
@@ -499,7 +507,7 @@ describe("room history reliability with real live transport", () => {
     expect(pending[0].signal?.aborted).toBe(true);
     if (change !== "unmount") {
       const replacement = {...second, roomId: change === "room" ? "room-2" : room.roomId};
-      await act(async () => pending[1].resolve({messages: [replacement], nextAfterSeq: null}));
+      await act(async () => pending[1].resolve({messages: [replacement], nextAfterSeq: null, nextBeforeSeq: null}));
       await act(async () => pending[0].resolve({messages: [message], nextAfterSeq: null, nextBeforeSeq: null}));
       expect(result.current.messages).toEqual([replacement]);
       expect(result.current.historyError).toBe(false);
@@ -536,7 +544,7 @@ describe("room history reliability with real live transport", () => {
       await drain();
       expect(result.current.messages).toEqual([]);
       expect(result.current.historyLoading).toBe(true);
-      await act(async () => pending.at(-1)!.resolve({ messages: [second], nextAfterSeq: null }));
+      await act(async () => pending.at(-1)!.resolve({ messages: [second], nextAfterSeq: null, nextBeforeSeq: null }));
       expect(result.current.messages).toEqual([second]);
     }
     unmount();

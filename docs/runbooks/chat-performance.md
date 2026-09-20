@@ -99,6 +99,8 @@ opts in; native mobile retains full history until its own room UI supports
 older-page loading. The legacy
 `.chat-transcript` containment rule does not cover `.room-history`; applying it
 without checking scroll geometry and hover-toolbar clipping is unverified.
+During a rolling deploy, an older backend omits `nextBeforeSeq`; web chat then
+falls back to its previous full-history read until the new API is available.
 
 ## Investigation results — 2026-09-20
 

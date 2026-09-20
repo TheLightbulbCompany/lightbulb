@@ -419,6 +419,11 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     try {
       const page = await messaging.listMessages(roomId, 0, 100, { beforeSeq: messagesRef.current[0].messageSeq, signal: controller.signal });
       if (generation.current !== runGeneration || pageAbort.current !== controller) return;
+      if (page.nextBeforeSeq === undefined) {
+        pageAbort.current = null;
+        void reconcile(0, true).catch(() => {});
+        return;
+      }
       applyMessages(roomId, mergeCanonicalMessages(messagesRef.current, page.messages.filter((message) => message.roomId === roomId)), page.nextBeforeSeq === null);
       setHistoryComplete(page.nextBeforeSeq === null);
     } catch (error) {
@@ -429,7 +434,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
         if (!reconciliation.current) setHistoryLoading(false);
       }
     }
-  }, [activeRoomId, accessRemoved, historyLoading, historyComplete, messaging, applyMessages]);
+  }, [activeRoomId, accessRemoved, historyLoading, historyComplete, messaging, applyMessages, reconcile]);
 
   // `room.run.frame` (carrying the terminal `run_ended`) is EPHEMERAL over the
   // live channel, unlike `room.message.created` -- it has no `afterSeq` gap
@@ -549,6 +554,12 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     setHistoryLoading(true);
     void messaging.listMessages(activeRoomId, 0, 100, { beforeSeq: newest + 1, signal: controller.signal }).then((page) => {
       if (generation.current !== runGeneration || initialRequest.current !== request) return;
+      if (page.nextBeforeSeq === undefined) {
+        pageAbort.current = null;
+        initialPending.current = false;
+        void reconcile(0).catch(() => {});
+        return;
+      }
       const valid = page.messages.filter((message) => message.roomId === activeRoomId);
       applyMessages(activeRoomId, mergeCanonicalMessages(valid, messagesRef.current), page.nextBeforeSeq === null);
       setHistoryComplete(page.nextBeforeSeq === null);

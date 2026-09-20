@@ -355,3 +355,68 @@ async def test_actual_broker_dispatch_selects_exact_device_and_generation(monkey
     await h.finish()
     assert (await h.store.get(AUTH, receipt["id"]))["state"] == "unknown"
     assert intended.send.empty() and other.send.empty()
+
+
+@pytest.mark.parametrize(
+    "stage,expected", [("authorize", "rejected"), ("before_resolve", "rejected"), ("after_resolve", "unknown")]
+)
+async def test_whole_background_lifecycle_has_one_admission_deadline(monkeypatch, stage, expected):
+    monkeypatch.setattr(execution, "RESULT_GRACE_SECONDS", 0)
+    h = Harness()
+    receipt = await h.store.submit(AUTH, h.token(), REQUEST | {"executionDeadlineMs": 20})
+    entered = asyncio.Event()
+    blocked = asyncio.Event()
+    calls = 0
+
+    async def authorize(auth):
+        entered.set()
+        await blocked.wait()
+
+    async def resolve(auth, request):
+        nonlocal calls
+        calls += 1
+        if calls == (2 if stage == "after_resolve" else 1):
+            entered.set()
+            await blocked.wait()
+        return h.target
+
+    if stage == "authorize":
+        h.store.authorize = authorize
+    else:
+        h.store.resolve = resolve
+    h.answer.set()
+    task = h.store.tasks[receipt["id"]]
+    try:
+        await asyncio.wait_for(entered.wait(), 0.2)
+        await asyncio.wait_for(asyncio.shield(task), 0.2)
+        assert not h.store.tasks
+        assert h.store.records[receipt["id"]]["state"] == expected
+        assert len(h.effects) == (1 if stage == "after_resolve" else 0)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_pruning_overdue_authority_wait_reclaims_task_capacity():
+    h = Harness()
+    receipt = await h.store.submit(AUTH, h.token(), REQUEST)
+    entered = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def authorize(auth):
+        entered.set()
+        await blocked.wait()
+
+    h.store.authorize = authorize
+    task = h.store.tasks[receipt["id"]]
+    try:
+        await entered.wait()
+        h.now += 2000
+        h.store._prune()
+        await asyncio.wait_for(asyncio.shield(task), 0.2)
+        assert not h.store.tasks
+        assert h.store.records[receipt["id"]]["state"] == "rejected"
+        assert not h.effects
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

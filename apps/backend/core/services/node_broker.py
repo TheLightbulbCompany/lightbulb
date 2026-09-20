@@ -231,9 +231,9 @@ class NodeSession:
         if frame.get("method") == "node.invoke.result":
             future = self.pending.get(str(params.get("id") or ""))
             if future is not None and not future.done():
-                # Reject the nested JSON before decoding it or retaining its body.
-                raw = params.get("payloadJSON")
-                size = len(raw.encode()) if isinstance(raw, str) else len(json.dumps(params).encode())
+                # Bound every retained field together, even when payloadJSON and
+                # payload/error coexist. Check before nested decoding/resolution.
+                size = len(json.dumps(params).encode())
                 if size > 1024 * 1024:
                     future.set_exception(NodeResultTooLarge())
                     return ack(str(frame.get("id") or ""))

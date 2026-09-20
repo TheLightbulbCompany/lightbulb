@@ -195,8 +195,18 @@ class DesktopOperations:
     def _prune(self):
         now = self.clock()
         for key, row in list(self.records.items()):
-            if row["state"] in ACTIVE and now > row["deadline"]:
-                row.update(state="unknown", error={"code": "execution_outcome_unknown"}, completed=now)
+            if now > row["deadline"]:
+                task = self.tasks.get(key)
+                if task is not None and not task.done():
+                    task.cancel()
+                if row["state"] in ACTIVE:
+                    row.update(
+                        state="unknown" if row["dispatched"] else "rejected",
+                        error={
+                            "code": "execution_outcome_unknown" if row["dispatched"] else "deadline_before_dispatch"
+                        },
+                        completed=now,
+                    )
             if row.get("completed") is not None and now > row["completed"] + BODY_SECONDS:
                 if "result" in row:
                     row.pop("result")
@@ -264,51 +274,59 @@ class DesktopOperations:
 
     async def _execute(self, row):
         try:
-            await self.authorize(row["auth"])
-            target = await self.resolve(row["auth"], row["request"])
-            if row["state"] == "cancel_requested":
-                row.update(state="rejected", error={"code": "cancelled_before_dispatch"})
-                return
-            if row["state"] != "queued":
-                return
-            if target["taskAddress"] != self.address or target["generation"] != row["socket"][2]:
-                raise DesktopError("desktop_generation_lost", 409)
-            if self.clock() > min(row["expiry"] + CLOCK_SKEW_SECONDS, row["deadline"]) or not self.enabled(
-                row["auth"]["ownerId"]
-            ):
-                raise DesktopError("admission_expired", 409)
-            row.update(state="running", dispatched=True)
-            # Await directly: wait_for would schedule a second task, leaving a window
-            # where cancel sees running but no broker waiter yet, then dispatch starts.
-            async with asyncio.timeout(row["request"]["executionDeadlineMs"] / 1000 + RESULT_GRACE_SECONDS):
-                result = await self.dispatch(target, row["request"], row["invokeId"])
-            current = await self.resolve(row["auth"], row["request"])
-            if current["taskAddress"] != self.address or current["generation"] != row["socket"][2]:
-                raise DesktopError("desktop_generation_lost", 409)
-            if row["state"] == "unknown":
-                return  # late output cannot make a lost generation authoritative again
-            if len(_json(result)) > MAX_RESULT_BYTES:
-                row.update(state="unknown", error={"code": "result_too_large"})
-                return
-            if result.get("ok"):
-                row.update(state="succeeded", result=result.get("payload"))
-            else:
-                row.update(state="failed", error={"code": "node_failed"}, result=result.get("error"))
-            # Evict result bodies, never accepted identities, to meet the socket budget.
-            bodies = [r for r in self.records.values() if r["socket"] == row["socket"] and "result" in r]
-            total = sum(len(_json(r["result"])) for r in bodies)
-            for old in bodies:
-                if total <= MAX_BODY_BYTES:
-                    break
-                total -= len(_json(old.pop("result")))
-                old.update(state="unknown", error={"code": "result_expired"})
-        except Exception as exc:
+            # One admission deadline covers authorization, dispatch AND completion
+            # validation; a stalled directory/DynamoDB read cannot hold a slot forever.
+            async with asyncio.timeout(max(0, row["deadline"] - self.clock())):
+                await self._execute_before_deadline(row)
+        except (Exception, asyncio.CancelledError) as exc:
             row.update(
                 state="unknown" if row["dispatched"] else "rejected",
-                error={"code": exc.code if isinstance(exc, DesktopError) else "execution_outcome_unknown"},
+                error={
+                    "code": exc.code
+                    if isinstance(exc, DesktopError)
+                    else ("execution_outcome_unknown" if row["dispatched"] else "deadline_before_dispatch")
+                },
             )
         finally:
             row["completed"] = self.clock()
+
+    async def _execute_before_deadline(self, row):
+        await self.authorize(row["auth"])
+        target = await self.resolve(row["auth"], row["request"])
+        if row["state"] == "cancel_requested":
+            row.update(state="rejected", error={"code": "cancelled_before_dispatch"})
+            return
+        if row["state"] != "queued":
+            return
+        if target["taskAddress"] != self.address or target["generation"] != row["socket"][2]:
+            raise DesktopError("desktop_generation_lost", 409)
+        if self.clock() > min(row["expiry"] + CLOCK_SKEW_SECONDS, row["deadline"]) or not self.enabled(
+            row["auth"]["ownerId"]
+        ):
+            raise DesktopError("admission_expired", 409)
+        row.update(state="running", dispatched=True)
+        # Await directly so cancel cannot interleave before the broker waiter exists.
+        result = await self.dispatch(target, row["request"], row["invokeId"])
+        current = await self.resolve(row["auth"], row["request"])
+        if current["taskAddress"] != self.address or current["generation"] != row["socket"][2]:
+            raise DesktopError("desktop_generation_lost", 409)
+        if row["state"] == "unknown":
+            return  # late output cannot make a lost generation authoritative again
+        if len(_json(result)) > MAX_RESULT_BYTES:
+            row.update(state="unknown", error={"code": "result_too_large"})
+            return
+        if result.get("ok"):
+            row.update(state="succeeded", result=result.get("payload"))
+        else:
+            row.update(state="failed", error={"code": "node_failed"}, result=result.get("error"))
+        # Evict result bodies, never accepted identities, to meet the socket budget.
+        bodies = [r for r in self.records.values() if r["socket"] == row["socket"] and "result" in r]
+        total = sum(len(_json(r["result"])) for r in bodies)
+        for old in bodies:
+            if total <= MAX_BODY_BYTES:
+                break
+            total -= len(_json(old.pop("result")))
+            old.update(state="unknown", error={"code": "result_expired"})
 
     async def get(self, auth: dict, receipt_id: str) -> dict:
         claims = self.receipt_claims(auth, receipt_id)

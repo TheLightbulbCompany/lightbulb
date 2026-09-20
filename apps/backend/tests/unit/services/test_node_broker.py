@@ -270,3 +270,27 @@ async def test_oversize_wire_json_is_rejected_before_nested_decode():
     )
     with pytest.raises(node_broker.NodeResultTooLarge):
         await task
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"payloadJSON": "{}", "payload": "x" * (2 * 1024 * 1024)},
+        {"payloadJSON": "{}", "error": {"message": "x" * (2 * 1024 * 1024)}},
+        {"payload": "x" * 600000, "error": {"message": "x" * 600000}},
+    ],
+)
+async def test_all_retained_result_fields_share_one_byte_budget(fields):
+    session = node_broker.NodeSession("dev-1", {"device.info"})
+    task = asyncio.create_task(session.invoke("device.info", {}, 5000, invoke_id="known-id"))
+    await asyncio.sleep(0)
+    session.resolve(
+        {
+            "type": "req",
+            "id": "result",
+            "method": "node.invoke.result",
+            "params": {"id": "known-id", "ok": True, **fields},
+        }
+    )
+    with pytest.raises(node_broker.NodeResultTooLarge):
+        await task

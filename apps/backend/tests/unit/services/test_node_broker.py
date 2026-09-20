@@ -222,3 +222,51 @@ async def test_progress_and_node_event_are_acked_and_need_no_implementation():
             "id": "x",
             "ok": True,
         }
+
+
+async def test_cancel_uses_verified_invoke_id_contract_without_claiming_termination():
+    session = node_broker.NodeSession("dev-1", {"device.info"})
+    task = asyncio.create_task(session.invoke("device.info", {}, 5000, invoke_id="known-id"))
+    await asyncio.sleep(0)
+    await session.send.get()
+    assert session.cancel("known-id") is True
+    assert await session.send.get() == {
+        "type": "event",
+        "event": "node.invoke.cancel",
+        "payload": {"invokeId": "known-id", "nodeId": "dev-1"},
+    }
+    assert not task.done()
+    session.fail_pending(node_broker.NodeDetached())
+    with pytest.raises(node_broker.NodeDetached):
+        await task
+
+
+async def test_pending_and_outbound_queue_are_bounded_and_timeout_drops_queued_invoke():
+    session = node_broker.NodeSession("dev-1", {"device.info"})
+    tasks = [asyncio.create_task(session.invoke("device.info", {}, 5000)) for _ in range(8)]
+    await asyncio.sleep(0)
+    with pytest.raises(node_broker.NodeCapacity):
+        await session.invoke("device.info", {}, 5000)
+    assert len(session.pending) == 8
+    session.fail_pending(node_broker.NodeDetached())
+    await asyncio.gather(*tasks, return_exceptions=True)
+    assert session.send.empty()
+    with pytest.raises(node_broker.NodeInvokeTimeout):
+        await session.invoke("device.info", {}, 1)
+    assert session.send.empty()
+
+
+async def test_oversize_wire_json_is_rejected_before_nested_decode():
+    session = node_broker.NodeSession("dev-1", {"device.info"})
+    task = asyncio.create_task(session.invoke("device.info", {}, 5000, invoke_id="known-id"))
+    await asyncio.sleep(0)
+    session.resolve(
+        {
+            "type": "req",
+            "id": "result",
+            "method": "node.invoke.result",
+            "params": {"id": "known-id", "ok": True, "payloadJSON": '"' + "x" * (1024 * 1024) + '"'},
+        }
+    )
+    with pytest.raises(node_broker.NodeResultTooLarge):
+        await task

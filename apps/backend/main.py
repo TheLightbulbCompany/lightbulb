@@ -43,6 +43,7 @@ from routers import (
     desktop_pair,
     devices,
     gateway_relay,
+    desktop_execution,
     google_accounts,
     hooks_credentials,
     hooks_proxy,
@@ -741,6 +742,7 @@ app.include_router(runtime_rpc.router, prefix="/api/v1/runtime", tags=["messagin
 # operators) — a direct browser-facing WS door on the ALB, not the API Gateway
 # WebSocket path.
 app.include_router(gateway_relay.router, prefix="/api/v1/gateway", tags=["gateway-relay"])
+app.include_router(desktop_execution.router, prefix="/api/v1/desktop-execution", tags=["desktop"])
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])

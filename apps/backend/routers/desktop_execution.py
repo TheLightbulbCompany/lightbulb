@@ -1,0 +1,138 @@
+"""Short hook-authenticated desktop commands; no model-supplied member or peer address."""
+
+import asyncio
+import hmac
+import json
+from contextlib import asynccontextmanager
+
+from fastapi import APIRouter, HTTPException, Request
+
+from core.config import settings
+from core.repositories import container_repo
+from core.services import desktop_execution as service
+
+router = APIRouter()
+
+
+@asynccontextmanager
+async def _boundary():
+    try:
+        async with asyncio.timeout(9):
+            yield
+    except service.DesktopError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code}) from None
+    except TimeoutError:
+        raise HTTPException(503, detail={"code": "desktop_request_timeout"}) from None
+
+
+async def _auth(request: Request, *, active: bool) -> dict:
+    owner = request.headers.get("x-desktop-owner", "")
+    if not service._ID.fullmatch(owner):
+        raise HTTPException(401, detail="missing owner")
+    presented = request.headers.get("authorization", "").removeprefix("Bearer ")
+    container = await container_repo.get_by_owner_id(owner, consistent=True)
+    expected = (container or {}).get("hook_token") or ""
+    if (
+        not expected
+        or not request.headers.get("authorization", "").startswith("Bearer ")
+        or not hmac.compare_digest(presented.encode(), expected.encode())
+    ):
+        raise HTTPException(401, detail="invalid hook token")
+    return await service.authorize_run(
+        owner,
+        request.headers.get("x-desktop-run", ""),
+        request.headers.get("x-desktop-agent", ""),
+        request.headers.get("x-desktop-run-family", "room"),
+        active=active,
+    )
+
+
+async def _body(request: Request) -> dict:
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > service.MAX_REQUEST_BYTES:
+            raise service.DesktopError("request_too_large", 413)
+        data.extend(chunk)
+    try:
+        body = json.loads(data)
+    except ValueError:
+        raise service.DesktopError("invalid_request") from None
+    if not isinstance(body, dict):
+        raise service.DesktopError("invalid_request")
+    return body
+
+
+@router.get("/devices")
+async def devices(request: Request):
+    async with _boundary():
+        return await service.discover_devices(await _auth(request, active=True))
+
+
+@router.post("/operations")
+async def submit(request: Request):
+    async with _boundary():
+        # Existing duplicate receipts remain readable even after the run ends.
+        auth = await _auth(request, active=False)
+        return await service.submit_desktop(auth, request.headers.get("x-desktop-admission", ""), await _body(request))
+
+
+@router.get("/operations/{receipt_id}")
+async def status(receipt_id: str, request: Request):
+    async with _boundary():
+        return await service.get_desktop_receipt(await _auth(request, active=False), receipt_id)
+
+
+@router.post("/operations/{receipt_id}/cancel")
+async def cancel(receipt_id: str, request: Request):
+    async with _boundary():
+        return await service.cancel_desktop(await _auth(request, active=False), receipt_id)
+
+
+@router.post("/internal")
+async def internal(request: Request):
+    async with _boundary():
+        secret = settings.WS_INTERNAL_SECRET
+        presented = request.headers.get("x-lightbulb-ws-internal", "")
+        if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
+            raise HTTPException(403, detail="forbidden")
+        body = await _body(request)
+        action, auth = body.get("action"), body.get("auth")
+        if (
+            action not in {"admit", "submit", "status", "cancel"}
+            or not isinstance(auth, dict)
+            or set(auth) != service.AUTH_FIELDS
+        ):
+            raise service.DesktopError("invalid_request")
+        allowed = (
+            {"action", "auth", "request"}
+            if action == "admit"
+            else (
+                {"action", "auth", "request", "admissionToken"}
+                if action == "submit"
+                else {"action", "auth", "receiptId"}
+            )
+        )
+        if set(body) != allowed:
+            raise service.DesktopError("invalid_request")
+        current = await service.authorize_run(
+            auth["ownerId"], auth["runId"], auth["agentId"], auth["family"], active=action == "admit"
+        )
+        if current != auth:
+            raise service.DesktopError("run_forbidden", 403)
+        if action == "admit":
+            params = body["request"]
+            if (
+                not isinstance(params, dict)
+                or set(params) != {"deviceId", "expectedConnectionGeneration", "command"}
+                or params["command"] not in service.SAFE_COMMANDS
+            ):
+                raise service.DesktopError("invalid_request")
+            return await service.admit_device(auth, params, forwarded=True)
+        return await service.route_operation(
+            action,
+            auth,
+            admission_token=body.get("admissionToken", ""),
+            request=body.get("request"),
+            receipt_id=body.get("receiptId", ""),
+            forwarded=True,
+        )

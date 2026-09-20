@@ -87,7 +87,7 @@ async def build_connected_integration_servers(owner_id: str, *, pending: str | N
         # from the registry alone — actor-refresh, so there is no retained secret.
         remote = prov.mcp_remote
         if remote is not None:
-            servers[remote.key] = remote.server_block()
+            servers[remote.key] = remote.server_block(brokered=prov.refresh_owner == "backend")
             continue
         # Stdio MCP server whose credential is a FILE in the profile (qbo_dotenv rail).
         # Same reasoning as the remote branch: actor-refresh, no retained secret,

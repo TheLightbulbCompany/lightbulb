@@ -33,6 +33,13 @@ def fake_table(monkeypatch):
         def delete_item(self, Key):
             store.pop((Key["owner_id"], Key["provider"]), None)
 
+        def update_item(self, Key, UpdateExpression, ExpressionAttributeNames, ExpressionAttributeValues, **kwargs):
+            assert UpdateExpression == "SET #status = :status, updated_at = :now"
+            assert ExpressionAttributeNames == {"#status": "status"}
+            item = store[(Key["owner_id"], Key["provider"])]
+            item["status"] = ExpressionAttributeValues[":status"]
+            item["updated_at"] = ExpressionAttributeValues[":now"]
+
         def query(self, KeyConditionExpression=None, **kw):
             # Extract the owner_id the repo queried on from the boto3
             # Key("owner_id").eq(owner_id) condition so we can owner-scope.
@@ -76,6 +83,19 @@ async def test_put_status_defaults_to_connected(fake_table):
 async def test_put_status_honors_explicit_status(fake_table):
     await integrations_repo.put_status("org_1", "stripe", "pending")
     assert fake_table[("org_1", "stripe")]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_set_status_preserves_existing_connection_metadata(fake_table):
+    await integrations_repo.put_status("org_1", "sentry", identity="example-org")
+    original = fake_table[("org_1", "sentry")].copy()
+
+    await integrations_repo.set_status("org_1", "sentry", "reconnect_required")
+
+    row = fake_table[("org_1", "sentry")]
+    assert row["status"] == "reconnect_required"
+    assert row["identity"] == "example-org"
+    assert row["connected_at"] == original["connected_at"]
 
 
 @pytest.mark.asyncio

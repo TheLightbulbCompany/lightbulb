@@ -1,5 +1,6 @@
 import time
 from urllib.parse import parse_qs, urlsplit
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -126,6 +127,7 @@ async def test_exchange_consumes_state_and_returns_credential(monkeypatch):
         return ("cid", "secret")
 
     monkeypatch.setattr(oauth_dance, "_oauth_client", _fake_client)
+    monkeypatch.setattr(oauth_dance.oauth_app_store, "get", AsyncMock(return_value=None))
 
     class _Resp:
         def raise_for_status(self):
@@ -515,6 +517,8 @@ async def test_start_includes_resource_for_mcp_remote_provider(monkeypatch, fake
         "client_id": "dcr_cid",
         "client_secret": "",
         "client_information": {"client_id": "dcr_cid"},
+        "scope": "openid offline_access mcp",
+        "redirect_uri": REDIRECT,
     }
 
     async def _fake_put_state(state, *, owner_id, provider, verifier, client_id=None):

@@ -142,9 +142,9 @@ def test_direct_oauth_requires_oauth_block():
         )  # no oauth
 
 
-# Linear, Notion, Sentry, Intercom, and Stripe deliver their hosted MCP over
-# OAuth rather than a local npx stdio process, so they ride the mcp_oauth
-# materializer rail (their remote-server metadata under mcp_remote), like Attio.
+# Hosted MCP providers keep their remote-server metadata under mcp_remote.
+# Sentry's workspace grant is backend-owned during the Hermes broker pilot;
+# the others still use Hermes's profile-local OAuth rail.
 # Stripe's URL is pathless on purpose — it must match the advertised
 # protected-resource value exactly for RFC 8707 token audiencing.
 @pytest.mark.parametrize(
@@ -166,7 +166,7 @@ def test_hosted_oauth_mcp_provider_shape(key, url):
     p = get_provider(key)
     assert p.acquisition == "direct_oauth"
     assert p.actor == "mcp"
-    assert p.refresh_owner == "actor"
+    assert p.refresh_owner == ("backend" if key == "sentry" else "actor")
     # Rides the mcp_oauth materializer rail; remote-server metadata under mcp_remote.
     assert p.wiring.materializer == "mcp_oauth"
     assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None

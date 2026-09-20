@@ -325,6 +325,21 @@ class TestListConnections:
     """GET /api/v1/connections — catalog + per-provider status."""
 
     @pytest.mark.asyncio
+    async def test_legacy_sentry_grant_without_canonical_secret_needs_reconnect(self, async_client, monkeypatch):
+        monkeypatch.setattr(
+            connections.integrations_repo,
+            "list_for_owner",
+            AsyncMock(return_value=[{"provider": "sentry", "status": "connected"}]),
+        )
+        monkeypatch.setattr(connections.integration_secret_store, "get", AsyncMock(return_value=None))
+
+        response = await async_client.get("/api/v1/connections")
+        by_key = {row["provider"]: row for row in response.json()["connections"]}
+
+        assert by_key["sentry"]["status"] == "reconnect_required"
+        assert by_key["sentry"]["requestable"] is False
+
+    @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
     async def test_list_returns_catalog_with_status(self, mock_repo, async_client):
         # stripe is connected; google has no row -> disconnected.
@@ -1339,6 +1354,27 @@ class TestOAuthCallback:
         )
         assert response.status_code in (302, 307)
         assert "error=oauth_provider" in response.headers["location"]
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_sentry_callback_retains_workspace_grant_before_status(
+        self, mock_dance, mock_repo, mock_store, mock_apply, async_client
+    ):
+        credential = {"access_token": "mcp-access", "refresh_token": "mcp-refresh", "client_id": "client"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "sentry", credential, None))
+        mock_store.put = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+
+        response = await async_client.get("/api/v1/oauth/sentry/callback?code=abc&state=st1", follow_redirects=False)
+
+        assert "connected=sentry" in response.headers["location"]
+        mock_store.put.assert_awaited_once_with("org_1", "sentry", credential)
+        mock_apply.apply_connection.assert_awaited_once_with("org_1", "sentry", credential)
+        mock_repo.put_status.assert_awaited_once_with("org_1", "sentry", "connected")
 
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_dance")

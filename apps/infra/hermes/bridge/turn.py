@@ -1091,6 +1091,58 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
     return _scope()
 
 
+def _brokered_mcp_env_names(agent_id: str) -> dict[str, str]:
+    """Server name → scoped env name for bearer refs in this profile's MCP config."""
+    config = sync.read_profile_config(agent_id)
+    names = {}
+    for server, block in (config.get("mcp_servers") or {}).items():
+        if not isinstance(block, dict):
+            continue
+        authorization = (block.get("headers") or {}).get("Authorization", "")
+        match = re.fullmatch(r"Bearer \$\{(MCP_[A-Z0-9_]+_ACCESS_TOKEN)\}", authorization)
+        if match:
+            names[server] = match.group(1)
+    return names
+
+
+def _clear_native_oauth_state(agent_id: str, server_names: dict[str, str]) -> None:
+    """Remove old profile-local grants when a server switches to brokered auth."""
+    for server in server_names:
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", server):
+            for suffix in (".json", ".client.json"):
+                (_profile_dir(agent_id) / "mcp-tokens" / f"{server}{suffix}").unlink(missing_ok=True)
+
+
+def _runtime_credential_env(agent_id: str, server_names: dict[str, str]) -> dict[str, str]:
+    """Fetch only tokens named by the active profile; never persist or log them."""
+    if not server_names:
+        return {}
+    env = dict.fromkeys(server_names.values(), "")
+    if not API or not HOOK_TOKEN:
+        return env
+    request = urllib.request.Request(
+        f"{API}/api/v1/runtime/credentials/u/{OWNER}",
+        data=json.dumps({"agent_id": agent_id}).encode(),
+        headers={"Authorization": f"Bearer {HOOK_TOKEN}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read(131072))
+    except Exception as exc:  # noqa: BLE001 — an integration outage must not abort an unrelated turn
+        log.warning("runtime credential fetch failed: %s", type(exc).__name__)
+        return env
+    if not isinstance(payload, dict) or not isinstance(payload.get("tokens"), dict):
+        log.warning("invalid runtime credential response")
+        return env
+    tokens = payload["tokens"]
+    for server, name in server_names.items():
+        value = tokens.get(server)
+        if isinstance(value, str) and value and len(value) <= 8192 and "\r" not in value and "\n" not in value:
+            env[name] = value
+    return env
+
+
 def _declare_child_env_names(secrets: dict) -> None:
     """Make each name VISIBLE (never its value) to Hermes's child-env filter.
 
@@ -1336,7 +1388,11 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
         # have installed against the stale value. See normalize_profile_backends's
         # docstring.
         sync.normalize_profile_backends(agent_id)
-        with _hermes_home_scope(agent_id), _secret_scope(agent_id), _terminal_scope(agent_id):
+        brokered_servers = _brokered_mcp_env_names(agent_id)
+        _clear_native_oauth_state(agent_id, brokered_servers)
+        brokered = _runtime_credential_env(agent_id, brokered_servers)
+        secret_scope = _secret_scope(agent_id, brokered) if brokered else _secret_scope(agent_id)
+        with _hermes_home_scope(agent_id), secret_scope, _terminal_scope(agent_id):
             agent = _construct_agent(agent_id, body, frames, session_key)
             attach_agent(run_id, agent)
             result = agent.run_conversation(
@@ -1386,6 +1442,9 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     }
     if identity.get("issueId"):
         env["PAPERCLIP_TASK_ID"] = identity["issueId"]
+    brokered_servers = _brokered_mcp_env_names(agent_id)
+    _clear_native_oauth_state(agent_id, brokered_servers)
+    env.update(_runtime_credential_env(agent_id, brokered_servers))
     # The agent dispositions the issue by calling the Paperclip API from a terminal command,
     # so this identity has to reach a SHELL, not just config.yaml's `${VAR}` resolver. Putting
     # it in the secret scope IS the mechanism: `_declare_child_env_names` makes the names

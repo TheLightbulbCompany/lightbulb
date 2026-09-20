@@ -496,6 +496,11 @@ def translate_mcp_servers(servers: dict | None) -> tuple[dict, dict[str, str]]:
             if isinstance(values, dict):
                 moved = {}
                 for var_name, value in values.items():
+                    if value == f"Bearer ${{{_mcp_env_key(name, 'ACCESS_TOKEN')}}}":
+                        # Hermes resolves this from the turn's secret scope. Moving
+                        # the reference into S3 .env would make it an inert string.
+                        moved[var_name] = value
+                        continue
                     env_key = _mcp_env_key(name, var_name)
                     origin = env_key_origin.setdefault(env_key, (name, var_name))
                     if origin != (name, var_name):
@@ -1285,6 +1290,7 @@ def _write_mcp_token_files(
     now_oauth = {name for name, block in (servers or {}).items() if block.get("auth") == "oauth"}
     for name in previously_oauth - now_oauth:
         _s3_delete(bucket, f"{profile_prefix(owner_id, agent_id)}mcp-tokens/{name}.json")
+        _s3_delete(bucket, f"{profile_prefix(owner_id, agent_id)}mcp-tokens/{name}.client.json")
     for name in now_oauth:
         key = f"{profile_prefix(owner_id, agent_id)}mcp-tokens/{name}.json"
         if _s3_get(bucket, key) is not None:

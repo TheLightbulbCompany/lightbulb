@@ -12,7 +12,7 @@
 2. The platform credential broker is the authority for workspace credentials. Initially it uses Secrets Manager; an AgentCore Identity pilot may replace OAuth custody provider by provider.
 3. DynamoDB stores connection state and non-secret metadata only.
 4. S3 Hermes profiles store configuration, skills, memory, and user files. They are not the canonical store for third-party secrets.
-5. Long-lived credentials are not copied into every agent profile. The active runtime receives only the credential material needed for its current provider and agent.
+5. Long-lived credentials are not copied into every agent profile. The active runtime receives only connected, supported workspace grants, and only for the adapters it initializes for that agent turn.
 6. Runtime credential files are ephemeral, excluded from profile upload, and removed after the consuming turn or process ends.
 7. An integration is not `ready` until a harmless operation succeeds through the same Hermes adapter the agent will use.
 8. Browser cookies, OAuth grants, webhook secrets, backend-only credentials, and LLM provider credentials remain separate credential classes with separate lifecycles.
@@ -38,9 +38,11 @@ These decisions are intentionally stricter than the current implementation. Herm
 
 ## Runtime credential broker
 
-The bridge will request a credential bundle from a new hook-token-authenticated internal endpoint before starting a turn that needs connected integrations. The request includes the workspace identity established by the hook token and the selected roster agent ID. The backend derives the workspace from the token, verifies that the agent belongs to the current roster, loads only connected grants, and returns provider-specific runtime material.
+The bridge will request a credential bundle from a new hook-token-authenticated internal endpoint before constructing the agent. The backend derives the workspace from the token, verifies the selected agent belongs to the current roster, loads only connected grants for adapters this runtime supports, and returns provider-specific runtime material. Hermes may initialize several MCP servers before knowing which tool the agent will choose, so this can include several workspace grants on one turn.
 
-The bridge writes that material to a private temporary area or explicitly excluded profile-home paths. It does not write secrets to `config.yaml`, the durable `.env`, or ordinary workspace files. Hermes configuration references ephemeral environment names for remote MCP headers and stdio servers. CLI adapters receive only their required private files. The bridge removes the material after the turn and before changing profiles.
+The bridge writes that material to a private temporary area or explicitly excluded profile-home paths. It does not write secrets to `config.yaml`, the durable `.env`, or ordinary workspace files. Hermes configuration references ephemeral environment names for remote MCP headers and stdio servers. CLI adapters receive only their required private files. The bridge removes the material after the turn and before changing profiles; any warm MCP client that retains an access token must be closed or rebuilt on disconnect.
+
+The hook token is also available to the workspace's agent shell today. It authenticates the workspace, not a tamper-proof roster-agent identity. A supplied agent or run ID is an audit hint unless the backend can independently match it to a canonical run; Paperclip and mail turns do not all share the messaging run ledger. The broker must not claim that ephemeral delivery hides a token from the agent allowed to use it. The concrete security improvement is removing long-lived canonical grants from durable S3 profiles and preventing cross-workspace issuance.
 
 For OAuth-protected remote MCP servers, the first implementation uses a backend-refreshed access token in an `Authorization` header referenced through Hermes's supported environment interpolation. Hermes's native `auth: oauth` flow remains appropriate when a human independently authorizes one Hermes profile, but it is not used to fan a single Lightbulb workspace grant across six profiles.
 
@@ -58,7 +60,7 @@ The current `actor` designation is removed for workspace-shared grants. A token 
 
 ## Workspace and agent authorization
 
-The canonical grant remains workspace-owned. For this repair, every active roster agent may use connected workspace grants, matching current product behavior. The broker records the acting agent and run when it issues credential material so use remains attributable.
+The canonical grant remains workspace-owned. For this repair, every active roster agent may use connected workspace grants, matching current product behavior. The broker records workspace-level issuance and a claimed agent/run hint; it labels the hint as verified only when a backend-owned run record supports it.
 
 Per-agent grants are a later product feature, not implied by names such as Finance or by `GOG_ACCOUNT`. Adding them will require an explicit allowlist enforced by the broker. Account selectors remain routing defaults and are never described as access-control boundaries.
 
@@ -98,14 +100,13 @@ The repository gets one provider-independent contract harness plus the smallest 
 - Stop marking a provider connected when projection or adapter support is missing.
 - Hide Vercel and QuickBooks from new connections until their Hermes adapters pass verification.
 
-### 2. Run the AgentCore Identity decision spike
+### 2. Apply the AgentCore Identity decision gate
 
-- Use one dev-only bearer-token OAuth provider to prove consent, token retrieval, refresh, workspace binding, scheduled/background retrieval, disconnect, and deletion.
-- Confirm whether an existing Lightbulb refresh token can be imported without reconnecting.
-- Confirm a single workspace grant can be deleted without deleting the shared provider configuration or leaving AWS-held credential material behind.
-- Record the tested API behavior and quotas. If import or individual deletion is unsupported, keep Secrets Manager as the authority and use Identity only after AWS closes those lifecycle gaps.
+- Inspect the current AgentCore Identity API surface for grant import and individual deletion before provisioning any provider.
+- If the API supports the complete lifecycle, use one dev-only bearer-token OAuth provider to prove consent, token retrieval, refresh, workspace binding, scheduled/background retrieval, disconnect, and deletion.
+- If it does not, keep Secrets Manager as the authority and revisit Identity when AWS exposes a verifiable individual grant lifecycle.
 
-The spike happens before provider migrations so Lightbulb does not build two provider-specific refresh implementations. It does not block the fail-closed fixes and it does not make Identity the system of record before the complete lifecycle passes.
+The read-only gate happens before provider migrations. It does not block the fail-closed fixes or the broker and does not make Identity the system of record before the complete lifecycle passes. On 2026-09-20, the installed `boto3` AgentCore models exposed token retrieval and consent completion, but no individual grant deletion or existing refresh-token import operation. AWS documents `forceAuthentication=true` as clearing a refresh token while initiating another consent flow; it does not establish our complete disconnect and vendor-revocation contract. Therefore Identity is not the initial authority. [AWS token behavior](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/identity-authentication.html) · [AWS provider deletion](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/identity-delete-oauth-client.html)
 
 ### 3. Add the broker boundary
 
@@ -134,9 +135,9 @@ After a provider passes, delete its old credential objects from every S3 agent p
 
 After the first message establishes the brief, identify only the capabilities the selected agent needs. Ask an admin to authorize those capabilities, verify them through that agent, then resume the original work. Do not add a connect-everything wizard.
 
-### 7. Expand AgentCore Identity
+### 7. Revisit AgentCore Identity
 
-If the decision spike passed the complete lifecycle, use Identity as the authority for new grants from that provider behind the same runtime-facing broker interface. Expand provider by provider only when the adapter and lifecycle contract pass. If the spike failed, retain its evidence and do not add an Identity abstraction that has no production implementation.
+Once AWS supports and Lightbulb verifies individual grant deletion and an acceptable migration path, pilot one OAuth provider behind the same runtime-facing broker interface. Expand provider by provider only when the adapter and lifecycle contract pass. Until then, do not add an Identity abstraction with no production implementation.
 
 ## Google
 

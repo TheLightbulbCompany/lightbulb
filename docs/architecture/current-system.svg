@@ -9,8 +9,9 @@
 <path d="M595 515 V565"/>
 <path d="M595 645 V695"/>
 <path d="M365 215 H440"/>
-<path d="M365 345 H440"/>
-<path d="M365 475 H440"/>
+<path d="M440 215 H390 V345 H365" marker-start="url(#arrow)"/>
+<path d="M440 235 H405 V455 H365"/>
+<path d="M365 495 H390 V585 H440"/>
 <path d="M440 605 H365" marker-start="url(#arrow)"/>
 <path d="M750 345 H825"/>
 <path d="M750 605 H825"/>

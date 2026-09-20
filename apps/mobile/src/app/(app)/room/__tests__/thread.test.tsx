@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import { ApiError, type CanonicalRoomMessage, type LiveEvent, type RoomDetail } from "@lightbulb/shared";
+import { ApiError, type CanonicalRoomMessage, type LiveEvent, type MessagePage, type RoomDetail } from "@lightbulb/shared";
 import { AppState } from "react-native";
 
 // The real @lightbulb/shared room machine runs here, so a cold transform cache
@@ -14,6 +14,7 @@ const mockPush = jest.fn();
 // keyed off this), so a getRoom override in one test can't be served from
 // another test's cached "room-1" success. Reset in beforeEach.
 let mockRoomId = "room-1";
+let mockMessageId = "m1";
 jest.mock("expo-router", () => {
   // useFocusEffect is an EFFECT upstream; calling the callback during render
   // turns the screen's setFocused into a render-phase update React re-runs
@@ -30,7 +31,7 @@ jest.mock("expo-router", () => {
     },
     Stack: { Screen: () => null },
     useFocusEffect: (cb: () => void) => useEffect(cb, [cb]),
-    useLocalSearchParams: () => ({ roomId: mockRoomId, messageId: "m1" }),
+    useLocalSearchParams: () => ({ roomId: mockRoomId, messageId: mockMessageId }),
   };
 });
 jest.mock("@clerk/clerk-expo", () => ({
@@ -87,7 +88,7 @@ const mockLive = {
     // identical keys across the fast-firing tests in this file, so reusing
     // "room-1" would just replay ITS cached success and never call this mock).
     getRoom: jest.fn(async (roomId: string) => ({ ...mockRoom, roomId })),
-    listMessages: jest.fn(async (roomId: string) => ({
+    listMessages: jest.fn(async (roomId: string, _afterSeq?: number, _limit?: number, _options?: { beforeSeq?: number }): Promise<MessagePage> => ({
       messages: mockMessages.map((message) => ({ ...message, roomId })),
       nextAfterSeq: null,
     })),
@@ -135,6 +136,12 @@ describe("thread screen", () => {
     typingHandlers.clear();
     mockMessages = [...mockBase];
     mockRoomId = "room-1";
+    mockMessageId = "m1";
+    mockLive.messaging.listRooms.mockReset().mockImplementation(async () => ({ rooms: [mockRoom] }));
+    mockLive.messaging.getRoom.mockReset().mockImplementation(async (roomId: string) => ({ ...mockRoom, roomId }));
+    mockLive.messaging.listMessages.mockReset().mockImplementation(async (roomId: string) => ({
+      messages: mockMessages.map((message) => ({ ...message, roomId })), nextAfterSeq: null,
+    }));
   });
 
   it("pins the root at the top and shows only its replies below", async () => {
@@ -144,6 +151,86 @@ describe("thread screen", () => {
     expect(screen.getByText("mine")).toBeTruthy();
     expect(screen.getByText("2 replies")).toBeTruthy();
     expect(screen.queryByText("unrelated")).toBeNull();
+  });
+
+  it("loads an older thread root after the newest room page", async () => {
+    mockRoomId = "room-long";
+    const server = Array.from({ length: 201 }, (_, index) => mockMsg({
+      messageId: `m${index + 1}`, messageSeq: index + 1,
+      text: `message ${index + 1}`,
+      threadRootMessageId: index === 200 ? "m1" : null,
+    }));
+    mockLive.messaging.listRooms.mockResolvedValue({ rooms: [{ ...mockRoom, roomId: mockRoomId, lastMessageSeq: 201 }] });
+    mockLive.messaging.getRoom.mockResolvedValue({ ...mockRoom, roomId: mockRoomId, lastMessageSeq: 201 });
+    mockLive.messaging.listMessages.mockImplementation(async (_roomId, afterSeq = 0, limit = 100, options) => {
+      if (options?.beforeSeq !== undefined) {
+        const messages = server.filter((item) => item.messageSeq < options.beforeSeq!).slice(-limit);
+        return { messages: messages.map((item) => ({ ...item, roomId: mockRoomId })), nextAfterSeq: null, nextBeforeSeq: messages[0]?.messageSeq > 1 ? messages[0].messageSeq : null };
+      }
+      const messages = server.filter((item) => item.messageSeq > afterSeq).slice(0, limit);
+      return { messages: messages.map((item) => ({ ...item, roomId: mockRoomId })), nextAfterSeq: messages.length === limit ? messages.at(-1)!.messageSeq : null };
+    });
+    await render(<Thread />);
+    await waitFor(() => expect(screen.getByText("message 1")).toBeTruthy());
+    expect(screen.getByText("message 201")).toBeTruthy();
+    expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-long", 0, 100, expect.objectContaining({ beforeSeq: 202 }));
+    expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-long", 0, 100, expect.any(Object));
+  });
+
+  it("keeps a recent thread on the newest page", async () => {
+    mockRoomId = "room-recent";
+    const server = Array.from({ length: 201 }, (_, index) => mockMsg({
+      messageId: `m${index + 1}`, messageSeq: index + 1,
+      text: `message ${index + 1}`,
+      threadRootMessageId: index === 200 ? "m1" : null,
+    }));
+    // This route targets a root inside the newest page.
+    server[0] = { ...server[0], messageId: "old-root" };
+    server[149] = { ...server[149], messageId: "m1", threadRootMessageId: null };
+    mockLive.messaging.listRooms.mockResolvedValue({ rooms: [{ ...mockRoom, roomId: mockRoomId, lastMessageSeq: 201 }] });
+    mockLive.messaging.getRoom.mockResolvedValue({ ...mockRoom, roomId: mockRoomId, lastMessageSeq: 201 });
+    mockLive.messaging.listMessages.mockImplementation(async (_roomId, afterSeq = 0, limit = 100, options) => {
+      if (options?.beforeSeq !== undefined) {
+        const messages = server.filter((item) => item.messageSeq < options.beforeSeq!).slice(-limit);
+        return { messages: messages.map((item) => ({ ...item, roomId: mockRoomId })), nextAfterSeq: null, nextBeforeSeq: 102 };
+      }
+      return { messages: server.filter((item) => item.messageSeq > afterSeq).slice(0, limit).map((item) => ({ ...item, roomId: mockRoomId })), nextAfterSeq: null };
+    });
+    await render(<Thread />);
+    await waitFor(() => expect(screen.getByText("message 150")).toBeTruthy());
+    expect(screen.getByText("message 201")).toBeTruthy();
+    expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-recent", 0, 100, expect.objectContaining({ beforeSeq: 202 }));
+    expect(mockLive.messaging.listMessages.mock.calls.some(([, afterSeq, , options]) => afterSeq === 0 && options?.beforeSeq === undefined)).toBe(false);
+  });
+
+  it("waits for a changed room before requesting an older thread root", async () => {
+    const nextRoom = Array.from({ length: 201 }, (_, index) => mockMsg({
+      roomId: "room-next", messageId: index === 0 ? "old-root" : `m${index + 1}`,
+      messageSeq: index + 1, text: `message ${index + 1}`,
+      threadRootMessageId: index === 200 ? "old-root" : null,
+    }));
+    mockLive.messaging.getRoom.mockImplementation(async (roomId) => ({ ...mockRoom, roomId, lastMessageSeq: roomId === "room-next" ? 201 : 2 }));
+    mockLive.messaging.listMessages.mockImplementation(async (roomId, afterSeq = 0, limit = 100, options) => {
+      if (roomId !== "room-next") {
+        return options?.beforeSeq !== undefined
+          ? { messages: [mockBase[0]], nextAfterSeq: null, nextBeforeSeq: 1 }
+          : { messages: [], nextAfterSeq: null };
+      }
+      if (options?.beforeSeq !== undefined) {
+        const messages = nextRoom.filter((item) => item.messageSeq < options.beforeSeq!).slice(-limit);
+        return { messages, nextAfterSeq: null, nextBeforeSeq: messages[0]?.messageSeq > 1 ? messages[0].messageSeq : null };
+      }
+      const messages = nextRoom.filter((item) => item.messageSeq > afterSeq).slice(0, limit);
+      return { messages, nextAfterSeq: messages.length === limit ? messages.at(-1)!.messageSeq : null };
+    });
+    const view = await render(<Thread />);
+    await waitFor(() => expect(screen.getByText("first")).toBeTruthy());
+    mockRoomId = "room-next";
+    mockMessageId = "old-root";
+    view.rerender(<Thread />);
+    await waitFor(() => expect(screen.getByText("message 1")).toBeTruthy());
+    expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-next", 0, 100, expect.objectContaining({ beforeSeq: 202 }));
+    expect(mockLive.messaging.listMessages.mock.calls.some(([roomId, afterSeq, , options]) => roomId === "room-next" && afterSeq === 0 && options?.beforeSeq === undefined)).toBe(true);
   });
 
   it("sends a reply carrying both thread ids", async () => {

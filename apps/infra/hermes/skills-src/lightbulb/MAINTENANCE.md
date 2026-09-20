@@ -29,7 +29,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  the image's gog binary (gmail settings watch = Pub/Sub)
   - Browser live view ....... references/surfaces.md
                               <- apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx;
-                                 apps/backend/core/services/browser_sessions.py; apps/infra/hermes/Dockerfile (agent-browser pin).
+                                 apps/backend/core/services/browser_sessions.py; apps/backend/core/services/browser_control.py; apps/infra/hermes/Dockerfile (agent-browser pin).
   - Control Panel tabs ...... references/surfaces.md
   - Shared local sessions ... references/platform-primitives.md + references/surfaces.md
                               <- apps/infra/hermes/bridge/ + apps/infra/hermes/plugins/lightbulb/__init__.py

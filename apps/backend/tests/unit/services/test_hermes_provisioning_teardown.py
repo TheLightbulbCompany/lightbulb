@@ -19,7 +19,12 @@ ROW = {
 }
 
 
-def test_delete_profile_prefix_objects_paginates_both_owner_scoped_prefixes(monkeypatch):
+@pytest.fixture(autouse=True)
+def no_browser_state(monkeypatch):
+    monkeypatch.setattr("core.repositories.container_repo.get_browser_state", AsyncMock(return_value=None))
+
+
+def test_delete_profile_prefix_objects_paginates_all_owner_scoped_prefixes(monkeypatch):
     class Paginator:
         def __init__(self):
             self.prefixes = []
@@ -36,6 +41,8 @@ def test_delete_profile_prefix_objects_paginates_both_owner_scoped_prefixes(monk
                 )
             if Prefix == "marketplace-installs/org_a/":
                 return iter([{"Contents": [{"Key": "marketplace-installs/org_a/agent_a.json"}]}])
+            if Prefix == "browser-state/org_a/":
+                return iter([{"Contents": [{"Key": "browser-state/org_a/checkpoint.json"}]}])
             raise AssertionError(f"unexpected prefix: {Prefix}")
 
     class Client:
@@ -56,11 +63,12 @@ def test_delete_profile_prefix_objects_paginates_both_owner_scoped_prefixes(monk
 
     hermes_provisioning._delete_profile_prefix_objects("org_a")
 
-    assert client.paginator.prefixes == ["org_a/hermes/", "marketplace-installs/org_a/"]
+    assert client.paginator.prefixes == ["org_a/hermes/", "marketplace-installs/org_a/", "browser-state/org_a/"]
     assert client.deleted == [
         ("test-bucket", "org_a/hermes/agent_a/config.yaml"),
         ("test-bucket", "org_a/hermes/auth.json"),
         ("test-bucket", "marketplace-installs/org_a/agent_a.json"),
+        ("test-bucket", "browser-state/org_a/checkpoint.json"),
     ]
     assert all("org_b" not in key for _, key in client.deleted)
 

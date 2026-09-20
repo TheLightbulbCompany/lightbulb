@@ -16,7 +16,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from bridge import API, HOOK_TOKEN, MODEL, OWNER, now
-from bridge import sync
+from bridge import sync, browser_control
 from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
 log = logging.getLogger("bridge")
@@ -1336,17 +1336,23 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
         # have installed against the stale value. See normalize_profile_backends's
         # docstring.
         sync.normalize_profile_backends(agent_id)
+        browser_lease = browser_control.begin_turn(
+            str(run_id or ""), agent_id
+        )
         with _hermes_home_scope(agent_id), _secret_scope(agent_id), _terminal_scope(agent_id):
-            agent = _construct_agent(agent_id, body, frames, session_key)
-            attach_agent(run_id, agent)
-            result = agent.run_conversation(
-                user_message=_message_content(
-                    _turn_user_message(body),
-                    images.get((body.get("message") or {}).get("messageId"), []),
-                ),
-                system_message=system_prompt(body, agent_id, media=current_media),
-                conversation_history=_history(body, agent_id, images) or None,
-            ) or {}
+            try:
+                agent = _construct_agent(agent_id, body, frames, session_key)
+                attach_agent(run_id, agent)
+                result = agent.run_conversation(
+                    user_message=_message_content(
+                        _turn_user_message(body),
+                        images.get((body.get("message") or {}).get("messageId"), []),
+                    ),
+                    system_message=system_prompt(body, agent_id, media=current_media),
+                    conversation_history=_history(body, agent_id, images) or None,
+                ) or {}
+            finally:
+                browser_control.release(browser_lease)
     usage = {**ZERO_USAGE,
              # the model this agent actually ran on (profile_model), not the runtime-wide
              # default -- usage_service prices per model ref, so the CEO's premium tier would
@@ -1392,20 +1398,24 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     # visible to Hermes's child-env filter, `pin_profile_defaults` lists them in
     # Hermes's per-session env passthrough, and Hermes resolves each value back out of this
     # same scope.
+    browser_lease = browser_control.begin_turn(str(run_id), agent_id)
     with _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id):
-        agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
-        attach_agent(run_id, agent)
-        if paperclip_run_aborted(run_id):
-            return "cancelled", None, "", dict(ZERO_USAGE)
         try:
-            result = agent.run_conversation(
-                user_message=request["input"],
-                system_message=request["instructions"],
-            ) or {}
-        except Exception:
+            agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
+            attach_agent(run_id, agent)
             if paperclip_run_aborted(run_id):
-                return "cancelled", None, "", _agent_usage(agent)
-            raise
+                return "cancelled", None, "", dict(ZERO_USAGE)
+            try:
+                result = agent.run_conversation(
+                    user_message=request["input"],
+                    system_message=request["instructions"],
+                ) or {}
+            except Exception:
+                if paperclip_run_aborted(run_id):
+                    return "cancelled", None, "", _agent_usage(agent)
+                raise
+        finally:
+            browser_control.release(browser_lease)
     usage = _agent_usage(agent)
     if paperclip_run_aborted(run_id):
         return "cancelled", None, "", usage

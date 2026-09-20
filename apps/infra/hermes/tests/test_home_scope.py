@@ -5,9 +5,45 @@ prompt_builder) resolve it while the turn is running. Hermes's own gateway holds
 "per profile activity, not per turn" (gateway/AGENTS.md:157-168)."""
 import sys
 import types
+from contextlib import contextmanager, nullcontext
 
 from bridge import turn
 from tests import factories as f
+
+
+class _BrowserAgent:
+    model = "model"
+    session_input_tokens = session_output_tokens = 0
+    session_cache_read_tokens = session_cache_write_tokens = 0
+
+    def run_conversation(self, **_kwargs):
+        return {"api_calls": 1, "final_response": "ok"}
+
+
+def _assert_browser_release_uses_profile_scope(monkeypatch, run):
+    active = {"agent": None}
+
+    @contextmanager
+    def home_scope(agent_id):
+        active["agent"] = agent_id
+        try:
+            yield
+        finally:
+            active["agent"] = None
+
+    monkeypatch.setattr(turn, "_hermes_home_scope", home_scope)
+    monkeypatch.setattr(turn, "_secret_scope", lambda *_a, **_k: nullcontext())
+    monkeypatch.setattr(turn, "_terminal_scope", lambda *_a, **_k: nullcontext())
+    monkeypatch.setattr(turn.sync, "ensure_profile", lambda _agent: None)
+    monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: None)
+    monkeypatch.setattr(turn, "_construct_agent", lambda *_a, **_k: _BrowserAgent())
+    monkeypatch.setattr(turn.browser_control, "begin_turn", lambda *_a: object())
+
+    def release(_lease):
+        assert active["agent"] == "ceo", "browser release ran outside the agent profile scope"
+
+    monkeypatch.setattr(turn.browser_control, "release", release)
+    run()
 
 
 def test_the_home_override_stays_active_through_run_conversation_and_is_reset_after(monkeypatch):
@@ -58,6 +94,24 @@ def test_the_scope_is_a_no_op_when_hermes_constants_is_unimportable(monkeypatch)
                         })())
     outcome, kind, reply, usage = turn._run_hermes("ceo", f.ingress(), None)
     assert (outcome, kind, reply) == ("completed", None, "ok")
+
+
+def test_room_browser_release_runs_inside_the_agent_profile_scope(monkeypatch):
+    _assert_browser_release_uses_profile_scope(
+        monkeypatch, lambda: turn._run_hermes("ceo", f.ingress(), None)
+    )
+
+
+def test_native_browser_release_runs_inside_the_agent_profile_scope(monkeypatch):
+    monkeypatch.setattr(turn, "paperclip_run_aborted", lambda _run_id: False)
+    identity = {
+        "agentId": "ceo", "runId": "run-1", "sessionId": "session-1",
+        "paperclipApiUrl": "http://paperclip.internal", "companyId": "company-1",
+    }
+    _assert_browser_release_uses_profile_scope(
+        monkeypatch,
+        lambda: turn._run_native_paperclip(identity, {"input": "go", "instructions": "do"}),
+    )
 
 
 def test_turn_ensures_the_profile_before_pinning_defaults(monkeypatch):

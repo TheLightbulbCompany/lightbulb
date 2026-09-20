@@ -383,12 +383,12 @@ def _delete_profile_prefix_objects(owner_id: str) -> None:
     from core.services.hermes_profiles import root_home_prefix
 
     client = boto3.client("s3")
-    prefix = root_home_prefix(owner_id)
     paginator = client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=settings.OWNER_STATE_BUCKET, Prefix=prefix):
-        keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
-        if keys:
-            client.delete_objects(Bucket=settings.OWNER_STATE_BUCKET, Delete={"Objects": keys})
+    for prefix in (root_home_prefix(owner_id), f"marketplace-installs/{owner_id}/"):
+        for page in paginator.paginate(Bucket=settings.OWNER_STATE_BUCKET, Prefix=prefix):
+            keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+            if keys:
+                client.delete_objects(Bucket=settings.OWNER_STATE_BUCKET, Delete={"Objects": keys})
 
 
 async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_profiles: bool) -> None:

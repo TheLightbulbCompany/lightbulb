@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { buildTimeline } from "@lightbulb/shared";
@@ -116,13 +116,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
   return <div className="room-timeline">
     <div ref={region} role="region" aria-label="Messages" className="room-history" tabIndex={0} onScroll={onScroll}>
       {leading}
-      {items.length === 0 ? empty : items.map((item) => {
-        if (item.kind === "date") return <div key={item.key} role="separator" aria-label={item.label} className="room-date-divider"><span>{item.label}</span></div>;
-        if (item.kind === "new") return <div key={item.key} role="separator" aria-label="New messages" className="room-new-line"><span>New</span></div>;
-        return <div key={item.key} data-message-id={item.message.messageId} data-highlight={highlighted === item.message.messageId ? "true" : undefined} tabIndex={-1} className="room-timeline-item">
-          {renderMessage(item.message, item.collapsed)}
-        </div>;
-      })}
+      {items.length === 0 ? empty : <TimelineMessages items={items} highlighted={highlighted} renderMessage={renderMessage} />}
       <div ref={live} className="room-live-content">{children}</div>
     </div>
     {unseen > 0 && <Button type="button" variant="outline" className="room-new-pill" onClick={scrollToBottom} aria-label={`${unseen} new ${unseen === 1 ? "message" : "messages"}`}>
@@ -130,3 +124,19 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
     </Button>}
   </div>;
 }
+
+// Drafts and live runs change beside history. Keep those renders out of the
+// canonical rows; normal shallow comparison still honors new action callbacks.
+const TimelineMessages = memo(function TimelineMessages({ items, highlighted, renderMessage }: {
+  items: ReturnType<typeof buildTimeline>;
+  highlighted: string | null;
+  renderMessage: RoomTimelineProps["renderMessage"];
+}) {
+  return items.map((item) => {
+    if (item.kind === "date") return <div key={item.key} role="separator" aria-label={item.label} className="room-date-divider"><span>{item.label}</span></div>;
+    if (item.kind === "new") return <div key={item.key} role="separator" aria-label="New messages" className="room-new-line"><span>New</span></div>;
+    return <div key={item.key} data-message-id={item.message.messageId} data-highlight={highlighted === item.message.messageId ? "true" : undefined} tabIndex={-1} className="room-timeline-item">
+      {renderMessage(item.message, item.collapsed)}
+    </div>;
+  });
+});

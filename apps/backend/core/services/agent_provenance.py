@@ -7,10 +7,23 @@ derive it only from persisted seed IDs or the marketplace deployment sidecar.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
 from typing import Any, Collection, Literal, TypedDict
+
+from core.config import settings
+from core.dynamodb import run_in_thread
+
+logger = logging.getLogger(__name__)
 
 
 AgentOrigin = Literal["Seed", "Starter", "Marketplace", "Custom"]
+
+
+def marketplace_provenance_key(owner_id: str, agent_id: str) -> str:
+    return f"marketplace-installs/{owner_id}/{agent_id}.json"
 
 
 class MarketplaceProvenance(TypedDict):
@@ -48,6 +61,71 @@ def marketplace_provenance(sidecar: dict[str, Any] | None) -> MarketplaceProvena
         "version": version,
         "seller": seller,
     }
+
+
+def _read_sidecar(owner_id: str, agent_id: str) -> dict[str, Any] | None:
+    import botocore.exceptions
+    import boto3
+
+    if not settings.OWNER_STATE_BUCKET:
+        return None
+    try:
+        body = (
+            boto3.client("s3")
+            .get_object(
+                Bucket=settings.OWNER_STATE_BUCKET,
+                Key=marketplace_provenance_key(owner_id, agent_id),
+            )["Body"]
+            .read()
+        )
+    except botocore.exceptions.ClientError as exc:
+        if (exc.response or {}).get("Error", {}).get("Code") in ("NoSuchKey", "404", "NotFound"):
+            return None
+        raise
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        logger.warning("ignoring malformed marketplace provenance marker for agent=%s", agent_id)
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+async def _load_agent_sidecars(owner_id: str, agent_ids: list[str]) -> dict[str, dict]:
+    loaded = await asyncio.gather(*(run_in_thread(_read_sidecar, owner_id, agent_id) for agent_id in agent_ids))
+    return {
+        agent_id: sidecar
+        for agent_id, sidecar in zip(agent_ids, loaded)
+        if isinstance(sidecar, dict)
+        and sidecar.get("agent_id") == agent_id
+        and marketplace_provenance(sidecar) is not None
+    }
+
+
+async def write_marketplace_provenance(
+    *, owner_id: str, agent_id: str, listing_id: str, slug: str, version: int, seller_id: str
+) -> None:
+    if not settings.OWNER_STATE_BUCKET:
+        raise RuntimeError("OWNER_STATE_BUCKET is not configured; refusing to commit marketplace provenance")
+    marker = {
+        "listing_id": listing_id,
+        "template_slug": slug,
+        "template_version": int(version),
+        "seller_id": seller_id,
+        "agent_id": agent_id,
+        "committed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    def _write() -> None:
+        import boto3
+
+        boto3.client("s3").put_object(
+            Bucket=settings.OWNER_STATE_BUCKET,
+            Key=marketplace_provenance_key(owner_id, agent_id),
+            Body=json.dumps(marker, separators=(",", ":")).encode(),
+            ContentType="application/json",
+        )
+
+    await run_in_thread(_write)
 
 
 def stamp_agent_provenance(

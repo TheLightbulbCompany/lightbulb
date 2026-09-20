@@ -39,6 +39,7 @@ from core.services import (
     seller_profile,
 )
 from core.services.agent_routine_provisioning import create_agent_routines
+from core.services.agent_provenance import marketplace_provenance, write_marketplace_provenance
 from core.services.inbound_triggers import automation_requirement
 from core.services.messaging import ApiProblem
 from core.services.hermes_provisioning import HermesProfileError
@@ -541,14 +542,30 @@ async def my_installed_templates(
 ):
     """Templates the caller has already deployed.
 
-    Used by the chat sidebar gallery to filter out rows the user has already hired. Always
-    EMPTY: the install record was the ``.template`` sidecar on the buyer's EFS workspace and
-    the profile transport writes no equivalent yet, so every listing renders as deployable.
-    KNOWN GAP (already empty for a migrated workspace before this deletion) -- see
-    ``catalog_service``'s module docstring.
+    Records identify completed installs for the live roster. They are
+    backend-authored markers outside the runtime-writable profile prefixes; seller metadata
+    and purchase rows are not treated as install evidence.
     """
-    resolve_owner_id(auth)
-    return {"installed": []}
+    owner_id = resolve_owner_id(auth)
+    from core.services.agent_provenance import _load_agent_sidecars
+    from core.services.messaging import load_agent_roster
+
+    roster = await load_agent_roster(owner_id)
+    agent_ids = [a["id"] for a in roster if isinstance(a, dict) and a.get("id")]
+    sidecars = await _load_agent_sidecars(owner_id, agent_ids)
+    installed = []
+    for agent_id, sidecar in sidecars.items():
+        provenance = marketplace_provenance(sidecar)
+        if provenance:
+            installed.append(
+                {
+                    "agent_id": agent_id,
+                    "template_slug": provenance["slug"],
+                    "template_version": provenance["version"],
+                    "listing_id": provenance["listingId"],
+                }
+            )
+    return {"installed": installed}
 
 
 @router.get("/me/agents-summary")
@@ -822,38 +839,10 @@ async def deploy_listing(
     catalog = get_catalog_service()
     owner_id = resolve_owner_id(auth)
 
-    # KNOWN GAP -- the install RECORD is gone, not the idempotency. The ``already_installed``
-    # branch that used to short-circuit here read a ``.template`` sidecar on the buyer's EFS
-    # workspace, cross-checked against ``openclaw.json``'s ``agents.list``; the profile transport
-    # writes no equivalent, so the branch could only ever resolve to "not installed" and was
-    # deleted rather than left as dead code.
-    #
-    # NO SECOND AGENT IS MINTED by a retry. The Paperclip create below carries a STABLE
-    # idempotency key derived from the intent alone (listingId + reportsTo + version), so a
-    # buyer who clicks Hire again after a lost response resolves to the SAME Paperclip agent,
-    # and the profile write is an overwrite of that agent's own prefix. What a retry does cost
-    # is a second ``catalog_agent_deployed`` funnel event and a second artifact fetch. The
-    # overlapping-deploy fence below (``try_claim_owner_deploy``) is a real lock and is
-    # untouched.
-    #
-    # What IS lost is provenance: ``GET /me/installed-templates`` and the Teams
-    # marketplace-origin sidecar both read that record, so an installed listing renders as
-    # deployable in the sidebar gallery and a hired agent shows no "from the marketplace"
-    # badge. Already true for every post-migration deploy before this deletion.
-
-    # Exclusive claim for the whole deploy, OWNER-WIDE (not per-listing). The
-    # sidecar read above is a READ, not a lock: two OVERLAPPING deploys can both
-    # see "not installed" (the second starts before the first has extracted
-    # anything) and both mint an agent — that grew "Pulse 2" for same-listing
-    # retries,
-    # and a per-listing claim only ever fenced that case. Three DIFFERENT
-    # listings hired within seconds still wrote three different map keys and
-    # all ran concurrently against the one OpenClaw container (two came back
-    # 500). Serializing per owner costs nothing — the container already
-    # queues config mutations internally — so the claim now fences one deploy
-    # at a time per owner, any listing. Taken BEFORE the S3 artifact fetch (a
-    # loser shouldn't pay for the GET) and held across the Paperclip mint, so
-    # a mint failure can't leak the claim.
+    # Provenance records describe completed installs; they are not a lock.
+    # Serialize installs owner-wide before fetching artifacts or minting agents.
+    # The stable Paperclip intent key reuses the same agent on a lost-response
+    # retry. The completed-install marker is written after routines succeed.
     claim_token, held_listing_id = await container_repo.try_claim_owner_deploy(
         owner_id, listing_id=listing["listing_id"]
     )
@@ -1006,6 +995,14 @@ async def deploy_listing(
                 new_agent_id=new_agent_id,
                 manifest_routines=manifest.get("routines") or [],
             )
+            await write_marketplace_provenance(
+                owner_id=owner_id,
+                agent_id=new_agent_id,
+                listing_id=listing["listing_id"],
+                slug=listing.get("slug") or "",
+                version=int(listing.get("version", 1) or 1),
+                seller_id=listing.get("seller_id") or "",
+            )
         except Exception as exc:
             # Catalog or container-resolution failed after Paperclip create
             # succeeded — roll back the orphan Paperclip agent. Idempotent
@@ -1018,8 +1015,8 @@ async def deploy_listing(
                 new_agent_id,
             )
             # The orphan to remove is the Paperclip row: a failed install's S3 profile objects
-            # are overwritten by the next attempt, and no install record is keyed on them (see
-            # catalog_service's module docstring). Best-effort; the original exception is what
+            # are overwritten by the next attempt; provenance reads ignore deleted agents.
+            # Best-effort; the original exception is what
             # the caller needs to see.
             #
             # EXCEPT on a timeout, where the row is what makes the half-install disposable. A

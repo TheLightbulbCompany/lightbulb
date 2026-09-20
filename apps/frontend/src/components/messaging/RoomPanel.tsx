@@ -94,6 +94,8 @@ export interface RoomPanelProps {
   resourceSource?: RoomResourceSource;
 }
 
+const NO_PINNED_MESSAGES: readonly string[] = [];
+
 const DEFAULT_QUICK_REACTIONS = ["👍", "✅", "🎉", "👀"];
 
 const workLabel: Record<WorkState, string> = {
@@ -241,7 +243,7 @@ function RoomContent({
   onAddMember,
   onRenameRoom,
   onRemoveMember,
-  pinnedMessageIds = [],
+  pinnedMessageIds = NO_PINNED_MESSAGES,
   onSetPin,
   onMarkUnreadFrom,
   onSetPrefs,
@@ -327,7 +329,20 @@ function RoomContent({
   const isNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
-  const mainMessages = messages.filter((message) => message.threadRootMessageId === null);
+  const mainMessages = useMemo(() => messages.filter((message) => message.threadRootMessageId === null), [messages]);
+  // One pass, as in the mobile timeline, instead of a full history scan per row.
+  const repliesByRoot = useMemo(() => {
+    const replies = new Map<string, { count: number; latest: RoomMessage }>();
+    for (const message of messages) {
+      if (!message.threadRootMessageId) continue;
+      const previous = replies.get(message.threadRootMessageId);
+      replies.set(message.threadRootMessageId, {
+        count: (previous?.count ?? 0) + 1,
+        latest: previous && previous.latest.messageSeq >= message.messageSeq ? previous.latest : message,
+      });
+    }
+    return replies;
+  }, [messages]);
   const newLineSeq = readSeqAtOpen ?? null;
   const ownSeqs = mainMessages.filter((message) => message.author.kind === "human" && message.author.id === currentUserId).map((message) => message.messageSeq);
   const ownLastSentSeq = ownSeqs.length ? Math.max(...ownSeqs) : null;
@@ -435,23 +450,34 @@ function RoomContent({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [closeOverlay, showDetail, showResources]);
 
-  function openDetail(kind: "thread" | "resources", targetId: string, button: HTMLButtonElement, fromThread = false) {
+  const openDetail = useCallback((kind: "thread" | "resources", targetId: string, button: HTMLButtonElement, fromThread = false) => {
     if (!fromThread) trigger.current = button;
     onSelectThread?.(kind === "thread" ? targetId : null);
     setSelection({ kind, id: targetId });
-  }
+  }, [onSelectThread]);
 
-  function renderMessage(message: RoomMessage, inThread = false, collapsed = false) {
+  const toggleReaction = useCallback(async (message: RoomMessage, emoji: string) => {
+    if (!onSetReaction || !actionable || reactionPending !== null) return;
+    setReactionPending(message.messageId);
+    setReactionError(null);
+    try { await onSetReaction(message.messageId, emoji, !message.reactions?.[emoji]?.includes(currentUserId)); }
+    catch { setReactionError(message.messageId); }
+    finally {
+      setReactionPending(null);
+      const recent = readRecentEmoji();
+      setQuickReactions(recent.length ? recent.slice(0, 4) : DEFAULT_QUICK_REACTIONS);
+    }
+  }, [onSetReaction, actionable, reactionPending, currentUserId]);
+
+  const renderMessage = useCallback((message: RoomMessage, inThread = false, collapsed = false) => {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
-    const replies = inThread ? [] : messages.filter((candidate) => candidate.threadRootMessageId === message.messageId);
-    const lastReply = replies.reduce<RoomMessage | undefined>((latest, candidate) =>
-      !latest || candidate.messageSeq > latest.messageSeq ? candidate : latest, undefined);
+    const replies = inThread ? undefined : repliesByRoot.get(message.messageId);
     return <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
       message={message} text={linkifyMentions(message.text, message.mentions, participants)} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
       startEditing={!inThread && editTarget === message.messageId}
       onEditingClosed={() => setEditTarget((current) => current === message.messageId ? null : current)}
-      replyCount={replies.length} lastReplyAt={lastReply?.createdAt}
+      replyCount={replies?.count ?? 0} lastReplyAt={replies?.latest.createdAt}
       highlighted={inThread && searchTarget?.messageId === message.messageId} mentionsViewer={mentionsMe} markdown={roomMarkdown} urlTransform={roomUrlTransform}
       quickReactions={quickReactions} reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
@@ -484,19 +510,12 @@ function RoomContent({
           }}><Link aria-hidden="true" /></Button>
         {copyError === message.messageId && <p role="alert" className="text-sm text-err">Could not copy the link.</p>}
       </> : undefined} />;
-  }
-  async function toggleReaction(message: RoomMessage, emoji: string) {
-    if (!onSetReaction || !actionable || reactionPending !== null) return;
-    setReactionPending(message.messageId);
-    setReactionError(null);
-    try { await onSetReaction(message.messageId, emoji, !message.reactions?.[emoji]?.includes(currentUserId)); }
-    catch { setReactionError(message.messageId); }
-    finally {
-      setReactionPending(null);
-      const recent = readRecentEmoji();
-      setQuickReactions(recent.length ? recent.slice(0, 4) : DEFAULT_QUICK_REACTIONS);
-    }
-  }
+  }, [participants, currentUserId, repliesByRoot, id, actionable, editTarget, searchTarget,
+    quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail,
+    onSelectParticipant, onUpdateMessage, onDownloadAttachment, onSetPin, onMarkUnreadFrom,
+    messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId]);
+  const renderMainMessage = useCallback((message: RoomMessage, collapsed: boolean) =>
+    renderMessage(message, false, collapsed), [renderMessage]);
 
   function renderRun(run: RoomRunView) {
     const agent = participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId);
@@ -585,7 +604,7 @@ function RoomContent({
         <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
           targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
-          renderMessage={(message, collapsed) => renderMessage(message, false, collapsed)}
+          renderMessage={renderMainMessage}
           leading={historyComplete ? <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} /> : null}
           empty={null}>
           {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>

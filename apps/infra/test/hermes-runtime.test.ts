@@ -242,8 +242,11 @@ describe("hermes runtime wiring", () => {
     const profiles = bySid("HermesProfilesRW");
     expect(profiles).toBeDefined();
     expect(flatten(profiles!.Action)).toEqual(expect.arrayContaining(["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]));
-    // Scoped to the hermes/ sub-prefix only: the backend must stay out of the litestream replicas.
-    expect(flatten(profiles!.Resource)).toEqual(["arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/hermes/*"]);
+    // Profiles plus backend-owned install records; still no access to the old replicas.
+    expect(flatten(profiles!.Resource)).toEqual([
+      "arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/hermes/*",
+      "arn:aws:s3:::lightbulb-dev-openclaw-replicas/marketplace-installs/*",
+    ]);
   });
 
   it("the owner boundary permits AgentCore Browser use, and the base policy grants none", () => {

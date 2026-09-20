@@ -1,3 +1,9 @@
+import json
+import sys
+from types import SimpleNamespace
+import pytest
+
+from core.services import agent_provenance
 from core.services.agent_provenance import marketplace_provenance, stamp_agent_provenance
 
 
@@ -81,3 +87,114 @@ def test_starter_origin_wins_over_marketplace_without_seed_protection():
 
     assert starter == {"id": "agent-ceo", "seeded": False, "origin": "Starter"}
     assert legacy_seed == {"id": "agent-ceo", "seeded": True, "origin": "Seed"}
+
+
+@pytest.mark.asyncio
+async def test_load_sidecars_reads_only_valid_backend_markers(monkeypatch):
+    markers = {
+        "good": {"agent_id": "good", "listing_id": "l1", "template_slug": "x", "template_version": 1, "seller_id": "s"},
+        "wrong": {
+            "agent_id": "other",
+            "listing_id": "l2",
+            "template_slug": "y",
+            "template_version": 1,
+            "seller_id": "s",
+        },
+        "bad": {"agent_id": "bad", "listing_id": "l3"},
+    }
+    monkeypatch.setattr(agent_provenance, "_read_sidecar", lambda _owner, agent: markers.get(agent))
+
+    result = await agent_provenance._load_agent_sidecars("owner", ["good", "wrong", "bad"])
+
+    assert set(result) == {"good"}
+    assert marketplace_provenance(result["good"])["listingId"] == "l1"
+
+
+@pytest.mark.asyncio
+async def test_write_marker_serializes_trusted_identity(monkeypatch):
+    monkeypatch.setattr(agent_provenance.settings, "OWNER_STATE_BUCKET", "bucket")
+    captured = {}
+
+    class S3:
+        def put_object(self, **kwargs):
+            captured.update(kwargs)
+
+    async def run(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(agent_provenance, "run_in_thread", run)
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda _name: S3()))
+
+    await agent_provenance.write_marketplace_provenance(
+        owner_id="owner", agent_id="agent", listing_id="listing", slug="forge", version=3, seller_id="seller"
+    )
+
+    assert captured["Bucket"] == "bucket"
+    assert captured["Key"] == "marketplace-installs/owner/agent.json"
+    marker = json.loads(captured["Body"].decode())
+    assert marker["agent_id"] == "agent"
+    assert marker["listing_id"] == "listing"
+    assert marker["template_version"] == 3
+
+
+@pytest.mark.asyncio
+async def test_write_marker_rejects_missing_bucket(monkeypatch):
+    monkeypatch.setattr(agent_provenance.settings, "OWNER_STATE_BUCKET", "")
+
+    with pytest.raises(RuntimeError, match="OWNER_STATE_BUCKET"):
+        await agent_provenance.write_marketplace_provenance(
+            owner_id="owner", agent_id="agent", listing_id="listing", slug="forge", version=1, seller_id="seller"
+        )
+
+
+@pytest.mark.asyncio
+async def test_installed_endpoint_uses_only_valid_markers_for_live_roster(monkeypatch):
+    from unittest.mock import AsyncMock
+    from core.auth import AuthContext
+    from routers.marketplace_listings import my_installed_templates
+
+    def marker(agent_id):
+        return {
+            "agent_id": agent_id,
+            "listing_id": "listing",
+            "template_slug": "pulse",
+            "template_version": 2,
+            "seller_id": "seller",
+        }
+
+    markers = {
+        "live": marker("live"),
+        "wrong": marker("different"),
+        "partial": {"agent_id": "partial"},
+        "deleted": marker("deleted"),
+    }
+    reads = []
+
+    def read(owner_id, agent_id):
+        assert owner_id == "org_test"
+        reads.append(agent_id)
+        return markers.get(agent_id)
+
+    monkeypatch.setattr(agent_provenance, "_read_sidecar", read)
+    monkeypatch.setattr(
+        "core.services.messaging.load_agent_roster",
+        AsyncMock(return_value=[{"id": agent} for agent in ["live", "wrong", "partial"]]),
+    )
+
+    result = await my_installed_templates(AuthContext(user_id="human", org_id="org_test", org_role="org:admin"))
+    assert result == {
+        "installed": [{"agent_id": "live", "template_slug": "pulse", "template_version": 2, "listing_id": "listing"}]
+    }
+    assert "deleted" not in reads
+
+
+def test_runtime_owner_policy_cannot_write_backend_install_marker():
+    from fnmatch import fnmatchcase
+    from core.billing.bedrock_aip import build_owner_litestream_s3_policy
+
+    bucket = "lightbulb-dev-openclaw-replicas"
+    policy = build_owner_litestream_s3_policy("org_test", bucket)
+    marker = f"arn:aws:s3:::{bucket}/{agent_provenance.marketplace_provenance_key('org_test', 'agent')}"
+    writable = [s["Resource"] for s in policy["Statement"] if "s3:PutObject" in s["Action"]]
+    assert writable
+    assert not any(fnmatchcase(marker, resource) for resource in writable)

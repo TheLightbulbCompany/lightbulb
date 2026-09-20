@@ -174,11 +174,9 @@ describe.each(["dev", "prod"] as const)(
         },
       });
       const json = JSON.stringify(service.toJSON());
-      // Wildcard prefix during the rename: one entry grants every table
-      // under this env's namespace, including both isol8-{env}-oauth-state
-      // and lightbulb-{env}-oauth-state, so the role keeps working across
-      // the reader flip. Narrows at step D.
-      expect(json).toContain(`:table/*-${environment}-*`);
+      expect(json).toContain(`:table/lightbulb-${environment}-*`);
+      expect(json).toContain(`:table/lightbulb-${environment}-*/index/*`);
+      expect(json).not.toContain(`:table/*-${environment}-*`);
     });
 
     test("service stack no longer imports either credential-table ARN", () => {

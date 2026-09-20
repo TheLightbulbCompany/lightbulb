@@ -98,6 +98,18 @@ const SERVICE_TEMPLATE_DEV = buildServiceStack("dev");
 describe("ServiceStack — clean handoff / rolling deploy", () => {
   const template = SERVICE_TEMPLATE_DEV;
 
+  test("backend can manage install metadata outside runtime owner prefixes", () => {
+    const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap(
+      (type) => Object.values(template.findResources(type)).flatMap(
+        (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],
+      ),
+    );
+    const grant = statements.find((statement: any) => statement.Sid === "HermesProfilesRW");
+    expect(grant.Effect).toBe("Allow");
+    expect(grant.Action).toEqual(expect.arrayContaining(["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]));
+    expect(grant.Resource).toContain("arn:aws:s3:::lightbulb-dev-openclaw-replicas/marketplace-installs/*");
+  });
+
   test("keeps the AgentCore runtime's VPC placement wired to the backend", () => {
     // ECS_SUBNETS + ECS_SECURITY_GROUP_ID are ECS-era NAMES but a LIVE Hermes
     // dependency: hermes_provisioning.build_runtime_request_for_owner reads both
@@ -319,13 +331,16 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
   });
 
   test("backend role's wildcard table statement admits the launch tables without a new grant", () => {
-    // allTableArns(env) → table/*-{env}-* — any table under the prefix is covered.
+    // allTableArns(env) → table/lightbulb-{env}-* plus its indexes.
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
             Action: Match.arrayWith(["dynamodb:PutItem", "dynamodb:Query"]),
-            Resource: Match.arrayWith([Match.stringLikeRegexp("table/\\*-dev-\\*$")]),
+            Resource: Match.arrayWith([
+              Match.stringLikeRegexp("table/lightbulb-dev-\\*$"),
+              Match.stringLikeRegexp("table/lightbulb-dev-\\*/index/\\*$"),
+            ]),
           }),
         ]),
       }),

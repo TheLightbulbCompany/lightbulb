@@ -58,6 +58,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
 
+      - name: Reclaim runner workspace disk
+        run: |
+          rm -rf node_modules apps/*/node_modules packages/*/node_modules
+          pnpm store prune || true
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 

@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @typescript-eslint/no-explicit-any -- DCV's browser SDK ships without types. */
+
 import { useEffect, useRef, useState } from "react";
 
 let nextViewerId = 0;
@@ -26,12 +28,14 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
         error: () => !disposed && setError("Could not authenticate the browser viewer."),
         httpExtraSearchParams: () => new URL(signedUrl).searchParams,
         success: async (_auth: unknown, result: Array<{ sessionId?: string; authToken?: string }>) => {
+          if (disposed) return;
           const credentials = result[0] ?? {};
           if (!credentials.sessionId || !credentials.authToken) {
             if (!disposed) setError("Browser viewer credentials were unavailable.");
             return;
           }
           try {
+            if (disposed) return;
             const connected = await dcv.connect({
             url: signedUrl,
             sessionId: credentials.sessionId,

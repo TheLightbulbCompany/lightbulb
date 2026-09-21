@@ -121,6 +121,8 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
     </div>
     {transferStatus && <p className="shrink-0 px-3 py-1 text-xs text-[var(--midnight-muted)]">{transferStatus}</p>}
     {files.length > 0 && <div className="shrink-0 flex gap-2 overflow-auto px-3 py-1 text-xs">{files.map((file) => <button key={file} type="button" onClick={() => void downloadFile(file)} className="underline">{file}</button>)}</div>}
-    <div className="min-h-0 flex-1 overflow-auto" id={displayId.current} />
+    <div className="min-h-0 flex-1 overflow-auto" aria-label="Shared browser display">
+      <div id={displayId.current} className="relative h-full min-h-0 w-full" />
+    </div>
   </div>;
 }

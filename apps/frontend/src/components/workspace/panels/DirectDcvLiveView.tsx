@@ -39,8 +39,10 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
             divId: displayId.current,
             baseUrl: "/nice-dcv-web-client-sdk/dcvjs-esm",
             enabledChannels: ["display", "input", "clipboard", "filestorage"],
-            callbacks: { disconnect: () => !disposed && setError("Browser viewer disconnected.") },
-            observers: { httpExtraSearchParams: () => new URL(signedUrl).searchParams },
+            callbacks: {
+              disconnect: () => !disposed && setError("Browser viewer disconnected."),
+              httpExtraSearchParams: () => new URL(signedUrl).searchParams,
+            },
           });
             if (disposed) connected.disconnect?.();
             else {

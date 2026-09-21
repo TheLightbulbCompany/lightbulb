@@ -104,7 +104,7 @@ export function useBilling() {
     window.location.href = portal_url;
   }, [api]);
 
-  const startCheckout = useCallback(async (plan: "workspace" | "ultra") => {
+  const startCheckout = useCallback(async (plan: "base" | "workspace" | "ultra") => {
     const res = (await api.post("/billing/checkout", { plan })) as {
       checkout_url?: string;
       updated?: boolean;

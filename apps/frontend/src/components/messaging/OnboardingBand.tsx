@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState, useSyncExternalStore, type ReactElement } from "react";
-import { Check, Users, Pencil, Plug, X } from "lucide-react";
+import { Check, Users, Pencil, Plus, X } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
 
 import { useApi } from "@/lib/api";
@@ -168,11 +168,8 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
           data-more="true"
           onClick={() => openPanel("connections", {}, { pushUrl: true })}
         >
-          <span className="onboarding-card-label">
-            <Plug size={16} aria-hidden="true" />
-            See more connections
-          </span>
-          <span className="onboarding-card-detail">Browse the full catalog</span>
+          <Plus size={26} aria-hidden="true" strokeWidth={1.75} />
+          <span className="onboarding-card-label">See more connections</span>
         </button>
       </div>
 

@@ -228,13 +228,22 @@ async def test_competing_first_publishers_leave_exactly_one_current_generation(r
     monkeypatch.setattr(task_address, "own_address", lambda: "http://10.0.1.7:8000")
     real_get = ready_table._client.get_item
     both_read_absent = threading.Barrier(2)
+    put_lock = threading.Lock()
 
     def _racing_get(**kwargs):
         result = real_get(**kwargs)
         both_read_absent.wait(timeout=5)
         return result
 
+    real_put = ready_table._client.put_item
+
+    def _serialized_put(**kwargs):
+        # Moto's condition-check/write is non-atomic; model DynamoDB's atomic PutItem.
+        with put_lock:
+            return real_put(**kwargs)
+
     monkeypatch.setattr(ready_table._client, "get_item", _racing_get)
+    monkeypatch.setattr(ready_table._client, "put_item", _serialized_put)
     results = await asyncio.gather(
         ready_table.publish_desktop_ready(identity=_identity(), generation="generation-a", commands={"system.run"}),
         ready_table.publish_desktop_ready(identity=_identity(), generation="generation-b", commands={"system.run"}),

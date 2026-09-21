@@ -9,7 +9,7 @@ from moto import mock_aws
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
-from core.repositories import billing_repo
+from core.repositories import billing_repo, container_repo
 
 
 @pytest.fixture
@@ -187,12 +187,51 @@ async def test_set_provider_choice_org_byo_key(dynamodb_table):
 @pytest.mark.asyncio
 async def test_set_provider_choice_unknown_provider_rejected(dynamodb_table):
     await billing_repo.create_if_not_exists("user_w", "cus_stu", owner_type="personal")
+    containers = boto3.resource("dynamodb", region_name="us-east-1").Table("test-containers")
+    containers.put_item(Item={"owner_id": "user_w", "needs_provision": False, "provider_switch_generation": "old"})
     with pytest.raises(ValueError, match="unknown provider_choice"):
         await billing_repo.set_provider_choice(
             "user_w",
             provider_choice="invalid_choice",
             byo_provider=None,
         )
+    row = containers.get_item(Key={"owner_id": "user_w"})["Item"]
+    assert row["needs_provision"] is False
+    assert row["provider_switch_generation"] == "old"
+
+
+@pytest.mark.asyncio
+async def test_failed_billing_write_restores_the_previous_turn_gate(dynamodb_table, monkeypatch):
+    await billing_repo.create_if_not_exists("user_failed", "cus_failed", owner_type="personal")
+    containers = boto3.resource("dynamodb", region_name="us-east-1").Table("test-containers")
+    containers.put_item(Item={"owner_id": "user_failed", "needs_provision": False, "provider_switch_generation": "old"})
+
+    async def fail_write(*args, **kwargs):
+        raise RuntimeError("billing table unavailable")
+
+    monkeypatch.setattr(billing_repo, "run_in_thread", fail_write)
+    with pytest.raises(RuntimeError, match="billing table unavailable"):
+        await billing_repo.set_provider_choice("user_failed", provider_choice="byo_key", byo_provider="openai")
+
+    row = containers.get_item(Key={"owner_id": "user_failed"})["Item"]
+    assert row["needs_provision"] is False
+    assert row["provider_switch_generation"] == "old"
+
+
+@pytest.mark.asyncio
+async def test_marker_rollback_never_clears_a_newer_switch(dynamodb_table):
+    containers = boto3.resource("dynamodb", region_name="us-east-1").Table("test-containers")
+    containers.put_item(Item={"owner_id": "user_race", "needs_provision": False, "provider_switch_generation": "old"})
+    first = await container_repo.mark_needs_provision("user_race")
+    with pytest.raises(container_repo.ProvisionSuperseded):
+        await container_repo.mark_needs_provision("user_race")
+    row = containers.get_item(Key={"owner_id": "user_race"})["Item"]
+    assert row["needs_provision"] is True
+    assert row["provider_switch_generation"] == first["generation"]
+    assert await container_repo.restore_needs_provision("user_race", first) is True
+    row = containers.get_item(Key={"owner_id": "user_race"})["Item"]
+    assert row["needs_provision"] is False
+    assert row["provider_switch_generation"] == "old"
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,5 @@
 import re
+import pytest
 
 from core.services import hermes_profiles
 
@@ -16,6 +17,36 @@ def cfg(**kw):
 
 def test_model_is_written_as_a_dict_with_default_never_a_bare_string():
     assert cfg()["model"] == {"default": AIPS["sonnet"], "provider": "bedrock", "context_length": 200_000}
+
+
+def test_managed_openrouter_refuses_to_render_without_server_model_and_gate(monkeypatch):
+    monkeypatch.setattr(hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "", raising=False)
+    monkeypatch.setattr(hermes_profiles.settings, "OPENROUTER_GATE_URL", "", raising=False)
+    with pytest.raises(ValueError, match="managed OpenRouter route"):
+        cfg(provider_choice="openrouter_managed", aip_arns={})
+
+
+def test_managed_openrouter_primary_and_all_auxiliary_tasks_use_only_the_gate(monkeypatch):
+    monkeypatch.setattr(hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model", raising=False)
+    monkeypatch.setattr(hermes_profiles.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1", raising=False)
+    config = cfg(provider_choice="openrouter_managed", aip_arns={})
+    assert config["model"] == {
+        "default": "candidate/model",
+        "provider": "custom",
+        "base_url": "https://gate.example/v1",
+        "api_key": "${LIGHTBULB_GATE_BEARER}",
+        "context_length": 200_000,
+    }
+    for task in _REAL_AUXILIARY_TASKS:
+        assert config["auxiliary"][task] == {
+            "provider": "custom",
+            "model": "candidate/model",
+            "base_url": "https://gate.example/v1",
+            "api_key": "${LIGHTBULB_GATE_BEARER}",
+            "fallback_chain": [],
+        }
+    assert "bedrock" not in config
+    assert "sk-or-" not in str(config)
 
 
 def test_the_ceo_profile_is_pinned_to_the_premium_tier():

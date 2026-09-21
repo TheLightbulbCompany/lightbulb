@@ -26,6 +26,7 @@ export interface BillingAccount {
   // an org whose admin has already picked.
   provider_choice: string | null;
   byo_provider: string | null;
+  managed_inference_available?: boolean;
   // Pricing tier: "standard" (the single $50/mo tier) or "ultra_pro" (the
   // higher $150/mo tier that unlocks larger marketplace companies). Backend
   // defaults a plan-less row to "standard"; optional here so pre-plan

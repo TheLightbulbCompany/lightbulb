@@ -123,7 +123,15 @@ def boot_secret_name(owner_id: str) -> str:
     return f"lightbulb/{_env()}/hermes/{owner_id}/boot"
 
 
-async def write_boot_secret(owner_id: str, *, hook_token: str, gateway_token: str, bedrock_bearer: str) -> str:
+async def write_boot_secret(
+    owner_id: str,
+    *,
+    hook_token: str,
+    gateway_token: str,
+    bedrock_bearer: str,
+    provider_choice: str = "bedrock_claude",
+    generation: str = "",
+) -> str:
     """Create or update the owner's boot secret; returns its name (the value a runtime's
     ``BOOT_SECRET_ENV_VAR`` carries). Plaintext lives in exactly one place: this secret."""
     import boto3
@@ -131,7 +139,16 @@ async def write_boot_secret(owner_id: str, *, hook_token: str, gateway_token: st
     from core.secrets_manager import create_or_update_secret
 
     name = boot_secret_name(owner_id)
-    value = json.dumps({"hookToken": hook_token, "gatewayToken": gateway_token, "bedrockBearer": bedrock_bearer})
+    payload = {
+        "hookToken": hook_token,
+        "gatewayToken": gateway_token,
+        "bedrockBearer": bedrock_bearer,
+        "providerChoice": provider_choice,
+        "providerSwitchFrozen": False,
+    }
+    if generation:
+        payload["providerSwitchGeneration"] = generation
+    value = json.dumps(payload)
     sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
     await run_in_thread(create_or_update_secret, sm, name, value)
     return name

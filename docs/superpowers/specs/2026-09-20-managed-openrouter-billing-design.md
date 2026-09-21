@@ -1,0 +1,37 @@
+# Managed OpenRouter inference and later trial/Base tiers
+
+## Product boundaries
+
+Lightbulb owns the OpenRouter account, management key, and every per-workspace inference key. Customers continue to see Lightbulb subscriptions, Lightbulb credits, and the existing model/provider settings; they never need an OpenRouter account or key. The existing $50 Workspace and $150 Ultra prices, direct OpenAI/Anthropic BYOK, and ChatGPT OAuth remain available. Phase 1 moves only the managed-credit inference path from Bedrock to OpenRouter. The current three-day `trial_local` remains unchanged during that phase. The 30-day no-card trial and $20 Base tier are Phase 2, after Phase 1 is metered and benchmarked.
+
+OpenRouter keys are spending controls against Lightbulb's pooled upstream account, not customer wallets. For Phase 1, Metronome remains the customer prepaid balance and payment-gated top-up ledger; Stripe remains the subscription and payment processor. Existing credit purchase UX is unchanged. No production cutover occurs without written confirmation that customer-facing managed inference is permitted under OpenRouter and chosen model-provider terms.
+
+## Phase 1 inference architecture
+
+The backend creates one OpenRouter completion key for each Lightbulb owner using a server-only management key. Initially use one OpenRouter workspace per Lightbulb environment and capped per-owner keys; Standard's five-workspace ceiling makes one OpenRouter workspace per customer inappropriate. Set a restrictive workspace default guardrail for the allowed model/provider/privacy ceiling, while the Lightbulb gate applies the per-tier policy. Add per-key guardrails only if a tested policy gap requires them. Store the completion key's plaintext only in AWS Secrets Manager and its OpenRouter hash/policy state in DynamoDB. Key creation has no documented idempotency token, so a durable local claim and orphan-reconciliation path are required. Key rotation creates and verifies a replacement before the old key is disabled.
+
+Hermes on AgentCore sends OpenAI-compatible Chat Completions to a Lightbulb streaming inference gate using an owner-scoped gate bearer. The gate alone reads the OpenRouter completion key. It verifies the live subscription and managed-credit provider choice, resolves the owner model policy, checks the Metronome fast-gate projection, reserves an estimate, clamps request features that could cause unbounded spend, and forwards to OpenRouter. Reject a caller-supplied upstream URL, arbitrary model, fallback, provider policy, or router plugin. OpenRouter's key limit and assigned guardrail are independent backstops. The gate must remain the only usable path for Lightbulb-funded inference; do not store an upstream key in any Hermes profile or runtime environment.
+
+The model policy is server-owned and versioned. First evaluate pinned candidate models and `openrouter/auto` against identical Lightbulb Hermes tasks. Do not choose the default in advance. Auto Router must be constrained by an allowed-model set, hard `provider.max_price` prompt/completion ceilings, data-retention rules, and a stable session identifier; its `cost_tier` alone is not a price ceiling and its preferred model may change between turns. Record the actual selected model and provider. Jev is a structured-decision service, not a standard chat model; integration with it is separate from this primary-inference migration.
+
+## Hermes contract
+
+The backend's per-agent profile writer must set the main model provider, gateway base URL, context bound, and explicit auxiliary routing for every task in `AUXILIARY_TASKS`. The bridge's fill-missing Bedrock pin must not populate Bedrock routes for an OpenRouter-managed profile. Delegated agents, cron/background work, Teams/Paperclip runs, vision, title generation, memory and compression must all use the owner gate or explicitly fail closed; no Hermes auto-chain may reach an unmetered provider. The per-owner AgentCore role remains for S3, browser, integrations, and runtime trust even after Bedrock inference moves.
+
+Provider changes rewrite the S3 profiles and stop the warm AgentCore session before retiring the prior bearer. The model picker is derived from Lightbulb's approved model policy, not the whole public OpenRouter catalog. An agent-edited profile cannot bypass the gate's model and credit checks. The pinned Hermes image, rather than current upstream docs alone, is the acceptance target.
+
+## Metering contract
+
+The gate durably records owner, key hash, gate request ID, model policy revision, OpenRouter generation ID when known, reservation, and settlement state. OpenRouter's generation metadata supplies actual `total_cost`, token/cache counts, provider, final model, and cancellation state. Emit one idempotent `openrouter_inference` event per generation to Metronome with string `provider_cost_nanodollars` (one dollar = one billion units), rated under the approved Lightbulb markup. The isolated Metronome sandbox proved that 12,345,678 units debit exactly $0.012345678 and transaction replay does not debit twice. The local fast-gate projection remains microcent-denominated; round its provisional debit upward to a whole microcent and correct it from Metronome's authoritative balance refresh.
+
+Streaming disconnects and gateway crashes remain pending until reconciliation. A worker retries generation lookups and compares per-key OpenRouter usage/activity with settled owner events. A key-level usage gap blocks widening rollout and alarms; it is never counted as free. OpenRouter Broadcast may assist observability but is not assumed to be a billing-grade delivery feed. Continue to use Metronome's balance as customer money truth; OpenRouter's per-key dollar limit is an upstream safety stop.
+
+## Phase 2 product behavior
+
+After Phase 1 proves cost per completed Hermes task, extend the existing no-card `trial_local` clock to 30 days from canonical readiness. Keep full listening and no automatic charge. Add a finite, visible managed-inference allowance. A trial owner may explicitly buy Lightbulb credits without starting Base; purchase does not extend the day-30 platform deadline. On day 30, Base subscription is required, and any purchased credits remain on that owner's ledger.
+
+Base is $20/month for the same workspace experience and a restricted, low-cost managed model policy. Its included allowance and renewal grant are decided from measured model cost and granted only after a paid subscription invoice, with durable idempotency. Both trial and Base can buy more credits while retaining their plan's model policy. The $50 Workspace plan adds broader approved models and preserves BYOK/ChatGPT choices and purchased credits; Ultra retains its existing benefits. Stripe Price IDs and customer-facing copy are changed only in this second phase. Existing trial deadlines and subscription records are not reset by migration.
+
+## Rollout and rollback
+
+Keep the Bedrock gate, AIPs, meter, and Metronome path intact for owners not yet moved and for rollback. Dev first: sandbox key and rate-card proofs, pinned-image Hermes smoke, full billing flow, streaming abort/retry and reconciliation. Then a small production owner cohort via CI/CD, with alarms and daily cost reconciliation. Only after all managed owners are on OpenRouter and there are no outstanding Bedrock dependencies may a separate cleanup remove AIPs or Bedrock-only infrastructure. The Muse/Zen draft PR is not part of either rollout and must not be merged as written.

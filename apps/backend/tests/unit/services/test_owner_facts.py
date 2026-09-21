@@ -104,6 +104,7 @@ async def test_write_owner_facts_never_raises(monkeypatch):
     "provider_choice,byo_provider,expected_substring",
     [
         ("bedrock_claude", None, "Bedrock"),
+        ("openrouter_managed", None, "Lightbulb-managed credits"),
         ("bedrock_trial", None, "free trial"),
         ("chatgpt_oauth", None, "ChatGPT"),
         ("byo_key", "anthropic", "BYO Anthropic"),

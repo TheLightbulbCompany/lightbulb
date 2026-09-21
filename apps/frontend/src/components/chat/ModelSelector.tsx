@@ -321,12 +321,6 @@ export function ModelSelector({
             </div>
         </div>
 
-        {/* Footer */}
-        <div className="p-2 border-t border-[var(--edge-soft)] bg-[var(--cream)] rounded-b-xl shrink-0">
-          <div className="text-2xs text-center text-[var(--midnight-muted)]">
-            Powered by AWS Bedrock
-          </div>
-        </div>
       </PopoverContent>
     </Popover>
   );

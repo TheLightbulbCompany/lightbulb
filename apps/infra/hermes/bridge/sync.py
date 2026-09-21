@@ -23,6 +23,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -985,7 +986,29 @@ def pin_profile_defaults(agent_id: str, model: str) -> dict:
     by ``bridge.turn._run_hermes``/``_run_native_paperclip``.
     """
     existing = normalize_profile_backends(agent_id)
-    config = deep_merge(auxiliary_pin(_aux_defaults(), model), existing)
+    provider = (existing.get("model") or {}).get("provider")
+    managed = os.environ.get("LIGHTBULB_PROVIDER_CHOICE") == "openrouter_managed"
+    if managed and provider != "custom":
+        raise RuntimeError("managed gate model route is missing or changed")
+    if managed:
+        tasks = (existing.get("auxiliary") or {})
+        gate_url = os.environ.get("LIGHTBULB_MANAGED_GATE_URL", "")
+        approved_model = os.environ.get("LIGHTBULB_MANAGED_MODEL_ID", "")
+        model_block = existing["model"]
+        if not gate_url or not approved_model or model_block.get("default") != approved_model or model_block.get("base_url") != gate_url or model_block.get("api_key") != "${LIGHTBULB_GATE_BEARER}":
+            raise RuntimeError("managed gate route is missing or changed")
+        for name, block in _aux_defaults().items():
+            if isinstance(block, dict) and "provider" in block:
+                route = tasks.get(name)
+                if not isinstance(route, dict) or not route.get("provider") or not route.get("model") or route.get("fallback_chain") != []:
+                    raise RuntimeError(f"missing auxiliary route for {name}")
+                if (route.get("provider") != "custom" or route.get("base_url") != gate_url
+                        or route.get("model") != approved_model
+                        or route.get("api_key") != "${LIGHTBULB_GATE_BEARER}"):
+                    raise RuntimeError(f"auxiliary route for {name} bypasses managed gate")
+        config = existing
+    else:
+        config = deep_merge(auxiliary_pin(_aux_defaults(), model), existing)
     config = deep_merge(config, plugins_pin(existing))
     write_profile_config(agent_id, config)
     return config

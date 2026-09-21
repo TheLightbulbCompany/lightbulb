@@ -15,7 +15,7 @@ from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
 
-ProviderChoice = Literal["chatgpt_oauth", "byo_key", "bedrock_claude"]
+ProviderChoice = Literal["chatgpt_oauth", "byo_key", "bedrock_claude", "openrouter_managed"]
 ByoProvider = Literal["openai", "anthropic"]
 
 
@@ -683,12 +683,48 @@ async def change_provider(
     # session for no functional change. byo_key with the same byo_provider
     # is treated as a no-op too — different byo_provider DOES re-provision
     # because the env-var secret reference changes.
+    from core.repositories import container_repo as _container_repo
+
+    pending_row = await _container_repo.get_by_owner_id(owner_id) or {}
+    if pending_row.get("needs_provision"):
+        if current_choice != provider_choice or current_byo != next_byo:
+            raise ChangeProviderError(
+                "provider_switch_pending", "A provider switch is already in progress.", status_code=409
+            )
+        # Retry the existing generation; do not stamp another one or repeat
+        # credential cleanup while the first switch is still converging.
+        await _container_repo.takeover_provision(owner_id)
+        from core.services.provision_dispatch import dispatch_provision
+
+        asyncio.create_task(dispatch_provision(owner_id))
+        return {"status": "ok", "provider_choice": provider_choice, "byo_provider": next_byo, "restart": True}
     if current_choice == provider_choice and current_byo == next_byo:
-        return {
-            "status": "noop",
-            "provider_choice": provider_choice,
-            "byo_provider": next_byo,
-        }
+        return {"status": "noop", "provider_choice": provider_choice, "byo_provider": next_byo}
+
+    if provider_choice == "openrouter_managed":
+        if current_choice != "openrouter_managed" and not settings.OPENROUTER_MANAGED_ENABLED:
+            raise ChangeProviderError(
+                "managed_provider_disabled", "Managed inference is not enabled yet.", status_code=409
+            )
+        if not settings.OPENROUTER_MANAGED_MODEL_ID:
+            raise ChangeProviderError(
+                "managed_route_unavailable", "Managed inference is not configured yet.", status_code=503
+            )
+        from core.billing.openrouter_gate_url import gate_url
+        from core.services.openrouter_keys import ensure_owner_key_for_settings
+
+        try:
+            await asyncio.to_thread(gate_url)
+        except Exception as exc:
+            raise ChangeProviderError(
+                "managed_route_unavailable", "Managed inference is not configured yet.", status_code=503
+            ) from exc
+        try:
+            await ensure_owner_key_for_settings(owner_id)
+        except Exception as exc:
+            raise ChangeProviderError(
+                "managed_key_unavailable", "Managed inference is unavailable. Try again.", status_code=503
+            ) from exc
 
     # Prerequisite check for the *new* provider. Done before the DDB write
     # so a missing prerequisite returns 409 with the chosen state still
@@ -760,12 +796,19 @@ async def change_provider(
     # Commit the new provider state. Done BEFORE side-effect cleanup so a
     # crash mid-cleanup leaves the owner in a coherent state (new provider
     # + a bit of stale OAuth/BYOK data, which the next sweep can reclaim).
-    await billing_repo.set_provider_choice(
-        owner_id,
-        provider_choice=provider_choice,
-        byo_provider=next_byo,
-        connector_user_id=clerk_user_id if provider_choice == "chatgpt_oauth" else None,
-    )
+    try:
+        saved = await billing_repo.set_provider_choice(
+            owner_id,
+            provider_choice=provider_choice,
+            byo_provider=next_byo,
+            connector_user_id=clerk_user_id if provider_choice == "chatgpt_oauth" else None,
+            return_switch_mark=True,
+        )
+    except _container_repo.ProvisionSuperseded as exc:
+        raise ChangeProviderError(
+            "provider_switch_pending", "A provider switch is already in progress.", status_code=409
+        ) from exc
+    switch_mark = saved.get("_switch_mark") if isinstance(saved, dict) else None
 
     # Keep the agents' view of plan/provider current — the owner-facts file
     # is what the bundled lightbulb skill points them at. The hot-swap path never
@@ -868,15 +911,16 @@ async def change_provider(
     # fresh lease, which the dispatch's own claim then refuses — breaking the
     # create-from-scratch path for a never-provisioned owner.
     #
-    # Nothing is stopped or drained. There is no ECS service to scale to zero and no shared
-    # EFS-WAL SQLite for two tasks to corrupt: the provision rewrites the owner's agent
-    # profiles in S3, and the agent reads them on its next turn.
+    # The AgentCore convergence waits for an idle turn, rewrites profiles, updates the
+    # runtime spec, then stops the warm session so the next invoke boots the new choice.
     try:
         from core.repositories import container_repo as _container_repo
 
         if await _container_repo.get_by_owner_id(owner_id) is not None:
             await _container_repo.takeover_provision(owner_id)
     except Exception as e:
+        from core.repositories import container_repo as _container_repo
+
         # The new provider is committed but nothing will converge it: a retry of this call
         # would hit the no-op fast path above (the row already matches the request) and
         # dispatch nothing. REVERT the commit so the retry re-runs the full switch. The old
@@ -899,6 +943,8 @@ async def change_provider(
             # pointless full provision on the next poll.
             requires_reprovision=False,
         )
+        if switch_mark is not None:
+            await _container_repo.restore_needs_provision(owner_id, switch_mark)
         await write_owner_facts(
             owner_id,
             account_overrides={"provider_choice": restore_choice, "byo_provider": current_byo},

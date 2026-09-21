@@ -19,10 +19,10 @@ const TODAY = "2026-07-15";
 // exercising these flows has a ledger in reality — a trial owner never reaches
 // that check (resolvePlan sends them to trialReserve). Pass ledger:false to
 // exercise the unprovisioned deny.
-function seed({ denied = false, spent = 0, status = "trial_local", ledger = true } = {}) {
+function seed({ denied = false, spent = 0, status = "trial_local", ledger = true, providerChoice } = {}) {
   const ddb = makeFakeDdb();
   ddb._store.tok = { [hashToken("t1")]: { token_hash: { S: hashToken("t1") }, owner_id: { S: "u" }, denied: { BOOL: denied }, aip_tiers: { M: { [AIP]: { S: "sonnet" } } } } };
-  ddb._store.bill = { u: { owner_id: { S: "u" }, subscription_status: { S: status }, trial_daily_spend_microcents: { M: { [TODAY]: { N: String(spent) } } }, reserved_microcents: { M: {} }, ...(ledger ? { metronome_customer_id: { S: "mc-1" }, metronome_contract_id: { S: "ct-1" } } : {}) } };
+  ddb._store.bill = { u: { owner_id: { S: "u" }, subscription_status: { S: status }, trial_daily_spend_microcents: { M: { [TODAY]: { N: String(spent) } } }, reserved_microcents: { M: {} }, ...(providerChoice ? { provider_choice: { S: providerChoice } } : {}), ...(ledger ? { metronome_customer_id: { S: "mc-1" }, metronome_contract_id: { S: "ct-1" } } : {}) } };
   return ddb;
 }
 function makeResponder() {
@@ -118,6 +118,24 @@ test("paid owner streams + decrements fast-gate", async () => {
   await handleRequest(evt(), r, { ddb, env: ENV, nowMs: NOW, forwardImpl: fakeForward200({ inputTokens: 100000 }) });
   assert.equal(r._status, 200);
   assert.equal(Number(ddb._store.fg.u.remaining_microcents.N), 1_000_000 - 330000);
+});
+
+test("paid owner switched to OpenRouter cannot invoke Bedrock before reservation", async () => {
+  const ddb = seed({ status: "active", providerChoice: "openrouter_managed" });
+  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "1000000" }, reserved_microcents: { N: "0" } } };
+  const r = makeResponder();
+  let forwarded = false;
+  await handleRequest(evt(), r, { ddb, env: ENV, nowMs: NOW, forwardImpl: async () => { forwarded = true; } });
+  assert.equal(r._status, 403);
+  assert.equal(forwarded, false);
+  assert.equal(ddb._store.fg.u.reserved_microcents.N, "0");
+});
+
+test("trial_local keeps its Bedrock route during Phase 1", async () => {
+  const ddb = seed({ status: "trial_local", providerChoice: "openrouter_managed" });
+  const r = makeResponder();
+  await handleRequest(evt(), r, { ddb, env: ENV, nowMs: NOW, forwardImpl: fakeForward200({ inputTokens: 0 }) });
+  assert.equal(r._status, 200);
 });
 
 test("paid owner with NO ledger is denied end-to-end with ledger_unprovisioned", async () => {

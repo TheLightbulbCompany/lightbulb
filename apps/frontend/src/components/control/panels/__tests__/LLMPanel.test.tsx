@@ -5,6 +5,11 @@ import { LLMPanel } from "../LLMPanel";
 
 const mockSWRData = vi.fn();
 const mockMutate = vi.fn();
+let managedAvailable = false;
+let billingLoading = false;
+vi.mock("@/hooks/useBilling", () => ({
+  useBilling: () => ({ account: { managed_inference_available: managedAvailable }, isLoading: billingLoading }),
+}));
 vi.mock("swr", () => ({
   default: () => ({ data: mockSWRData(), error: null, isLoading: false, mutate: mockMutate }),
 }));
@@ -124,6 +129,8 @@ vi.mock("../CreditsSection", () => ({
 
 describe("LLMPanel", () => {
   beforeEach(() => {
+    managedAvailable = false;
+    billingLoading = false;
     mockSWRData.mockReset();
     mockMutate.mockReset();
     mockApiPut.mockReset();
@@ -219,6 +226,15 @@ describe("LLMPanel", () => {
     expect(screen.queryByRole("button", { name: /manage credits/i })).toBeNull();
   });
 
+  it("shows Lightbulb-managed inference and its credits for a migrated owner", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
+    render(<LLMPanel />);
+    expect(screen.getByText("Lightbulb-managed models")).toBeInTheDocument();
+    expect(screen.getByText("Inference uses your Lightbulb workspace credits")).toBeInTheDocument();
+    expect(screen.getByTestId("credits-section")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/sk-/)).toBeNull();
+  });
+
   it("hides CreditsSection for non-bedrock users", () => {
     mockSWRData.mockReturnValue({ provider_choice: "byo_key", byo_provider: "anthropic" });
     render(<LLMPanel />);
@@ -230,6 +246,7 @@ describe("LLMPanel", () => {
     render(<LLMPanel />);
     // The empty-state copy uses a typographic apostrophe; match either.
     expect(screen.getByText(/haven.{1,3}t picked a provider/i)).toBeInTheDocument();
+    expect(screen.queryByText("Lightbulb-managed models")).toBeNull();
     // The choices are visible without a click — the old single "Pick a
     // provider" button hid them behind a modal, so a user with no provider
     // couldn't see what the options even were.
@@ -253,6 +270,29 @@ describe("LLMPanel", () => {
     // Bedrock needs no credential collection, so the modal must stay shut.
     expect(screen.queryByTestId("change-provider-modal-open")).not.toBeInTheDocument();
     await waitFor(() => expect(mockMutate).toHaveBeenCalled());
+  });
+
+  it("offers and commits Lightbulb-managed inference when available", async () => {
+    managedAvailable = true;
+    mockSWRData.mockReturnValue({ provider_choice: null });
+    render(<LLMPanel />);
+    expect(screen.queryByRole("button", { name: /Powered by Claude/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Lightbulb-managed models/ }));
+    await waitFor(() => expect(mockApiPost).toHaveBeenCalledWith("/billing/provider", {
+      provider_choice: "openrouter_managed",
+    }));
+    expect(screen.queryByTestId("change-provider-modal-open")).toBeNull();
+  });
+
+  it("waits for billing capability before offering a first provider choice", () => {
+    managedAvailable = true;
+    billingLoading = true;
+    mockSWRData.mockReturnValue({ provider_choice: null });
+    const view = render(<LLMPanel />);
+    expect(screen.queryByRole("button", { name: /Powered by Claude/ })).toBeNull();
+    billingLoading = false;
+    view.rerender(<LLMPanel />);
+    expect(screen.getByRole("button", { name: /Lightbulb-managed models/ })).toBeInTheDocument();
   });
 
   it("surfaces a commit error inline when the Bedrock pick fails", async () => {

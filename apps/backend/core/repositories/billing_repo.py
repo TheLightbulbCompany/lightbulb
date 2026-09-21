@@ -944,7 +944,7 @@ async def set_subscription(
     return await _put_with_apple_cas(owner_id, _mutate)
 
 
-_VALID_PROVIDER_CHOICES = frozenset({"bedrock_claude", "byo_key", "chatgpt_oauth"})
+_VALID_PROVIDER_CHOICES = frozenset({"bedrock_claude", "byo_key", "chatgpt_oauth", "openrouter_managed"})
 
 
 async def set_provider_choice(
@@ -954,12 +954,14 @@ async def set_provider_choice(
     byo_provider: str | None,
     connector_user_id: str | None = None,
     requires_reprovision: bool = True,
+    return_switch_mark: bool = False,
 ) -> dict:
     """Persist the provider choice on a billing row.
 
     Args:
         owner_id: org_id or personal user_id (the billing row's PK).
-        provider_choice: one of ``bedrock_claude``, ``byo_key``, ``chatgpt_oauth``.
+        provider_choice: one of ``bedrock_claude``, ``byo_key``, ``chatgpt_oauth``,
+            ``openrouter_managed``.
         byo_provider: optional even when ``provider_choice == "byo_key"`` —
             the picker submits ``byo_key`` alone at /trial-checkout time, and
             the BYO wizard fills in ``byo_provider`` (openai vs anthropic) +
@@ -975,22 +977,15 @@ async def set_provider_choice(
     Raises:
         ValueError: unknown provider_choice.
     """
-    # Mark the container BEFORE committing the billing write, and only for
-    # switches that change the task-def shape (the cold path). Ordering is
-    # the failure-safety: a marked row with an UNCHANGED provider merely
-    # costs one unnecessary full provision on the next wake; an unmarked
-    # row with a CHANGED provider boots the stale task def — the dangerous
-    # state. The hot-swap path (task-def-neutral by construction) passes
-    # requires_reprovision=False and never marks.
-    # Lazy import: container_repo is a sibling; no cycle back here.
-    if requires_reprovision:
-        from core.repositories import container_repo
-
-        await container_repo.mark_needs_provision(owner_id)
-
     if provider_choice not in _VALID_PROVIDER_CHOICES:
         raise ValueError(f"unknown provider_choice: {provider_choice!r}")
 
+    # Mark the container BEFORE committing the billing write, and only for
+    # switches that change the runtime. The marker blocks new turn ingress
+    # while the old provider can still be warm. If the billing write fails,
+    # restore the previous marker/generation with a conditional write below.
+    # The explicit rollback path passes requires_reprovision=False.
+    # Lazy import: container_repo is a sibling; no cycle back here.
     now = utc_now_iso()
     table = _get_table()
     sets = ["provider_choice = :pc", "updated_at = :t"]
@@ -1018,15 +1013,29 @@ async def set_provider_choice(
     if removes:
         update_expr += " REMOVE " + ", ".join(removes)
 
-    response = await run_in_thread(
-        table.update_item,
-        Key={"owner_id": owner_id},
-        UpdateExpression=update_expr,
-        ExpressionAttributeValues=values,
-        ReturnValues="ALL_NEW",
-    )
+    mark = None
+    if requires_reprovision:
+        from core.repositories import container_repo
+
+        mark = await container_repo.mark_needs_provision(owner_id)
+    try:
+        response = await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=values,
+            ReturnValues="ALL_NEW",
+        )
+    except Exception:
+        if mark is not None:
+            try:
+                await container_repo.restore_needs_provision(owner_id, mark)
+            except Exception:
+                logger.exception("provider marker rollback failed for owner=%s", owner_id)
+        raise
     publish_status_changed(owner_id)
-    return response["Attributes"]
+    row = response["Attributes"]
+    return {**row, "_switch_mark": mark} if return_switch_mark else row
 
 
 async def claim_oauth_connector(owner_id: str, *, connector_user_id: str) -> None:

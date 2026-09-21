@@ -104,6 +104,39 @@ def test_the_runtime_env_carries_identifiers_only_and_no_secret_value(monkeypatc
     assert "GATEWAY_TOKEN" not in env
 
 
+def test_managed_gate_url_is_a_runtime_identifier_without_a_bearer():
+    env = hermes_provisioning.build_hermes_runtime_env(
+        owner_id="org_a",
+        api_base="https://api-dev.flickmeon.ai",
+        bucket="bucket",
+        boot_secret_id="lightbulb/dev/hermes/org_a/boot",
+        gate_endpoint="https://bedrock-gate.example",
+        sonnet_aip_arn="arn:aip:sonnet",
+        managed_gate_url="https://openrouter-gate.example/v1",
+        managed_model_id="candidate/model",
+    )
+    assert env["LIGHTBULB_MANAGED_GATE_URL"] == "https://openrouter-gate.example/v1"
+    assert env["LIGHTBULB_MANAGED_MODEL_ID"] == "candidate/model"
+    assert "LIGHTBULB_GATE_BEARER" not in env
+
+
+def test_bedrock_runtime_does_not_discover_managed_gate_when_candidate_is_configured(monkeypatch):
+    monkeypatch.setattr(hermes_provisioning.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
+    monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", lambda: "https://bedrock-gate.example")
+    monkeypatch.setattr(
+        "core.billing.openrouter_gate_url.gate_url",
+        lambda: (_ for _ in ()).throw(AssertionError("must not read OpenRouter SSM")),
+    )
+    request = hermes_provisioning.build_runtime_request_for_owner(
+        "org_a",
+        "arn:aws:iam::123456789012:role/owner",
+        {"sonnet": "arn:aip:sonnet"},
+        provider_choice="bedrock_claude",
+    )
+    env = request["environmentVariables"]
+    assert "LIGHTBULB_MANAGED_GATE_URL" not in env
+
+
 def test_the_runtime_env_never_carries_the_nous_guest_launch_gate(monkeypatch):
     """M4-R38: Hermes's vision auxiliary task falls through to its auto chain (OpenRouter ->
     Nous -> DeepInfra) even with fallback_chain: [], and is unreachable in our runtime ONLY
@@ -339,8 +372,16 @@ async def test_prepare_hermes_workspace_mints_tokens_and_writes_one_json_boot_se
 
     written = {}
 
-    async def _fake_write_boot_secret(owner_id, *, hook_token, gateway_token, bedrock_bearer):
-        written.update(hookToken=hook_token, gatewayToken=gateway_token, bedrockBearer=bedrock_bearer)
+    async def _fake_write_boot_secret(
+        owner_id, *, hook_token, gateway_token, bedrock_bearer, provider_choice, generation
+    ):
+        written.update(
+            hookToken=hook_token,
+            gatewayToken=gateway_token,
+            bedrockBearer=bedrock_bearer,
+            providerChoice=provider_choice,
+            generation=generation,
+        )
         return f"lightbulb/dev/hermes/{owner_id}/boot"
 
     monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _fake_write_boot_secret)
@@ -355,13 +396,41 @@ async def test_prepare_hermes_workspace_mints_tokens_and_writes_one_json_boot_se
 
     await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1", attempt_token="tok-1")
 
-    assert set(written) == {"hookToken", "gatewayToken", "bedrockBearer"}
+    assert set(written) == {"hookToken", "gatewayToken", "bedrockBearer", "providerChoice", "generation"}
+    assert written["providerChoice"] == "bedrock_claude"
+    assert written["generation"] == ""
     assert written["bedrockBearer"] == "bearer-plaintext"
     assert row_fields["hook_token"] == written["hookToken"]
     assert row_fields["gateway_token"] == written["gatewayToken"]
     # Non-terminal: the lease is refreshed, not released -- the provision isn't done yet.
     assert row_kwargs["release_lease"] is False
     assert row_kwargs["attempt_token"] == "tok-1"
+
+
+@pytest.mark.asyncio
+async def test_fresh_managed_workspace_ensures_owner_key_before_boot_secret(monkeypatch):
+    _patch_owner_aws(monkeypatch, existing_row=None)
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "openrouter_managed"}),
+    )
+    order = []
+
+    async def ensure_key(owner_id):
+        order.append(("key", owner_id))
+        return "hash-only"
+
+    async def write_secret(owner_id, **kwargs):
+        order.append(("boot", owner_id))
+        assert kwargs["provider_choice"] == "openrouter_managed"
+        return "lightbulb/dev/hermes/org_a/boot"
+
+    monkeypatch.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", ensure_key)
+    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", write_secret)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", AsyncMock())
+
+    await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1")
+    assert order == [("key", "org_a"), ("boot", "org_a")]
 
 
 @pytest.mark.asyncio
@@ -797,7 +866,16 @@ async def test_create_record_poll_happen_in_that_order(monkeypatch):
         "create",
         ("record", {"agentcore_runtime_arn": "arn:r1"}, False),
         "poll",
-        ("record", {"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:r1", "status": "running"}, True),
+        (
+            "record",
+            {
+                "runtime_host": "agentcore",
+                "agentcore_runtime_arn": "arn:r1",
+                "status": "running",
+                "needs_provision": False,
+            },
+            True,
+        ),
     ]
 
 

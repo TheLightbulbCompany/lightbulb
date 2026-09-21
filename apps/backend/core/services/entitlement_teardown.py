@@ -99,7 +99,8 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
     # do NOT: the resubscribe's provision has already returned success, so
     # nothing retries, and the owner's chat just hard-fails on Bedrock. Cheap
     # strongly-consistent read against that.
-    if still_entitled(await billing_repo.get_by_owner_id(owner_id, consistent_read=True)):
+    current_account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+    if still_entitled(current_account):
         logger.warning(
             "entitlement.teardown ABORTED for owner %s trigger=%s — became entitled again "
             "mid-teardown (resubscribe or redelivered webhook); leaving the runtime alone",
@@ -120,6 +121,17 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
         await delete_workspace_runtime(owner_id)
     except Exception:
         logger.exception("entitlement.teardown container delete failed for owner %s", owner_id)
+
+    # A workspace can have an old managed key even if it currently uses BYOK or
+    # ChatGPT. Retire by key existence/state, not the current provider choice.
+    # The gate already denies a canceled subscription; the settlement worker
+    # keeps the key usable for pending generation lookups until the outbox drains.
+    try:
+        from core.repositories.openrouter_key_repo import mark_retiring
+
+        await mark_retiring(owner_id)
+    except Exception:
+        logger.exception("entitlement.teardown OpenRouter key retirement failed for owner %s", owner_id)
 
     # Pause the nightly CEO routine and cancel its looping in-progress issues.
     # This MUST run BEFORE ``disable`` below: ``disable`` flips this owner's

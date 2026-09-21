@@ -161,6 +161,12 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       // both secrets are populated.
       STRIPE_ULTRA_PRICE_ID_DEV: "${{ secrets.STRIPE_ULTRA_PRICE_ID_DEV }}",
       STRIPE_ULTRA_PRICE_ID_PROD: "${{ secrets.STRIPE_ULTRA_PRICE_ID_PROD }}",
+      OPENROUTER_WORKSPACE_ID_DEV: "${{ vars.OPENROUTER_WORKSPACE_ID_DEV }}",
+      OPENROUTER_WORKSPACE_ID_PROD: "${{ vars.OPENROUTER_WORKSPACE_ID_PROD }}",
+      OPENROUTER_KEY_DAILY_LIMIT_USD_DEV: "${{ vars.OPENROUTER_KEY_DAILY_LIMIT_USD_DEV }}",
+      OPENROUTER_KEY_DAILY_LIMIT_USD_PROD: "${{ vars.OPENROUTER_KEY_DAILY_LIMIT_USD_PROD }}",
+      OPENROUTER_MANAGED_MODEL_ID_DEV: "${{ vars.OPENROUTER_MANAGED_MODEL_ID_DEV }}",
+      OPENROUTER_MANAGED_MODEL_ID_PROD: "${{ vars.OPENROUTER_MANAGED_MODEL_ID_PROD }}",
       // Same secrets the Vercel build job already consumes (lines below).
       // Re-exported here so service-stack.ts can bake the publishable key
       // into the backend container env at synth time — the paperclip-proxy

@@ -24,6 +24,16 @@ describe("agentCatalog over the models.list payload", () => {
     ]);
   });
 
+  it("uses only the server-approved managed model list", () => {
+    const managed = {
+      models: [{ id: "deepseek/deepseek-v4", name: "DeepSeek V4", provider: "custom" }],
+      defaultId: "deepseek/deepseek-v4",
+    };
+    expect(listCatalogModels(managed)).toEqual([
+      { ref: "deepseek/deepseek-v4", name: "DeepSeek V4" },
+    ]);
+  });
+
   it("still pins the agent's current model to the front when the list omits it", () => {
     const [first] = buildSelectorModels(list, "retired-model");
     expect(first.ref).toBe("retired-model");

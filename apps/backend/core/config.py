@@ -204,6 +204,8 @@ class Settings(BaseSettings):
     METRONOME_WEBHOOK_SECRET: str = ""
     """HMAC-SHA256 key for verifying Metronome-Webhook-Signature on inbound webhooks."""
     METRONOME_FAST_GATE_TABLE: str = ""
+    OPENROUTER_WORKSPACE_ID: str = ""
+    OPENROUTER_KEY_DAILY_LIMIT_USD: float = 0.0
     """DDB table backing the local fast-gate flag the synchronous chat gate reads."""
     METRONOME_RATE_CARD_ID: str = ""
     """Rate card the per-customer contract references at provision time.
@@ -283,6 +285,9 @@ class Settings(BaseSettings):
     stack) via ``core.billing.bedrock_gate_url.gate_url`` — the gateway is the
     STANDARD Bedrock path, so nothing is wired through task env. When this
     override is set it wins over SSM; empty (the default) means "ask SSM"."""
+    OPENROUTER_GATE_URL: str = ""
+    OPENROUTER_MANAGED_MODEL_ID: str = ""
+    OPENROUTER_MANAGED_ENABLED: bool = False
 
     # Billing / Stripe
     STRIPE_SECRET_KEY: str = ""

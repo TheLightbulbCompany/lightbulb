@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { ChangeProviderModal } from "../ChangeProviderModal";
 
@@ -47,13 +47,14 @@ describe("ChangeProviderModal initialChoice", () => {
     });
   });
 
-  const renderModal = (initialChoice?: "chatgpt_oauth" | "byo_key" | null) =>
+  const renderModal = (initialChoice?: "chatgpt_oauth" | "byo_key" | null, managedInferenceAvailable = false) =>
     render(
       <ChangeProviderModal
         open
         currentProvider={null}
         currentByoProvider={null}
         initialChoice={initialChoice}
+        managedInferenceAvailable={managedInferenceAvailable}
         onClose={vi.fn()}
         onCommitted={vi.fn()}
       />,
@@ -65,6 +66,17 @@ describe("ChangeProviderModal initialChoice", () => {
     expect(screen.getByText("Sign in with ChatGPT")).toBeInTheDocument();
     expect(screen.getByText("Bring your own API key")).toBeInTheDocument();
     expect(pickerCards()).toHaveLength(3);
+    expect(screen.queryByText("Lightbulb-managed models")).toBeNull();
+  });
+
+  it("offers the managed route without asking for a key when available", async () => {
+    renderModal(null, true);
+    expect(screen.queryByText("Powered by Claude")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Lightbulb-managed models/ }));
+    await waitFor(() => expect(mockApiPost).toHaveBeenCalledWith("/billing/provider", {
+      provider_choice: "openrouter_managed",
+    }));
+    expect(screen.queryByPlaceholderText(/sk-/)).toBeNull();
   });
 
   it("opens on the ChatGPT device-code stage for chatgpt_oauth", () => {

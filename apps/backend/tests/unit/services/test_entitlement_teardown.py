@@ -14,6 +14,12 @@ import pytest
 from core.services import entitlement_teardown
 
 
+@pytest.fixture(autouse=True)
+def _no_real_openrouter_key_retirement():
+    with patch("core.repositories.openrouter_key_repo.mark_retiring", new=AsyncMock(return_value=False)):
+        yield
+
+
 @pytest.fixture
 def _runtime():
     """Stub the side effects, so tests assert on intent not on AWS."""
@@ -99,6 +105,29 @@ async def test_the_last_provider_ending_tears_the_runtime_down(_runtime):
 
     _runtime.facts.assert_awaited_once_with("user_1", account_overrides={"subscription_status": "canceled"})
     _runtime.runtime.assert_awaited_once_with("user_1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_choice", ["openrouter_managed", "byo_key", "chatgpt_oauth"])
+async def test_canceled_owner_retires_any_old_managed_key(_runtime, provider_choice):
+    retire = AsyncMock(return_value=True)
+    with (
+        patch.object(
+            entitlement_teardown.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "org_1",
+                    "subscription_status": "canceled",
+                    "provider_choice": provider_choice,
+                }
+            ),
+        ),
+        patch("core.repositories.openrouter_key_repo.mark_retiring", retire),
+    ):
+        assert await entitlement_teardown.teardown_if_unentitled("org_1", trigger="subscription_deleted") is True
+    _runtime.runtime.assert_awaited_once_with("org_1")
+    retire.assert_awaited_once_with("org_1")
 
 
 @pytest.mark.asyncio

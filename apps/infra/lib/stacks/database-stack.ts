@@ -39,6 +39,8 @@ export class DatabaseStack extends cdk.Stack {
   public readonly webhookDedupTable: dynamodb.Table;
   public readonly adminActionsTable: dynamodb.Table;
   public readonly metronomeFastGateTable: dynamodb.Table;
+  public readonly openrouterKeysTable: dynamodb.Table;
+  public readonly openrouterRequestsTable: dynamodb.Table;
   public readonly bedrockAipOwnersTable: dynamodb.Table;
   public readonly oauthTokensTable: dynamodb.Table;
   public readonly oauthStateTable: dynamodb.Table;
@@ -284,6 +286,19 @@ export class DatabaseStack extends cdk.Stack {
     // projection is wipeable cache state. PK owner_id.
     this.metronomeFastGateTable = createTable("MetronomeFastGateTable", "metronome-fast-gate", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+    });
+
+    this.openrouterKeysTable = createTable("OpenRouterKeysTable", "openrouter-keys", {
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+    });
+
+    this.openrouterRequestsTable = createTable("OpenRouterRequestsTable", "openrouter-requests", {
+      partitionKey: { name: "request_id", type: dynamodb.AttributeType.STRING },
+    });
+    this.openrouterRequestsTable.addGlobalSecondaryIndex({
+      indexName: "state-created-index",
+      partitionKey: { name: "state", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "created_at", type: dynamodb.AttributeType.NUMBER },
     });
 
     // Per-owner Bedrock AIP -> owner reverse index (Plan 2). PK aip_arn.

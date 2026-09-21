@@ -20,6 +20,7 @@ class BillingAccountResponse(BaseModel):
     # to render.
     provider_choice: str | None = None
     byo_provider: str | None = None
+    managed_inference_available: bool = False
     # Pricing tier: "standard" (Workspace) or "ultra_pro" (Ultra). Defaults to
     # "standard" so a billing row created before the plan field existed (no
     # `plan` key) surfaces cleanly rather than as null.

@@ -151,9 +151,8 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
       return {
         title: "Out of credits",
         description:
-          "Your Claude credit balance is used up. Top up to keep your agents running.",
-        // In-shell: routes into CreditsStep, same as OutOfCreditsBanner.
-        action: { label: "Top up now", href: "/chat?provider=bedrock_claude" },
+          "Your workspace credit balance is used up. Top up to keep your agents running.",
+        action: { label: "Top up now", href: "/chat?panel=llm" },
       };
     case "subscription_inactive":
       return {

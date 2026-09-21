@@ -532,7 +532,7 @@ async def _evaluate_provision_gate_inner(
         )
 
     # Layer 3 — provider-specific prerequisites.
-    if provider_choice == "bedrock_claude":
+    if provider_choice in {"bedrock_claude", "openrouter_managed"}:
         # Credits pool at the owner level — org members all draw from one
         # balance funded by the admin. Blocked-ness comes from the shared
         # Metronome fast-gate read (webhook-fed flag + lazy getNetBalance
@@ -542,8 +542,16 @@ async def _evaluate_provision_gate_inner(
         if await is_owner_blocked(owner_id):
             return Gate(
                 code="credits_required",
-                title="Top up Claude credits to start your container",
-                message="Top up some Claude credits to start your Bedrock container.",
+                title=(
+                    "Top up Lightbulb credits to start your workspace"
+                    if provider_choice == "openrouter_managed"
+                    else "Top up Claude credits to start your container"
+                ),
+                message=(
+                    "Top up Lightbulb credits to continue managed inference."
+                    if provider_choice == "openrouter_managed"
+                    else "Top up some Claude credits to start your Bedrock container."
+                ),
                 action_label="Top up now",
                 # The PROVIDERS panel, not billing. Credits are sold by
                 # CreditsSection, which LLMPanel embeds (see

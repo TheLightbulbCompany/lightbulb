@@ -742,6 +742,23 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "OpenRouterOwnerSecretsRW",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+        ],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/openrouter/owners/*`,
+        ],
+      }),
+    );
+
     // Per-owner integration credential secrets (credential-layer redesign):
     // paste-key tokens and backend-custodian OAuth credentials live under
     // isol8/{env}/integrations/*. The secret-free integrations DDB index points
@@ -800,6 +817,7 @@ export class ServiceStack extends cdk.Stack {
         actions: [
           "secretsmanager:CreateSecret",
           "secretsmanager:PutSecretValue",
+          "secretsmanager:UpdateSecretVersionStage",
           "secretsmanager:UpdateSecret",
           "secretsmanager:DeleteSecret",
           "secretsmanager:GetSecretValue",
@@ -927,6 +945,16 @@ export class ServiceStack extends cdk.Stack {
         actions: ["ssm:GetParameter"],
         resources: [
           `arn:aws:ssm:${this.region}:${this.account}:parameter/lightbulb/${env}/bedrock-gate-url`,
+        ],
+      }),
+    );
+
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "OpenRouterGateUrlParamRead",
+        actions: ["ssm:GetParameter"],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/lightbulb/${env}/openrouter-gate-url`,
         ],
       }),
     );
@@ -1454,6 +1482,16 @@ export class ServiceStack extends cdk.Stack {
       // DynamoDbOwnedTables wildcard statement, so no cross-stack export is
       // created.
       METRONOME_FAST_GATE_TABLE: tableName(env, "metronome-fast-gate"),
+      OPENROUTER_WORKSPACE_ID: env === "dev"
+        ? (process.env.OPENROUTER_WORKSPACE_ID_DEV ?? "")
+        : (process.env.OPENROUTER_WORKSPACE_ID_PROD ?? ""),
+      OPENROUTER_KEY_DAILY_LIMIT_USD: env === "dev"
+        ? (process.env.OPENROUTER_KEY_DAILY_LIMIT_USD_DEV || "0")
+        : (process.env.OPENROUTER_KEY_DAILY_LIMIT_USD_PROD || "0"),
+      OPENROUTER_MANAGED_MODEL_ID: env === "dev"
+        ? (process.env.OPENROUTER_MANAGED_MODEL_ID_DEV ?? "")
+        : (process.env.OPENROUTER_MANAGED_MODEL_ID_PROD ?? ""),
+      OPENROUTER_MANAGED_ENABLED: "false",
       // Per-env rate card the per-customer contract references at
       // provision. Dev = sandbox rate card (2026-06-10); prod =
       // isol8-bedrock-prod (2026-06-12). Both price AWS us. CRIS x 1.03

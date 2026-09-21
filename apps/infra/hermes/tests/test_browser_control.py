@@ -84,3 +84,25 @@ def test_runless_turns_never_share_a_controller_identity():
     second = browser_control.begin_turn("", "ceo")
     assert first["runId"] != second["runId"]
     browser_control.release(second)
+
+
+def test_signed_url_stays_stable_until_refresh_and_then_requires_snapshot(monkeypatch):
+    monkeypatch.setenv('AGENT_BROWSER_CDP', 'http://127.0.0.1:8080')
+    clock = [1000.0]
+    monkeypatch.setattr(browser_control.time, 'time', lambda: clock[0])
+    urls = iter(('wss://aws.example/first', 'wss://aws.example/second', 'wss://aws.example/third'))
+    with patch.object(browser_control, '_post', side_effect=lambda *a, **k: {'generation': 'stable', 'cdpUrl': next(urls)}), patch.object(browser_control, '_disconnect', return_value=True) as disconnect:
+        state = browser_control.begin_turn('url-cache-run', 'agent')
+        assert browser_control._refresh(state, 'task')
+        state['snapshotGeneration'] = 'stable'
+        clock[0] += 5
+        assert browser_control._refresh(state, 'task')
+        assert browser_control.discovery_payload()['webSocketDebuggerUrl'] == 'wss://aws.example/first'
+        assert state['snapshotGeneration'] == 'stable'
+        clock[0] += 240
+        assert browser_control._refresh(state, 'task')
+        assert browser_control.discovery_payload()['webSocketDebuggerUrl'] == 'wss://aws.example/third'
+        assert state['snapshotGeneration'] is None
+        disconnect.assert_called_once_with('task')
+    browser_control._TURN.set(None)
+    browser_control._CURRENT.clear()

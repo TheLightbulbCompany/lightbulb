@@ -130,6 +130,13 @@ from tools.browser_tool_install import _chromium_installed; assert not _chromium
 sys.path.insert(0,'/opt/hermes'); from tools.browser_tool_install import _chromium_installed; \
 assert _chromium_installed()"
 
+# The released CLI rewrites /json/version's WebSocket host to its HTTP discovery
+# host. Resolve our loopback metadata in a child launcher so traffic goes to AWS,
+# not wss://127.0.0.1:8080. The upstream binary remains unchanged.
+COPY --chmod=755 browser_cli.py /opt/lightbulb/bin/agent-browser
+RUN test -x /usr/local/bin/agent-browser && /opt/lightbulb/bin/agent-browser --version
+ENV PATH="/opt/lightbulb/bin:${PATH}"
+
 COPY bridge /opt/bridge/bridge
 COPY plugins/ /opt/hermes/plugins/
 # Bundled agent-facing skills. NOT checked in: `skills/` is GENERATED into this build

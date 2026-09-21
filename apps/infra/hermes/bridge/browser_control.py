@@ -56,7 +56,14 @@ def _refresh(state: dict, task_id: str = "") -> bool:
     result = _post("acquire", {"runId": state["runId"], "agentId": state["agentId"]}, timeout=10.0)
     if not result or not result.get("cdpUrl") or result.get("generation") is None:
         return False
-    changed = state.get("generation") not in (None, result["generation"])
+    now = time.time()
+    with _LOCK:
+        cached = dict(_CURRENT)
+    same = state.get("generation") == result["generation"] and cached.get("runId") == state["runId"]
+    reuse_url = same and cached.get("urlExpiresAt", 0) > now
+    # agent-browser hashes the entire CDP URL; changing its signature relaunches the
+    # connection and invalidates element refs. Refresh only with a fresh snapshot.
+    changed = state.get("generation") is not None and not reuse_url
     if changed and not _disconnect(task_id):
         return False
     with _LOCK:
@@ -65,8 +72,9 @@ def _refresh(state: dict, task_id: str = "") -> bool:
         if changed:
             state["pendingSnapshots"].clear()
         _CURRENT.clear()
-        _CURRENT.update({"cdpUrl": result["cdpUrl"],
-                         "leaseExpiresAt": result.get("leaseExpiresAt", time.time() + 30), **state})
+        _CURRENT.update({"cdpUrl": cached["cdpUrl"] if reuse_url else result["cdpUrl"],
+                         "urlExpiresAt": cached["urlExpiresAt"] if reuse_url else now + 240,
+                         "leaseExpiresAt": result.get("leaseExpiresAt", now + 30), **state})
     return True
 
 

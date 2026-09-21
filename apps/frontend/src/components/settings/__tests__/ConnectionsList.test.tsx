@@ -72,6 +72,24 @@ describe("ConnectionsList — delivery receipts", () => {
     expect(screen.getByText(/payment tools/i)).toBeInTheDocument();
   });
 
+  it("does not present an unsupported old grant as usable by agents", () => {
+    h.connections = [
+      {
+        provider: "stripe",
+        display_name: "Stripe",
+        acquisition: "direct_oauth",
+        status: "connected",
+        actor: "mcp",
+        runtime_supported: false,
+      },
+    ];
+    render(<ConnectionsList canManage />);
+
+    expect(screen.getByText(/authorized.*unavailable to agents/i)).toBeInTheDocument();
+    expect(screen.queryByText(/delivered:/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Disconnect Stripe" })).toBeInTheDocument();
+  });
+
   it("shows what a disconnected provider will deliver", () => {
     h.connections = [
       { provider: "github", display_name: "GitHub", acquisition: "paste_token", status: "disconnected" },

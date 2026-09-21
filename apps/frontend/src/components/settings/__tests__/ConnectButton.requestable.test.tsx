@@ -51,6 +51,12 @@ function renderButton(overrides: Partial<React.ComponentProps<typeof ConnectButt
 }
 
 describe("ConnectButton requestable", () => {
+  it("offers no action for a provider the current runtime cannot use", () => {
+    renderButton({ connection: { ...requestableRow, requestable: false } });
+
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
   it("offers Request access and no Connect for a gated provider", () => {
     renderButton();
 

@@ -134,4 +134,23 @@ describe("StripeSection — the consolidated Stripe card", () => {
     expect(screen.getByRole("button", { name: "Disconnect Stripe" })).toBeInTheDocument();
     expect(screen.queryByText(/pick the same account/)).toBeNull();
   });
+
+  it("keeps Disconnect but does not claim an unsupported old agent grant works", async () => {
+    get.mockResolvedValue(COMPANY_UNBOUND);
+    h.connections = [
+      {
+        provider: "stripe",
+        display_name: "Stripe",
+        acquisition: "direct_oauth",
+        status: "connected",
+        actor: "mcp",
+        runtime_supported: false,
+      },
+    ];
+    renderSection();
+
+    expect(await screen.findByText(/Authorized · unavailable to agents/)).toBeInTheDocument();
+    expect(screen.queryByText(/Delivered:/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Disconnect Stripe" })).toBeInTheDocument();
+  });
 });

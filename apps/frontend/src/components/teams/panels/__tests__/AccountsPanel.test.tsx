@@ -51,8 +51,9 @@ vi.mock("@/components/settings/ProvisionedResources", () => ({
   }),
 }));
 
+let connectionRows = [{ provider: "github", status: "connected", runtime_supported: true }];
 vi.mock("@/hooks/useConnections", () => ({
-  useConnections: () => ({ connections: [{ provider: "github", status: "connected" }] }),
+  useConnections: () => ({ connections: connectionRows }),
 }));
 
 let canManage = true;
@@ -76,6 +77,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   canManage = true;
   railProviders = [];
+  connectionRows = [{ provider: "github", status: "connected", runtime_supported: true }];
   get.mockResolvedValue({ ...POLICY });
   patch.mockResolvedValue({ ...POLICY });
   post.mockResolvedValue({ revoked: ["workflows_cancelled:2"] });
@@ -96,6 +98,13 @@ describe("AccountsPanel — masthead + composition", () => {
     renderPanel();
     await screen.findByText("Ask me first: Moving money");
     expect(screen.getByTestId("panel-masthead-meta")).toHaveTextContent("2 connected");
+  });
+
+  it("does not count an unsupported old grant as wired", async () => {
+    connectionRows = [{ provider: "github", status: "connected", runtime_supported: false }];
+    renderPanel();
+    await screen.findByText("Ask me first: Moving money");
+    expect(screen.getByTestId("panel-masthead-meta")).toHaveTextContent("0 connected");
   });
 });
 

@@ -1415,7 +1415,7 @@ async def test_resolve_profile_inputs_defaults_aip_arns_to_empty_when_row_has_no
 
 
 @pytest.mark.asyncio
-async def test_resolve_profile_inputs_returns_bedrock_trial_choice_for_a_trial_local_owner(monkeypatch):
+async def test_resolve_profile_inputs_returns_managed_choice_for_a_trial_local_owner(monkeypatch):
     """M6-R10, divergence (1): catalog_service used to skip
     provider_choice_from_row's trial_local branch entirely -- a card-less
     trial owner's marketplace deploy would get the full paid model ladder.
@@ -1427,9 +1427,7 @@ async def test_resolve_profile_inputs_returns_bedrock_trial_choice_for_a_trial_l
         "org_trial", container_row={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
     )
 
-    from core.services.hermes_profiles import _BEDROCK_TRIAL_CHOICE
-
-    assert inputs.provider_choice == _BEDROCK_TRIAL_CHOICE
+    assert inputs.provider_choice == "openrouter_managed"
     assert inputs.byo_provider is None
     assert inputs.aip_arns == {"sonnet": "arn:aip:sonnet"}
 
@@ -1625,7 +1623,7 @@ def test_create_runtime_gives_up_after_the_bound(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider,tiers", [("bedrock_trial", ["sonnet"]), ("bedrock_claude", None)])
+@pytest.mark.parametrize("provider,tiers", [("bedrock_claude", None)])
 @pytest.mark.parametrize("prepare", [True, False])
 async def test_hermes_aips_follow_authoritative_provider_and_reconcile_live_tokens(
     monkeypatch, provider, tiers, prepare

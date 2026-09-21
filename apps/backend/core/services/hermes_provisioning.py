@@ -844,7 +844,8 @@ async def reconcile_hermes_aips(owner_id: str) -> dict[str, str]:
     from core.billing.bedrock_aip import ensure_owner_aips
     from core.billing.bedrock_gate_tokens import reconcile_gate_token_tiers
     from core.repositories import billing_repo
-    from core.services.container_provision import BEDROCK_TRIAL_CHOICE, provider_choice_from_row
+    from core.services.hermes_profiles import _BEDROCK_TRIAL_CHOICE as BEDROCK_TRIAL_CHOICE
+    from core.services.container_provision import provider_choice_from_row
 
     # This read rewrites authorization and meter classification: a stale trial
     # row after checkout would narrow a paying workspace back to Sonnet.

@@ -38,6 +38,7 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
             authToken: credentials.authToken,
             divId: displayId.current,
             baseUrl: "/nice-dcv-web-client-sdk/dcvjs-esm",
+            enabledChannels: ["display", "input", "clipboard", "filestorage"],
             callbacks: { disconnect: () => !disposed && setError("Browser viewer disconnected.") },
             observers: { httpExtraSearchParams: () => new URL(signedUrl).searchParams },
           });

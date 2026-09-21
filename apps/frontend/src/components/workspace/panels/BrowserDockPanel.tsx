@@ -21,9 +21,7 @@ import { useAuth } from "@clerk/nextjs";
 import { useRuntimeHost } from "@lightbulb/shared";
 import { ApiError, useApi } from "@/lib/api";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
-import { ensureDcvMediaShim, suppressDcvWebcamRejection } from "./dcvWebKitShim";
-
-suppressDcvWebcamRejection();
+import { ensureDcvMediaShim } from "./dcvWebKitShim";
 
 const BrowserLiveView = lazy(() =>
   import("./DirectDcvLiveView").then((m) => ({ default: m.DirectDcvLiveView })),

@@ -24,8 +24,8 @@ vi.mock("@/lib/api", () => ({
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   useMessagingWorkspaceOptional: () => ({ roomProps: { runs: state.runs }, directoryProps: { participants: state.participants } }),
 }));
-vi.mock("bedrock-agentcore/browser/live-view", () => ({
-  BrowserLiveView: ({ signedUrl, remoteWidth, remoteHeight }: {
+vi.mock("../panels/DirectDcvLiveView", () => ({
+  DirectDcvLiveView: ({ signedUrl, remoteWidth, remoteHeight }: {
     signedUrl: string;
     remoteWidth?: number;
     remoteHeight?: number;

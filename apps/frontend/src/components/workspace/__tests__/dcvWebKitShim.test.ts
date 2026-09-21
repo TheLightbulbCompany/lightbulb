@@ -1,9 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { ensureDcvMediaShim } from "../panels/dcvWebKitShim";
 
 describe("ensureDcvMediaShim", () => {
-  it("supplies a writable mediaDevices object when WebKit exposes no media API", async () => {
+  it("supplies a writable mediaDevices object when WebKit exposes no media API", () => {
     const original = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
     Object.defineProperty(navigator, "mediaDevices", {
       configurable: true,
@@ -13,12 +13,7 @@ describe("ensureDcvMediaShim", () => {
 
     try {
       ensureDcvMediaShim();
-      expect(navigator.mediaDevices).toMatchObject({ getUserMedia: expect.any(Function) });
-      await expect(navigator.mediaDevices.getUserMedia({ video: true })).resolves.toMatchObject({
-        getAudioTracks: expect.any(Function),
-        getTracks: expect.any(Function),
-        getVideoTracks: expect.any(Function),
-      });
+      expect(navigator.mediaDevices).toEqual({});
     } finally {
       if (original) Object.defineProperty(navigator, "mediaDevices", original);
       else delete (navigator as Navigator & { mediaDevices?: MediaDevices }).mediaDevices;
@@ -43,21 +38,4 @@ describe("ensureDcvMediaShim", () => {
     }
   });
 
-  it("replaces WebKit's unsupported media probe inside Tauri", async () => {
-    const originalMedia = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
-    const originalTauri = Object.getOwnPropertyDescriptor(window, "__TAURI__");
-    const unsupported = vi.fn(() => Promise.reject(new Error("unsupported")));
-    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: unsupported } });
-    Object.defineProperty(window, "__TAURI__", { configurable: true, value: {} });
-
-    try {
-      ensureDcvMediaShim();
-      await expect(navigator.mediaDevices.getUserMedia({ video: true })).resolves.toMatchObject({ getTracks: expect.any(Function) });
-      expect(unsupported).not.toHaveBeenCalled();
-    } finally {
-      if (originalMedia) Object.defineProperty(navigator, "mediaDevices", originalMedia);
-      if (originalTauri) Object.defineProperty(window, "__TAURI__", originalTauri);
-      else delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
-    }
-  });
 });

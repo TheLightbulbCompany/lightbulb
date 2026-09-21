@@ -64,8 +64,12 @@ export class OpenRouterGateStack extends cdk.Stack {
         FAST_GATE_TABLE: `${tablePrefix(env)}metronome-fast-gate`,
         OPENROUTER_KEYS_TABLE: `${tablePrefix(env)}openrouter-keys`,
         REQUESTS_TABLE: `${tablePrefix(env)}openrouter-requests`,
-        MODEL_POLICY_JSON: "{}",
-        OPENROUTER_MANAGED_ENABLED: "false",
+        MODEL_POLICY_JSON: env === "dev"
+          ? (process.env.OPENROUTER_MODEL_POLICY_JSON_DEV ?? "{}")
+          : (process.env.OPENROUTER_MODEL_POLICY_JSON_PROD ?? "{}"),
+        OPENROUTER_MANAGED_ENABLED: env === "dev"
+          ? (process.env.OPENROUTER_MANAGED_ENABLED_DEV ?? "false")
+          : (process.env.OPENROUTER_MANAGED_ENABLED_PROD ?? "false"),
         MAX_BODY_BYTES: "262144",
         MAX_OUTPUT_TOKENS: "4096",
         RESERVE_ESTIMATE_MICROCENTS: "300000",

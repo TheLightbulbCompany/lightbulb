@@ -254,7 +254,11 @@ class NodeSession:
             raise NodeCapacity()
         frame = invoke_request(invoke_id, self.node_id, command, params, timeout_ms)
         if len(frame["payload"]["paramsJSON"].encode()) > (
-            768 * 1024 if command in {"browser.proxy.upload.v1", "file.write"} else 16_384
+            768 * 1024
+            if command in {"browser.proxy.upload.v1", "file.write"}
+            else 32_768
+            if command == "desktop.operation.approve.v1"
+            else 16_384
         ):
             raise NodeCapacity()
         future: asyncio.Future = asyncio.get_running_loop().create_future()

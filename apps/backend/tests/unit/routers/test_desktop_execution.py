@@ -31,6 +31,33 @@ def app():
     return app
 
 
+async def test_native_approval_wrapper_has_room_for_maximum_command_summary(app):
+    # A valid near-16KiB normalized command plus its authenticated prompt wrapper
+    # is larger than the public command budget, yet comfortably below 32KiB.
+    body = {
+        "params": {"operation": {"command": "system.run", "params": {"argv": ["a" * 3980] * 4, "cwd": "/tmp"}}},
+        "binding": "b" * 512,
+    }
+    with (
+        patch.object(routes.settings, "WS_INTERNAL_SECRET", "internal"),
+        patch.object(service, "handle_approval_peer", AsyncMock(return_value={"approved": False})),
+    ):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/desktop-execution/internal/approval",
+                json=body,
+                headers={"x-lightbulb-ws-internal": "internal"},
+            )
+            assert response.status_code == 200
+            body["padding"] = "x" * 32768
+            response = await client.post(
+                "/api/v1/desktop-execution/internal/approval",
+                json=body,
+                headers={"x-lightbulb-ws-internal": "internal"},
+            )
+            assert response.status_code == 413
+
+
 async def test_route_does_not_trust_hook_token_alone_or_member_headers(app):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         with patch.object(routes.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "hook"})):
@@ -46,6 +73,27 @@ async def test_route_does_not_trust_hook_token_alone_or_member_headers(app):
                 "/api/v1/desktop-execution/devices", headers=HEADERS | {"X-Desktop-Member": "other"}
             )
             assert response.status_code == 403
+
+
+async def test_public_admission_uses_canonical_run_and_strict_selection(app):
+    selection = {"deviceId": "device_1", "expectedConnectionGeneration": "gen_1", "command": "device.info"}
+    with (
+        patch.object(routes.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "hook"})),
+        patch.object(service, "authorize_run", AsyncMock(return_value=AUTH)) as authorize,
+        patch.object(service, "admit_device", AsyncMock(return_value={"admissionToken": "server-capability"})) as admit,
+    ):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/api/v1/desktop-execution/admission", headers=HEADERS, json=selection)
+            assert response.status_code == 200
+            assert response.json() == {"admissionToken": "server-capability"}
+            authorize.assert_awaited_with("user_1", "run_1", "agent_1", "room", active=True)
+            admit.assert_awaited_once_with(AUTH, selection)
+            for extra in ({"memberId": "other"}, {"approved": True}, {"command": "system.execApprovals.set"}):
+                response = await client.post(
+                    "/api/v1/desktop-execution/admission", headers=HEADERS, json=selection | extra
+                )
+                assert response.status_code == 400
+            assert admit.await_count == 1
 
 
 async def test_file_write_public_binary_boundary_and_internal_policy_secret(app):
@@ -200,7 +248,7 @@ async def test_real_room_authority_comes_from_human_trigger_and_current_membersh
             await service.authorize_run("user_1", "run_1", "agent_1", "room", active=True)
 
 
-async def test_paperclip_rejects_forged_actual_run_and_discloses_missing_member_authority():
+async def test_paperclip_rejects_forged_run_and_never_infers_member_authority():
     from types import SimpleNamespace
     from core.repositories.paperclip_repo import PaperclipRepo
     from core.services import paperclip_admin_client, paperclip_admin_session
@@ -210,11 +258,16 @@ async def test_paperclip_rejects_forged_actual_run_and_discloses_missing_member_
         get_heartbeat_run=AsyncMock(
             return_value={"id": "run_1", "companyId": "company_1", "agentId": "other", "status": "running"}
         ),
-        get_agent=AsyncMock(return_value={"companyId": "company_1"}),
+        get_agent=AsyncMock(return_value={"id": "agent_1", "companyId": "company_1"}),
     )
     with (
+        patch.object(PaperclipRepo, "resolve_owner_row", AsyncMock(return_value=SimpleNamespace(user_id="user_1"))),
         patch.object(
-            PaperclipRepo, "resolve_owner_row", AsyncMock(return_value=SimpleNamespace(company_id="company_1"))
+            PaperclipRepo,
+            "get",
+            AsyncMock(
+                return_value=SimpleNamespace(user_id="user_1", org_id="", company_id="company_1", status="active")
+            ),
         ),
         patch.object(paperclip_admin_client, "shared_admin_client", lambda: admin),
         patch.object(paperclip_admin_session, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
@@ -222,8 +275,8 @@ async def test_paperclip_rejects_forged_actual_run_and_discloses_missing_member_
         with pytest.raises(service.DesktopError, match="run_forbidden"):
             await service.authorize_run("user_1", "run_1", "agent_1", "paperclip", active=True)
         admin.get_heartbeat_run.return_value["agentId"] = "agent_1"
-        with pytest.raises(service.DesktopError, match="paperclip_member_authority_unavailable"):
-            await service.authorize_run("user_1", "run_1", "agent_1", "paperclip", active=True)
+        auth = await service.authorize_run("user_1", "run_1", "agent_1", "paperclip", active=True)
+        assert auth["companyId"] == "company_1" and "memberId" not in auth
 
 
 async def test_public_submit_rejects_bypass_fields_and_internal_caller_addresses(app):

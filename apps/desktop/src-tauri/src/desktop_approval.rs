@@ -16,10 +16,49 @@ struct Approval {
     agent: String,
     device: String,
     run: String,
-    argv: Vec<String>,
-    cwd: String,
-    env: std::collections::BTreeMap<String, String>,
+    argv: Option<Vec<String>>,
+    cwd: Option<String>,
+    env: Option<std::collections::BTreeMap<String, String>>,
+    company: Option<String>,
+    native_device: Option<String>,
+    operation: Option<Value>,
     expires_at_ms: u64,
+}
+
+impl Approval {
+    fn valid_operation(&self) -> bool {
+        match (
+            &self.operation,
+            &self.company,
+            &self.native_device,
+            &self.argv,
+            &self.cwd,
+            &self.env,
+        ) {
+            (Some(operation), Some(company), Some(native), None, None, None) => {
+                !company.is_empty()
+                    && company.len() <= 128
+                    && !native.is_empty()
+                    && native.len() <= 128
+                    && operation.is_object()
+                    && operation.to_string().len() <= 32768
+                    && operation
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .is_some_and(|s| !s.is_empty() && s.len() <= 128)
+                    && operation.get("params").is_some_and(Value::is_object)
+            }
+            (None, None, None, Some(argv), Some(cwd), Some(env)) => {
+                !argv.is_empty()
+                    && argv.len() <= 64
+                    && !argv.iter().any(|s| s.len() > 4096 || s.contains('\0'))
+                    && cwd.starts_with('/')
+                    && cwd.len() <= 4096
+                    && env.len() <= 16
+            }
+            _ => false,
+        }
+    }
 }
 
 fn now_ms() -> u64 {
@@ -74,12 +113,7 @@ pub async fn prompt(
         || [&p.workspace, &p.agent, &p.device, &p.run]
             .iter()
             .any(|s| s.is_empty() || s.len() > 128)
-        || p.argv.is_empty()
-        || p.argv.len() > 64
-        || p.argv.iter().any(|s| s.len() > 4096 || s.contains('\0'))
-        || !p.cwd.starts_with('/')
-        || p.cwd.len() > 4096
-        || p.env.len() > 16
+        || !p.valid_operation()
     {
         return json!({"approved":false,"binding":p.binding});
     }
@@ -101,7 +135,7 @@ pub async fn prompt(
         &label,
         WebviewUrl::CustomProtocol("desktop-approval://localhost/".parse().unwrap()),
     )
-    .title("Lightbulb — command approval")
+    .title("Lightbulb — operation approval")
     .inner_size(640.0, 600.0)
     .resizable(true)
     .initialization_script(format!("window.__desktopApproval = {};", params))
@@ -130,6 +164,24 @@ pub async fn prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn operation_consent_is_typed_and_cannot_mix_shell_approval() {
+        let request = json!({"binding":"a".repeat(64),"workspace":"org_1","company":"company_1",
+            "agent":"agent_1","run":"run_1","device":"cli","nativeDevice":"native",
+            "operation":{"command":"device.info","params":{}},"expiresAtMs":now_ms()+60_000});
+        let p: Approval = serde_json::from_value(request.clone()).unwrap();
+        assert!(p.valid_operation());
+        let mut mixed = request.clone();
+        mixed["argv"] = json!(["echo"]);
+        assert!(!serde_json::from_value::<Approval>(mixed)
+            .unwrap()
+            .valid_operation());
+        let mut invalid = request;
+        invalid["operation"] = json!("not a typed operation");
+        assert!(!serde_json::from_value::<Approval>(invalid)
+            .unwrap()
+            .valid_operation());
+    }
     #[test]
     fn main_and_duplicate_or_late_responses_cannot_approve() {
         let (tx, mut rx) = oneshot::channel();

@@ -48,7 +48,7 @@ async def _auth(request: Request, *, active: bool) -> dict:
     )
 
 
-async def _body(request: Request, limit=service.MAX_REQUEST_BYTES) -> dict:
+async def _body(request: Request, limit=service.MAX_REQUEST_BYTES, *, command_body=True) -> dict:
     data = bytearray()
     async for chunk in request.stream():
         if len(data) + len(chunk) > limit:
@@ -63,14 +63,18 @@ async def _body(request: Request, limit=service.MAX_REQUEST_BYTES) -> dict:
     if not isinstance(body, dict):
         raise service.DesktopError("invalid_request")
     candidate = body.get("request", body) if body.get("action") == "submit" else body
-    if len(data) > service.MAX_REQUEST_BYTES and not (
-        isinstance(candidate, dict)
-        and (
-            candidate.get("command") == "file.write"
-            or (
-                candidate.get("command") == "browser.proxy"
-                and isinstance(candidate.get("params"), dict)
-                and candidate["params"].get("action") == "upload"
+    if (
+        command_body
+        and len(data) > service.MAX_REQUEST_BYTES
+        and not (
+            isinstance(candidate, dict)
+            and (
+                candidate.get("command") == "file.write"
+                or (
+                    candidate.get("command") == "browser.proxy"
+                    and isinstance(candidate.get("params"), dict)
+                    and candidate["params"].get("action") == "upload"
+                )
             )
         )
     ):
@@ -92,6 +96,24 @@ async def submit(request: Request):
         return await service.submit_desktop(
             auth, request.headers.get("x-desktop-admission", ""), await _body(request, MAX_UPLOAD_REQUEST)
         )
+
+
+@router.post("/admission")
+async def admission(request: Request):
+    async with _boundary():
+        auth = await _auth(request, active=True)
+        selection = await _body(request)
+        if (
+            set(selection) != {"deviceId", "expectedConnectionGeneration", "command"}
+            or not isinstance(selection["command"], str)
+            or selection["command"] not in service.PUBLIC_COMMANDS
+            or any(
+                not isinstance(selection[k], str) or not service._ID.fullmatch(selection[k])
+                for k in ("deviceId", "expectedConnectionGeneration")
+            )
+        ):
+            raise service.DesktopError("invalid_request")
+        return await service.admit_device(auth, selection)
 
 
 @router.get("/operations/{receipt_id}")
@@ -127,11 +149,7 @@ async def internal(request: Request):
             raise HTTPException(403, detail="forbidden")
         body = await _body(request, MAX_UPLOAD_REQUEST + 8192)
         action, auth = body.get("action"), body.get("auth")
-        if (
-            action not in {"admit", "submit", "status", "cancel", "artifact"}
-            or not isinstance(auth, dict)
-            or set(auth) != service.AUTH_FIELDS
-        ):
+        if action not in {"admit", "submit", "status", "cancel", "artifact"} or not service.valid_auth(auth):
             raise service.DesktopError("invalid_request")
         allowed = (
             {"action", "auth", "request"}
@@ -180,7 +198,7 @@ async def approval_peer(request: Request):
         raise HTTPException(403, detail="forbidden")
     try:
         async with asyncio.timeout(service.APPROVAL_SECONDS + 5):
-            return await service.handle_approval_peer(await _body(request))
+            return await service.handle_approval_peer(await _body(request, 32768, command_body=False))
     except service.DesktopError as exc:
         raise HTTPException(exc.status, detail={"code": exc.code}) from None
     except TimeoutError:

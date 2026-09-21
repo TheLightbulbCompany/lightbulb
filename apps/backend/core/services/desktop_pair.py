@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
+    "desktop.operation.approve.v1",
     "system.run.approve.v1",
     "file.access.policy.v1",
     "system.notify",
@@ -45,6 +46,7 @@ DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
 )
 
 DESKTOP_MAC_BASE_COMMANDS: tuple[str, ...] = (
+    "desktop.operation.approve.v1",
     "system.notify",
     "device.info",
     "device.status",
@@ -383,7 +385,11 @@ async def pair_desktop_devices(
     mac_commands = grant.mac_commands()
     if permissions is None:
         # Legacy full access was never explicit consent to the new approval handler.
-        mac_commands = tuple(command for command in mac_commands if command != "system.run.approve.v1")
+        mac_commands = tuple(
+            command
+            for command in mac_commands
+            if command not in {"system.run.approve.v1", "desktop.operation.approve.v1"}
+        )
     cli_commands = grant.cli_commands()
     pairing_group_id = secrets.token_urlsafe(18)
 

@@ -107,6 +107,18 @@ async def test_duplicate_and_changed_input_never_repeat_effect():
     assert len(h.effects) == 1
 
 
+async def test_stop_before_submission_reserves_cancelled_identity():
+    h = Harness()
+    token = h.token()
+    receipt_id = token + "." + REQUEST["requestId"]
+    cancelled = await h.store.cancel(AUTH, receipt_id)
+    assert cancelled["state"] == "rejected"
+    for admission in (token, h.token()):
+        result = await h.store.submit(AUTH, admission, REQUEST)
+        assert result["error"]["code"] == "cancelled_before_dispatch"
+    assert not h.store.tasks and not h.effects
+
+
 async def test_expiry_process_loss_and_forgery_cannot_dispatch():
     h = Harness()
     token = h.token()

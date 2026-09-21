@@ -242,7 +242,7 @@ pub async fn handle_invoke(
             Ok(policy) => Ok(ok_payload(&request, policy)),
             Err(_) => Ok(error_result(&request, "FILE_POLICY_UNAVAILABLE", "No current approved folders")),
         },
-        "system.run.approve.v1" => Ok(ok_payload(&request, crate::desktop_approval::prompt(
+        "system.run.approve.v1" | "desktop.operation.approve.v1" => Ok(ok_payload(&request, crate::desktop_approval::prompt(
             app, parse_screen_params(&request.params_json), cancel.clone()).await)),
         "system.notify" => handle_system_notify(&request).await,
         "device.info" => handle_device_info(&request).await,

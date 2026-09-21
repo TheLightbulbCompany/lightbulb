@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import json
 import logging
@@ -200,6 +201,7 @@ def abort_run(run_id: str) -> bool:
             return False
         entry["aborted"] = True
         agent = entry["agent"]
+    cancel_run_desktop(run_id)
     if agent is not None:
         try:
             agent.interrupt(hard_cancel=True, tool_reason="explicit stop requested")
@@ -834,6 +836,96 @@ def clear_turn_context(root, session_id: str) -> None:
     _turn_context_path(root, session_id).unlink(missing_ok=True)
 
 
+def _desktop_state_path(root, run_id):
+    # Same file contract as plugins/lightbulb/desktop.py; module globals are not shared.
+    return Path(root) / TURN_CONTEXT_DIRNAME / ("desktop-" + hashlib.sha256(run_id.encode()).hexdigest() + ".json")
+
+
+def _start_desktop_turn(root, ctx):
+    with _RUNS_LOCK:
+        entry = RUNS[ctx["runId"]]
+        target = _desktop_state_path(root, ctx["runId"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
+            json.dump({"ctx": ctx, "stopped": entry["aborted"], "receipts": {}}, stream)
+        entry["desktopRoot"] = str(root)
+
+
+def _desktop_active_turn(session_id, run_id):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def scope():
+        with _RUNS_LOCK:
+            root = (RUNS.get(run_id) or {}).get("desktopRoot")
+        if not root:
+            yield
+            return
+        target = Path(root) / TURN_CONTEXT_DIRNAME / ("desktop-active-" + hashlib.sha256(session_id.encode()).hexdigest() + ".json")
+        with os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w") as stream:
+            json.dump({"runId": run_id}, stream)
+        try:
+            yield
+        finally:
+            target.unlink(missing_ok=True)
+
+    return scope()
+
+
+def cancel_run_desktop(run_id):
+    """Latch Stop before returning, then cancel only this run's recorded receipts.
+
+    Shell cancellation requests termination; browser/file/MCP effects cannot be undone.
+    A network failure is unconfirmed cancellation, never permission to replay.
+    """
+    with _RUNS_LOCK:
+        root = (RUNS.get(run_id) or {}).get("desktopRoot")
+    if not root:
+        return None  # Ordinary cloud-only turns have no desktop ledger.
+    try:
+        with _desktop_state_path(root, run_id).open("r+", encoding="utf-8") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            state = json.load(stream)
+            if state["stopped"]:
+                return None
+            state["stopped"] = True
+            stream.seek(0)
+            json.dump(state, stream)
+            stream.truncate()
+    except (OSError, ValueError):
+        log.warning("desktop cancellation ledger unavailable run=%s", run_id)
+        return None
+
+    def cancel_receipts():
+        from concurrent.futures import ThreadPoolExecutor
+
+        ctx = state["ctx"]
+
+        def cancel(receipt_id):
+            request = urllib.request.Request(
+                ctx["apiUrl"].rstrip("/") + "/api/v1/desktop-execution/operations/" + receipt_id + "/cancel",
+                data=b"{}", method="POST", headers={
+                    "Authorization": "Bearer " + ctx["hookToken"], "Content-Type": "application/json",
+                    "X-Desktop-Owner": ctx["ownerId"], "X-Desktop-Run": ctx["runId"],
+                    "X-Desktop-Agent": ctx["agentId"], "X-Desktop-Run-Family": ctx["family"],
+                })
+            try:
+                with urllib.request.urlopen(request, timeout=12) as response:
+                    response.read(1024)
+            except Exception:  # never delay Hermes interrupt or claim physical termination
+                log.warning("desktop cancellation unconfirmed run=%s", run_id)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(cancel, (rid for rid, item in state["receipts"].items()
+                                   if item.get("state") not in {"succeeded", "failed", "rejected"})))
+
+    if not state["receipts"]:
+        return None
+    worker = threading.Thread(target=cancel_receipts, name=f"desktop-stop-{run_id}", daemon=True)
+    worker.start()
+    return worker
+
+
 # ---- the turn --------------------------------------------------------------------------------
 ZERO_USAGE = {"model": MODEL, "inputTokens": 0, "outputTokens": 0,
               "cacheReadTokens": 0, "cacheWriteTokens": 0, "estimatedCostUsd": None}
@@ -1382,7 +1474,7 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
         browser_lease = browser_control.begin_turn(
             str(run_id or ""), agent_id
         )
-        with _hermes_home_scope(agent_id), _secret_scope(agent_id), _terminal_scope(agent_id):
+        with _hermes_home_scope(agent_id), _secret_scope(agent_id), _terminal_scope(agent_id), _desktop_active_turn(session_key, run_id):
             try:
                 agent = _construct_agent(agent_id, body, frames, session_key)
                 attach_agent(run_id, agent)
@@ -1442,7 +1534,8 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     # Hermes's per-session env passthrough, and Hermes resolves each value back out of this
     # same scope.
     browser_lease = browser_control.begin_turn(str(run_id), agent_id)
-    with _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id):
+    # Same-session Paperclip retries must not replace another active desktop ledger.
+    with _turn_lock(agent_id), _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id), _desktop_active_turn(session_id, run_id):
         try:
             agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
             attach_agent(run_id, agent)
@@ -1498,7 +1591,15 @@ def run_paperclip_turn(identity: dict, request: dict) -> None:
             if paperclip_run_aborted(run_id):
                 outcome = "cancelled"
             else:
-                outcome, error, output, usage = _run_native_paperclip(identity, request)
+                _start_desktop_turn(_profile_dir(agent_id), {
+                    "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN,
+                    "agentId": agent_id, "runId": run_id, "sessionKey": session_id, "family": "paperclip",
+                })
+                try:
+                    outcome, error, output, usage = _run_native_paperclip(identity, request)
+                finally:
+                    cancel_run_desktop(run_id)
+                    _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
         except Exception as exc:  # noqa: BLE001 -- return the class, never exception text/prompt data
             if paperclip_run_aborted(run_id):
                 outcome, error = "cancelled", None
@@ -1571,13 +1672,17 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
             # session_id Hermes gives it, so a different value here means the plugin looks
             # in a location the bridge never writes to.
             turn_session_id = session_key
-            write_turn_context(_profile_dir(agent_id), turn_session_id, {
+            turn_ctx = {
                 "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "roomId": room.get("id"),
                 "agentId": agent_id, "runId": run_id, "eventId": body.get("eventId"),
                 "threadRootMessageId": thread_root, "sessionKey": session_key,
                 "localSessionToken": local_session_token,
-            })
+                "family": "room" if has_run else "unavailable",
+            }
+            write_turn_context(_profile_dir(agent_id), turn_session_id, turn_ctx)
             try:
+                if has_run:
+                    _start_desktop_turn(_profile_dir(agent_id), turn_ctx)
                 if has_run and RUNS.get(run_id, {}).get("aborted"):  # dropped before it launched
                     outcome, error_kind, reply, usage = "aborted", None, "", ZERO_USAGE
                 else:
@@ -1598,6 +1703,9 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
                             # agent was attached, so this check still sees it.
                             outcome, error_kind, reply = "aborted", None, ""
             finally:
+                if has_run:
+                    cancel_run_desktop(run_id)
+                    _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
                 clear_turn_context(_profile_dir(agent_id), turn_session_id)
         except Exception as exc:  # noqa: BLE001
             outcome, error_kind, reply, usage = "error", type(exc).__name__, "", ZERO_USAGE

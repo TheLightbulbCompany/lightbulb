@@ -24,6 +24,7 @@ login. Its two Metronome POSTs call documented **read** endpoints.
 | Workspace-specific key proof | The management key created and deleted a disposable daily-capped key inside `Lightbulb Dev` (create 201, delete 200), and the returned workspace ID matched `5db3e7d3-4447-43b8-ac39-b1e35e3f54a9`. No inference request was made. |
 | OpenRouter credits | `GET /api/v1/credits` returned 200 with `total_credits=0` and `total_usage=0`. Funding the dev credit pool is required before a paid inference or settlement smoke. |
 | Free-model smoke | On 2026-09-21, `liquid/lfm-2.5-2.6b:free` returned `LIGHTBULB_FREE_MODEL_OK` from a fixed harmless prompt in `Lightbulb Dev` (completion 200; reported cost 0). The disposable daily-capped key was deleted (200). A 512-token ceiling was needed because the currently available free models spend part of their response budget on hidden reasoning. |
+| Selected free-model smoke | On 2026-09-21, the selected `nvidia/nemotron-3-ultra-550b-a55b:free` returned `LIGHTBULB_ULTRA_OK` from a fixed harmless prompt in `Lightbulb Dev` (completion 200; reported cost 0). The disposable daily-capped key was deleted (200). A first request returned no completed choice, so availability should be handled as transient during dev validation. |
 
 The existing [workspace billing runbook](workspace-stripe-metronome-configuration.md)
 describes the repair order. Until the integration and Product mapping are

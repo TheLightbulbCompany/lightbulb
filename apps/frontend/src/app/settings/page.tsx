@@ -470,6 +470,9 @@ function BillingPanel() {
           onSubscribe={() => startCheckout("workspace")}
           onManage={handlePortal}
         />
+        {isTrialLocal && !isTrialExpired && (
+          <BaseUpgradeRow basePriceUsd={account?.base_price_usd} startCheckout={startCheckout} />
+        )}
       </div>
     );
   }

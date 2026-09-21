@@ -4,7 +4,7 @@
 
 **Goal:** Restore one OAuth-protected remote MCP integration through a workspace-owned credential authority without writing its refresh token or access token to S3 profiles.
 
-**Architecture:** Sentry is the first provider because its MCP endpoint accepts its OAuth bearer token in a normal `Authorization` header. The backend stores and refreshes the workspace grant in Secrets Manager. The Hermes bridge asks for a short-lived token before constructing an agent, injects it into the turn's existing secret scope, and keeps only a `${VAR}` reference in profile configuration. Existing workspace ownership and per-owner runtime remain unchanged.
+**Architecture:** Sentry was the first code proof for a hosted MCP bearer header. Stripe is now the first active-provider lifecycle to verify. The backend stores and refreshes the workspace grant in Secrets Manager. The Hermes bridge asks for a short-lived token before constructing an agent, injects it into the turn's existing secret scope, and keeps only a `${VAR}` reference in profile configuration. Existing workspace ownership and per-owner runtime remain unchanged.
 
 **Tech Stack:** FastAPI, existing `httpx`/`boto3`, existing owner lifecycle lease, Hermes 0.21.3 bridge, pytest.
 
@@ -74,7 +74,8 @@
 - [x] **Step 1: Write failing tests** for Sentry's bearer config, no secret in S3, old token/client-file cleanup, bridge scope lifetime, and reconnect UX.
 - [x] **Step 2: Run** each focused test and observe the expected failure before implementation.
 - [x] **Step 3: Add** brokered Sentry in dev, use Hermes's existing secret-scope overlay, and remove old S3/warm token files. The runtime broker refuses production issuance while Sentry is dev-only.
-- [ ] **Step 4: Run** a real pinned-image MCP smoke and controlled dev Sentry lifecycle. Local backend/Hermes tests pass; Docker daemon is unavailable on this machine, so this remains the acceptance gate before production.
+- [x] **Step 4a: Run** the pinned-image MCP scope smoke in CI; it passes.
+- [ ] **Step 4b: Run** a controlled dev OAuth, tool-read, refresh, cold-runtime, and disconnect lifecycle before enabling the provider beyond dev. Stripe takes priority over Sentry for this live check.
 
 ### Task 4: Dev acceptance and expansion decision
 

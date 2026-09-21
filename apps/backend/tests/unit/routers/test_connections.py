@@ -340,6 +340,20 @@ class TestListConnections:
         assert by_key["sentry"]["requestable"] is False
 
     @pytest.mark.asyncio
+    async def test_existing_stripe_row_without_dev_broker_grant_needs_reconnect(self, async_client, monkeypatch):
+        monkeypatch.setattr(connections.registry.settings, "ENVIRONMENT", "dev")
+        monkeypatch.setattr(
+            connections.integrations_repo,
+            "list_for_owner",
+            AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}]),
+        )
+        monkeypatch.setattr(connections.integration_secret_store, "get", AsyncMock(return_value=None))
+
+        response = await async_client.get("/api/v1/connections")
+        by_key = {row["provider"]: row for row in response.json()["connections"]}
+        assert by_key["stripe"]["status"] == "reconnect_required"
+
+    @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
     async def test_list_returns_catalog_with_status(self, mock_repo, async_client):
         # stripe is connected; google has no row -> disconnected.
@@ -531,6 +545,15 @@ class TestEnvGatedProvider:
         assert row["requestable"] is False
         assert row["status"] == "connected"
         assert row["runtime_supported"] is False
+
+    def test_stripe_dev_retains_workspace_grant_and_is_connectable(self, monkeypatch):
+        monkeypatch.setattr(connections.registry.settings, "ENVIRONMENT", "dev")
+        p = registry.get_provider("stripe")
+        assert connections._retains_secret(p) is True
+        assert (
+            connections._connection_row("stripe", p, connected={}, byo=False, owner_id="org_1")["status"]
+            == "disconnected"
+        )
 
     @pytest.mark.asyncio
     async def test_unsupported_oauth_does_not_start_provider_consent(self, monkeypatch):

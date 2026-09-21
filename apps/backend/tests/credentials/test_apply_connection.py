@@ -256,6 +256,22 @@ async def test_sentry_first_connect_reconciles_brokered_profile(monkeypatch):
     assert calls == [("org_1", "sentry")]
 
 
+@pytest.mark.asyncio
+async def test_stripe_dev_connect_reconciles_brokered_profile(monkeypatch):
+    from core.services.credentials import apply_connection as ac
+    from core.services.credentials import mcp_server as mcp_server_mod
+
+    monkeypatch.setattr(ac.registry.settings, "ENVIRONMENT", "dev")
+    calls = []
+
+    async def reconcile(owner_id, *, pending=None):
+        calls.append((owner_id, pending))
+
+    monkeypatch.setattr(mcp_server_mod, "reconcile_integrations", reconcile)
+    await ac.apply_connection("org_1", "stripe", {"access_token": "fresh", "refresh_token": "rotating"})
+    assert calls == [("org_1", "stripe")]
+
+
 @pytest.mark.parametrize("provider", ("google", "github", "posthog", "meta_ads", "parallel"))
 def test_existing_hermes_rails_remain_supported(provider):
     from core.services.credentials import apply_connection as ac

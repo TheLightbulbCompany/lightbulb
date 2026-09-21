@@ -70,6 +70,29 @@ async def test_connected_provider_returns_access_token_only(credential_app, monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("environment, expected", [("dev", {"stripe": "short-access"}), ("prod", {})])
+async def test_stripe_token_is_vended_only_in_brokered_environment(credential_app, monkeypatch, environment, expected):
+    from core.services.credentials import access_token
+
+    monkeypatch.setattr(registry.settings, "ENVIRONMENT", environment)
+    monkeypatch.setattr(registry, "all_providers", lambda: {"stripe": registry.get_provider("stripe")})
+    monkeypatch.setattr(
+        integrations_repo, "list_for_owner", AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}])
+    )
+    get = AsyncMock(return_value="short-access")
+    monkeypatch.setattr(access_token, "get", get)
+    async with AsyncClient(transport=ASGITransport(app=credential_app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/runtime/credentials/u/org_1",
+            headers={"Authorization": "Bearer owner-hook"},
+            json={"agent_id": "agent_1"},
+        )
+    assert response.status_code == 200
+    assert response.json() == {"tokens": expected, "unavailable": []}
+    assert get.await_count == (1 if environment == "dev" else 0)
+
+
+@pytest.mark.asyncio
 async def test_disconnected_provider_returns_no_token(credential_app, monkeypatch):
     from core.services.credentials import access_token
 

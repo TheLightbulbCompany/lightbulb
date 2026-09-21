@@ -188,6 +188,25 @@ async def test_backend_owned_sentry_uses_runtime_bearer_reference(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stripe_dev_profile_uses_brokered_bearer_reference(monkeypatch):
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(m.registry.settings, "ENVIRONMENT", "dev")
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(return_value=[{"provider": "stripe", "status": "connected"}]),
+    )
+    assert await m.build_connected_integration_servers("org_1") == {
+        "stripe": {
+            "url": "https://mcp.stripe.com",
+            "headers": {"Authorization": "Bearer ${MCP_STRIPE_ACCESS_TOKEN}"},
+            "requestTimeoutMs": 60000,
+        }
+    }
+
+
+@pytest.mark.asyncio
 async def test_build_connected_map_skips_disconnected_remote_provider(monkeypatch):
     # A disconnected mcp_remote row must not be re-published (no stale server block).
     from core.services.credentials import mcp_server as m

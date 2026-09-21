@@ -17,7 +17,7 @@ The work is ordered by active use and shared failure mode, not by the Sentry pil
 3. **Existing mixed-custody MCP connections:** PostHog has a retained Secrets Manager copy, but its actor-owned profile copy can rotate independently; make one authority serve both the agent MCP and backend rollups. Meta Ads has no refresh grant and needs its long-lived-token expiry/reconnect lifecycle verified.
 4. **Remaining catalog:** Linear, Attio, Intercom, Cloudflare, and Sentry use the remote MCP contract; Parallel and the Attio/Apollo API-key rows use skill or backend rails; Vercel CLI is unsupported. Verify each separately before advertising agent readiness. Treat manually added MCP servers and Slack as separate onboarding/credential paths, not registry OAuth successes.
 
-The current draft PR supplies fail-closed connection handling, the shared runtime bearer-token seam, a dev-only Sentry proof, and an honest UI state for unsupported existing grants. It does not make the production rows above ready. The same provider lifecycle contract in this spec gates each later rollout.
+The current draft PR supplies fail-closed connection handling, the shared runtime bearer-token seam, a dev-only Sentry plumbing proof, a dev-only Stripe broker path, and an honest UI state for unsupported existing grants. Stripe is the first active-provider lifecycle to verify. Neither production Stripe row has a retained grant, so production remains on the unsupported actor path until the dev contract passes and its owners reconnect. The same provider lifecycle contract in this spec gates each later rollout.
 
 ## Decisions
 

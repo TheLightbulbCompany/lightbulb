@@ -48,7 +48,7 @@ async def runtime_credentials(
         if (
             provider.key not in connected
             or not provider.mcp_remote
-            or provider.refresh_owner != "backend"
+            or registry.refresh_owner_for(provider) != "backend"
             or not registry.available_for(provider, owner_id)
         ):
             continue

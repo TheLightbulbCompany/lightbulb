@@ -11,6 +11,14 @@ def test_loads_known_providers():
     assert "google" in providers
 
 
+def test_stripe_refresh_authority_is_backend_only_in_dev(monkeypatch):
+    stripe = registry.get_provider("stripe")
+    monkeypatch.setattr(registry.settings, "ENVIRONMENT", "dev")
+    assert registry.refresh_owner_for(stripe) == "backend"
+    monkeypatch.setattr(registry.settings, "ENVIRONMENT", "prod")
+    assert registry.refresh_owner_for(stripe) == "actor"
+
+
 def test_parallel_openclaw_paths_provider_shape():
     p = registry.get_provider("parallel")
     assert p.acquisition == "paste_token"

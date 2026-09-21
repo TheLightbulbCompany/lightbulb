@@ -62,7 +62,7 @@ def _retains_secret(p: registry.Provider) -> bool:
     its own HogQL reads (owner-day rollups) without touching the container's
     MCP copy. Disconnect deletes the retained secret unconditionally
     (``_disconnect_teardown``), so the flag needs no teardown wiring."""
-    return p.refresh_owner != "actor" or p.retain_secret
+    return registry.refresh_owner_for(p) != "actor" or p.retain_secret
 
 
 async def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, credential: dict) -> None:
@@ -407,7 +407,7 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     connected = {r["provider"]: r.get("status", "connected") for r in rows}
     for provider, status in connected.items():
         p = registry.all_providers().get(provider)
-        if status == "connected" and p and p.mcp_remote and p.refresh_owner == "backend":
+        if status == "connected" and p and p.mcp_remote and registry.refresh_owner_for(p) == "backend":
             if not await integration_secret_store.get(owner_id, provider):
                 connected[provider] = "reconnect_required"
     connections = []

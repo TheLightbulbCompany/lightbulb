@@ -78,7 +78,7 @@ def runtime_supported(p: registry.Provider) -> bool:
     if is_mcp_shaped(p):
         # Reconciliation reads only Secrets Manager; actor-owned grants without a
         # retained copy currently become an empty mcp-tokens file.
-        return p.refresh_owner != "actor" or p.retain_secret
+        return registry.refresh_owner_for(p) != "actor" or p.retain_secret
     if p.wiring.materializer:
         from core.services.credentials import hermes_cli
 

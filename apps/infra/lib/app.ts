@@ -154,6 +154,8 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
     env: {
       STRIPE_WORKSPACE_PRICE_ID_DEV: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_DEV }}",
       STRIPE_WORKSPACE_PRICE_ID_PROD: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_PROD }}",
+      STRIPE_BASE_PRICE_ID_DEV: "${{ secrets.STRIPE_BASE_PRICE_ID_DEV }}",
+      STRIPE_BASE_PRICE_ID_PROD: "${{ secrets.STRIPE_BASE_PRICE_ID_PROD }}",
       // Stripe Ultra Price IDs — same synth-time bake + per-env live/test
       // split as the Workspace price above. Empty string is tolerated (the
       // backend surfaces "STRIPE_ULTRA_PRICE_ID not configured" at the billing

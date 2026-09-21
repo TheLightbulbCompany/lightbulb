@@ -151,11 +151,17 @@ class BillingService:
         )
 
 
-async def create_workspace_checkout(*, owner_id: str, clerk_user_id: str, plan: Literal["workspace", "ultra"]) -> dict:
+async def create_workspace_checkout(
+    *, owner_id: str, clerk_user_id: str, plan: Literal["base", "workspace", "ultra"]
+) -> dict:
     """Create or change the single recurring subscription for a workspace."""
     checkout_bucket = int(time.time() // 300)
     checkout_expires_at = (checkout_bucket * 300) + 36 * 60
-    price_id = settings.STRIPE_WORKSPACE_PRICE_ID if plan == "workspace" else settings.STRIPE_ULTRA_PRICE_ID
+    price_id = {
+        "base": settings.STRIPE_BASE_PRICE_ID,
+        "workspace": settings.STRIPE_WORKSPACE_PRICE_ID,
+        "ultra": settings.STRIPE_ULTRA_PRICE_ID,
+    }[plan]
     if not price_id:
         raise BillingServiceError(f"STRIPE_{plan.upper()}_PRICE_ID not configured")
 

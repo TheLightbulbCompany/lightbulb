@@ -822,6 +822,8 @@ def _workspace_plan_from_subscription_items(event_data: dict[str, Any]) -> str |
         price_id = price.get("id")
         if not isinstance(price.get("recurring"), dict):
             reason = "non_recurring_item"
+        elif price_id == settings.STRIPE_BASE_PRICE_ID and price_id:
+            return "base"
         elif price_id == settings.STRIPE_WORKSPACE_PRICE_ID and price_id:
             return "standard"
         elif price_id == settings.STRIPE_ULTRA_PRICE_ID and price_id:

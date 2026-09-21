@@ -293,6 +293,7 @@ class Settings(BaseSettings):
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
     STRIPE_WORKSPACE_PRICE_ID: str = ""
+    STRIPE_BASE_PRICE_ID: str = ""
     # Stripe price for the Ultra runtime tier. Empty default so the app boots
     # without it; CDK-wired in dev/prod. This is the billing source of truth
     # for "$150".
@@ -303,6 +304,7 @@ class Settings(BaseSettings):
     # App Review requires a displayed external price to be accurate, so a
     # divergence here is a compliance bug rather than a cosmetic one.
     WORKSPACE_PRICE_USD: int = 50
+    BASE_PRICE_USD: int = 20
     ULTRA_PRICE_USD: int = 150
 
     # Apple In-App Purchase (App Store guideline 3.1.3(b) — the plan must also

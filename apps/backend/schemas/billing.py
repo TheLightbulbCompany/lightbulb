@@ -29,6 +29,7 @@ class BillingAccountResponse(BaseModel):
     # binary because a catalog update would otherwise leave stale checkout
     # copy in the field.
     workspace_price_usd: int
+    base_price_usd: int
     ultra_price_usd: int
     # Which channel the live subscription was bought through: "apple_iap", or
     # absent/None for the Stripe path (the default, and every pre-IAP row).

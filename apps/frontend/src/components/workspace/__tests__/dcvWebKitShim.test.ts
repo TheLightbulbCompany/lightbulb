@@ -13,7 +13,7 @@ describe("ensureDcvMediaShim", () => {
 
     try {
       ensureDcvMediaShim();
-      expect(navigator.mediaDevices).toEqual({});
+      expect(navigator.mediaDevices.getUserMedia).toBeTypeOf("function");
     } finally {
       if (original) Object.defineProperty(navigator, "mediaDevices", original);
       else Reflect.deleteProperty(navigator, "mediaDevices");
@@ -48,7 +48,7 @@ describe("ensureDcvMediaShim", () => {
 
     try {
       ensureDcvMediaShim();
-      expect(navigator.mediaDevices).toEqual({});
+      expect(navigator.mediaDevices.getUserMedia).toBeTypeOf("function");
     } finally {
       if (original) Object.defineProperty(navigator, "mediaDevices", original);
       else Reflect.deleteProperty(navigator, "mediaDevices");

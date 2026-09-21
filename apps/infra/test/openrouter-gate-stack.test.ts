@@ -35,6 +35,32 @@ test("dev OpenRouter gate is a token-gated streaming Lambda with owner-key acces
   expect(gatePolicies).not.toContain("lightbulb/dev/openrouter/management");
 });
 
+test("dev gate consumes an explicitly supplied model policy and rollout flag", () => {
+  const oldPolicy = process.env.OPENROUTER_MODEL_POLICY_JSON_DEV;
+  const oldEnabled = process.env.OPENROUTER_MANAGED_ENABLED_DEV;
+  process.env.OPENROUTER_MODEL_POLICY_JSON_DEV = '{"revision":"ultra-free-v1","models":["nvidia/nemotron-3-ultra-550b-a55b:free"],"max_prompt_tokens":1000,"max_price":{"prompt":0,"completion":0}}';
+  process.env.OPENROUTER_MANAGED_ENABLED_DEV = "true";
+  try {
+    const app = new cdk.App();
+    const stack = new OpenRouterGateStack(app, "OpenRouterGatePolicy", {
+      env: { account: "877352799272", region: "us-east-1" },
+      environment: "dev",
+    });
+    Template.fromStack(stack).hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "lightbulb-dev-openrouter-gate",
+      Environment: { Variables: Match.objectLike({
+        MODEL_POLICY_JSON: '{"revision":"ultra-free-v1","models":["nvidia/nemotron-3-ultra-550b-a55b:free"],"max_prompt_tokens":1000,"max_price":{"prompt":0,"completion":0}}',
+        OPENROUTER_MANAGED_ENABLED: "true",
+      }) },
+    });
+  } finally {
+    if (oldPolicy === undefined) delete process.env.OPENROUTER_MODEL_POLICY_JSON_DEV;
+    else process.env.OPENROUTER_MODEL_POLICY_JSON_DEV = oldPolicy;
+    if (oldEnabled === undefined) delete process.env.OPENROUTER_MANAGED_ENABLED_DEV;
+    else process.env.OPENROUTER_MANAGED_ENABLED_DEV = oldEnabled;
+  }
+});
+
 test("dev settlement worker is scheduled but cannot ingest money before contract proof", () => {
   const app = new cdk.App();
   const stack = new OpenRouterGateStack(app, "OpenRouterGate", {

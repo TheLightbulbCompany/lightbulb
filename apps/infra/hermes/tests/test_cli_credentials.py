@@ -73,6 +73,16 @@ def test_cli_env_json_carries_the_per_agent_google_account(home):
     assert "NOT_ALLOWED" not in env
 
 
+def test_cli_env_json_carries_the_vercel_skill_token(home):
+    profile = home / "profiles" / "ceo"
+    profile.mkdir(parents=True)
+    (profile / "cli-env.json").write_text('{"VERCEL_TOKEN": "vrc_secret", "NOPE": "x"}')
+
+    env = sync.cli_credential_env("ceo")
+    assert env["VERCEL_TOKEN"] == "vrc_secret"
+    assert "NOPE" not in env
+
+
 def test_aws_child_without_connector_has_no_platform_credential_fallback():
     env = turn._fence_aws_child_env(
         {

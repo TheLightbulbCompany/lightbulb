@@ -62,7 +62,7 @@ def _retains_secret(p: registry.Provider) -> bool:
     its own HogQL reads (owner-day rollups) without touching the container's
     MCP copy. Disconnect deletes the retained secret unconditionally
     (``_disconnect_teardown``), so the flag needs no teardown wiring."""
-    return p.refresh_owner != "actor" or p.retain_secret
+    return registry.refresh_owner_for(p) != "actor" or p.retain_secret
 
 
 async def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, credential: dict) -> None:

@@ -221,13 +221,15 @@ async def test_apply_agentcore_materializer_with_no_projection_is_rejected(monke
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "provider",
-    ("stripe", "notion", "sentry", "linear", "attio", "intercom", "apollo", "cloudflare", "quickbooks"),
+    ("stripe", "notion", "linear", "attio", "intercom", "apollo", "cloudflare"),
 )
 async def test_actor_owned_mcp_without_retained_credential_is_rejected(monkeypatch, provider):
     """A missing canonical token must not become a working-looking empty Hermes token file."""
     from core.services.credentials import apply_connection as ac
     from core.services.credentials import mcp_server as mcp_server_mod
 
+    # Production remains native actor-owned until the dev broker is certified.
+    monkeypatch.setattr(ac.registry.settings, "ENVIRONMENT", "prod")
     calls = []
 
     async def fake_reconcile(owner_id, *, pending=None):
@@ -240,11 +242,30 @@ async def test_actor_owned_mcp_without_retained_credential_is_rejected(monkeypat
     assert calls == []
 
 
+def test_quickbooks_uses_the_hermes_profile_materializer():
+    from core.services.credentials import apply_connection as ac
+
+    provider = ac.registry.get_provider("quickbooks")
+    assert ac.runtime_supported(provider)
+    assert provider.mcp_stdio is not None
+    assert provider.mcp_stdio.command == "/usr/local/bin/lightbulb-quickbooks-mcp"
+
+
 @pytest.mark.parametrize("provider", ("google", "github", "posthog", "meta_ads", "parallel"))
 def test_existing_hermes_rails_remain_supported(provider):
     from core.services.credentials import apply_connection as ac
 
     assert ac.runtime_supported(ac.registry.get_provider(provider))
+
+
+@pytest.mark.parametrize("provider", ("stripe", "notion", "linear", "attio", "intercom", "apollo", "cloudflare"))
+def test_dev_brokered_remote_mcp_is_runtime_supported(monkeypatch, provider):
+    from core.services.credentials import apply_connection as ac
+
+    monkeypatch.setattr(ac.registry.settings, "ENVIRONMENT", "dev")
+    p = ac.registry.get_provider(provider)
+    assert ac.registry.refresh_owner_for(p) == "backend"
+    assert ac.runtime_supported(p)
 
 
 @pytest.mark.asyncio

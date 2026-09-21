@@ -84,6 +84,7 @@ CLI_CREDENTIAL_PREFIXES = (
     f"{PROFILE_HOME}/.config/gogcli/",
     f"{PROFILE_HOME}/.local/share/gogcli/",
     f"{PROFILE_HOME}/.xurl",
+    f"{PROFILE_HOME}/quickbooks/",
     "skills/instagram/",
     CLI_ENV_FILE,
 )
@@ -854,7 +855,12 @@ def auxiliary_pin(aux_defaults: dict, model: str) -> dict:
 #: ``GOG_ACCOUNT`` is the odd one out -- not a credential but gog's default account, written PER
 #: AGENT by the backend's ``google_identity`` seeder (the profile twin of the ECS IDENTITY.md
 #: ``gog -a <email>`` instruction).
-CLI_ENV_FILE_NAMES: tuple[str, ...] = ("GOG_KEYRING_PASSWORD", "GOG_KEYRING_BACKEND", "GOG_ACCOUNT")
+CLI_ENV_FILE_NAMES: tuple[str, ...] = (
+    "GOG_KEYRING_PASSWORD",
+    "GOG_KEYRING_BACKEND",
+    "GOG_ACCOUNT",
+    "VERCEL_TOKEN",
+)
 
 
 def cli_credential_env(agent_id: str) -> dict[str, str]:

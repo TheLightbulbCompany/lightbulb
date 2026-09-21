@@ -33,7 +33,7 @@ def client():
 
 
 def test_catalog_is_public_and_lists_supported_integrations(client):
-    """No auth → 200, but an unusable Hermes rail is never pitched to agents."""
+    """No auth → 200, and the dev broker exposes hosted MCP + skill rails."""
     resp = client.get(PREFIX)
     assert resp.status_code == 200
     body = resp.json()
@@ -42,8 +42,10 @@ def test_catalog_is_public_and_lists_supported_integrations(client):
     assert got_integrations <= set(registry.all_providers())
     assert "google" in got_integrations
     assert "github" in got_integrations
-    assert "stripe" not in got_integrations
-    assert "vercel_cli" not in got_integrations
+    assert "stripe" in got_integrations
+    assert "vercel_cli" in got_integrations
+    assert "notion" in got_integrations
+    assert "quickbooks" in got_integrations
 
     got_channels = {c["key"] for c in body["channels"]}
     assert got_channels == set(CHANNEL_PROVIDER_IDS)

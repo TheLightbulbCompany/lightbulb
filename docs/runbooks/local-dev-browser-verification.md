@@ -64,6 +64,38 @@ On the browser branch based on main `4f0c6771b`, Next.js 16.2.12 and `bedrock-ag
 
 Private verification captures are temporary local artifacts; do not commit console logs containing signed AWS URLs. This verifies localhost against deployed dev, not a deployment of the frontend branch.
 
+## Desktop DCV startup regression
+
+Test the installed app with a normal macOS launch (`open /Applications/Lightbulb.app`),
+not only by executing `Contents/MacOS/lightbulb-desktop` from a terminal. On the
+2026-09-21 founder reproduction, a normal launch exposed no `navigator.mediaDevices`,
+whereas the terminal launch exposed a native media API and rendered successfully.
+That difference concealed the failure during earlier tests.
+
+The SDK bundled with `bedrock-agentcore@0.4.4` detects its native WebRTC-redirection
+host by the presence of `window.webkit.messageHandlers.ipc`. Tauri also exposes that
+handler. DCV therefore initializes the wrong native client at module evaluation,
+requests microphone access and calls `mediaDevices.addEventListener`. With the
+missing-media shim's plain object this throws before authentication:
+`TypeError: navigator.mediaDevices.addEventListener is not a function`.
+An unhandled `The webcam system is not supported.` rejection accompanies it.
+Selecting display/input-only connection channels cannot prevent import-time work.
+
+`copy-dcv-assets.mjs` excludes `window.__TAURI_INTERNALS__` from that native-host
+detection in the generated ESM and UMD SDK copies. The Next alias consumes the
+guarded ESM copy; the original dependency is unchanged. Generation fails if the
+expected upstream detection changes, requiring a new audit on dependency upgrades.
+The SDK regression test executes the real generated SDK with a Tauri IPC handler
+and asserts that import does not capture local media or send DCV traffic to Tauri.
+
+Local native A/B evidence: the instrumented Tauri executable launched through
+macOS reproduced the exact exception above. Changing only the SDK detection guard
+in memory, under the same normal-launch conditions with the media API still absent,
+rendered a DCV canvas showing YouTube and removed both import-time errors. This is
+local proof of the guard, not proof of a later production deployment. Recheck the
+official installed app after promotion. Viewer startup exceptions now retain their
+stage and sanitized error details in console/PostHog; signed URLs are redacted.
+
 ## Current limits
 
 Direct browser calls from an arbitrary local origin fail the deployed dev API's CORS policy, so bypassing the proxy is not a valid test. Teams-related API surfaces may currently return `503`; record that separately from Browser/DCV results. Cookie persistence across AgentCore browser sessions is not established by this procedure and requires its own two-turn measurement.

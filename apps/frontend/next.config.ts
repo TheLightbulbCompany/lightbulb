@@ -156,7 +156,8 @@ const nextConfig: NextConfig = {
     // has to alias, and a package-relative request is blocked by that same
     // `exports` map. Without these two lines the Browser panel fails the build.
     resolveAlias: {
-      dcv: dcvAlias("dcvjs-esm/dcv.js"),
+      // predev/prebuild copies and guards native IPC detection for Tauri.
+      dcv: "./public/nice-dcv-web-client-sdk/dcvjs-esm/dcv.js",
       "dcv-ui": dcvAlias("dcv-ui/dcv-ui.js"),
     },
   },

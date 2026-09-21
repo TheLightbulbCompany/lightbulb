@@ -34,7 +34,7 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
       stage = "authentication setup";
       dcv.authenticate(signedUrl, {
         promptCredentials: () => {},
-        error: (_auth: unknown, reason: unknown) => {
+        error: (reason: unknown) => {
           // DCV can close a completed auth websocket after connect starts. That
           // callback must not unmount the host element under an active display.
           if (!disposed && !connecting.current && !connection.current) {

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
@@ -30,7 +30,8 @@ vi.mock("../panels/DirectDcvLiveView", () => ({
     remoteWidth?: number;
     remoteHeight?: number;
   }) => {
-    const [initialUrl] = useState(signedUrl);
+    const [initialUrl, setInitialUrl] = useState(signedUrl);
+    useEffect(() => setInitialUrl(signedUrl), [signedUrl]);
     return <div
       data-testid="dcv-live-view"
       data-signed-url={signedUrl}

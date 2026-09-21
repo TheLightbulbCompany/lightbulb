@@ -16,7 +16,7 @@ describe("ensureDcvMediaShim", () => {
       expect(navigator.mediaDevices).toEqual({});
     } finally {
       if (original) Object.defineProperty(navigator, "mediaDevices", original);
-      else delete (navigator as unknown as { mediaDevices?: MediaDevices }).mediaDevices;
+      else Reflect.deleteProperty(navigator, "mediaDevices");
     }
   });
 
@@ -34,7 +34,7 @@ describe("ensureDcvMediaShim", () => {
       expect(navigator.mediaDevices).toBe(native);
     } finally {
       if (original) Object.defineProperty(navigator, "mediaDevices", original);
-      else delete (navigator as unknown as { mediaDevices?: MediaDevices }).mediaDevices;
+      else Reflect.deleteProperty(navigator, "mediaDevices");
     }
   });
 

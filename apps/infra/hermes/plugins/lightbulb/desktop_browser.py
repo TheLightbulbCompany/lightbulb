@@ -248,6 +248,11 @@ def browser_action(
         "params": params,
         "executionDeadlineMs": execution_deadline_ms,
     }
+    return submit_request(request, ctx=ctx, admission_token=admission_token)
+
+
+def submit_request(request, *, ctx, admission_token):
+    request_id = str(uuid.UUID(request["requestId"]))
     # Caller retains this identity even if the HTTP response is lost; never resubmit
     # with a new UUID to recover from an unknown click/submission/upload.
     receipt_id = admission_token + "." + request_id

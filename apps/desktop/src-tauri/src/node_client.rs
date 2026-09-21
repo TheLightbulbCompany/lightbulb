@@ -725,6 +725,7 @@ fn build_signed_connect(
             "caps": ["system"],
             "commands": [
                 "system.run.approve.v1",
+                "file.access.policy.v1",
                 "system.notify",
                 "screen.snapshot",
                 "device.info",

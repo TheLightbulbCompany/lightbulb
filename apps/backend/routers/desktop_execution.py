@@ -65,9 +65,14 @@ async def _body(request: Request, limit=service.MAX_REQUEST_BYTES) -> dict:
     candidate = body.get("request", body) if body.get("action") == "submit" else body
     if len(data) > service.MAX_REQUEST_BYTES and not (
         isinstance(candidate, dict)
-        and candidate.get("command") == "browser.proxy"
-        and isinstance(candidate.get("params"), dict)
-        and candidate["params"].get("action") == "upload"
+        and (
+            candidate.get("command") == "file.write"
+            or (
+                candidate.get("command") == "browser.proxy"
+                and isinstance(candidate.get("params"), dict)
+                and candidate["params"].get("action") == "upload"
+            )
+        )
     ):
         raise service.DesktopError("request_too_large", 413)
     return body
@@ -180,3 +185,13 @@ async def approval_peer(request: Request):
         raise HTTPException(exc.status, detail={"code": exc.code}) from None
     except TimeoutError:
         raise HTTPException(409, detail={"code": "shell_approval_expired"}) from None
+
+
+@router.post("/internal/file-policy")
+async def file_policy_peer(request: Request):
+    async with _boundary():
+        secret = settings.WS_INTERNAL_SECRET
+        presented = request.headers.get("x-lightbulb-ws-internal", "")
+        if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
+            raise HTTPException(403, detail="forbidden")
+        return await service.handle_file_policy_peer(await _body(request))

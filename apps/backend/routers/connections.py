@@ -261,7 +261,8 @@ def _connection_row(
     """
     live = connected.get(key)
     requestable = not live and not registry.available_for(v, owner_id)
-    runtime_unavailable = not live and not apply_connection.runtime_supported(v)
+    runtime_supported = apply_connection.runtime_supported(v)
+    runtime_unavailable = not live and not runtime_supported
     return {
         "provider": key,
         "display_name": v.display_name,
@@ -273,6 +274,7 @@ def _connection_row(
         # integration isn't mistaken for a broken MCP one.
         "actor": v.actor,
         "status": "unavailable" if requestable or runtime_unavailable else (live or "disconnected"),
+        "runtime_supported": runtime_supported,
         "requestable": requestable,
         # byo_required: provider has no managed app, owner must bring one.
         # byo_configured: whether THIS owner has stored their own app.

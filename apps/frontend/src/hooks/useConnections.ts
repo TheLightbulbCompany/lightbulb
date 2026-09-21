@@ -24,6 +24,8 @@ export interface Connection {
   display_name: string;
   acquisition: "paste_token" | "direct_oauth" | "aws_sts" | "container_login";
   status: "connected" | "disconnected" | "unavailable" | "reconnect_required";
+  /** Whether this Hermes runtime can deliver the grant to an agent. */
+  runtime_supported?: boolean;
   /**
    * BYO ("bring your own") OAuth app affordance:
    *   - `byo_required`   → this provider has no managed app; the owner MUST

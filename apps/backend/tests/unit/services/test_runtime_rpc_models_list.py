@@ -73,6 +73,19 @@ async def test_a_trial_owner_is_offered_only_the_one_profile_they_hold(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_managed_openrouter_catalog_is_server_owned_and_requires_an_selected_model(monkeypatch):
+    _wire_owner(monkeypatch, provider_choice="openrouter_managed", aip_arns={})
+    _no_bridge(monkeypatch)
+    monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
+    assert await _models_list() == {
+        "models": [{"id": "candidate/model", "name": "candidate/model", "provider": "custom"}],
+        "defaultId": "candidate/model",
+    }
+    monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "")
+    assert await _models_list() == {"models": [], "defaultId": ""}
+
+
+@pytest.mark.asyncio
 async def test_no_aips_on_the_row_yet_is_an_empty_list_not_an_error(monkeypatch):
     _wire_owner(monkeypatch, aip_arns={})
     _no_bridge(monkeypatch)
@@ -111,6 +124,29 @@ async def test_overhead_model_patch_expands_into_every_auxiliary_task(monkeypatc
     assert set(aux) == set(AUXILIARY_TASKS)
     assert all(
         entry == {"provider": "bedrock", "model": "arn:aip:haiku", "fallback_chain": []} for entry in aux.values()
+    )
+
+
+@pytest.mark.asyncio
+async def test_managed_overhead_patch_keeps_every_task_on_the_gate(monkeypatch):
+    from core.services.hermes_profiles import AUXILIARY_TASKS
+
+    _wire_owner(monkeypatch, provider_choice="openrouter_managed", aip_arns={})
+    _no_bridge(monkeypatch)
+    monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
+    monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1")
+    out = await rpc._expand_agentcore_config_patch("org_a", {"auxiliary": {"model": "candidate/model"}})
+    assert set(out["auxiliary"]) == set(AUXILIARY_TASKS)
+    assert all(
+        route
+        == {
+            "provider": "custom",
+            "model": "candidate/model",
+            "base_url": "https://gate.example/v1",
+            "api_key": "${LIGHTBULB_GATE_BEARER}",
+            "fallback_chain": [],
+        }
+        for route in out["auxiliary"].values()
     )
 
 

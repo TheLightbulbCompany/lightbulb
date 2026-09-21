@@ -12,7 +12,7 @@
     "analyze:webpack": "ANALYZE=true next build --webpack",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "NODE_OPTIONS='--max-old-space-size=8192' vitest run",
+    "test": "node scripts/copy-dcv-assets.mjs && node --test scripts/dcv-sdk.test.mjs && NODE_OPTIONS='--max-old-space-size=8192' vitest run",
     "test:watch": "NODE_OPTIONS='--max-old-space-size=8192' vitest",
     "test:ui": "NODE_OPTIONS='--max-old-space-size=8192' vitest --ui",
     "test:coverage": "NODE_OPTIONS='--max-old-space-size=8192' vitest --coverage",

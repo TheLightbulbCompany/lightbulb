@@ -149,7 +149,7 @@ describe("BrowserDockPanel", () => {
       .mockResolvedValue({ active: true, url: "https://signed/one?new", sessionId: "s1", generation: 2, mode: "human", isController: false, canControl: true });
     render(<BrowserDockPanel />);
     await flush();
-    await flush(5_000);
+    await flush(10_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-signed-url", "https://signed/one");
     expect(screen.getByRole("button", { name: /take control/i })).toBeInTheDocument();
   });

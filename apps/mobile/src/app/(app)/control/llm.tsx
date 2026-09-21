@@ -27,6 +27,7 @@ import { usePulse } from "../../../components/chat/usePulse";
 import { WEB_ORIGIN } from "../../../config/domain";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { makeAdapter } from "../../../lib/adapter";
+import { listCatalogModels } from "../../../lib/agentCatalog";
 import {
   resolveProviderStatus,
   statusToDotColor,
@@ -88,6 +89,8 @@ function providerLabel(account: BillingAccount): {
       };
     case "bedrock_claude":
       return { title: "Anthropic Claude via AWS Bedrock", detail: null };
+    case "openrouter_managed":
+      return { title: "Lightbulb-managed models", detail: "Inference uses your workspace credits" };
     case "byo_key":
       if (account.byo_provider === "openai") {
         return { title: "Bring your own key", detail: "OpenAI API key" };
@@ -235,9 +238,9 @@ function useLlmBilling(orgRestricted: boolean) {
     try {
       const account = (await api.get("/billing/account")) as BillingAccount;
       // Credits are best-effort: failure never fails the card, and we only
-      // need them for the Bedrock path.
+      // need them for managed inference.
       const credits =
-        account.provider_choice === "bedrock_claude"
+        account.provider_choice === "bedrock_claude" || account.provider_choice === "openrouter_managed"
           ? ((await api
               .get("/billing/credits/balance")
               .then((body) => body as CreditsBalance)
@@ -336,9 +339,22 @@ export default function LlmPanel() {
     live,
     runtimeHost ? "config.get" : null,
   );
+  const { data: managedCatalog } = useRuntimeRpc<unknown>(
+    live,
+    runtimeHost && state.kind === "ready" && state.account.provider_choice === "openrouter_managed"
+      ? "models.list"
+      : null,
+  );
   const config = useMemo(() => extractConfig(configSnapshot), [configSnapshot]);
-  const groups = useMemo(() => listGroupedModels(config), [config]);
-  const defaultRef = useMemo(() => readDefaultModelRef(config), [config]);
+  const managed = state.kind === "ready" && state.account.provider_choice === "openrouter_managed";
+  const groups = useMemo(() => {
+    if (!managed) return listGroupedModels(config);
+    const models = listCatalogModels(managedCatalog);
+    return models.length ? [{ providerKey: "custom", label: "Lightbulb managed", models }] : [];
+  }, [config, managed, managedCatalog]);
+  const defaultRef = managed
+    ? (managedCatalog as { defaultId?: string } | undefined)?.defaultId
+    : readDefaultModelRef(config);
 
   const restricted = orgRestricted || state.kind === "restricted";
 
@@ -416,12 +432,12 @@ export default function LlmPanel() {
     );
   }
 
-  // Credits card (Bedrock only) ---------------------------------------------
+  // Credits card (managed inference) ----------------------------------------
   let creditsCard: ReactNode = null;
   if (
     !restricted &&
     state.kind === "ready" &&
-    state.account.provider_choice === "bedrock_claude"
+    (state.account.provider_choice === "bedrock_claude" || state.account.provider_choice === "openrouter_managed")
   ) {
     const credits = state.credits;
     // Top-up itself is web-only (D1). Only offer it when the balance actually
@@ -430,13 +446,13 @@ export default function LlmPanel() {
     const topUpAvailable = credits != null;
     creditsCard = (
       <Card>
-        <Text style={styles.overline}>BEDROCK CREDITS</Text>
+        <Text style={styles.overline}>WORKSPACE CREDITS</Text>
         <Text style={styles.balanceText}>
           {credits?.balance_dollars != null ? `$${credits.balance_dollars}` : "—"}
         </Text>
         <Text style={styles.captionText}>
           {credits?.balance_dollars != null
-            ? "Prepaid balance for Bedrock inference."
+            ? "Prepaid balance for managed inference."
             : "Balance unavailable right now."}
         </Text>
         {topUpAvailable && <ManageLink label="Top up on flickmeon.ai" />}
@@ -446,7 +462,7 @@ export default function LlmPanel() {
 
   // Model catalog card -------------------------------------------------------
   let catalogCard: ReactNode;
-  if (configSnapshot === undefined && groups.length === 0) {
+  if ((managed ? managedCatalog : configSnapshot) === undefined && groups.length === 0) {
     catalogCard = (
       <Card>
         <Text style={styles.overline}>MODEL CATALOG</Text>
@@ -459,8 +475,9 @@ export default function LlmPanel() {
       <Card>
         <Text style={styles.overline}>MODEL CATALOG</Text>
         <Text style={styles.captionText}>
-          No models are listed in your gateway config. This is normal for the
-          ChatGPT plan and some bring-your-own-key setups.
+          {managed
+            ? "No approved models are available right now."
+            : "No models are listed in your gateway config. This is normal for the ChatGPT plan and some bring-your-own-key setups."}
         </Text>
       </Card>
     );

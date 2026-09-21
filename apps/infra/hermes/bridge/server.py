@@ -47,6 +47,12 @@ def _header(headers: dict, name: str) -> str | None:
     return next((v for k, v in headers.items() if k.lower() == name), None)
 
 
+def _provider_generation_matches(headers: dict) -> bool:
+    return (_header(headers, "X-Lightbulb-Provider-Generation") or "") == os.environ.get(
+        "LIGHTBULB_PROVIDER_SWITCH_GENERATION", ""
+    )
+
+
 _RUN_CONTROL_RE = re.compile(r"^/plugins/lightbulb-channel/runs/([0-9a-f-]{36})/(abort|steer)$")
 # Underscore included deliberately: it must not be NARROWER than the backend facade's own
 # run-id charset (routers/messaging.py's _HERMES_RUN_ID_RE), or a run id the facade accepts
@@ -87,24 +93,38 @@ def _paperclip_envelope(body, *, path_run_id: str | None = None, require_request
     return identity, request
 
 
-def _handle_paperclip_run(path: str, method: str, body) -> tuple[int, dict] | None:
+def _handle_paperclip_run(path: str, method: str, headers: dict, body) -> tuple[int, dict] | None:
     if path == "/internal/paperclip/v1/runs" and method == "POST":
         parsed = _paperclip_envelope(body, require_request=True)
         if parsed is None:
             return 400, {"error": "invalid_paperclip_run"}
+        if not _provider_generation_matches(headers):
+            return 503, {"error": "provider_generation_stale"}
+        if not turn.reserve_turn():
+            return 503, {"error": "provider_switch_frozen"}
         identity, request = parsed
-        registration = turn.register_paperclip_run(identity, request)
-        if registration == "conflict":
-            return 409, {"error": "idempotency_conflict"}
-        status = turn.paperclip_run_status(identity["runId"], identity)
-        if registration == "replayed":
-            return 200, status
-        threading.Thread(
-            target=turn.run_paperclip_turn,
-            args=(dict(identity), dict(request)),
-            daemon=True,
-            name=f"paperclip-{identity['runId']}",
-        ).start()
+        registered = False
+        try:
+            registration = turn.register_paperclip_run(identity, request)
+            if registration == "conflict":
+                turn.release_turn()
+                return 409, {"error": "idempotency_conflict"}
+            registered = registration != "replayed"
+            status = turn.paperclip_run_status(identity["runId"], identity)
+            if registration == "replayed":
+                turn.release_turn()
+                return 200, status
+            threading.Thread(
+                target=turn.run_paperclip_turn,
+                args=(dict(identity), dict(request), True),
+                daemon=True,
+                name=f"paperclip-{identity['runId']}",
+            ).start()
+        except Exception:
+            if registered:
+                turn.discard_run(identity["runId"])
+            turn.release_turn()
+            raise
         return 202, status
     match = _PAPERCLIP_RUN_RE.fullmatch(path)
     if not match or method not in ("GET", "POST"):
@@ -130,7 +150,7 @@ def _handle_paperclip_run(path: str, method: str, body) -> tuple[int, dict] | No
 def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dict]:
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}
-    paperclip = _handle_paperclip_run(path, method, body)
+    paperclip = _handle_paperclip_run(path, method, headers, body)
     if paperclip is not None:
         return paperclip
     control = _RUN_CONTROL_RE.match(path)
@@ -155,36 +175,43 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
                 raise turn.IngressError("targetAgentId does not match the path")
         except turn.IngressError as exc:
             return 400, {"error": "invalid_ingress", "message": exc.message}
+        if not _provider_generation_matches(headers):
+            return 503, {"error": "provider_generation_stale"}
+        if not turn.reserve_turn():
+            return 503, {"error": "provider_switch_frozen"}
         # agent_mail (Task 20) and paperclip_run (Task 21) carry no `run` block at all -- the
         # registry/replay/run.started steps below are for a room turn's run lifecycle, which
         # run-less ingresses have none of; run_turn's own has_run=False path handles the rest.
-        run_id = (body.get("run") or {}).get("runId")
-        event_id = body.get("eventId")
-        if run_id:
-            if not turn.register_run(run_id):
-                return 200, {"eventId": event_id, "runId": run_id, "status": "replayed"}
-            turn.mark_started(run_id)
-            turn._post_backend(f"runs/{OWNER}/events", {
-                "runId": run_id, "type": "run.started", "at": now(),
-                "sessionKey": turn._resolve_session_key(agent_id, body),
-            })
-        elif event_id:
-            # Fix round (Important 4): a run-less ingress has no `run.runId` to dedupe on, so
-            # it never touched the RUNS registry at all -- a redelivered mail/paperclip event
-            # (SES retries on "error"/"woken") ran a second full turn: tokens spent twice, a
-            # second reply, real side effects. Register it in the SAME registry keyed by its
-            # own eventId (namespaced so it can never collide with a real runId's UUID) and
-            # answer the identical 200 replayed a real run's replay gets. There is no
-            # run.started/mark_started for it -- there is no run lifecycle to start.
-            event_key = f"event:{event_id}"
-            if not turn.register_run(event_key):
-                return 200, {"eventId": event_id, "runId": run_id, "status": "replayed"}
-            # Nothing further to track once "seen" is recorded -- finish immediately so
-            # prune_runs can reclaim it once the registry grows past its cap.
-            turn.finish_run(event_key, "dispatched")
-        local_session_token = _header(headers, "X-Lightbulb-Local-Session-Token")
-        threading.Thread(target=turn.run_turn, args=(agent_id, body, local_session_token),
-                         daemon=True, name=f"turn-{run_id or body.get('eventId')}").start()
+        registered_key = None
+        try:
+            run_id = (body.get("run") or {}).get("runId")
+            event_id = body.get("eventId")
+            if run_id:
+                if not turn.register_run(run_id):
+                    turn.release_turn()
+                    return 200, {"eventId": event_id, "runId": run_id, "status": "replayed"}
+                registered_key = run_id
+                turn.mark_started(run_id)
+                turn._post_backend(f"runs/{OWNER}/events", {
+                    "runId": run_id, "type": "run.started", "at": now(),
+                    "sessionKey": turn._resolve_session_key(agent_id, body),
+                })
+            elif event_id:
+                # Run-less ingresses dedupe by eventId in the same registry.
+                event_key = f"event:{event_id}"
+                if not turn.register_run(event_key):
+                    turn.release_turn()
+                    return 200, {"eventId": event_id, "runId": run_id, "status": "replayed"}
+                registered_key = event_key
+                turn.finish_run(event_key, "dispatched")
+            local_session_token = _header(headers, "X-Lightbulb-Local-Session-Token")
+            threading.Thread(target=turn.run_turn, args=(agent_id, body, local_session_token, True),
+                             daemon=True, name=f"turn-{run_id or body.get('eventId')}").start()
+        except Exception:
+            if registered_key:
+                turn.discard_run(registered_key)
+            turn.release_turn()
+            raise
         return 202, {"eventId": body.get("eventId"), "runId": run_id, "status": "accepted"}
     if path == "/plugins/lightbulb-channel/rpc" and method == "POST":
         return _rpc(body)
@@ -268,6 +295,12 @@ def _health(_params: dict, **_kwargs) -> dict:
 
 RPC_METHODS: dict = {"health": _health}
 
+
+def _provider_freeze(_params: dict, **_kwargs) -> dict:
+    return {"ok": True, "payload": {"frozen": True, "busy": turn.freeze_turns()}}
+
+
+RPC_METHODS["provider.freeze"] = _provider_freeze
 
 def _browser_state(params: dict, **_kwargs) -> dict:
     """Checkpoint through the isolated state helper; never return its URL or exception text."""
@@ -451,6 +484,8 @@ def _dotenv_has(agent_id: str, key: str) -> bool:
 def _provider_credential(agent_id: str, provider: str) -> tuple[bool, str]:
     if provider == "bedrock":
         return bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK")), "bedrock-gate"
+    if provider == "custom" and os.environ.get("LIGHTBULB_PROVIDER_CHOICE") == "openrouter_managed":
+        return bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK")), "lightbulb-gate"
     if provider == "anthropic":
         return _dotenv_has(agent_id, "ANTHROPIC_API_KEY"), "byo-key"
     if provider == "openai-api":

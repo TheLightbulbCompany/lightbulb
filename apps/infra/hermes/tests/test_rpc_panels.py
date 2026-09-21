@@ -264,6 +264,15 @@ def test_auth_status_reports_bedrock_through_the_gate_bearer(home, monkeypatch):
         {"provider": "bedrock", "status": "ok", "via": "bedrock-gate"}]
 
 
+def test_auth_status_reports_managed_custom_through_the_gate_bearer(home, monkeypatch):
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-token")
+    monkeypatch.setenv("LIGHTBULB_PROVIDER_CHOICE", "openrouter_managed")
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    sync.write_profile_config("ceo", {"model": {"provider": "custom"}})
+    assert call("models.authStatus")[1]["payload"]["providers"] == [
+        {"provider": "custom", "status": "ok", "via": "lightbulb-gate"}]
+
+
 def test_auth_status_reports_chatgpt_oauth_from_the_root_auth_json(home, monkeypatch):
     (home / "profiles" / "ceo").mkdir(parents=True)
     sync.write_profile_config("ceo", {"model": {"provider": "openai-codex"}})

@@ -92,6 +92,60 @@ def test_pin_profile_defaults_still_fills_a_task_the_profile_never_had(home, mon
     assert config["auxiliary"]["compression"] == {"provider": "bedrock", "model": "aip-aux", "fallback_chain": []}
 
 
+def test_non_bedrock_profile_never_gains_a_bedrock_auxiliary_lane(home, monkeypatch):
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    monkeypatch.setenv("LIGHTBULB_PROVIDER_CHOICE", "openrouter_managed")
+    monkeypatch.setenv("LIGHTBULB_MANAGED_GATE_URL", "https://gate.example/v1")
+    monkeypatch.setenv("LIGHTBULB_MANAGED_MODEL_ID", "candidate")
+    sync.write_profile_config("ceo", {"model": {"provider": "custom", "default": "candidate", "base_url": "https://gate.example/v1", "api_key": "${LIGHTBULB_GATE_BEARER}"},
+                                      "auxiliary": {"vision": {"provider": "custom", "model": "candidate", "base_url": "https://gate.example/v1", "api_key": "${LIGHTBULB_GATE_BEARER}", "fallback_chain": []}}})
+    monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
+
+    with pytest.raises(RuntimeError, match="missing auxiliary route"):
+        sync.pin_profile_defaults("ceo", "aip-aux")
+
+
+def test_managed_custom_route_refuses_an_edited_upstream_url(home, monkeypatch):
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    monkeypatch.setenv("LIGHTBULB_PROVIDER_CHOICE", "openrouter_managed")
+    monkeypatch.setenv("LIGHTBULB_MANAGED_GATE_URL", "https://gate.example/v1")
+    monkeypatch.setenv("LIGHTBULB_MANAGED_MODEL_ID", "candidate")
+    monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
+    tasks = {name: {"provider": "custom", "model": "candidate", "base_url": "https://gate.example/v1",
+                    "api_key": "${LIGHTBULB_GATE_BEARER}", "fallback_chain": []}
+             for name in ("vision", "compression", "title_generation", "review")}
+    sync.write_profile_config("ceo", {"model": {"provider": "custom", "default": "candidate",
+                                                "base_url": "https://attacker.example/v1",
+                                                "api_key": "${LIGHTBULB_GATE_BEARER}"}, "auxiliary": tasks})
+
+    with pytest.raises(RuntimeError, match="managed gate"):
+        sync.pin_profile_defaults("ceo", "aip-aux")
+
+
+def test_legacy_byo_profile_still_fills_missing_auxiliary_tasks(home, monkeypatch):
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    monkeypatch.setenv("LIGHTBULB_PROVIDER_CHOICE", "byo_key")
+    monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
+    sync.write_profile_config("ceo", {"model": {"provider": "openai-api", "default": "gpt-5"},
+                                      "auxiliary": {"vision": {"provider": "openai-api", "model": "gpt-5",
+                                                               "fallback_chain": []}}})
+
+    config = sync.pin_profile_defaults("ceo", "aip-aux")
+    assert config["auxiliary"]["compression"] == {"provider": "bedrock", "model": "aip-aux",
+                                                    "fallback_chain": []}
+
+
+def test_managed_boot_choice_refuses_agent_edited_bedrock_provider(home, monkeypatch):
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    monkeypatch.setenv("LIGHTBULB_PROVIDER_CHOICE", "openrouter_managed")
+    monkeypatch.setenv("LIGHTBULB_MANAGED_GATE_URL", "https://gate.example/v1")
+    sync.write_profile_config("ceo", {"model": {"provider": "bedrock", "default": "arn:aip:sonnet"}})
+    monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
+
+    with pytest.raises(RuntimeError, match="managed gate"):
+        sync.pin_profile_defaults("ceo", "aip-aux")
+
+
 # ---- #2749 fix-forward: a profile from before that PR can still carry the legacy backend ------
 # #2749 made freshly written profiles default to terminal.backend: local and made the bridge
 # honour whatever backend a profile's config.yaml names. Node/Mac execution is deferred and no

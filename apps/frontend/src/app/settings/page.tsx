@@ -262,9 +262,9 @@ function UltraUpgradeRow({
   ultraPriceUsd,
   startCheckout,
 }: {
-  plan: "standard" | "ultra_pro" | undefined;
+  plan: "base" | "standard" | "ultra_pro" | undefined;
   ultraPriceUsd?: number;
-  startCheckout: (plan: "workspace" | "ultra") => Promise<void>;
+  startCheckout: (plan: "base" | "workspace" | "ultra") => Promise<void>;
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -301,6 +301,11 @@ function UltraUpgradeRow({
 
   return (
     <div style={{ marginTop: 14 }}>
+      {plan === "base" && (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "color-mix(in srgb, var(--midnight) 8%, transparent)", padding: "3px 10px", borderRadius: 999 }}>
+          Base
+        </span>
+      )}
       <button type="button" className="settings-btn-save" onClick={handleUpgrade} disabled={loading}>
         {loading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
         {ultraPriceUsd === undefined ? "Upgrade to Ultra" : `Upgrade to Ultra — $${ultraPriceUsd}/mo`}
@@ -310,6 +315,37 @@ function UltraUpgradeRow({
           {error}
         </div>
       )}
+    </div>
+  );
+}
+
+function BaseUpgradeRow({
+  basePriceUsd,
+  startCheckout,
+}: {
+  basePriceUsd?: number;
+  startCheckout: (plan: "base" | "workspace" | "ultra") => Promise<void>;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const handleUpgrade = useCallback(async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      await startCheckout("base");
+      setLoading(false);
+    } catch {
+      setError("Couldn't start the Base plan. Please try again.");
+      setLoading(false);
+    }
+  }, [startCheckout]);
+  return (
+    <div style={{ marginTop: 14 }}>
+      <button type="button" className="settings-btn-save" onClick={handleUpgrade} disabled={loading}>
+        {loading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
+        {basePriceUsd === undefined ? "Upgrade to Base" : `Upgrade to Base — $${basePriceUsd}/mo`}
+      </button>
+      {error && <div className="settings-alert settings-alert-error" style={{ marginTop: 8 }}>{error}</div>}
     </div>
   );
 }
@@ -331,7 +367,7 @@ function BillingPanel() {
   const [portalLoading, setPortalLoading] = useState(false);
   // Mount-time snapshot for the trial-expired check below: render must stay
   // pure (the react-compiler lint rejects Date.now() during render), and the
-  // 3-day expiry granularity makes a per-mount timestamp plenty fresh.
+  // 30-day expiry granularity makes a per-mount timestamp plenty fresh.
   const [nowMs] = useState(() => Date.now());
 
   const handlePortal = useCallback(async () => {
@@ -380,7 +416,7 @@ function BillingPanel() {
         })
       : null;
   // trial_local's `trial_end` is the OVERALL free-tier window expiry — stamped
-  // locally at signup as created + 3 days (backend trial_cap._is_expired), NOT
+  // locally at signup as created + 30 days (backend trial_cap._is_expired), NOT
   // the daily $3 reset boundary (which resets at UTC midnight and is tracked
   // separately). Once it elapses the backend blocks usage outright
   // (trial_block_reason -> TRIAL_EXPIRED) WITHOUT flipping subscription_status,
@@ -440,6 +476,9 @@ function BillingPanel() {
           onSubscribe={() => startCheckout("workspace")}
           onManage={handlePortal}
         />
+        {isTrialLocal && !isTrialExpired && (
+          <BaseUpgradeRow basePriceUsd={account?.base_price_usd} startCheckout={startCheckout} />
+        )}
       </div>
     );
   }
@@ -533,9 +572,7 @@ function BillingPanel() {
               Manage Payment
             </button>
           ) : (
-            <Link href="/chat" className="settings-btn-save">
-              Sign up
-            </Link>
+            <Link href="/chat" className="settings-btn-save">Sign up</Link>
           )}
         </div>
         {/* Ultra upgrade hangs off the paid card for a subscribed owner only —
@@ -547,6 +584,9 @@ function BillingPanel() {
             ultraPriceUsd={account?.ultra_price_usd}
             startCheckout={startCheckout}
           />
+        )}
+        {isTrialLocal && !isTrialExpired && (
+          <BaseUpgradeRow basePriceUsd={account?.base_price_usd} startCheckout={startCheckout} />
         )}
       </div>
     </div>

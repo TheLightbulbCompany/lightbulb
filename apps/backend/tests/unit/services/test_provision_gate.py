@@ -165,6 +165,25 @@ async def test_active_subscription_bedrock_blocked_returns_credits_required():
 
 
 @pytest.mark.asyncio
+async def test_active_managed_openrouter_owner_blocked_returns_credits_required():
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.metronome_gate.is_owner_blocked", new=AsyncMock(return_value=True)),
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_x",
+                "provider_choice": "openrouter_managed",
+            }
+        )
+        gate = await evaluate_provision_gate(owner_id="org_x")
+    assert gate is not None
+    assert gate.code == "credits_required"
+    assert "Lightbulb credits" in gate.message
+
+
+@pytest.mark.asyncio
 async def test_trialing_with_credits_returns_none():
     with (
         patch("core.services.provision_gate.billing_repo") as repo,

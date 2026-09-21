@@ -45,7 +45,7 @@ export function PricingThreeCard() {
           <span>/mo</span>
         </p>
         <p className="lb-price-free">
-          <strong>Start free for 3 days</strong> — no credit card.
+          <strong>Start free for 30 days</strong> — no credit card.
         </p>
 
         <div className="lb-plans">

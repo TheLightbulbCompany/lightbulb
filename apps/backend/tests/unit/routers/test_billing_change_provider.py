@@ -109,6 +109,7 @@ async def test_change_provider_bedrock_to_byo_key_happy_path(
         # Non-chatgpt switch always passes connector_user_id=None so the repo
         # REMOVEs any stale connector from the row.
         connector_user_id=None,
+        return_switch_mark=True,
     )
 
 
@@ -237,6 +238,7 @@ async def test_org_owner_can_switch_to_chatgpt_oauth_and_is_recorded(
         provider_choice="chatgpt_oauth",
         byo_provider=None,
         connector_user_id="user_test_123",
+        return_switch_mark=True,
     )
 
 
@@ -545,6 +547,7 @@ async def test_change_provider_same_choice_is_noop(
             "core.repositories.billing_repo.set_provider_choice",
             new=AsyncMock(return_value=None),
         ) as mock_set_pc,
+        patch("core.repositories.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",

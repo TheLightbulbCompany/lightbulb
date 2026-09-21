@@ -45,6 +45,8 @@ def _patch_provisioning(monkeypatch):
     provisioning = _fake_provisioning()
     monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
     monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+    monkeypatch.setattr("core.services.workspace_join.revoke_join_link", AsyncMock())
+    monkeypatch.setattr("core.repositories.openrouter_key_repo.mark_retiring", AsyncMock(return_value=False))
     return provisioning
 
 
@@ -80,6 +82,23 @@ async def test_organization_deleted_cancels_active_stripe_subscription(monkeypat
     assert set_sub_kwargs["owner_id"] == "org_acme"
     assert set_sub_kwargs["subscription_id"] is None
     assert set_sub_kwargs["status"] == "canceled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_choice", ["openrouter_managed", "byo_key"])
+async def test_organization_deleted_retires_managed_key_even_if_stripe_cancel_fails(monkeypatch, provider_choice):
+    from routers import webhooks
+
+    _patch_provisioning(monkeypatch)
+    retire = AsyncMock(return_value=True)
+    row = {"owner_id": "org_acme", "stripe_subscription_id": "sub_123", "provider_choice": provider_choice}
+    with (
+        patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
+        patch("core.repositories.openrouter_key_repo.mark_retiring", retire),
+        patch("core.services.billing_service.stripe.Subscription.delete", side_effect=RuntimeError("stripe down")),
+    ):
+        await webhooks._handle_organization_deleted({"id": "org_acme"})
+    retire.assert_awaited_once_with("org_acme")
 
 
 @pytest.mark.asyncio

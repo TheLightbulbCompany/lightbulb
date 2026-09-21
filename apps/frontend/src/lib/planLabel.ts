@@ -55,7 +55,7 @@ export function isFreeTierExpired(
  * as EXACTLY signup + this many days (`trial_cap._is_expired`), so the count
  * below can never legitimately exceed it — see the clamp in `freeTierDaysLeft`.
  */
-export const FREE_TIER_DAYS = 3;
+export const FREE_TIER_DAYS = 30;
 
 /**
  * Whole days left in the free-tier window. Consumed by `FreeTierNote`, which is
@@ -68,10 +68,10 @@ export const FREE_TIER_DAYS = 3;
  * window to describe (not on the free tier, or no `trial_end` — legacy dev
  * rows have none, and the backend treats a missing stamp as NOT expired).
  *
- * Clamped to `FREE_TIER_DAYS`: `trial_end` is signup + exactly that many days,
+ * Clamped to `FREE_TIER_DAYS` (30): `trial_end` is signup + exactly that many days,
  * but `nowMs` is the CLIENT clock — a machine a few minutes slow makes
  * `trial_end - now` exceed the true window and the ceil round to 4, so a fresh
- * signup read "4 days left" on a 3-day trial. The clamp caps it at the promise.
+ * signup read "31 days left" on a 30-day trial. The clamp caps it at the promise.
  *
  * Because it rounds up, a 0 is only reachable at exact millisecond equality,
  * and callers check `isFreeTierExpired` first anyway — so there is no "last

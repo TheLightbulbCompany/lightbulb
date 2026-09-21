@@ -20,23 +20,22 @@ from core.services.container_provision import BEDROCK_TRIAL_CHOICE, resolve_prov
 
 
 @pytest.mark.asyncio
-async def test_resolve_provider_choice_trial_local_short_circuits_to_bedrock_trial():
+async def test_resolve_provider_choice_trial_local_short_circuits_to_managed_free_route():
     """A trial_local row (the no-card local trial) short-circuits BEFORE the
     provider_choice/byo_provider lookup — `trial_local` is a
     subscription_status, never a stored provider_choice, so the provider must
     not be read off the row (a trial row carries none).
 
-    It resolves to the one-tier `bedrock_trial` CONFIG MODE. Falling through to
-    `bedrock_claude` would hand a card-less owner the full paid three-tier
-    ladder — Opus included."""
+    It resolves to the managed free route. Falling through to a paid provider
+    would hand a card-less owner an unentitled inference path.
+    """
     with patch("core.services.container_provision.billing_repo") as repo:
         repo.get_by_owner_id = AsyncMock(
             return_value={"subscription_status": "trial_local", "provider_choice": "byo_key"},
         )
         result = await resolve_provider_choice("user_x")
     # Short-circuits: the row's stray provider_choice/byo_provider is ignored.
-    assert result == (BEDROCK_TRIAL_CHOICE, None)
-    assert result[0] == "bedrock_trial"
+    assert result == ("openrouter_managed", None)
 
 
 @pytest.mark.asyncio

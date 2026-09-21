@@ -39,7 +39,7 @@ interface BillingAccount {
   subscription_status: string | null;
   /** Unix epoch SECONDS. Stripe owns the trial clock — render-only. */
   trial_end: number | null;
-  provider_choice: "chatgpt_oauth" | "byo_key" | "bedrock_claude" | null;
+  provider_choice: "chatgpt_oauth" | "byo_key" | "bedrock_claude" | "openrouter_managed" | null;
   byo_provider: "openai" | "anthropic" | null;
   /**
    * Which channel took the money — "apple_iap", or absent for Stripe (every
@@ -207,6 +207,8 @@ export function providerLabel(
     }
     case "bedrock_claude":
       return { title: "Anthropic Claude via AWS Bedrock", detail: null };
+    case "openrouter_managed":
+      return { title: "Lightbulb-managed models", detail: "Inference uses your workspace credits" };
     case "byo_key":
       if (account.byo_provider === "openai") {
         return { title: "Bring your own key", detail: "OpenAI API key" };
@@ -457,6 +459,7 @@ export default function Settings() {
       account.subscription_status === "trialing" && account.trial_end != null;
     const showCredits =
       account.provider_choice === "bedrock_claude" ||
+      account.provider_choice === "openrouter_managed" ||
       credits?.balance_dollars != null;
     const provider = providerLabel(account, chatgpt);
     const planName = isTrialLocal ? "Lightbulb Free plan" : "Lightbulb";
@@ -480,11 +483,11 @@ export default function Settings() {
 
         {showCredits && (
           <Section
-            title="Bedrock credits"
+            title="Workspace credits"
             footer={
               <Text>
                 {credits?.balance_dollars != null
-                  ? "Prepaid balance for Bedrock inference. Top up on flickmeon.ai."
+                  ? "Prepaid balance for managed inference. Top up on flickmeon.ai."
                   : "Balance unavailable right now."}
               </Text>
             }

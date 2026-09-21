@@ -125,8 +125,10 @@ async def get_billing_account(
         trial_end=int(trial_end) if trial_end is not None else None,
         provider_choice=account.get("provider_choice") if account else None,
         byo_provider=account.get("byo_provider") if account else None,
+        managed_inference_available=settings.OPENROUTER_MANAGED_ENABLED,
         plan=(account.get("plan") or "standard") if account else "standard",
         workspace_price_usd=settings.WORKSPACE_PRICE_USD,
+        base_price_usd=settings.BASE_PRICE_USD,
         ultra_price_usd=settings.ULTRA_PRICE_USD,
         subscription_source=(account.get("subscription_source") if account else None),
     )
@@ -305,7 +307,7 @@ async def create_portal(
 
 
 class CheckoutRequest(BaseModel):
-    plan: Literal["workspace", "ultra"]
+    plan: Literal["base", "workspace", "ultra"]
 
 
 @router.post(
@@ -362,9 +364,9 @@ _TOP_UP_MAX_CENTS = 100_000  # $1,000.00 — single-shot prepay ceiling
 
 class ChangeProviderRequest(BaseModel):
     # Pydantic validates choices before any DDB read or container side-effect.
-    provider_choice: Literal["chatgpt_oauth", "byo_key", "bedrock_claude"] = Field(
+    provider_choice: Literal["chatgpt_oauth", "byo_key", "bedrock_claude", "openrouter_managed"] = Field(
         ...,
-        description="chatgpt_oauth | byo_key | bedrock_claude",
+        description="chatgpt_oauth | byo_key | bedrock_claude | openrouter_managed",
     )
     byo_provider: Literal["openai", "anthropic"] | None = Field(
         None,

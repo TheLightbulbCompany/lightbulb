@@ -32,6 +32,14 @@ describe("OutOfCreditsBanner", () => {
     expect(screen.getByText(/out of Claude credits/i)).toBeInTheDocument();
   });
 
+  it("routes a managed-model owner to workspace credits", () => {
+    mockSwr.mockReturnValue({ data: { provider_choice: "openrouter_managed" } });
+    mockCredits.mockReturnValue({ balance: { balance_microcents: 0, is_exhausted: true } });
+    render(<OutOfCreditsBanner />);
+    expect(screen.getByText(/out of workspace credits/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Top up now" })).toHaveAttribute("href", "/chat?panel=llm");
+  });
+
   it("stays hidden on a spendable balance", () => {
     mockCredits.mockReturnValue({ balance: { balance_microcents: 5_000_000, is_exhausted: false } });
     const { container } = render(<OutOfCreditsBanner />);

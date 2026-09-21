@@ -214,10 +214,10 @@ async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll()
             with patch("core.repositories.billing_repo.time.time", return_value=1_000):
                 result = await container_status(_workspace_auth(), flow=None)
             assert result["runtime_phase"] == "ready"
-            assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 260_200
+            assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 2_593_000
             with patch("core.repositories.billing_repo.time.time", return_value=9_999):
                 await container_status(_workspace_auth(), flow=None)
-            assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 260_200
+                assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 2_593_000
 
 
 @pytest.mark.asyncio

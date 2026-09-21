@@ -56,6 +56,17 @@ def _subscription_event(**overrides) -> dict:
     return {"id": "evt_x", "type": "customer.subscription.created", "data": {"object": event_data}}
 
 
+@pytest.mark.parametrize(
+    ("price_id", "expected"),
+    [("price_base_test", "base"), ("price_workspace_test", "standard"), ("price_ultra_test", "ultra_pro")],
+)
+def test_subscription_item_maps_each_configured_plan(monkeypatch, price_id, expected):
+    monkeypatch.setattr("core.config.settings.STRIPE_BASE_PRICE_ID", "price_base_test")
+    monkeypatch.setattr("core.config.settings.STRIPE_ULTRA_PRICE_ID", "price_ultra_test")
+    event = _subscription_event(items={"data": [{"price": {"id": price_id, "recurring": {"interval": "month"}}}]})
+    assert handlers._workspace_plan_from_subscription_items(event["data"]["object"]) == expected
+
+
 @pytest.fixture
 def mock_repo():
     with patch.object(handlers, "billing_repo") as repo:

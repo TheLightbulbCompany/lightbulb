@@ -45,7 +45,7 @@ def test_catalog_is_public_and_lists_supported_integrations(client):
     assert "stripe" in got_integrations
     assert "vercel_cli" in got_integrations
     assert "notion" in got_integrations
-    assert "quickbooks" not in got_integrations
+    assert "quickbooks" in got_integrations
 
     got_channels = {c["key"] for c in body["channels"]}
     assert got_channels == set(CHANNEL_PROVIDER_IDS)

@@ -221,7 +221,7 @@ async def test_apply_agentcore_materializer_with_no_projection_is_rejected(monke
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "provider",
-    ("stripe", "notion", "sentry", "linear", "attio", "intercom", "apollo", "cloudflare", "quickbooks"),
+    ("stripe", "notion", "linear", "attio", "intercom", "apollo", "cloudflare"),
 )
 async def test_actor_owned_mcp_without_retained_credential_is_rejected(monkeypatch, provider):
     """A missing canonical token must not become a working-looking empty Hermes token file."""
@@ -240,6 +240,15 @@ async def test_actor_owned_mcp_without_retained_credential_is_rejected(monkeypat
     with pytest.raises(ac.RuntimeUnsupportedError):
         await ac.apply_connection("org_1", provider, {"access_token": "fresh", "refresh_token": "rotating"})
     assert calls == []
+
+
+def test_quickbooks_uses_the_hermes_profile_materializer():
+    from core.services.credentials import apply_connection as ac
+
+    provider = ac.registry.get_provider("quickbooks")
+    assert ac.runtime_supported(provider)
+    assert provider.mcp_stdio is not None
+    assert provider.mcp_stdio.command == "/usr/local/bin/lightbulb-quickbooks-mcp"
 
 
 @pytest.mark.parametrize("provider", ("google", "github", "posthog", "meta_ads", "parallel"))

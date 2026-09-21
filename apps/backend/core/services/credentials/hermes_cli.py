@@ -65,14 +65,15 @@ logger = logging.getLogger(__name__)
 #: materializer writes into. Three jobs: seed the scratch root before running the materializer
 #: (so a shared file keeps the entries this provider does not own), decide what to upload, and
 #: decide what to delete when the materializer removed it. A materializer absent from this map
-#: has no Hermes projection and keeps the old skip. ``mcp_oauth``/``qbo_dotenv`` are deliberately
-#: absent: they are MCP-shaped and already ride ``reconcile_integrations``. ``toml_cli`` remains
-#: absent because no live provider uses it on Hermes.
+#: has no Hermes projection and keeps the old skip. ``mcp_oauth`` remains absent because remote
+#: grants use the broker/native MCP rails. ``toml_cli`` remains absent because no live provider
+#: uses it on Hermes.
 OWNED_PATHS: dict[str, tuple[str, ...]] = {
     "aws_cli": (".aws/",),
     "gh_cli": (".config/gh/",),
     "gog_cli": (".config/gogcli/", ".local/share/gogcli/"),
     "instagram_cli": ("skills/instagram/",),
+    "qbo_dotenv": ("quickbooks/",),
     "skill_cli": ("skills/vercel/",),
     "xurl_cli": (".xurl",),
 }
@@ -81,7 +82,7 @@ OWNED_PATHS: dict[str, tuple[str, ...]] = {
 #: ``home/`` — the profile's ``$HOME`` under ``TERMINAL_HOME_MODE: profile``. ``instagram_cli``
 #: is absent because its output is a Hermes skills dir, already profile-relative.
 HOME_DIR = "home"
-ROOT_DIR: dict[str, str] = dict.fromkeys(("aws_cli", "gh_cli", "gog_cli", "xurl_cli"), HOME_DIR)
+ROOT_DIR: dict[str, str] = dict.fromkeys(("aws_cli", "gh_cli", "gog_cli", "qbo_dotenv", "xurl_cli"), HOME_DIR)
 
 #: Backend-owned values a projected CLI needs in the SHELL's environment, written to the
 #: profile's ``cli-env.json``. NOT the profile ``.env``: that file feeds Hermes's in-process

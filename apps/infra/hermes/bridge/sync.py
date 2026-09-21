@@ -84,6 +84,7 @@ CLI_CREDENTIAL_PREFIXES = (
     f"{PROFILE_HOME}/.config/gogcli/",
     f"{PROFILE_HOME}/.local/share/gogcli/",
     f"{PROFILE_HOME}/.xurl",
+    f"{PROFILE_HOME}/quickbooks/",
     "skills/instagram/",
     CLI_ENV_FILE,
 )

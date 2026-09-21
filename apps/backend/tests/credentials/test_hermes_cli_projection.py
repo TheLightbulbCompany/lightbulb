@@ -175,6 +175,29 @@ async def test_vercel_skill_projection_lands_skill_and_token_env(s3, roster):
     assert json.loads(s3["org_1/hermes/ceo/cli-env.json"].decode()) == {"VERCEL_TOKEN": "vrc_secret"}
 
 
+@pytest.mark.asyncio
+async def test_quickbooks_projection_lands_profile_local_store(s3, roster, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from core.services.credentials.materializers import qbo_dotenv
+
+    monkeypatch.setattr(
+        qbo_dotenv.platform_oauth_app_store,
+        "get",
+        AsyncMock(return_value={"client_id": "cid", "client_secret": "cs"}),
+    )
+    await hermes_cli.project(
+        "org_1",
+        "quickbooks",
+        "qbo_dotenv",
+        {"refresh_token": "rt", "realm_id": "123"},
+    )
+
+    body = s3["org_1/hermes/ceo/home/quickbooks/.env"].decode()
+    assert "QUICKBOOKS_REFRESH_TOKEN=rt" in body
+    assert "QUICKBOOKS_REALM_ID=123" in body
+
+
 def test_every_projected_materializer_has_a_remover():
     from core.services.credentials.materializers import MATERIALIZER_REMOVERS, MATERIALIZERS
 
@@ -183,9 +206,9 @@ def test_every_projected_materializer_has_a_remover():
 
 
 @pytest.mark.asyncio
-async def test_clear_is_a_no_op_for_an_unprojected_materializer(s3, roster):
-    await hermes_cli.clear("org_1", "quickbooks", "qbo_dotenv", {})  # must not raise
-    assert not s3
+async def test_clear_is_idempotent_for_quickbooks(s3, roster):
+    await hermes_cli.clear("org_1", "quickbooks", "qbo_dotenv", {})
+    assert "org_1/hermes/ceo/.revision" in s3
 
 
 def test_projection_root_is_scoped_and_restored(tmp_path):

@@ -78,6 +78,10 @@ def runtime_supported(p: registry.Provider) -> bool:
     if is_mcp_shaped(p):
         # Reconciliation reads Secrets Manager for brokered grants; an unbrokered
         # actor-owned grant has no durable backend copy and cannot be projected.
+        if p.mcp_stdio and p.wiring.materializer:
+            from core.services.credentials import hermes_cli
+
+            return hermes_cli.supports(p.wiring.materializer)
         return registry.refresh_owner_for(p) != "actor" or p.retain_secret
     if p.wiring.materializer:
         from core.services.credentials import hermes_cli
@@ -145,10 +149,15 @@ async def _apply_connection_agentcore(
     """Project a supported connection; let failures reach the caller's rollback."""
     if not runtime_supported(p):
         raise RuntimeUnsupportedError(f"{provider_key}: no usable Hermes credential path")
-    if p.wiring.materializer and not is_mcp_shaped(p):
+    if p.wiring.materializer and (not is_mcp_shaped(p) or p.mcp_stdio):
         from core.services.credentials import hermes_cli
 
-        return await hermes_cli.project(owner_id, provider_key, p.wiring.materializer, credential)
+        result = await hermes_cli.project(owner_id, provider_key, p.wiring.materializer, credential)
+        if p.mcp_stdio:
+            from core.services.credentials.mcp_server import reconcile_integrations
+
+            await reconcile_integrations(owner_id, pending=provider_key)
+        return result
     if p.wiring.openclaw_paths and not is_mcp_shaped(p):
         spec = HERMES_OPENCLAW_PATHS_PROVIDERS.get(provider_key)
         if spec is None:

@@ -23,6 +23,8 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
 
   useEffect(() => {
     let disposed = false;
+    setError(null);
+    connecting.current = false;
     void import("dcv").then(({ default: dcv }) => {
       dcv.authenticate(signedUrl, {
         promptCredentials: () => {},

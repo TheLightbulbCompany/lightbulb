@@ -4,14 +4,24 @@
  * throws before the live viewer can connect.
  */
 export function ensureDcvMediaShim(): boolean {
-  if (typeof navigator === "undefined" || navigator.mediaDevices !== undefined) return true;
+  if (typeof navigator === "undefined") return true;
   try {
-    Object.defineProperty(navigator, "mediaDevices", {
-      configurable: true,
-      enumerable: true,
-      value: {},
-      writable: true,
-    });
+    if (navigator.mediaDevices === undefined) {
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        enumerable: true,
+        value: {},
+        writable: true,
+      });
+    }
+    if (typeof navigator.mediaDevices.getUserMedia !== "function") {
+      const emptyStream = {
+        getAudioTracks: () => [],
+        getTracks: () => [],
+        getVideoTracks: () => [],
+      } as unknown as MediaStream;
+      navigator.mediaDevices.getUserMedia = async () => emptyStream;
+    }
     return true;
   } catch {
     return false;

@@ -366,6 +366,9 @@ async def test_change_provider_refuses_different_choice_while_switch_pending(mon
     )
     commit = AsyncMock()
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", commit)
+    monkeypatch.setattr(
+        "core.services.key_service.get_secret_arn", AsyncMock(return_value="arn:aws:secretsmanager:key")
+    )
 
     with pytest.raises(billing_service.ChangeProviderError) as exc:
         await billing_service.change_provider(

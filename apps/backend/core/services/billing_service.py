@@ -684,31 +684,19 @@ async def change_provider(
             status_code=403,
         )
 
-    # Fast-path no-op. Returning early instead of re-provisioning prevents
-    # an idle "change provider" click from blowing away the user's chat
-    # session for no functional change. byo_key with the same byo_provider
-    # is treated as a no-op too — different byo_provider DOES re-provision
-    # because the env-var secret reference changes.
+    # Fast-path same-choice retry/no-op. A matching choice normally does no
+    # work, but a matching choice with a pending profile rewrite must
+    # redispatch that existing generation.
     from core.repositories import container_repo as _container_repo
 
-    # A pending switch is a stronger fact than a matching billing row or a
-    # prerequisite for a prospective new provider. The committed billing row
-    # already contains the intended choice, so the same retry must re-dispatch
-    # that generation; a different choice must conflict before reading a BYOK
-    # secret or OAuth token for a switch that cannot be admitted.
-    pending_row = await _container_repo.get_by_owner_id(owner_id) or {}
-    if pending_row.get("needs_provision"):
-        if current_choice != provider_choice or current_byo != next_byo:
-            raise ChangeProviderError(
-                "provider_switch_pending", "A provider switch is already in progress.", status_code=409
-            )
-        await _container_repo.takeover_provision(owner_id)
-        from core.services.provision_dispatch import dispatch_provision
-
-        asyncio.create_task(dispatch_provision(owner_id))
-        return {"status": "ok", "provider_choice": provider_choice, "byo_provider": next_byo, "restart": True}
-
     if current_choice == provider_choice and current_byo == next_byo:
+        pending_row = await _container_repo.get_by_owner_id(owner_id) or {}
+        if pending_row.get("needs_provision"):
+            await _container_repo.takeover_provision(owner_id)
+            from core.services.provision_dispatch import dispatch_provision
+
+            asyncio.create_task(dispatch_provision(owner_id))
+            return {"status": "ok", "provider_choice": provider_choice, "byo_provider": next_byo, "restart": True}
         return {"status": "noop", "provider_choice": provider_choice, "byo_provider": next_byo}
 
     if provider_choice == "openrouter_managed":

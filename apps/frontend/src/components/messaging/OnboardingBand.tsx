@@ -16,6 +16,7 @@ import {
   STARTER_AGENT_DEFAULT_NAMES,
   type SetupStep,
 } from "./onboardingSteps";
+import { ConnectorIcon } from "./ConnectorIcons";
 import type { RoomParticipant } from "./types";
 import type { JoinLinkStatus } from "@/components/settings/WorkspaceMembersSection";
 
@@ -148,7 +149,13 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
 
       <div className="onboarding-band-grid">
         {connectors.map((step) => (
-          <StepCard key={step.id} step={step} isAdmin={isAdmin} onSelect={onStep} />
+          <StepCard
+            key={step.id}
+            step={step}
+            isAdmin={isAdmin}
+            icon={<ConnectorIcon provider={step.id} />}
+            onSelect={onStep}
+          />
         ))}
       </div>
 

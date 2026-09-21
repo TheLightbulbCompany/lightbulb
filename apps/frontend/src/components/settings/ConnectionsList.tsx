@@ -116,7 +116,8 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
     <div className="space-y-2">
       {railError}
       {rows.map(({ connection, railOnly }) => {
-        const connected = connection.status === "connected";
+        const authorized = connection.status === "connected";
+        const connected = authorized && connection.runtime_supported !== false;
         // Gated off this owner. Distinct from "not connected": there is nothing
         // they can click to change it, so the row must not read as one step away
         // — and must not promise capabilities we cannot deliver to them yet.
@@ -128,7 +129,8 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
         // before it ever looks at `acquisition`); only a NEW connection attempt
         // is unavailable.
         const unavailableOnRuntime =
-          connection.acquisition === "container_login" && !connected;
+          connection.runtime_supported === false ||
+          (connection.acquisition === "container_login" && !authorized);
         const receipt = INTEGRATION_RECEIPTS[connection.provider];
         return (
           <div
@@ -155,6 +157,8 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
               <p className="text-xs text-[var(--midnight-muted)]">
                 {railOnly ? (
                   "Set up by your agents on your own provider account"
+                ) : authorized && unavailableOnRuntime ? (
+                  "Authorized · unavailable to agents"
                 ) : unavailableOnRuntime ? (
                   "Not available on this runtime"
                 ) : (
@@ -170,7 +174,13 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
               </p>
               {receipt && (
                 <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
-                  {connected ? "Delivered: " : unavailable ? "Would deliver: " : "Will deliver: "}
+                  {connected
+                    ? "Delivered: "
+                    : authorized && unavailableOnRuntime
+                      ? "Agent access unavailable: "
+                      : unavailable
+                        ? "Would deliver: "
+                        : "Will deliver: "}
                   <span className={connected ? "text-[var(--ok)]" : undefined}>
                     {receipt.delivers}
                   </span>
@@ -217,7 +227,7 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
               />
             </div>
             {!railOnly &&
-              (unavailableOnRuntime ? null : (
+              (unavailableOnRuntime && !authorized ? null : (
                 <ConnectButton
                   connection={connection}
                   canManage={canManage}

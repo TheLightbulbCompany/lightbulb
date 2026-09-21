@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import contextvars
 import fcntl
 import hashlib
 import json
@@ -25,6 +26,9 @@ log = logging.getLogger("bridge")
 _busy = 0
 _busy_lock = threading.Lock()
 _last_turn: dict[str, float] = {}
+_brokered_mcp_overlay: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "brokered_mcp_overlay", default=None
+)
 
 
 def _busy_add(n: int) -> None:
@@ -529,6 +533,21 @@ def runtime_mcp_env(agent_id: str) -> dict[str, str]:
         for key, token in tokens.items()
         if isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_-]+", key) and isinstance(token, str) and token
     }
+
+
+def _brokered_mcp_scope(overlay: dict[str, str]):
+    """Keep brokered bearers isolated to this turn's execution context."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _scope():
+        token = _brokered_mcp_overlay.set(overlay)
+        try:
+            yield
+        finally:
+            _brokered_mcp_overlay.reset(token)
+
+    return _scope()
 
 
 # Exactly the three statuses a text-only re-post can actually recover from. 400: a backend
@@ -1194,6 +1213,7 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
             yield
             return
         secrets = build_profile_secret_scope(_profile_dir(agent_id))
+        secrets.update(_brokered_mcp_overlay.get() or {})
         # A projected CLI's shell values are profile FACTS, not turn facts, so they join the
         # same dict every caller's scope is built from. The NAMES are in the fixed contract
         # above regardless, so a profile with no gog connected simply resolves them to nothing.
@@ -1501,7 +1521,7 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
         browser_lease = browser_control.begin_turn(
             str(run_id or ""), agent_id
         )
-        with _hermes_home_scope(agent_id), _secret_scope(agent_id, runtime_mcp_env(agent_id)), _terminal_scope(agent_id), _desktop_active_turn(session_key, run_id):
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id), _desktop_active_turn(session_key, run_id):
             try:
                 agent = _construct_agent(agent_id, body, frames, session_key)
                 attach_agent(run_id, agent)

@@ -503,22 +503,36 @@ class TestEnvGatedProvider:
         assert row["requestable"] is True
         assert row["status"] == "unavailable"
 
-    @pytest.mark.parametrize("provider", ("stripe", "vercel_cli"))
-    def test_unsupported_hermes_provider_is_unavailable_for_new_connections(self, provider):
-        p = registry.get_provider(provider)
-        row = connections._connection_row(provider, p, connected={}, byo=False, owner_id="org_1")
+    def test_unsupported_hermes_provider_is_unavailable_for_new_connections(self):
+        p = registry.Provider(
+            key="synthetic_unsupported",
+            display_name="Synthetic",
+            acquisition="paste_token",
+            actor="cli",
+            refresh_owner="none",
+            wiring=registry.Wiring(materializer="toml_cli"),
+        )
+        row = connections._connection_row(p.key, p, connected={}, byo=False, owner_id="org_1")
         assert row["requestable"] is False
         assert row["status"] == "unavailable"
 
     def test_existing_unsupported_connection_remains_visible_for_disconnect(self):
-        p = registry.get_provider("stripe")
-        row = connections._connection_row("stripe", p, connected={"stripe": "connected"}, byo=False, owner_id="org_1")
+        p = registry.Provider(
+            key="synthetic_unsupported",
+            display_name="Synthetic",
+            acquisition="paste_token",
+            actor="cli",
+            refresh_owner="none",
+            wiring=registry.Wiring(materializer="toml_cli"),
+        )
+        row = connections._connection_row(p.key, p, connected={p.key: "connected"}, byo=False, owner_id="org_1")
         assert row["requestable"] is False
         assert row["status"] == "connected"
         assert row["runtime_supported"] is False
 
     @pytest.mark.asyncio
     async def test_unsupported_oauth_does_not_start_provider_consent(self, monkeypatch):
+        monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
         started = AsyncMock()
         monkeypatch.setattr(connections.oauth_dance, "start", started)
         with pytest.raises(connections.HTTPException) as exc:

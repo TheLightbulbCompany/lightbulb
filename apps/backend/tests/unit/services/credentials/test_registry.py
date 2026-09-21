@@ -267,12 +267,14 @@ def test_tier2_rest_keys_are_retained_backend_side():
         assert _retains_secret(p) is True, f"{key} must be readable by a backend route"
 
 
-def test_mcp_rows_stay_container_only():
+def test_mcp_rows_stay_container_only(monkeypatch):
     """The agent-facing rows must NOT start retaining as a side effect."""
+    from core.services.credentials import registry
     from core.services.credentials.registry import all_providers
     from routers.connections import _retains_secret
 
     providers = all_providers()
+    monkeypatch.setattr(registry.settings, "ENVIRONMENT", "prod")
     for key in ("attio", "apollo"):
         assert _retains_secret(providers[key]) is False, key
 

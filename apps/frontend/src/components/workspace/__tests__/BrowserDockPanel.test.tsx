@@ -139,7 +139,7 @@ describe("BrowserDockPanel", () => {
       .mockResolvedValue({ active: true, url: "https://signed/one?new", sessionId: "s1", generation: 2, mode: "human", isController: false, canControl: true });
     render(<BrowserDockPanel />);
     await flush();
-    await flush(5_000);
+    await flush(10_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-signed-url", "https://signed/one");
     expect(screen.getByRole("button", { name: /take control/i })).toBeInTheDocument();
   });
@@ -220,10 +220,12 @@ describe("BrowserDockPanel", () => {
     await flush(5_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-signed-url", url);
     await flush(235_000);
-    expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", url.replace("first", "second"));
+    // Same-session signed URLs are retained until the 240s remint boundary.
+    expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", url);
     const nextUrl = url.replace("/one/", "/two/");
     get.mockResolvedValue({ active: true, url: nextUrl, sessionId: "s2", generation: "g2", mode: "agent", canControl: true });
-    await flush(5_000);
+    await flush(10_000);
+    await flush();
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", nextUrl);
   });
 

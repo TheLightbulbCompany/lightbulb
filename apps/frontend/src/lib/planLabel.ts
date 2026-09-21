@@ -55,7 +55,7 @@ export function isFreeTierExpired(
  * as EXACTLY signup + this many days (`trial_cap._is_expired`), so the count
  * below can never legitimately exceed it — see the clamp in `freeTierDaysLeft`.
  */
-export const FREE_TIER_DAYS = 3;
+export const FREE_TIER_DAYS = 30;
 
 /**
  * Whole days left in the free-tier window. Consumed by `FreeTierNote`, which is

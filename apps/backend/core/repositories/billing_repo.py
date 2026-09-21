@@ -814,7 +814,7 @@ async def create_if_not_exists(
     return item
 
 
-_TRIAL_LOCAL_DURATION_SECONDS = 3 * 24 * 60 * 60
+_TRIAL_LOCAL_DURATION_SECONDS = 30 * 24 * 60 * 60
 
 
 async def create_trial_local_if_absent(owner_id: str, owner_type: str, *, trial_end: int | None = None) -> bool:

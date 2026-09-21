@@ -26,6 +26,13 @@ def default_s3_prefix(owner: str) -> str:
 S3_PREFIX = os.environ.get("S3_PREFIX", default_s3_prefix(OWNER)).strip("/")
 STARTED = time.time()
 
+# Browser v2 keeps lifecycle in the backend and points Hermes at the loopback discovery seam.
+# Old runtime specs may still carry the v1 provider; the new bridge ignores it only when the
+# workspace has an AgentCore Browser profile, so the image remains backward-compatible.
+if os.environ.get("AGENTCORE_PROFILE_ID"):
+    os.environ.pop("AGENT_BROWSER_PROVIDER", None)
+    os.environ.setdefault("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
+
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -52,6 +59,9 @@ if _secret_id:
     os.environ["GATEWAY_TOKEN"] = GATEWAY_TOKEN
     if _boot_secrets.get("bedrockBearer"):
         os.environ["AWS_BEARER_TOKEN_BEDROCK"] = _boot_secrets["bedrockBearer"]
+    os.environ["LIGHTBULB_PROVIDER_CHOICE"] = _boot_secrets.get("providerChoice") or "bedrock_claude"
+    os.environ["LIGHTBULB_PROVIDER_SWITCH_FROZEN"] = "1" if _boot_secrets.get("providerSwitchFrozen") is True else "0"
+    os.environ["LIGHTBULB_PROVIDER_SWITCH_GENERATION"] = _boot_secrets.get("providerSwitchGeneration") or ""
 
 # Task 13b: mark this process as a profile multiplexer once, at boot -- agent.secret_scope's
 # get_secret() then fails CLOSED (raises) for any direct caller that reads a credential with no

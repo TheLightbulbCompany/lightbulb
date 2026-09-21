@@ -11,7 +11,6 @@ live read worth it:
 """
 
 import os
-from types import SimpleNamespace
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -33,14 +32,20 @@ def client():
     return TestClient(app)
 
 
-def test_catalog_is_public_and_lists_everything(client):
-    """No auth → 200, and every provider offered in THIS env + channel is present."""
+def test_catalog_is_public_and_lists_supported_integrations(client):
+    """No auth → 200, and the dev broker exposes hosted MCP + skill rails."""
     resp = client.get(PREFIX)
     assert resp.status_code == 200
     body = resp.json()
 
     got_integrations = {i["key"] for i in body["integrations"]}
-    assert got_integrations == set(registry.all_providers().keys())
+    assert got_integrations <= set(registry.all_providers())
+    assert "google" in got_integrations
+    assert "github" in got_integrations
+    assert "stripe" in got_integrations
+    assert "vercel_cli" in got_integrations
+    assert "notion" in got_integrations
+    assert "quickbooks" in got_integrations
 
     got_channels = {c["key"] for c in body["channels"]}
     assert got_channels == set(CHANNEL_PROVIDER_IDS)
@@ -58,7 +63,15 @@ def test_catalog_is_public_and_lists_everything(client):
 def test_new_provider_surfaces_with_no_skill_change(client, monkeypatch):
     """Appending a provider to the registry surfaces it in the catalog — the
     whole point of the live read (no image rebuild, no skill edit)."""
-    fake = SimpleNamespace(key="acme", display_name="Acme", byo_required=True, environments=None, actor="mcp")
+    fake = registry.Provider(
+        key="acme",
+        display_name="Acme",
+        byo_required=True,
+        acquisition="paste_token",
+        actor="mcp",
+        refresh_owner="none",
+        wiring=registry.Wiring(mcp_server=registry.McpServer(key="acme", command="acme")),
+    )
     real = dict(registry.all_providers())
     real["acme"] = fake
     monkeypatch.setattr(platform_info.registry, "all_providers", lambda: real)

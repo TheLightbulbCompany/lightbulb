@@ -1644,17 +1644,62 @@ def is_provision_claim_stale(container: dict | None) -> bool:
     return int(claimed_at) < int(time.time()) - PROVISION_CLAIM_STALE_S
 
 
-async def mark_needs_provision(owner_id: str) -> None:
-    """Mark the owner's container as needing a FULL provision on its next
-    wake: something task-definition-shaped changed (today: a provider
-    switch — the one config write whose effect lives in the task def, not
-    in EFS/secret values that a plain boot re-reads). The wake verb routes
-    a marked row through the SFN executor (which re-registers the task def
-    and rewrites openclaw.json) instead of the direct scale-up fast path;
-    the full provision's terminal running write clears the marker. No-op
-    when no row exists — a first provision is always full.
+async def mark_needs_provision(owner_id: str) -> dict | None:
+    """Block new turn ingress and stamp a generation for provider convergence.
+
+    Return the prior state so a failed billing write can restore it only while
+    this generation is still current. No-op when no container row exists.
     """
-    await update_fields(owner_id, {"needs_provision": True})
+    generation = uuid.uuid4().hex
+    try:
+        response = await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET needs_provision = :yes, provider_switch_generation = :gen, updated_at = :now",
+            ConditionExpression="attribute_exists(owner_id) AND attribute_not_exists(release_update_id) "
+            "AND (attribute_not_exists(needs_provision) OR needs_provision = :no)",
+            ExpressionAttributeValues={":yes": True, ":no": False, ":gen": generation, ":now": utc_now_iso()},
+            ReturnValues="ALL_OLD",
+            ReturnValuesOnConditionCheckFailure="ALL_OLD",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            if exc.response.get("Item") or await get_by_owner_id(owner_id, consistent=True):
+                raise ProvisionSuperseded(f"owner mutation row for {owner_id} is reserved") from exc
+            return None
+        raise
+    previous = response.get("Attributes") or {}
+    publish_status_changed(owner_id)
+    return {
+        "generation": generation,
+        "previous_needs_provision": previous.get("needs_provision", False),
+        "previous_generation": previous.get("provider_switch_generation"),
+    }
+
+
+async def restore_needs_provision(owner_id: str, mark: dict) -> bool:
+    """Undo only this switch's marker; a newer generation wins the race."""
+    values = {":gen": mark["generation"], ":prior": bool(mark["previous_needs_provision"]), ":now": utc_now_iso()}
+    update = "SET needs_provision = :prior, updated_at = :now"
+    if mark.get("previous_generation") is None:
+        update += " REMOVE provider_switch_generation"
+    else:
+        update += ", provider_switch_generation = :oldgen"
+        values[":oldgen"] = mark["previous_generation"]
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression=update,
+            ConditionExpression="provider_switch_generation = :gen AND attribute_not_exists(release_update_id)",
+            ExpressionAttributeValues=values,
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+    publish_status_changed(owner_id)
+    return True
 
 
 async def update_status(owner_id: str, status: str, substatus: str | None = None) -> dict | None:
@@ -2044,3 +2089,59 @@ async def delete(owner_id: str) -> dict | None:
     # ``or None``: DynamoDB omits Attributes when there was no row, but moto
     # returns an empty map — one answer for "there was nothing here" either way.
     return resp.get("Attributes") or None
+
+
+BROWSER_KEY_PREFIX = "__browser__#"
+
+
+async def get_browser_state(owner_id: str) -> dict | None:
+    row = await get_by_owner_id(f"{BROWSER_KEY_PREFIX}{owner_id}", consistent=True)
+    return (row or {}).get("browser_state")
+
+
+async def delete_browser_state(owner_id: str) -> None:
+    await run_in_thread(_get_table().delete_item, Key={"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"})
+
+
+async def compare_browser_state(owner_id: str, expected: dict | None, state: dict) -> bool:
+    """Fence browser metadata independently of disposable runtime rows, in the same table.
+
+    The parent condition stops a late checkpoint resurrecting data after account wipe.
+    Reserved keys are already excluded by scan_all; no new table or GSI is needed.
+    """
+    values = {":next": state}
+    if expected is None:
+        condition = "attribute_not_exists(browser_state)"
+    else:
+        condition = "browser_state = :expected"
+        values[":expected"] = expected
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.meta.client.transact_write_items,
+            TransactItems=[
+                {
+                    "ConditionCheck": {
+                        "TableName": table.name,
+                        "Key": {"owner_id": owner_id},
+                        "ConditionExpression": "attribute_exists(owner_id) AND attribute_not_exists(release_update_id)",
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": table.name,
+                        "Key": {"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"},
+                        "UpdateExpression": "SET browser_state = :next",
+                        "ConditionExpression": condition,
+                        "ExpressionAttributeValues": values,
+                    }
+                },
+            ],
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "TransactionCanceledException":
+            reasons = exc.response.get("CancellationReasons", [])
+            if any(r.get("Code") == "ConditionalCheckFailed" for r in reasons):
+                return False
+        raise

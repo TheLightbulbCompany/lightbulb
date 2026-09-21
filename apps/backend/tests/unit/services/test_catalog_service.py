@@ -119,7 +119,6 @@ async def test_build_and_upload_agent_profile_gets_the_bedrock_trial_choice_for_
     trial owner's marketplace AgentCore deploy got the full paid model
     ladder instead of BEDROCK_TRIAL_CHOICE. Now that it delegates to the
     shared resolve_profile_inputs, it must not."""
-    from core.services.container_provision import BEDROCK_TRIAL_CHOICE
     from core.services import catalog_service
 
     _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"subscription_status": "trial_local"})
@@ -142,7 +141,7 @@ async def test_build_and_upload_agent_profile_gets_the_bedrock_trial_choice_for_
         owner_id="org_trial", agent_id="agent_new", container={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
     )
 
-    assert written["kwargs"]["provider_choice"] == BEDROCK_TRIAL_CHOICE
+    assert written["kwargs"]["provider_choice"] == "openrouter_managed"
     assert written["kwargs"]["byo_provider"] is None
 
 

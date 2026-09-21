@@ -438,10 +438,9 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // AgentCore Browser: the backend mints/reads the per-workspace profile and discovers the
-    // live session itself (design §2c -- nothing in the runtime reports one). No
-    // StopBrowserSession and no UpdateBrowserStream: the backend never stops a session and
-    // human takeover ships in no version of this plan.
+    // AgentCore Browser: the backend mints/reads the per-workspace profile, drives the
+    // workspace-owned session handoff, and discovers live sessions itself. Browser-profile
+    // state snapshots use the released agent-browser CLI; no SaveBrowserSessionProfile grant.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "AgentCoreBrowserManage",
@@ -463,6 +462,28 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:GetBrowserSession",
           "bedrock-agentcore:ListBrowserSessions",
           "bedrock-agentcore:ConnectBrowserLiveViewStream",
+        ],
+        resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
+      }),
+    );
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AgentCoreBrowserSessionStart",
+        actions: ["bedrock-agentcore:StartBrowserSession"],
+        resources: [
+          agentcoreArn("browser/*"),
+          `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`,
+          agentcoreArn("browser-profile/*"),
+        ],
+      }),
+    );
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AgentCoreBrowserSessionControl",
+        actions: [
+          "bedrock-agentcore:StopBrowserSession",
+          "bedrock-agentcore:UpdateBrowserStream",
+          "bedrock-agentcore:ConnectBrowserAutomationStream",
         ],
         resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
       }),
@@ -742,6 +763,23 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "OpenRouterOwnerSecretsRW",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+        ],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/openrouter/owners/*`,
+        ],
+      }),
+    );
+
     // Per-owner integration credential secrets (credential-layer redesign):
     // paste-key tokens and backend-custodian OAuth credentials live under
     // isol8/{env}/integrations/*. The secret-free integrations DDB index points
@@ -800,6 +838,7 @@ export class ServiceStack extends cdk.Stack {
         actions: [
           "secretsmanager:CreateSecret",
           "secretsmanager:PutSecretValue",
+          "secretsmanager:UpdateSecretVersionStage",
           "secretsmanager:UpdateSecret",
           "secretsmanager:DeleteSecret",
           "secretsmanager:GetSecretValue",
@@ -822,6 +861,7 @@ export class ServiceStack extends cdk.Stack {
         resources: [
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/hermes/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/marketplace-installs/*`,
+          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/browser-state/*`,
         ],
       }),
     );
@@ -927,6 +967,16 @@ export class ServiceStack extends cdk.Stack {
         actions: ["ssm:GetParameter"],
         resources: [
           `arn:aws:ssm:${this.region}:${this.account}:parameter/lightbulb/${env}/bedrock-gate-url`,
+        ],
+      }),
+    );
+
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "OpenRouterGateUrlParamRead",
+        actions: ["ssm:GetParameter"],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/lightbulb/${env}/openrouter-gate-url`,
         ],
       }),
     );
@@ -1301,6 +1351,10 @@ export class ServiceStack extends cdk.Stack {
     // env.startsWith, not ===, so this stays correct if a prod-prefixed variant is ever
     // introduced.
     const currentHermesTag = env.startsWith("prod") ? HERMES_VERSION.prod.tag : HERMES_VERSION.dev.tag;
+    const desktopOwner = process.env[`DESKTOP_EXECUTION_OWNER_${env.toUpperCase()}`] ?? "";
+    if (desktopOwner && !/^(?:user|org)_[A-Za-z0-9_-]{1,123}$/.test(desktopOwner)) {
+      throw new Error(`Invalid desktop execution owner for ${env}`);
+    }
 
     // Backend container environment + secrets, declared as consts (rather
     // than inline literals) so the provisioning-executor task definition can
@@ -1337,6 +1391,10 @@ export class ServiceStack extends cdk.Stack {
       // unauthenticated WebSocket-impersonation hole on the public HTTP
       // API Gateway $default path.
       WS_ENFORCE_INTERNAL_SECRET: "true",
+      // One owner per env. An unset synth variable closes new submissions;
+      // existing receipts remain readable/cancellable in the backend.
+      DESKTOP_EXECUTION_ENABLED: desktopOwner ? "true" : "false",
+      DESKTOP_EXECUTION_OWNER_ALLOWLIST: desktopOwner,
       WEBHOOK_DEDUP_TABLE: tableName(env, "webhook-event-dedup"),
       CORS_ORIGINS:
         env === "prod"
@@ -1366,6 +1424,10 @@ export class ServiceStack extends cdk.Stack {
         env === "prod"
           ? (process.env.STRIPE_WORKSPACE_PRICE_ID_PROD ?? "")
           : (process.env.STRIPE_WORKSPACE_PRICE_ID_DEV ?? ""),
+      STRIPE_BASE_PRICE_ID:
+        env === "prod"
+          ? (process.env.STRIPE_BASE_PRICE_ID_PROD ?? "")
+          : (process.env.STRIPE_BASE_PRICE_ID_DEV ?? ""),
       // Stripe Ultra Price ID — same env-specific live/test split as
       // STRIPE_WORKSPACE_PRICE_ID above (a test-mode Price would silently create
       // test subscriptions in prod). Read per-env from the runner's secrets
@@ -1454,6 +1516,19 @@ export class ServiceStack extends cdk.Stack {
       // DynamoDbOwnedTables wildcard statement, so no cross-stack export is
       // created.
       METRONOME_FAST_GATE_TABLE: tableName(env, "metronome-fast-gate"),
+      OPENROUTER_WORKSPACE_ID: env === "dev"
+        ? (process.env.OPENROUTER_WORKSPACE_ID_DEV ?? "")
+        : (process.env.OPENROUTER_WORKSPACE_ID_PROD ?? ""),
+      OPENROUTER_KEY_DAILY_LIMIT_USD: env === "dev"
+        ? (process.env.OPENROUTER_KEY_DAILY_LIMIT_USD_DEV || "0")
+        : (process.env.OPENROUTER_KEY_DAILY_LIMIT_USD_PROD || "0"),
+      OPENROUTER_MANAGED_MODEL_ID: env === "dev"
+        ? (process.env.OPENROUTER_MANAGED_MODEL_ID_DEV ?? "")
+        : (process.env.OPENROUTER_MANAGED_MODEL_ID_PROD ?? ""),
+      OPENROUTER_MANAGED_ENABLED:
+        env === "prod"
+          ? (process.env.OPENROUTER_MANAGED_ENABLED_PROD ?? "false")
+          : (process.env.OPENROUTER_MANAGED_ENABLED_DEV ?? "false"),
       // Per-env rate card the per-customer contract references at
       // provision. Dev = sandbox rate card (2026-06-10); prod =
       // isol8-bedrock-prod (2026-06-12). Both price AWS us. CRIS x 1.03

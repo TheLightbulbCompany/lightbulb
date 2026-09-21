@@ -75,7 +75,7 @@ describe("freeTierDaysLeft", () => {
     expect(freeTierDaysLeft("trial_local", (now - 3 * DAY) / 1000, now)).toBe(0);
   });
 
-  it("clamps to the trial length, so a fresh signup never reads 4 on a 3-day trial", () => {
+  it("clamps to the trial length, so a fresh signup never reads 31 on a 30-day trial", () => {
     // trial_end is stamped signup + FREE_TIER_DAYS exactly, but nowMs is the
     // CLIENT clock. A machine 5 min slow makes trial_end - now exceed the window
     // and the ceil round to 4 — the clamp must cap it at the promised length.

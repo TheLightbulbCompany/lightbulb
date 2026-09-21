@@ -179,6 +179,24 @@ def test_a_paperclip_api_key_reference_resolves_from_the_profiles_env_under_the_
     assert _stub_get_secret("PAPERCLIP_API_KEY") is None  # reset after
 
 
+def test_managed_gate_bearer_comes_from_boot_secret_not_profile_dotenv(home, monkeypatch):
+    profile = sync._profile_dir("ceo")
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / ".env").write_text("PAPERCLIP_API_KEY=pcp_live_x\nLIGHTBULB_GATE_BEARER=attacker\n")
+    fake_agent_pkg = types.ModuleType("agent")
+    fake_ss = types.ModuleType("agent.secret_scope")
+    fake_ss.build_profile_secret_scope = _stub_build_profile_secret_scope
+    fake_ss.set_secret_scope = _stub_set_secret_scope
+    fake_ss.reset_secret_scope = _stub_reset_secret_scope
+    monkeypatch.setitem(sys.modules, "agent", fake_agent_pkg)
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", fake_ss)
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "boot-gate-bearer")
+
+    with turn._secret_scope("ceo"):
+        assert _stub_get_secret("LIGHTBULB_GATE_BEARER") == "boot-gate-bearer"
+    assert _stub_get_secret("LIGHTBULB_GATE_BEARER") is None
+
+
 def test_native_paperclip_identity_overlays_profile_secrets_without_process_leak(home, monkeypatch):
     profile = sync._profile_dir("ceo")
     profile.mkdir(parents=True, exist_ok=True)

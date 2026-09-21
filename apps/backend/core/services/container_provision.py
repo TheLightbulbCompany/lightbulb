@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from core.services.hermes_profiles import _BEDROCK_TRIAL_CHOICE as BEDROCK_TRIAL_CHOICE
+from core.services.hermes_profiles import _BEDROCK_TRIAL_CHOICE as BEDROCK_TRIAL_CHOICE  # noqa: F401
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
@@ -25,17 +25,12 @@ def provider_choice_from_row(row: dict | None) -> tuple[str, str | None]:
     owners onboarded before per-owner provider_choice storage.
     """
     if (row or {}).get("subscription_status") == "trial_local":
-        # No-card local trial. `trial_local` is a subscription_status, never a
-        # stored provider_choice, so the provider must never be read off the
-        # row — a trial owner's row carries none, and this function never
-        # writes one back.
-        #
-        # The free tier runs on Bedrock through the `bedrock_trial` CONFIG MODE:
-        # a single, IAM-pinned Sonnet inference profile (the provisioner mints
-        # tiers=["sonnet"], and build_owner_bedrock_policy scopes the owner's
-        # task role to exactly that AIP). Returning "bedrock_claude" here would
-        # hand a card-less owner the full paid three-tier ladder — Opus included.
-        return BEDROCK_TRIAL_CHOICE, None
+        # Cardless Free rows intentionally store no provider_choice. Resolve
+        # them through the managed gate so provisioning/key/profile code has
+        # one path; the gate admits this mode only for its zero-price policy.
+        return "openrouter_managed", None
+    if (row or {}).get("plan") == "base" and not (row or {}).get("provider_choice"):
+        return "openrouter_managed", None
     provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
     byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None
     return provider_choice, byo_provider

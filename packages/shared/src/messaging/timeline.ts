@@ -25,6 +25,7 @@ export const lastSequence = (messages: readonly CanonicalRoomMessage[]) => messa
 
 /** A live agent run, accumulated from `room.run.frame` events. */
 export interface LiveRoomRun {
+  triggerMessageId?: string | null;
   roomId: string;
   agentId: string;
   runId: string;

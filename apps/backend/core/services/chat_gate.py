@@ -148,13 +148,17 @@ async def gate_chat(*, user_id: str, owner_id: str, session_key: str) -> dict:
     # from one balance funded by the
     # admin. Keying on user_id meant org members saw balance=0 and
     # got blocked at chat with code=out_of_credits.
-    if account is None or account.get("provider_choice") != "bedrock_claude":
+    if account is None or account.get("provider_choice") not in {"bedrock_claude", "openrouter_managed"}:
         return {"blocked": False}
 
     if await is_owner_blocked(owner_id):
         return {
             "blocked": True,
             "code": "out_of_credits",
-            "message": BUDGET_BLOCK_MESSAGES["out_of_credits"],
+            "message": (
+                "You're out of Lightbulb credits. Top up to continue."
+                if account.get("provider_choice") == "openrouter_managed"
+                else BUDGET_BLOCK_MESSAGES["out_of_credits"]
+            ),
         }
     return {"blocked": False}

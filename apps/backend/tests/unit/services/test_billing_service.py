@@ -223,6 +223,162 @@ async def test_change_provider_takes_over_before_it_dispatches(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_managed_switch_ensures_owner_key_before_provider_commit(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_ENABLED", True)
+    monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
+    monkeypatch.setattr(billing_service.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
+    )
+    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda row: True)
+    order = []
+    monkeypatch.setattr(
+        "core.services.openrouter_keys.ensure_owner_key_for_settings",
+        AsyncMock(side_effect=lambda owner: order.append("key")),
+    )
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "set_provider_choice",
+        AsyncMock(side_effect=lambda *a, **kw: order.append("commit")),
+    )
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+
+    async def dispatch(owner):
+        pass
+
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
+    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: coro.close())
+
+    await billing_service.change_provider(
+        owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="openrouter_managed"
+    )
+    assert order == ["key", "commit"]
+
+
+@pytest.mark.asyncio
+async def test_managed_switch_is_disabled_by_default(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_ENABLED", False, raising=False)
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
+    )
+    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda row: True)
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+    commit = AsyncMock()
+    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", commit)
+    with pytest.raises(billing_service.ChangeProviderError, match="not enabled"):
+        await billing_service.change_provider(
+            owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="openrouter_managed"
+        )
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_managed_key_failure_keeps_provider_unchanged(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_ENABLED", True)
+    monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
+    monkeypatch.setattr(billing_service.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
+    )
+    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda row: True)
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "core.services.openrouter_keys.ensure_owner_key_for_settings",
+        AsyncMock(side_effect=RuntimeError("upstream unavailable")),
+    )
+    commit = AsyncMock()
+    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", commit)
+
+    with pytest.raises(billing_service.ChangeProviderError) as exc:
+        await billing_service.change_provider(
+            owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="openrouter_managed"
+        )
+    assert exc.value.code == "managed_key_unavailable"
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_managed_switch_requires_a_selected_server_model_before_commit(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_ENABLED", True)
+    monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_MODEL_ID", "")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
+    )
+    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda row: True)
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+    commit = AsyncMock()
+    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", commit)
+    with pytest.raises(billing_service.ChangeProviderError) as exc:
+        await billing_service.change_provider(
+            owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="openrouter_managed"
+        )
+    assert exc.value.code == "managed_route_unavailable"
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retry_of_committed_provider_with_pending_marker_dispatches_again(monkeypatch):
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
+    )
+    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda row: True)
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"needs_provision": True})
+    )
+    monkeypatch.setattr("core.repositories.container_repo.takeover_provision", AsyncMock())
+    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
+
+    async def dispatch(owner):
+        pass
+
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
+    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: coro.close())
+
+    result = await billing_service.change_provider(
+        owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="bedrock_claude"
+    )
+    assert result["restart"] is True
+    billing_service.billing_repo.set_provider_choice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_change_provider_refuses_different_choice_while_switch_pending(monkeypatch):
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
+    )
+    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda row: True)
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"needs_provision": True})
+    )
+    commit = AsyncMock()
+    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", commit)
+    monkeypatch.setattr(
+        "core.services.key_service.get_secret_arn", AsyncMock(return_value="arn:aws:secretsmanager:key")
+    )
+
+    with pytest.raises(billing_service.ChangeProviderError) as exc:
+        await billing_service.change_provider(
+            owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="byo_key", byo_provider="openai"
+        )
+    assert exc.value.code == "provider_switch_pending"
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_change_provider_skips_the_takeover_for_a_workspace_with_no_row(monkeypatch):
     """With no row there is no lease to fence, and a takeover would CREATE one as
     "provisioning" with a fresh lease -- which the dispatch's own claim then refuses, breaking
@@ -273,7 +429,8 @@ async def test_change_provider_reverts_the_commit_when_the_takeover_fails(monkey
         ),
     )
     monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda a: True)
-    set_choice = AsyncMock()
+    mark = {"generation": "gen-new", "previous_needs_provision": False, "previous_generation": "gen-old"}
+    set_choice = AsyncMock(side_effect=[{"_switch_mark": mark}, {}])
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", set_choice)
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
     monkeypatch.setattr("core.services.key_service.KeyService", MagicMock())
@@ -283,6 +440,8 @@ async def test_change_provider_reverts_the_commit_when_the_takeover_fails(monkey
     monkeypatch.setattr(
         "core.repositories.container_repo.takeover_provision", AsyncMock(side_effect=RuntimeError("ddb down"))
     )
+    restore_marker = AsyncMock(return_value=True)
+    monkeypatch.setattr("core.repositories.container_repo.restore_needs_provision", restore_marker)
     dispatch = MagicMock()
     monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
 
@@ -299,6 +458,7 @@ async def test_change_provider_reverts_the_commit_when_the_takeover_fails(monkey
     # Committed to bedrock, then restored to what the workspace is actually running.
     assert [c.kwargs["provider_choice"] for c in set_choice.await_args_list] == ["bedrock_claude", "byo_key"]
     assert set_choice.await_args_list[1].kwargs["requires_reprovision"] is False
+    restore_marker.assert_awaited_once_with("user_x", mark)
 
 
 @pytest.mark.asyncio
@@ -328,7 +488,7 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
     monkeypatch.setattr(
         billing_service.asyncio,
         "create_task",
-        lambda coro: MagicMock(),
+        lambda coro: coro.close() or MagicMock(),
     )
 
     await billing_service.change_provider(

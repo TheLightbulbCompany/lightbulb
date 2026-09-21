@@ -477,6 +477,8 @@ export function ConnectButton({
     );
   }
 
+  if (status === "unavailable") return null;
+
   // Connected → Disconnect, plus the BYO setup affordance when this owner still
   // needs to store their own app (non-destructive migration off the old
   // shared-app connection — no disconnect-first required).

@@ -1,21 +1,7 @@
-"""AgentCore Browser: one profile per workspace, and the owner's watch-only live view.
+"""AgentCore Browser profiles, AWS ownership checks and direct stream signing.
 
-Three functions, no state. The browser itself is AWS's built-in ``aws.browser.v1`` — we
-never create one — so the only per-workspace object is a **Browser Profile**, whose
-AWS-assigned id is injected into that workspace's runtime environment
-(``AGENTCORE_PROFILE_ID``) and recorded on the containers row as ``browser_profile_id``.
-
-**The backend discovers the live session; nothing self-reports it** (ruling R12). There is
-no callback and no hook-token route: a runtime inside a microVM could only ever *claim* a
-session id, and a claim is not an ownership proof. ``ListBrowserSessions`` summaries carry
-no ``profileConfiguration`` (confirmed against the installed botocore model — only
-``GetBrowserSession`` has it), so resolution is List-then-Get, and the Get is not optional.
-The profile id is minted by us, carries an AWS-random 10-char suffix, and reaches exactly
-one workspace's runtime env, which is what makes it a real owner binding.
-
-Nothing about a session is cached or stored: no row field, no in-process map. The cost is
-one List plus N Gets per panel refresh (the panel polls at 240 s against a 300 s presigned
-URL — AWS's hard cap on that TTL).
+Browser v2 lifecycle and checkpoint publication live in browser_control. Legacy
+list/get discovery remains here for workspaces awaiting the image rollout.
 """
 
 from __future__ import annotations
@@ -181,7 +167,9 @@ def _get_session(session_id: str) -> dict:
     return _data_client().get_browser_session(browserIdentifier=BUILTIN_BROWSER_ID, sessionId=session_id)
 
 
-async def owns_session(owner_id: str, session_id: str, *, profile_id: str | None = None) -> dict | None:
+async def owns_session(
+    owner_id: str, session_id: str, *, profile_id: str | None = None, strict: bool = False
+) -> dict | None:
     """THE ownership rule, and the only one: a session belongs to this workspace when
     ``GetBrowserSession`` reports it ``READY`` and carries this workspace's own
     ``profileConfiguration.profileIdentifier``. A profileless session — which a compromised
@@ -198,7 +186,9 @@ async def owns_session(owner_id: str, session_id: str, *, profile_id: str | None
         return None
     try:
         got = await run_in_thread(_get_session, session_id)
-    except ClientError:
+    except ClientError as exc:
+        if strict and exc.response["Error"]["Code"] != "ResourceNotFoundException":
+            raise
         logger.info("browser session %s unreadable for owner=%s", session_id, owner_id, exc_info=True)
         return None
     if got.get("status") != "READY":
@@ -220,7 +210,7 @@ def _ready_session_ids() -> list[str]:
     return [item["sessionId"] for item in items]
 
 
-def _presign_live_view(session_id: str) -> str:
+def _presign_stream(session_id: str, stream: str) -> str:
     """Sync — call via ``run_in_thread``. Mirrors ``bedrock-agentcore`` 1.23.1's
     ``generate_live_view_url``; botocore already signs AppSync the same way in
     ``live_events.py``, so this needs no new package."""
@@ -231,12 +221,27 @@ def _presign_live_view(session_id: str) -> str:
     request = AWSRequest(
         method="GET",
         url=f"https://bedrock-agentcore.{region}.amazonaws.com"
-        f"/browser-streams/{BUILTIN_BROWSER_ID}/sessions/{session_id}/live-view",
+        f"/browser-streams/{BUILTIN_BROWSER_ID}/sessions/{session_id}/{stream}",
     )
     SigV4QueryAuth(credentials.get_frozen_credentials(), "bedrock-agentcore", region, expires=LIVE_VIEW_TTL_S).add_auth(
         request
     )
-    return request.url
+    return request.url.replace("https://", "wss://", 1) if stream == "automation" else request.url
+
+
+def _presign_live_view(session_id: str) -> str:
+    return _presign_stream(session_id, "live-view")
+
+
+async def session_view(session_id: str, got: dict) -> dict:
+    view_port = got.get("viewPort") or {}
+    return {
+        "active": True,
+        "url": await run_in_thread(_presign_live_view, session_id),
+        "expiresAt": (datetime.now(timezone.utc) + timedelta(seconds=LIVE_VIEW_TTL_S)).isoformat(),
+        "remoteWidth": view_port.get("width") or REMOTE_WIDTH,
+        "remoteHeight": view_port.get("height") or REMOTE_HEIGHT,
+    }
 
 
 async def live_view(owner_id: str) -> dict:
@@ -262,15 +267,5 @@ async def live_view(owner_id: str) -> dict:
         got = await owns_session(owner_id, session_id, profile_id=profile_id)
         if not got:
             continue
-        # The panel scales the DCV canvas by these, so the SESSION's own viewport is the
-        # answer and the module constants are only a fallback.
-        view_port = got.get("viewPort") or {}
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=LIVE_VIEW_TTL_S)
-        return {
-            "active": True,
-            "url": await run_in_thread(_presign_live_view, session_id),
-            "expiresAt": expires_at.isoformat(),
-            "remoteWidth": view_port.get("width") or REMOTE_WIDTH,
-            "remoteHeight": view_port.get("height") or REMOTE_HEIGHT,
-        }
+        return await session_view(session_id, got)
     return dict(_INACTIVE)

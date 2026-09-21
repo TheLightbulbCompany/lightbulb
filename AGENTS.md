@@ -860,7 +860,13 @@ that will mislead you otherwise:
   and control are in-shell panels, **not routes** — the legacy `/teams/*` URL tree
   was removed and 404s. The AgentCore browser panel is `panels/BrowserDockPanel.tsx`: it
   gets a workspace-authorized signed URL from `/api/v1/browser/live-view` and connects
-  directly to AWS DCV. It does not use the retired OpenClaw live-view WS or
+  directly to AWS DCV. Browser v2 adds explicit Start, Take control, Done/save and Stop,
+  with workspace-shared sign-ins. The backend owns sessions; the new Hermes image
+  advertises `browserProtocol: 2` and attaches via local CDP discovery. Saved state
+  lives under backend-only `browser-state/<owner>/` in S3, with a fenced pointer in
+  the existing containers table at `__browser__#<owner>` (survives reprovision).
+  Human Start requires the new image capability; backend deployment alone is not
+  an image rollout. It does not use the retired OpenClaw live-view WS or
   `routers/browser_view.py`. See `docs/architecture/current-system.md`.
 - **`/admin`** only resolves on allowed admin hosts (`admin.flickmeon.ai`,
   `admin.dev.flickmeon.ai`, `admin.localhost:3000`; overridable via

@@ -93,6 +93,22 @@ async def request(
     ``httpx.ConnectError`` for anything else in the way — so a caller's existing
     ``except httpx.…`` covers a microVM exactly as it used to cover a task IP.
     """
+    if method == "POST" and (
+        path.startswith("/plugins/lightbulb-channel/inbound/") or path == "/internal/paperclip/v1/runs"
+    ):
+        # The caller may hold a stale container snapshot. Check the switch marker against DDB
+        # just before invoke; the bridge's atomic admission freeze closes the remaining race.
+        from core.repositories import container_repo
+
+        try:
+            row = await container_repo.get_by_owner_id(container.get("owner_id") or "", consistent=True)
+        except Exception:
+            row = None
+        if not row or row.get("needs_provision"):
+            return RuntimeResponse(status_code=503, text='{"error":"provider_switch_pending"}')
+        generation = row.get("provider_switch_generation")
+        if generation:
+            headers = {**(headers or {}), "X-Lightbulb-Provider-Generation": generation}
     return await _request_agentcore(
         container,
         path,

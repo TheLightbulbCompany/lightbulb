@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { ApiMethods } from "../api/client";
+import { createApiClient, type ApiMethods } from "../api/client";
 import { createMessagingClient } from "./client";
 import { LIVE_EVENT_TYPES, parseLiveEvent } from "../live/types";
 
@@ -46,7 +46,7 @@ describe("messaging HTTP client", () => {
       ["/messaging/live-config"],
       ["/messaging/rooms"],
       [`/messaging/rooms/${roomId}`],
-      [`/messaging/rooms/${roomId}/messages?afterSeq=42&limit=100`],
+      [`/messaging/rooms/${roomId}/messages?afterSeq=42&limit=100`, { signal: expect.any(AbortSignal) }],
       ["/messaging/runs/run-1"],
     ]);
   });
@@ -182,4 +182,29 @@ it("parses a room.member.updated frame and rejects a malformed one", () => {
   // is present and disagrees with the payload is still a rejected frame.
   expect(parseLiveEvent({ ...event, roomId: "other" })).toBeNull();
   expect(parseLiveEvent({ ...event, roomId: "room-1" })).toEqual({ ...event, roomId: "room-1" });
+});
+
+it("bounds history reads even when authentication never settles", async () => {
+  vi.useFakeTimers();
+  try {
+    const getToken = vi.fn(() => new Promise<string | null>(() => {}));
+    const client = createMessagingClient(createApiClient({ apiUrl: "https://example.test", getToken }));
+    const settled = vi.fn();
+    const read = client.listMessages(roomId, 0).catch(settled);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(getToken).toHaveBeenCalledTimes(1);
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/timed out/i) }));
+    await read;
+  } finally { vi.useRealTimers(); }
+});
+
+it("cancels history immediately and skips an already-cancelled read", async () => {
+  const controller = new AbortController();
+  const get = vi.fn(() => new Promise(() => {}));
+  const client = createMessagingClient({ get } as unknown as ApiMethods);
+  const read = client.listMessages(roomId, 0, 100, { signal: controller.signal });
+  controller.abort();
+  await expect(read).rejects.toThrow("cancelled");
+  await expect(client.listMessages(roomId, 0, 100, { signal: controller.signal })).rejects.toThrow("cancelled");
+  expect(get).toHaveBeenCalledTimes(1);
 });

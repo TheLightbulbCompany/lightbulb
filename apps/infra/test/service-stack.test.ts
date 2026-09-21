@@ -2,6 +2,7 @@ import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
+import { vi } from "vitest";
 import { ContainerStack } from "../lib/stacks/container-stack";
 import { ROOT_DOMAIN } from "../lib/domains";
 import { DatabaseStack } from "../lib/stacks/database-stack";
@@ -95,8 +96,92 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
 // Hoist a single ServiceStack synthesis and reuse across tests.
 const SERVICE_TEMPLATE_DEV = buildServiceStack("dev");
 
+describe("ServiceStack — desktop execution rollout", () => {
+  test("defaults closed without an owner", () => {
+    vi.stubEnv("DESKTOP_EXECUTION_OWNER_DEV", "");
+    vi.stubEnv("DESKTOP_EXECUTION_OWNER_PROD", "");
+    try {
+      buildServiceStack("dev").hasResourceProperties("AWS::ECS::TaskDefinition", {
+        ContainerDefinitions: Match.arrayWith([
+          Match.objectLike({
+            Name: "backend",
+            Environment: Match.arrayWith([
+              { Name: "DESKTOP_EXECUTION_ENABLED", Value: "false" },
+              { Name: "DESKTOP_EXECUTION_OWNER_ALLOWLIST", Value: "" },
+            ]),
+          }),
+        ]),
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  test("admits exactly the configured dev owner without enabling prod", () => {
+    vi.stubEnv("DESKTOP_EXECUTION_OWNER_DEV", "user_disposable");
+    vi.stubEnv("DESKTOP_EXECUTION_OWNER_PROD", "");
+    try {
+      const dev = buildServiceStack("dev");
+      const prod = buildServiceStack("prod");
+      for (const template of [dev, prod]) {
+        const enabled = template === dev;
+        template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+          ContainerDefinitions: Match.arrayWith([
+            Match.objectLike({
+              Name: "backend",
+              Environment: Match.arrayWith([
+                { Name: "DESKTOP_EXECUTION_ENABLED", Value: enabled ? "true" : "false" },
+                { Name: "DESKTOP_EXECUTION_OWNER_ALLOWLIST", Value: enabled ? "user_disposable" : "" },
+              ]),
+            }),
+          ]),
+        });
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
 describe("ServiceStack — clean handoff / rolling deploy", () => {
   const template = SERVICE_TEMPLATE_DEV;
+
+  test("backend can write only per-owner OpenRouter secrets", () => {
+    const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap(
+      (type) => Object.values(template.findResources(type)).flatMap(
+        (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],
+      ),
+    );
+    const grant = statements.find((statement: any) => statement.Sid === "OpenRouterOwnerSecretsRW");
+    expect(grant).toMatchObject({
+      Effect: "Allow",
+      Resource: "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/openrouter/owners/*",
+    });
+    expect(grant.Action).toEqual(expect.arrayContaining([
+      "secretsmanager:CreateSecret", "secretsmanager:PutSecretValue", "secretsmanager:DescribeSecret",
+    ]));
+    const gateUrl = statements.find((statement: any) => statement.Sid === "OpenRouterGateUrlParamRead");
+    expect(gateUrl).toMatchObject({
+      Action: "ssm:GetParameter",
+      Resource: "arn:aws:ssm:us-east-1:877352799272:parameter/lightbulb/dev/openrouter-gate-url",
+    });
+    const hermesBoot = statements.find((statement: any) => statement.Sid === "HermesBootSecretsRW");
+    expect(hermesBoot.Action).toContain("secretsmanager:UpdateSecretVersionStage");
+    expect(hermesBoot.Resource).toBe(
+      "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/hermes/*",
+    );
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([Match.objectLike({
+        Name: "backend",
+        Environment: Match.arrayWith([
+          Match.objectLike({ Name: "OPENROUTER_WORKSPACE_ID", Value: "" }),
+          Match.objectLike({ Name: "OPENROUTER_KEY_DAILY_LIMIT_USD", Value: "0" }),
+          Match.objectLike({ Name: "OPENROUTER_MANAGED_MODEL_ID", Value: "" }),
+          Match.objectLike({ Name: "OPENROUTER_MANAGED_ENABLED", Value: "false" }),
+        ]),
+      })]),
+    });
+  });
 
   test("backend can manage install metadata outside runtime owner prefixes", () => {
     const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap(

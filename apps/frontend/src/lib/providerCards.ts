@@ -14,7 +14,7 @@
  * doesn't read like a different product.
  */
 
-export type ProviderChoiceId = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
+export type ProviderChoiceId = "chatgpt_oauth" | "byo_key" | "bedrock_claude" | "openrouter_managed";
 
 export interface ProviderCard {
   id: ProviderChoiceId;
@@ -61,6 +61,15 @@ export const PROVIDER_SWITCH_CARDS: ProviderSwitchCard[] = [
   },
 ];
 
+export function providerSwitchCards(managedAvailable: boolean): ProviderSwitchCard[] {
+  return managedAvailable
+    ? [
+        { id: "openrouter_managed", title: "Lightbulb-managed models", subtitle: "Uses prepaid workspace credits" },
+        ...PROVIDER_SWITCH_CARDS.slice(1),
+      ]
+    : PROVIDER_SWITCH_CARDS;
+}
+
 export const PROVIDER_CARDS: ProviderCard[] = [
   {
     id: "chatgpt_oauth",
@@ -103,3 +112,21 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     highlighted: true,
   },
 ];
+
+export function providerComparisonCards(managedAvailable: boolean): ProviderCard[] {
+  return managedAvailable
+    ? [
+        ...PROVIDER_CARDS.slice(0, 2),
+        {
+          id: "openrouter_managed",
+          title: "Lightbulb-managed models",
+          subtitle: "Managed inference uses prepaid workspace credits",
+          trialNote: "Choose and fund managed inference separately after billing",
+          bullets: ["Models approved by Lightbulb", "All channels", "Always-on container"],
+          cta: "Get started",
+          href: "/chat?panel=llm",
+          highlighted: true,
+        },
+      ]
+    : PROVIDER_CARDS;
+}

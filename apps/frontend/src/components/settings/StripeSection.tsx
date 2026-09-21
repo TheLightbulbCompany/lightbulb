@@ -37,7 +37,8 @@ export function StripeSection({ canManage }: { canManage: boolean }) {
   const rail = useProvisioningRail();
   const stripe = connections.find((c) => c.provider === "stripe");
 
-  const connected = stripe?.status === "connected";
+  const authorized = stripe?.status === "connected";
+  const connected = authorized && stripe?.runtime_supported !== false;
   const unavailable = stripe?.status === "unavailable";
   const receipt = stripe ? INTEGRATION_RECEIPTS[stripe.provider] : undefined;
   const stripeResources = rail.byProvider.get("stripe") ?? [];
@@ -76,7 +77,13 @@ export function StripeSection({ canManage }: { canManage: boolean }) {
             <p className="text-xs text-[var(--midnight-muted)]">
               {stripe ? (
                 <>
-                  {connected ? "Connected" : unavailable ? "Not available yet" : "Not connected"}
+                  {authorized && !connected
+                    ? "Authorized · unavailable to agents"
+                    : connected
+                      ? "Connected"
+                      : unavailable
+                        ? "Not available yet"
+                        : "Not connected"}
                   {stripe.acquisition === "direct_oauth"
                     ? " · OAuth"
                     : stripe.acquisition === "aws_sts"
@@ -93,7 +100,13 @@ export function StripeSection({ canManage }: { canManage: boolean }) {
             </p>
             {receipt && (
               <p className="text-xs text-[var(--midnight-muted)] mt-0.5">
-                {connected ? "Delivered: " : unavailable ? "Would deliver: " : "Will deliver: "}
+                {connected
+                  ? "Delivered: "
+                  : authorized
+                    ? "Agent access unavailable: "
+                    : unavailable
+                      ? "Would deliver: "
+                      : "Will deliver: "}
                 <span className={connected ? "text-[var(--ok)]" : undefined}>{receipt.delivers}</span>
               </p>
             )}

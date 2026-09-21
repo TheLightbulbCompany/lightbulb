@@ -1001,20 +1001,10 @@ class PaperclipRepo:
         the PERSONAL-owner path too (the org-create claim only covers orgs),
         and it lives on the real row so the loser can simply poll it.
 
-        Claim-row shape: ``status="seeding"`` + ``seeding_claim_id`` +
-        ``seeding_claimed_at`` and deliberately NO credential fields
-        (``get()`` tolerates that, same as the failed marker). An OWNER claim
-        carries no ``company_id`` (none exists yet); a MEMBER claim passes the
-        org's already-known ``company_id`` so that an
-        ``organizationMembership.deleted`` landing mid-claim (or after the
-        claimant crashed) lets ``archive_member`` list the company and retire
-        the row cleanly instead of erroring on an empty id and leaving the
-        claim stranded once the member no longer polls. A ``status="seeding"`` row is BY CONSTRUCTION always this
-        bare claim: the winner's very next durable write (the post-sign-up
-        credential put) replaces it wholesale with ``status="provisioning"``,
-        and every failure path downgrades it to ``failed`` — nothing else
-        ever writes ``seeding``. That is what makes the stale-steal below a
-        safe whole-item put: it can only ever replace a bare claim.
+        Claims retain staged encrypted signup credentials across retries and
+        stale-lease takeover. No Paperclip user ID exists until signup or
+        authenticated recovery returns. A member claim also carries the
+        known company_id so membership removal can retire it mid-provision.
 
         Steal threshold rationale (mirrors ``try_acquire_org_create_claim``):
         a live ``provision_org`` chain is ~9 awaited Paperclip HTTP calls,
@@ -1053,10 +1043,9 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
-        # 2. A row exists — strongly-consistent read, then steal only a BARE
-        #    seeding claim whose holder has gone stale. Any other status
-        #    (provisioning/active/failed/disabled) is a real row the caller
-        #    must handle by re-reading, never by overwriting here.
+        # 2. Reclaim a failed signup without a confirmed identity, or a stale
+        #    seeding claim, retaining its staged credentials. Other rows are
+        #    handled by the caller rather than overwritten here.
         resp = await run_in_thread(table.get_item, Key={"user_id": user_id}, ConsistentRead=True)
         existing = resp.get("Item")
         if existing is None:
@@ -1071,11 +1060,28 @@ class PaperclipRepo:
             except table.meta.client.exceptions.ConditionalCheckFailedException:
                 return False
 
+        # An interrupted signup may already have created the remote account.
+        # Its exact password/email must survive reclaim; generating another
+        # password would make that account permanently unadoptable.
+        credential_conditions = []
+        credential_values = {}
+        for field in ("paperclip_password_encrypted", "paperclip_email"):
+            if field in existing:
+                credential_conditions.append(f"{field} = :{field}")
+                credential_values[f":{field}"] = existing[field]
+                if existing[field]:
+                    item[field] = existing[field]
+            else:
+                credential_conditions.append(f"attribute_not_exists({field})")
+        # Staging can land after this read without changing the lease timestamp.
+        # Defer takeover if either credential changed instead of erasing it.
+        credential_condition = " AND ".join(credential_conditions)
+
         status = existing.get("status")
         if status == "failed" and not existing.get("paperclip_user_id"):
-            # A credential-less ``failed`` marker: a claim that failed BEFORE
-            # its sign-up landed (or the put-if-absent marker). There is
-            # nothing to adopt, so the next attempt re-runs the sign-up — and
+            # No confirmed identity yet: signup failed or its response was
+            # lost. Retain any staged password for authenticated recovery.
+            # The next attempt re-runs the sign-up — and
             # two concurrent retries would each sign up, reopening the exact
             # duplicate-account race this claim exists to close. Reclaim it
             # atomically, fenced on it still being credential-less: a failed
@@ -1092,10 +1098,11 @@ class PaperclipRepo:
                     table.put_item,
                     Item=item,
                     ConditionExpression=(
-                        "#s = :failed AND (attribute_not_exists(paperclip_user_id) OR paperclip_user_id = :empty)"
+                        "#s = :failed AND (attribute_not_exists(paperclip_user_id) OR paperclip_user_id = :empty) "
+                        f"AND {credential_condition}"
                     ),
                     ExpressionAttributeNames={"#s": "status"},
-                    ExpressionAttributeValues={":failed": "failed", ":empty": ""},
+                    ExpressionAttributeValues={":failed": "failed", ":empty": "", **credential_values},
                 )
                 return True
             except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -1119,13 +1126,37 @@ class PaperclipRepo:
             await run_in_thread(
                 table.put_item,
                 Item=item,
-                ConditionExpression="#s = :seeding AND seeding_claimed_at = :prev",
+                ConditionExpression=f"#s = :seeding AND seeding_claimed_at = :prev AND {credential_condition}",
                 ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={":seeding": "seeding", ":prev": prev_claimed_at},
+                ExpressionAttributeValues={":seeding": "seeding", ":prev": prev_claimed_at, **credential_values},
             )
             return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False
+
+    async def stage_signup_credentials(
+        self, user_id: str, *, claim_id: str, email: str, password_encrypted: str
+    ) -> tuple[str, str]:
+        """Persist the signup secret before sending it, fenced on our lease."""
+        response = await run_in_thread(
+            self._table().update_item,
+            Key={"user_id": user_id},
+            UpdateExpression=(
+                "SET paperclip_email = if_not_exists(paperclip_email, :email), "
+                "paperclip_password_encrypted = if_not_exists(paperclip_password_encrypted, :password)"
+            ),
+            ConditionExpression="#s = :seeding AND seeding_claim_id = :claim",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":seeding": "seeding",
+                ":claim": claim_id,
+                ":email": email,
+                ":password": password_encrypted,
+            },
+            ReturnValues="ALL_NEW",
+        )
+        item = response["Attributes"]
+        return item["paperclip_email"], item["paperclip_password_encrypted"]
 
     async def find_owner_row(self, org_id: str, *, include_inactive: bool = False) -> Optional[PaperclipCompany]:
         """Find the ORG owner row (oldest ACTIVE ``created_at`` for this org_id).

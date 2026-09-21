@@ -128,6 +128,11 @@ export class ContainerStack extends cdk.Stack {
     const foundationModelArns = FAN_OUT_REGIONS.flatMap((region) =>
       FM_IDS.map((model) => `arn:aws:bedrock:${region}::foundation-model/${model}`),
     );
+    // These shared policies attach to every owner role. IAM substitutes the
+    // role's owner_id tag, so one runtime cannot read another owner's boot
+    // bearer tokens. The boundary mirrors the same ceiling.
+    const ownerBootSecretArn =
+      `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${props.environment}/hermes/\${aws:PrincipalTag/owner_id}/boot-*`;
 
     // The logs/ssm grants the backend attaches to every per-owner role. Keeps
     // the non-Bedrock grants in IaC (auditable); only the per-owner-varying
@@ -201,7 +206,7 @@ export class ContainerStack extends cdk.Stack {
         new iam.PolicyStatement({
           sid: "HermesSecretsRead",
           actions: ["secretsmanager:GetSecretValue"],
-          resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${props.environment}/hermes/*`],
+          resources: [ownerBootSecretArn],
         }),
         new iam.PolicyStatement({
           sid: "AgentCoreTelemetry",
@@ -372,7 +377,7 @@ export class ContainerStack extends cdk.Stack {
         new iam.PolicyStatement({
           sid: "BoundaryHermesSecretsRead",
           actions: ["secretsmanager:GetSecretValue"],
-          resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${props.environment}/hermes/*`],
+          resources: [ownerBootSecretArn],
         }),
       ],
     });

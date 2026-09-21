@@ -40,8 +40,8 @@ def _render_welcome_html(first_name: str | None, base_url: str) -> str:
     history stay where you left them.
   </p>
   <p>
-    <strong>It's free for your first 3 days.</strong> No credit card, up to $3
-    of Claude a day, and the workspace sleeps when you're not using it.
+    <strong>It's free for your first 30 days.</strong> No credit card, and the
+    workspace sleeps when you're not using it.
   </p>
   <p>
     <a href="{base_url}/chat"
@@ -88,8 +88,8 @@ The whole workspace runs in a container that belongs only to you. Nothing is
 shared, and nothing resets between conversations — files, context and history
 stay where you left them.
 
-It's free for your first 3 days. No credit card, up to $3 of Claude a day, and
-the workspace sleeps when you're not using it.
+It's free for your first 30 days. No credit card, and the workspace sleeps when
+you're not using it.
 
 Open your workspace: {base_url}/chat
 

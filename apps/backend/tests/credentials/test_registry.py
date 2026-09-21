@@ -166,7 +166,7 @@ def test_hosted_oauth_mcp_provider_shape(key, url):
     p = get_provider(key)
     assert p.acquisition == "direct_oauth"
     assert p.actor == "mcp"
-    assert p.refresh_owner == "actor"
+    assert p.refresh_owner == ("backend" if key == "sentry" else "actor")
     # Rides the mcp_oauth materializer rail; remote-server metadata under mcp_remote.
     assert p.wiring.materializer == "mcp_oauth"
     assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
@@ -375,6 +375,15 @@ def test_posthog_mcp_remote_uses_cli_mode_and_list_timeout():
         "auth": "oauth",
         "requestTimeoutMs": 60000,
     }
+
+
+def test_actor_remote_mcp_can_be_brokered_per_environment(monkeypatch):
+    p = registry.get_provider("notion")
+    assert p.refresh_owner == "actor"
+    monkeypatch.setattr(registry.settings, "ENVIRONMENT", "dev")
+    assert registry.refresh_owner_for(p) == "backend"
+    monkeypatch.setattr(registry.settings, "ENVIRONMENT", "prod")
+    assert registry.refresh_owner_for(p) == "actor"
 
 
 def test_skill_spec_model_shape():

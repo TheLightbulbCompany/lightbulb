@@ -237,13 +237,15 @@ only.
 p95 time from a human message to the agent message answering it exceeds 5
 minutes (the stated SLO).
 
-The one number a user would recognise as "is this thing working". A cold
-AgentCore workspace legitimately costs ~54-57s on its first invoke, so a p95 in
-the minutes means turns are slow or failing, not that microVMs are starting.
+This ends at backend reply handling, before browser delivery and paint, and
+only includes messages that receive a matched reply. The older 54–57s cold
+invoke measurement is historical, not a current baseline. This alarm does not
+distinguish cold starts from model/tool work or catch every slow interaction;
+use the [chat performance checks](chat-performance.md) for that investigation.
 
 ## P22 — messaging-ingress-4xx
 
-The bridge's `lightbulb-channel` ingress rejected a dispatch with a 4xx.
+The Hermes bridge ingress rejected a dispatch with a 4xx.
 
 **Non-transient and silent:** a 4xx is OUR bug — bad agent id, wrong auth,
 malformed body — it will not self-heal, and every affected message never reaches

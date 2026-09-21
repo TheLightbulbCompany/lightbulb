@@ -41,14 +41,14 @@ export const docsFaq = [
   },
   // Every answer below is verified against the product, not marketing copy:
   // prices are WORKSPACE_PRICE_USD / ULTRA_PRICE_USD in the backend settings,
-  // the free tier is the `trial_local` path (a $3.00/day cap AND a 3-day
-  // window, both enforced by the bedrock-gate), and the starter roster is
+  // the free tier is the `trial_local` path (a 30-day no-card window on the
+  // server-selected free model), and the starter roster is
   // STARTER_ROSTER in paperclip_provisioning.py. There is no 14-day trial —
   // it was removed in July 2026. Keep this block true or delete the entry.
   {
     question: "Is Lightbulb free to try?",
     answer:
-      "Yes. The free tier needs no credit card. It is capped at $3.00 of inference per day and runs for a 3-day window, and the workspace sleeps when idle and wakes when you open it. Paid plans are Workspace at $50 a month and Ultra at $150 a month, both with unlimited members.",
+      "Yes. The free tier needs no credit card and runs for 30 days on the server-selected free model. The workspace sleeps when idle and wakes when you open it. Paid plans are Base at $20 a month, Workspace at $50 a month, and Ultra at $150 a month.",
   },
   {
     question: "How much does Lightbulb cost?",

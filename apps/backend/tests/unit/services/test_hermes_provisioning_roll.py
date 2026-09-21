@@ -32,7 +32,10 @@ def _wire(monkeypatch, *, current_image, row=ROW):
     monkeypatch.setattr(
         hermes_provisioning,
         "build_runtime_request_for_owner",
-        lambda o, r, a, *, browser_profile_id="": {"req": o, "profile": browser_profile_id},
+        lambda o, r, a, *, browser_profile_id="", provider_choice="bedrock_claude": {
+            "req": o,
+            "profile": browser_profile_id,
+        },
     )
 
     async def _ensure_profile(owner_id):
@@ -64,6 +67,23 @@ async def test_roll_updates_waits_and_stops_the_session_on_drift(monkeypatch):
     assert [c[0] for c in calls] == ["update", "ready", "health", "stop"]
     assert calls[0] == ("update", "arn:rt", {"req": "org_a", "profile": "org_a-ab12cd34ef"})
     assert calls[3][1] == "arn:rt" and calls[3][2].startswith("lb-org_a-")
+
+
+@pytest.mark.asyncio
+async def test_roll_keeps_managed_provider_in_replacement_spec(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    calls = _wire(monkeypatch, current_image="x:old")
+    monkeypatch.setattr(hermes_provisioning.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
+    monkeypatch.setattr(
+        "core.services.container_provision.resolve_provider_choice",
+        AsyncMock(return_value=("openrouter_managed", None)),
+    )
+    monkeypatch.setattr(
+        hermes_provisioning, "build_runtime_request_for_owner", lambda *a, **kw: {"provider": kw["provider_choice"]}
+    )
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
+    assert calls[0][2]["provider"] == "openrouter_managed"
 
 
 @pytest.mark.asyncio

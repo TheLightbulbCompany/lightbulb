@@ -9,7 +9,7 @@ export type CreditsBalance = {
   /** Metronome prepaid balance in microcents, or null when unavailable. */
   balance_microcents: number | null;
   balance_dollars: string | null;
-  /** Server-computed bedrock-gate predicate. */
+  /** Server-computed managed-credit gate predicate. */
   is_exhausted?: boolean;
   active_top_up?: {
     request_id: string;
@@ -30,7 +30,7 @@ export function isCreditsBlocked(
   balance: CreditsBalance | null | undefined,
   providerChoice: string | null | undefined,
 ): boolean {
-  return providerChoice === "bedrock_claude" && isCreditsExhausted(balance);
+  return (providerChoice === "bedrock_claude" || providerChoice === "openrouter_managed") && isCreditsExhausted(balance);
 }
 
 export type TopUpResult = {

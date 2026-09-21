@@ -32,7 +32,7 @@ import { handleShellLinkClick } from "@/lib/shellNav";
  * its own branch below so a free-tier user sees a distinct "come back
  * tomorrow or upgrade" state rather than a generic failure.
  *
- * `trial_expired` is the sibling Isol8-side code for the 3-day
+ * `trial_expired` is the sibling local-trial code for the 30-day
  * `trial_local` window itself running out (as opposed to the daily cost
  * cap) — surfaced by both the provision gate and gate_chat's Layer 2
  * (core/services/provision_gate.py, core/gateway/connection_pool.py).
@@ -151,9 +151,8 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
       return {
         title: "Out of credits",
         description:
-          "Your Claude credit balance is used up. Top up to keep your agents running.",
-        // In-shell: routes into CreditsStep, same as OutOfCreditsBanner.
-        action: { label: "Top up now", href: "/chat?provider=bedrock_claude" },
+          "Your workspace credit balance is used up. Top up to keep your agents running.",
+        action: { label: "Top up now", href: "/chat?panel=llm" },
       };
     case "subscription_inactive":
       return {

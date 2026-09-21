@@ -116,6 +116,16 @@ it("navigates search results into controlled threads and focuses main results", 
   expect(screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]")).toHaveFocus();
 });
 
+it("loads missing replies when a thread opens from a bounded history page", () => {
+  const onLoadHistory = vi.fn();
+  const view = render(<RoomPanel {...props} selectedThreadId={message.messageId}
+    historyComplete={false} historyLoading={false} onLoadHistory={onLoadHistory} />);
+  expect(onLoadHistory).toHaveBeenCalledOnce();
+  view.rerender(<RoomPanel {...props} selectedThreadId={message.messageId}
+    historyComplete={false} historyLoading={false} onLoadHistory={onLoadHistory} />);
+  expect(onLoadHistory).toHaveBeenCalledOnce();
+});
+
 it("does not leave focus on a stale thread trigger when a search result targets a main message", async () => {
   HTMLElement.prototype.scrollIntoView = vi.fn();
   const reply = { ...message, messageId: "reply", messageSeq: 2, text: "Reply text", threadRootMessageId: message.messageId };
@@ -912,4 +922,25 @@ it("offers Listening normally when the workspace is subscribed", async () => {
   const details = within(screen.getByRole("complementary", { name: "Room details" }));
   expect(within(details.getByRole("combobox", { name: "Response for Friday" })).getByRole("option", { name: "Listening" })).toBeEnabled();
   expect(details.queryByRole("link", { name: "See plans" })).not.toBeInTheDocument();
+});
+
+
+it("exposes a working thread before its first reply, then keeps unique responder avatars", async () => {
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "thread-run", threadRootMessageId: message.messageId,
+    state: "running", text: "", thinking: "", tools: [] };
+  const view = render(<RoomPanel {...props} runs={[run]} />);
+  const activity = screen.getByRole("button", { name: "Reply in thread, Friday is working…" });
+  expect(within(activity).getByRole("img", { name: "Friday" })).toBeInTheDocument();
+  await userEvent.click(activity);
+  expect(within(screen.getByRole("complementary", { name: "Thread" })).getByRole("article", { name: "Live run from Friday" })).toBeInTheDocument();
+  view.rerender(<RoomPanel {...props} runs={[]} messages={[message,
+    { ...message, messageId: "reply-a", messageSeq: 2, threadRootMessageId: message.messageId },
+    { ...message, messageId: "reply-b", messageSeq: 3, threadRootMessageId: message.messageId },
+    { ...message, messageId: "reply-c", messageSeq: 4, author: { kind: "human", id: "owner", displayName: "Owner" }, threadRootMessageId: message.messageId },
+  ]} />);
+  const replies = screen.getByRole("button", { name: /^Reply in thread, 3 replies/ });
+  expect(within(replies).getAllByRole("img")).toHaveLength(2);
+  expect(within(replies).getByRole("img", { name: "Friday" })).toBeInTheDocument();
+  expect(within(replies).getByRole("img", { name: "Owner" })).toBeInTheDocument();
+  expect(replies).not.toHaveTextContent("working");
 });

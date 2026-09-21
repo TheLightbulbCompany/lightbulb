@@ -23,6 +23,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -84,6 +85,7 @@ CLI_CREDENTIAL_PREFIXES = (
     f"{PROFILE_HOME}/.config/gogcli/",
     f"{PROFILE_HOME}/.local/share/gogcli/",
     f"{PROFILE_HOME}/.xurl",
+    f"{PROFILE_HOME}/quickbooks/",
     "skills/instagram/",
     CLI_ENV_FILE,
 )
@@ -100,9 +102,13 @@ CLI_CREDENTIAL_PREFIXES = (
 #: lacks, which must never be pointed at an agent-owned path.
 #: NB ``fnmatch``'s ``*`` spans ``/``, so one pattern per name covers the whole subtree.
 _HOME_UNSYNCED = (".cache", ".npm", ".ssh", ".gnupg", ".local/state")
+# pnpm puts its reproducible package store under XDG_DATA_HOME, which points into this
+# profile. Old S3 copies must also be skipped on cold restore, not just future uploads.
+PNPM_STORE_PREFIX = f"{PROFILE_HOME}/.local/share/pnpm/store/"
 HOME_EXCLUDE_GLOBS = (
     f"{PROFILE_HOME}/.gitconfig",
     *(f"{PROFILE_HOME}/{name}/*" for name in _HOME_UNSYNCED),
+    f"{PNPM_STORE_PREFIX}*",
 )
 
 #: Hazard 4 (local-exec persistence report): ``terminal.backend: local`` runs the agent's shell
@@ -307,8 +313,8 @@ def restore_profile(agent_id: str) -> float:
             rel = obj["Key"][len(prefix):]
             if not rel or rel.endswith("/"):
                 continue  # directory marker: downloading it onto the directory raises
-            if is_lock_sidecar(rel):
-                continue  # a lock nobody holds; see LOCK_SIDECAR_GLOBS
+            if is_lock_sidecar(rel) or rel.startswith(PNPM_STORE_PREFIX):
+                continue  # process-local lock or reproducible package cache
             target = dest / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             s3.download_file(S3_BUCKET, obj["Key"], str(target))
@@ -850,7 +856,12 @@ def auxiliary_pin(aux_defaults: dict, model: str) -> dict:
 #: ``GOG_ACCOUNT`` is the odd one out -- not a credential but gog's default account, written PER
 #: AGENT by the backend's ``google_identity`` seeder (the profile twin of the ECS IDENTITY.md
 #: ``gog -a <email>`` instruction).
-CLI_ENV_FILE_NAMES: tuple[str, ...] = ("GOG_KEYRING_PASSWORD", "GOG_KEYRING_BACKEND", "GOG_ACCOUNT")
+CLI_ENV_FILE_NAMES: tuple[str, ...] = (
+    "GOG_KEYRING_PASSWORD",
+    "GOG_KEYRING_BACKEND",
+    "GOG_ACCOUNT",
+    "VERCEL_TOKEN",
+)
 
 
 def cli_credential_env(agent_id: str) -> dict[str, str]:
@@ -985,7 +996,29 @@ def pin_profile_defaults(agent_id: str, model: str) -> dict:
     by ``bridge.turn._run_hermes``/``_run_native_paperclip``.
     """
     existing = normalize_profile_backends(agent_id)
-    config = deep_merge(auxiliary_pin(_aux_defaults(), model), existing)
+    provider = (existing.get("model") or {}).get("provider")
+    managed = os.environ.get("LIGHTBULB_PROVIDER_CHOICE") == "openrouter_managed"
+    if managed and provider != "custom":
+        raise RuntimeError("managed gate model route is missing or changed")
+    if managed:
+        tasks = (existing.get("auxiliary") or {})
+        gate_url = os.environ.get("LIGHTBULB_MANAGED_GATE_URL", "")
+        approved_model = os.environ.get("LIGHTBULB_MANAGED_MODEL_ID", "")
+        model_block = existing["model"]
+        if not gate_url or not approved_model or model_block.get("default") != approved_model or model_block.get("base_url") != gate_url or model_block.get("api_key") != "${LIGHTBULB_GATE_BEARER}":
+            raise RuntimeError("managed gate route is missing or changed")
+        for name, block in _aux_defaults().items():
+            if isinstance(block, dict) and "provider" in block:
+                route = tasks.get(name)
+                if not isinstance(route, dict) or not route.get("provider") or not route.get("model") or route.get("fallback_chain") != []:
+                    raise RuntimeError(f"missing auxiliary route for {name}")
+                if (route.get("provider") != "custom" or route.get("base_url") != gate_url
+                        or route.get("model") != approved_model
+                        or route.get("api_key") != "${LIGHTBULB_GATE_BEARER}"):
+                    raise RuntimeError(f"auxiliary route for {name} bypasses managed gate")
+        config = existing
+    else:
+        config = deep_merge(auxiliary_pin(_aux_defaults(), model), existing)
     config = deep_merge(config, plugins_pin(existing))
     write_profile_config(agent_id, config)
     return config

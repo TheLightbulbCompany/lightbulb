@@ -1,0 +1,11 @@
+{
+  "name": "openrouter-gate",
+  "private": true,
+  "type": "module",
+  "main": "handler.mjs",
+  "scripts": { "test": "node --test" },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.716.0",
+    "@aws-sdk/client-secrets-manager": "^3.716.0"
+  }
+}

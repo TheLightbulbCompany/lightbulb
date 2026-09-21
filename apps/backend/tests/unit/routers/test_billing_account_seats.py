@@ -30,3 +30,31 @@ async def test_account_for_workspace_owner_has_workspace_prices_without_seats(mo
     assert "team_seat_price_usd" not in payload
     assert "team_base_price_usd" not in payload
     assert "is_seat_subscription" not in payload
+
+
+@pytest.mark.asyncio
+async def test_account_exposes_server_managed_inference_capability(monkeypatch):
+    monkeypatch.setattr(billing.settings, "OPENROUTER_MANAGED_ENABLED", True)
+    monkeypatch.setattr(
+        billing,
+        "_get_billing_account",
+        AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "subscription_status": "active",
+                "provider_choice": "bedrock_claude",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        billing,
+        "get_usage_summary",
+        AsyncMock(
+            return_value={
+                "total_spend": 0.0,
+                "lifetime_spend": 0.0,
+            }
+        ),
+    )
+    resp = await billing.get_billing_account(auth=AuthContext(user_id="u", org_id="org_1", org_role="org:admin"))
+    assert resp.managed_inference_available is True

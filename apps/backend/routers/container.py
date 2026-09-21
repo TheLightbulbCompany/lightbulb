@@ -7,11 +7,13 @@ and a manual retry-provision endpoint.
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field, HttpUrl
+from typing import Literal
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.services import browser_sessions, readiness_state
+from core.services import browser_control, readiness_state
 from core.services.onboarding_brief import reconcile_pending_brief
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
@@ -445,7 +447,7 @@ browser_router = APIRouter()
     description=(
         "Returns a 300 s presigned DCV URL for the AgentCore Browser session this "
         "workspace's agents are driving, or `active: false` when none is running. "
-        "Watch-only, and it never STARTS a session."
+        "Polling never starts a session; controller metadata gates the workspace UI."
     ),
     operation_id="browser_live_view",
 )
@@ -456,7 +458,96 @@ async def browser_live_view(
     # The URL is a short-lived bearer credential for a live browser: no CDN, no proxy, no
     # disk cache. The owner comes from the Clerk claim and never from the request.
     response.headers["Cache-Control"] = "no-store"
-    return await browser_sessions.live_view(resolve_owner_id(auth))
+    return await _browser_result(browser_control.view(resolve_owner_id(auth), auth.user_id))
+
+
+class BrowserGeneration(BaseModel):
+    generation: str = Field(min_length=1, max_length=128)
+
+
+class BrowserControlRequest(BrowserGeneration):
+    action: Literal["take", "release"]
+
+
+class BrowserNavigateRequest(BrowserGeneration):
+    url: HttpUrl
+
+
+class BrowserRun(BaseModel):
+    runId: str = Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9:_-]+$")
+
+
+class BrowserRunRelease(BrowserRun, BrowserGeneration):
+    pass
+
+
+async def _browser_result(operation):
+    try:
+        return await operation
+    except browser_control.BrowserError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except Exception:
+        # A failed signed URL/RPC must never leak its credential-bearing exception.
+        raise HTTPException(status_code=503, detail="Browser is temporarily unavailable. Try again.") from None
+
+
+@browser_router.post("/start")
+async def browser_start(response: Response, auth: AuthContext = Depends(get_current_user)):
+    response.headers["Cache-Control"] = "no-store"
+    owner_id = resolve_owner_id(auth)
+    await _assert_provision_allowed(owner_id, is_admin=auth.is_org_admin)
+    return await _browser_result(browser_control.start(owner_id, auth.user_id))
+
+
+@browser_router.post("/control")
+async def browser_change_control(
+    body: BrowserControlRequest, response: Response, auth: AuthContext = Depends(get_current_user)
+):
+    response.headers["Cache-Control"] = "no-store"
+    owner_id = resolve_owner_id(auth)
+    if body.action == "take":
+        await _assert_provision_allowed(owner_id, is_admin=auth.is_org_admin)
+    action = browser_control.take if body.action == "take" else browser_control.release_human
+    return await _browser_result(action(owner_id, auth.user_id, body.generation))
+
+
+@browser_router.post("/stop")
+async def browser_stop(body: BrowserGeneration, response: Response, auth: AuthContext = Depends(get_current_user)):
+    response.headers["Cache-Control"] = "no-store"
+    return await _browser_result(browser_control.stop(resolve_owner_id(auth), auth.user_id, body.generation))
+
+
+@browser_router.post("/navigate")
+async def browser_navigate(
+    body: BrowserNavigateRequest, response: Response, auth: AuthContext = Depends(get_current_user)
+):
+    response.headers["Cache-Control"] = "no-store"
+    if body.url.username or body.url.password:
+        raise HTTPException(status_code=422, detail="Website addresses cannot include credentials.")
+    return await _browser_result(
+        browser_control.navigate(resolve_owner_id(auth), auth.user_id, body.generation, str(body.url))
+    )
+
+
+browser_internal_router = APIRouter()
+
+
+@browser_internal_router.post("/{owner_id}/acquire")
+async def browser_agent_acquire(owner_id: str, body: BrowserRun, request: Request, response: Response):
+    from routers.messaging import _require_hook_token
+
+    await _require_hook_token(owner_id, request)
+    response.headers["Cache-Control"] = "no-store"
+    return await _browser_result(browser_control.acquire_agent(owner_id, body.runId))
+
+
+@browser_internal_router.post("/{owner_id}/release")
+async def browser_agent_release(owner_id: str, body: BrowserRunRelease, request: Request, response: Response):
+    from routers.messaging import _require_hook_token
+
+    await _require_hook_token(owner_id, request)
+    response.headers["Cache-Control"] = "no-store"
+    return await _browser_result(browser_control.release_agent(owner_id, body.runId, body.generation))
 
 
 @router.post(

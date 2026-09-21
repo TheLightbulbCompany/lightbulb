@@ -549,6 +549,16 @@ async def _handle_organization_deleted(data: dict) -> None:
     except Exception:
         logger.exception("join-link revoke on organization.deleted failed for org %s", org_id)
 
+    # A deleted org must stop funded inference even if Stripe cancellation
+    # fails. It may retain an old managed key after switching to BYOK/OAuth,
+    # so retire by key state rather than the current provider choice.
+    try:
+        from core.repositories.openrouter_key_repo import mark_retiring
+
+        await mark_retiring(org_id)
+    except Exception:
+        logger.exception("OpenRouter key retirement on organization.deleted failed for org %s", org_id)
+
     try:
         from core.services.billing_service import cancel_subscription_for_owner
 

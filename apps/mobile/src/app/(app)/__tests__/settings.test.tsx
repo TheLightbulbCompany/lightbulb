@@ -92,6 +92,20 @@ describe("Settings plan card", () => {
     expect(screen.getByText("Active")).toBeTruthy();
   });
 
+  it("labels a migrated owner's provider and credits as Lightbulb-managed", async () => {
+    mockAccountFixture = {
+      is_subscribed: true,
+      subscription_status: "active",
+      trial_end: null,
+      provider_choice: "openrouter_managed",
+      byo_provider: null,
+    };
+    await render(<Settings />);
+    expect(await screen.findByText("Lightbulb-managed models")).toBeTruthy();
+    expect(screen.getByText("Workspace credits")).toBeTruthy();
+    expect(screen.queryByText(/OpenRouter|API key/i)).toBeNull();
+  });
+
   // App Store 3.1.3(f): the exemption holds only while the app carries no
   // call to action for purchase outside it. This screen used to have two —
   // "Upgrade on flickmeon.ai" and "Manage billing on flickmeon.ai" — plus the plan

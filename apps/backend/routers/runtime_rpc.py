@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Response
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user
+from core.repositories import integrations_repo
 from core.services import runtime_rpc as service
+from core.services import messaging
+from core.services.credentials import access_token, registry
 from core.services.messaging import (
     RuntimeOperation,
     RuntimeOperationAccepted,
@@ -14,6 +19,45 @@ from core.services.messaging import (
 )
 
 router = APIRouter()
+
+
+class RuntimeCredentialRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+@router.post("/credentials/u/{owner_id}")
+async def runtime_credentials(
+    owner_id: str, body: RuntimeCredentialRequest, request: Request, response: Response
+) -> dict:
+    """Vend short-lived remote-MCP tokens to this workspace's Hermes bridge."""
+    from routers.agent_builder import _require_hook_token
+
+    await _require_hook_token(owner_id, request)
+    roster = await messaging.load_agent_roster(owner_id)
+    if body.agent_id not in {agent["id"] for agent in roster}:
+        raise HTTPException(status_code=403, detail="agent_not_in_workspace")
+
+    connected = {
+        row["provider"]
+        for row in await integrations_repo.list_for_owner(owner_id)
+        if row.get("provider") and row.get("status", "connected") == "connected"
+    }
+    tokens: dict[str, str] = {}
+    unavailable: list[str] = []
+    for provider in registry.all_providers().values():
+        if (
+            provider.key not in connected
+            or not provider.mcp_remote
+            or registry.refresh_owner_for(provider) != "backend"
+            or not registry.available_for(provider, owner_id)
+        ):
+            continue
+        try:
+            tokens[provider.mcp_remote.key] = await access_token.get(owner_id, provider.key)
+        except (access_token.ReconnectRequired, httpx.HTTPError):
+            unavailable.append(provider.key)
+    response.headers["Cache-Control"] = "no-store"
+    return {"tokens": tokens, "unavailable": unavailable}
 
 
 @router.post(

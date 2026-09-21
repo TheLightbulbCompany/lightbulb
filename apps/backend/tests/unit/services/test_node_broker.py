@@ -256,6 +256,21 @@ async def test_pending_and_outbound_queue_are_bounded_and_timeout_drops_queued_i
     assert session.send.empty()
 
 
+async def test_cancelled_waiter_sends_exact_cancel_after_request_left_queue():
+    session = node_broker.NodeSession("dev-1", {"system.run"})
+    task = asyncio.create_task(session.invoke("system.run", {}, 5000, invoke_id="execution-id"))
+    await session.send.get()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not session.pending
+    assert session.send.get_nowait() == {
+        "type": "event",
+        "event": "node.invoke.cancel",
+        "payload": {"invokeId": "execution-id", "nodeId": "dev-1"},
+    }
+
+
 async def test_oversize_wire_json_is_rejected_before_nested_decode():
     session = node_broker.NodeSession("dev-1", {"device.info"})
     task = asyncio.create_task(session.invoke("device.info", {}, 5000, invoke_id="known-id"))

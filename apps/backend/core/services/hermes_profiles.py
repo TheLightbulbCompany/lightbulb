@@ -266,6 +266,23 @@ def model_block(provider_choice, byo_provider, aip_arns, is_ceo, *, default_id=N
 
 
 def _derive_model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tuple[dict, str, str]:
+    if provider_choice == "openrouter_managed":
+        from core.billing.openrouter_gate_url import gate_url
+
+        model_id = settings.OPENROUTER_MANAGED_MODEL_ID.strip()
+        if not model_id:
+            raise ValueError("managed OpenRouter route requires a server model")
+        return (
+            {
+                "default": model_id,
+                "provider": "custom",
+                "base_url": gate_url(),
+                "api_key": "${LIGHTBULB_GATE_BEARER}",
+                "context_length": 200_000,
+            },
+            model_id,
+            "custom",
+        )
     if provider_choice in ("bedrock_claude", "bedrock_trial"):
         if not aip_arns:
             raise ValueError(f"{provider_choice} requires aip_arns")
@@ -294,7 +311,7 @@ def _derive_model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tupl
     return {"default": "gpt-5.6-sol", "provider": "openai-codex"}, "gpt-5.6-sol", "openai-codex"
 
 
-def auxiliary_tasks_block(model_id: str, provider: str) -> dict:
+def auxiliary_tasks_block(model_id: str, provider: str, *, base_url: str = "", api_key: str = "") -> dict:
     """Every ``AUXILIARY_TASKS`` entry pinned to one model + provider.
 
     The ONE builder for those entries (M6 task 10-C, scan rows 4/23): the fresh-profile write
@@ -302,7 +319,10 @@ def auxiliary_tasks_block(model_id: str, provider: str) -> dict:
     18-task list and the ``fallback_chain: []`` fence (see ``AUXILIARY_TASKS``' own note --
     it is the fence, not a preference) can never drift between them.
     """
-    return {task: {"provider": provider, "model": model_id, "fallback_chain": []} for task in AUXILIARY_TASKS}
+    route = {"provider": provider, "model": model_id, "fallback_chain": []}
+    if base_url:
+        route.update(base_url=base_url, api_key=api_key)
+    return {task: dict(route) for task in AUXILIARY_TASKS}
 
 
 def build_profile_config(
@@ -315,7 +335,13 @@ def build_profile_config(
     is_ceo: bool = False,
 ) -> dict:
     model, aux_model, aux_provider = model_block(provider_choice, byo_provider, aip_arns, is_ceo)
-    aux: dict = {"free_only": True, "transient_retries": 2, **auxiliary_tasks_block(aux_model, aux_provider)}
+    aux: dict = {
+        "free_only": True,
+        "transient_retries": 2,
+        **auxiliary_tasks_block(
+            aux_model, aux_provider, base_url=model.get("base_url", ""), api_key=model.get("api_key", "")
+        ),
+    }
     config: dict = {
         "model": model,
         "auxiliary": aux,

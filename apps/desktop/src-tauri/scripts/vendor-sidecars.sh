@@ -98,6 +98,7 @@ EOF
             --cpu="${NPM_CPU}" \
             --os=darwin
     )
+    node "$SCRIPT_DIR/verify-browser-pin.mjs" "$HOST_DIR/node_modules/openclaw"
 }
 
 # Write a per-triple launcher shim that finds node + openclaw-host at
@@ -138,7 +139,7 @@ fi
 # their CLI openclaw setup intact.
 export OPENCLAW_HOME="\${HOME}/Library/Application Support/company.thelightbulb.desktop/openclaw"
 mkdir -p "\$OPENCLAW_HOME"
-exec "\$ASSETS/node-${TRIPLE}" \\
+exec "\$ASSETS/node-${TRIPLE}" --disable-warning=ExperimentalWarning \\
     "\$ASSETS/openclaw-host-${TRIPLE}/node_modules/openclaw/openclaw.mjs" \\
     node run --host 127.0.0.1 --port "\$LIGHTBULB_PROXY_PORT" "\$@"
 LAUNCHER_EOF

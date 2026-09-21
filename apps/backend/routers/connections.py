@@ -62,7 +62,7 @@ def _retains_secret(p: registry.Provider) -> bool:
     its own HogQL reads (owner-day rollups) without touching the container's
     MCP copy. Disconnect deletes the retained secret unconditionally
     (``_disconnect_teardown``), so the flag needs no teardown wiring."""
-    return p.refresh_owner != "actor" or p.retain_secret
+    return registry.refresh_owner_for(p) != "actor" or p.retain_secret
 
 
 async def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, credential: dict) -> None:
@@ -261,6 +261,8 @@ def _connection_row(
     """
     live = connected.get(key)
     requestable = not live and not registry.available_for(v, owner_id)
+    runtime_supported = apply_connection.runtime_supported(v)
+    runtime_unavailable = not live and not runtime_supported
     return {
         "provider": key,
         "display_name": v.display_name,
@@ -271,7 +273,8 @@ def _connection_row(
         # bundled skill. The UI badges the row with it so a connected CLI
         # integration isn't mistaken for a broken MCP one.
         "actor": v.actor,
-        "status": "unavailable" if requestable else (live or "disconnected"),
+        "status": "unavailable" if requestable or runtime_unavailable else (live or "disconnected"),
+        "runtime_supported": runtime_supported,
         "requestable": requestable,
         # byo_required: provider has no managed app, owner must bring one.
         # byo_configured: whether THIS owner has stored their own app.
@@ -999,6 +1002,8 @@ async def _start_oauth(owner_id: str, provider: str, *, origin: str | None = Non
     p = _get_provider_or_404(provider, owner_id)
     if p.acquisition != "direct_oauth":
         raise HTTPException(status_code=400, detail=f"{provider} is not an OAuth integration")
+    if not apply_connection.runtime_supported(p):
+        raise HTTPException(status_code=503, detail=f"{p.display_name} is not available on this runtime yet")
     if p.byo_required and not await _byo_active(owner_id, provider):
         raise HTTPException(status_code=400, detail=f"Set up your own {p.display_name} app before connecting")
     # The OAuth dance hits the provider's endpoints (incl. Dynamic Client

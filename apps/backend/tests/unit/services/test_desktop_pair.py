@@ -153,7 +153,11 @@ async def test_pair_writes_both_devices_onto_the_owner_row():
         )
 
     assert result.device_id_mac != result.device_id_cli
-    assert result.commands_mac == DESKTOP_MAC_COMMANDS
+    assert result.commands_mac == tuple(
+        command
+        for command in DESKTOP_MAC_COMMANDS
+        if command not in {"system.run.approve.v1", "desktop.operation.approve.v1"}
+    )
     assert result.commands_cli == DESKTOP_CLI_COMMANDS
     assert result.gateway_token == "gw-token"
 

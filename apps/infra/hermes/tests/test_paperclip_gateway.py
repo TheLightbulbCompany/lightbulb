@@ -128,6 +128,15 @@ def test_native_context_completes_with_real_output_usage_and_session(home, monke
             }
 
     def construct(agent_id, body, frames, session_key):
+        import json
+        import hashlib
+        root = turn._profile_dir(agent_id)
+        state = json.loads(turn._desktop_state_path(root, RUN).read_text())
+        assert state["ctx"] == {"runId": RUN, "agentId": agent_id, "ownerId": turn.OWNER,
+                                "apiUrl": turn.API, "hookToken": turn.HOOK_TOKEN,
+                                "family": "paperclip", "sessionKey": SESSION}
+        marker = root / turn.TURN_CONTEXT_DIRNAME / ("desktop-active-" + hashlib.sha256(SESSION.encode()).hexdigest() + ".json")
+        assert json.loads(marker.read_text()) == {"runId": RUN}
         seen["construct"] = (agent_id, body, frames, session_key)
         return Agent()
 
@@ -155,6 +164,7 @@ def test_native_context_completes_with_real_output_usage_and_session(home, monke
         "system_message": REQUEST["instructions"],
     }
     assert seen["construct"] == ("agent-1", {"sessionKey": SESSION}, None, SESSION)
+    assert not turn._desktop_state_path(turn._profile_dir("agent-1"), RUN).exists()
     assert seen["secret_overlay"] == {
         "PAPERCLIP_API_URL": "http://paperclip.internal:3100",
         "PAPERCLIP_AGENT_ID": "agent-1",
@@ -167,6 +177,28 @@ def test_native_context_completes_with_real_output_usage_and_session(home, monke
     assert usage_args[:4] == (SESSION, "agent-1", RUN, True)
     assert usage_args[5]["inputTokens"] == 12
     assert usage_args[5]["outputTokens"] == 7
+
+
+def test_native_desktop_context_waits_for_existing_agent_lock(home, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(turn.sync, "ensure_profile", lambda _agent: None)
+    monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: None)
+    constructed = threading.Event()
+    def construct(*_args):
+        constructed.set()
+        return SimpleNamespace(run_conversation=lambda **_kw: {"api_calls": 1, "final_response": "ok"})
+    monkeypatch.setattr(turn, "_construct_agent", construct)
+    turn.register_paperclip_run(IDENTITY, REQUEST)
+    worker = threading.Thread(target=turn._run_native_paperclip, args=(IDENTITY, REQUEST))
+    try:
+        with turn._turn_lock("agent-1"):
+            worker.start()
+            assert not constructed.wait(0.1), "native turns must not replace an active run's session context"
+    finally:
+        worker.join(2)
+    assert constructed.is_set() and not worker.is_alive()
 
 
 def test_failed_turn_and_unknown_run_are_honest_terminal_or_missing(home, monkeypatch):

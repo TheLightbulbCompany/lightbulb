@@ -26,14 +26,16 @@ export interface BillingAccount {
   // an org whose admin has already picked.
   provider_choice: string | null;
   byo_provider: string | null;
+  managed_inference_available?: boolean;
   // Pricing tier: "standard" (the single $50/mo tier) or "ultra_pro" (the
   // higher $150/mo tier that unlocks larger marketplace companies). Backend
   // defaults a plan-less row to "standard"; optional here so pre-plan
   // response shapes (and test fixtures) don't have to carry it.
-  plan?: "standard" | "ultra_pro";
+  plan?: "base" | "standard" | "ultra_pro";
   // Workspace prices are server-owned so every client shows the deployed
   // catalog instead of a stale price baked into a release.
   workspace_price_usd: number;
+  base_price_usd: number;
   ultra_price_usd: number;
 }
 
@@ -102,7 +104,7 @@ export function useBilling() {
     window.location.href = portal_url;
   }, [api]);
 
-  const startCheckout = useCallback(async (plan: "workspace" | "ultra") => {
+  const startCheckout = useCallback(async (plan: "base" | "workspace" | "ultra") => {
     const res = (await api.post("/billing/checkout", { plan })) as {
       checkout_url?: string;
       updated?: boolean;

@@ -7,7 +7,7 @@
  * resolution + status→color rules as web. No React — testable in isolation.
  */
 
-export type ProviderChoice = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
+export type ProviderChoice = "chatgpt_oauth" | "byo_key" | "bedrock_claude" | "openrouter_managed";
 export type ByoProvider = "openai" | "anthropic";
 
 // Upstream enum: src/agents/auth-health.ts — "ok"|"expiring"|"expired"|"missing"|"static".
@@ -53,6 +53,7 @@ function candidateIds(
   // lowercases — it does NOT map ``amazon-bedrock`` → ``bedrock``), so the
   // real reported id is ``amazon-bedrock``; ``bedrock`` is a tolerant fallback.
   if (choice === "bedrock_claude") return ["amazon-bedrock", "bedrock"];
+  if (choice === "openrouter_managed") return ["custom"];
   if (choice === "chatgpt_oauth") return ["openai-codex"];
   // byo_key
   if (byoProvider === "anthropic") return ["anthropic"];
@@ -69,6 +70,7 @@ function candidateIds(
 function allReservedExactIds(): Set<string> {
   return new Set([
     ...candidateIds("bedrock_claude", null),
+    ...candidateIds("openrouter_managed", null),
     ...candidateIds("chatgpt_oauth", null),
     ...candidateIds("byo_key", "anthropic"),
     ...candidateIds("byo_key", "openai"),

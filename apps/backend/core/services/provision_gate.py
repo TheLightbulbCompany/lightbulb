@@ -519,6 +519,8 @@ async def _evaluate_provision_gate_inner(
     # ChatGPT-OAuth disconnect clears provider_choice — a re-read here used
     # to mask the null with the legacy "bedrock_claude" fallback).
     provider_choice = account.get("provider_choice")
+    if account.get("plan") == "base" and provider_choice is None:
+        provider_choice = "openrouter_managed"
     if provider_choice is None:
         return Gate(
             code="provider_required",
@@ -532,7 +534,7 @@ async def _evaluate_provision_gate_inner(
         )
 
     # Layer 3 — provider-specific prerequisites.
-    if provider_choice == "bedrock_claude":
+    if provider_choice in {"bedrock_claude", "openrouter_managed"}:
         # Credits pool at the owner level — org members all draw from one
         # balance funded by the admin. Blocked-ness comes from the shared
         # Metronome fast-gate read (webhook-fed flag + lazy getNetBalance
@@ -542,8 +544,16 @@ async def _evaluate_provision_gate_inner(
         if await is_owner_blocked(owner_id):
             return Gate(
                 code="credits_required",
-                title="Top up Claude credits to start your container",
-                message="Top up some Claude credits to start your Bedrock container.",
+                title=(
+                    "Top up Lightbulb credits to start your workspace"
+                    if provider_choice == "openrouter_managed"
+                    else "Top up Claude credits to start your container"
+                ),
+                message=(
+                    "Top up Lightbulb credits to continue managed inference."
+                    if provider_choice == "openrouter_managed"
+                    else "Top up some Claude credits to start your Bedrock container."
+                ),
                 action_label="Top up now",
                 # The PROVIDERS panel, not billing. Credits are sold by
                 # CreditsSection, which LLMPanel embeds (see

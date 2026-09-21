@@ -12,6 +12,7 @@ pub mod pair_client;
 pub mod pair_state;
 pub mod proxy;
 pub mod screen;
+mod desktop_approval;
 pub mod subprocess;
 mod tray;
 
@@ -534,6 +535,24 @@ async fn local_mcp_list(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
     local_mcp::list_servers(&openclaw_state_dir(&app)?)
 }
 
+#[tauri::command]
+async fn local_browser_status(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    local_mcp::browser_setup_status(&openclaw_state_dir(&app)?)
+}
+
+#[tauri::command]
+async fn local_browser_configure(app: tauri::AppHandle, extension: bool) -> Result<(), String> {
+    let state = app.try_state::<AuthState>().ok_or("AuthState not managed")?;
+    let _serialized = state.node_host_mutation.lock().await;
+    local_mcp::configure_browser(&openclaw_state_dir(&app)?, extension)?;
+    restart_node_host_subprocess_locked(&app).await
+}
+
+#[tauri::command]
+async fn local_browser_pairing(app: tauri::AppHandle) -> Result<String, String> {
+    local_mcp::browser_pairing(&openclaw_state_dir(&app)?)
+}
+
 /// Replace the whole servers map, then bounce the sidecar so it takes effect.
 ///
 /// The lock spans the read-modify-write AND the restart. Guarding only the
@@ -620,8 +639,8 @@ fn stash_handles(app: &tauri::AppHandle, handles: DesktopNodeHostHandles) {
 ///
 /// The webview Clerk path (`send_auth_token` → bootstrap) remains the ONLY
 /// pairing path: it runs the FIRST pair (no persisted state yet) and the
-/// re-pair after the persisted state goes stale (Keychain wiped → device-id
-/// mismatch → we discard the file here and return `Ok(false)`).
+/// re-pair after persisted state goes stale (version mismatch makes `load`
+/// return `None`; Keychain wipe causes a device-id mismatch discarded here).
 ///
 /// Returns `Ok(true)` if the node host was started from persisted state,
 /// `Ok(false)` if there was nothing (valid) persisted — the normal first-run
@@ -819,15 +838,12 @@ async fn start_node_host(
         update_node_status(&app_for_cb, status);
     });
 
-    let mut invoke_rx = client.start().await?;
+    let invoke_rx = client.start().await?;
     log("[node] Node client started, listening for invoke requests");
 
     let app_for_invoke = app.clone();
     tokio::spawn(async move {
-        while let Some(request) = invoke_rx.recv().await {
-            log(&format!("[node] Invoke: {} ({})", request.command, request.id));
-            node_invoke::handle_invoke(&client, app_for_invoke.clone(), request).await;
-        }
+        node_invoke::run(client, app_for_invoke, invoke_rx).await;
         log("[node] Invoke receiver closed");
     });
 
@@ -1432,6 +1448,14 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri::plugin::Builder::<tauri::Wry>::new("desktop-approval")
+            .invoke_handler(tauri::generate_handler![desktop_approval::desktop_shell_answer]).build())
+        .register_uri_scheme_protocol("desktop-approval", |_context, _request| {
+            tauri::http::Response::builder()
+                .header("Content-Type", "text/html; charset=utf-8")
+                .header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src ipc: http://ipc.localhost")
+                .body(desktop_approval::HTML.as_bytes().to_vec()).unwrap()
+        })
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("oauth-intercept")
                 .on_navigation(|_window, url| {
@@ -1503,6 +1527,9 @@ end tell"#,
             file_access_remove_path,
             file_access_default_path,
             local_mcp_list,
+            local_browser_status,
+            local_browser_configure,
+            local_browser_pairing,
             local_mcp_set,
             local_mcp_remove,
             claude_export::export_claude_context,

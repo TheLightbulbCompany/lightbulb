@@ -449,7 +449,7 @@ class ConnectionService:
                 raise
 
     async def _resolve_desktop_target(
-        self, owner_id: str, member_id: str, device_id: str, generation: str, command: str
+        self, owner_id: str, member_id: str, device_id: str, generation: str, command: str | None
     ) -> dict:
         response = await asyncio.to_thread(
             self._client.get_item,
@@ -483,7 +483,8 @@ class ConnectionService:
             raise DesktopTargetNotReady(device_id)
         ready_commands = {value["S"] for value in item.get("commands", {}).get("L", []) if "S" in value}
         effective = ready_commands & set(paired.get("commands") or [])
-        if command not in effective:
+        # None is an internal reciprocal-pair identity read, never a command grant.
+        if command is not None and command not in effective:
             raise DesktopTargetForbidden(command)
         latest = await asyncio.to_thread(
             self._client.get_item,

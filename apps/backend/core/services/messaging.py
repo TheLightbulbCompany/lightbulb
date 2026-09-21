@@ -209,6 +209,7 @@ class ActiveRun(ContractModel):
 
     run_id: str
     agent_id: str
+    trigger_message_id: str | None = None
     started_at: datetime | None = None
     last_heartbeat_at: datetime | None = None
 
@@ -466,6 +467,7 @@ class AgentMessageReceiptResponse(ContractModel):
 class MessagePage(ContractModel):
     messages: list[CanonicalMessage]
     next_after_seq: int | None
+    next_before_seq: int | None = None
 
 
 class ReadCursorRequest(ContractModel):
@@ -1231,6 +1233,7 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
             ActiveRun(
                 run_id=row["runId"],
                 agent_id=row["agentId"],
+                trigger_message_id=row.get("triggerMessageId"),
                 started_at=row.get("startedAt"),
                 last_heartbeat_at=row.get("lastHeartbeatAt"),
             )
@@ -1824,13 +1827,20 @@ async def revoke_human_membership(owner_id: str, user_id: str) -> None:
     await messaging_repo.deactivate_user_stream(owner_id, user_id)
 
 
-async def list_messages(auth: AuthContext, room_id: str, after_seq: int, limit: int) -> MessagePage:
+async def list_messages(
+    auth: AuthContext, room_id: str, after_seq: int, limit: int, before_seq: int | None = None
+) -> MessagePage:
     await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     try:
-        rows, next_after = await messaging_repo.list_messages(room_id, after_seq, limit)
+        if before_seq is None:
+            rows, next_after = await messaging_repo.list_messages(room_id, after_seq, limit)
+            return MessagePage(messages=[canonical_message(row) for row in rows], next_after_seq=next_after)
+        rows, next_before = await messaging_repo.list_messages_before_page(room_id, before_seq, limit)
     except ValueError as exc:
         raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
-    return MessagePage(messages=[canonical_message(row) for row in rows], next_after_seq=next_after)
+    return MessagePage(
+        messages=[canonical_message(row) for row in rows], next_after_seq=None, next_before_seq=next_before
+    )
 
 
 async def update_message(

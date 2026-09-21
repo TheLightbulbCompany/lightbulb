@@ -154,6 +154,8 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
     env: {
       STRIPE_WORKSPACE_PRICE_ID_DEV: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_DEV }}",
       STRIPE_WORKSPACE_PRICE_ID_PROD: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_PROD }}",
+      STRIPE_BASE_PRICE_ID_DEV: "${{ secrets.STRIPE_BASE_PRICE_ID_DEV }}",
+      STRIPE_BASE_PRICE_ID_PROD: "${{ secrets.STRIPE_BASE_PRICE_ID_PROD }}",
       // Stripe Ultra Price IDs — same synth-time bake + per-env live/test
       // split as the Workspace price above. Empty string is tolerated (the
       // backend surfaces "STRIPE_ULTRA_PRICE_ID not configured" at the billing
@@ -161,12 +163,25 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       // both secrets are populated.
       STRIPE_ULTRA_PRICE_ID_DEV: "${{ secrets.STRIPE_ULTRA_PRICE_ID_DEV }}",
       STRIPE_ULTRA_PRICE_ID_PROD: "${{ secrets.STRIPE_ULTRA_PRICE_ID_PROD }}",
+      OPENROUTER_WORKSPACE_ID_DEV: "${{ vars.OPENROUTER_WORKSPACE_ID_DEV }}",
+      OPENROUTER_WORKSPACE_ID_PROD: "${{ vars.OPENROUTER_WORKSPACE_ID_PROD }}",
+      OPENROUTER_KEY_DAILY_LIMIT_USD_DEV: "${{ vars.OPENROUTER_KEY_DAILY_LIMIT_USD_DEV }}",
+      OPENROUTER_KEY_DAILY_LIMIT_USD_PROD: "${{ vars.OPENROUTER_KEY_DAILY_LIMIT_USD_PROD }}",
+      OPENROUTER_MANAGED_MODEL_ID_DEV: "${{ vars.OPENROUTER_MANAGED_MODEL_ID_DEV }}",
+      OPENROUTER_MANAGED_MODEL_ID_PROD: "${{ vars.OPENROUTER_MANAGED_MODEL_ID_PROD }}",
+      OPENROUTER_MODEL_POLICY_JSON_DEV: "${{ vars.OPENROUTER_MODEL_POLICY_JSON_DEV }}",
+      OPENROUTER_MODEL_POLICY_JSON_PROD: "${{ vars.OPENROUTER_MODEL_POLICY_JSON_PROD }}",
+      OPENROUTER_MANAGED_ENABLED_DEV: "${{ vars.OPENROUTER_MANAGED_ENABLED_DEV }}",
+      OPENROUTER_MANAGED_ENABLED_PROD: "${{ vars.OPENROUTER_MANAGED_ENABLED_PROD }}",
       // Same secrets the Vercel build job already consumes (lines below).
       // Re-exported here so service-stack.ts can bake the publishable key
       // into the backend container env at synth time — the paperclip-proxy
       // bootstrap HTML needs it to load the Clerk SDK.
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD }}",
+      // Empty GitHub variables keep desktop submissions closed in both envs.
+      DESKTOP_EXECUTION_OWNER_DEV: "${{ vars.DESKTOP_EXECUTION_OWNER_DEV }}",
+      DESKTOP_EXECUTION_OWNER_PROD: "${{ vars.DESKTOP_EXECUTION_OWNER_PROD }}",
     },
     primaryOutputDirectory: "apps/infra/cdk.out",
   }),

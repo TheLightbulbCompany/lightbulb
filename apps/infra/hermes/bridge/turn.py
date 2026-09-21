@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+import contextvars
+import fcntl
 import hashlib
 import json
 import logging
@@ -16,20 +18,46 @@ from collections import namedtuple
 from pathlib import Path
 
 from bridge import API, HOOK_TOKEN, MODEL, OWNER, now
-from bridge import sync
+from bridge import sync, browser_control
 from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
 log = logging.getLogger("bridge")
 
 _busy = 0
 _busy_lock = threading.Lock()
+_turns_frozen = os.environ.get("LIGHTBULB_PROVIDER_SWITCH_FROZEN") == "1"
 _last_turn: dict[str, float] = {}
+_brokered_mcp_overlay: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "brokered_mcp_overlay", default=None
+)
 
 
 def _busy_add(n: int) -> None:
     global _busy
     with _busy_lock:
         _busy += n
+
+
+def reserve_turn() -> bool:
+    """Atomically admit a turn and count it before its worker thread starts."""
+    global _busy
+    with _busy_lock:
+        if _turns_frozen:
+            return False
+        _busy += 1
+        return True
+
+
+def release_turn() -> None:
+    _busy_add(-1)
+
+
+def freeze_turns() -> int:
+    """Reject later turns and return the number already admitted, including queued threads."""
+    global _turns_frozen
+    with _busy_lock:
+        _turns_frozen = True
+        return _busy
 
 
 # ---- run registry + abort (spec §5 "Run lifecycle"; §5 abort) -------------------------------
@@ -49,6 +77,12 @@ def register_run(run_id: str) -> bool:
             return False
         RUNS[run_id] = {"state": "queued", "agent": None, "aborted": False, "outcome": None, "started": False}
         return True
+
+
+def discard_run(run_id: str) -> None:
+    """Undo registration when admission fails before the worker thread starts."""
+    with _RUNS_LOCK:
+        RUNS.pop(run_id, None)
 
 
 def mark_started(run_id: str) -> None:
@@ -200,6 +234,7 @@ def abort_run(run_id: str) -> bool:
             return False
         entry["aborted"] = True
         agent = entry["agent"]
+    cancel_run_desktop(run_id)
     if agent is not None:
         try:
             agent.interrupt(hard_cancel=True, tool_reason="explicit stop requested")
@@ -500,6 +535,48 @@ def _post_backend(path: str, body: dict) -> int:
         except Exception as exc:  # noqa: BLE001 — never throw; a network error retries too
             log.warning("backend %s failed (attempt %d/%d): %s", path, attempt, POST_BACKEND_ATTEMPTS, exc)
     return last_status
+
+
+def runtime_mcp_env(agent_id: str) -> dict[str, str]:
+    """Fresh brokered-MCP bearers for one Hermes turn; never persist them in a profile."""
+    if not API or not OWNER or not HOOK_TOKEN:
+        return {}
+    request = urllib.request.Request(
+        f"{API}/api/v1/runtime/credentials/u/{OWNER}",
+        data=json.dumps({"agent_id": agent_id}).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {HOOK_TOKEN}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read())
+    except Exception:  # noqa: BLE001 -- a missing optional integration must not fail the turn
+        log.warning("brokered MCP credentials unavailable for agent=%s", agent_id)
+        return {}
+    tokens = payload.get("tokens") if isinstance(payload, dict) else None
+    if not isinstance(tokens, dict):
+        log.warning("brokered MCP credentials returned an invalid payload for agent=%s", agent_id)
+        return {}
+    return {
+        f"MCP_{re.sub(r'[^A-Za-z0-9]', '_', key).upper()}_ACCESS_TOKEN": token
+        for key, token in tokens.items()
+        if isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_-]+", key) and isinstance(token, str) and token
+    }
+
+
+def _brokered_mcp_scope(overlay: dict[str, str]):
+    """Keep brokered bearers isolated to this turn's execution context."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _scope():
+        token = _brokered_mcp_overlay.set(overlay)
+        try:
+            yield
+        finally:
+            _brokered_mcp_overlay.reset(token)
+
+    return _scope()
 
 
 # Exactly the three statuses a text-only re-post can actually recover from. 400: a backend
@@ -834,6 +911,96 @@ def clear_turn_context(root, session_id: str) -> None:
     _turn_context_path(root, session_id).unlink(missing_ok=True)
 
 
+def _desktop_state_path(root, run_id):
+    # Same file contract as plugins/lightbulb/desktop.py; module globals are not shared.
+    return Path(root) / TURN_CONTEXT_DIRNAME / ("desktop-" + hashlib.sha256(run_id.encode()).hexdigest() + ".json")
+
+
+def _start_desktop_turn(root, ctx):
+    with _RUNS_LOCK:
+        entry = RUNS[ctx["runId"]]
+        target = _desktop_state_path(root, ctx["runId"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
+            json.dump({"ctx": ctx, "stopped": entry["aborted"], "receipts": {}}, stream)
+        entry["desktopRoot"] = str(root)
+
+
+def _desktop_active_turn(session_id, run_id):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def scope():
+        with _RUNS_LOCK:
+            root = (RUNS.get(run_id) or {}).get("desktopRoot")
+        if not root:
+            yield
+            return
+        target = Path(root) / TURN_CONTEXT_DIRNAME / ("desktop-active-" + hashlib.sha256(session_id.encode()).hexdigest() + ".json")
+        with os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w") as stream:
+            json.dump({"runId": run_id}, stream)
+        try:
+            yield
+        finally:
+            target.unlink(missing_ok=True)
+
+    return scope()
+
+
+def cancel_run_desktop(run_id):
+    """Latch Stop before returning, then cancel only this run's recorded receipts.
+
+    Shell cancellation requests termination; browser/file/MCP effects cannot be undone.
+    A network failure is unconfirmed cancellation, never permission to replay.
+    """
+    with _RUNS_LOCK:
+        root = (RUNS.get(run_id) or {}).get("desktopRoot")
+    if not root:
+        return None  # Ordinary cloud-only turns have no desktop ledger.
+    try:
+        with _desktop_state_path(root, run_id).open("r+", encoding="utf-8") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            state = json.load(stream)
+            if state["stopped"]:
+                return None
+            state["stopped"] = True
+            stream.seek(0)
+            json.dump(state, stream)
+            stream.truncate()
+    except (OSError, ValueError):
+        log.warning("desktop cancellation ledger unavailable run=%s", run_id)
+        return None
+
+    def cancel_receipts():
+        from concurrent.futures import ThreadPoolExecutor
+
+        ctx = state["ctx"]
+
+        def cancel(receipt_id):
+            request = urllib.request.Request(
+                ctx["apiUrl"].rstrip("/") + "/api/v1/desktop-execution/operations/" + receipt_id + "/cancel",
+                data=b"{}", method="POST", headers={
+                    "Authorization": "Bearer " + ctx["hookToken"], "Content-Type": "application/json",
+                    "X-Desktop-Owner": ctx["ownerId"], "X-Desktop-Run": ctx["runId"],
+                    "X-Desktop-Agent": ctx["agentId"], "X-Desktop-Run-Family": ctx["family"],
+                })
+            try:
+                with urllib.request.urlopen(request, timeout=12) as response:
+                    response.read(1024)
+            except Exception:  # never delay Hermes interrupt or claim physical termination
+                log.warning("desktop cancellation unconfirmed run=%s", run_id)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(cancel, (rid for rid, item in state["receipts"].items()
+                                   if item.get("state") not in {"succeeded", "failed", "rejected"})))
+
+    if not state["receipts"]:
+        return None
+    worker = threading.Thread(target=cancel_receipts, name=f"desktop-stop-{run_id}", daemon=True)
+    worker.start()
+    return worker
+
+
 # ---- the turn --------------------------------------------------------------------------------
 ZERO_USAGE = {"model": MODEL, "inputTokens": 0, "outputTokens": 0,
               "cacheReadTokens": 0, "cacheWriteTokens": 0, "estimatedCostUsd": None}
@@ -1075,11 +1242,16 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
             yield
             return
         secrets = build_profile_secret_scope(_profile_dir(agent_id))
+        secrets.update(_brokered_mcp_overlay.get() or {})
         # A projected CLI's shell values are profile FACTS, not turn facts, so they join the
         # same dict every caller's scope is built from. The NAMES are in the fixed contract
         # above regardless, so a profile with no gog connected simply resolves them to nothing.
         secrets.update(sync.cli_credential_env(agent_id))
         secrets.update(overlay or {})
+        # The owner bearer is boot-fetched, never trusted from an agent-editable profile .env.
+        secrets.pop("LIGHTBULB_GATE_BEARER", None)
+        if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
+            secrets["LIGHTBULB_GATE_BEARER"] = os.environ["AWS_BEARER_TOKEN_BEDROCK"]
         _declare_child_env_names(secrets)
         _allow_child_env_names(secrets)
         token = set_secret_scope(secrets)
@@ -1145,6 +1317,48 @@ def _allow_child_env_names(secrets: dict) -> None:
     register_env_passthrough(secrets.keys())
 
 
+_aws_shell_fence_lock = threading.Lock()
+_AMBIENT_AWS_CREDENTIAL_KEYS = (
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN",
+    "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", "AWS_EC2_METADATA_SERVICE_ENDPOINT",
+    "AWS_DEFAULT_PROFILE", "AWS_BEARER_TOKEN_BEDROCK",
+)
+
+
+def _fence_aws_child_env(env: dict[str, str], profile: str | None) -> dict[str, str]:
+    """Keep the runtime role out of agent children; AWS CLI uses the customer profile or fails."""
+    for name in _AMBIENT_AWS_CREDENTIAL_KEYS:
+        env.pop(name, None)
+    aws_dir = Path(profile) / "home" / ".aws" if profile else None
+    env["AWS_CONFIG_FILE"] = str(aws_dir / "config") if aws_dir else "/dev/null"
+    env["AWS_SHARED_CREDENTIALS_FILE"] = str(aws_dir / "credentials") if aws_dir else "/dev/null"
+    env["AWS_PROFILE"] = "default"
+    env["AWS_EC2_METADATA_DISABLED"] = "true"
+    return env
+
+
+def _install_aws_shell_fence() -> None:
+    """Patch Hermes's shared terminal/code-exec child-env seam once per process."""
+    try:
+        from tools.environments import local
+    except ImportError:  # Hermes isn't installed in bridge-only unit tests
+        return
+    with _aws_shell_fence_lock:
+        if getattr(local._scrubbed_env, "_lightbulb_aws_fence", False):
+            return
+        original = local._scrubbed_env
+
+        def fenced(*args, **kwargs):
+            from hermes_constants import get_hermes_home_override
+
+            return _fence_aws_child_env(original(*args, **kwargs), get_hermes_home_override())
+
+        fenced._lightbulb_aws_fence = True
+        local._scrubbed_env = fenced
+
+
 def _terminal_scope(agent_id: str):
     """Use Hermes's profile-local policy, default shell cwd and profile $HOME, never process
     globals.
@@ -1168,6 +1382,7 @@ def _terminal_scope(agent_id: str):
         except ImportError:  # tests outside the Hermes image
             yield
             return
+        _install_aws_shell_fence()
         profile = _profile_dir(agent_id)
         # Both keys are TERMINAL_-prefixed deliberately: tools/terminal_scope.py keeps ONLY
         # those from env_overlay (`if k.startswith("TERMINAL_")`) and drops everything else, so
@@ -1336,17 +1551,23 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
         # have installed against the stale value. See normalize_profile_backends's
         # docstring.
         sync.normalize_profile_backends(agent_id)
-        with _hermes_home_scope(agent_id), _secret_scope(agent_id), _terminal_scope(agent_id):
-            agent = _construct_agent(agent_id, body, frames, session_key)
-            attach_agent(run_id, agent)
-            result = agent.run_conversation(
-                user_message=_message_content(
-                    _turn_user_message(body),
-                    images.get((body.get("message") or {}).get("messageId"), []),
-                ),
-                system_message=system_prompt(body, agent_id, media=current_media),
-                conversation_history=_history(body, agent_id, images) or None,
-            ) or {}
+        browser_lease = browser_control.begin_turn(
+            str(run_id or ""), agent_id
+        )
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id), _desktop_active_turn(session_key, run_id):
+            try:
+                agent = _construct_agent(agent_id, body, frames, session_key)
+                attach_agent(run_id, agent)
+                result = agent.run_conversation(
+                    user_message=_message_content(
+                        _turn_user_message(body),
+                        images.get((body.get("message") or {}).get("messageId"), []),
+                    ),
+                    system_message=system_prompt(body, agent_id, media=current_media),
+                    conversation_history=_history(body, agent_id, images) or None,
+                ) or {}
+            finally:
+                browser_control.release(browser_lease)
     usage = {**ZERO_USAGE,
              # the model this agent actually ran on (profile_model), not the runtime-wide
              # default -- usage_service prices per model ref, so the CEO's premium tier would
@@ -1392,20 +1613,25 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     # visible to Hermes's child-env filter, `pin_profile_defaults` lists them in
     # Hermes's per-session env passthrough, and Hermes resolves each value back out of this
     # same scope.
-    with _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id):
-        agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
-        attach_agent(run_id, agent)
-        if paperclip_run_aborted(run_id):
-            return "cancelled", None, "", dict(ZERO_USAGE)
+    browser_lease = browser_control.begin_turn(str(run_id), agent_id)
+    # Same-session Paperclip retries must not replace another active desktop ledger.
+    with _turn_lock(agent_id), _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id), _desktop_active_turn(session_id, run_id):
         try:
-            result = agent.run_conversation(
-                user_message=request["input"],
-                system_message=request["instructions"],
-            ) or {}
-        except Exception:
+            agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
+            attach_agent(run_id, agent)
             if paperclip_run_aborted(run_id):
-                return "cancelled", None, "", _agent_usage(agent)
-            raise
+                return "cancelled", None, "", dict(ZERO_USAGE)
+            try:
+                result = agent.run_conversation(
+                    user_message=request["input"],
+                    system_message=request["instructions"],
+                ) or {}
+            except Exception:
+                if paperclip_run_aborted(run_id):
+                    return "cancelled", None, "", _agent_usage(agent)
+                raise
+        finally:
+            browser_control.release(browser_lease)
     usage = _agent_usage(agent)
     if paperclip_run_aborted(run_id):
         return "cancelled", None, "", usage
@@ -1430,12 +1656,13 @@ def _agent_usage(agent) -> dict:
     }
 
 
-def run_paperclip_turn(identity: dict, request: dict) -> None:
+def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) -> None:
     """Run one native Paperclip turn and leave its terminal result in the bounded registry."""
     run_id = identity["runId"]
     agent_id = identity["agentId"]
     session_id = identity["sessionId"]
-    _busy_add(1)
+    if not reserved:
+        _busy_add(1)
     started = time.time()
     outcome, error, output, usage = "failed", None, "", dict(ZERO_USAGE)
     try:
@@ -1445,7 +1672,15 @@ def run_paperclip_turn(identity: dict, request: dict) -> None:
             if paperclip_run_aborted(run_id):
                 outcome = "cancelled"
             else:
-                outcome, error, output, usage = _run_native_paperclip(identity, request)
+                _start_desktop_turn(_profile_dir(agent_id), {
+                    "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN,
+                    "agentId": agent_id, "runId": run_id, "sessionKey": session_id, "family": "paperclip",
+                })
+                try:
+                    outcome, error, output, usage = _run_native_paperclip(identity, request)
+                finally:
+                    cancel_run_desktop(run_id)
+                    _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
         except Exception as exc:  # noqa: BLE001 -- return the class, never exception text/prompt data
             if paperclip_run_aborted(run_id):
                 outcome, error = "cancelled", None
@@ -1473,7 +1708,7 @@ def run_paperclip_turn(identity: dict, request: dict) -> None:
         _busy_add(-1)
 
 
-def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) -> None:
+def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, reserved: bool = False) -> None:
     run = body.get("run") or {}
     run_id = run.get("runId")
     has_run = bool(run_id)  # agent_mail (Task 20) carries no run block: no callbacks, no frames
@@ -1485,7 +1720,8 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
                             room.get("id"), agent_id, run_id, thread_root)
     if has_run:
         register_run(run_id)  # idempotent: a no-op if server.py already registered it pre-dispatch
-    _busy_add(1)
+    if not reserved:
+        _busy_add(1)
     outcome, error_kind, reply, usage = "completed", None, "", ZERO_USAGE
     t0 = time.time()
     done = threading.Event()
@@ -1518,13 +1754,17 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
             # session_id Hermes gives it, so a different value here means the plugin looks
             # in a location the bridge never writes to.
             turn_session_id = session_key
-            write_turn_context(_profile_dir(agent_id), turn_session_id, {
+            turn_ctx = {
                 "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "roomId": room.get("id"),
                 "agentId": agent_id, "runId": run_id, "eventId": body.get("eventId"),
                 "threadRootMessageId": thread_root, "sessionKey": session_key,
                 "localSessionToken": local_session_token,
-            })
+                "family": "room" if has_run else "unavailable",
+            }
+            write_turn_context(_profile_dir(agent_id), turn_session_id, turn_ctx)
             try:
+                if has_run:
+                    _start_desktop_turn(_profile_dir(agent_id), turn_ctx)
                 if has_run and RUNS.get(run_id, {}).get("aborted"):  # dropped before it launched
                     outcome, error_kind, reply, usage = "aborted", None, "", ZERO_USAGE
                 else:
@@ -1545,6 +1785,9 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
                             # agent was attached, so this check still sees it.
                             outcome, error_kind, reply = "aborted", None, ""
             finally:
+                if has_run:
+                    cancel_run_desktop(run_id)
+                    _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
                 clear_turn_context(_profile_dir(agent_id), turn_session_id)
         except Exception as exc:  # noqa: BLE001
             outcome, error_kind, reply, usage = "error", type(exc).__name__, "", ZERO_USAGE

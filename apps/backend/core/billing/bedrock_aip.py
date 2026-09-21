@@ -911,7 +911,9 @@ async def delete_owner_bedrock_role(owner_id: str) -> None:
             raise
 
 
-async def reap_owner_bedrock_resources(owner_id: str, row_image: dict | None) -> str:
+async def reap_owner_bedrock_resources(
+    owner_id: str, row_image: dict | None, *, delete_browser_profile: bool = True
+) -> str:
     """SHARED CONTRACT (every teardown path): destroy the per-owner Bedrock
     footprint that the containers row was the only handle on.
 
@@ -1020,7 +1022,7 @@ async def reap_owner_bedrock_resources(owner_id: str, row_image: dict | None) ->
     # failure here is a real one and logs as such.
     from core.services.browser_sessions import delete_browser_profiles
 
-    deleted_profiles = await delete_browser_profiles(owner_id)
+    deleted_profiles = await delete_browser_profiles(owner_id) if delete_browser_profile else 0
     if deleted_profiles:
         done.append(f"{deleted_profiles} browser profile(s)")
 

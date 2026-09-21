@@ -47,6 +47,7 @@ describe("/llms.txt", () => {
     // A price edit in the backend must be reflected here, not silently drift.
     expect(text).toContain("$50/month");
     expect(text).toContain("$150/month");
+    expect(text).toContain("Base plan: $20/month");
     expect(text).toContain("server-selected free model");
     expect(text).toContain("30 days");
     // The 14-day trial was removed in 2026-07; never reintroduce the claim.

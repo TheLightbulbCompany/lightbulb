@@ -42,6 +42,7 @@ export function GET() {
     "",
     "- Product site: " + SITE_URL,
     "- Free tier: no credit card, 30 days on the server-selected free model. The workspace sleeps when idle and wakes when opened.",
+    "- Base plan: $20/month — the same managed free model after the no-card trial, with no per-user request cap in the initial release.",
     "- Workspace plan: $50/month — an always-on workspace so channels, webhooks, routines and autonomous runs keep working while you are away. Unlimited members.",
     "- Ultra plan: $150/month — a larger workspace (2 vCPU / 8 GB), required above 10 agents. Unlimited members.",
     "- Inference providers: Lightbulb-managed Claude credits, your own ChatGPT account via OAuth, or a bring-your-own Anthropic or OpenAI API key.",

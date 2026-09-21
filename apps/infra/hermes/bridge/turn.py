@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import contextvars
 import fcntl
 import hashlib
 import json
@@ -25,6 +26,9 @@ log = logging.getLogger("bridge")
 _busy = 0
 _busy_lock = threading.Lock()
 _last_turn: dict[str, float] = {}
+_brokered_mcp_overlay: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "brokered_mcp_overlay", default=None
+)
 
 
 def _busy_add(n: int) -> None:
@@ -502,6 +506,48 @@ def _post_backend(path: str, body: dict) -> int:
         except Exception as exc:  # noqa: BLE001 — never throw; a network error retries too
             log.warning("backend %s failed (attempt %d/%d): %s", path, attempt, POST_BACKEND_ATTEMPTS, exc)
     return last_status
+
+
+def runtime_mcp_env(agent_id: str) -> dict[str, str]:
+    """Fresh brokered-MCP bearers for one Hermes turn; never persist them in a profile."""
+    if not API or not OWNER or not HOOK_TOKEN:
+        return {}
+    request = urllib.request.Request(
+        f"{API}/api/v1/runtime/credentials/u/{OWNER}",
+        data=json.dumps({"agent_id": agent_id}).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {HOOK_TOKEN}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read())
+    except Exception:  # noqa: BLE001 -- a missing optional integration must not fail the turn
+        log.warning("brokered MCP credentials unavailable for agent=%s", agent_id)
+        return {}
+    tokens = payload.get("tokens") if isinstance(payload, dict) else None
+    if not isinstance(tokens, dict):
+        log.warning("brokered MCP credentials returned an invalid payload for agent=%s", agent_id)
+        return {}
+    return {
+        f"MCP_{re.sub(r'[^A-Za-z0-9]', '_', key).upper()}_ACCESS_TOKEN": token
+        for key, token in tokens.items()
+        if isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_-]+", key) and isinstance(token, str) and token
+    }
+
+
+def _brokered_mcp_scope(overlay: dict[str, str]):
+    """Keep brokered bearers isolated to this turn's execution context."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _scope():
+        token = _brokered_mcp_overlay.set(overlay)
+        try:
+            yield
+        finally:
+            _brokered_mcp_overlay.reset(token)
+
+    return _scope()
 
 
 # Exactly the three statuses a text-only re-post can actually recover from. 400: a backend
@@ -1167,6 +1213,7 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
             yield
             return
         secrets = build_profile_secret_scope(_profile_dir(agent_id))
+        secrets.update(_brokered_mcp_overlay.get() or {})
         # A projected CLI's shell values are profile FACTS, not turn facts, so they join the
         # same dict every caller's scope is built from. The NAMES are in the fixed contract
         # above regardless, so a profile with no gog connected simply resolves them to nothing.
@@ -1474,7 +1521,7 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
         browser_lease = browser_control.begin_turn(
             str(run_id or ""), agent_id
         )
-        with _hermes_home_scope(agent_id), _secret_scope(agent_id), _terminal_scope(agent_id), _desktop_active_turn(session_key, run_id):
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id), _desktop_active_turn(session_key, run_id):
             try:
                 agent = _construct_agent(agent_id, body, frames, session_key)
                 attach_agent(run_id, agent)

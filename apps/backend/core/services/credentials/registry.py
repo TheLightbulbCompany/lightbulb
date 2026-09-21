@@ -407,8 +407,8 @@ class Provider(BaseModel):
     acquisition: Acquisition
     actor: Actor
     refresh_owner: RefreshOwner
-    # Roll an actor-owned remote OAuth MCP provider onto the workspace broker
-    # in one environment before changing production's credential authority.
+    # Route an actor-owned remote OAuth MCP provider through the workspace
+    # broker in the declared environments, keeping refresh grants out of runtimes.
     brokered_environments: list[str] | None = None
     # Opt-in override for actor-refresh providers: retain the exchanged
     # credential in Secrets Manager anyway, for backend-side reads (posthog:

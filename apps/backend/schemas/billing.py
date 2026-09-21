@@ -30,6 +30,7 @@ class BillingAccountResponse(BaseModel):
     # copy in the field.
     workspace_price_usd: int
     # Default keeps pre-Base billing rows/API callers backward compatible;
+    # legacy callers may omit this field safely.
     # the router still supplies the server-owned configured value when present.
     base_price_usd: int = 20
     ultra_price_usd: int

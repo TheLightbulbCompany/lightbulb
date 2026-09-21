@@ -32,3 +32,16 @@ export function ensureDcvMediaShim(): boolean {
     return false;
   }
 }
+
+let webcamRejectionHandled = false;
+
+/** DCV rejects its optional webcam probe in WebKit after viewer startup. */
+export function suppressDcvWebcamRejection(): void {
+  if (typeof window === "undefined" || webcamRejectionHandled) return;
+  webcamRejectionHandled = true;
+  window.addEventListener("unhandledrejection", (event) => {
+    if (event.reason instanceof Error && event.reason.message === "The webcam system is not supported.") {
+      event.preventDefault();
+    }
+  });
+}

@@ -21,7 +21,9 @@ import { useAuth } from "@clerk/nextjs";
 import { useRuntimeHost } from "@lightbulb/shared";
 import { ApiError, useApi } from "@/lib/api";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
-import { ensureDcvMediaShim } from "./dcvWebKitShim";
+import { ensureDcvMediaShim, suppressDcvWebcamRejection } from "./dcvWebKitShim";
+
+suppressDcvWebcamRejection();
 
 const BrowserLiveView = lazy(() =>
   import("bedrock-agentcore/browser/live-view").then((m) => ({ default: m.BrowserLiveView })),

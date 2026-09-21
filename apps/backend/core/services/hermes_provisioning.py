@@ -444,11 +444,13 @@ def _delete_profile_prefix_objects(owner_id: str) -> None:
 
     client = boto3.client("s3")
     paginator = client.get_paginator("list_objects_v2")
-    for prefix in (root_home_prefix(owner_id), f"marketplace-installs/{owner_id}/"):
+    for prefix in (root_home_prefix(owner_id), f"marketplace-installs/{owner_id}/", f"browser-state/{owner_id}/"):
         for page in paginator.paginate(Bucket=settings.OWNER_STATE_BUCKET, Prefix=prefix):
             keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
             if keys:
-                client.delete_objects(Bucket=settings.OWNER_STATE_BUCKET, Delete={"Objects": keys})
+                result = client.delete_objects(Bucket=settings.OWNER_STATE_BUCKET, Delete={"Objects": keys})
+                if (result or {}).get("Errors"):
+                    raise RuntimeError("Workspace state deletion was incomplete")
 
 
 async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_profiles: bool) -> None:
@@ -481,6 +483,15 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
     """
     from core.billing.bedrock_gate_tokens import delete_gate_token_rows
     from core.services.runtime_transport import session_id_for
+
+    from core.services import browser_control
+
+    try:
+        await browser_control.teardown(owner_id, container_row, delete_state=delete_profiles)
+    except Exception:
+        if not delete_profiles:
+            raise
+        logger.warning("Browser teardown failed for owner=%s", owner_id)
 
     arn = container_row.get("agentcore_runtime_arn")
     if arn:
@@ -557,7 +568,11 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
 
     from core.billing.bedrock_aip import reap_owner_bedrock_resources
 
-    reaped = await reap_owner_bedrock_resources(owner_id, deleted)
+    if delete_profiles:
+        await container_repo.delete_browser_state(owner_id)
+        if not container:
+            await run_in_thread(_delete_profile_prefix_objects, owner_id)
+    reaped = await reap_owner_bedrock_resources(owner_id, deleted, delete_browser_profile=delete_profiles)
     logger.info("Bedrock reap for owner %s: %s", owner_id, reaped)
 
     try:

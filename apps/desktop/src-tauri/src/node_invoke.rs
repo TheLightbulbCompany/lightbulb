@@ -13,15 +13,177 @@
 //! has full parity): openclaw/src/node-host/invoke.ts (dispatch) +
 //! openclaw/src/node-host/invoke-types.ts (param shapes).
 
+use crate::node_client::NodeEvent;
 use crate::node_client::{InvokeError, NodeClient, NodeInvokeRequest, NodeInvokeResult};
+use futures_util::{stream::FuturesUnordered, StreamExt};
 use serde::Deserialize;
+use std::collections::{HashMap, VecDeque};
 use tokio::process::Command;
+use tokio::sync::{mpsc, watch};
+
+#[derive(Default)]
+struct Invocations {
+    active: HashMap<String, (String, watch::Sender<bool>)>,
+    seen: VecDeque<(String, String, std::time::Instant)>,
+    generation: u64,
+}
+
+impl Invocations {
+    fn admit(&mut self, request: &NodeInvokeRequest) -> Option<watch::Receiver<bool>> {
+        while self
+            .seen
+            .front()
+            .is_some_and(|(_, _, time)| time.elapsed().as_secs() > 310)
+        {
+            self.seen.pop_front();
+        }
+        if self.active.len() >= 8
+            || self.seen.len() >= 128
+            || self.active.contains_key(&request.id)
+            || self
+                .seen
+                .iter()
+                .any(|(id, node, _)| id == &request.id && node == &request.node_id)
+        {
+            return None;
+        }
+        self.seen.push_back((
+            request.id.clone(),
+            request.node_id.clone(),
+            std::time::Instant::now(),
+        ));
+        let (tx, rx) = watch::channel(false);
+        self.active
+            .insert(request.id.clone(), (request.node_id.clone(), tx));
+        Some(rx)
+    }
+
+    fn cancel(&mut self, id: String, node: String) {
+        if let Some((live_node, tx)) = self.active.get(&id) {
+            if live_node == &node {
+                tx.send_replace(true);
+            }
+        }
+        if self.seen.len() < 128 {
+            self.seen.push_back((id, node, std::time::Instant::now()));
+        }
+    }
+
+    fn disconnect(&mut self) {
+        self.generation += 1;
+        for (_, tx) in self.active.values() {
+            tx.send_replace(true);
+        }
+    }
+}
+
+pub async fn run(client: NodeClient, app: tauri::AppHandle, mut events: mpsc::Receiver<NodeEvent>) {
+    let mut jobs = FuturesUnordered::new();
+    let mut registry = Invocations::default();
+    loop {
+        tokio::select! {
+            biased;
+            event = events.recv() => {
+                match event {
+                    Some(NodeEvent::Disconnected) | None => {
+                        registry.disconnect();
+                        if event.is_none() {
+                            while jobs.next().await.is_some() {}
+                            break;
+                        }
+                    }
+                    Some(NodeEvent::Cancel { invoke_id, node_id }) => {
+                        registry.cancel(invoke_id, node_id);
+                    }
+                    Some(NodeEvent::Invoke(request)) => {
+                        let Some(rx) = registry.admit(&request) else {
+                            let _ = client.send_invoke_result(error_result(&request, "REJECTED", "cancelled, duplicate, or at capacity")).await;
+                            continue;
+                        };
+                        let tx = registry.active[&request.id].1.clone();
+                        let app = app.clone();
+                        let admitted_generation = registry.generation;
+                        jobs.push(async move {
+                            let deadline = std::time::Duration::from_millis(request.timeout_ms.unwrap_or(30_000).clamp(1, 180_000));
+                            let operation = handle_invoke(app, request.clone(), rx.clone());
+                            tokio::pin!(operation);
+                            let result = tokio::select! {
+                                result = &mut operation => result,
+                                _ = tokio::time::sleep(deadline) => {
+                                    let _ = tx.send(true);
+                                    // Handlers cooperate: capture kills AND waits before returning.
+                                    operation.await
+                                }
+                            };
+                            (request.id, admitted_generation, result)
+                        });
+                    }
+                }
+            }
+            Some((id, admitted_generation, result)) = jobs.next(), if !jobs.is_empty() => {
+                registry.active.remove(&id);
+                if admitted_generation == registry.generation { let _ = client.send_invoke_result(result).await; }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    fn request(id: &str) -> NodeInvokeRequest {
+        NodeInvokeRequest {
+            id: id.into(),
+            node_id: "mac".into(),
+            command: "device.health".into(),
+            params_json: None,
+            timeout_ms: Some(100),
+        }
+    }
+
+    #[test]
+    fn cancel_before_spawn_exact_node_capacity_disconnect_and_late_result() {
+        let mut registry = Invocations::default();
+        registry.cancel("cancelled".into(), "mac".into());
+        assert!(registry.admit(&request("cancelled")).is_none());
+        let receiver = registry.admit(&request("live")).unwrap();
+        registry.cancel("live".into(), "other-mac".into());
+        assert!(!*receiver.borrow());
+        registry.cancel("live".into(), "mac".into());
+        assert!(*receiver.borrow());
+        assert!(registry.admit(&request("live")).is_none());
+        for n in 0..7 {
+            registry.admit(&request(&n.to_string())).unwrap();
+        }
+        assert!(registry.admit(&request("ninth")).is_none());
+        let admitted_generation = registry.generation;
+        registry.disconnect();
+        assert_ne!(admitted_generation, registry.generation);
+        for (_, tx) in registry.active.values() {
+            assert!(*tx.borrow());
+        }
+    }
+
+    #[test]
+    fn notification_text_is_literal_and_bypass_fields_are_rejected() {
+        let body = "\"; do shell script \"touch /tmp/unwanted\"\n\\";
+        let parsed: NotifyParams =
+            serde_json::from_value(serde_json::json!({"body": body})).unwrap();
+        assert_eq!(parsed.body.as_deref(), Some(body));
+        assert!(serde_json::from_value::<NotifyParams>(
+            serde_json::json!({"body": body,"approved":true})
+        )
+        .is_err());
+    }
+}
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct NotifyParams {
     title: Option<String>,
     body: Option<String>,
-    sound: Option<String>,
+    #[serde(rename = "sound")]
+    _sound: Option<String>,
     // priority and delivery are accepted but mapped best-effort only — macOS
     // display notification doesn't expose priority/delivery controls.
     #[serde(default, rename = "priority")]
@@ -49,31 +211,44 @@ const NOT_IMPLEMENTED_COMMANDS: &[&str] = &[
 
 /// Dispatch a node.invoke.request to the appropriate Mac-native handler.
 ///
-/// The `_app` handle is currently unused but retained for symmetry with
-/// the future Mac-native surface (camera/photos/etc. will need it for
-/// permission prompts) and to avoid churning `lib.rs` in this trim.
+/// Approval uses a local window; capture cooperates with cancellation to reap
+/// its child before returning. Other handlers are cancelled by dropping work.
 pub async fn handle_invoke(
-    client: &NodeClient,
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     request: NodeInvokeRequest,
-) {
+    cancel: watch::Receiver<bool>,
+) -> NodeInvokeResult {
     let id = request.id.clone();
     let node_id = request.node_id.clone();
     let command = request.command.clone();
 
-    let result = match command.as_str() {
+    if *cancel.borrow() {
+        return error_result(&request, "CANCELLED", "cancelled before dispatch");
+    }
+    if command == "screen.snapshot" {
+        return wrap_screen_payload(
+            &request,
+            crate::screen::handle_screen_snapshot(
+                &parse_screen_params(&request.params_json),
+                cancel,
+            )
+            .await,
+        )
+        .unwrap();
+    }
+    let work = async {
+        match command.as_str() {
+        "file.access.policy.v1" => match crate::file_access::execution_policy() {
+            Ok(policy) => Ok(ok_payload(&request, policy)),
+            Err(_) => Ok(error_result(&request, "FILE_POLICY_UNAVAILABLE", "No current approved folders")),
+        },
+        "system.run.approve.v1" | "desktop.operation.approve.v1" => Ok(ok_payload(&request, crate::desktop_approval::prompt(
+            app, parse_screen_params(&request.params_json), cancel.clone()).await)),
         "system.notify" => handle_system_notify(&request).await,
         "device.info" => handle_device_info(&request).await,
         "device.status" => handle_device_status(&request).await,
         "device.health" => handle_device_health(&request).await,
         "device.permissions" => handle_device_permissions(&request).await,
-        "screen.snapshot" => {
-            let params = parse_screen_params(&request.params_json);
-            wrap_screen_payload(
-                &request,
-                crate::screen::handle_screen_snapshot(&params).await,
-            )
-        }
         cmd if NOT_IMPLEMENTED_COMMANDS.contains(&cmd) => Ok(NodeInvokeResult {
             id,
             node_id,
@@ -97,28 +272,13 @@ pub async fn handle_invoke(
                 message: format!("Unknown command: {}", command),
             }),
         }),
+    }
     };
-
-    match result {
-        Ok(invoke_result) => {
-            if let Err(e) = client.send_invoke_result(invoke_result).await {
-                eprintln!("[node-invoke] Failed to send result: {}", e);
-            }
-        }
-        Err(e) => {
-            let _ = client
-                .send_invoke_result(NodeInvokeResult {
-                    id: request.id.clone(),
-                    node_id: request.node_id.clone(),
-                    ok: false,
-                    payload_json: None,
-                    error: Some(InvokeError {
-                        code: "INTERNAL".into(),
-                        message: e.to_string(),
-                    }),
-                })
-                .await;
-        }
+    let mut stop = cancel.clone();
+    tokio::select! {
+        biased;
+        _ = stop.changed() => error_result(&request, "CANCELLED", "operation cancelled"),
+        result = work => result.unwrap_or_else(|e| error_result(&request, "INTERNAL", &e.to_string())),
     }
 }
 
@@ -204,16 +364,6 @@ fn ok_payload(request: &NodeInvokeRequest, payload: serde_json::Value) -> NodeIn
 
 // ---- system.notify ----
 
-/// Escape a string for safe embedding inside an AppleScript double-quoted
-/// literal. AppleScript treats `\` and `"` as special; everything else
-/// (including newlines) is taken literally. Mirrors what OpenClaw's Mac app
-/// does in Objective-C — we use osascript instead of UserNotifications
-/// because the UN framework requires bundle entitlements we'd rather not
-/// ship a first release with.
-fn escape_applescript_string(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
 async fn handle_system_notify(
     request: &NodeInvokeRequest,
 ) -> Result<NodeInvokeResult, Box<dyn std::error::Error + Send + Sync>> {
@@ -228,25 +378,19 @@ async fn handle_system_notify(
         ));
     }
 
-    let mut script = format!(
-        r#"display notification "{}" with title "{}""#,
-        escape_applescript_string(&body),
-        escape_applescript_string(&title),
-    );
-    if let Some(sound) = params.sound.as_deref().filter(|s| !s.is_empty()) {
-        script.push_str(&format!(
-            r#" sound name "{}""#,
-            escape_applescript_string(sound),
+    if title.len() > 256 || body.len() > 4096 {
+        return Ok(error_result(
+            request,
+            "INVALID_PARAMS",
+            "notification too large",
         ));
     }
-
-    let output = Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .await?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Ok(error_result(request, "NOTIFY_FAILED", stderr.trim()));
+    if !crate::notify::native_notify(title, Some(body), Some(request.id.clone())).await {
+        return Ok(error_result(
+            request,
+            "PERMISSION_DENIED",
+            "notifications unavailable or denied",
+        ));
     }
 
     Ok(NodeInvokeResult {
@@ -266,7 +410,7 @@ async fn handle_system_notify(
 async fn quick_output(cmd: &str, args: &[&str]) -> String {
     match tokio::time::timeout(
         std::time::Duration::from_secs(3),
-        Command::new(cmd).args(args).output(),
+        Command::new(cmd).kill_on_drop(true).args(args).output(),
     )
     .await
     {
@@ -351,18 +495,15 @@ async fn handle_device_health(
 async fn handle_device_permissions(
     request: &NodeInvokeRequest,
 ) -> Result<NodeInvokeResult, Box<dyn std::error::Error + Send + Sync>> {
-    // We don't (yet) request camera/photos/screen/location permissions from
-    // macOS, so reporting the TCC state here would be misleading — the only
-    // honest answer is "we haven't asked". When those capabilities land we
-    // can probe the actual authorization status via AVFoundation/
-    // CoreLocation/Photos/ScreenCaptureKit and swap this out.
+    // Screen and notification permissions are read from macOS without prompts.
+    // The remaining capabilities have no implemented handler.
     let payload = serde_json::json!({
         "camera": "not-requested",
         "microphone": "not-requested",
         "photos": "not-requested",
         "location": "not-requested",
-        "screenRecording": "not-requested",
-        "notifications": "granted",  // osascript display notification works without explicit grant
+        "screenRecording": crate::screen::permission(),
+        "notifications": crate::notify::notification_permission(false).await,
         "accessibility": "not-requested",
     });
     Ok(ok_payload(request, payload))

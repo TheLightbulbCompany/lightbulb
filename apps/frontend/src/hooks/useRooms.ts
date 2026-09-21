@@ -42,5 +42,5 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true,
     onVisibilityChange,
     uuid: () => crypto.randomUUID(),
   }), [isLoaded, userId, orgId, live, isVisible, onVisibilityChange]);
-  return useSharedRooms(platform, { initialAgentId, subscribeToRoom });
+  return useSharedRooms(platform, { initialAgentId, subscribeToRoom, boundedHistory: true });
 }

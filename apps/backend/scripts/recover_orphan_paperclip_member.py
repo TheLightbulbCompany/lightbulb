@@ -8,7 +8,9 @@ the now-existing user, so the member is permanently wedged with a
 ``failed`` DDB row (``/teams`` shows "not provisioned"). Paperclip exposes
 no user-delete/reset, so the only recovery is to delete the orphan Aurora
 ``user`` row (cascades account/session) and the failed DDB row; the next
-``/container/status`` poll re-provisions the member cleanly.
+``/container/status`` poll re-provisions the member cleanly. Identities with
+ANY company membership are refused: recover their existing credentials
+instead, preserving their identity and workspace attribution.
 
 Dry-run by default. Pass ``--apply`` to mutate. Requires AWS SSO
 (``aws sso login --profile isol8-admin``).
@@ -53,7 +55,7 @@ def plan_recovery(
 ) -> RecoveryPlan:
     """Pure decision logic — no AWS. ``SystemExit`` on any unsafe shape.
 
-    ``aurora_rows`` is ``[{"id", "email"}, ...]`` from the Better Auth
+    ``aurora_rows`` is ``[{"id", "email", "membership_count"}, ...]`` from the Better Auth
     ``user`` table; ``ddb_failed_rows`` is ``[{"user_id", "status"}, ...]``
     pre-filtered to the org (caller scopes by owner_id).
 
@@ -74,13 +76,18 @@ def plan_recovery(
       - no failed rows in scope → Aurora-only recovery, ``member_user_id``
         not required.
     """
-    if email in BOOTSTRAP_EMAILS:
+    if email.strip().lower() in BOOTSTRAP_EMAILS:
         sys.exit(f"REFUSING: {email} is a bootstrap admin and must be preserved.")
     matches = [r for r in aurora_rows if r.get("email") == email]
     if len(matches) == 0:
         sys.exit(f"No Aurora Better Auth user found for {email}; nothing to recover.")
     if len(matches) > 1:
         sys.exit(f"REFUSING: {len(matches)} Aurora users share email {email}; resolve by hand.")
+
+    if matches[0].get("membership_count", 0):
+        sys.exit(
+            "REFUSING: Paperclip identity has company memberships; recover its credentials instead of deleting it."
+        )
 
     failed = [r["user_id"] for r in ddb_failed_rows if r.get("status") == "failed"]
     if failed and member_user_id is None:
@@ -128,9 +135,16 @@ def _aurora_users(client, db_arn, secret_arn) -> list[dict]:
         resourceArn=db_arn,
         secretArn=secret_arn,
         database="paperclip",
-        sql='SELECT id, email FROM "user" ORDER BY email',
+        sql=(
+            "SELECT u.id, u.email, (SELECT COUNT(*) FROM company_memberships m "
+            "WHERE m.principal_type = 'user' AND m.principal_id = u.id) "
+            'FROM "user" u ORDER BY u.email'
+        ),
     )
-    return [{"id": rec[0].get("stringValue"), "email": rec[1].get("stringValue")} for rec in resp.get("records", [])]
+    return [
+        {"id": rec[0]["stringValue"], "email": rec[1]["stringValue"], "membership_count": rec[2]["longValue"]}
+        for rec in resp.get("records", [])
+    ]
 
 
 def _ddb_failed_rows(env: str, owner_id: str | None) -> list[dict]:
@@ -187,13 +201,18 @@ def main() -> None:
         print("\nDRY RUN — re-run with --apply to execute.")
         return
 
-    client.execute_statement(
+    deleted = client.execute_statement(
         resourceArn=db_arn,
         secretArn=secret_arn,
         database="paperclip",
-        sql='DELETE FROM "user" WHERE id = :id',
+        sql=(
+            'DELETE FROM "user" WHERE id = :id AND NOT EXISTS '
+            "(SELECT 1 FROM company_memberships WHERE principal_type = 'user' AND principal_id = :id)"
+        ),
         parameters=[{"name": "id", "value": {"stringValue": plan.aurora_user_id}}],
     )
+    if deleted.get("numberOfRecordsUpdated") != 1:
+        sys.exit("REFUSING: Aurora identity disappeared or gained membership; DDB rows were preserved.")
     print(f"Deleted Aurora user {plan.aurora_user_id}")
 
     ddb = boto3.client("dynamodb", region_name=REGION)

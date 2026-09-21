@@ -174,6 +174,7 @@ pub async fn spawn(
     cmd.env("OPENCLAW_STATE_DIR", &state_dir)
         // Do not inherit a path to the user's personal OpenClaw config.
         .env("OPENCLAW_CONFIG_PATH", crate::local_mcp::config_path(&state_dir))
+        .env("OPENCLAW_OAUTH_DIR", state_dir.join("credentials"))
         .env("OPENCLAW_GATEWAY_TOKEN", gateway_token)
         .env("LIGHTBULB_PROXY_PORT", &port_str)
         .stdout(Stdio::piped())
@@ -237,7 +238,7 @@ mod tests {
         let binary = dir.path().join("check-config");
         std::fs::write(
             &binary,
-            "#!/bin/sh\ntest \"$OPENCLAW_CONFIG_PATH\" = \"$OPENCLAW_STATE_DIR/openclaw.json\"\n",
+            "#!/bin/sh\ntest \"$OPENCLAW_CONFIG_PATH\" = \"$OPENCLAW_STATE_DIR/openclaw.json\" && test \"$OPENCLAW_OAUTH_DIR\" = \"$OPENCLAW_STATE_DIR/credentials\"\n",
         ).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);

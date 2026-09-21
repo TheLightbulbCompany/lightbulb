@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { MessagingWorkspaceProvider, useMessagingWorkspace } from "./MessagingWorkspaceContext";
 import { RoomDirectory } from "./RoomDirectory";
 import { RoomPanel } from "./RoomPanel";
@@ -47,11 +48,25 @@ export function MessagingConversation() {
 export function MessagingWorkspace(props: {
   initialAgentId?: string | null;
   subscribeToRoom?: boolean;
+  roomId?: string | null;
+  messageId?: string | null;
 }) {
-  return <MessagingWorkspaceProvider {...props}>
+  return <MessagingWorkspaceProvider initialAgentId={props.roomId ? null : props.initialAgentId} subscribeToRoom={props.subscribeToRoom}>
+    <RoomLink roomId={props.roomId} messageId={props.messageId} />
     <div className="messaging-workspace">
       <MessagingDirectory />
       <MessagingConversation />
     </div>
   </MessagingWorkspaceProvider>;
+}
+
+function RoomLink({ roomId, messageId }: { roomId?: string | null; messageId?: string | null }) {
+  const { openMessage, scope } = useMessagingWorkspace();
+  const consumed = useRef<string | null>(null);
+  useEffect(() => {
+    const key = roomId ? JSON.stringify([scope, roomId, messageId ?? null]) : null;
+    if (key && key !== consumed.current) openMessage(roomId!, messageId ?? null);
+    consumed.current = key;
+  }, [roomId, messageId, openMessage, scope]);
+  return null;
 }

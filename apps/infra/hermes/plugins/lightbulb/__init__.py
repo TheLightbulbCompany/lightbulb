@@ -7,6 +7,7 @@ import re
 import urllib.request
 
 from . import turn_context
+from bridge import browser_control
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _counter = itertools.count(1)
@@ -230,9 +231,15 @@ def _local_sessions(args: dict, *, session_id: str = "", **_kw) -> str:
 def register(ctx) -> None:
     """Register all Lightbulb tools and redaction patterns with the Hermes context."""
     _register_redaction_default()
+    ctx.register_hook("pre_tool_call", browser_control.pre_tool_call)
+    ctx.register_hook("post_tool_call", browser_control.post_tool_call)
     ctx.register_tool("send_room_message", "lightbulb", SEND_SCHEMA, _send_room_message,
                       description=SEND_SCHEMA["description"], emoji="💬")
     ctx.register_tool("hire_suggestion", "lightbulb", HIRE_SCHEMA, _hire_suggestion,
                       description=HIRE_SCHEMA["description"], emoji="🧑‍💼")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,
                       description=SESSIONS_SCHEMA["description"], emoji="🖥️")
+    from . import desktop
+
+    ctx.register_tool("lightbulb_desktop", "lightbulb", desktop.SCHEMA, desktop.handle,
+                      description=desktop.SCHEMA["description"], emoji="🖥️")

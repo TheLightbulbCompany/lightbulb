@@ -116,6 +116,7 @@ def _member_repo(monkeypatch, *, existing, owner_row):
     repo.get = AsyncMock(side_effect=lambda uid: owner_row if uid == "user_owner" else existing)
     repo.get_org_company_id = AsyncMock(return_value="co_xyz")
     repo.try_acquire_seed_claim = AsyncMock(return_value=True)
+    repo.stage_signup_credentials = AsyncMock(side_effect=lambda uid, **kw: (kw["email"], kw["password_encrypted"]))
     repo.put = AsyncMock()
 
     import core.services.paperclip_provisioning as prov_mod

@@ -21,7 +21,7 @@ handler builds each dict from a fixed field allowlist — never ``model_dump()``
 from fastapi import APIRouter
 
 from core.constants import CHANNEL_PROVIDER_IDS
-from core.services.credentials import registry
+from core.services.credentials import apply_connection, registry
 
 router = APIRouter()
 
@@ -57,7 +57,8 @@ async def get_platform_info() -> dict:
         # Without this, adding a half-wired provider gated `environments:
         # [local, dev]` would publish it on this unauthenticated route and have
         # agents pitch it, with no config knob left to suppress it.
-        if registry.visible_in_env(provider) or provider.offer_request_access
+        if (registry.visible_in_env(provider) or provider.offer_request_access)
+        and apply_connection.runtime_supported(provider)
     ]
     channels = [{"key": key, "display_name": key.replace("_", " ").title()} for key in CHANNEL_PROVIDER_IDS]
     return {"integrations": integrations, "channels": channels}

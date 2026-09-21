@@ -38,20 +38,29 @@ vi.mock("@/hooks/useIsDesktop", () => ({ useIsDesktop: () => false }));
 // it asserts which shell mounts, not what the shell threads down).
 // The shell hands ChatLayout its `onPanelChange` (setActivePanel) — captured
 // so a test can perform a plain sidebar nav without mounting the real nav.
-const layout = vi.hoisted(() => ({ onPanelChange: (() => {}) as (next: string) => void }));
+const layout = vi.hoisted(() => ({ onPanelChange: (() => {}) as (next: string) => void, onClearPanel: () => {} }));
 vi.mock("@/components/chat/ChatLayout", () => ({
   ChatLayout: ({
     children,
     onPanelChange,
+    onClearPanel,
   }: {
     children: React.ReactNode;
     onPanelChange?: (next: string) => void;
+    onClearPanel?: () => void;
   }) => {
     if (onPanelChange) layout.onPanelChange = onPanelChange;
+    if (onClearPanel) layout.onClearPanel = onClearPanel;
     return <div>{children}</div>;
   },
 }));
-vi.mock("@/components/messaging/MessagingWorkspace", () => ({ MessagingWorkspace: () => null }));
+vi.mock("@/components/messaging/MessagingWorkspace", () => ({
+  MessagingWorkspace: (props: { roomId?: string | null; messageId?: string | null }) =>
+    <div data-testid="messaging-workspace" data-room={props.roomId ?? ""} data-message={props.messageId ?? ""} />,
+}));
+vi.mock("@/components/control/ControlPanelRouter", () => ({
+  ControlPanelRouter: () => <div data-testid="control-panel" />,
+}));
 vi.mock("@/components/notifications/RunNotifications", () => ({ RunNotifications: () => null }));
 // Echo the params the shell derives from the URL; keep the real key helpers.
 vi.mock("@/components/chat/InlineTeamsPanel", async (importOriginal) => ({
@@ -127,5 +136,25 @@ describe("/chat — a retired ?panel=teams-org-chart lands on the Agents chart v
       panelParams: descriptor.params,
     }) as React.ReactElement<{ initialView: string | null }>;
     expect(element.props.initialView).toBe("chart");
+  });
+});
+
+describe("mobile chat room links", () => {
+  it.each(["panel=chat&", ""])("opens the requested conversation without control panels (%s)", (prefix) => {
+    window.history.replaceState(null, "", `/chat?${prefix}room=room-link&message=message-link`);
+    render(<ChatPage />);
+    expect(screen.queryByTestId("control-panel")).not.toBeInTheDocument();
+    expect(screen.getByTestId("messaging-workspace")).toHaveAttribute("data-room", "room-link");
+    expect(screen.getByTestId("messaging-workspace")).toHaveAttribute("data-message", "message-link");
+    expect(window.location.search).toBe(`?${prefix}room=room-link&message=message-link`);
+  });
+
+  it("releases the linked destination when an agent is explicitly selected", () => {
+    window.history.replaceState(null, "", "/chat?panel=chat&room=room-link&message=message-link");
+    render(<ChatPage />);
+    act(() => layout.onClearPanel());
+    const params = new URLSearchParams(window.location.search);
+    expect(params.has("room")).toBe(false);
+    expect(params.has("message")).toBe(false);
   });
 });

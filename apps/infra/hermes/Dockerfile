@@ -44,6 +44,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl jq ripgrep unzip ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+# ---- QuickBooks MCP server -------------------------------------------------
+# Intuit publishes this server only as source. Keep the same pinned commit and
+# dev-dependency build fix used by the retired OpenClaw image; the runtime image
+# carries only the compiled server after pruning build tools.
+ENV QUICKBOOKS_MCP_COMMIT=c351dc011d9cb14b211857457085f7994d8b1e15
+RUN set -eux; \
+    mkdir -p /opt/quickbooks-mcp; \
+    cd /opt/quickbooks-mcp; \
+    git init -q .; \
+    git remote add origin https://github.com/intuit/quickbooks-online-mcp-server.git; \
+    git fetch -q --depth 1 origin "$QUICKBOOKS_MCP_COMMIT"; \
+    git checkout -q FETCH_HEAD; \
+    rm -rf .git; \
+    npm ci --include=dev --ignore-scripts; \
+    npm run build; \
+    npm prune --omit=dev; \
+    test -f /opt/quickbooks-mcp/dist/index.js; \
+    printf '%s\n' '#!/bin/sh' 'set -eu' 'export QUICKBOOKS_TOKEN_STORE_PATH="${HOME}/quickbooks/.env"' 'exec node /opt/quickbooks-mcp/dist/index.js' > /usr/local/bin/lightbulb-quickbooks-mcp; \
+    chmod 0755 /usr/local/bin/lightbulb-quickbooks-mcp; \
+    sh -n /usr/local/bin/lightbulb-quickbooks-mcp; \
+    chown -R root:root /opt/quickbooks-mcp /usr/local/bin/lightbulb-quickbooks-mcp
+
 # ---- CLI connector binaries ------------------------------------------------------------------
 # The binaries behind the five CLI-materializer connectors whose credentials the backend projects
 # into every profile (core/services/credentials/hermes_cli.py). Instagram's "CLI" is curl + jq,
@@ -129,6 +151,13 @@ from tools.browser_tool_install import _chromium_installed; assert not _chromium
  && AGENT_BROWSER_EXECUTABLE_PATH=/opt/lightbulb/no-local-browser python3 -c "import sys, os; \
 sys.path.insert(0,'/opt/hermes'); from tools.browser_tool_install import _chromium_installed; \
 assert _chromium_installed()"
+
+# The released CLI rewrites /json/version's WebSocket host to its HTTP discovery
+# host. Resolve our loopback metadata in a child launcher so traffic goes to AWS,
+# not wss://127.0.0.1:8080. The upstream binary remains unchanged.
+COPY --chmod=755 browser_cli.py /opt/lightbulb/bin/agent-browser
+RUN test -x /usr/local/bin/agent-browser && /opt/lightbulb/bin/agent-browser --version
+ENV PATH="/opt/lightbulb/bin:${PATH}"
 
 COPY bridge /opt/bridge/bridge
 COPY plugins/ /opt/hermes/plugins/

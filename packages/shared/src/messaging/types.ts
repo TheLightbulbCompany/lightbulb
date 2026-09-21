@@ -50,6 +50,7 @@ export interface RoomSummary {
 }
 
 export interface ActiveRoomRun {
+  triggerMessageId?: string | null;
   runId: string;
   agentId: string;
   startedAt?: string | null;
@@ -205,6 +206,7 @@ export interface UpdateMessageRequest {
 export interface MessagePage {
   messages: CanonicalRoomMessage[];
   nextAfterSeq: number | null;
+  nextBeforeSeq?: number | null;
 }
 
 export interface ReadCursorRequest {
@@ -360,4 +362,3 @@ export type LocalSessionCommandReceipt = {
   providerMessageId: string | null;
 } & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }
   | { actorUserId?: never; actor: { kind: "agent"; id: string }; invocationExpiresAt: number });
-

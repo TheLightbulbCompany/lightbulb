@@ -26,6 +26,13 @@ def default_s3_prefix(owner: str) -> str:
 S3_PREFIX = os.environ.get("S3_PREFIX", default_s3_prefix(OWNER)).strip("/")
 STARTED = time.time()
 
+# Browser v2 keeps lifecycle in the backend and points Hermes at the loopback discovery seam.
+# Old runtime specs may still carry the v1 provider; the new bridge ignores it only when the
+# workspace has an AgentCore Browser profile, so the image remains backward-compatible.
+if os.environ.get("AGENTCORE_PROFILE_ID"):
+    os.environ.pop("AGENT_BROWSER_PROVIDER", None)
+    os.environ.setdefault("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
+
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

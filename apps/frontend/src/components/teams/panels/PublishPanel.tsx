@@ -62,7 +62,7 @@ export function PublishPanel() {
   // endpoint already hides env-gated providers, so "available" here means
   // "listed for you", and the copy names exactly those.
   const social = connections.filter((c) => c.provider in SOCIAL);
-  const connected = social.filter((c) => c.status === "connected").map((c) => SOCIAL[c.provider as keyof typeof SOCIAL]);
+  const connected = social.filter((c) => c.status === "connected" && c.runtime_supported !== false).map((c) => SOCIAL[c.provider as keyof typeof SOCIAL]);
   const available = social.map((c) => SOCIAL[c.provider as keyof typeof SOCIAL]);
   const list = (xs: string[]) => new Intl.ListFormat("en", { type: "disjunction" }).format(xs);
 

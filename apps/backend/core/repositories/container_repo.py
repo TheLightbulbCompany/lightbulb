@@ -2089,3 +2089,59 @@ async def delete(owner_id: str) -> dict | None:
     # ``or None``: DynamoDB omits Attributes when there was no row, but moto
     # returns an empty map — one answer for "there was nothing here" either way.
     return resp.get("Attributes") or None
+
+
+BROWSER_KEY_PREFIX = "__browser__#"
+
+
+async def get_browser_state(owner_id: str) -> dict | None:
+    row = await get_by_owner_id(f"{BROWSER_KEY_PREFIX}{owner_id}", consistent=True)
+    return (row or {}).get("browser_state")
+
+
+async def delete_browser_state(owner_id: str) -> None:
+    await run_in_thread(_get_table().delete_item, Key={"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"})
+
+
+async def compare_browser_state(owner_id: str, expected: dict | None, state: dict) -> bool:
+    """Fence browser metadata independently of disposable runtime rows, in the same table.
+
+    The parent condition stops a late checkpoint resurrecting data after account wipe.
+    Reserved keys are already excluded by scan_all; no new table or GSI is needed.
+    """
+    values = {":next": state}
+    if expected is None:
+        condition = "attribute_not_exists(browser_state)"
+    else:
+        condition = "browser_state = :expected"
+        values[":expected"] = expected
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.meta.client.transact_write_items,
+            TransactItems=[
+                {
+                    "ConditionCheck": {
+                        "TableName": table.name,
+                        "Key": {"owner_id": owner_id},
+                        "ConditionExpression": "attribute_exists(owner_id) AND attribute_not_exists(release_update_id)",
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": table.name,
+                        "Key": {"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"},
+                        "UpdateExpression": "SET browser_state = :next",
+                        "ConditionExpression": condition,
+                        "ExpressionAttributeValues": values,
+                    }
+                },
+            ],
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "TransactionCanceledException":
+            reasons = exc.response.get("CancellationReasons", [])
+            if any(r.get("Code") == "ConditionalCheckFailed" for r in reasons):
+                return False
+        raise

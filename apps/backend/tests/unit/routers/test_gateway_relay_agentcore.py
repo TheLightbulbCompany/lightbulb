@@ -487,6 +487,43 @@ async def test_the_session_is_registered_only_after_hello_ok_actually_sends():
 
 
 @pytest.mark.asyncio
+async def test_ready_generation_is_published_after_hello_and_removed_with_a_generation_fence():
+    socket = _FeedableSocket()
+    socket.feed(_connect_frame("c-ready", ["system.run"]))
+    connections = MagicMock()
+
+    async def _publish(**kwargs):
+        assert json.loads(socket.sent[-1])["payload"]["type"] == "hello-ok"
+
+    connections.publish_desktop_ready = AsyncMock(side_effect=_publish)
+    connections.refresh_relay_presence = AsyncMock(return_value=True)
+    connections.refresh_desktop_ready = AsyncMock(return_value=True)
+    connections.delete_desktop_ready = AsyncMock()
+    with (
+        patch.object(node_broker, "signature_matches", lambda params, nonce: True),
+        patch.object(node_broker, "TICK_INTERVAL_MS", 60_000),
+        patch.object(gateway_relay.desktop_pair, "declared_commands_for", AsyncMock(return_value={"system.run"})),
+    ):
+        serve_task = asyncio.create_task(
+            gateway_relay._serve_node_protocol(
+                socket,
+                _identity(),
+                {"runtime_host": "agentcore"},
+                connections=connections,
+                connection_id="relay#ready",
+            )
+        )
+        await _poll_until(lambda: ("org_1", "dev-1") in gateway_relay.node_sessions)
+        generation = connections.publish_desktop_ready.await_args.kwargs["generation"]
+        assert gateway_relay.node_sessions[("org_1", "dev-1")].generation == generation
+
+        socket.feed(None)
+        await asyncio.wait_for(serve_task, timeout=1.0)
+
+    connections.delete_desktop_ready.assert_awaited_once_with("org_1", "dev-1", generation)
+
+
+@pytest.mark.asyncio
 async def test_a_connect_declaring_an_incompatible_protocol_range_closes_1008():
     frame = json.dumps(
         {

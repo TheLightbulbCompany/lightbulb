@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 
 
 DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
+    "desktop.operation.approve.v1",
+    "system.run.approve.v1",
+    "file.access.policy.v1",
     "system.notify",
     "screen.snapshot",
     "device.info",
@@ -43,6 +46,7 @@ DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
 )
 
 DESKTOP_MAC_BASE_COMMANDS: tuple[str, ...] = (
+    "desktop.operation.approve.v1",
     "system.notify",
     "device.info",
     "device.status",
@@ -150,6 +154,30 @@ def assert_command_sets_disjoint(
 assert_command_sets_disjoint(DESKTOP_MAC_COMMANDS, DESKTOP_CLI_COMMANDS)
 
 
+def paired_physical_mac(row: dict, member_id: str, device_id: str) -> tuple[dict, dict] | None:
+    """Return the selected device and its reciprocal native/CLI peer.
+
+    Legacy and partially-written pairs have no authority for desktop execution. The old
+    relay remains compatible with them; an explicit re-pair adds the linkage.
+    """
+    devices = (row or {}).get("paired_devices") or {}
+    selected = devices.get(device_id)
+    group_id = selected.get("pairingGroupId") if isinstance(selected, dict) else None
+    if not group_id or selected.get("userId") != member_id:
+        return None
+    linked = [
+        entry
+        for entry in devices.values()
+        if isinstance(entry, dict) and entry.get("pairingGroupId") == group_id and entry.get("userId") == member_id
+    ]
+    by_client = {entry.get("clientId"): entry for entry in linked}
+    if len(linked) != 2 or set(by_client) != ALLOWED_CLIENT_IDS:
+        return None
+    peer_client = "node-host" if selected.get("clientId") == "openclaw-macos" else "openclaw-macos"
+    peer = by_client.get(peer_client)
+    return (selected, peer) if peer is not None else None
+
+
 @dataclass(frozen=True)
 class DesktopPermissionGrant:
     """User-granted desktop command groups.
@@ -172,6 +200,10 @@ class DesktopPermissionGrant:
         allowed = set(DESKTOP_MAC_BASE_COMMANDS)
         if self.screen:
             allowed.add("screen.snapshot")
+        if self.shell:
+            allowed.add("system.run.approve.v1")
+        if self.files:
+            allowed.add("file.access.policy.v1")
         return tuple(command for command in DESKTOP_MAC_COMMANDS if command in allowed)
 
     def cli_commands(self) -> tuple[str, ...]:
@@ -351,7 +383,15 @@ async def pair_desktop_devices(
     """
     grant = permissions or DesktopPermissionGrant.full()
     mac_commands = grant.mac_commands()
+    if permissions is None:
+        # Legacy full access was never explicit consent to the new approval handler.
+        mac_commands = tuple(
+            command
+            for command in mac_commands
+            if command not in {"system.run.approve.v1", "desktop.operation.approve.v1"}
+        )
     cli_commands = grant.cli_commands()
+    pairing_group_id = secrets.token_urlsafe(18)
 
     mac_entry = build_paired_entry(
         pubkey_pem=tauri_mac_pubkey,
@@ -385,12 +425,17 @@ async def pair_desktop_devices(
                 "clientId": entry["clientId"],
                 "displayName": entry["displayName"],
                 "commands": list(entry["commands"]),
+                "pairingGroupId": pairing_group_id,
             }
             for entry in (mac_entry, cli_entry)
         },
     )
 
-    row = await container_repo.get_by_owner_id(owner_id) or {}
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+    if not paired_physical_mac(row, user_id, mac_entry["deviceId"]) or not paired_physical_mac(
+        row, user_id, cli_entry["deviceId"]
+    ):
+        raise ValueError("desktop pairing was incomplete; pair again")
     return PairResult(
         gateway_url=settings.WS_GATEWAY_URL,
         gateway_token=row.get("gateway_token") or "",

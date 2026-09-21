@@ -198,13 +198,14 @@ describe("hermes runtime wiring", () => {
     }
   });
 
-  it("lets the per-owner role read its own Hermes secrets at boot, in both the base policy and the boundary", () => {
+  it("lets the per-owner role read only its own Hermes boot secret, in both the base policy and the boundary", () => {
     const baseStatements = managedPolicyStatements(dev.containerTemplate, "lightbulb-dev-owner-bedrock-base");
     const boundaryStatements = managedPolicyStatements(
       dev.containerTemplate,
       "lightbulb-dev-owner-bedrock-boundary",
     );
-    const hermesSecretArn = "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/hermes/*";
+    const hermesSecretArn =
+      "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/hermes/${aws:PrincipalTag/owner_id}/boot-*";
 
     for (const statements of [baseStatements, boundaryStatements]) {
       const secretsStatement = statements.find((s) =>
@@ -246,6 +247,7 @@ describe("hermes runtime wiring", () => {
     expect(flatten(profiles!.Resource)).toEqual([
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/hermes/*",
       "arn:aws:s3:::lightbulb-dev-openclaw-replicas/marketplace-installs/*",
+      "arn:aws:s3:::lightbulb-dev-openclaw-replicas/browser-state/*",
     ]);
   });
 
@@ -290,14 +292,35 @@ describe("hermes runtime wiring", () => {
               "arn:aws:bedrock-agentcore:us-east-1:aws:browser/aws.browser.v1",
             ]),
           }),
+          Match.objectLike({
+            Sid: "AgentCoreBrowserSessionStart",
+            // CDK collapses a single action to a bare string.
+            Action: "bedrock-agentcore:StartBrowserSession",
+            Resource: Match.arrayEquals([
+              "arn:aws:bedrock-agentcore:us-east-1:877352799272:browser/*",
+              "arn:aws:bedrock-agentcore:us-east-1:aws:browser/aws.browser.v1",
+              "arn:aws:bedrock-agentcore:us-east-1:877352799272:browser-profile/*",
+            ]),
+          }),
+          Match.objectLike({
+            Sid: "AgentCoreBrowserSessionControl",
+            Action: Match.arrayEquals([
+              "bedrock-agentcore:StopBrowserSession",
+              "bedrock-agentcore:UpdateBrowserStream",
+              "bedrock-agentcore:ConnectBrowserAutomationStream",
+            ]),
+            Resource: Match.arrayEquals([
+              "arn:aws:bedrock-agentcore:us-east-1:877352799272:browser/*",
+              "arn:aws:bedrock-agentcore:us-east-1:aws:browser/aws.browser.v1",
+            ]),
+          }),
         ]),
       }),
     });
 
-    // The backend never starts a browser session itself (design §2d): it discovers sessions by
-    // List-then-Get and only presigns the live-view URL. DeleteBrowserProfile is no longer
-    // absent -- account wipe needs it (see the test above) -- so only this negative remains.
+    // Native SaveBrowserSessionProfile is deliberately absent: v2 persists via the released
+    // agent-browser state save/load path instead.
     const doc = JSON.stringify(dev.serviceTemplate.findResources("AWS::IAM::Policy"));
-    expect(doc).not.toContain("bedrock-agentcore:StartBrowserSession");
+    expect(doc).not.toContain("bedrock-agentcore:SaveBrowserSessionProfile");
   });
 });

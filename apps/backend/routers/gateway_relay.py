@@ -86,7 +86,13 @@ def _pick_close_code(done: set[asyncio.Task], refresher: asyncio.Task | None) ->
     return None
 
 
-async def _refresh_presence_loop(connections: ConnectionService, connection_id: str) -> None:
+async def _refresh_presence_loop(
+    connections: ConnectionService,
+    connection_id: str,
+    owner_id: str,
+    device_id: str,
+    generation: str,
+) -> None:
     """60s presence-refresh tick, shared by both transports' relay loop (M2-R1: the
     AgentCore branch keeps this running exactly as this loop does today). Ending this task
     (the row was revoked) is the signal that closes the socket 1008."""
@@ -100,6 +106,9 @@ async def _refresh_presence_loop(connections: ConnectionService, connection_id: 
         if not alive:
             put_metric("relay.presence", dimensions={"outcome": "revoked"})
             return  # ends the wait below → both legs cancelled → close 1008
+        if not await connections.refresh_desktop_ready(owner_id, device_id, generation):
+            put_metric("relay.presence", dimensions={"outcome": "superseded"})
+            return
 
 
 def _parse(frame: str, *, limit: int = _PARSE_LIMIT) -> dict | None:
@@ -258,18 +267,25 @@ async def _serve_node_protocol(
     key = (identity.owner_id, device_id)
     # Registered only once hello-ok has actually gone out -- a send failure right here must
     # not leave a session live that the client was never told is ready (fix round 1, item 7).
-    await websocket.send_text(json.dumps(node_broker.hello_ok(str(body.get("id")), str(uuid.uuid4()))))
+    generation = str(uuid.uuid4())
+    await websocket.send_text(json.dumps(node_broker.hello_ok(str(body.get("id")), generation)))
+    if connections is not None:
+        await connections.publish_desktop_ready(identity=identity, generation=generation, commands=allowed)
+    session.generation = generation
     node_sessions[key] = session
+    refresher = None
     try:
-        await relay_hooks.on_node_ready(identity.owner_id, identity.user_id)
-    except Exception:  # noqa: BLE001 — a hook failure must not kill the leg
-        logger.warning("relay on_node_ready hook failed owner=%s", identity.owner_id, exc_info=True)
-    refresher = (
-        asyncio.create_task(_refresh_presence_loop(connections, connection_id))
-        if connections is not None and connection_id is not None
-        else None
-    )
-    try:
+        try:
+            await relay_hooks.on_node_ready(identity.owner_id, identity.user_id)
+        except Exception:  # noqa: BLE001 — a hook failure must not kill the leg
+            logger.warning("relay on_node_ready hook failed owner=%s", identity.owner_id, exc_info=True)
+        refresher = (
+            asyncio.create_task(
+                _refresh_presence_loop(connections, connection_id, identity.owner_id, device_id, generation)
+            )
+            if connections is not None and connection_id is not None
+            else None
+        )
         return await _pump(websocket, session, refresher)
     finally:
         # Defensive belt-and-suspenders: `_pump`'s own finally already cancels-and-awaits
@@ -289,6 +305,11 @@ async def _serve_node_protocol(
         # registered its own (owner_id, device_id) key since, and must not be evicted here.
         if node_sessions.get(key) is session:
             node_sessions.pop(key, None)
+        if connections is not None:
+            try:
+                await connections.delete_desktop_ready(identity.owner_id, device_id, generation)
+            except Exception:  # noqa: BLE001 — TTL still expires a failed cleanup
+                logger.warning("relay ready-presence delete failed owner=%s", identity.owner_id, exc_info=True)
         try:
             await relay_hooks.on_node_closed(identity.owner_id, identity.user_id)
         except Exception:  # noqa: BLE001

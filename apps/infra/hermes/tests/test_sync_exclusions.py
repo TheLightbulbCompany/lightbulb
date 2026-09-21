@@ -118,6 +118,36 @@ def test_restore_profile_downloads_everything_in_the_prefix(home, monkeypatch):
     assert sorted(key[len(prefix):] for key in fake.downloaded) == sorted(keys)
 
 
+def test_pnpm_store_stays_local_across_restore_refresh_and_save(home, monkeypatch):
+    """A dependency install must not turn the next cold start into thousands of S3 GETs."""
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    sync._restored.discard("a1")
+    prefix = f"{sync.S3_PREFIX}/a1/"
+    cache = "home/.local/share/pnpm/store/v3/files/00/package"
+    kept = "home/.local/share/project/notes.txt"
+    fake = FakeS3({prefix + cache: ("cached", time.time()),
+                   prefix + kept: ("notes", time.time())})
+    monkeypatch.setattr(sync, "_s3", lambda: fake)
+
+    sync.restore_profile("a1")
+    assert fake.downloaded == [prefix + kept]
+
+    fake.downloaded.clear()
+    fake.objects[prefix + cache] = ("new cache", time.time() + 1)
+    assert sync._pull_changed_objects("a1") is True
+    assert fake.downloaded == []
+
+    profile = sync._profile_dir("a1")
+    path = profile / cache
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("local cache")
+    source = profile / "repo/src/index.ts"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("source")
+    sync.save_profile("a1")
+    assert fake.uploaded == [prefix + "repo/src/index.ts"]
+
+
 def test_a_backend_written_build_dir_still_re_pulls_on_a_revision_bump(home, monkeypatch):
     """The recency walk honours EXCLUDE_GLOBS, which is exactly why the reproducible names are
     not in it: a Files-panel upload into ``dist/`` has to reach the microVM."""

@@ -179,6 +179,9 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       // bootstrap HTML needs it to load the Clerk SDK.
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD }}",
+      // Empty GitHub variables keep desktop submissions closed in both envs.
+      DESKTOP_EXECUTION_OWNER_DEV: "${{ vars.DESKTOP_EXECUTION_OWNER_DEV }}",
+      DESKTOP_EXECUTION_OWNER_PROD: "${{ vars.DESKTOP_EXECUTION_OWNER_PROD }}",
     },
     primaryOutputDirectory: "apps/infra/cdk.out",
   }),

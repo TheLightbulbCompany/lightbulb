@@ -124,7 +124,7 @@ export function AccountsPanel() {
   // account. The company Stripe account is its own section right below, so it
   // is deliberately not folded into this number.
   const wired = new Set([
-    ...connections.filter((c) => c.status === "connected").map((c) => c.provider),
+    ...connections.filter((c) => c.status === "connected" && c.runtime_supported !== false).map((c) => c.provider),
     ...rail.providers,
   ]);
 

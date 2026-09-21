@@ -5,11 +5,9 @@ Writes the token store their client reads (``src/clients/quickbooks-client.ts``)
 ``hermes_profiles.refresh_integrations`` from the registry + this store's PATH — never a
 secret — so a reprovision rebuilds it from the registry alone.
 
-NOT DISPATCHED TODAY. The one materializer dispatch is ``credentials.hermes_cli.project``,
-which gates on ``OWNED_PATHS``; this rail is absent from it, so ``materializer_root()`` raises
-if anything ever calls ``write``/``remove``. That is deliberate — a silent write to a path no
-runtime reads is worse. Wiring it up means adding it to ``hermes_cli.OWNED_PATHS``/``ROOT_DIR``
-and giving the credential a delivery the microVM's shell actually reads.
+Hermes dispatches this materializer through ``credentials.hermes_cli.project`` and lands the
+result at ``$HOME/quickbooks/.env`` in every profile. The baked wrapper resets the client's
+``QUICKBOOKS_TOKEN_STORE_PATH`` to that profile-local path before starting the server.
 
 WHY THE CLIENT SECRET IS IN THIS FILE, when oauth_dance deliberately blanks it
 ------------------------------------------------------------------------------
@@ -71,7 +69,9 @@ def _store_path(owner_id: str):
 
 def container_store_path() -> str:
     """Path the SERVER reads, as seen from inside the container. Public because
-    the reprovision rehydration builds the same block and must not re-derive it."""
+    the reprovision rehydration builds the same block and must not re-derive it.
+    Hermes starts the baked wrapper, which overrides this legacy absolute value
+    with the profile-local ``$HOME/quickbooks/.env`` path."""
     return f"{_CONTAINER_STATE_DIR}/{_STORE_DIR}/{_STORE_FILE}"
 
 

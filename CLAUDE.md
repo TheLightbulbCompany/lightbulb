@@ -856,7 +856,13 @@ that will mislead you otherwise:
   and control are in-shell panels, **not routes** — the legacy `/teams/*` URL tree
   was removed and 404s. The AgentCore browser panel is `panels/BrowserDockPanel.tsx`: it
   gets a workspace-authorized signed URL from `/api/v1/browser/live-view` and connects
-  directly to AWS DCV. It does not use the retired OpenClaw live-view WS or
+  directly to AWS DCV. Browser v2 adds explicit Start, Take control, Done/save and Stop,
+  with workspace-shared sign-ins. The backend owns sessions; the new Hermes image
+  advertises `browserProtocol: 2` and attaches via local CDP discovery. Saved state
+  lives under backend-only `browser-state/<owner>/` in S3, with a fenced pointer in
+  the existing containers table at `__browser__#<owner>` (survives reprovision).
+  Human Start requires the new image capability; backend deployment alone is not
+  an image rollout. It does not use the retired OpenClaw live-view WS or
   `routers/browser_view.py`. See `docs/architecture/current-system.md`.
 - **`/admin`** only resolves on allowed admin hosts (`admin.flickmeon.ai`,
   `admin.dev.flickmeon.ai`, `admin.localhost:3000`; overridable via
@@ -1388,6 +1394,29 @@ Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (s
 - Signed DMG for macOS (arm64), built by the standalone `.github/workflows/desktop-build.yml` on a self-hosted macOS runner (label `macos-desktop`) — dev + prod jobs, auto-publishing `desktop-dev-v0.4.*` / `desktop-v0.4.*` GitHub Releases consumed by the Tauri auto-updater
 - Auth: `POST /api/v1/auth/desktop/sign-in-token` (Clerk sign-in-token bridge, `routers/desktop_auth.py`) + the frontend's `/auth/desktop-callback` page; device pairing via `POST /api/v1/desktop/pair` / `DELETE /desktop/devices/{id}` (`routers/desktop_pair.py`). There is no device-code flow.
 - Requirement driver: WebAuthn/passkey support (see `project_desktop_app_tauri` memory)
+
+**Selected-Mac execution is not the AgentCore terminal/browser.** The ordinary
+Hermes tools stay in the cloud; `lightbulb_desktop` uses an explicit paired Mac
+and connection generation. `DESKTOP_EXECUTION_ENABLED` plus
+`DESKTOP_EXECUTION_OWNER_ALLOWLIST` gates new backend submissions; CDK derives
+both from the single-owner `DESKTOP_EXECUTION_OWNER_DEV` / `_PROD` GitHub Actions
+variables at synth time (unset means closed). Disabling new submits does not
+erase existing process-local receipts or block their status/cancel routes, but
+task loss makes their outcomes unknown. Reciprocal pairing and effective
+native/CLI command grants — not desktop version text — prove capabilities.
+The signed update discards v3 `pair_state.json`; foreground Clerk sign-in then
+calls `/desktop/pair` automatically to refresh those grants. Verify the new
+reciprocal pair and ready commands; do not delete Keychain keys or manually wipe
+state. Shell requires exact native approval; Paperclip
+requires a separate exact-operation human consent, and files require approved
+folders. Local managed browsing and explicitly selected Chrome-extension tabs
+are separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
+existing-session attachment remains unavailable because tab identity cannot be
+verified safely. See [staged desktop acceptance](docs/runbooks/desktop-execution-staged-acceptance.md)
+for rollout, unknown/cancellation, browser/file/MCP and measured RAM gates.
+Neither #2821's redundant-launcher topology proof nor #2820's 100-message
+initial history bound proves a renderer memory reduction; the observed
++466 MB/101 s WKWebView WebContent growth needs before/after measurement.
 
 ---
 

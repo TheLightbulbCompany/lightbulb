@@ -30,6 +30,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from core.dynamodb import utc_now_iso
+from core.repositories import container_repo
 from core.services import task_address
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,28 @@ class ConnectionServiceError(Exception):
     """Base exception for connection service errors."""
 
     pass
+
+
+class DesktopTargetError(ConnectionServiceError):
+    """Base typed failure for desktop execution target resolution."""
+
+
+class DesktopTargetNotReady(DesktopTargetError):
+    """The selected device has no fresh, fully-linked ready connection."""
+
+    code = "desktop_not_ready"
+
+
+class DesktopTargetStale(DesktopTargetError):
+    """The caller selected a generation that is no longer authoritative."""
+
+    code = "desktop_generation_stale"
+
+
+class DesktopTargetForbidden(DesktopTargetError):
+    """The member or command is not in the device's current pairing grant."""
+
+    code = "desktop_forbidden"
 
 
 class ConnectionService:
@@ -341,6 +364,156 @@ class ConnectionService:
 
     RELAY_TTL_SECONDS = 120
 
+    @staticmethod
+    def desktop_ready_id(owner_id: str, device_id: str) -> str:
+        return f"desktop-ready#{owner_id}#{device_id}"
+
+    async def publish_desktop_ready(self, *, identity, generation: str, commands: set[str]) -> None:
+        """CAS the one authoritative ready generation after hello succeeds."""
+        key = {"connectionId": {"S": self.desktop_ready_id(identity.owner_id, identity.device_id or "")}}
+        current = await asyncio.to_thread(
+            self._client.get_item,
+            TableName=self.table_name,
+            Key=key,
+            ProjectionExpression="#generation",
+            ExpressionAttributeNames={"#generation": "generation"},
+            ConsistentRead=True,
+        )
+        previous = current.get("Item", {}).get("generation", {}).get("S")
+        names = None
+        values = None
+        condition = "attribute_not_exists(connectionId)"
+        if previous is not None:
+            condition = "#generation = :previous"
+            names = {"#generation": "generation"}
+            values = {":previous": {"S": previous}}
+        item = {
+            **key,
+            "userId": {"S": identity.user_id},
+            "orgId": {"S": identity.org_id},
+            "ownerId": {"S": identity.owner_id},
+            "connectionType": {"S": "desktop-ready"},
+            "clientId": {"S": identity.client_id},
+            "deviceId": {"S": identity.device_id or ""},
+            "generation": {"S": generation},
+            "commands": {"L": [{"S": command} for command in sorted(commands)]},
+            "taskAddress": {"S": task_address.own_address()},
+            "ttl": {"N": str(int(time.time()) + self.RELAY_TTL_SECONDS)},
+        }
+        kwargs = {
+            "TableName": self.table_name,
+            "Item": item,
+            "ConditionExpression": condition,
+        }
+        if names is not None:
+            kwargs["ExpressionAttributeNames"] = names
+        if values is not None:
+            kwargs["ExpressionAttributeValues"] = values
+        await asyncio.to_thread(self._client.put_item, **kwargs)
+
+    async def refresh_desktop_ready(self, owner_id: str, device_id: str, generation: str) -> bool:
+        """Refresh only this socket's generation; a superseded socket returns false."""
+        try:
+            await asyncio.to_thread(
+                self._client.update_item,
+                TableName=self.table_name,
+                Key={"connectionId": {"S": self.desktop_ready_id(owner_id, device_id)}},
+                UpdateExpression="SET #ttl = :ttl, taskAddress = :address",
+                ConditionExpression="#generation = :generation",
+                ExpressionAttributeNames={"#ttl": "ttl", "#generation": "generation"},
+                ExpressionAttributeValues={
+                    ":ttl": {"N": str(int(time.time()) + self.RELAY_TTL_SECONDS)},
+                    ":address": {"S": task_address.own_address()},
+                    ":generation": {"S": generation},
+                },
+            )
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
+    async def delete_desktop_ready(self, owner_id: str, device_id: str, generation: str) -> None:
+        """Delete only this socket's generation; an old disconnect cannot erase a new one."""
+        try:
+            await asyncio.to_thread(
+                self._client.delete_item,
+                TableName=self.table_name,
+                Key={"connectionId": {"S": self.desktop_ready_id(owner_id, device_id)}},
+                ConditionExpression="#generation = :generation",
+                ExpressionAttributeNames={"#generation": "generation"},
+                ExpressionAttributeValues={":generation": {"S": generation}},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+
+    async def _resolve_desktop_target(
+        self, owner_id: str, member_id: str, device_id: str, generation: str, command: str | None
+    ) -> dict:
+        response = await asyncio.to_thread(
+            self._client.get_item,
+            TableName=self.table_name,
+            Key={"connectionId": {"S": self.desktop_ready_id(owner_id, device_id)}},
+            ConsistentRead=True,
+        )
+        item = response.get("Item")
+        if not item or int(item.get("ttl", {}).get("N", "0")) <= int(time.time()):
+            raise DesktopTargetNotReady(device_id)
+        if item.get("generation", {}).get("S") != generation:
+            raise DesktopTargetStale(device_id)
+        if (
+            item.get("ownerId", {}).get("S") != owner_id
+            or item.get("userId", {}).get("S") != member_id
+            or item.get("deviceId", {}).get("S") != device_id
+        ):
+            raise DesktopTargetForbidden(device_id)
+        if not item.get("taskAddress", {}).get("S"):
+            raise DesktopTargetNotReady(device_id)
+
+        from core.services.desktop_pair import paired_physical_mac
+
+        row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+        linked = paired_physical_mac(row, member_id, device_id)
+        if linked is None:
+            raise DesktopTargetNotReady(device_id)
+        paired, _peer = linked
+        client_id = item.get("clientId", {}).get("S")
+        if paired.get("clientId") != client_id:
+            raise DesktopTargetNotReady(device_id)
+        ready_commands = {value["S"] for value in item.get("commands", {}).get("L", []) if "S" in value}
+        effective = ready_commands & set(paired.get("commands") or [])
+        # None is an internal reciprocal-pair identity read, never a command grant.
+        if command is not None and command not in effective:
+            raise DesktopTargetForbidden(command)
+        latest = await asyncio.to_thread(
+            self._client.get_item,
+            TableName=self.table_name,
+            Key={"connectionId": {"S": self.desktop_ready_id(owner_id, device_id)}},
+            ProjectionExpression="#generation, #ttl, taskAddress",
+            ExpressionAttributeNames={"#generation": "generation", "#ttl": "ttl"},
+            ConsistentRead=True,
+        )
+        latest_item = latest.get("Item")
+        if (
+            not latest_item
+            or int(latest_item.get("ttl", {}).get("N", "0")) <= int(time.time())
+            or not latest_item.get("taskAddress", {}).get("S")
+        ):
+            raise DesktopTargetNotReady(device_id)
+        if latest_item.get("generation", {}).get("S") != generation:
+            raise DesktopTargetStale(device_id)
+        return {
+            "taskAddress": latest_item.get("taskAddress", {}).get("S", ""),
+            "ownerId": owner_id,
+            "memberId": member_id,
+            "deviceId": device_id,
+            "clientId": client_id,
+            "pairingGroupId": paired["pairingGroupId"],
+            "generation": generation,
+            "commands": sorted(effective),
+        }
+
     async def put_relay_presence(self, *, connection_id: str, identity) -> None:
         """Write the gateway relay's presence row for a node/operator socket.
 
@@ -393,7 +566,7 @@ class ConnectionService:
             raise
 
     async def delete_relay_rows_for_device(self, owner_id: str, device_id: str) -> int:
-        """Force-close a revoked device's live relay presence row(s).
+        """Force-close a revoked device's live relay and ready presence rows.
 
         The `by-owner-id` GSI does not project `deviceId` (only `userId` /
         `connectionType`), so candidates come from its `node`-typed rows, each
@@ -403,7 +576,13 @@ class ConnectionService:
         place of the old in-process `force_close_device` socket kill; the
         relay itself notices within its 60s presence refresh and closes 1008.
         """
-        deleted = 0
+        ready = await asyncio.to_thread(
+            self._client.delete_item,
+            TableName=self.table_name,
+            Key={"connectionId": {"S": self.desktop_ready_id(owner_id, device_id)}},
+            ReturnValues="ALL_OLD",
+        )
+        deleted = int(bool(ready.get("Attributes")))
         for connection_id, _user_id, kind in await self.query_by_owner(owner_id):
             if kind != "node":
                 continue
@@ -442,3 +621,8 @@ async def delete_all_for_user(user_id: str) -> int:
 async def count_for_user(user_id: str) -> int:
     """Module-level helper: count every WS connection row for ``user_id``."""
     return await _get_singleton().count_for_user(user_id)
+
+
+async def resolve_desktop_target(owner_id: str, member_id: str, device_id: str, generation: str, command: str) -> dict:
+    """Resolve one explicitly selected, currently-ready desktop device."""
+    return await _get_singleton()._resolve_desktop_target(owner_id, member_id, device_id, generation, command)

@@ -1,8 +1,9 @@
 # Pinned desktop node protocol probe
 
-This is an isolated **local protocol proof**, not production device enrollment
-or a human approval test. Shell remains blocked pending Task 4's trusted native
-approval and cancellation confirmation. The old guide's real dev account,
+This is a historical, isolated **local protocol proof**, not production device
+enrollment or a human approval test. The native approval implementation now exists,
+but this probe did not exercise it; use the [staged acceptance runbook](../../../../docs/runbooks/desktop-execution-staged-acceptance.md)
+before enabling a real owner. The old guide's real dev account,
 removed `/internal/node/invoke` endpoint and `lightbulb_node` backend instructions
 are obsolete; do not restore them.
 
@@ -145,14 +146,13 @@ or detached process-group tests. The stop-before-spawn case records prevention
 separately from the successful second cancellation; it is a failed prevention
 gate, never a pass.
 
-Native approve/deny/close/expiry and stop-during-approval are **unproven**: the
-headless host denies immediately under restrictive policy and supplies no native
-human prompt in this configuration. Task 4 must provide the trusted native
-approval channel, exact device/run/input/deadline binding and fail-closed local
-policy. The backend must prevent dispatch after cancellation. Task 4 also needs
-an observable terminal confirmation (or honest requested/unknown status), since
-the current cancel event produces no terminal result. Keep shell disabled until
-these gates pass; do not solve them by changing policy to full/off.
+Native approve/deny/close/expiry and stop-during-approval remain **unproven by
+this probe**: the headless host denies immediately under restrictive policy and
+supplies no native human prompt here. The backend/native implementation must pass
+the live exact device/run/input/deadline and fail-closed cancellation checks in
+the staged runbook. The cancel event observed here had no terminal result, so
+silence cannot be reported as confirmed termination. Do not bypass the native
+prompt by changing policy to full/off.
 
 No real desktop pairing, production calls, browser controls, user-file access,
 or security-policy migration are part of this probe.

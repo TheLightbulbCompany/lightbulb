@@ -23,7 +23,7 @@ TICK_INTERVAL_MS = 15_000  # we promise it in hello-ok; the CLI closes 4000 at 2
 MAX_PAYLOAD = 26_214_400  # 25 MiB — the real gateway's value; screen snapshots need it
 MAX_BUFFERED_BYTES = 52_428_800
 CHALLENGE_DEADLINE_S = 10.0  # the CLI's own watchdog is ~15 s; leave headroom
-NODE_METHODS = ("node.invoke.result", "node.invoke.progress", "node.event")
+NODE_METHODS = ("node.invoke.result", "node.invoke.progress", "node.event", "node.pluginTools.update")
 NODE_EVENTS = ("node.invoke.request", "node.invoke.cancel", "node.invoke.input", "tick")
 
 
@@ -116,6 +116,14 @@ class NodeInvokeTimeout(Exception):
     pass
 
 
+class NodeCapacity(Exception):
+    """Admission must fail before enqueue when the socket is full."""
+
+
+class NodeResultTooLarge(Exception):
+    pass
+
+
 class NodeDetached(Exception):
     """Raised for every invoke still in flight when the node's socket closes -- the relay
     calls ``NodeSession.fail_pending`` with this so a caller learns immediately that no
@@ -152,39 +160,200 @@ class NodeSession:
     def __init__(self, node_id: str, commands: set[str]) -> None:
         self.node_id, self.commands = node_id, set(commands)
         self.pending: dict[str, asyncio.Future] = {}
-        self.send: asyncio.Queue[dict] = asyncio.Queue()
+        self.result_limits: dict[str, int] = {}
+        self.send: asyncio.Queue[dict] = asyncio.Queue(maxsize=16)
+        self.generation = ""
+        self.catalog_version = str(uuid.uuid4())
+        self.catalog: list[dict] = []
 
-    async def invoke(self, command: str, params: dict, timeout_ms: int) -> dict:
+    def mcp_catalog(self) -> dict:
+        return {
+            "deviceId": self.node_id,
+            "generation": self.generation,
+            "catalogVersion": self.catalog_version,
+            "untrusted": True,
+            "tools": json.loads(json.dumps(self.catalog)) if "mcp.tools.call.v1" in self.commands else [],
+        }
+
+    def mcp_call(self, server: str, tool: str, version: str) -> None:
+        if version != self.catalog_version or not any(
+            t["server"] == server and t["tool"] == tool for t in self.mcp_catalog()["tools"]
+        ):
+            raise CommandNotAllowed("mcp_catalog_stale")
+
+    def _catalog_update(self, params: dict) -> bool:
+        # Replace, never merge: removed tools and malformed refreshes revoke old authority.
+        self.catalog = []
+        self.catalog_version = str(uuid.uuid4())
+        try:
+            if (
+                not isinstance(params, dict)
+                or set(params) != {"tools"}
+                or len(json.dumps(params, allow_nan=False).encode()) > 256 * 1024
+            ):
+                return False
+            descriptors = params["tools"]
+            if not isinstance(descriptors, list) or len(descriptors) > 128:
+                return False
+            tools, seen = [], set()
+            for item in descriptors:
+                if not isinstance(item, dict):
+                    return False
+                if item.get("pluginId") != "node-mcp" or item.get("command") != "mcp.tools.call.v1":
+                    continue  # Session catalog and other plugins have separate consent.
+                mcp = item.get("mcp", {})
+                if not isinstance(mcp, dict) or set(mcp) != {"server", "tool"}:
+                    return False
+                if any(
+                    not isinstance(mcp[k], str)
+                    or not 1 <= len(mcp[k]) <= 256
+                    or mcp[k].strip() != mcp[k]
+                    or any(ord(c) < 32 for c in mcp[k])
+                    for k in mcp
+                ):
+                    return False
+                key = (mcp["server"], mcp["tool"])
+                if (
+                    key in seen
+                    or len(json.dumps(item).encode()) > 16 * 1024
+                    or not isinstance(item.get("parameters"), dict)
+                ):
+                    return False
+                description = item.get("description", "")
+                if not isinstance(description, str):
+                    return False
+                seen.add(key)
+                tools.append({**mcp, "description": description[:1024], "parameters": item["parameters"]})
+            if "mcp.tools.call.v1" in self.commands:
+                self.catalog = json.loads(json.dumps(tools))
+            return True
+        except (ValueError, TypeError, RecursionError):
+            return False
+
+    async def invoke(
+        self,
+        command: str,
+        params: dict,
+        timeout_ms: int,
+        *,
+        invoke_id: str | None = None,
+        result_grace_ms: int = 0,
+        browser_media: bool = False,
+        file_authorized: bool = False,
+    ) -> dict:
         if command not in self.commands:
             raise CommandNotAllowed(command)
-        invoke_id = str(uuid.uuid4())
+        if command in {"file.fetch", "file.write", "dir.list", "dir.fetch"} and not file_authorized:
+            raise CommandNotAllowed("file_policy_required")
+        if browser_media and command != "browser.proxy":
+            raise ValueError("media budget is private to browser proxy")
+        if len(self.pending) >= 8 or self.send.full():
+            raise NodeCapacity()
+        invoke_id = invoke_id or str(uuid.uuid4())
+        if invoke_id in self.pending:
+            raise NodeCapacity()
+        frame = invoke_request(invoke_id, self.node_id, command, params, timeout_ms)
+        if len(frame["payload"]["paramsJSON"].encode()) > (
+            768 * 1024
+            if command in {"browser.proxy.upload.v1", "file.write"}
+            else 32_768
+            if command == "desktop.operation.approve.v1"
+            else 16_384
+        ):
+            raise NodeCapacity()
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self.pending[invoke_id] = future
-        await self.send.put(invoke_request(invoke_id, self.node_id, command, params, timeout_ms))
+        self.result_limits[invoke_id] = (
+            6 * 1024 * 1024 if browser_media or command in {"file.fetch", "dir.fetch"} else 1024 * 1024
+        )
+        self.send.put_nowait(frame)
+        interrupted = False
         try:
-            return await asyncio.wait_for(future, timeout=timeout_ms / 1000)
+            return await asyncio.wait_for(future, timeout=(timeout_ms + result_grace_ms) / 1000)
         except asyncio.TimeoutError as exc:
+            interrupted = True
             raise NodeInvokeTimeout(command) from exc
+        except asyncio.CancelledError:
+            interrupted = True
+            raise
         finally:
             self.pending.pop(invoke_id, None)
+            self.result_limits.pop(invoke_id, None)
+            was_queued = self._drop_queued(invoke_id)
+            if interrupted and not was_queued and not self.send.full():
+                self.send.put_nowait(
+                    {
+                        "type": "event",
+                        "event": "node.invoke.cancel",
+                        "payload": {"invokeId": invoke_id, "nodeId": self.node_id},
+                    }
+                )
+
+    def _drop_queued(self, invoke_id: str) -> bool:
+        retained = []
+        was_queued = False
+        while not self.send.empty():
+            frame = self.send.get_nowait()
+            payload = frame.get("payload", {})
+            was_queued |= payload.get("id") == invoke_id
+            if payload.get("id") != invoke_id and payload.get("invokeId") != invoke_id:
+                retained.append(frame)
+        for frame in retained:
+            self.send.put_nowait(frame)
+        return was_queued
+
+    def cancel(self, invoke_id: str) -> bool:
+        """A queued request can be withdrawn; a sent request needs node confirmation.
+
+        Do not resolve the waiter: the pinned CLI's cancel has no terminal ACK.
+        """
+        if invoke_id not in self.pending:
+            return False
+        self._drop_queued(invoke_id)
+        if self.send.full():
+            raise NodeCapacity()
+        self.send.put_nowait(
+            {"type": "event", "event": "node.invoke.cancel", "payload": {"invokeId": invoke_id, "nodeId": self.node_id}}
+        )
+        return True
 
     def fail_pending(self, exc: Exception) -> None:
         """The socket is gone -- nothing will ever answer an in-flight invoke. Fail every
         unfinished future with `exc` right now and clear the map, rather than letting each
         one sit until its own `timeout_ms` elapses."""
+        self.catalog = []
+        self.catalog_version = str(uuid.uuid4())
         for future in self.pending.values():
             if not future.done():
                 future.set_exception(exc)
         self.pending.clear()
+        self.result_limits.clear()
+        while not self.send.empty():
+            self.send.get_nowait()
 
     def resolve(self, frame: dict) -> dict | None:
         """Answer a node->gateway req. Returns the ack to send, or None for a non-req frame."""
         if frame.get("type") != "req":
             return None
         params = frame.get("params") or {}
+        if frame.get("method") == "node.pluginTools.update":
+            if self._catalog_update(params):
+                return ack(str(frame.get("id") or ""))
+            return {
+                "type": "res",
+                "id": str(frame.get("id") or ""),
+                "ok": False,
+                "error": {"code": "INVALID_REQUEST", "message": "Invalid or oversized tool catalog"},
+            }
         if frame.get("method") == "node.invoke.result":
             future = self.pending.get(str(params.get("id") or ""))
             if future is not None and not future.done():
+                # Bound every retained field together, even when payloadJSON and
+                # payload/error coexist. Check before nested decoding/resolution.
+                size = len(json.dumps(params).encode())
+                if size > self.result_limits.get(str(params.get("id") or ""), 1024 * 1024):
+                    future.set_exception(NodeResultTooLarge())
+                    return ack(str(frame.get("id") or ""))
                 payload = params.get("payload")
                 if payload is None and isinstance(params.get("payloadJSON"), str):
                     try:

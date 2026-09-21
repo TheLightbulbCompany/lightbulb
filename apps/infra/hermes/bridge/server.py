@@ -30,7 +30,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
-from bridge import sync, turn
+from bridge import sync, turn, browser_control
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
 log = logging.getLogger("bridge")
@@ -289,6 +289,7 @@ def _health(_params: dict, **_kwargs) -> dict:
         "ready": True, "runtime": "hermes",
         "uptimeS": round(time.time() - STARTED, 1), "busy": turn._busy,
         "agents": len(_roster()),
+        "browserProtocol": 2 if os.environ.get("AGENTCORE_PROFILE_ID") else 1,
     }}
 
 
@@ -300,6 +301,25 @@ def _provider_freeze(_params: dict, **_kwargs) -> dict:
 
 
 RPC_METHODS["provider.freeze"] = _provider_freeze
+
+def _browser_state(params: dict, **_kwargs) -> dict:
+    """Checkpoint through the isolated state helper; never return its URL or exception text."""
+    try:
+        from bridge import browser_state
+        return {"ok": True, "payload": browser_state.checkpoint(params)}
+    except Exception:
+        return {"ok": False, "error": {"code": "UNAVAILABLE", "message": "browser checkpoint failed"}}
+
+
+def _browser_navigate(params: dict, **_kwargs) -> dict:
+    from bridge.browser_state import navigate
+    try:
+        return {"ok": True, "payload": navigate(params)}
+    except Exception:
+        return {"ok": False, "error": {"code": "BROWSER_UNAVAILABLE", "message": "Browser navigation failed"}}
+
+
+RPC_METHODS.update({"browser.state": _browser_state, "browser.navigate": _browser_navigate})
 
 
 def _unavailable(method: str) -> dict:
@@ -650,6 +670,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/ping":
             return self._send(200, {"status": "HealthyBusy" if turn._busy else "Healthy",
                                     "time_of_last_update": int(time.time())})
+        if self.path == "/json/version":
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                return self._send(403, {"error": "loopback_only"})
+            payload = browser_control.discovery_payload()
+            return self._send(200 if payload else 503, payload or {"error": "browser_unavailable"})
         self._send(404, {"error": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802

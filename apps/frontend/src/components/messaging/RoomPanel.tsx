@@ -63,6 +63,7 @@ export interface RoomPanelProps {
   historyError?: boolean;
   historyErrorMessage?: string | null;
   onLoadHistory?: () => void;
+  onLoadOlder?: () => void;
   pendingMessages?: readonly PendingRoomMessage[];
   typingMembers?: readonly { userId: string; displayName: string }[];
   runs?: readonly RoomRunView[];
@@ -226,6 +227,7 @@ function RoomContent({
   historyError,
   historyErrorMessage,
   onLoadHistory,
+  onLoadOlder,
   pendingMessages = [],
   typingMembers = [],
   runs = [],
@@ -308,6 +310,13 @@ function RoomContent({
   const selection = useMemo(() => selectedThreadId === undefined ? localSelection
     : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
       : localSelection?.kind !== "thread" ? localSelection : null, [selectedThreadId, localSelection]);
+  const loadedThreadHistory = useRef<string | null>(null);
+  useEffect(() => {
+    if (selection?.kind !== "thread" || historyComplete || historyLoading || !onLoadHistory) return;
+    if (loadedThreadHistory.current === selection.id) return;
+    loadedThreadHistory.current = selection.id;
+    onLoadHistory();
+  }, [selection, historyComplete, historyLoading, onLoadHistory]);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement>(null);
   const contextHeading = useRef<HTMLHeadingElement>(null);
@@ -332,17 +341,44 @@ function RoomContent({
   const mainMessages = useMemo(() => messages.filter((message) => message.threadRootMessageId === null), [messages]);
   // One pass, as in the mobile timeline, instead of a full history scan per row.
   const repliesByRoot = useMemo(() => {
-    const replies = new Map<string, { count: number; latest: RoomMessage }>();
+    const replies = new Map<string, { count: number; latest: RoomMessage; authors: Map<string, RoomMessage["author"]> }>();
     for (const message of messages) {
       if (!message.threadRootMessageId) continue;
       const previous = replies.get(message.threadRootMessageId);
+      const authors = previous?.authors ?? new Map<string, RoomMessage["author"]>();
+      authors.set(`${message.author.kind}:${message.author.id}`, message.author);
       replies.set(message.threadRootMessageId, {
+        authors,
         count: (previous?.count ?? 0) + 1,
         latest: previous && previous.latest.messageSeq >= message.messageSeq ? previous.latest : message,
       });
     }
     return replies;
   }, [messages]);
+  // Only membership changes invalidate history; streamed text/tool frames do not.
+  const workingThreadKey = JSON.stringify(runs.filter(run => run.state === "running" && run.threadRootMessageId)
+    .map(run => [run.threadRootMessageId, run.agentId]));
+  const threadActivity = useMemo(() => {
+    const result = new Map<string, { participants: Map<string, DirectoryParticipant>; working: Set<string> }>();
+    const entry = (root: string) => {
+      if (!result.has(root)) result.set(root, { participants: new Map(), working: new Set() });
+      return result.get(root)!;
+    };
+    const identity = (kind: "human" | "agent", id: string, name?: string) =>
+      participants.find(member => member.kind === kind && member.id === id)
+        ?? { kind, id, displayName: name || "Unknown author", mentionHandle: null };
+    for (const [root, replies] of repliesByRoot) {
+      for (const [key, author] of replies.authors) {
+        if (author.kind !== "system") entry(root).participants.set(key, identity(author.kind, author.id, author.displayName));
+      }
+    }
+    for (const [root, agentId] of JSON.parse(workingThreadKey) as [string, string][]) {
+      const agent = identity("agent", agentId, "Agent");
+      entry(root).participants.set(`agent:${agentId}`, agent);
+      entry(root).working.add(agent.displayName);
+    }
+    return result;
+  }, [repliesByRoot, participants, workingThreadKey]);
   const newLineSeq = readSeqAtOpen ?? null;
   const ownSeqs = mainMessages.filter((message) => message.author.kind === "human" && message.author.id === currentUserId).map((message) => message.messageSeq);
   const ownLastSentSeq = ownSeqs.length ? Math.max(...ownSeqs) : null;
@@ -478,6 +514,8 @@ function RoomContent({
       startEditing={!inThread && editTarget === message.messageId}
       onEditingClosed={() => setEditTarget((current) => current === message.messageId ? null : current)}
       replyCount={replies?.count ?? 0} lastReplyAt={replies?.latest.createdAt}
+      threadParticipants={[...(threadActivity.get(message.messageId)?.participants.values() ?? [])]}
+      workingNames={[...(threadActivity.get(message.messageId)?.working ?? [])]}
       highlighted={inThread && searchTarget?.messageId === message.messageId} mentionsViewer={mentionsMe} markdown={roomMarkdown} urlTransform={roomUrlTransform}
       quickReactions={quickReactions} reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
@@ -510,7 +548,7 @@ function RoomContent({
           }}><Link aria-hidden="true" /></Button>
         {copyError === message.messageId && <p role="alert" className="text-sm text-err">Could not copy the link.</p>}
       </> : undefined} />;
-  }, [participants, currentUserId, repliesByRoot, id, actionable, editTarget, searchTarget,
+  }, [participants, currentUserId, repliesByRoot, threadActivity, id, actionable, editTarget, searchTarget,
     quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail,
     onSelectParticipant, onUpdateMessage, onDownloadAttachment, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId]);
@@ -602,11 +640,12 @@ function RoomContent({
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
       <div ref={historyRef} className="contents">
         <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
+          historyComplete={historyComplete} historyLoading={historyLoading} historyError={historyErrorMessage} onLoadOlder={onLoadOlder}
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
           targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
           renderMessage={renderMainMessage}
           leading={historyComplete ? <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} /> : null}
-          empty={null}>
+          empty={!historyComplete ? <p className="room-empty">Load older messages to see the start of this conversation.</p> : null}>
           {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}

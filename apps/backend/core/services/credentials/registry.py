@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+import re
 from typing import Literal
 
 import yaml
@@ -17,7 +18,7 @@ _YAML = Path(__file__).parent / "providers.yaml"
 
 Acquisition = Literal["paste_token", "direct_oauth", "nango", "agentcore", "aws_sts", "secrets_manager"]
 Actor = Literal["cli", "mcp", "skill", "nango_proxy"]
-RefreshOwner = Literal["none", "actor", "nango_proxy"]
+RefreshOwner = Literal["none", "actor", "backend", "nango_proxy"]
 
 
 class OpenclawPath(BaseModel):
@@ -83,15 +84,15 @@ class McpRemote(BaseModel):
     request_timeout_ms: int = Field(60_000, alias="requestTimeoutMs")
     model_config = {"populate_by_name": True}
 
-    def server_block(self) -> dict[str, object]:
-        """The mcp.servers.<key> block published into the live openclaw.json.
-
-        ``auth: "oauth"`` is load-bearing: OpenClaw only attaches the MCP SDK's
-        OAuthClientProvider (which reads + self-refreshes the seeded token file)
-        when the raw server config carries ``auth === "oauth"`` — without it the
-        runtime treats the endpoint as a plain remote server, ignores the token
-        store, and the server 401s. The materializer write and the reprovision
-        rehydration both build the block from here, so they stay identical."""
+    def server_block(self, *, brokered: bool = False) -> dict[str, object]:
+        """Hermes MCP config: native per-profile OAuth or brokered bearer auth."""
+        if brokered:
+            env_key = f"MCP_{re.sub(r'[^A-Za-z0-9]', '_', self.key).upper()}_ACCESS_TOKEN"
+            return {
+                "url": self.url,
+                "headers": {"Authorization": f"Bearer ${{{env_key}}}"},
+                "requestTimeoutMs": self.request_timeout_ms,
+            }
         return {
             "transport": self.transport,
             "url": self.url,
@@ -406,6 +407,9 @@ class Provider(BaseModel):
     acquisition: Acquisition
     actor: Actor
     refresh_owner: RefreshOwner
+    # Roll an actor-owned remote OAuth MCP provider onto the workspace broker
+    # in one environment before changing production's credential authority.
+    brokered_environments: list[str] | None = None
     # Opt-in override for actor-refresh providers: retain the exchanged
     # credential in Secrets Manager anyway, for backend-side reads (posthog:
     # HogQL rollups). Non-actor providers retain regardless — see
@@ -502,7 +506,16 @@ class Provider(BaseModel):
         # time keeps _oauth_client's resolution order unambiguous.
         if self.oauth and self.oauth.platform_app and (self.byo_required or self.oauth.registration_url):
             raise ValueError(f"{self.key}: platform_app is mutually exclusive with byo_required/registration_url")
+        if self.brokered_environments and (not self.mcp_remote or self.refresh_owner != "actor"):
+            raise ValueError(f"{self.key}: brokered_environments requires actor-owned remote OAuth MCP")
         return self
+
+
+def refresh_owner_for(provider: Provider) -> RefreshOwner:
+    """Resolve the effective token custodian for the current environment."""
+    if provider.brokered_environments and current_env() in provider.brokered_environments:
+        return "backend"
+    return provider.refresh_owner
 
 
 @lru_cache(maxsize=1)

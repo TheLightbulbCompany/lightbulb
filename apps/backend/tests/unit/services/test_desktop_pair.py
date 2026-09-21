@@ -131,11 +131,17 @@ def test_build_paired_entry_public_key_is_base64url_raw():
 @pytest.mark.asyncio
 async def test_pair_writes_both_devices_onto_the_owner_row():
     upsert = AsyncMock()
+    stored = {}
+
+    async def _upsert(_owner, entries):
+        stored.update(entries)
+
+    upsert.side_effect = _upsert
     with (
         patch("core.services.desktop_pair.container_repo.upsert_paired_devices", upsert),
         patch(
             "core.services.desktop_pair.container_repo.get_by_owner_id",
-            AsyncMock(return_value={"gateway_token": "gw-token"}),
+            AsyncMock(side_effect=lambda *_args, **_kwargs: {"gateway_token": "gw-token", "paired_devices": stored}),
         ),
     ):
         result: PairResult = await pair_desktop_devices(
@@ -147,7 +153,11 @@ async def test_pair_writes_both_devices_onto_the_owner_row():
         )
 
     assert result.device_id_mac != result.device_id_cli
-    assert result.commands_mac == DESKTOP_MAC_COMMANDS
+    assert result.commands_mac == tuple(
+        command
+        for command in DESKTOP_MAC_COMMANDS
+        if command not in {"system.run.approve.v1", "desktop.operation.approve.v1"}
+    )
     assert result.commands_cli == DESKTOP_CLI_COMMANDS
     assert result.gateway_token == "gw-token"
 
@@ -163,6 +173,7 @@ async def test_pair_writes_both_devices_onto_the_owner_row():
         assert entry["commands"]
     assert entries[result.device_id_mac]["clientId"] == "openclaw-macos"
     assert entries[result.device_id_cli]["clientId"] == "node-host"
+    assert entries[result.device_id_mac]["pairingGroupId"] == entries[result.device_id_cli]["pairingGroupId"]
     assert entries[result.device_id_mac]["displayName"] == "Alice Smith | Lightbulb Mac"
     assert entries[result.device_id_cli]["displayName"] == "Alice Smith | Lightbulb Desktop (CLI)"
 
@@ -170,10 +181,19 @@ async def test_pair_writes_both_devices_onto_the_owner_row():
 @pytest.mark.asyncio
 async def test_pair_honors_an_explicit_permission_grant():
     upsert = AsyncMock()
+    stored = {}
+
+    async def _upsert(_owner, entries):
+        stored.update(entries)
+
+    upsert.side_effect = _upsert
     grant = DesktopPermissionGrant()
     with (
         patch("core.services.desktop_pair.container_repo.upsert_paired_devices", upsert),
-        patch("core.services.desktop_pair.container_repo.get_by_owner_id", AsyncMock(return_value={})),
+        patch(
+            "core.services.desktop_pair.container_repo.get_by_owner_id",
+            AsyncMock(side_effect=lambda *_args, **_kwargs: {"paired_devices": stored}),
+        ),
     ):
         result = await pair_desktop_devices(
             user_id="user_alice",
@@ -187,6 +207,36 @@ async def test_pair_honors_an_explicit_permission_grant():
     assert result.commands_cli == grant.cli_commands()
     _owner, entries = upsert.await_args.args
     assert entries[result.device_id_cli]["commands"] == list(grant.cli_commands())
+
+
+@pytest.mark.asyncio
+async def test_pair_fails_closed_when_the_two_scoped_writes_land_partially():
+    """The repository writes each device conditionally, not as one transaction.
+
+    A cross-member collision can therefore leave only one new entry.  Pairing must not
+    report that incomplete physical Mac as execution-capable.
+    """
+    stored = {}
+
+    async def _partial_upsert(_owner, entries):
+        device_id, entry = next(iter(entries.items()))
+        stored[device_id] = entry
+
+    with (
+        patch("core.services.desktop_pair.container_repo.upsert_paired_devices", _partial_upsert),
+        patch(
+            "core.services.desktop_pair.container_repo.get_by_owner_id",
+            AsyncMock(side_effect=lambda *_args, **_kwargs: {"paired_devices": stored}),
+        ),
+    ):
+        with pytest.raises(ValueError, match="pair again"):
+            await pair_desktop_devices(
+                user_id="user_alice",
+                owner_id="org_42",
+                display_name_base="Alice",
+                tauri_mac_pubkey=_MAC_PEM,
+                cli_pubkey=_CLI_PEM,
+            )
 
 
 @pytest.mark.asyncio

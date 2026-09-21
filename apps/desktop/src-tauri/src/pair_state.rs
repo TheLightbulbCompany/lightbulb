@@ -29,7 +29,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::pair_client::PairResponse;
 
-/// Current on-disk schema version. Bump when the JSON shape changes; `load`
+/// Current on-disk pairing version. Bump when the JSON shape or server-side
+/// command grant contract changes; `load`
 /// treats any other version as absent so an old binary never misreads a
 /// newer shape (and vice versa) — the webview pair path just re-pairs.
 ///
@@ -44,20 +45,21 @@ use crate::pair_client::PairResponse;
 /// version bump documents that refusal instead of leaving it as an accident
 /// of a missing required field.
 ///
-/// `nodes/paired.json` — the gateway's approval surface — is written only by
-/// `POST /desktop/pair`, and that endpoint is called only from
-/// `bootstrap::run_bootstrap`. Every relaunch after the first replays this
-/// persisted state instead (`lib.rs::start_from_persisted_state`), so an
-/// existing install would never re-pair on its own. It would therefore never
-/// be granted `mcp.tools.call.v1` (local MCP tools would silently not appear —
-/// the gateway filters the node's MCP descriptors out before the agent sees
-/// them, with no error) and would keep filing a capability-upgrade pairing
-/// request on every single reconnect, because the 8.1 node host declares
-/// `caps: ["system","mcp"]` unconditionally.
+/// 3 -> 4: shape unchanged; force the signed app to re-pair on foreground
+/// Clerk sign-in so the server grants native approval/cancel and CLI execution
+/// commands added after the 0.4.150 pair. Retaining v3 would start from the
+/// old pair response and rotate the JWT without calling `/desktop/pair`.
+///
+/// `POST /desktop/pair` writes the server-side `paired_devices` grants in the
+/// owner's DynamoDB row, and `lib.rs::run_bootstrap` is the app's pairing
+/// path. A normal relaunch instead replays this persisted state
+/// (`lib.rs::start_from_persisted_state`), so a schema bump is how an existing
+/// install obtains newly granted commands. V2 added local MCP; V4 adds
+/// selected-Mac execution approvals and file policy.
 ///
 /// Discarding this file costs one re-pair round trip on next launch and
 /// nothing else: device identity lives in the Keychain, not here.
-const STORE_VERSION: u32 = 3;
+const STORE_VERSION: u32 = 4;
 
 const FILE_NAME: &str = "pair_state.json";
 
@@ -204,8 +206,8 @@ mod tests {
         assert_eq!(load(dir.path()), None);
     }
 
-    /// The v1 -> v2 bump is the ONLY mechanism that re-pairs an already-paired
-    /// Mac, which is how an existing install is granted `mcp.tools.call.v1`.
+    /// The v1 -> v2 bump re-paired an already-paired Mac, which is how that
+    /// existing install was granted `mcp.tools.call.v1`.
     /// Deliberately a literal `1`, not `STORE_VERSION - 1`: this pins the real
     /// upgrade path and must keep meaning that even after the next bump.
     /// The sibling test above only covers a NEWER file (forward-incompat).
@@ -221,6 +223,15 @@ mod tests {
             "a v1 pair_state must be discarded, or the Mac replays persisted \
              state forever and never re-pairs"
         );
+    }
+
+    #[test]
+    fn load_discards_a_v3_file_so_the_mac_re_pairs_for_execution_grants() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = sample();
+        state.version = 3; // installed 0.4.150 persisted this exact version
+        save(dir.path(), &state).unwrap();
+        assert_eq!(load(dir.path()), None);
     }
 
     #[test]

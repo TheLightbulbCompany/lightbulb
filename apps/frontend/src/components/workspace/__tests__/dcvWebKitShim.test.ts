@@ -38,4 +38,21 @@ describe("ensureDcvMediaShim", () => {
     }
   });
 
+  it("replaces a null mediaDevices value exposed by WebKit", () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: null,
+      writable: true,
+    });
+
+    try {
+      ensureDcvMediaShim();
+      expect(navigator.mediaDevices).toEqual({});
+    } finally {
+      if (original) Object.defineProperty(navigator, "mediaDevices", original);
+      else Reflect.deleteProperty(navigator, "mediaDevices");
+    }
+  });
+
 });

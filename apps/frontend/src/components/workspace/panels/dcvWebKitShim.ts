@@ -6,7 +6,7 @@
 export function ensureDcvMediaShim(): boolean {
   if (typeof navigator === "undefined") return true;
   try {
-    if (navigator.mediaDevices === undefined) {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices !== "object") {
       Object.defineProperty(navigator, "mediaDevices", {
         configurable: true,
         enumerable: true,

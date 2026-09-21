@@ -45,10 +45,10 @@ describe("ensureDcvMediaShim", () => {
 
   it("replaces WebKit's unsupported media probe inside Tauri", async () => {
     const originalMedia = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
-    const originalTauri = Object.getOwnPropertyDescriptor(window, "__TAURI_INTERNALS__");
+    const originalTauri = Object.getOwnPropertyDescriptor(window, "__TAURI__");
     const unsupported = vi.fn(() => Promise.reject(new Error("unsupported")));
     Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: unsupported } });
-    Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    Object.defineProperty(window, "__TAURI__", { configurable: true, value: {} });
 
     try {
       ensureDcvMediaShim();
@@ -56,8 +56,8 @@ describe("ensureDcvMediaShim", () => {
       expect(unsupported).not.toHaveBeenCalled();
     } finally {
       if (originalMedia) Object.defineProperty(navigator, "mediaDevices", originalMedia);
-      if (originalTauri) Object.defineProperty(window, "__TAURI_INTERNALS__", originalTauri);
-      else delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      if (originalTauri) Object.defineProperty(window, "__TAURI__", originalTauri);
+      else delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
     }
   });
 });

@@ -13,5 +13,5 @@ it("sends completed Clerk signup and existing sign-in flows through the chat wor
     fallbackRedirectUrl: "/chat", signInFallbackRedirectUrl: "/chat",
   }));
   expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/sign-in");
-  expect(screen.getByText("Free for 3 days")).toBeInTheDocument();
+  expect(screen.getByText("Free for 30 days")).toBeInTheDocument();
 });

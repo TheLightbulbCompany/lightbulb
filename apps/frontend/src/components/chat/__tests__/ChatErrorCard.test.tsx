@@ -76,15 +76,15 @@ describe("ChatErrorCard", () => {
     render(<ChatErrorCard code="out_of_credits" message="server copy: out_of_credits" />);
     expect(screen.getByText("Out of credits")).toBeInTheDocument();
     expect(
-      screen.getByText("Your Claude credit balance is used up. Top up to keep your agents running."),
+      screen.getByText("Your workspace credit balance is used up. Top up to keep your agents running."),
     ).toBeInTheDocument();
     expect(screen.queryByText("Failed to generate")).not.toBeInTheDocument();
     expect(screen.queryByText("server copy: out_of_credits")).not.toBeInTheDocument();
     expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
-    // Routes into CreditsStep, the same destination OutOfCreditsBanner uses.
+    // Routes to the managed-credit panel for either managed provider.
     expect(screen.getByRole("link", { name: "Top up now" })).toHaveAttribute(
       "href",
-      "/chat?provider=bedrock_claude",
+      "/chat?panel=llm",
     );
   });
 

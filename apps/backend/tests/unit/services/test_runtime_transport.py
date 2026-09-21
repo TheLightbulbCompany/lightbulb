@@ -53,6 +53,46 @@ class TestNoTransportSelection:
 
 class TestAgentCoreTransport:
     @pytest.mark.asyncio
+    async def test_pending_switch_blocks_room_and_paperclip_turn_invokes(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        owner = {"owner_id": "org_a", "agentcore_runtime_arn": "arn:runtime/abc"}
+        get_row = AsyncMock(return_value={**owner, "needs_provision": True})
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", get_row)
+        monkeypatch.setattr("boto3.client", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("no invoke")))
+        for path in ("/plugins/lightbulb-channel/inbound/ceo", "/internal/paperclip/v1/runs"):
+            response = await rt.request(owner, path, method="POST", json_body={})
+            assert response.status_code == 503
+        assert get_row.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_turn_invoke_carries_current_provider_generation(self, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        owner = {"owner_id": "org_a", "agentcore_runtime_arn": "arn:runtime/abc"}
+        monkeypatch.setattr(
+            "core.repositories.container_repo.get_by_owner_id",
+            AsyncMock(return_value={**owner, "provider_switch_generation": "gen-new"}),
+        )
+        captured = {}
+
+        class Client:
+            def invoke_agent_runtime(self, **kwargs):
+                captured.update(kwargs)
+                return {"statusCode": 200, "response": b'{"status":202,"body":"accepted"}'}
+
+        monkeypatch.setattr("boto3.client", lambda *a, **kw: Client())
+        await rt.request(
+            owner,
+            "/plugins/lightbulb-channel/inbound/ceo",
+            method="POST",
+            headers={"Authorization": "Bearer gw"},
+            json_body={},
+        )
+        envelope = json.loads(captured["payload"].decode())
+        assert envelope["headers"]["X-Lightbulb-Provider-Generation"] == "gen-new"
+
+    @pytest.mark.asyncio
     async def test_unwraps_the_contract_server_envelope(self, monkeypatch):
         captured = {}
 

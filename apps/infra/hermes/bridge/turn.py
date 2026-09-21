@@ -25,6 +25,7 @@ log = logging.getLogger("bridge")
 
 _busy = 0
 _busy_lock = threading.Lock()
+_turns_frozen = os.environ.get("LIGHTBULB_PROVIDER_SWITCH_FROZEN") == "1"
 _last_turn: dict[str, float] = {}
 _brokered_mcp_overlay: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
     "brokered_mcp_overlay", default=None
@@ -35,6 +36,28 @@ def _busy_add(n: int) -> None:
     global _busy
     with _busy_lock:
         _busy += n
+
+
+def reserve_turn() -> bool:
+    """Atomically admit a turn and count it before its worker thread starts."""
+    global _busy
+    with _busy_lock:
+        if _turns_frozen:
+            return False
+        _busy += 1
+        return True
+
+
+def release_turn() -> None:
+    _busy_add(-1)
+
+
+def freeze_turns() -> int:
+    """Reject later turns and return the number already admitted, including queued threads."""
+    global _turns_frozen
+    with _busy_lock:
+        _turns_frozen = True
+        return _busy
 
 
 # ---- run registry + abort (spec §5 "Run lifecycle"; §5 abort) -------------------------------
@@ -54,6 +77,12 @@ def register_run(run_id: str) -> bool:
             return False
         RUNS[run_id] = {"state": "queued", "agent": None, "aborted": False, "outcome": None, "started": False}
         return True
+
+
+def discard_run(run_id: str) -> None:
+    """Undo registration when admission fails before the worker thread starts."""
+    with _RUNS_LOCK:
+        RUNS.pop(run_id, None)
 
 
 def mark_started(run_id: str) -> None:
@@ -1219,6 +1248,10 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
         # above regardless, so a profile with no gog connected simply resolves them to nothing.
         secrets.update(sync.cli_credential_env(agent_id))
         secrets.update(overlay or {})
+        # The owner bearer is boot-fetched, never trusted from an agent-editable profile .env.
+        secrets.pop("LIGHTBULB_GATE_BEARER", None)
+        if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
+            secrets["LIGHTBULB_GATE_BEARER"] = os.environ["AWS_BEARER_TOKEN_BEDROCK"]
         _declare_child_env_names(secrets)
         _allow_child_env_names(secrets)
         token = set_secret_scope(secrets)
@@ -1623,12 +1656,13 @@ def _agent_usage(agent) -> dict:
     }
 
 
-def run_paperclip_turn(identity: dict, request: dict) -> None:
+def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) -> None:
     """Run one native Paperclip turn and leave its terminal result in the bounded registry."""
     run_id = identity["runId"]
     agent_id = identity["agentId"]
     session_id = identity["sessionId"]
-    _busy_add(1)
+    if not reserved:
+        _busy_add(1)
     started = time.time()
     outcome, error, output, usage = "failed", None, "", dict(ZERO_USAGE)
     try:
@@ -1674,7 +1708,7 @@ def run_paperclip_turn(identity: dict, request: dict) -> None:
         _busy_add(-1)
 
 
-def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) -> None:
+def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, reserved: bool = False) -> None:
     run = body.get("run") or {}
     run_id = run.get("runId")
     has_run = bool(run_id)  # agent_mail (Task 20) carries no run block: no callbacks, no frames
@@ -1686,7 +1720,8 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None) 
                             room.get("id"), agent_id, run_id, thread_root)
     if has_run:
         register_run(run_id)  # idempotent: a no-op if server.py already registered it pre-dispatch
-    _busy_add(1)
+    if not reserved:
+        _busy_add(1)
     outcome, error_kind, reply, usage = "completed", None, "", ZERO_USAGE
     t0 = time.time()
     done = threading.Event()

@@ -80,6 +80,11 @@ describe("resolveProviderStatus", () => {
     expect(resolveProviderStatus("chatgpt_oauth", null, list)).toBe("ok");
   });
 
+  it("matches managed inference to the custom Hermes provider", () => {
+    const list = providers({ provider: "custom", displayName: "Lightbulb", status: "static" });
+    expect(resolveProviderStatus("openrouter_managed", null, list)).toBe("static");
+  });
+
   it("matches chatgpt_oauth to openai-codex even when a byo openai entry is present (exact)", () => {
     const list = providers(
       { provider: "openai-codex", displayName: "ChatGPT", status: "ok" },

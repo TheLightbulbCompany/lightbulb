@@ -8,6 +8,7 @@ import { useApi } from "@/lib/api";
 import { externalLinkClick } from "@/lib/externalAuth";
 import { notifyApiError } from "@/lib/notify";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
+import { useBilling } from "@/hooks/useBilling";
 import { useRuntimeHost } from "@lightbulb/shared";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { CreditsSection } from "./CreditsSection";
@@ -31,7 +32,7 @@ import {
 } from "./llm-auth-status";
 
 import {
-  PROVIDER_SWITCH_CARDS,
+  providerSwitchCards,
   type ProviderChoiceId as ProviderChoice,
 } from "@/lib/providerCards";
 
@@ -294,19 +295,21 @@ function ByoKeyBlock({
   );
 }
 
-function BedrockBlock({
+function ManagedBlock({
   onChangeProvider,
   dotColor,
+  openrouter = false,
 }: {
   onChangeProvider: () => void;
   dotColor: DotColor;
+  openrouter?: boolean;
 }) {
   return (
     <>
       <HeroCard
-        icon={<AnthropicIcon size={32} />}
-        title="Powered by Claude"
-        subtitle="Anthropic Claude via AWS Bedrock"
+        icon={openrouter ? <span className="text-xl font-semibold">✦</span> : <AnthropicIcon size={32} />}
+        title={openrouter ? "Lightbulb-managed models" : "Powered by Claude"}
+        subtitle={openrouter ? "Inference uses your Lightbulb workspace credits" : "Anthropic Claude via AWS Bedrock"}
         status="Active"
         dotColor={dotColor}
       />
@@ -330,6 +333,7 @@ function BedrockBlock({
 // it — a key glyph is the honest icon there.
 const PROVIDER_ICONS: Record<ProviderChoice, React.ReactNode> = {
   bedrock_claude: <AnthropicIcon size={24} />,
+  openrouter_managed: <span className="text-xl font-semibold">✦</span>,
   chatgpt_oauth: <OpenAIIcon size={24} />,
   byo_key: <KeyRound size={20} className="text-[var(--midnight-muted)]" />,
 };
@@ -340,7 +344,7 @@ const PROVIDER_ICONS: Record<ProviderChoice, React.ReactNode> = {
  * with no provider shouldn't have to click blind into a modal to discover what
  * the options even are.
  *
- * Bedrock commits in place (nothing to collect). The other two need a
+ * Managed inference commits in place (nothing to collect). The other two need a
  * credential stage, so they hand off to ChangeProviderModal opened straight on
  * that stage — the modal remains the single owner of the OAuth device-code and
  * BYO-key flows.
@@ -349,15 +353,17 @@ function ProviderChoiceCards({
   onPick,
   committing,
   error,
+  managedAvailable,
 }: {
   onPick: (choice: ProviderChoice) => void;
   committing: ProviderChoice | null;
   error: string | null;
+  managedAvailable: boolean;
 }) {
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {PROVIDER_SWITCH_CARDS.map((card) => {
+        {providerSwitchCards(managedAvailable).map((card) => {
           const busy = committing === card.id;
           return (
             <button
@@ -397,12 +403,14 @@ function EmptyStateCard({
   onPick,
   committing,
   error,
+  managedAvailable = false,
 }: {
   message?: string;
   /** Absent pre-subscription — nothing to commit against, so link to onboarding. */
   onPick?: (choice: ProviderChoice) => void;
   committing?: ProviderChoice | null;
   error?: string | null;
+  managedAvailable?: boolean;
 }) {
   const prompt = message ?? "You haven’t picked a provider yet.";
 
@@ -420,6 +428,7 @@ function EmptyStateCard({
           onPick={onPick}
           committing={committing ?? null}
           error={error ?? null}
+          managedAvailable={managedAvailable}
         />
       </div>
     );
@@ -452,6 +461,8 @@ export interface LLMPanelProps {
 
 export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelProps = {}) {
   const api = useApi();
+  const { account, isLoading: billingLoading } = useBilling();
+  const managedAvailable = account?.managed_inference_available === true;
   const { data: user, mutate } = useSWR<UserData | null>(
     "/users/me",
     (p: string) => api.get(p) as Promise<UserData | null>,
@@ -508,7 +519,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   );
   const dotColor: DotColor = statusToDotColor(providerStatus);
 
-  // Inline-picker commit state. Bedrock is the only choice committed from the
+  // Inline-picker commit state. Managed inference is committed from the
   // panel itself; the other two hand off to the modal's credential stages.
   const [committing, setCommitting] = useState<ProviderChoice | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
@@ -516,7 +527,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   const handlePick = useCallback(
     (choice: ProviderChoice) => {
       setPickError(null);
-      if (choice !== "bedrock_claude") {
+      if (choice !== "bedrock_claude" && choice !== "openrouter_managed") {
         setModalChoice(choice);
         setModalOpen(true);
         return;
@@ -530,7 +541,9 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
     [api, mutate],
   );
 
-  if (!user) return <div className="p-6 text-sm">Loading…</div>;
+  if (!user || (billingLoading && (!user.provider_choice || (user.provider_choice === "byo_key" && !user.byo_provider)))) {
+    return <div className="p-6 text-sm">Loading…</div>;
+  }
 
   const openModal = () => {
     setModalChoice(null);
@@ -607,11 +620,12 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
           onPick={handlePick}
           committing={committing}
           error={pickError}
+          managedAvailable={managedAvailable}
         />
       )}
 
-      {user.provider_choice === "bedrock_claude" && (
-        <BedrockBlock onChangeProvider={openModal} dotColor={dotColor} />
+      {(user.provider_choice === "bedrock_claude" || user.provider_choice === "openrouter_managed") && (
+        <ManagedBlock onChangeProvider={openModal} dotColor={dotColor} openrouter={user.provider_choice === "openrouter_managed"} />
       )}
 
       {!user.provider_choice && (
@@ -619,18 +633,20 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
           onPick={handlePick}
           committing={committing}
           error={pickError}
+          managedAvailable={managedAvailable}
         />
       )}
 
-      {/* Credits live inline for Bedrock owners — the former Credits panel.
-          Non-Bedrock providers bill through their own account, so nothing
+      {/* Credits live inline for managed owners — the former Credits panel.
+          BYO providers bill through their own account, so nothing
           renders for them. */}
-      {user.provider_choice === "bedrock_claude" && <CreditsSection />}
+      {(user.provider_choice === "bedrock_claude" || user.provider_choice === "openrouter_managed") && <CreditsSection />}
 
       <ChangeProviderModal
-        open={modalOpen}
+        open={modalOpen && !billingLoading}
         currentProvider={user.provider_choice ?? null}
         currentByoProvider={user.byo_provider ?? null}
+        managedInferenceAvailable={managedAvailable}
         initialChoice={modalChoice}
         onClose={() => setModalOpen(false)}
         onCommitted={() => {

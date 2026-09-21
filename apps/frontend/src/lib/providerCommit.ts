@@ -46,6 +46,7 @@ export function providerCommitErrorMessage(e: unknown): string {
 
 export function readableProvider(choice: ProviderChoiceId, byo?: ByoProvider): string {
   if (choice === "bedrock_claude") return "Bedrock-managed Claude";
+  if (choice === "openrouter_managed") return "Lightbulb-managed models";
   if (choice === "chatgpt_oauth") return "ChatGPT OAuth";
   if (choice === "byo_key" && byo) return `${byo === "openai" ? "OpenAI" : "Anthropic"} (BYO key)`;
   return "BYO key";

@@ -750,6 +750,10 @@ async def _agentcore_models_list(owner_id: str) -> dict[str, Any] | None:
     so ``None`` means "fall through to the bridge".
     """
     provider_choice, byo_provider, aip_arns = await _owner_model_inputs(owner_id)
+    if provider_choice == "openrouter_managed":
+        model_id = hermes_profiles.settings.OPENROUTER_MANAGED_MODEL_ID.strip()
+        models = [{"id": model_id, "name": model_id, "provider": "custom"}] if model_id else []
+        return {"models": models, "defaultId": model_id}
     if provider_choice not in _BEDROCK_PROVIDER_CHOICES:
         return None
     from core.services.spend_service import TIER_DISPLAY_NAMES
@@ -886,11 +890,15 @@ async def _expand_agentcore_config_patch(owner_id: str, patch: dict[str, Any]) -
         return patch
     model = await _validated_model_id(owner_id, model, method="config.patch")
     provider_choice, byo_provider, aip_arns = await _owner_model_inputs(owner_id)
-    _model, _aux_model, aux_provider = hermes_profiles.model_block(
+    model_block, _aux_model, aux_provider = hermes_profiles.model_block(
         provider_choice=provider_choice, byo_provider=byo_provider, aip_arns=aip_arns, is_ceo=False
     )
     expanded = {key: value for key, value in aux.items() if key != _AUX_MODEL_KEY}
-    expanded.update(hermes_profiles.auxiliary_tasks_block(model, aux_provider))
+    expanded.update(
+        hermes_profiles.auxiliary_tasks_block(
+            model, aux_provider, base_url=model_block.get("base_url", ""), api_key=model_block.get("api_key", "")
+        )
+    )
     return {**patch, "auxiliary": expanded}
 
 

@@ -6,6 +6,7 @@ import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
 import { BedrockGateStack } from "./stacks/bedrock-gate-stack";
 import { BedrockMeterStack } from "./stacks/bedrock-meter-stack";
+import { OpenRouterGateStack } from "./stacks/openrouter-gate-stack";
 import { ContainerStack } from "./stacks/container-stack";
 import { DatabaseStack } from "./stacks/database-stack";
 import { DnsStack } from "./stacks/dns-stack";
@@ -338,6 +339,15 @@ export class LightbulbStage extends cdk.Stage {
     );
     observability.addDependency(database);
     observability.addDependency(paperclip);
+
+    // Dev-only and policy-disabled until key, Hermes, and money-path acceptance.
+    if (env === "dev") {
+      const openrouterGate = new OpenRouterGateStack(this, `lightbulb-${env}-openrouter-gate`, {
+        stackName: `lightbulb-${env}-openrouter-gate`,
+        environment: env,
+      });
+      openrouterGate.addDependency(database);
+    }
 
     // BedrockMeterStack — account-scoped usage meter, direct Metronome
     // ingest. Bedrock model-invocation logging is account+region-global (one

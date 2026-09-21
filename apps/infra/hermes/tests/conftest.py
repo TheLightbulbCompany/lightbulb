@@ -1,4 +1,8 @@
-import os, sys, pathlib, pytest
+import os
+import pathlib
+import sys
+
+import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 os.environ.setdefault("GATEWAY_TOKEN", "gw-test")
@@ -50,5 +54,11 @@ def _clear_run_registry():
     more abort-leaving-state tests, purely from alphabetical test-file execution order)."""
     from bridge import turn
     turn.RUNS.clear()
+    with turn._busy_lock:
+        turn._busy = 0
+        turn._turns_frozen = False
     yield
     turn.RUNS.clear()
+    with turn._busy_lock:
+        turn._busy = 0
+        turn._turns_frozen = False

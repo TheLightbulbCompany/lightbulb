@@ -28,10 +28,11 @@ def checkout_slot(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("plan", "price_id"),
-    [("workspace", "price_workspace"), ("ultra", "price_ultra")],
+    [("base", "price_base"), ("workspace", "price_workspace"), ("ultra", "price_ultra")],
 )
 async def test_workspace_checkout_has_one_recurring_item_and_manual_promotion_codes(monkeypatch, plan, price_id):
     monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_BASE_PRICE_ID", "price_base")
     monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
     monkeypatch.setattr(
         billing_service.billing_repo,

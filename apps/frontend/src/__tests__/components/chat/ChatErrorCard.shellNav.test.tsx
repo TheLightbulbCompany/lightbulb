@@ -47,6 +47,6 @@ describe("ChatErrorCard action link", () => {
     const push = vi.spyOn(window.history, "pushState").mockImplementation(() => {});
     render(<ChatErrorCard code="out_of_credits" message="" />);
     fireEvent.click(screen.getByRole("link", { name: "Top up now" }), { button: 0 });
-    expect(push).toHaveBeenCalledWith(null, "", "/chat?provider=bedrock_claude");
+    expect(push).toHaveBeenCalledWith(null, "", "/chat?panel=llm");
   });
 });

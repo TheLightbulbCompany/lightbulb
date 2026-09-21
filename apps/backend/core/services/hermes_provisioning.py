@@ -110,6 +110,8 @@ def build_hermes_runtime_env(
     gate_endpoint: str,
     sonnet_aip_arn: str,
     browser_profile_id: str = "",
+    managed_gate_url: str = "",
+    managed_model_id: str = "",
 ) -> dict[str, str]:
     """The bridge's environment (M4-R19). Identifiers ONLY — every credential lives in the ONE
     Secrets Manager boot secret ``boot_secret_id`` names; nothing here is a bearer, a hook token,
@@ -152,6 +154,9 @@ def build_hermes_runtime_env(
         "PYTHONUNBUFFERED": "1",
         BOOT_SECRET_ENV_VAR: boot_secret_id,
     }
+    if managed_gate_url:
+        env["LIGHTBULB_MANAGED_GATE_URL"] = managed_gate_url
+        env["LIGHTBULB_MANAGED_MODEL_ID"] = managed_model_id
     if browser_profile_id:
         env.update(
             {
@@ -370,6 +375,61 @@ def _delete_boot_secret(owner_id: str) -> None:
         pass
 
 
+def _refresh_boot_secret_provider_choice(
+    owner_id: str, provider_choice: str, *, frozen: bool = True, generation: str | None = None
+) -> None:
+    """Publish a provider marker only for the current switch generation.
+
+    AWSCURRENT's old VersionId is the compare-and-swap fence: a delayed writer
+    cannot replace a marker that another attempt has already published.
+    """
+    import json
+    import boto3
+
+    if generation is None:
+        raise ValueError("provider switch generation is required")
+    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+    secret_id = boot_secret_name(owner_id)
+    current = sm.get_secret_value(SecretId=secret_id)
+    # Read DDB AFTER AWSCURRENT. If a newer switch has already published its
+    # secret, its marker necessarily landed first, so a stale writer sees it.
+    # If it lands after this read, the stage move below loses the CAS instead.
+    row = container_repo._get_table().get_item(Key={"owner_id": owner_id}, ConsistentRead=True).get("Item") or {}
+    if row.get("provider_switch_generation", "") != generation or not row.get("needs_provision"):
+        raise container_repo.ProvisionSuperseded(f"provider switch for {owner_id} was superseded")
+    payload = json.loads(current["SecretString"])
+    if not all(payload.get(key) for key in ("hookToken", "gatewayToken", "bedrockBearer")):
+        raise RuntimeError("Hermes boot secret is missing a required token")
+    # A thaw is valid only for the generation it froze. A late preparation of
+    # the same generation cannot re-freeze a switch that already thawed.
+    if not frozen and payload.get("providerSwitchGeneration") != generation:
+        raise container_repo.ProvisionSuperseded(f"provider switch for {owner_id} was superseded")
+    if (
+        frozen
+        and payload.get("providerSwitchGeneration") == generation
+        and payload.get("providerSwitchFrozen") is False
+    ):
+        return
+    if (
+        payload.get("providerChoice") != provider_choice
+        or payload.get("providerSwitchFrozen") != frozen
+        or (generation is not None and payload.get("providerSwitchGeneration") != generation)
+    ):
+        payload["providerChoice"] = provider_choice
+        payload["providerSwitchFrozen"] = frozen
+        if generation is not None:
+            payload["providerSwitchGeneration"] = generation
+        candidate = sm.put_secret_value(
+            SecretId=secret_id, SecretString=json.dumps(payload), VersionStages=["LIGHTBULB_PROVIDER_PENDING"]
+        )
+        sm.update_secret_version_stage(
+            SecretId=secret_id,
+            VersionStage="AWSCURRENT",
+            MoveToVersionId=candidate["VersionId"],
+            RemoveFromVersionId=current["VersionId"],
+        )
+
+
 def _delete_profile_prefix_objects(owner_id: str) -> None:
     """Delete every S3 object under ``<owner>/hermes/`` -- the whole Hermes home, every agent's
     profile plus the root ``auth.json``. Only called by ``teardown_hermes_runtime`` when
@@ -533,10 +593,9 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
     roster, so the native Hermes adapter's ``apiKey`` bakes in a real token instead of the empty
     string a missing row field falls back to.
 
-    Idempotent: a no-op (no AWS call, no row write) once the owner already has an
-    ``agentcore_runtime_arn`` — the whole workspace, tokens included, is already provisioned by
-    then, so re-running this on every reconcile dispatch would otherwise rotate a LIVE gate bearer
-    for no reason. NOT idempotent on the bearer itself while unprovisioned: a retry of a
+    An existing runtime with no pending provider switch is a no-op. A pending switch updates
+    only the boot secret's provider marker and preserves its live tokens. NOT idempotent on the
+    bearer itself while unprovisioned: a retry of a
     still-unprovisioned owner re-mints (``mint_gate_token`` always rotates), which is safe — nothing
     ever presented the prior one, since the runtime was never created.
 
@@ -559,12 +618,30 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
     """
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     if row.get("agentcore_runtime_arn"):
+        if row.get("needs_provision"):
+            from core.services.container_provision import resolve_provider_choice
+
+            provider_choice, _ = await resolve_provider_choice(owner_id)
+            if provider_choice == "openrouter_managed":
+                from core.services.openrouter_keys import ensure_owner_key_for_settings
+
+                await ensure_owner_key_for_settings(owner_id)
+            await container_repo.update_container_leased(
+                owner_id, claim_id, {}, attempt_token=attempt_token, release_lease=False
+            )
+            await run_in_thread(
+                _refresh_boot_secret_provider_choice,
+                owner_id,
+                provider_choice,
+                generation=row.get("provider_switch_generation") or "",
+            )
         return
 
     import secrets as _secrets
 
     from core.billing.bedrock_aip import _owner_role_name, ensure_owner_bedrock_role
     from core.billing.bedrock_gate_tokens import mint_gate_token
+    from core.services.container_provision import resolve_provider_choice
 
     hook_token_reused = bool(row.get("hook_token"))
     gateway_token_reused = bool(row.get("gateway_token"))
@@ -575,7 +652,19 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
     role_arn = await ensure_owner_bedrock_role(owner_id, aip_arns)
     await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), role_arn.split(":")[4])
     bedrock_bearer = await mint_gate_token(owner_id, aip_arns)
-    await write_boot_secret(owner_id, hook_token=hook_token, gateway_token=gateway_token, bedrock_bearer=bedrock_bearer)
+    provider_choice, _ = await resolve_provider_choice(owner_id)
+    if provider_choice == "openrouter_managed":
+        from core.services.openrouter_keys import ensure_owner_key_for_settings
+
+        await ensure_owner_key_for_settings(owner_id)
+    await write_boot_secret(
+        owner_id,
+        hook_token=hook_token,
+        gateway_token=gateway_token,
+        bedrock_bearer=bedrock_bearer,
+        provider_choice=provider_choice,
+        generation=row.get("provider_switch_generation") or "",
+    )
 
     # m2: the one step that mints three credentials and writes a secret was otherwise invisible
     # in the provision log. Never logs a value -- only which tokens were reused vs freshly minted.
@@ -596,7 +685,12 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
 
 
 def build_runtime_request_for_owner(
-    owner_id: str, role_arn: str, aip_arns: dict[str, str], *, browser_profile_id: str = ""
+    owner_id: str,
+    role_arn: str,
+    aip_arns: dict[str, str],
+    *,
+    browser_profile_id: str = "",
+    provider_choice: str = "bedrock_claude",
 ) -> dict:
     """The CreateAgentRuntime/UpdateAgentRuntime spec for ``owner_id`` on the CURRENTLY configured
     image (N2/M4-R40's one spec-building path, lifted out of ``provision_hermes_runtime`` so
@@ -607,6 +701,10 @@ def build_runtime_request_for_owner(
     building the request, so a roll is also the door through which an existing runtime gets
     its first profile."""
     from core.billing.bedrock_gate_url import gate_url
+    from core.billing.openrouter_gate_url import gate_url as openrouter_gate_url
+
+    if provider_choice == "openrouter_managed" and not settings.OPENROUTER_MANAGED_MODEL_ID:
+        raise RuntimeError("managed OpenRouter model is not configured")
 
     return build_hermes_runtime_request(
         owner_id=owner_id,
@@ -622,6 +720,8 @@ def build_runtime_request_for_owner(
             gate_endpoint=gate_url(),
             sonnet_aip_arn=aip_arns["sonnet"],
             browser_profile_id=browser_profile_id,
+            managed_gate_url=openrouter_gate_url() if provider_choice == "openrouter_managed" else "",
+            managed_model_id=settings.OPENROUTER_MANAGED_MODEL_ID if provider_choice == "openrouter_managed" else "",
         ),
     )
 
@@ -715,13 +815,20 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     if dry_run:
         return "would-update"
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
+    provider_choice = "bedrock_claude"
+    if settings.OPENROUTER_MANAGED_MODEL_ID:
+        from core.services.container_provision import resolve_provider_choice
+
+        provider_choice, _ = await resolve_provider_choice(owner_id)
     # The roll is how an ALREADY-provisioned workspace gets its first Browser profile: a
     # create-or-adopt, then the env block. Never raises -- "" just means no browser.
     browser_profile_id = await browser_sessions.ensure_browser_profile(owner_id)
     await run_in_thread(
         _update_runtime_image,
         arn,
-        build_runtime_request_for_owner(owner_id, role_arn, aip_arns, browser_profile_id=browser_profile_id),
+        build_runtime_request_for_owner(
+            owner_id, role_arn, aip_arns, browser_profile_id=browser_profile_id, provider_choice=provider_choice
+        ),
     )
     await run_in_thread(_wait_for_runtime_ready, arn)
     idle = await _wait_for_idle_session(owner_id)
@@ -752,7 +859,8 @@ async def reconcile_hermes_aips(owner_id: str) -> dict[str, str]:
     from core.billing.bedrock_aip import ensure_owner_aips
     from core.billing.bedrock_gate_tokens import reconcile_gate_token_tiers
     from core.repositories import billing_repo
-    from core.services.container_provision import BEDROCK_TRIAL_CHOICE, provider_choice_from_row
+    from core.services.hermes_profiles import _BEDROCK_TRIAL_CHOICE as BEDROCK_TRIAL_CHOICE
+    from core.services.container_provision import provider_choice_from_row
 
     # This read rewrites authorization and meter classification: a stale trial
     # row after checkout would narrow a paying workspace back to Sonnet.
@@ -1072,7 +1180,8 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
     secret this reads the NAME of (not the contents) and the ``hook_token``/``gateway_token`` this
     never re-writes. ``provision_runner.run`` always calls it first.
 
-    Fully idempotent: a row with ``agentcore_runtime_arn`` AND ``status="running"`` returns as-is,
+    Fully idempotent: a row with ``agentcore_runtime_arn`` AND ``status="running"`` and no pending
+    ``needs_provision`` returns as-is,
     with no AWS call and no row write. A row with the ARN but NOT yet ``running`` (a retry that
     reached the create but not the terminal write) skips straight to the READY poll instead of
     creating again (M4-R35/C1) — see the ARN-recording comment below for why that field exists.
@@ -1095,15 +1204,32 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         raise RuntimeError("OWNER_STATE_BUCKET is not configured for this environment")
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     arn = row.get("agentcore_runtime_arn")
-    if arn and row.get("status") == "running":
+    switching = bool(arn and row.get("needs_provision"))
+    if arn and row.get("status") == "running" and not switching:
         return arn
 
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
+    from core.services.container_provision import resolve_provider_choice
+
+    provider_choice = (
+        (await resolve_provider_choice(owner_id))[0]
+        if row.get("needs_provision") or settings.OPENROUTER_MANAGED_MODEL_ID
+        else "bedrock_claude"
+    )
     # Create-or-adopt this workspace's AgentCore Browser profile and grant it, before the
     # request is built: its id is what turns the browser env block on. Never raises -- ""
     # means the runtime simply advertises no browser tools this round.
     browser_profile_id = await browser_sessions.ensure_browser_profile(owner_id)
-    if not arn:
+    if switching:
+        from core.services import container_rpc
+
+        frozen = await container_rpc.call(owner_id, "provider.freeze")
+        if not isinstance(frozen, dict) or frozen.get("frozen") is not True:
+            raise RuntimeError("Hermes provider switch could not freeze turn admission")
+        if not await _wait_for_idle_session(owner_id):
+            raise RuntimeError("Hermes provider switch deferred: runtime is busy")
+        await write_profiles(owner_id, aip_arns)
+    elif not arn:
         # N4/M4-R42: write_profiles runs BEFORE CreateAgentRuntime, so a row that already
         # carries an ARN has its profiles in S3 already. Idempotence now keys on
         # status == "running" (M4-R35/C1), so an ARN row sitting in error/stopped -- which C2's
@@ -1127,7 +1253,9 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         # partial replace. Only called from the two branches that actually need it (create, or
         # update-on-drift) -- gate_url() is a real (cached) SSM read, not free to call on every
         # idempotent poll-and-reuse pass.
-        return build_runtime_request_for_owner(owner_id, role_arn, aip_arns, browser_profile_id=browser_profile_id)
+        return build_runtime_request_for_owner(
+            owner_id, role_arn, aip_arns, browser_profile_id=browser_profile_id, provider_choice=provider_choice
+        )
 
     if arn:
         # Reusing an already-created runtime (recorded on the row, or found by name). Bring it
@@ -1143,7 +1271,7 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
             await run_in_thread(_wait_for_runtime_gone, arn)
             arn = None
         else:
-            if current_image and current_image != settings.AGENTCORE_HERMES_IMAGE:
+            if switching or (current_image and current_image != settings.AGENTCORE_HERMES_IMAGE):
                 await run_in_thread(_update_runtime_image, arn, _build_request())
             if not row.get("agentcore_runtime_arn"):
                 # Found by name lookup only -- the row never got it. Record now, before polling,
@@ -1192,6 +1320,27 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         )
         raise
 
+    if switching:
+        from botocore.exceptions import ClientError
+        from core.services.runtime_transport import session_id_for
+
+        try:
+            await run_in_thread(_stop_runtime_session, arn, session_id_for(owner_id))
+        except ClientError as exc:
+            # AgentCore returns 404 when the session was already parked or terminated.
+            if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+                raise
+        await container_repo.update_container_leased(
+            owner_id, claim_id, {}, attempt_token=attempt_token, release_lease=False
+        )
+        await run_in_thread(
+            _refresh_boot_secret_provider_choice,
+            owner_id,
+            provider_choice,
+            frozen=False,
+            generation=row.get("provider_switch_generation") or "",
+        )
+
     # `running` from here: AgentCore wakes on invoke, so every "stopped -> start" door must see a
     # live workspace.
     # Fenced write (M4-R28) — the same terminal transition every provision write takes. A lost
@@ -1202,7 +1351,7 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
     await container_repo.update_container_leased(
         owner_id,
         claim_id,
-        {"runtime_host": "agentcore", "agentcore_runtime_arn": arn, "status": "running"},
+        {"runtime_host": "agentcore", "agentcore_runtime_arn": arn, "status": "running", "needs_provision": False},
         attempt_token=attempt_token,
         release_lease=True,
     )

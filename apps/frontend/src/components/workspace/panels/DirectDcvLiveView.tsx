@@ -14,7 +14,7 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
   remoteHeight?: number;
 }): React.ReactElement {
   const displayId = useRef(`dcv-display-${++nextViewerId}`);
-  const connection = useRef<any>(null);
+  const connection = useRef<import("dcv").DcvConnection | null>(null);
   const connecting = useRef(false);
   const viewer = useRef<HTMLDivElement>(null);
   const viewport = useRef<HTMLDivElement>(null);
@@ -136,8 +136,12 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
     try {
       const explorer = await connection.current?.getFileExplorer?.();
       const listed = await explorer?.list?.("/");
-      const entries = Array.isArray(listed) ? listed : listed?.files ?? listed?.items ?? [];
-      setFiles(entries.map((entry: unknown) => typeof entry === "string" ? entry : (entry as { path?: string; name?: string }).path ?? (entry as { name?: string }).name).filter(Boolean));
+      const listing = listed as { files?: unknown[]; items?: unknown[] } | null | undefined;
+      const entries = Array.isArray(listed) ? listed : listing?.files ?? listing?.items ?? [];
+      const paths = entries
+        .map((entry: unknown) => typeof entry === "string" ? entry : (entry as { path?: string; name?: string }).path ?? (entry as { name?: string }).name)
+        .filter((path): path is string => Boolean(path));
+      setFiles(paths);
     } catch {
       setTransferStatus("File storage is unavailable for this browser session.");
     }

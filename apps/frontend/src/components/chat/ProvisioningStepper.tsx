@@ -20,7 +20,7 @@ import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
 import { CreditsStep } from "@/components/chat/CreditsStep";
 import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
 import { Logo, LogoMark } from "@/components/Logo";
-import { PROVIDER_CARDS } from "@/lib/providerCards";
+import { providerComparisonCards } from "@/lib/providerCards";
 // Provisioning copy + timing live in @lightbulb/shared so the web and mobile
 // steppers stay in lockstep. Aliased to this file's historical local names so
 // every usage site below is unchanged.
@@ -87,6 +87,10 @@ const PROVIDER_SETTLE_COPY: Record<ProviderChoice | "default", { title: string; 
   bedrock_claude: {
     title: "Setting up your credits",
     desc: "Getting Bedrock access ready and starting your container.",
+  },
+  openrouter_managed: {
+    title: "Setting up your credits",
+    desc: "Getting your managed models ready and starting your container.",
   },
   default: {
     title: "Finishing setup",
@@ -1836,7 +1840,7 @@ export function ProviderPicker({
         )}
 
         <div className="grid grid-cols-1 gap-4 @3xl:grid-cols-3">
-          {PROVIDER_CARDS.map((card) => (
+          {providerComparisonCards(account?.is_subscribed === true && account?.managed_inference_available === true).map((card) => (
             <div
               key={card.id}
               className={

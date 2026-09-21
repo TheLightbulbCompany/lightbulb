@@ -37,13 +37,13 @@ import { Button } from "@/components/ui/button";
  *      On completion we POST /billing/provider.
  *   3. If BYO key → collect provider + key, PUT /settings/keys, then
  *      POST /billing/provider.
- *   4. If Bedrock → POST /billing/provider directly (credits gate is
+ *   4. If managed inference → POST /billing/provider directly (credits gate is
  *      enforced at provisioning time by provision_gate).
  *
  * `initialChoice` skips step 1: LLMPanel's empty state renders the same three
  * choices inline, so a user arriving from there has already picked and the
  * modal opens straight on the credential stage. It only ever names a
- * credential-collecting path — Bedrock needs no stage, so the panel commits
+ * credential-collecting path — managed inference needs no stage, so the panel commits
  * it inline without opening the modal at all.
  *
  * Errors from /billing/provider carry a `{code, message}` payload from
@@ -53,7 +53,7 @@ import { Button } from "@/components/ui/button";
  */
 
 import {
-  PROVIDER_SWITCH_CARDS,
+  providerSwitchCards,
   type ProviderChoiceId as ProviderChoice,
 } from "@/lib/providerCards";
 
@@ -65,12 +65,13 @@ type Stage =
   | { kind: "error"; message: string };
 
 /** Paths that need a credential stage — the only valid `initialChoice` values. */
-export type CredentialProviderChoice = Exclude<ProviderChoice, "bedrock_claude">;
+export type CredentialProviderChoice = Exclude<ProviderChoice, "bedrock_claude" | "openrouter_managed">;
 
 interface ChangeProviderModalProps {
   open: boolean;
   currentProvider?: ProviderChoice | null;
   currentByoProvider?: ByoProvider | null;
+  managedInferenceAvailable?: boolean;
   /** Open past the picker, on this choice's credential stage. */
   initialChoice?: CredentialProviderChoice | null;
   onClose: () => void;
@@ -81,6 +82,7 @@ export function ChangeProviderModal({
   open,
   currentProvider,
   currentByoProvider,
+  managedInferenceAvailable = false,
   initialChoice = null,
   onClose,
   onCommitted,
@@ -104,6 +106,7 @@ export function ChangeProviderModal({
           <ChangeProviderBody
             currentProvider={currentProvider}
             currentByoProvider={currentByoProvider}
+            managedInferenceAvailable={managedInferenceAvailable}
             initialChoice={initialChoice}
             onClose={onClose}
             onCommitted={onCommitted}
@@ -117,6 +120,7 @@ export function ChangeProviderModal({
 interface BodyProps {
   currentProvider?: ProviderChoice | null;
   currentByoProvider?: ByoProvider | null;
+  managedInferenceAvailable: boolean;
   initialChoice?: CredentialProviderChoice | null;
   onClose: () => void;
   onCommitted: () => void;
@@ -125,6 +129,7 @@ interface BodyProps {
 function ChangeProviderBody({
   currentProvider,
   currentByoProvider,
+  managedInferenceAvailable,
   initialChoice = null,
   onClose,
   onCommitted,
@@ -182,10 +187,8 @@ function ChangeProviderBody({
       <DialogHeader>
         <DialogTitle>Change provider</DialogTitle>
         <DialogDescription>
-          Bedrock and ChatGPT switches happen instantly without interrupting
-          your chat. Switching to or from Bring-Your-Own-Key restarts your
-          container (about 30s) — conversation history is preserved either
-          way.
+          Changing providers may restart your workspace runtime. Conversation
+          history is preserved.
         </DialogDescription>
       </DialogHeader>
 
@@ -193,6 +196,7 @@ function ChangeProviderBody({
         <PickerStage
           currentProvider={currentProvider}
           currentByoProvider={currentByoProvider}
+          managedInferenceAvailable={managedInferenceAvailable}
           onPick={handlePick}
         />
       )}
@@ -244,10 +248,11 @@ function ChangeProviderBody({
 interface PickerStageProps {
   currentProvider?: ProviderChoice | null;
   currentByoProvider?: ByoProvider | null;
+  managedInferenceAvailable: boolean;
   onPick: (choice: ProviderChoice) => void;
 }
 
-function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStageProps) {
+function PickerStage({ currentProvider, currentByoProvider, managedInferenceAvailable, onPick }: PickerStageProps) {
   const isCurrent = (id: ProviderChoice) => {
     if (id !== currentProvider) return false;
     // BYO is "current" only if the user is on byo_key today; sub-provider
@@ -258,7 +263,7 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
 
   return (
     <div className="grid grid-cols-1 gap-3 py-2 md:grid-cols-3">
-      {PROVIDER_SWITCH_CARDS.map((card) => {
+      {providerSwitchCards(managedInferenceAvailable).map((card) => {
         const current = isCurrent(card.id);
         return (
           <button

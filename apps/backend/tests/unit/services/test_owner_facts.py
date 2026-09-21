@@ -9,13 +9,13 @@ from core.services import owner_facts
 
 def test_build_owner_facts_trial_local():
     # A REAL trial_local row carries no provider_choice at all — the provider
-    # must short-circuit to the bedrock_trial config mode, not "unknown".
+    # resolves to the internal managed OpenRouter mode.
     facts = owner_facts.build_owner_facts("user_abc", {"subscription_status": "trial_local"})
     assert facts["owner_kind"] == "personal"
     assert facts["subscription_status"] == "trial_local"
     assert "free" in facts["plan"].lower()
-    assert facts["provider_choice"] == "bedrock_trial"
-    assert "free trial" in facts["provider"]
+    assert facts["provider_choice"] == "openrouter_managed"
+    assert "managed" in facts["provider"].lower()
     assert "generated_at" in facts
 
 
@@ -104,6 +104,7 @@ async def test_write_owner_facts_never_raises(monkeypatch):
     "provider_choice,byo_provider,expected_substring",
     [
         ("bedrock_claude", None, "Bedrock"),
+        ("openrouter_managed", None, "Lightbulb-managed credits"),
         ("bedrock_trial", None, "free trial"),
         ("chatgpt_oauth", None, "ChatGPT"),
         ("byo_key", "anthropic", "BYO Anthropic"),

@@ -20,6 +20,7 @@ class BillingAccountResponse(BaseModel):
     # to render.
     provider_choice: str | None = None
     byo_provider: str | None = None
+    managed_inference_available: bool = False
     # Pricing tier: "standard" (Workspace) or "ultra_pro" (Ultra). Defaults to
     # "standard" so a billing row created before the plan field existed (no
     # `plan` key) surfaces cleanly rather than as null.
@@ -28,6 +29,10 @@ class BillingAccountResponse(BaseModel):
     # binary because a catalog update would otherwise leave stale checkout
     # copy in the field.
     workspace_price_usd: int
+    # Default keeps pre-Base billing rows/API callers backward compatible;
+    # legacy callers may omit this field safely.
+    # the router still supplies the server-owned configured value when present.
+    base_price_usd: int = 20
     ultra_price_usd: int
     # Which channel the live subscription was bought through: "apple_iap", or
     # absent/None for the Stripe path (the default, and every pre-IAP row).

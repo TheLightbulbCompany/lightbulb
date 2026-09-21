@@ -27,7 +27,9 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
         def get_secret_value(self, SecretId):
             assert SecretId == "lightbulb/dev/hermes/org_test"
             return {"SecretString": json.dumps(
-                {"hookToken": "boot-hook", "gatewayToken": "boot-gw", "bedrockBearer": "boot-bearer"}
+                {"hookToken": "boot-hook", "gatewayToken": "boot-gw", "bedrockBearer": "boot-bearer",
+                 "providerChoice": "openrouter_managed", "providerSwitchFrozen": True,
+                 "providerSwitchGeneration": "gen-new"}
             )}
 
     fake_boto3.client = lambda name: FakeSecretsManager()
@@ -50,6 +52,10 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
         assert turn.HOOK_TOKEN == "boot-hook", "turn.py captured a stale value, not the boot fetch"
         assert server.GATEWAY_TOKEN == "boot-gw", "server.py captured a stale value, not the boot fetch"
         assert os.environ["AWS_BEARER_TOKEN_BEDROCK"] == "boot-bearer"
+        assert os.environ["LIGHTBULB_PROVIDER_CHOICE"] == "openrouter_managed"
+        assert os.environ["LIGHTBULB_PROVIDER_SWITCH_GENERATION"] == "gen-new"
+        assert turn._turns_frozen is True
+        assert turn.reserve_turn() is False
         # M2-R12: lightbulb_node reads OPENCLAW_HOOK_TOKEN off the process env directly (it has
         # no per-turn context file -- exec isn't turn-scoped), so the boot fetch must reach that
         # env var too, not just the `bridge.HOOK_TOKEN` module attribute.
@@ -63,5 +69,8 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
             if mod is not None:
                 sys.modules[name] = mod
         os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+        os.environ.pop("LIGHTBULB_PROVIDER_CHOICE", None)
+        os.environ.pop("LIGHTBULB_PROVIDER_SWITCH_FROZEN", None)
+        os.environ.pop("LIGHTBULB_PROVIDER_SWITCH_GENERATION", None)
         os.environ.pop("OPENCLAW_HOOK_TOKEN", None)
         os.environ.pop("GATEWAY_TOKEN", None)

@@ -160,7 +160,7 @@ async def test_trial_arms_once_even_when_ready_polls_race(dynamodb_table):
         billing_repo.arm_trial_if_unset("org_trial", now_s=9_999),
     )
     assert ends[0] == ends[1]
-    assert ends[0] in (260_200, 269_199)
+    assert ends[0] in (2_593_000, 2_601_999)
     assert await billing_repo.arm_trial_if_unset("org_trial", now_s=50_000) == ends[0]
     assert (await billing_repo.get_by_owner_id("org_trial"))["trial_end"] == ends[0]
 
@@ -178,11 +178,11 @@ async def test_trial_armer_leaves_missing_and_non_trial_rows_untouched(dynamodb_
 
 
 @pytest.mark.asyncio
-async def test_trial_armer_returns_first_ready_plus_three_days(dynamodb_table):
+async def test_trial_armer_returns_first_ready_plus_thirty_days(dynamodb_table):
     from core.repositories import billing_repo
 
     dynamodb_table.put_item(Item={"owner_id": "org_trial", "subscription_status": "trial_local"})
-    assert await billing_repo.arm_trial_if_unset("org_trial", now_s=1_000) == 260_200
+    assert await billing_repo.arm_trial_if_unset("org_trial", now_s=1_000) == 2_593_000
 
 
 @pytest.mark.asyncio

@@ -47,7 +47,7 @@ const PANELS: PanelRow[] = [
   {
     key: "llm",
     label: "Model & Credits",
-    description: "Provider, model, and Bedrock credits",
+    description: "Provider, model, and workspace credits",
     icon: "cpu",
     route: "/(app)/control/llm",
   },

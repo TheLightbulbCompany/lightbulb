@@ -21,7 +21,7 @@ def test_legacy_subscription_checkout_routes_are_not_registered():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("plan", ["workspace", "ultra"])
+@pytest.mark.parametrize("plan", ["base", "workspace", "ultra"])
 async def test_org_admin_can_start_workspace_checkout(plan, monkeypatch):
     monkeypatch.setattr(
         billing,

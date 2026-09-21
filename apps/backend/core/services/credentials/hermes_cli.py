@@ -56,6 +56,7 @@ from typing import Any
 
 from core.config import settings
 from core.dynamodb import run_in_thread
+from core.services.credentials import registry
 from core.services.credentials.materializers import MATERIALIZER_REMOVERS, MATERIALIZERS, base
 
 logger = logging.getLogger(__name__)
@@ -65,14 +66,14 @@ logger = logging.getLogger(__name__)
 #: (so a shared file keeps the entries this provider does not own), decide what to upload, and
 #: decide what to delete when the materializer removed it. A materializer absent from this map
 #: has no Hermes projection and keeps the old skip. ``mcp_oauth``/``qbo_dotenv`` are deliberately
-#: absent: they are MCP-shaped and already ride ``reconcile_integrations``. ``toml_cli``/
-#: ``skill_cli`` are absent because no live provider in ``providers.yaml`` uses them for a shell
-#: CLI the microVM has a binary for.
+#: absent: they are MCP-shaped and already ride ``reconcile_integrations``. ``toml_cli`` remains
+#: absent because no live provider uses it on Hermes.
 OWNED_PATHS: dict[str, tuple[str, ...]] = {
     "aws_cli": (".aws/",),
     "gh_cli": (".config/gh/",),
     "gog_cli": (".config/gogcli/", ".local/share/gogcli/"),
     "instagram_cli": ("skills/instagram/",),
+    "skill_cli": ("skills/vercel/",),
     "xurl_cli": (".xurl",),
 }
 
@@ -95,9 +96,14 @@ ROOT_DIR: dict[str, str] = dict.fromkeys(("aws_cli", "gh_cli", "gog_cli", "xurl_
 CLI_ENV_FILE = "cli-env.json"
 
 
-def _shell_env(materializer: str) -> dict[str, str]:
+def _shell_env(materializer: str, provider_key: str, credential: dict[str, Any]) -> dict[str, str]:
     if materializer == "gog_cli" and settings.GOG_KEYRING_PASSWORD:
         return {"GOG_KEYRING_PASSWORD": settings.GOG_KEYRING_PASSWORD, "GOG_KEYRING_BACKEND": "file"}
+    if materializer == "skill_cli":
+        spec = registry.get_provider(provider_key).skill
+        token = credential.get("token")
+        if spec and token:
+            return {spec.primary_env: str(token)}
     return {}
 
 
@@ -176,7 +182,7 @@ def _run_and_sync(
         # materializer needs the CURRENT file to preserve the entries it does not own.
         hermes_profiles.fetch_profile_subtree(owner_id, agent_ids[0], owned, root)
         before = set(_snapshot(root, materializer))
-        if _shell_env(materializer):
+        if _shell_env(materializer, provider_key, credential):
             # B2: cli-env.json is written only on the WRITE leg, so it is never in `before` from
             # the snapshot and would survive every disconnect — leaving the fleet-shared gog
             # keyring password in the profile forever. Seed it here so a disconnect prunes it.
@@ -184,7 +190,7 @@ def _run_and_sync(
         with base.materialize_into(root / root_dir if root_dir else root):
             result = fn(owner_id, provider_key, credential)  # type: ignore[operator]
         files = _snapshot(root, materializer)
-        if write and (shell_env := _shell_env(materializer)):
+        if write and (shell_env := _shell_env(materializer, provider_key, credential)):
             files[CLI_ENV_FILE] = json.dumps(shell_env).encode()
         gone = before - set(files)
         for agent_id in agent_ids:

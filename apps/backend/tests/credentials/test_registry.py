@@ -377,6 +377,15 @@ def test_posthog_mcp_remote_uses_cli_mode_and_list_timeout():
     }
 
 
+def test_actor_remote_mcp_can_be_brokered_per_environment(monkeypatch):
+    p = registry.get_provider("notion")
+    assert p.refresh_owner == "actor"
+    monkeypatch.setattr(registry.settings, "ENVIRONMENT", "dev")
+    assert registry.refresh_owner_for(p) == "backend"
+    monkeypatch.setattr(registry.settings, "ENVIRONMENT", "prod")
+    assert registry.refresh_owner_for(p) == "actor"
+
+
 def test_skill_spec_model_shape():
     # A SkillSpec carries what a paste-token CLI integration's materializer needs:
     # the skills.entries.<key> it owns, the env var the credential is injected as,

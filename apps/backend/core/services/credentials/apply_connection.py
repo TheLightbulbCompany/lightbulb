@@ -76,9 +76,9 @@ def runtime_supported(p: registry.Provider) -> bool:
     if p.wiring.backend_only:
         return True
     if is_mcp_shaped(p):
-        # Reconciliation reads only Secrets Manager; actor-owned grants without a
-        # retained copy currently become an empty mcp-tokens file.
-        return p.refresh_owner != "actor" or p.retain_secret
+        # Reconciliation reads Secrets Manager for brokered grants; an unbrokered
+        # actor-owned grant has no durable backend copy and cannot be projected.
+        return registry.refresh_owner_for(p) != "actor" or p.retain_secret
     if p.wiring.materializer:
         from core.services.credentials import hermes_cli
 

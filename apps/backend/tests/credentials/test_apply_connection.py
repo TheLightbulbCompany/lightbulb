@@ -228,6 +228,8 @@ async def test_actor_owned_mcp_without_retained_credential_is_rejected(monkeypat
     from core.services.credentials import apply_connection as ac
     from core.services.credentials import mcp_server as mcp_server_mod
 
+    # Production remains native actor-owned until the dev broker is certified.
+    monkeypatch.setattr(ac.registry.settings, "ENVIRONMENT", "prod")
     calls = []
 
     async def fake_reconcile(owner_id, *, pending=None):
@@ -245,6 +247,16 @@ def test_existing_hermes_rails_remain_supported(provider):
     from core.services.credentials import apply_connection as ac
 
     assert ac.runtime_supported(ac.registry.get_provider(provider))
+
+
+@pytest.mark.parametrize("provider", ("stripe", "notion", "linear", "attio", "intercom", "apollo", "cloudflare"))
+def test_dev_brokered_remote_mcp_is_runtime_supported(monkeypatch, provider):
+    from core.services.credentials import apply_connection as ac
+
+    monkeypatch.setattr(ac.registry.settings, "ENVIRONMENT", "dev")
+    p = ac.registry.get_provider(provider)
+    assert ac.registry.refresh_owner_for(p) == "backend"
+    assert ac.runtime_supported(p)
 
 
 @pytest.mark.asyncio

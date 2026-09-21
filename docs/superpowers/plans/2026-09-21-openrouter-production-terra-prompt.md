@@ -125,8 +125,11 @@ Important commits:
 - `dc9112471` — Base billing contract
 - `a2cca0eb0` — current-main merge, preserving both bridge RPC surfaces
 - `635af3f21` — Browser viewer remount fix
+- `73eb74c3f` — finish OpenRouter billing CI contract and stale entitlement expectations
+- `12417adcd` — reclaim the shared macOS runner workspace before mobile install
+- `6d8d1ea9d` — clear persistent pnpm/CocoaPods/Xcode caches on the shared macOS runner
 
-The worktree is clean. The zero-price gate, durable outbox, and settlement changes are committed and focused tests pass. Do not reset or recreate them.
+The worktree is clean after the current commit. The zero-price gate, durable outbox, settlement changes, 30-day entitlement, Base billing contract, and CI fixes are committed and focused tests pass. Do not reset or recreate them. Re-check the PR status before changing code: a red Claude review is the documented credential outage, while backend/frontend/infra/mobile failures still require investigation.
 
 ## Existing storage decisions
 

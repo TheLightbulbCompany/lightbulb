@@ -691,19 +691,6 @@ async def change_provider(
     # because the env-var secret reference changes.
     from core.repositories import container_repo as _container_repo
 
-    pending_row = await _container_repo.get_by_owner_id(owner_id) or {}
-    if pending_row.get("needs_provision"):
-        if current_choice != provider_choice or current_byo != next_byo:
-            raise ChangeProviderError(
-                "provider_switch_pending", "A provider switch is already in progress.", status_code=409
-            )
-        # Retry the existing generation; do not stamp another one or repeat
-        # credential cleanup while the first switch is still converging.
-        await _container_repo.takeover_provision(owner_id)
-        from core.services.provision_dispatch import dispatch_provision
-
-        asyncio.create_task(dispatch_provision(owner_id))
-        return {"status": "ok", "provider_choice": provider_choice, "byo_provider": next_byo, "restart": True}
     if current_choice == provider_choice and current_byo == next_byo:
         return {"status": "noop", "provider_choice": provider_choice, "byo_provider": next_byo}
 
@@ -782,6 +769,23 @@ async def change_provider(
     # provision_gate.evaluate_provision_gate — we don't pre-block here so
     # owners with zero balance can still pick Bedrock + see the structured
     # gate UI prompting them to top up.
+
+    # Read the container only after validating provider prerequisites. A
+    # missing BYO key or OAuth token must return its deliberate 409 even when
+    # the container table is unavailable.
+    pending_row = await _container_repo.get_by_owner_id(owner_id) or {}
+    if pending_row.get("needs_provision"):
+        if current_choice != provider_choice or current_byo != next_byo:
+            raise ChangeProviderError(
+                "provider_switch_pending", "A provider switch is already in progress.", status_code=409
+            )
+        # Retry the existing generation; do not stamp another one or repeat
+        # credential cleanup while the first switch is still converging.
+        await _container_repo.takeover_provision(owner_id)
+        from core.services.provision_dispatch import dispatch_provision
+
+        asyncio.create_task(dispatch_provision(owner_id))
+        return {"status": "ok", "provider_choice": provider_choice, "byo_provider": next_byo, "restart": True}
 
     # AgentCore root auth is the live ChatGPT credential. Revoke it before the provider-choice
     # commit: if S3/classification fails, leaving the old choice + OAuth row intact is what makes

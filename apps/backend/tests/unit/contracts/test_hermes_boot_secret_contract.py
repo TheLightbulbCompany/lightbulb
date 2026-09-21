@@ -48,7 +48,13 @@ async def test_write_boot_secret_round_trips_through_the_bridges_own_reader():
         assert name.endswith("/org_a/boot")
 
         loaded = bridge_sync.load_boot_secrets(name, client=sm)
-        assert loaded == {"hookToken": "hook-1", "gatewayToken": "gw-1", "bedrockBearer": "bearer-1"}
+        assert loaded == {
+            "hookToken": "hook-1",
+            "gatewayToken": "gw-1",
+            "bedrockBearer": "bearer-1",
+            "providerChoice": "bedrock_claude",
+            "providerSwitchFrozen": False,
+        }
 
 
 async def test_write_boot_secret_update_also_round_trips(monkeypatch):

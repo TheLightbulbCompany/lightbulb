@@ -198,13 +198,14 @@ describe("hermes runtime wiring", () => {
     }
   });
 
-  it("lets the per-owner role read its own Hermes secrets at boot, in both the base policy and the boundary", () => {
+  it("lets the per-owner role read only its own Hermes boot secret, in both the base policy and the boundary", () => {
     const baseStatements = managedPolicyStatements(dev.containerTemplate, "lightbulb-dev-owner-bedrock-base");
     const boundaryStatements = managedPolicyStatements(
       dev.containerTemplate,
       "lightbulb-dev-owner-bedrock-boundary",
     );
-    const hermesSecretArn = "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/hermes/*";
+    const hermesSecretArn =
+      "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/hermes/${aws:PrincipalTag/owner_id}/boot-*";
 
     for (const statements of [baseStatements, boundaryStatements]) {
       const secretsStatement = statements.find((s) =>

@@ -1145,6 +1145,48 @@ def _allow_child_env_names(secrets: dict) -> None:
     register_env_passthrough(secrets.keys())
 
 
+_aws_shell_fence_lock = threading.Lock()
+_AMBIENT_AWS_CREDENTIAL_KEYS = (
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN",
+    "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", "AWS_EC2_METADATA_SERVICE_ENDPOINT",
+    "AWS_DEFAULT_PROFILE", "AWS_BEARER_TOKEN_BEDROCK",
+)
+
+
+def _fence_aws_child_env(env: dict[str, str], profile: str | None) -> dict[str, str]:
+    """Keep the runtime role out of agent children; AWS CLI uses the customer profile or fails."""
+    for name in _AMBIENT_AWS_CREDENTIAL_KEYS:
+        env.pop(name, None)
+    aws_dir = Path(profile) / "home" / ".aws" if profile else None
+    env["AWS_CONFIG_FILE"] = str(aws_dir / "config") if aws_dir else "/dev/null"
+    env["AWS_SHARED_CREDENTIALS_FILE"] = str(aws_dir / "credentials") if aws_dir else "/dev/null"
+    env["AWS_PROFILE"] = "default"
+    env["AWS_EC2_METADATA_DISABLED"] = "true"
+    return env
+
+
+def _install_aws_shell_fence() -> None:
+    """Patch Hermes's shared terminal/code-exec child-env seam once per process."""
+    try:
+        from tools.environments import local
+    except ImportError:  # Hermes isn't installed in bridge-only unit tests
+        return
+    with _aws_shell_fence_lock:
+        if getattr(local._scrubbed_env, "_lightbulb_aws_fence", False):
+            return
+        original = local._scrubbed_env
+
+        def fenced(*args, **kwargs):
+            from hermes_constants import get_hermes_home_override
+
+            return _fence_aws_child_env(original(*args, **kwargs), get_hermes_home_override())
+
+        fenced._lightbulb_aws_fence = True
+        local._scrubbed_env = fenced
+
+
 def _terminal_scope(agent_id: str):
     """Use Hermes's profile-local policy, default shell cwd and profile $HOME, never process
     globals.
@@ -1168,6 +1210,7 @@ def _terminal_scope(agent_id: str):
         except ImportError:  # tests outside the Hermes image
             yield
             return
+        _install_aws_shell_fence()
         profile = _profile_dir(agent_id)
         # Both keys are TERMINAL_-prefixed deliberately: tools/terminal_scope.py keeps ONLY
         # those from env_overlay (`if k.startswith("TERMINAL_")`) and drops everything else, so

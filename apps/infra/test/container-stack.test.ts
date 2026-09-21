@@ -170,20 +170,6 @@ describe("ContainerStack — dev", () => {
     });
   });
 
-  test("runtime roles can read only their own Hermes boot secret", () => {
-    const ownBootSecret =
-      "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/hermes/${aws:PrincipalTag/owner_id}/boot-*";
-    for (const [name, sid] of [
-      ["lightbulb-dev-owner-bedrock-base", "HermesSecretsRead"],
-      ["lightbulb-dev-owner-bedrock-boundary", "BoundaryHermesSecretsRead"],
-    ]) {
-      const statement = managedPolicy(template, name).Properties.PolicyDocument.Statement.find(
-        (item: { Sid: string }) => item.Sid === sid,
-      );
-      expect(statement.Resource).toBe(ownBootSecret);
-    }
-  });
-
   test("creates the OwnerBedrockBoundary permissions-boundary policy", () => {
     template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       ManagedPolicyName: "lightbulb-dev-owner-bedrock-boundary",

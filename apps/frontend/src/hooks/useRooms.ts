@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { useRooms as useSharedRooms, type RoomsPlatform } from "@lightbulb/shared";
+import { useRooms as useSharedRooms, type RoomsPlatform, type UseRoomsResult } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 
 // The browser's half of RoomsPlatform.isVisible: document visible, window focused.
@@ -42,5 +42,11 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true,
     onVisibilityChange,
     uuid: () => crypto.randomUUID(),
   }), [isLoaded, userId, orgId, live, isVisible, onVisibilityChange]);
-  return useSharedRooms(platform, { initialAgentId, subscribeToRoom, boundedHistory: true });
+  // The package can be consumed from a previously built workspace declaration
+  // during rolling CI installs. Keep the app boundary typed to the source
+  // contract (bounded history + older-page loading) that the runtime implements.
+  return useSharedRooms(
+    platform,
+    { initialAgentId, subscribeToRoom, boundedHistory: true } as Parameters<typeof useSharedRooms>[1],
+  ) as UseRoomsResult & { loadOlder: () => Promise<void> };
 }

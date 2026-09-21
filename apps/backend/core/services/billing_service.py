@@ -691,6 +691,23 @@ async def change_provider(
     # because the env-var secret reference changes.
     from core.repositories import container_repo as _container_repo
 
+    # A pending switch is a stronger fact than a matching billing row or a
+    # prerequisite for a prospective new provider. The committed billing row
+    # already contains the intended choice, so the same retry must re-dispatch
+    # that generation; a different choice must conflict before reading a BYOK
+    # secret or OAuth token for a switch that cannot be admitted.
+    pending_row = await _container_repo.get_by_owner_id(owner_id) or {}
+    if pending_row.get("needs_provision"):
+        if current_choice != provider_choice or current_byo != next_byo:
+            raise ChangeProviderError(
+                "provider_switch_pending", "A provider switch is already in progress.", status_code=409
+            )
+        await _container_repo.takeover_provision(owner_id)
+        from core.services.provision_dispatch import dispatch_provision
+
+        asyncio.create_task(dispatch_provision(owner_id))
+        return {"status": "ok", "provider_choice": provider_choice, "byo_provider": next_byo, "restart": True}
+
     if current_choice == provider_choice and current_byo == next_byo:
         return {"status": "noop", "provider_choice": provider_choice, "byo_provider": next_byo}
 
@@ -770,9 +787,8 @@ async def change_provider(
     # owners with zero balance can still pick Bedrock + see the structured
     # gate UI prompting them to top up.
 
-    # Read the container only after validating provider prerequisites. A
-    # missing BYO key or OAuth token must return its deliberate 409 even when
-    # the container table is unavailable.
+    # Re-read after validation to fence a switch that started while provider
+    # prerequisites were being checked.
     pending_row = await _container_repo.get_by_owner_id(owner_id) or {}
     if pending_row.get("needs_provision"):
         if current_choice != provider_choice or current_byo != next_byo:

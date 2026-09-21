@@ -13,6 +13,7 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
 }): React.ReactElement {
   const displayId = useRef(`dcv-display-${++nextViewerId}`);
   const connection = useRef<any>(null);
+  const connecting = useRef(false);
   const viewer = useRef<HTMLDivElement>(null);
   const upload = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -22,10 +23,18 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
 
   useEffect(() => {
     let disposed = false;
+    setError(null);
+    connecting.current = false;
     void import("dcv").then(({ default: dcv }) => {
       dcv.authenticate(signedUrl, {
         promptCredentials: () => {},
-        error: () => !disposed && setError("Could not authenticate the browser viewer."),
+        error: () => {
+          // DCV can close a completed auth websocket after connect starts. That
+          // callback must not unmount the host element under an active display.
+          if (!disposed && !connecting.current && !connection.current) {
+            setError("Could not authenticate the browser viewer.");
+          }
+        },
         httpExtraSearchParams: () => new URL(signedUrl).searchParams,
         success: async (_auth: unknown, result: Array<{ sessionId?: string; authToken?: string }>) => {
           if (disposed) return;
@@ -36,6 +45,7 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
           }
           try {
             if (disposed) return;
+            connecting.current = true;
             const connected = await dcv.connect({
             url: signedUrl,
             sessionId: credentials.sessionId,
@@ -43,11 +53,12 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
             divId: displayId.current,
             baseUrl: "/nice-dcv-web-client-sdk/dcvjs-esm",
             enabledChannels: ["display", "input", "clipboard", "filestorage"],
-            callbacks: {
+              callbacks: {
               disconnect: () => !disposed && setError("Browser viewer disconnected."),
               httpExtraSearchParams: () => new URL(signedUrl).searchParams,
-            },
-          });
+              },
+            });
+            connecting.current = false;
             if (disposed) connected.disconnect?.();
             else {
               connection.current = connected;
@@ -57,6 +68,7 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
               connected.setDisplayQuality?.(80, 80);
             }
           } catch {
+            connecting.current = false;
             if (!disposed) setError("Could not connect the browser viewer.");
           }
         },
@@ -64,6 +76,7 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
     }).catch(() => !disposed && setError("Could not start the browser viewer."));
     return () => {
       disposed = true;
+      connecting.current = false;
       connection.current?.captureClipboardEvents?.(false, window);
       connection.current?.disconnect?.();
       connection.current = null;

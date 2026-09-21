@@ -99,6 +99,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
   const viewEpoch = useRef(0);
   const mutationSeq = useRef(0);
   const alive = useRef(true);
+  const autoTakeGeneration = useRef<string | undefined>(undefined);
 
   const knownSession = useRef(false);
   const ready = host === "agentcore";
@@ -109,6 +110,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
     setControlError(null);
     setAddress("");
     knownSession.current = false;
+    autoTakeGeneration.current = undefined;
   }, [api, ready, scope]);
 
   useEffect(() => {
@@ -186,6 +188,16 @@ export function BrowserDockPanel(): React.ReactElement | null {
     }
   };
 
+  useEffect(() => {
+    if (!view?.active || view.mode !== "idle" || !view.generation || !view.canControl || view.isController) return;
+    if (autoTakeGeneration.current === view.generation) return;
+    autoTakeGeneration.current = view.generation;
+    void mutate("/browser/control", { action: "take", generation: view.generation });
+    // `mutate` is intentionally the single serialized mutation path; this effect
+    // only fires once per idle generation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view?.active, view?.mode, view?.generation, view?.canControl, view?.isController]);
+
   if (!ready) return null;
   if (!view) return <Notice>Looking for a live browser session…</Notice>;
   if (view.mode === "error") {
@@ -242,7 +254,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between gap-3 border-b border-[var(--edge)] px-3 py-2 text-xs">
-        <span className="text-[var(--midnight-muted)]">Shared workspace browser · {view.mode === "idle" ? "Ready" : view.mode === "human" ? (isController ? "You control it" : "A teammate controls it") : "Agent controls it"}</span>
+        <span className="text-[var(--midnight-muted)]">Shared workspace browser · {view.mode === "idle" ? "Taking control…" : view.mode === "human" ? (isController ? "You control it" : "A teammate controls it") : "Agent controls it"}</span>
         <div className="flex items-center gap-2">
           {isController ? <button type="button" disabled={busy} onClick={release} className="rounded-md border border-[var(--edge)] px-2 py-1 disabled:opacity-50">Done &amp; hand back</button> : canTake && <button type="button" disabled={busy} onClick={take} className="rounded-md bg-midnight px-2 py-1 text-cream disabled:opacity-50">Take control</button>}
           {isController && <button type="button" disabled={busy} onClick={stop} className="rounded-md border border-err px-2 py-1 text-err disabled:opacity-50">Done &amp; stop</button>}
@@ -250,7 +262,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
       </div>
       {controlError && <p role="alert" className="px-3 py-2 text-xs text-err">{controlError} Try the action again; your current browser session is still open.</p>}
       <div className="px-3 py-1 text-[11px] text-[var(--midnight-muted)]">
-        {isController ? "Done saves your sign-in and returns control to automation." : "Closing this panel only hides it; the shared browser keeps running."}
+        {isController ? "Done saves your sign-in and returns control to automation." : view.mode === "agent" ? "Taking control pauses browser automation; the agent run can continue other work." : "Closing this panel only hides it; the shared browser keeps running."}
         {view.savedAt && <> Last saved {new Date(view.savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.</>}
       </div>
       {isController && <form onSubmit={navigate} className="flex gap-2 px-3 pb-2" aria-label="Navigate shared browser">

@@ -19,6 +19,10 @@ login. Its two Metronome POSTs call documented **read** endpoints.
 | Metronome rate card | Configured dev rate card resolved (200). This does not prove a new OpenRouter metric or rate exists. |
 | Microcent sandbox proof | A disposable `SUM` metric with string property `provider_cost_microcents="12345"` and rate `0.0001` cents per unit reduced a disposable customer's unbilled 100-cent credit balance to **98.7655 cents**: exactly **1.2345 cents = $0.012345**. Replaying the same transaction ID left it at 98.7655 cents; event search marked the replay duplicate. |
 | Nanodollar sandbox proof | A separate disposable `SUM` metric with string property `provider_cost_nanodollars="12345678"` and rate `0.0000001` cents per unit reduced a 100-cent unbilled test balance to **98.7654322 cents**: exactly **1.2345678 cents = $0.012345678**. Replay left that balance unchanged. |
+| OpenRouter management key | On 2026-09-21, the dev secret `lightbulb/dev/openrouter/management` created a disposable capped completion key (201), returned one-time plaintext and a hash, then allowed get, disable, and delete (all 200). No completion request was made and no credential was logged. |
+| OpenRouter workspaces | On 2026-09-21, a dedicated `Lightbulb Dev` workspace was created with slug `lightbulb-dev` and ID `5db3e7d3-4447-43b8-ac39-b1e35e3f54a9`. Set that exact ID as `OPENROUTER_WORKSPACE_ID_DEV`; do not repurpose the account's existing default workspace. |
+| Workspace-specific key proof | The management key created and deleted a disposable daily-capped key inside `Lightbulb Dev` (create 201, delete 200), and the returned workspace ID matched `5db3e7d3-4447-43b8-ac39-b1e35e3f54a9`. No inference request was made. |
+| OpenRouter credits | `GET /api/v1/credits` returned 200 with `total_credits=0` and `total_usage=0`. Funding the dev credit pool is required before a paid inference or settlement smoke. |
 
 The existing [workspace billing runbook](workspace-stripe-metronome-configuration.md)
 describes the repair order. Until the integration and Product mapping are

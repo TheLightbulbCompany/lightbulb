@@ -14,13 +14,18 @@ export function ensureDcvMediaShim(): boolean {
         writable: true,
       });
     }
-    if (typeof navigator.mediaDevices.getUserMedia !== "function") {
+    const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    if (isTauri || typeof navigator.mediaDevices.getUserMedia !== "function") {
       const emptyStream = {
         getAudioTracks: () => [],
         getTracks: () => [],
         getVideoTracks: () => [],
       } as unknown as MediaStream;
-      navigator.mediaDevices.getUserMedia = async () => emptyStream;
+      Object.defineProperty(navigator.mediaDevices, "getUserMedia", {
+        configurable: true,
+        value: async () => emptyStream,
+        writable: true,
+      });
     }
     return true;
   } catch {

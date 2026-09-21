@@ -72,7 +72,10 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
       const listed = await explorer?.list?.("/");
       const listing = listed as { files?: unknown[]; items?: unknown[] } | null | undefined;
       const entries = Array.isArray(listed) ? listed : listing?.files ?? listing?.items ?? [];
-      setFiles(entries.map((entry: unknown) => typeof entry === "string" ? entry : (entry as { path?: string; name?: string }).path ?? (entry as { name?: string }).name).filter(Boolean));
+      const paths = entries
+        .map((entry: unknown) => typeof entry === "string" ? entry : (entry as { path?: string; name?: string }).path ?? (entry as { name?: string }).name)
+        .filter((path): path is string => Boolean(path));
+      setFiles(paths);
     } catch {
       setTransferStatus("File storage is unavailable for this browser session.");
     }

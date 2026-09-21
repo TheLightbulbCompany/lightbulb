@@ -6,6 +6,19 @@
 
 **Source of runtime truth:** Hermes Agent 0.21.3 (`v2026.9.14`), pinned by digest in `hermes-version.json`. OpenClaw file layouts and behavior are not compatibility requirements.
 
+## Active connection audit and execution order
+
+Read-only production audit on 2026-09-20 found connected rows for Google, AWS, GitHub, Stripe, Apollo, Notion, PostHog, X, Instagram, Meta Ads, and QuickBooks. A `connected` row records an earlier authorization; it is not a Hermes adapter test. Stripe and Apollo each have seven empty `mcp-tokens/<provider>.json` files in Hermes profiles. Notion and QuickBooks have no such file in the checked profiles. None of those four has a retained integration secret in Secrets Manager. Their existing grants cannot be automatically moved into the broker from the current stores; repair the adapter in dev, then require one reconnect before claiming production readiness. Do not flip their production refresh owner based on the status row alone.
+
+The work is ordered by active use and shared failure mode, not by the Sentry pilot:
+
+1. **Existing broken MCP connections:** Stripe, Apollo, and Notion use the remote OAuth MCP rail; QuickBooks uses a separate stdio rail. Prove each in dev through authorize, tool read, refresh, cold runtime, and disconnect. Then migrate production with an explicit one-time reconnect for grants absent from the durable store.
+2. **Existing CLI connections:** AWS, Google, GitHub, X, and Instagram need real CLI reads after cold start and disconnect. AWS's old OpenClaw `aws-exec-profile` plugin only selected `AWS_PROFILE` for shell commands; Hermes replaces that job with a `[default]` profile plus `AWS_CONFIG_FILE`, while the backend still vends one-hour STS credentials. Move durable CLI bearer/token files out of S3 as specified below; verify Google/X/Instagram rotation reaches the canonical store. Google OAuth scope reduction and verification/CASA work runs alongside this rail.
+3. **Existing mixed-custody MCP connections:** PostHog has a retained Secrets Manager copy, but its actor-owned profile copy can rotate independently; make one authority serve both the agent MCP and backend rollups. Meta Ads has no refresh grant and needs its long-lived-token expiry/reconnect lifecycle verified.
+4. **Remaining catalog:** Linear, Attio, Intercom, Cloudflare, and Sentry use the remote MCP contract; Parallel and the Attio/Apollo API-key rows use skill or backend rails; Vercel CLI is unsupported. Verify each separately before advertising agent readiness. Treat manually added MCP servers and Slack as separate onboarding/credential paths, not registry OAuth successes.
+
+The current draft PR supplies fail-closed connection handling, the shared runtime bearer-token seam, a dev-only Sentry proof, and an honest UI state for unsupported existing grants. It does not make the production rows above ready. The same provider lifecycle contract in this spec gates each later rollout.
+
 ## Decisions
 
 1. A connected integration is owned by the Clerk workspace, preserving the current team-sharing product model.

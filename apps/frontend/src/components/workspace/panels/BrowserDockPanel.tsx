@@ -26,7 +26,7 @@ import { ensureDcvMediaShim, suppressDcvWebcamRejection } from "./dcvWebKitShim"
 suppressDcvWebcamRejection();
 
 const BrowserLiveView = lazy(() =>
-  import("bedrock-agentcore/browser/live-view").then((m) => ({ default: m.BrowserLiveView })),
+  import("./DirectDcvLiveView").then((m) => ({ default: m.DirectDcvLiveView })),
 );
 
 /** The route's constant key set (`GET /api/v1/browser/live-view`). */

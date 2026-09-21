@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the existing $50 managed-credit Bedrock inference path with Lightbulb-owned, per-workspace OpenRouter keys while preserving the customer subscription and credit-purchase experience; then build a 30-day no-card trial and $20 Base tier on the proven path.
+**Goal:** Ship a production-ready OpenRouter inference platform with Lightbulb-owned per-workspace keys, a 30-day no-card Ultra-powered free trial, a $20 Base tier, existing $50/$150 tiers, tested credits and billing, complete observability, and a safe Bedrock AIP retirement path.
 
 **Architecture:** A server-only OpenRouter management key provisions one capped completion key per Lightbulb owner. Hermes sends all model traffic through a Lightbulb streaming gate; the gate keeps the upstream key secret, enforces the existing Metronome balance and an approved model policy, and settles OpenRouter's actual generation cost into Metronome. Bedrock remains live for unmigrated owners and rollback. Trial/Base changes are a separate second phase.
 
@@ -15,10 +15,17 @@
 - No direct production server or environment mutation: use committed code and CI/CD. Dev deploys on merge; prod is a manual `deploy.yml` dispatch.
 - Existing $50 Workspace/$150 Ultra Stripe subscriptions, Lightbulb credit purchase UI, Metronome balance, ChatGPT OAuth, and direct OpenAI/Anthropic BYOK continue through Phase 1.
 - The customer never receives an OpenRouter account or key. The management key never reaches an inference endpoint; an owner completion key never reaches a Hermes profile or AgentCore environment.
-- The current three-day `trial_local` remains unchanged through Phase 1. The Zen/Muse draft PR is not part of this branch.
+- `trial_local` lasts 30 days from canonical readiness and routes only to `nvidia/nemotron-3-ultra-550b-a55b:free`; Base uses the same model at $20/month. Neither has a per-owner request cap in the initial release.
 - All new provider routes are disabled for customer traffic until Hermes, money, and rollback acceptance passes.
 - OpenRouter commercial permission and selected model terms are production gates, not assumptions inferred from the existence of Management API keys.
 - Every model route, including auxiliary and delegated turns, must pass the Lightbulb gate or fail closed.
+
+## Implementation status — 2026-09-21
+
+- Committed: disabled managed OpenRouter path, owner-key claim/secret lifecycle, streaming gate, durable request outbox and settlement worker, Hermes profile/provider switching, web/mobile capability surfaces, 30-day trial clock/copy, dev management secret/workspace contract proofs, and live zero-cost Nemotron Ultra sentinel.
+- In progress: zero-cost gate admission/outbox closure for Free/Base; the focused gate suite passes, but trial routing, free settlement completion, and the deployment policy remain uncommitted.
+- Not deployed: all OpenRouter customer flags remain false and the gate policy remains empty. No production owner or runtime has moved.
+- External setup still open: dev Stripe–Metronome repair, GitHub CLI authentication/branch publication, local Docker asset packaging, written OpenRouter commercial approval, and production credentials/workspace.
 
 ---
 
@@ -99,20 +106,21 @@
 
 ## Phase 2 — 30-day no-card trial and $20 Base after Phase 1 succeeds
 
-### Task 8: Set the included model policy and cost ceilings from actual Hermes tasks
+### Task 8: Lock and validate the Free/Base Nemotron Ultra policy
 
 **Files:** `docs/runbooks/openrouter-managed-inference.md`, versioned model-policy configuration and evaluation fixtures/tests.
 
-- [ ] Run identical multi-tool, delegation, vision, long-context, recovery, and final-report tasks on pinned DeepSeek V4.1 Flash, GLM 5.3 Flash, MiniMax M3, and constrained Auto Router. Record pass rate, invalid tool calls, p95 latency, input/output/cache usage, and upstream cost **per successfully completed task**. Treat OpenRouter Hermes token-share rankings as adoption, not a quality benchmark. Keep Jev out of the chat-model comparison because it returns typed decisions.
-- [ ] Choose the trial/Base allowlist and finite included allowance from that measured distribution plus the approved per-signup and per-subscriber cost budget. Set explicit owner-key limits and model/provider privacy policy; test a price increase, model removal, and provider 429 against the chosen ceiling.
+- [ ] Pin `nvidia/nemotron-3-ultra-550b-a55b:free` as the only Free/Base model in backend facts, Hermes primary/auxiliary config, runtime model lists, and gate policy. Set prompt/completion price ceilings to zero and reject every other model or routing override.
+- [ ] Run the pinned Hermes image through primary chat, multi-tool calls, delegation, compression, title/review, cron, Teams/Paperclip, disconnect/retry, and long-context recovery. Record pass rate, invalid tool calls, empty-choice retries, p95 latency, and provider 429/5xx behavior. A direct API sentinel is evidence of upstream reachability, not Hermes acceptance.
+- [ ] Add one environment-level kill switch and retry policy for transient empty choices/429/5xx. Do not add a per-owner counter or a second model until measured fleet behavior requires it.
 
 ### Task 9: Extend the existing local trial, then enable optional top-ups
 
 **Files:** `apps/backend/core/repositories/billing_repo.py`, `apps/backend/core/services/trial_cap.py`, `apps/backend/core/services/provision_gate.py`, `apps/backend/core/billing/metronome_provisioning.py`, `apps/backend/core/billing/metronome_funding.py`, trial purchase route/tests, `apps/frontend/src/lib/planLabel.ts`, onboarding/billing UI/tests.
 
 - [ ] Write failing tests for a 30-day clock armed only on canonical readiness, concurrent status polls, no payment method at signup, full listening mode, expiry without automatic charge, and preserved workspace data. Test that an explicit trial credit purchase does not extend `trial_end` and unused purchased credits survive Base conversion.
-- [ ] Run focused backend/frontend tests to confirm red on the current 3-day implementation.
-- [ ] Extend `trial_local` rather than starting a Stripe subscription at signup. Provision a no-card Metronome customer/contract and finite included allowance only after the Phase 1 cost metric and payment path are proven. First trial top-up collects a payment method explicitly, then uses a payment-gated credit commit; no spendable credit is granted before collection. Keep the 30-day entitlement clock independent of positive credit balance.
+- [x] Run focused backend/frontend tests against the prior 3-day implementation; update the repository clock, UI clamp, signup/pricing copy, and welcome email to 30 days only after the assertions fail for the old value. Committed as `d4b451233`.
+- [ ] Extend `trial_local` rather than starting a Stripe subscription at signup. Provision its OpenRouter owner key during workspace provisioning and route every primary/auxiliary call through the zero-cost gate. Do not require a Metronome customer, balance, or payment method for free-model inference. Keep the 30-day entitlement clock independent of keys and purchased credit balance.
 - [ ] Verify dev trial signup, allowance exhaustion, optional payment, day-30 expiry, and Base conversion; run tests and commit.
 
 ### Task 10: Add Base at $20 without changing $50/Ultra
@@ -121,5 +129,31 @@
 
 - [ ] Write failing tests for a Base checkout with one $20 recurring Price, Base's restricted model policy and credits, $50's broader model/BYOK/ChatGPT choices, plan changes with one subscription item, invoice failure, duplicate/out-of-order webhooks, and no trial auto-charge.
 - [ ] Run focused tests to confirm Base is absent.
-- [ ] Add separate dev/prod Stripe Base Price IDs and server-owned display price. Grant each paid-period included allowance only after an authenticated paid invoice, keyed durably by subscription+invoice/period so retries after Stripe/Metronome's 24-hour idempotency retention cannot double-grant. Purchased credits remain in the owner's balance across trial→Base and Base→Workspace. Do not mutate the existing $50 or Ultra Price.
+- [ ] Add separate dev/prod Stripe Base Price IDs and server-owned display price. Activate/renew Base only after an authenticated paid invoice. Base receives no synthetic credit grant while Ultra is zero-cost. Purchased credits remain in the owner's balance across trial→Base and Base→Workspace. Do not mutate the existing $50 or Ultra Price.
 - [ ] Run backend/frontend/mobile/infra checks, dev end-to-end billing acceptance, and then promote through CI/CD. Verify live price/catalog strings and delete this plan/spec after the feature ships, per repository planning-doc policy.
+
+### Task 11: Unify customer-facing plans and provider controls
+
+**Files:** Modify the shared backend billing schema/catalog, web/mobile/desktop plan and provider surfaces, agent-facing `lightbulb` skill references, privacy consent version, and their focused tests.
+
+- [ ] Assert one exact matrix everywhere: Free = 30 days/no card/Ultra-only; Base = $20/Ultra-only; Workspace = existing $50 with managed credits + BYOK + ChatGPT; Ultra = existing $150 benefits. Free/Base never show an OpenRouter key, provider picker, paid-credit error for free inference, or public model catalog.
+- [ ] Test signup, ready-state clock arming, day-30 expiry, Base Checkout, invoice success/failure, plan upgrades/downgrades, billing portal return, mobile disclosure re-consent, and preserved workspace data.
+- [ ] Rebuild the Hermes `lightbulb` skill and verify `lightbulb-facts.json` reports the same plan/model/provider facts as the UI and gate.
+
+### Task 12: Prove billing, credits, settlement, and observability
+
+**Files:** Modify Metronome provisioning/funding, OpenRouter settlement, Stripe webhook handlers, observability metrics/alarms, runbooks, and focused integration tests.
+
+- [ ] Repair the dev Stripe–Metronome account/Product mapping, then prove a test-mode top-up produces exactly one Stripe collection and one Metronome grant under replay. No real-money payment is needed in dev.
+- [ ] Prove paid OpenRouter generation cost → one nanodollar Metronome event → one balance debit → corrected fast-gate projection. Prove canceled streams, gateway crash, delayed metadata, duplicate generations, key rotation, exhausted balance, top-up recovery, and rollback.
+- [ ] Free generations must close their outbox records with actual cost zero without a Metronome event or fast-gate mutation. Daily reconciliation must still compare OpenRouter activity so a mislabeled paid generation cannot disappear as “free.”
+- [ ] Add structured logs/metrics without prompts, completions, bearer tokens, or plaintext keys. Alarm on upstream 401/402/429/5xx, key-provision failure, missing generation ID, settlement age/gap, and cohort error rate.
+
+### Task 13: Production rollout, AIP cleanup, and final acceptance
+
+**Files:** Modify rollout/reconciliation scripts, CDK stacks, CI variables, runbooks, and deletion tests; delete obsolete Bedrock resources only in the final cleanup PR.
+
+- [ ] Restore Docker packaging and GitHub authentication; synthesize all stacks, push the feature branch, run every path-filtered CI suite, and deploy dev through `deploy.yml`. Never hot-patch a server or Lambda.
+- [ ] Run four dev journeys: new Free signup; day-30 Free→Base; Base→Workspace with credit purchase; Workspace BYOK/ChatGPT and Bedrock rollback. Exercise all six starter agents, Teams, listening mode, scheduled work, mobile, desktop, and browser sessions.
+- [ ] Enable one production owner, observe several daily reconciliation windows, then expand cohorts. Keep Bedrock AIPs/gate/meter until production readback shows zero active Bedrock owners and zero unsettled Bedrock usage.
+- [ ] In a separate cleanup PR, idempotently delete retired owner AIPs, AIP reverse-index rows, Bedrock-only IAM permissions, gate/meter resources, and obsolete configuration. Preserve S3 Hermes profiles, AgentCore runtimes, billing rows, subscriptions, credits, and OpenRouter keys. Run a dry-run inventory and require zero unexpected resources before mutation.

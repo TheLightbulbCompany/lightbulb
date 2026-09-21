@@ -74,15 +74,16 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     if (!ownerId || token?.denied?.BOOL) fail(token?.denied?.BOOL ? 403 : 401, 'Invalid gateway token');
     const billing = (await ddb.getItem({ TableName: env.BILLING_TABLE, Key: { owner_id: { S: ownerId } }, ConsistentRead: true }))?.Item;
     const trial = S(billing, 'subscription_status') === 'trial_local';
+    const base = S(billing, 'plan') === 'base';
     const managed = S(billing, 'provider_choice') === 'openrouter_managed';
-    if ((!managed && !trial) || (!trial && S(billing, 'subscription_status') !== 'active')) fail(403, 'Managed inference unavailable');
+    if ((!managed && !trial && !base) || ((!trial && !base) && S(billing, 'subscription_status') !== 'active')) fail(403, 'Managed inference unavailable');
     const raw = event.body == null ? '' : event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body;
     if (!Number.isSafeInteger(Number(env.MAX_BODY_BYTES)) || Number(env.MAX_BODY_BYTES) < 1) fail(503, 'Request limit unavailable');
     if (Buffer.byteLength(raw) > Number(env.MAX_BODY_BYTES)) fail(413, 'Request too large');
     let input;
     try { input = JSON.parse(raw); } catch { fail(400, 'Invalid JSON'); }
     const policy = JSON.parse(env.MODEL_POLICY_JSON);
-    if (trial && (policy.max_price?.prompt !== 0 || policy.max_price?.completion !== 0)) fail(403, 'Free model policy unavailable');
+    if ((trial || base) && (policy.max_price?.prompt !== 0 || policy.max_price?.completion !== 0)) fail(403, 'Free model policy unavailable');
     const body = prepareBody(input, policy, ownerId, env);
     if (Buffer.byteLength(raw) > policy.max_prompt_tokens) fail(413, 'Prompt context bound exceeded');
     const keyRow = (await ddb.getItem({ TableName: env.OPENROUTER_KEYS_TABLE, Key: { owner_id: { S: ownerId } }, ConsistentRead: true }))?.Item;

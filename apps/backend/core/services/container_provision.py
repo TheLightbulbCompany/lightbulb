@@ -29,6 +29,8 @@ def provider_choice_from_row(row: dict | None) -> tuple[str, str | None]:
         # them through the managed gate so provisioning/key/profile code has
         # one path; the gate admits this mode only for its zero-price policy.
         return "openrouter_managed", None
+    if (row or {}).get("plan") == "base" and not (row or {}).get("provider_choice"):
+        return "openrouter_managed", None
     provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
     byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None
     return provider_choice, byo_provider

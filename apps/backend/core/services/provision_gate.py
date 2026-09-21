@@ -519,6 +519,8 @@ async def _evaluate_provision_gate_inner(
     # ChatGPT-OAuth disconnect clears provider_choice — a re-read here used
     # to mask the null with the legacy "bedrock_claude" fallback).
     provider_choice = account.get("provider_choice")
+    if account.get("plan") == "base" and provider_choice is None:
+        provider_choice = "openrouter_managed"
     if provider_choice is None:
         return Gate(
             code="provider_required",

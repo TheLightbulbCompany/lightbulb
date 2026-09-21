@@ -267,16 +267,29 @@ def test_tier2_rest_keys_are_retained_backend_side():
         assert _retains_secret(p) is True, f"{key} must be readable by a backend route"
 
 
-def test_mcp_rows_stay_container_only(monkeypatch):
-    """The agent-facing rows must NOT start retaining as a side effect."""
+def test_brokered_remote_mcp_rows_retain_refresh_grants_in_production(monkeypatch):
+    """The runtime receives per-turn bearers; Secrets Manager owns refresh grants."""
     from core.services.credentials import registry
     from core.services.credentials.registry import all_providers
     from routers.connections import _retains_secret
 
     providers = all_providers()
     monkeypatch.setattr(registry.settings, "ENVIRONMENT", "prod")
-    for key in ("attio", "apollo"):
-        assert _retains_secret(providers[key]) is False, key
+    for key in ("stripe", "notion", "sentry", "linear", "attio", "intercom", "posthog", "apollo", "cloudflare"):
+        assert _retains_secret(providers[key]) is True, key
+
+
+def test_remote_mcp_providers_are_brokered_in_production(monkeypatch):
+    """AgentCore receives a per-turn bearer; refresh grants stay in Secrets Manager."""
+    from core.services.credentials import registry
+    from core.services.credentials.apply_connection import runtime_supported
+
+    monkeypatch.setattr(registry.settings, "ENVIRONMENT", "prod")
+    for key in ("stripe", "notion", "sentry", "linear", "attio", "intercom", "posthog", "apollo", "cloudflare"):
+        provider = registry.get_provider(key)
+        assert registry.available_for(provider, "org_test"), key
+        assert registry.refresh_owner_for(provider) == "backend", key
+        assert runtime_supported(provider), key
 
 
 def test_paired_providers_never_share_a_bare_name():

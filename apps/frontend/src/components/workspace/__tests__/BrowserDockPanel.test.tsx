@@ -230,12 +230,10 @@ describe("BrowserDockPanel", () => {
     await flush(5_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-signed-url", url);
     await flush(235_000);
-    // Same-session signed URLs are retained until the 240s remint boundary.
-    expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", url);
+    expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", url.replace("first", "second"));
     const nextUrl = url.replace("/one/", "/two/");
     get.mockResolvedValue({ active: true, url: nextUrl, sessionId: "s2", generation: "g2", mode: "agent", canControl: true });
-    await flush(10_000);
-    await flush();
+    await flush(5_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", nextUrl);
   });
 

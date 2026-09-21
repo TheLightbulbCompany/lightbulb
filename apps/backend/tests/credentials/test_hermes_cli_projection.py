@@ -164,6 +164,17 @@ async def test_instagram_projection_lands_only_the_skill_dir(s3, roster, monkeyp
     }
 
 
+@pytest.mark.asyncio
+async def test_vercel_skill_projection_lands_skill_and_token_env(s3, roster):
+    """The Vercel skill is a Hermes profile skill; its token travels through the
+    allowlisted CLI environment rather than an agent-editable config field."""
+    await hermes_cli.project("org_1", "vercel_cli", "skill_cli", {"token": "vrc_secret"})
+
+    body = s3["org_1/hermes/ceo/skills/vercel/SKILL.md"].decode()
+    assert "vercel@54.18.2" in body
+    assert json.loads(s3["org_1/hermes/ceo/cli-env.json"].decode()) == {"VERCEL_TOKEN": "vrc_secret"}
+
+
 def test_every_projected_materializer_has_a_remover():
     from core.services.credentials.materializers import MATERIALIZER_REMOVERS, MATERIALIZERS
 

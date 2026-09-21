@@ -11,6 +11,9 @@ def _no_manual_servers_by_default(monkeypatch):
     in this file; the manual-servers tests below override it per test."""
     from core.services.credentials import mcp_server as m
 
+    # These assertions pin the native actor-owned production rail. Dev uses the
+    # workspace bearer broker for the same remote providers.
+    monkeypatch.setattr(m.registry.settings, "ENVIRONMENT", "prod")
     monkeypatch.setattr(m.integrations_repo, "get_manual_mcp_servers", AsyncMock(return_value={}))
 
 

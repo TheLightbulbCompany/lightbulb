@@ -411,6 +411,9 @@ class Provider(BaseModel):
     acquisition: Acquisition
     actor: Actor
     refresh_owner: RefreshOwner
+    # Roll an actor-owned remote OAuth MCP provider onto the workspace broker
+    # in one environment before changing production's credential authority.
+    brokered_environments: list[str] | None = None
     # Opt-in override for actor-refresh providers: retain the exchanged
     # credential in Secrets Manager anyway, for backend-side reads (posthog:
     # HogQL rollups). Non-actor providers retain regardless — see
@@ -507,7 +510,16 @@ class Provider(BaseModel):
         # time keeps _oauth_client's resolution order unambiguous.
         if self.oauth and self.oauth.platform_app and (self.byo_required or self.oauth.registration_url):
             raise ValueError(f"{self.key}: platform_app is mutually exclusive with byo_required/registration_url")
+        if self.brokered_environments and (not self.mcp_remote or self.refresh_owner != "actor"):
+            raise ValueError(f"{self.key}: brokered_environments requires actor-owned remote OAuth MCP")
         return self
+
+
+def refresh_owner_for(provider: Provider) -> RefreshOwner:
+    """Resolve the effective token custodian for the current environment."""
+    if provider.brokered_environments and current_env() in provider.brokered_environments:
+        return "backend"
+    return provider.refresh_owner
 
 
 @lru_cache(maxsize=1)

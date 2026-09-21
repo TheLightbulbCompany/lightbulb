@@ -83,11 +83,11 @@ async def build_connected_integration_servers(owner_id: str, *, pending: str | N
             # Orphan status row for a provider no longer in the registry (e.g. a
             # since-removed integration). Skip it rather than failing the whole build.
             continue
-        # Remote MCP server (mcp_oauth rail): re-publish the {transport, url} block
-        # from the registry alone — actor-refresh, so there is no retained secret.
+        # Remote MCP server: brokered grants use a bearer reference; native actor
+        # grants use Hermes's OAuth token file.
         remote = prov.mcp_remote
         if remote is not None:
-            servers[remote.key] = remote.server_block(brokered=prov.refresh_owner == "backend")
+            servers[remote.key] = remote.server_block(brokered=registry.refresh_owner_for(prov) == "backend")
             continue
         # Stdio MCP server whose credential is a FILE in the profile (qbo_dotenv rail).
         # Same reasoning as the remote branch: actor-refresh, no retained secret,

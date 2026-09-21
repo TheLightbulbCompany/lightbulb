@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { reserve, release } from './ledger.mjs';
+import { reserve, release, recordFree, releaseFree } from './ledger.mjs';
 import { forward } from './forward.mjs';
 
 class GateError extends Error {
@@ -25,7 +25,7 @@ function ceilPricedTokens(tokens, price) {
 function reservationFor(body, policy) {
   const output = Math.max(body.max_tokens ?? 0, body.max_completion_tokens ?? 0);
   const amount = ceilPricedTokens(policy.max_prompt_tokens, policy.max_price.prompt) + ceilPricedTokens(output, policy.max_price.completion);
-  if (amount < 1n || amount > BigInt(Number.MAX_SAFE_INTEGER)) fail(503, 'Model reservation unavailable');
+  if (amount < 0n || amount > BigInt(Number.MAX_SAFE_INTEGER)) fail(503, 'Model reservation unavailable');
   return Number(amount);
 }
 
@@ -47,7 +47,7 @@ export function prepareBody(input, policy, ownerId, env) {
     const value = input[name];
     if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > Number(env.MAX_OUTPUT_TOKENS))) fail(400, 'Output limit exceeded');
   }
-  if (!Number.isFinite(policy?.max_price?.prompt) || !Number.isFinite(policy?.max_price?.completion) || policy.max_price.prompt <= 0 || policy.max_price.completion <= 0) fail(503, 'Model policy unavailable');
+  if (!Number.isFinite(policy?.max_price?.prompt) || !Number.isFinite(policy?.max_price?.completion) || policy.max_price.prompt < 0 || policy.max_price.completion < 0) fail(503, 'Model policy unavailable');
   const { session_id: _ignoredSession, ...safeInput } = input;
   const body = { ...safeInput, provider: { max_price: policy.max_price, data_collection: 'deny' }, stream_options: { include_usage: true } };
   if (body.max_tokens === undefined && body.max_completion_tokens === undefined) body.max_tokens = Number(env.MAX_OUTPUT_TOKENS);
@@ -74,7 +74,6 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     if (!ownerId || token?.denied?.BOOL) fail(token?.denied?.BOOL ? 403 : 401, 'Invalid gateway token');
     const billing = (await ddb.getItem({ TableName: env.BILLING_TABLE, Key: { owner_id: { S: ownerId } }, ConsistentRead: true }))?.Item;
     if (S(billing, 'provider_choice') !== 'openrouter_managed' || S(billing, 'subscription_status') !== 'active') fail(403, 'Managed inference unavailable');
-    if (!S(billing, 'metronome_customer_id') || !S(billing, 'metronome_contract_id')) fail(429, 'Credit ledger unavailable');
     const raw = event.body == null ? '' : event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body;
     if (!Number.isSafeInteger(Number(env.MAX_BODY_BYTES)) || Number(env.MAX_BODY_BYTES) < 1) fail(503, 'Request limit unavailable');
     if (Buffer.byteLength(raw) > Number(env.MAX_BODY_BYTES)) fail(413, 'Request too large');
@@ -89,8 +88,10 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     if (!secret || !secret.startsWith('sk-or-')) fail(503, 'Owner key unavailable');
     requestId = randomUUID();
     estimate = reservationFor(body, policy);
-    const outbox = { request_id: { S: requestId }, owner_id: { S: ownerId }, key_hash: { S: S(keyRow, 'key_hash') }, secret_name: { S: S(keyRow, 'secret_name') }, model: { S: input.model }, policy_revision: { S: String(policy.revision) }, reservation_microcents: { N: String(estimate) }, state: { S: 'pending' }, created_at: { N: String(Math.floor(Date.now() / 1000)) } };
-    const admitted = await reserve(ddb, env, ownerId, estimate, outbox);
+    const free = estimate === 0;
+    if (!free && (!S(billing, 'metronome_customer_id') || !S(billing, 'metronome_contract_id'))) fail(429, 'Credit ledger unavailable');
+    const outbox = { request_id: { S: requestId }, owner_id: { S: ownerId }, key_hash: { S: S(keyRow, 'key_hash') }, secret_name: { S: S(keyRow, 'secret_name') }, model: { S: input.model }, policy_revision: { S: String(policy.revision) }, billing_mode: { S: free ? 'free' : 'paid' }, reservation_microcents: { N: String(estimate) }, state: { S: 'pending' }, created_at: { N: String(Math.floor(Date.now() / 1000)) } };
+    const admitted = free ? await recordFree(ddb, env, outbox) : await reserve(ddb, env, ownerId, estimate, outbox);
     if (!admitted) fail(429, 'Credit balance exhausted');
     let persistedId;
     const onGenerationId = async id => {
@@ -101,7 +102,8 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     const result = await forwardImpl({ body, key: secret, writeHead: (status, headers) => responder.writeHead(status, { 'content-type': headers['content-type']?.includes('text/event-stream') ? 'text/event-stream' : 'application/json' }), write: chunk => responder.write(chunk), waitForDrain: () => { if (!responder.waitForDrain) throw new Error('Client drain unavailable'); return responder.waitForDrain(); }, onGenerationId, end: () => responder.end(), abortSignal: responder.abortSignal });
     if (result.generationId) await onGenerationId(result.generationId);
     if (result.preGeneration === true && !persistedId) {
-      await release(ddb, env, ownerId, estimate, requestId);
+      if (free) await releaseFree(ddb, env, requestId);
+      else await release(ddb, env, ownerId, estimate, requestId);
     }
   } catch (error) {
     if (!responder.headersSent()) responder.error(error instanceof GateError ? error : new GateError(502, 'Inference gateway unavailable'));

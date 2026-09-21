@@ -71,6 +71,31 @@ class SettlementTests(unittest.TestCase):
                               ingest=lambda *_: self.fail("ingested"), commit=lambda *_: None,
                               verified=False, now=1_700_000_001)
 
+    def test_free_zero_cost_skips_metronome_and_money_proof(self):
+        row = {**self.row, "billing_mode": "free", "reservation_microcents": 0}
+        generation = {**self.generation, "total_cost": Decimal("0")}
+        calls = []
+        result = worker.settle_one(
+            row, get_generation=lambda *_: generation,
+            ingest=lambda *_: self.fail("free generation ingested into Metronome"),
+            commit=lambda *_: self.fail("paid commit used"),
+            commit_free=lambda *args: calls.append(args) or "settled",
+            verified=False, now=1_700_000_001,
+        )
+        self.assertEqual(result, "settled")
+        self.assertEqual(len(calls), 1)
+
+    def test_free_positive_cost_fails_closed_without_ingest(self):
+        row = {**self.row, "billing_mode": "free", "reservation_microcents": 0}
+        with self.assertRaisesRegex(worker.PendingSettlement, "positive cost"):
+            worker.settle_one(
+                row, get_generation=lambda *_: self.generation,
+                ingest=lambda *_: self.fail("unexpected cost ingested"),
+                commit=lambda *_: self.fail("paid commit used"),
+                commit_free=lambda *_: self.fail("free commit used"),
+                verified=True, now=1_700_000_001,
+            )
+
     def test_rotation_uses_historical_secret_and_retry_is_idempotent(self):
         seen = []
         committed = set()
@@ -132,6 +157,19 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(calls[0]["TransactItems"][2]["Update"]["ExpressionAttributeValues"][":debit"]["N"], "-12346")
         self.assertEqual(calls[0]["TransactItems"][1]["Update"]["ExpressionAttributeValues"][":cost"]["S"], "0.012345678")
         self.assertEqual(calls[0]["TransactItems"][1]["Update"]["ExpressionAttributeValues"][":actual"]["N"], "12345678")
+
+    def test_free_commit_never_touches_fast_gate(self):
+        calls = []
+        class Ddb:
+            def transact_write_items(self, **kwargs):
+                calls.append(kwargs)
+        row = {**self.row, "billing_mode": "free", "reservation_microcents": 0}
+        generation = {**self.generation, "total_cost": Decimal("0")}
+        store = worker.Store(Ddb(), requests_table="requests", fast_table="fast")
+        result = store.commit_free(row, worker.event_for(row, generation), 1_700_000_001)
+        self.assertEqual(result, "settled")
+        self.assertEqual(len(calls[0]["TransactItems"]), 2)
+        self.assertTrue(all(operation.get("Update", {}).get("TableName") != "fast" for operation in calls[0]["TransactItems"]))
 
     def test_late_settlement_releases_only_openrouter_hold_without_stale_reset(self):
         calls = []

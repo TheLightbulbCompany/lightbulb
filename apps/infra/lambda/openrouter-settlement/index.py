@@ -57,8 +57,9 @@ def event_for(row, generation):
     }
 
 
-def settle_one(row, *, get_generation, ingest, commit, verified, now):
-    if not verified:
+def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_free=None):
+    free = row.get("billing_mode") == "free"
+    if not verified and not free:
         raise MoneyContractUnverified("Metronome OpenRouter rate contract is unverified")
     if row.get("state") != "pending":
         return "already_processed"
@@ -70,8 +71,15 @@ def settle_one(row, *, get_generation, ingest, commit, verified, now):
     if not generation:
         return "metadata_pending"
     event = event_for(row, generation)
+    amount = cost_nanodollars(generation["total_cost"])
+    if free:
+        if amount:
+            raise PendingSettlement("Free OpenRouter generation reported positive cost")
+        if commit_free is None:
+            raise RuntimeError("Free OpenRouter settlement commit is unavailable")
+        return commit_free(row, event, now)
     ingest(event)  # Metronome deduplicates by generation ID for 34 days.
-    return commit(row, event, cost_nanodollars(generation["total_cost"]), now)
+    return commit(row, event, amount, now)
 
 
 def activity_date_allowed(day, today):
@@ -296,6 +304,42 @@ class Store:
             self._mark_duplicate(row, now)
             return "duplicate_generation"
 
+    def commit_free(self, row, event, now):
+        generation_id = event["transaction_id"]
+        request_id = row["request_id"]
+        transaction = [
+            {"Put": {
+                "TableName": self.requests_table,
+                "Item": {"request_id": {"S": f"generation#{generation_id}"}, "owner_id": {"S": row["owner_id"]},
+                         "key_hash": {"S": row["key_hash"]}, "source_request_id": {"S": request_id}},
+                "ConditionExpression": "attribute_not_exists(request_id)",
+            }},
+            {"Update": {
+                "TableName": self.requests_table,
+                "Key": {"request_id": {"S": request_id}},
+                "UpdateExpression": "SET #state = :settled, total_cost = :zero, provider_cost_nanodollars = :actual, settled_at = :now, #date = :date, actual_model = :model, provider_name = :provider",
+                "ConditionExpression": "#state = :pending AND generation_id = :generation AND billing_mode = :free",
+                "ExpressionAttributeNames": {"#state": "state", "#date": "date"},
+                "ExpressionAttributeValues": {
+                    ":settled": {"S": "settled"}, ":pending": {"S": "pending"}, ":free": {"S": "free"},
+                    ":generation": {"S": generation_id}, ":zero": {"S": "0"}, ":actual": {"N": "0"},
+                    ":now": {"N": str(now)}, ":date": {"S": event["timestamp"][:10]},
+                    ":model": {"S": event["properties"]["model"]},
+                    ":provider": {"S": event["properties"]["provider"]},
+                },
+            }},
+        ]
+        try:
+            self.ddb.transact_write_items(TransactItems=transaction)
+            return "settled"
+        except Exception as exc:
+            if exc.__class__.__name__ != "TransactionCanceledException":
+                raise
+            current = self.ddb.get_item(TableName=self.requests_table, Key={"request_id": {"S": request_id}}).get("Item", {})
+            if current.get("state", {}).get("S") == "settled":
+                return "settled"
+            raise
+
     def _mark_duplicate(self, row, now):
         updates = [{"Update": {
             "TableName": self.requests_table,
@@ -514,20 +558,20 @@ def handler(event, _context):
             raise RuntimeError(f"OpenRouter key activity gap on {audit_day}: {len(gaps)} key(s)")
         return {"audited_date": audit_day, "keys_with_gaps": 0}
     retirement = _retire_scheduled(store, now) if store.keys_table else None
-    if not _verified():
-        raise MoneyContractUnverified("OpenRouter rate-card precision proof is missing")
+    verified = _verified()
     outcomes = {}
     for row in store.pending():
         if now - int(row["created_at"]) < 300:
             continue  # a stream may still be running
         try:
             outcome = settle_one(row, get_generation=_get_generation, ingest=_ingest,
-                                 commit=store.commit, verified=True, now=now)
+                                 commit=store.commit, commit_free=store.commit_free,
+                                 verified=verified, now=now)
             outcomes[outcome] = outcomes.get(outcome, 0) + 1
         except Exception as exc:
             # No prompts, keys, or customer IDs in logs. The row stays pending.
             outcomes[exc.__class__.__name__] = outcomes.get(exc.__class__.__name__, 0) + 1
-    if outcomes.get("unknown_generation") or outcomes.get("expired_gap") or outcomes.get("PendingSettlement") or any(
+    if outcomes.get("unknown_generation") or outcomes.get("expired_gap") or outcomes.get("PendingSettlement") or outcomes.get("MoneyContractUnverified") or any(
         name.endswith("Error") or name.endswith("Exception") for name in outcomes
     ):
         raise RuntimeError("OpenRouter settlement has unresolved pending requests")

@@ -31,6 +31,12 @@ export async function reserve(ddb, env, ownerId, estimate, outbox) {
   return false;
 }
 
+export async function recordFree(ddb, env, outbox) {
+  if (!outbox?.request_id?.S) return false;
+  await ddb.putItem({ TableName: env.REQUESTS_TABLE, Item: outbox, ConditionExpression: 'attribute_not_exists(request_id)' });
+  return true;
+}
+
 export async function release(ddb, env, ownerId, estimate, requestId) {
   await ddb.transactWriteItems({ TransactItems: [
     { Update: {
@@ -49,4 +55,13 @@ export async function release(ddb, env, ownerId, estimate, requestId) {
       ExpressionAttributeValues: { ':released': { S: 'released' }, ':pending': { S: 'pending' } },
     } },
   ] });
+}
+
+export async function releaseFree(ddb, env, requestId) {
+  await ddb.updateItem({
+    TableName: env.REQUESTS_TABLE, Key: { request_id: { S: requestId } },
+    UpdateExpression: 'SET #state = :released', ConditionExpression: '#state = :pending',
+    ExpressionAttributeNames: { '#state': 'state' },
+    ExpressionAttributeValues: { ':released': { S: 'released' }, ':pending': { S: 'pending' } },
+  });
 }

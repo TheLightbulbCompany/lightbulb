@@ -32,7 +32,7 @@ import { handleShellLinkClick } from "@/lib/shellNav";
  * its own branch below so a free-tier user sees a distinct "come back
  * tomorrow or upgrade" state rather than a generic failure.
  *
- * `trial_expired` is the sibling Isol8-side code for the 3-day
+ * `trial_expired` is the sibling local-trial code for the 30-day
  * `trial_local` window itself running out (as opposed to the daily cost
  * cap) — surfaced by both the provision gate and gate_chat's Layer 2
  * (core/services/provision_gate.py, core/gateway/connection_pool.py).

@@ -361,7 +361,7 @@ function BillingPanel() {
   const [portalLoading, setPortalLoading] = useState(false);
   // Mount-time snapshot for the trial-expired check below: render must stay
   // pure (the react-compiler lint rejects Date.now() during render), and the
-  // 3-day expiry granularity makes a per-mount timestamp plenty fresh.
+  // 30-day expiry granularity makes a per-mount timestamp plenty fresh.
   const [nowMs] = useState(() => Date.now());
 
   const handlePortal = useCallback(async () => {
@@ -410,7 +410,7 @@ function BillingPanel() {
         })
       : null;
   // trial_local's `trial_end` is the OVERALL free-tier window expiry — stamped
-  // locally at signup as created + 3 days (backend trial_cap._is_expired), NOT
+  // locally at signup as created + 30 days (backend trial_cap._is_expired), NOT
   // the daily $3 reset boundary (which resets at UTC midnight and is tracked
   // separately). Once it elapses the backend blocks usage outright
   // (trial_block_reason -> TRIAL_EXPIRED) WITHOUT flipping subscription_status,

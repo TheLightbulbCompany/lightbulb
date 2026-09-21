@@ -135,6 +135,15 @@ describe("BrowserDockPanel", () => {
     expect(screen.getByRole("button", { name: /done & stop/i })).toBeInTheDocument();
   });
 
+  it("takes an idle session for the viewer automatically", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle", canControl: true });
+    post.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true });
+    render(<BrowserDockPanel />);
+    await flush();
+    expect(post).toHaveBeenCalledWith("/browser/control", { action: "take", generation: "g1" });
+    expect(screen.getByRole("button", { name: /done & stop/i })).toBeInTheDocument();
+  });
+
   it("merges fresh control metadata while retaining the current signed URL", async () => {
     get.mockResolvedValueOnce({ active: true, url: "https://signed/one", sessionId: "s1", generation: 1, mode: "agent", canControl: true })
       .mockResolvedValue({ active: true, url: "https://signed/one?new", sessionId: "s1", generation: 2, mode: "human", isController: false, canControl: true });

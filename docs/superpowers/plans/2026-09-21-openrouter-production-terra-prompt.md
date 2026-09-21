@@ -107,8 +107,8 @@ The plan and spec are working documents. Update them when the implementation cha
 - OpenRouter account currently reports zero purchased credits and zero usage. Do not require a purchase for Free/Base work.
 - Metronome nanodollar proof passed exactly: `12,345,678` nanodollars debited `$0.012345678`; duplicate transaction ID produced no second debit.
 - Dev Stripe–Metronome mapping is wrong. The runbook contains the exact IDs and repair order. Do not claim paid end-to-end acceptance until repaired.
-- GitHub CLI authentication is currently invalid.
-- OrbStack is running but the Docker socket is absent, so Docker-based CDK asset synthesis currently fails.
+- GitHub PR creation and pushes are working through the configured credential manager; `gh auth status` may still report a stale token, so use the actual PR/run commands as the authority.
+- OrbStack/Docker is running and a full `cdk synth --quiet` has passed locally with real asset packaging.
 
 ## Current branch state
 
@@ -120,14 +120,13 @@ Important commits:
 - `1ecda2dbb` — Nemotron Ultra smoke record
 - `d4b451233` — 30-day free trial entitlement and copy
 - `906b45d21` — audited production-readiness spec and plan
+- `aacd83542` — zero-cost OpenRouter admission and settlement path
+- `8ba5b2145` — local trial routing through managed inference
+- `dc9112471` — Base billing contract
+- `a2cca0eb0` — current-main merge, preserving both bridge RPC surfaces
+- `635af3f21` — Browser viewer remount fix
 
-There are currently uncommitted changes in:
-
-- `apps/infra/lambda/openrouter-gate/core.mjs`
-- `apps/infra/lambda/openrouter-gate/core.test.mjs`
-- `apps/infra/lambda/openrouter-gate/ledger.mjs`
-
-Those changes add zero-price request admission and durable outbox creation without a Metronome reservation. The focused gate/ledger suite passes. Review and finish them; do not discard them.
+The worktree is clean. The zero-price gate, durable outbox, and settlement changes are committed and focused tests pass. Do not reset or recreate them.
 
 ## Existing storage decisions
 
@@ -245,10 +244,10 @@ Support diagnostics must resolve owner → key hash → gate request → generat
 
 ## Work package 7 — infrastructure, CI, and dev deployment
 
-- Restore a working local Docker engine or prove the exact CI bundling path another way. Do not rewrite Lambda packaging merely to avoid a broken local daemon.
+- Keep the verified Docker/CDK packaging path intact. Do not rewrite Lambda packaging merely to avoid an environmental failure.
 - Run CDK synth twice if workflow asset-job discovery changes generated assets.
 - Run workflow transport and production-dispatch guard tests.
-- Restore `gh` authentication, push the feature branch, and open a reviewable PR.
+- Keep PR #2852 reviewable, watch every CI run, and merge only after the fresh backend/frontend checks reach terminal success (the repository-documented Claude reviewer outage is accepted).
 - Watch every CI run.
 - Configure dev variables only after code is committed:
   - `OPENROUTER_WORKSPACE_ID_DEV=5db3e7d3-4447-43b8-ac39-b1e35e3f54a9`

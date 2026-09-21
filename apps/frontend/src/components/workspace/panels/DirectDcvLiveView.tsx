@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { reportViewerError } from "./dcvViewerError";
+import { fitDcvDisplay } from "./dcvSizing";
 
 let nextViewerId = 0;
 
@@ -16,6 +17,7 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
   const connection = useRef<any>(null);
   const connecting = useRef(false);
   const viewer = useRef<HTMLDivElement>(null);
+  const viewport = useRef<HTMLDivElement>(null);
   const upload = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [quality, setQuality] = useState(80);
@@ -96,6 +98,40 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
     };
   }, [remoteHeight, remoteWidth, signedUrl]);
 
+  useEffect(() => {
+    const host = document.getElementById(displayId.current);
+    const container = viewport.current;
+    if (!host || !container) return;
+
+    const applyFit = () => {
+      const { width, height } = container.getBoundingClientRect();
+      const { scale, offsetX, offsetY } = fitDcvDisplay(width, height, remoteWidth, remoteHeight);
+      if (!scale) return;
+      const next = {
+        height: `${remoteHeight}px`,
+        left: `${offsetX}px`,
+        position: "absolute",
+        top: `${offsetY}px`,
+        transform: `scale(${scale})`,
+        "transform-origin": "top left",
+        width: `${remoteWidth}px`,
+      };
+      for (const [property, value] of Object.entries(next)) {
+        if (host.style.getPropertyValue(property) !== value) host.style.setProperty(property, value);
+      }
+    };
+
+    const resizeObserver = new ResizeObserver(applyFit);
+    const mutationObserver = new MutationObserver(applyFit);
+    resizeObserver.observe(container);
+    mutationObserver.observe(host, { attributes: true, attributeFilter: ["style"] });
+    applyFit();
+    return () => {
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+    };
+  }, [remoteHeight, remoteWidth]);
+
   const refreshFiles = async () => {
     try {
       const explorer = await connection.current?.getFileExplorer?.();
@@ -151,8 +187,8 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
     </div>
     {transferStatus && <p className="shrink-0 px-3 py-1 text-xs text-[var(--midnight-muted)]">{transferStatus}</p>}
     {files.length > 0 && <div className="shrink-0 flex gap-2 overflow-auto px-3 py-1 text-xs">{files.map((file) => <button key={file} type="button" onClick={() => void downloadFile(file)} className="underline">{file}</button>)}</div>}
-    <div className="min-h-0 flex-1 overflow-auto" aria-label="Shared browser display">
-      <div id={displayId.current} className="relative h-full min-h-0 w-full" />
+    <div ref={viewport} className="relative min-h-0 flex-1 overflow-hidden" aria-label="Shared browser display">
+      <div id={displayId.current} />
     </div>
   </div>;
 }

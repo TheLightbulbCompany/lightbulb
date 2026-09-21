@@ -21,6 +21,7 @@ import { useAuth } from "@clerk/nextjs";
 import { useRuntimeHost } from "@lightbulb/shared";
 import { ApiError, useApi } from "@/lib/api";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
+import { ensureDcvMediaShim } from "./dcvWebKitShim";
 
 const BrowserLiveView = lazy(() =>
   import("bedrock-agentcore/browser/live-view").then((m) => ({ default: m.BrowserLiveView })),
@@ -54,6 +55,13 @@ function Notice({ children }: { children: React.ReactNode }): React.ReactElement
       <p>{children}</p>
     </div>
   );
+}
+
+function DcvLiveView(props: React.ComponentProps<typeof BrowserLiveView>): React.ReactElement {
+  if (!ensureDcvMediaShim()) {
+    return <Notice>This device cannot initialize the shared browser viewer.</Notice>;
+  }
+  return <BrowserLiveView {...props} />;
 }
 
 function normalizeBrowserUrl(value: string): string {
@@ -197,7 +205,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
       <div className="flex h-full min-h-0 flex-col">
         <p className="p-3 text-xs text-[var(--midnight-muted)]">Shared browser controls become available after this existing session finishes.</p>
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
-          <div inert className="min-h-0 flex-1"><BrowserLiveView key={view.url} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} /></div>
+          <div inert className="min-h-0 flex-1"><DcvLiveView key={view.url} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} /></div>
         </Suspense>
       </div>
     );
@@ -252,7 +260,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
       <div className="relative min-h-0 flex-1">
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
           <div aria-disabled={!isController} inert={!isController || busy} className="h-full">
-            <BrowserLiveView key={view.url} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} />
+            <DcvLiveView key={view.url} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} />
           </div>
         </Suspense>
         {!isController && <div aria-label="Read-only browser view" role="region" tabIndex={0} onKeyDown={(event) => event.preventDefault()} onPointerDown={(event) => event.preventDefault()} className="absolute inset-0 z-10 cursor-default" />}

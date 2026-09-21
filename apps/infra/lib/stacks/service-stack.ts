@@ -1323,6 +1323,10 @@ export class ServiceStack extends cdk.Stack {
     // env.startsWith, not ===, so this stays correct if a prod-prefixed variant is ever
     // introduced.
     const currentHermesTag = env.startsWith("prod") ? HERMES_VERSION.prod.tag : HERMES_VERSION.dev.tag;
+    const desktopOwner = process.env[`DESKTOP_EXECUTION_OWNER_${env.toUpperCase()}`] ?? "";
+    if (desktopOwner && !/^(?:user|org)_[A-Za-z0-9_-]{1,123}$/.test(desktopOwner)) {
+      throw new Error(`Invalid desktop execution owner for ${env}`);
+    }
 
     // Backend container environment + secrets, declared as consts (rather
     // than inline literals) so the provisioning-executor task definition can
@@ -1359,6 +1363,10 @@ export class ServiceStack extends cdk.Stack {
       // unauthenticated WebSocket-impersonation hole on the public HTTP
       // API Gateway $default path.
       WS_ENFORCE_INTERNAL_SECRET: "true",
+      // One owner per env. An unset synth variable closes new submissions;
+      // existing receipts remain readable/cancellable in the backend.
+      DESKTOP_EXECUTION_ENABLED: desktopOwner ? "true" : "false",
+      DESKTOP_EXECUTION_OWNER_ALLOWLIST: desktopOwner,
       WEBHOOK_DEDUP_TABLE: tableName(env, "webhook-event-dedup"),
       CORS_ORIGINS:
         env === "prod"

@@ -36,6 +36,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/infra/hermes/plugins/lightbulb/desktop_browser.py;
                                  apps/desktop/src-tauri/src/local_mcp.rs;
                                  apps/frontend/src/components/desktop/LocalBrowserSetup.tsx.
+  - Paired Mac execution .... references/platform-primitives.md
+                              <- apps/infra/hermes/plugins/lightbulb/desktop.py; bridge/turn.py;
+                                 apps/backend/routers/desktop_execution.py;
+                                 apps/backend/core/services/{desktop_execution,desktop_pair,connection_service}.py;
+                                 apps/frontend/src/components/desktop/{DesktopPermissionsGate,NodeStatusPill}.tsx.
   - Shared local sessions ... references/platform-primitives.md + references/surfaces.md
                               <- apps/infra/hermes/bridge/ + apps/infra/hermes/plugins/lightbulb/__init__.py
                                  (lightbulb_local_sessions); apps/backend/core/services/{local_session_grants,local_sessions,local_session_relay,openclaw_work}.py;

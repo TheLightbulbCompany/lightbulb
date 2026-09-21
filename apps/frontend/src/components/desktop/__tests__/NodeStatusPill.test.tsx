@@ -16,11 +16,11 @@ describe("NodeStatusPill", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("renders the available pill when connected", () => {
+  it("reports a connected Mac without claiming every tool is available", () => {
     gatewayState.nodeConnected = true;
     gatewayState.nodeStatus = "connected";
     render(<NodeStatusPill />);
-    expect(screen.getByText(/local tools available/i)).toBeTruthy();
+    expect(screen.getByText(/mac connected/i)).toBeTruthy();
   });
 
   it("renders a visible failing state on error instead of hiding", () => {
@@ -29,7 +29,7 @@ describe("NodeStatusPill", () => {
     gatewayState.nodeConnected = false;
     gatewayState.nodeStatus = "error";
     render(<NodeStatusPill />);
-    expect(screen.getByText(/local tools: connection failing/i)).toBeTruthy();
+    expect(screen.getByText(/mac connection failing/i)).toBeTruthy();
   });
 
   it("stays hidden during transient connecting/reconnecting states", () => {

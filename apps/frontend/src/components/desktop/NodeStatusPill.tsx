@@ -6,8 +6,8 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
  * Desktop-node ("local tools") status pill, rendered in both sidebars.
  *
  * Three states:
- * - connected → green "Local tools available"
- * - error     → warn "Local tools: connection failing" — previously an
+ * - connected → green "Mac connected" (not a grant for every tool)
+ * - error     → warn "Mac connection failing" — previously an
  *   erroring node rendered NOTHING, indistinguishable from no desktop app
  *   at all (the Rust side only logged to /tmp/isol8-desktop.log)
  * - anything else (no desktop app, connecting, parked between retries) →
@@ -38,7 +38,7 @@ export function NodeStatusPill() {
           display: "inline-block",
         }}
       />
-      {nodeConnected ? "Local tools available" : "Local tools: connection failing"}
+      {nodeConnected ? "Mac connected" : "Mac connection failing"}
     </div>
   );
 }

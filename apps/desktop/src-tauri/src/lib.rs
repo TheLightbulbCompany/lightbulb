@@ -639,8 +639,8 @@ fn stash_handles(app: &tauri::AppHandle, handles: DesktopNodeHostHandles) {
 ///
 /// The webview Clerk path (`send_auth_token` → bootstrap) remains the ONLY
 /// pairing path: it runs the FIRST pair (no persisted state yet) and the
-/// re-pair after the persisted state goes stale (Keychain wiped → device-id
-/// mismatch → we discard the file here and return `Ok(false)`).
+/// re-pair after persisted state goes stale (version mismatch makes `load`
+/// return `None`; Keychain wipe causes a device-id mismatch discarded here).
 ///
 /// Returns `Ok(true)` if the node host was started from persisted state,
 /// `Ok(false)` if there was nothing (valid) persisted — the normal first-run

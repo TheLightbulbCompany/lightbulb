@@ -239,3 +239,7 @@ def register(ctx) -> None:
                       description=HIRE_SCHEMA["description"], emoji="🧑‍💼")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,
                       description=SESSIONS_SCHEMA["description"], emoji="🖥️")
+    from . import desktop
+
+    ctx.register_tool("lightbulb_desktop", "lightbulb", desktop.SCHEMA, desktop.handle,
+                      description=desktop.SCHEMA["description"], emoji="🖥️")

@@ -1395,6 +1395,29 @@ Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (s
 - Auth: `POST /api/v1/auth/desktop/sign-in-token` (Clerk sign-in-token bridge, `routers/desktop_auth.py`) + the frontend's `/auth/desktop-callback` page; device pairing via `POST /api/v1/desktop/pair` / `DELETE /desktop/devices/{id}` (`routers/desktop_pair.py`). There is no device-code flow.
 - Requirement driver: WebAuthn/passkey support (see `project_desktop_app_tauri` memory)
 
+**Selected-Mac execution is not the AgentCore terminal/browser.** The ordinary
+Hermes tools stay in the cloud; `lightbulb_desktop` uses an explicit paired Mac
+and connection generation. `DESKTOP_EXECUTION_ENABLED` plus
+`DESKTOP_EXECUTION_OWNER_ALLOWLIST` gates new backend submissions; CDK derives
+both from the single-owner `DESKTOP_EXECUTION_OWNER_DEV` / `_PROD` GitHub Actions
+variables at synth time (unset means closed). Disabling new submits does not
+erase existing process-local receipts or block their status/cancel routes, but
+task loss makes their outcomes unknown. Reciprocal pairing and effective
+native/CLI command grants — not desktop version text — prove capabilities.
+The signed update discards v3 `pair_state.json`; foreground Clerk sign-in then
+calls `/desktop/pair` automatically to refresh those grants. Verify the new
+reciprocal pair and ready commands; do not delete Keychain keys or manually wipe
+state. Shell requires exact native approval; Paperclip
+requires a separate exact-operation human consent, and files require approved
+folders. Local managed browsing and explicitly selected Chrome-extension tabs
+are separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
+existing-session attachment remains unavailable because tab identity cannot be
+verified safely. See [staged desktop acceptance](docs/runbooks/desktop-execution-staged-acceptance.md)
+for rollout, unknown/cancellation, browser/file/MCP and measured RAM gates.
+Neither #2821's redundant-launcher topology proof nor #2820's 100-message
+initial history bound proves a renderer memory reduction; the observed
++466 MB/101 s WKWebView WebContent growth needs before/after measurement.
+
 ---
 
 ## Mobile App

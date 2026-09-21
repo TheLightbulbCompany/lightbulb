@@ -30,6 +30,7 @@ MAX_BODY_BYTES = 8 * MAX_RESULT_BYTES
 MAX_REQUEST_BYTES = 16_384
 SAFE_COMMANDS = frozenset({"device.info", "device.status", "device.health", "device.permissions"})
 APPROVAL_COMMAND = "system.run.approve.v1"
+CONSENT_COMMAND = "desktop.operation.approve.v1"
 PUBLIC_COMMANDS = SAFE_COMMANDS | {
     "system.run",
     "system.notify",
@@ -44,6 +45,7 @@ PUBLIC_COMMANDS = SAFE_COMMANDS | {
 }
 ACTIVE = frozenset({"queued", "pending_approval", "running", "cancel_requested"})
 AUTH_FIELDS = {"ownerId", "memberId", "runId", "agentId", "family", "roomId"}
+PAPERCLIP_AUTH_FIELDS = {"ownerId", "companyId", "runId", "agentId", "family"}
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
@@ -55,6 +57,12 @@ class DesktopError(Exception):
 
 def _json(value) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+
+def valid_auth(auth):
+    return isinstance(auth, dict) and set(auth) == (
+        PAPERCLIP_AUTH_FIELDS if auth.get("family") == "paperclip" else AUTH_FIELDS
+    )
 
 
 def request_digest(validated_request: dict) -> str:
@@ -221,7 +229,7 @@ class DesktopOperations:
             claims = json.loads(self.cipher.decrypt(token.encode()))
             if set(claims) != {"purpose", "auth", "deviceId", "generation", "address", "epoch", "nonce", "iat", "exp"}:
                 raise ValueError()
-            if claims["purpose"] != "desktop-admission-v1" or set(claims["auth"]) != AUTH_FIELDS:
+            if claims["purpose"] != "desktop-admission-v1" or not valid_auth(claims["auth"]):
                 raise ValueError()
             if any(not isinstance(v, str) or not _ID.fullmatch(v) for v in claims["auth"].values()):
                 raise ValueError()
@@ -272,9 +280,12 @@ class DesktopOperations:
             if (
                 row["auth"] == auth
                 and row["requestId"] == request["requestId"]
-                and row["socket"] == (auth["ownerId"], claims["deviceId"], claims["generation"])
+                and (
+                    auth["family"] == "paperclip"
+                    or row["socket"] == (auth["ownerId"], claims["deviceId"], claims["generation"])
+                )
             ):
-                if row["digest"] != digest:
+                if row["digest"] is not None and row["digest"] != digest:
                     raise DesktopError("request_conflict", 409)
                 row["expiry"] = max(row["expiry"], claims["exp"])
                 return self._view(row)
@@ -360,6 +371,8 @@ class DesktopOperations:
             "dispatched": False,
             "pendingInvoke": None,
         }
+        if auth["family"] == "paperclip":
+            row["deadline"] += APPROVAL_SECONDS
         self.records[receipt_id] = row
         task = asyncio.create_task(self._execute(row))
         self.tasks[receipt_id] = task
@@ -414,6 +427,8 @@ class DesktopOperations:
             row["auth"]["ownerId"]
         ):
             raise DesktopError("admission_expired", 409)
+        if row["auth"]["family"] == "paperclip":
+            await self._paperclip_consent(row, target)
         if row["request"]["command"] == "system.run":
             result = await self._shell(row, target)
         elif row["request"]["command"] == "browser.proxy":
@@ -426,6 +441,8 @@ class DesktopOperations:
             row.update(state="running", dispatched=True)
             result = await self._phase(row, target, row["request"], row["invokeId"])
         current = await self.resolve(row["auth"], row["request"])
+        if row["auth"]["family"] == "paperclip":
+            await self._check_consent(row)
         if current["taskAddress"] != self.address or current["generation"] != row["socket"][2]:
             raise DesktopError("desktop_generation_lost", 409)
         if row["state"] == "unknown":
@@ -476,6 +493,10 @@ class DesktopOperations:
     async def _phase(self, row, target, request, invoke_id):
         if row["state"] in {"cancel_requested", "unknown"}:
             raise DesktopError("cancelled_before_dispatch", 409)
+        if row["auth"]["family"] == "paperclip" and request["command"] != CONSENT_COMMAND:
+            await self._check_consent(row)
+            if row["state"] in {"cancel_requested", "unknown"}:
+                raise DesktopError("cancelled_before_dispatch", 409)
         row["pendingInvoke"] = (target, invoke_id)
         # No task hop: waiter registration must precede interleaved cancellation.
         result = await self.dispatch(target, request, invoke_id)
@@ -544,8 +565,9 @@ class DesktopOperations:
             "expiresAtMs": int(expires * 1000),
         }
         row["state"] = "pending_approval" if row["state"] == "queued" else row["state"]
-        answer = await self._phase(
+        answer = await self._approval_phase(
             row,
+            target,
             native,
             request
             | {
@@ -554,6 +576,7 @@ class DesktopOperations:
                 "executionDeadlineMs": max(1, int((expires - self.clock()) * 1000)),
             },
             row["invokeId"] + "-approval",
+            expires,
         )
         if not answer.get("ok") or answer.get("payload") != {"approved": True, "binding": binding}:
             raise DesktopError("shell_approval_denied", 403)
@@ -575,6 +598,114 @@ class DesktopOperations:
         row.update(state="running", dispatched=True)
         return await self._phase(row, target, request | {"params": run_params}, row["invokeId"])
 
+    async def _paperclip_consent(self, row, target):
+        if self.companion is None:
+            raise DesktopError("desktop_consent_unavailable", 422)
+        auth, request = row["auth"], row["request"]
+        native = await self.companion(auth, target, CONSENT_COMMAND)
+        expires = min(row["deadline"], self.clock() + APPROVAL_SECONDS)
+        binding = request_digest(
+            {
+                "auth": auth,
+                "target": target,
+                "native": native,
+                "requestDigest": row["digest"],
+                "nonce": row["invokeId"],
+                "expires": expires,
+            }
+        )
+
+        # Binary transfers are identified by exact digest/length; never render megabytes
+        # of base64 in the human prompt. All other normalized parameters remain visible.
+        def summary(value):
+            if isinstance(value, dict):
+                return {
+                    k: (
+                        {"base64Bytes": len(v), "sha256": hashlib.sha256(v.encode()).hexdigest()}
+                        if k == "contentBase64" and isinstance(v, str)
+                        else summary(v)
+                    )
+                    for k, v in value.items()
+                }
+            if isinstance(value, list):
+                return [summary(v) for v in value]
+            return value
+
+        params = {
+            "binding": binding,
+            "workspace": auth["ownerId"],
+            "company": auth["companyId"],
+            "agent": auth["agentId"],
+            "run": auth["runId"],
+            "device": target["deviceId"],
+            "nativeDevice": native["deviceId"],
+            "operation": summary(request),
+            "expiresAtMs": int(expires * 1000),
+        }
+        if row["state"] != "queued":
+            raise DesktopError("cancelled_before_dispatch", 409)
+        row["state"] = "pending_approval"
+        answer = await self._approval_phase(
+            row,
+            target,
+            native,
+            {
+                "command": CONSENT_COMMAND,
+                "params": params,
+                "executionDeadlineMs": max(1, int((expires - self.clock()) * 1000)),
+            },
+            row["invokeId"] + "-consent",
+            expires,
+        )
+        if not answer.get("ok") or answer.get("payload") != {"approved": True, "binding": binding}:
+            raise DesktopError("desktop_consent_denied", 403)
+        await self.authorize(auth)
+        current = await self.resolve(auth, request)
+        if current != target or await self.companion(auth, current, CONSENT_COMMAND) != native:
+            raise DesktopError("desktop_generation_lost", 409)
+        if self.clock() >= expires or not self.enabled(auth["ownerId"]):
+            raise DesktopError("desktop_consent_expired", 409)
+        if row["state"] != "pending_approval":
+            raise DesktopError("cancelled_before_dispatch", 409)
+        row["state"] = "queued"
+        row["consent"] = (target, native)
+
+    async def _approval_phase(self, row, target, native, request, invoke_id, expires):
+        if row["auth"]["family"] != "paperclip":
+            return await self._phase(row, native, request, invoke_id)
+        # Both local prompts must close when Paperclip authority disappears, even
+        # if the human never answers. The exact pending phase is cancelled by _execute.
+        auth = row["auth"]
+        phase = asyncio.create_task(self._phase(row, native, request, invoke_id))
+        try:
+            async with asyncio.timeout(max(0, expires - self.clock())):
+                while not (await asyncio.wait({phase}, timeout=1))[0]:
+                    await self.authorize(auth)
+                    current = await self.resolve(auth, row["request"])
+                    if (
+                        current != target
+                        or await self.companion(auth, current, request["command"]) != native
+                        or row["state"] != "pending_approval"
+                        or not self.enabled(auth["ownerId"])
+                    ):
+                        raise DesktopError("desktop_consent_invalidated", 403)
+                    if request["command"] != CONSENT_COMMAND:
+                        await self._check_consent(row)
+                return await phase
+        finally:
+            if not phase.done():
+                phase.cancel()
+                await asyncio.gather(phase, return_exceptions=True)
+
+    async def _check_consent(self, row):
+        # Child phases can await folder preflight, another browser user, or shell
+        # approval. They cannot carry consent onto a replaced pair or native socket.
+        await self.authorize(row["auth"])
+        target = await self.resolve(row["auth"], row["request"])
+        native = await self.companion(row["auth"], target, CONSENT_COMMAND)
+        if row.get("consent") != (target, native) or not self.enabled(row["auth"]["ownerId"]):
+            raise DesktopError("desktop_consent_invalidated", 403)
+
     async def get(self, auth: dict, receipt_id: str) -> dict:
         claims = self.receipt_claims(auth, receipt_id)
         self._prune()
@@ -591,11 +722,36 @@ class DesktopOperations:
         return self._view(row)
 
     async def cancel(self, auth: dict, receipt_id: str) -> dict:
-        self.receipt_claims(auth, receipt_id)
+        claims = self.receipt_claims(auth, receipt_id)
         self._prune()
         row = self.records.get(receipt_id)
         if not row:
-            return self._unknown(receipt_id)
+            # Stop can arrive before the submitting HTTP request. Retain that exact
+            # identity so a later arrival (or refreshed admission) cannot execute it.
+            if (
+                claims["epoch"] != self.epoch
+                or claims["address"] != self.address
+                or self.clock() > claims["exp"] + CLOCK_SKEW_SECONDS
+            ):
+                return self._unknown(receipt_id)
+            socket = (auth["ownerId"], claims["deviceId"], claims["generation"])
+            if sum(r["socket"] == socket for r in self.records.values()) >= MAX_IDENTITIES:
+                raise DesktopError("desktop_capacity", 429)
+            row = {
+                "id": receipt_id,
+                "requestId": receipt_id.rsplit(".", 1)[-1],
+                "auth": auth,
+                "socket": socket,
+                "digest": None,
+                "request": {},
+                "state": "rejected",
+                "error": {"code": "cancelled_before_dispatch"},
+                "expiry": claims["exp"],
+                "deadline": claims["exp"] + CLOCK_SKEW_SECONDS,
+                "completed": self.clock(),
+                "dispatched": False,
+            }
+            self.records[receipt_id] = row
         if row["state"] in ACTIVE:
             row["state"] = "cancel_requested"
             if row.get("pendingInvoke"):
@@ -623,8 +779,10 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
         from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
         from core.services.paperclip_admin_session import get_admin_session_cookie
 
-        owner = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-        if not owner:
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        owner = await repo.resolve_owner_row(owner_id)
+        owner = await repo.get(owner.user_id, consistent_read=True) if owner else None
+        if not owner or owner.status != "active" or (owner.org_id or owner.user_id) != owner_id:
             raise DesktopError("run_forbidden", 403)
         admin = shared_admin_client()
         try:
@@ -638,11 +796,20 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
             or run.get("agentId") != agent_id
             or run.get("companyId") != owner.company_id
             or agent.get("companyId") != owner.company_id
+            or agent.get("id") != agent_id
         ):
             raise DesktopError("run_forbidden", 403)
-        # A company/run/agent is not a human's grant over their paired Mac.
-        # Task 4/7 must add explicit trusted local consent, not infer an issue author.
-        raise DesktopError("paperclip_member_authority_unavailable", 403)
+        if active and run.get("status") != "running":
+            raise DesktopError("run_not_active", 403)
+        # This is run identity only. Human authority comes from the selected native
+        # pairing and an exact-operation prompt, never mutable wake/actor metadata.
+        return {
+            "ownerId": owner_id,
+            "companyId": owner.company_id,
+            "runId": run_id,
+            "agentId": agent_id,
+            "family": family,
+        }
     if family != "room":
         raise DesktopError("unsupported_run_family", 403)
     run = await messaging_repo.get_run(owner_id, run_id)
@@ -701,10 +868,13 @@ async def _resolve(auth, request):
     from core.services.connection_service import DesktopTargetError, resolve_desktop_target
     from core.services.desktop_resources import node_command
 
+    member_id = (
+        (await _paperclip_member(auth, request["deviceId"])) if auth["family"] == "paperclip" else auth["memberId"]
+    )
     try:
         return await resolve_desktop_target(
             auth["ownerId"],
-            auth["memberId"],
+            member_id,
             request["deviceId"],
             request["expectedConnectionGeneration"],
             node_command(request["command"]),
@@ -713,21 +883,61 @@ async def _resolve(auth, request):
         raise DesktopError(exc.code, 409) from None
 
 
+async def _paperclip_member(auth, device_id):
+    from core.repositories import container_repo
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.clerk_admin import list_organization_members
+    from core.services.desktop_pair import paired_physical_mac
+
+    row = await container_repo.get_by_owner_id(auth["ownerId"], consistent=True) or {}
+    selected = (row.get("paired_devices") or {}).get(device_id) or {}
+    if not isinstance(selected, dict):
+        raise DesktopError("desktop_forbidden", 403)
+    pair = paired_physical_mac(row, selected.get("userId"), device_id)
+    if pair is None:
+        raise DesktopError("desktop_forbidden", 403)
+    native = next(p for p in pair if p["clientId"] == "openclaw-macos")
+    member_id = native.get("userId")
+    if not isinstance(member_id, str) or not _ID.fullmatch(member_id):
+        raise DesktopError("desktop_forbidden", 403)
+    if auth["ownerId"] != member_id and (
+        not auth["ownerId"].startswith("org_")
+        or not any(m.get("user_id") == member_id for m in await list_organization_members(auth["ownerId"]))
+    ):
+        raise DesktopError("desktop_forbidden", 403)
+    member = await PaperclipRepo(table_name="paperclip-companies").get(member_id, consistent_read=True)
+    if (
+        not member
+        or member.user_id != member_id
+        or member.status != "active"
+        or (member.org_id or member.user_id) != auth["ownerId"]
+        or member.company_id != auth["companyId"]
+    ):
+        raise DesktopError("desktop_forbidden", 403)
+    return member_id
+
+
 async def _resolve_companion(auth, target, command=APPROVAL_COMMAND):
     from core.repositories import container_repo
     from core.services.connection_service import ConnectionService, DesktopTargetError
     from core.services.desktop_pair import paired_physical_mac
 
-    unavailable = "shell_approval_unavailable" if command == APPROVAL_COMMAND else "file_policy_unavailable"
+    unavailable = (
+        "desktop_consent_unavailable"
+        if command == CONSENT_COMMAND
+        else ("shell_approval_unavailable" if command == APPROVAL_COMMAND else "file_policy_unavailable")
+    )
     row = await container_repo.get_by_owner_id(auth["ownerId"], consistent=True) or {}
-    pair = paired_physical_mac(row, auth["memberId"], target["deviceId"])
+    member_id = target["memberId"]
+    pair = paired_physical_mac(row, member_id, target["deviceId"])
     if (
         pair is None
-        or pair[0].get("clientId") != "node-host"
+        or (command != CONSENT_COMMAND and pair[0].get("clientId") != "node-host")
         or pair[0].get("pairingGroupId") != target["pairingGroupId"]
     ):
         raise DesktopError(unavailable, 422)
-    native_id = next((key for key, entry in row["paired_devices"].items() if entry == pair[1]), "")
+    native_entry = next(p for p in pair if p["clientId"] == "openclaw-macos")
+    native_id = next((key for key, entry in row["paired_devices"].items() if entry == native_entry), "")
     connections = ConnectionService()
     ready = await asyncio.to_thread(
         connections._client.get_item,
@@ -737,14 +947,31 @@ async def _resolve_companion(auth, target, command=APPROVAL_COMMAND):
     )
     generation = ready.get("Item", {}).get("generation", {}).get("S", "")
     try:
-        native = await connections._resolve_desktop_target(
-            auth["ownerId"], auth["memberId"], native_id, generation, command
-        )
+        native = await connections._resolve_desktop_target(auth["ownerId"], member_id, native_id, generation, command)
     except DesktopTargetError:
         raise DesktopError(unavailable, 422) from None
     if native["pairingGroupId"] != target["pairingGroupId"]:
         raise DesktopError(unavailable, 422)
-    return native | {"approvalAuth": auth, "cliDeviceId": target["deviceId"], "cliGeneration": target["generation"]}
+    result = native | {"approvalAuth": auth, "cliDeviceId": target["deviceId"], "cliGeneration": target["generation"]}
+    if command == CONSENT_COMMAND:
+        cli_entry = next(p for p in pair if p["clientId"] == "node-host")
+        cli_id = next(key for key, entry in row["paired_devices"].items() if entry == cli_entry)
+        ready = await asyncio.to_thread(
+            connections._client.get_item,
+            TableName=connections.table_name,
+            Key={"connectionId": {"S": connections.desktop_ready_id(auth["ownerId"], cli_id)}},
+            ConsistentRead=True,
+        )
+        try:
+            cli = await connections._resolve_desktop_target(
+                auth["ownerId"], member_id, cli_id, ready.get("Item", {}).get("generation", {}).get("S", ""), None
+            )
+        except DesktopTargetError:
+            raise DesktopError(unavailable, 422) from None
+        if cli["pairingGroupId"] != target["pairingGroupId"]:
+            raise DesktopError(unavailable, 422)
+        result |= {"pairedCliId": cli_id, "pairedCliGeneration": cli["generation"]}
+    return result
 
 
 def _session(target):
@@ -759,7 +986,7 @@ def _session(target):
 async def _dispatch(target, request, invoke_id):
     from core.services.node_broker import NodeResultTooLarge
 
-    if request["command"] == APPROVAL_COMMAND and target["taskAddress"] != operations().address:
+    if request["command"] in {APPROVAL_COMMAND, CONSENT_COMMAND} and target["taskAddress"] != operations().address:
         return await _approval_rpc(target, "invoke", invoke_id, request["params"])
     try:
         return await _session(target).invoke(
@@ -827,7 +1054,7 @@ async def handle_file_policy_peer(body):
         set(body) != {"auth", "deviceId", "generation", "nativeId", "nativeGeneration", "command"}
         or body["command"] not in FILE_COMMANDS
         or not isinstance(body["auth"], dict)
-        or set(body["auth"]) != AUTH_FIELDS
+        or not valid_auth(body["auth"])
     ):
         raise DesktopError("invalid_request")
     auth = body["auth"]
@@ -900,9 +1127,9 @@ async def handle_approval_peer(body):
     if set(body) != {"action", "auth", "deviceId", "generation", "cliDeviceId", "cliGeneration", "invokeId", "params"}:
         raise DesktopError("invalid_request")
     auth = body["auth"]
-    if not isinstance(auth, dict) or set(auth) != AUTH_FIELDS or body["action"] not in {"invoke", "cancel"}:
+    if not valid_auth(auth) or body["action"] not in {"invoke", "cancel"}:
         raise DesktopError("invalid_request")
-    if not isinstance(body["invokeId"], str) or not re.fullmatch(r"[a-f0-9-]{36}-approval", body["invokeId"]):
+    if not isinstance(body["invokeId"], str) or not re.fullmatch(r"[a-f0-9-]{36}-(approval|consent)", body["invokeId"]):
         raise DesktopError("invalid_request")
     if body["action"] == "cancel":
         # A revocation must not prevent cancellation of an already authenticated phase.
@@ -916,29 +1143,56 @@ async def handle_approval_peer(body):
         await _cancel(target, body["invokeId"])
         return {"cancelRequested": True}
     await _reauthorize(auth)
+    consent = body["invokeId"].endswith("-consent")
+    p = body["params"]
+    if consent and (
+        auth["family"] != "paperclip"
+        or not isinstance(p, dict)
+        or not isinstance(p.get("operation"), dict)
+        or not isinstance(p["operation"].get("command"), str)
+        or p["operation"].get("command") not in PUBLIC_COMMANDS
+    ):
+        raise DesktopError("invalid_request")
     target = await _resolve(
         auth,
         {
             "deviceId": body["cliDeviceId"],
             "expectedConnectionGeneration": body["cliGeneration"],
-            "command": "system.run",
+            "command": p["operation"]["command"] if consent else "system.run",
         },
     )
-    native = await _resolve_companion(auth, target)
+    native = (
+        await _resolve_companion(auth, target, CONSENT_COMMAND) if consent else await _resolve_companion(auth, target)
+    )
     if (
         native["deviceId"] != body["deviceId"]
         or native["generation"] != body["generation"]
         or native["taskAddress"] != operations().address
     ):
         raise DesktopError("desktop_generation_lost", 409)
-    p = body["params"]
     if (
         not isinstance(p, dict)
-        or set(p) != {"binding", "workspace", "agent", "device", "run", "argv", "cwd", "env", "expiresAtMs"}
+        or set(p)
+        != (
+            {"binding", "workspace", "company", "agent", "device", "run", "nativeDevice", "operation", "expiresAtMs"}
+            if consent
+            else {"binding", "workspace", "agent", "device", "run", "argv", "cwd", "env", "expiresAtMs"}
+        )
         or p["workspace"] != auth["ownerId"]
         or p["agent"] != auth["agentId"]
         or p["run"] != auth["runId"]
         or p["device"] != target["deviceId"]
+        or (
+            consent
+            and (
+                p["company"] != auth["companyId"]
+                or p["nativeDevice"] != native["deviceId"]
+                or p["operation"].get("deviceId") != target["deviceId"]
+                or p["operation"].get("expectedConnectionGeneration") != target["generation"]
+                or p["operation"].get("runId") != auth["runId"]
+                or p["operation"].get("agentId") != auth["agentId"]
+            )
+        )
         or not isinstance(p["binding"], str)
         or not re.fullmatch(r"[a-f0-9]{64}", p["binding"])
         or type(p["expiresAtMs"]) is not int
@@ -948,7 +1202,7 @@ async def handle_approval_peer(body):
     return await _dispatch(
         native,
         {
-            "command": APPROVAL_COMMAND,
+            "command": CONSENT_COMMAND if consent else APPROVAL_COMMAND,
             "params": p,
             "executionDeadlineMs": max(1, int(p["expiresAtMs"] - time.time() * 1000)),
         },
@@ -1083,7 +1337,7 @@ async def discover_devices(auth: dict) -> dict:
     connections = ConnectionService()
     devices = []
     for connection_id, member, kind in await connections.query_by_owner(auth["ownerId"]):
-        if member != auth["memberId"] or kind != "desktop-ready":
+        if kind != "desktop-ready" or (auth["family"] != "paperclip" and member != auth["memberId"]):
             continue
         response = await asyncio.to_thread(
             connections._client.get_item,
@@ -1101,7 +1355,18 @@ async def discover_devices(auth: dict) -> dict:
             "command": sorted(commands)[0],
         }
         try:
-            devices.append(await admit_device(auth, request))
+            if auth["family"] == "paperclip":
+                target = await _resolve(auth, request)
+                await _resolve_companion(auth, target, CONSENT_COMMAND)
+                devices.append(
+                    {
+                        "deviceId": target["deviceId"],
+                        "generation": target["generation"],
+                        "commands": sorted(public_commands(target["commands"]) & PUBLIC_COMMANDS),
+                    }
+                )
+            else:
+                devices.append(await admit_device(auth, request))
         except DesktopError:
             continue  # stale GSI rows are never advertised as ready
         if len(devices) >= 64:

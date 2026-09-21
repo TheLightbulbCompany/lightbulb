@@ -35,7 +35,7 @@ describe("CONNECTOR_BRAND", () => {
 
   // The whole point: #181717 and #000000 vanish on the midnight ground. Same
   // fix providerBrand.ts already applies to the AWS wordmark.
-  it.each(["github", "notion", "posthog"] as const)(
+  it.each(["github", "notion"] as const)(
     "draws the monochrome %s mark on the ground token, not a black literal",
     (provider) => {
       expect(CONNECTOR_BRAND[provider]).toBe("var(--foreground)");

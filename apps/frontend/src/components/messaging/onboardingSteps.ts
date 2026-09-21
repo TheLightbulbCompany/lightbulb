@@ -9,7 +9,7 @@ import type { RoomParticipant } from "./types";
 // reality. Disconnect Stripe and its card comes back on its own.
 // =============================================================================
 
-export type SetupStepId = "stripe" | "github" | "notion" | "posthog" | "invite" | "name-agents";
+export type SetupStepId = "stripe" | "github" | "notion" | "invite" | "name-agents";
 
 export interface SetupStep {
   id: SetupStepId;
@@ -26,12 +26,18 @@ export interface SetupStep {
   adminOnly: boolean;
 }
 
-/** The connector cards, in display order. Every one is in `providers.yaml`. */
+/**
+ * The connector cards, in display order. Every one is in `providers.yaml`.
+ *
+ * Three, not four: the fourth slot in the grid is "See more connections",
+ * which opens the Connections panel. That is a LINK, not a step — it is never
+ * done, carries no state, and is deliberately absent from this list so
+ * `isBandComplete` cannot wait on it forever.
+ */
 export const CONNECTOR_STEPS: readonly { id: SetupStepId; label: string; detail: string }[] = [
   { id: "stripe", label: "Stripe", detail: "Revenue, customers and payouts" },
   { id: "github", label: "GitHub", detail: "Code, issues and pull requests" },
   { id: "notion", label: "Notion", detail: "Docs and company knowledge" },
-  { id: "posthog", label: "PostHog", detail: "Product analytics and funnels" },
 ];
 
 /**

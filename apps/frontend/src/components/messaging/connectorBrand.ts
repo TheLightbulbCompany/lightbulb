@@ -5,9 +5,9 @@
  * misrepresent it — this file is exempt from the brand-token sweep for that
  * reason (`*Brand.ts`), and nothing else in the band may hold a hex.
  *
- * Three of the four are the same case `providerBrand.ts` already documents for
- * the AWS wordmark: Simple Icons records GitHub as #181717 and Notion/PostHog
- * as #000000, all of which are invisible on the midnight ground. These are
+ * Two of the three are the same case `providerBrand.ts` already documents for
+ * the AWS wordmark: Simple Icons records GitHub as #181717 and Notion as
+ * #000000, both of which are invisible on the midnight ground. These are
  * MONOCHROME marks whose own brand guidance is "black on light, white on
  * dark", so following the foreground token is the correct rendering, not a
  * compromise — it is what the vendors ask for.
@@ -18,5 +18,4 @@ export const CONNECTOR_BRAND = {
   stripe: "#635BFF",
   github: "var(--foreground)",
   notion: "var(--foreground)",
-  posthog: "var(--foreground)",
 } as const;

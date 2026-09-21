@@ -11,7 +11,7 @@ const connection = (provider: string, status: Connection["status"]): Connection 
   status,
 });
 
-const ALL_CONNECTED = ["stripe", "github", "notion", "posthog"].map((p) => connection(p, "connected"));
+const ALL_CONNECTED = ["stripe", "github", "notion"].map((p) => connection(p, "connected"));
 
 const participant = (kind: "human" | "agent", id: string, displayName: string): RoomParticipant => ({
   kind,
@@ -47,9 +47,9 @@ describe("connector steps", () => {
     expect(step(SOLO, [], "github").done).toBe(false);
   });
 
-  it("offers exactly stripe, github, notion and shopify", () => {
+  it("offers exactly stripe, github and notion", () => {
     expect(buildSetupSteps({ participants: SOLO, connections: [], agentNames: new Map() }).map((s) => s.id))
-      .toEqual(["stripe", "github", "notion", "posthog", "invite", "name-agents"]);
+      .toEqual(["stripe", "github", "notion", "invite", "name-agents"]);
   });
 });
 
@@ -103,7 +103,7 @@ describe("permissions", () => {
   it("marks every connector and the invite as admin-only", () => {
     const steps = buildSetupSteps({ participants: SOLO, connections: [], agentNames: new Map() });
     expect(steps.filter((s) => s.adminOnly).map((s) => s.id))
-      .toEqual(["stripe", "github", "notion", "posthog", "invite"]);
+      .toEqual(["stripe", "github", "notion", "invite"]);
   });
 
   it("leaves naming open to members, since PATCH /teams/agents has no admin guard", () => {

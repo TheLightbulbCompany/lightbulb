@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
   agents: [] as { id: string; name: string }[],
+  openPanel: vi.fn(),
 }));
 
 vi.mock("@/hooks/useConnections", () => ({
@@ -30,6 +31,10 @@ vi.mock("@clerk/nextjs", () => ({
 
 vi.mock("@/lib/api", () => ({
   useApi: () => ({ get: h.get, post: h.post, patch: vi.fn() }),
+}));
+
+vi.mock("@/components/workspace/workspaceController", () => ({
+  openPanel: (...args: unknown[]) => h.openPanel(...args),
 }));
 
 vi.mock("@/hooks/useTeamsApi", () => ({
@@ -58,6 +63,7 @@ beforeEach(() => {
   h.get.mockReset();
   h.post.mockReset();
   h.agents = [];
+  h.openPanel.mockReset();
   window.localStorage.clear();
 });
 
@@ -67,7 +73,8 @@ describe("OnboardingBand", () => {
     expect(screen.getByRole("button", { name: /Stripe/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /GitHub/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Notion/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /PostHog/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /PostHog/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /See more connections/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Invite your teammates/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Name your agents/ })).toBeInTheDocument();
   });
@@ -86,13 +93,37 @@ describe("OnboardingBand", () => {
   });
 
   it("renders nothing at all once every step is done", () => {
-    h.connections = ["stripe", "github", "notion", "posthog"].map(connected);
+    h.connections = ["stripe", "github", "notion"].map(connected);
     const { container } = render(<OnboardingBand participants={[
       participant("human", "user_a", "Aden"),
       participant("human", "user_b", "Sam"),
       participant("agent", "agent_0", "Ada"),
     ]} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("opens the Connections panel from the See more card", async () => {
+    render(<OnboardingBand participants={FRESH} />);
+    await userEvent.click(screen.getByRole("button", { name: /See more connections/ }));
+    expect(h.openPanel).toHaveBeenCalledWith("connections", {}, { pushUrl: true });
+  });
+
+  it("never counts See more toward completion — it is a link, not a task", () => {
+    // All five real steps done. The See more card is still on screen, and the
+    // band must still retire; counting it would keep the band up forever.
+    h.connections = ["stripe", "github", "notion"].map(connected);
+    const { container } = render(<OnboardingBand participants={[
+      participant("human", "user_a", "Aden"),
+      participant("human", "user_b", "Sam"),
+      participant("agent", "agent_0", "Ada"),
+    ]} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("lets a plain member browse connections even though they cannot connect one", () => {
+    h.role = "org:member";
+    render(<OnboardingBand participants={FRESH} />);
+    expect(screen.getByRole("button", { name: /See more connections/ })).toBeEnabled();
   });
 
   it("disappears when dismissed", async () => {

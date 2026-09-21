@@ -392,6 +392,10 @@
 .onboarding-card:hover:not(:disabled) { border-color: var(--ring); background: var(--accent); }
 .onboarding-card:disabled { opacity: 0.6; }
 .onboarding-card[data-done="true"] { opacity: 1; border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+/* The catalog door, not a connector: a dashed edge says "this one goes
+   somewhere" rather than "this one is a task you have not done". */
+.onboarding-card[data-more="true"] { border-style: dashed; }
+.onboarding-card[data-more="true"] .onboarding-card-label { color: var(--muted-foreground); }
 .onboarding-card-label { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 0.875rem; }
 /* The vendor mark keeps its own colour; the done-state tint below deliberately
    recolours only the text and the check, never the logo. */

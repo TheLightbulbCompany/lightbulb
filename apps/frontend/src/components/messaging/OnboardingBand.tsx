@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState, useSyncExternalStore, type ReactElement } from "react";
-import { Check, Users, Pencil, X } from "lucide-react";
+import { Check, Users, Pencil, Plug, X } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
 
 import { useApi } from "@/lib/api";
@@ -16,6 +16,7 @@ import {
   STARTER_AGENT_DEFAULT_NAMES,
   type SetupStep,
 } from "./onboardingSteps";
+import { openPanel } from "@/components/workspace/workspaceController";
 import { ConnectorIcon } from "./ConnectorIcons";
 import type { RoomParticipant } from "./types";
 import type { JoinLinkStatus } from "@/components/settings/WorkspaceMembersSection";
@@ -157,6 +158,22 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
             onSelect={onStep}
           />
         ))}
+        {/* The fourth tile is a door, not a task. It is NOT a SetupStep — see
+            onboardingSteps.ts — so it never counts toward completion, and it
+            stays live for a member who cannot connect anything themselves:
+            seeing what the workspace is already wired to is not a mutation. */}
+        <button
+          type="button"
+          className="onboarding-card"
+          data-more="true"
+          onClick={() => openPanel("connections", {}, { pushUrl: true })}
+        >
+          <span className="onboarding-card-label">
+            <Plug size={16} aria-hidden="true" />
+            See more connections
+          </span>
+          <span className="onboarding-card-detail">Browse the full catalog</span>
+        </button>
       </div>
 
       <div className="onboarding-band-actions">

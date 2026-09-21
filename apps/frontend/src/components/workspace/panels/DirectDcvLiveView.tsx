@@ -3,6 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- DCV's browser SDK ships without types. */
 
 import { useEffect, useRef, useState } from "react";
+import { reportViewerError } from "./dcvViewerError";
 
 let nextViewerId = 0;
 
@@ -23,15 +24,19 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
 
   useEffect(() => {
     let disposed = false;
+    let stage = "SDK import";
     setError(null);
     connecting.current = false;
     void import("dcv").then(({ default: dcv }) => {
+      if (disposed) return;
+      stage = "authentication setup";
       dcv.authenticate(signedUrl, {
         promptCredentials: () => {},
-        error: () => {
+        error: (_auth: unknown, reason: unknown) => {
           // DCV can close a completed auth websocket after connect starts. That
           // callback must not unmount the host element under an active display.
           if (!disposed && !connecting.current && !connection.current) {
+            reportViewerError("authentication", reason);
             setError("Could not authenticate the browser viewer.");
           }
         },
@@ -67,13 +72,21 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
               connected.enableDisplayQualityUpdates?.(true);
               connected.setDisplayQuality?.(80, 80);
             }
-          } catch {
+          } catch (reason) {
             connecting.current = false;
-            if (!disposed) setError("Could not connect the browser viewer.");
+            if (!disposed) {
+              reportViewerError("connection", reason);
+              setError("Could not connect the browser viewer.");
+            }
           }
         },
       });
-    }).catch(() => !disposed && setError("Could not start the browser viewer."));
+    }).catch((reason) => {
+      if (!disposed) {
+        reportViewerError(stage, reason);
+        setError("Could not start the browser viewer.");
+      }
+    });
     return () => {
       disposed = true;
       connecting.current = false;

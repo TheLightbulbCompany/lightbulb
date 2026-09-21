@@ -100,9 +100,13 @@ CLI_CREDENTIAL_PREFIXES = (
 #: lacks, which must never be pointed at an agent-owned path.
 #: NB ``fnmatch``'s ``*`` spans ``/``, so one pattern per name covers the whole subtree.
 _HOME_UNSYNCED = (".cache", ".npm", ".ssh", ".gnupg", ".local/state")
+# pnpm puts its reproducible package store under XDG_DATA_HOME, which points into this
+# profile. Old S3 copies must also be skipped on cold restore, not just future uploads.
+PNPM_STORE_PREFIX = f"{PROFILE_HOME}/.local/share/pnpm/store/"
 HOME_EXCLUDE_GLOBS = (
     f"{PROFILE_HOME}/.gitconfig",
     *(f"{PROFILE_HOME}/{name}/*" for name in _HOME_UNSYNCED),
+    f"{PNPM_STORE_PREFIX}*",
 )
 
 #: Hazard 4 (local-exec persistence report): ``terminal.backend: local`` runs the agent's shell
@@ -307,8 +311,8 @@ def restore_profile(agent_id: str) -> float:
             rel = obj["Key"][len(prefix):]
             if not rel or rel.endswith("/"):
                 continue  # directory marker: downloading it onto the directory raises
-            if is_lock_sidecar(rel):
-                continue  # a lock nobody holds; see LOCK_SIDECAR_GLOBS
+            if is_lock_sidecar(rel) or rel.startswith(PNPM_STORE_PREFIX):
+                continue  # process-local lock or reproducible package cache
             target = dest / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             s3.download_file(S3_BUCKET, obj["Key"], str(target))

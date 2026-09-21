@@ -100,7 +100,9 @@ function MobileChatShell() {
   // Company/System panel → control; no panel → chat); there's no tab-switcher.
   const panelParam = searchParams.get("panel");
   const detailId = searchParams.get("detailId");
-  const activeView: "chat" | "control" = panelParam ? "control" : "chat";
+  const activeView: "chat" | "control" = panelParam && panelParam !== "chat" ? "control" : "chat";
+  const roomId = searchParams.get("room");
+  const messageId = searchParams.get("message");
   // Resolve retired panel keys (credits→llm, teams-approvals→teams-inbox, …)
   // through the shared registry so the panel renders under its live key.
   // Resolution happens at READ time only — the address bar is left exactly as
@@ -227,6 +229,8 @@ function MobileChatShell() {
     params.delete("panel");
     params.delete("agent");
     params.delete("detailId");
+    params.delete("room");
+    params.delete("message");
     replaceSearchParams(params);
   }, [searchParams]);
   // Opens a Teams detail view inline: mirrors setActivePanel but also records
@@ -358,7 +362,7 @@ function MobileChatShell() {
         {/* Keep the room workspace mounted but hidden so its canonical state
             and draft survive in-shell panel switches. */}
         <div className={activeView === "chat" ? "flex flex-col h-full min-h-0" : "hidden"}>
-          <MessagingWorkspace initialAgentId={effectiveAgentId} />
+          <MessagingWorkspace initialAgentId={effectiveAgentId} roomId={roomId} messageId={messageId} />
         </div>
         {activeView === "control" && (
           <div className="flex flex-col h-full min-h-0">

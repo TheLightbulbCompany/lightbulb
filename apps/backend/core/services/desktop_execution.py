@@ -1,7 +1,7 @@
 """Finite, process-local desktop receipts. Losing the process never authorizes replay.
 
-Native probes, notifications, bounded snapshots, explicitly approved shell commands
-and scoped browser actions. General files and MCP still require their own policy.
+Native probes, notifications, bounded snapshots, approved shell commands, scoped
+browser actions, approved-root file transfers and device-scoped MCP catalogs/calls.
 """
 
 from __future__ import annotations
@@ -30,7 +30,18 @@ MAX_BODY_BYTES = 8 * MAX_RESULT_BYTES
 MAX_REQUEST_BYTES = 16_384
 SAFE_COMMANDS = frozenset({"device.info", "device.status", "device.health", "device.permissions"})
 APPROVAL_COMMAND = "system.run.approve.v1"
-PUBLIC_COMMANDS = SAFE_COMMANDS | {"system.run", "system.notify", "screen.snapshot", "browser.proxy"}
+PUBLIC_COMMANDS = SAFE_COMMANDS | {
+    "system.run",
+    "system.notify",
+    "screen.snapshot",
+    "browser.proxy",
+    "file.fetch",
+    "file.write",
+    "dir.list",
+    "dir.fetch",
+    "mcp_list",
+    "mcp_call",
+}
 ACTIVE = frozenset({"queued", "pending_approval", "running", "cancel_requested"})
 AUTH_FIELDS = {"ownerId", "memberId", "runId", "agentId", "family", "roomId"}
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
@@ -75,7 +86,7 @@ def validate_request(request: dict) -> dict:
         request["requestId"] = str(uuid.UUID(request["requestId"]))
         from core.services.desktop_browser import MAX_UPLOAD_REQUEST
 
-        upload = (
+        upload = request.get("command") == "file.write" or (
             request.get("command") == "browser.proxy"
             and isinstance(request.get("params"), dict)
             and request["params"].get("action") == "upload"
@@ -90,6 +101,10 @@ def validate_request(request: dict) -> dict:
     command = request["command"]
     if not isinstance(command, str):
         raise DesktopError("unsupported_command", 422)
+    from core.services.desktop_resources import COMMANDS, validate as validate_resource
+
+    if command in COMMANDS:
+        return json.loads(_json(request | {"params": validate_resource(command, request["params"])}))
     if command == "browser.proxy":
         from core.services.desktop_browser import validate
 
@@ -164,6 +179,7 @@ class DesktopOperations:
         clock=time.time,
         enabled=lambda owner: True,
         companion=None,
+        file_policy=None,
     ):
         if not secret:
             raise DesktopError("desktop_not_configured", 503)
@@ -174,6 +190,7 @@ class DesktopOperations:
         self.cancel_dispatch, self.authorize, self.clock, self.enabled = cancel, authorize, clock, enabled
         self.epoch = str(uuid.uuid4())
         self.companion = companion
+        self.file_policy = file_policy
         from core.services.desktop_browser import BrowserScopes
 
         self.browser = BrowserScopes()
@@ -367,6 +384,8 @@ class DesktopOperations:
                 },
             )
         finally:
+            if row["request"]["command"] == "file.write":
+                row["request"]["params"].pop("contentBase64", None)
             if row["request"]["command"] == "browser.proxy":
                 for file in row["request"]["params"].get("args", {}).get("files", []):
                     file.pop("contentBase64", None)
@@ -399,6 +418,10 @@ class DesktopOperations:
             result = await self._shell(row, target)
         elif row["request"]["command"] == "browser.proxy":
             result = await self.browser.execute(self, row, target)
+        elif row["request"]["command"] in {"file.fetch", "file.write", "dir.list", "dir.fetch", "mcp_list", "mcp_call"}:
+            from core.services.desktop_resources import execute
+
+            result = await execute(self, row, target)
         else:
             row.update(state="running", dispatched=True)
             result = await self._phase(row, target, row["request"], row["invokeId"])
@@ -676,6 +699,7 @@ async def _reauthorize(auth):
 
 async def _resolve(auth, request):
     from core.services.connection_service import DesktopTargetError, resolve_desktop_target
+    from core.services.desktop_resources import node_command
 
     try:
         return await resolve_desktop_target(
@@ -683,17 +707,18 @@ async def _resolve(auth, request):
             auth["memberId"],
             request["deviceId"],
             request["expectedConnectionGeneration"],
-            request["command"],
+            node_command(request["command"]),
         )
     except DesktopTargetError as exc:
         raise DesktopError(exc.code, 409) from None
 
 
-async def _resolve_companion(auth, target):
+async def _resolve_companion(auth, target, command=APPROVAL_COMMAND):
     from core.repositories import container_repo
     from core.services.connection_service import ConnectionService, DesktopTargetError
     from core.services.desktop_pair import paired_physical_mac
 
+    unavailable = "shell_approval_unavailable" if command == APPROVAL_COMMAND else "file_policy_unavailable"
     row = await container_repo.get_by_owner_id(auth["ownerId"], consistent=True) or {}
     pair = paired_physical_mac(row, auth["memberId"], target["deviceId"])
     if (
@@ -701,7 +726,7 @@ async def _resolve_companion(auth, target):
         or pair[0].get("clientId") != "node-host"
         or pair[0].get("pairingGroupId") != target["pairingGroupId"]
     ):
-        raise DesktopError("shell_approval_unavailable", 422)
+        raise DesktopError(unavailable, 422)
     native_id = next((key for key, entry in row["paired_devices"].items() if entry == pair[1]), "")
     connections = ConnectionService()
     ready = await asyncio.to_thread(
@@ -713,12 +738,12 @@ async def _resolve_companion(auth, target):
     generation = ready.get("Item", {}).get("generation", {}).get("S", "")
     try:
         native = await connections._resolve_desktop_target(
-            auth["ownerId"], auth["memberId"], native_id, generation, APPROVAL_COMMAND
+            auth["ownerId"], auth["memberId"], native_id, generation, command
         )
     except DesktopTargetError:
-        raise DesktopError("shell_approval_unavailable", 422) from None
+        raise DesktopError(unavailable, 422) from None
     if native["pairingGroupId"] != target["pairingGroupId"]:
-        raise DesktopError("shell_approval_unavailable", 422)
+        raise DesktopError(unavailable, 422)
     return native | {"approvalAuth": auth, "cliDeviceId": target["deviceId"], "cliGeneration": target["generation"]}
 
 
@@ -743,6 +768,7 @@ async def _dispatch(target, request, invoke_id):
             request["executionDeadlineMs"],
             invoke_id=invoke_id,
             result_grace_ms=RESULT_GRACE_SECONDS * 1000,
+            file_authorized=request.get("_fileAuthorized") is True,
             **(
                 {"browser_media": True}
                 if request["command"] == "browser.proxy"
@@ -752,6 +778,74 @@ async def _dispatch(target, request, invoke_id):
         )
     except NodeResultTooLarge:
         raise DesktopError("result_too_large", 413) from None
+
+
+async def _file_policy(auth, target, command, *, forwarded=False):
+    """Read standing local folder consent from this CLI's exact native companion."""
+    from core.services.desktop_resources import POLICY_COMMAND
+    import httpx
+    from core.config import settings
+
+    native = await _resolve_companion(auth, target, POLICY_COMMAND)
+    if native["taskAddress"] != operations().address:
+        if forwarded:
+            raise DesktopError("desktop_forward_loop", 409)
+        async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
+            response = await client.post(
+                native["taskAddress"] + "/api/v1/desktop-execution/internal/file-policy",
+                headers={"x-lightbulb-ws-internal": settings.WS_INTERNAL_SECRET},
+                json={
+                    "auth": auth,
+                    "deviceId": target["deviceId"],
+                    "generation": target["generation"],
+                    "nativeId": native["deviceId"],
+                    "nativeGeneration": native["generation"],
+                    "command": command,
+                },
+            )
+        if response.status_code != 200:
+            raise DesktopError("file_policy_unavailable", 403)
+        policy = response.json()
+    else:
+        result = await _dispatch(
+            native, {"command": POLICY_COMMAND, "params": {}, "executionDeadlineMs": 5000}, str(uuid.uuid4())
+        )
+        if not result.get("ok") or not isinstance(result.get("payload"), dict):
+            raise DesktopError("file_policy_unavailable", 403)
+        policy = result["payload"]
+    if await _resolve_companion(auth, target, POLICY_COMMAND) != native:
+        raise DesktopError("file_policy_unavailable", 403)
+    if not isinstance(policy, dict):
+        raise DesktopError("file_policy_unavailable", 403)
+    return policy | {"nativeDeviceId": native["deviceId"], "nativeGeneration": native["generation"]}
+
+
+async def handle_file_policy_peer(body):
+    from core.services.desktop_resources import FILE_COMMANDS, POLICY_COMMAND
+
+    if (
+        set(body) != {"auth", "deviceId", "generation", "nativeId", "nativeGeneration", "command"}
+        or body["command"] not in FILE_COMMANDS
+        or not isinstance(body["auth"], dict)
+        or set(body["auth"]) != AUTH_FIELDS
+    ):
+        raise DesktopError("invalid_request")
+    auth = body["auth"]
+    await _reauthorize(auth)
+    if not submissions_enabled(auth["ownerId"]):
+        raise DesktopError("desktop_disabled", 503)
+    target = await _resolve(
+        auth,
+        {"deviceId": body["deviceId"], "expectedConnectionGeneration": body["generation"], "command": body["command"]},
+    )
+    native = await _resolve_companion(auth, target, POLICY_COMMAND)
+    if (
+        native["deviceId"] != body["nativeId"]
+        or native["generation"] != body["nativeGeneration"]
+        or native["taskAddress"] != operations().address
+    ):
+        raise DesktopError("desktop_generation_lost", 409)
+    return await _file_policy(auth, target, body["command"], forwarded=True)
 
 
 async def _cancel(target, invoke_id):
@@ -880,6 +974,7 @@ def operations() -> DesktopOperations:
             authorize=_reauthorize,
             enabled=submissions_enabled,
             companion=_resolve_companion,
+            file_policy=_file_policy,
         )
     return _operations
 
@@ -963,6 +1058,8 @@ async def cancel_desktop(auth: dict, receipt_id: str) -> dict:
 
 
 async def admit_device(auth: dict, request: dict, *, forwarded=False) -> dict:
+    from core.services.desktop_resources import public_commands
+
     target = await _resolve(auth, request)
     store = operations()
     if target["taskAddress"] != store.address:
@@ -973,7 +1070,7 @@ async def admit_device(auth: dict, request: dict, *, forwarded=False) -> dict:
     return {
         "deviceId": target["deviceId"],
         "generation": target["generation"],
-        "commands": sorted(set(target["commands"]) & PUBLIC_COMMANDS),
+        "commands": sorted(public_commands(target["commands"]) & PUBLIC_COMMANDS),
         "admissionToken": store.admit(auth, target),
         "expiresInSeconds": SUBMISSION_SECONDS,
     }
@@ -981,6 +1078,7 @@ async def admit_device(auth: dict, request: dict, *, forwarded=False) -> dict:
 
 async def discover_devices(auth: dict) -> dict:
     from core.services.connection_service import ConnectionService
+    from core.services.desktop_resources import public_commands
 
     connections = ConnectionService()
     devices = []
@@ -994,7 +1092,7 @@ async def discover_devices(auth: dict) -> dict:
             ConsistentRead=True,
         )
         row = response.get("Item", {})
-        commands = {v["S"] for v in row.get("commands", {}).get("L", []) if "S" in v} & PUBLIC_COMMANDS
+        commands = public_commands({v["S"] for v in row.get("commands", {}).get("L", []) if "S" in v}) & PUBLIC_COMMANDS
         if not commands:
             continue
         request = {

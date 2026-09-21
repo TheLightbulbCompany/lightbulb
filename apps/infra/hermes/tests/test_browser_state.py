@@ -208,3 +208,29 @@ def test_navigate_rejects_unsafe_urls_before_running_cli(monkeypatch, url):
     with pytest.raises(ValueError, match="navigation URL"):
         browser_state.navigate({"cdpUrl": _params()["cdpUrl"], "url": url})
     assert called is False
+
+
+@pytest.mark.parametrize('operation', ['navigate', 'checkpoint'])
+def test_helpers_use_private_writable_sockets_with_root_home(monkeypatch, operation):
+    import stat
+    sockets = []
+    monkeypatch.setenv('HOME', '/')
+    monkeypatch.setenv('OPENCLAW_HOOK_TOKEN', 'must-not-inherit')
+
+    def run(argv, **kwargs):
+        env = kwargs['env']
+        socket_dir = Path(env['AGENT_BROWSER_SOCKET_DIR'])
+        assert socket_dir.is_dir()
+        assert stat.S_IMODE(socket_dir.stat().st_mode) == 0o700
+        assert 'OPENCLAW_HOOK_TOKEN' not in env
+        sockets.append(socket_dir)
+        return type('Completed', (), {'returncode': 0})()
+
+    monkeypatch.setattr(browser_state.subprocess, 'run', run)
+    monkeypatch.setattr(browser_state, '_download', lambda *_args: b'{"cookies":[],"origins":[]}')
+    if operation == 'navigate':
+        browser_state.navigate({'cdpUrl': _params()['cdpUrl'], 'url': 'https://example.com'})
+    else:
+        browser_state.checkpoint(_params(action='load'))
+    assert sockets and len(set(sockets)) == 1
+    assert not sockets[0].exists()

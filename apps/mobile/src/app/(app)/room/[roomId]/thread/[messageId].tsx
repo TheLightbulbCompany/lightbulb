@@ -55,7 +55,7 @@ export default function ThreadScreen() {
   // visible-flip listener the moment this screen is popped.
   // ponytail: the residual room badge until the conversation is opened is the
   // accepted ceiling; per-thread read state is Phase B and needs a backend field.
-  const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: false });
+  const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: false, boundedHistory: true });
   // Each thread drafts on its own, separately from the room's timeline.
   const composerDraftKey = useDraftKey(roomId, messageId ?? null);
 
@@ -68,7 +68,18 @@ export default function ThreadScreen() {
     if (roomId) selectRoomRef.current(roomId);
   }, [roomId]);
 
-  const root = rooms.messages.find((message) => message.messageId === messageId) ?? null;
+  const { activeRoom, messages, historyLoading, historyComplete, historyError, loadHistory } = rooms;
+  const root = messages.find((message) => message.messageId === messageId) ?? null;
+  // An old thread root may be outside the newest room page. Its replies are
+  // newer than the root, so finding that root once also finds every reply.
+  const fullHistoryRequested = useRef<string | null>(null);
+  useEffect(() => {
+    if (!roomId || !messageId || activeRoom?.roomId !== roomId || !messages.length || root || historyLoading || historyComplete || historyError) return;
+    const target = `${roomId}:${messageId}`;
+    if (fullHistoryRequested.current === target) return;
+    fullHistoryRequested.current = target;
+    loadHistory();
+  }, [roomId, messageId, activeRoom, messages.length, root, historyLoading, historyComplete, historyError, loadHistory]);
   const replies = useMemo(
     () => rooms.messages.filter((message) => message.threadRootMessageId === messageId),
     [rooms.messages, messageId],

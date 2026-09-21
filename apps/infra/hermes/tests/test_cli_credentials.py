@@ -73,6 +73,23 @@ def test_cli_env_json_carries_the_per_agent_google_account(home):
     assert "NOT_ALLOWED" not in env
 
 
+def test_aws_child_without_connector_has_no_platform_credential_fallback():
+    env = turn._fence_aws_child_env(
+        {
+            "AWS_ACCESS_KEY_ID": "platform",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://platform",
+            "AWS_CONFIG_FILE": "/platform/config",
+        },
+        None,
+    )
+    assert "AWS_ACCESS_KEY_ID" not in env
+    assert "AWS_CONTAINER_CREDENTIALS_FULL_URI" not in env
+    assert env["AWS_CONFIG_FILE"] == "/dev/null"
+    assert env["AWS_SHARED_CREDENTIALS_FILE"] == "/dev/null"
+    assert env["AWS_PROFILE"] == "default"
+    assert env["AWS_EC2_METADATA_DISABLED"] == "true"
+
+
 def test_ensure_profile_home_is_idempotent(home):
     first = sync.ensure_profile_home("ceo")
     (first / ".gitconfig").write_text("keep me")

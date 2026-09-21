@@ -149,6 +149,36 @@ it("re-scrolls to the same target message when its token bumps", () => {
   expect(scrollIntoView).toHaveBeenCalledTimes(2);
 });
 
+it("keeps message bodies stable across highlights while honoring content and action changes", () => {
+  vi.useRealTimers();
+  vi.useFakeTimers({ now: new Date(2026, 8, 11, 12, 0, 0), toFake: ["Date", "setTimeout", "clearTimeout"] });
+  const messages = [msg(1, 0), msg(2, 1)];
+  const draw = vi.fn(renderMessage);
+  const props = { roomId: "r", messages, readSeq: null, ownLastSentSeq: null, renderMessage: draw, empty: null };
+  const { container, rerender } = render(<RoomTimeline {...props} />);
+  expect(draw).toHaveBeenCalledTimes(2);
+  draw.mockClear();
+
+  rerender(<RoomTimeline {...props} targetMessageId="m2" />);
+  const target = container.querySelector('[data-message-id="m2"]')!;
+  expect(target).toHaveAttribute("data-highlight", "true");
+  expect(draw).not.toHaveBeenCalled();
+  act(() => { vi.advanceTimersByTime(2000); });
+  expect(target).not.toHaveAttribute("data-highlight");
+  expect(draw).not.toHaveBeenCalled();
+
+  const onAction = vi.fn();
+  const nextDraw = vi.fn((message: RoomMessage, collapsed: boolean) => <button data-collapsed={collapsed} onClick={() => onAction(message.messageId)}>{message.text}</button>);
+  rerender(<RoomTimeline {...props} renderMessage={nextDraw} />);
+  expect(nextDraw).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getAllByRole("button", { name: "x" })[1]);
+  expect(onAction).toHaveBeenCalledWith("m2");
+
+  rerender(<RoomTimeline {...props} renderMessage={nextDraw} messages={[{ ...messages[0], text: "Edited" }, messages[1]]} readSeq={1} />);
+  expect(screen.getByRole("button", { name: "Edited" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "x" })).toHaveAttribute("data-collapsed", "false");
+});
+
 it("renders the leading node above the oldest message, and alone when there are no messages", () => {
   const { rerender } = render(<RoomTimeline roomId="r" messages={[]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage}
     leading={<p>This is the beginning of #general.</p>} empty={null} />);
@@ -157,4 +187,28 @@ it("renders the leading node above the oldest message, and alone when there are 
     leading={<p>This is the beginning of #general.</p>} empty={null} />);
   const region = screen.getByRole("region", { name: "Messages" });
   expect(region.firstElementChild).toHaveTextContent("This is the beginning of #general.");
+});
+
+it("keeps the visible message in place when older history is prepended", () => {
+  let rowTop = 20;
+  const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    const top = this.getAttribute("data-message-id") === "m2" ? rowTop : 0;
+    return { top, bottom: top + 40 } as DOMRect;
+  });
+  try {
+    const onLoadOlder = vi.fn();
+    const { rerender } = render(<RoomTimeline roomId="r" messages={[msg(2, 1), msg(3, 2)]} readSeq={null}
+      ownLastSentSeq={null} renderMessage={renderMessage} empty={null} historyComplete={false} onLoadOlder={onLoadOlder} />);
+    const region = screen.getByRole("region", { name: "Messages" });
+    scrollable(region, { top: 40 });
+    fireEvent.click(screen.getByRole("button", { name: "Load older messages" }));
+    expect(onLoadOlder).toHaveBeenCalledOnce();
+    rowTop = 120;
+    rerender(<RoomTimeline roomId="r" messages={[msg(1, 0), msg(2, 1), msg(3, 2)]} readSeq={null}
+      ownLastSentSeq={null} renderMessage={renderMessage} empty={null} historyComplete={true} onLoadOlder={onLoadOlder} />);
+    expect(region.scrollTop).toBe(140);
+    expect(screen.queryByRole("button", { name: "Load older messages" })).not.toBeInTheDocument();
+  } finally {
+    rect.mockRestore();
+  }
 });

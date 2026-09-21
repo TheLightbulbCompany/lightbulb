@@ -40,7 +40,7 @@ vi.mock("../RoomPanel", () => ({ RoomPanel: (props: RoomPanelProps) => {
 } }));
 
 import { MessagingWorkspaceProvider, useMessagingWorkspace, type MessagingWorkspaceValue } from "../MessagingWorkspaceContext";
-import { MessagingConversation, MessagingDirectory } from "../MessagingWorkspace";
+import { MessagingConversation, MessagingDirectory, MessagingWorkspace } from "../MessagingWorkspace";
 
 let workspaceValue: MessagingWorkspaceValue;
 function CaptureContext() {
@@ -102,6 +102,8 @@ beforeEach(() => {
   state.selectRoomError = null;
   state.historyError = false;
   state.historyErrorMessage = null;
+  state.historyComplete = false;
+  state.historyLoading = false;
 });
 // Belt-and-suspenders for the one test below that does let its sessions fetch
 // resolve: flush inside act(), before cleanup unmounts the tree.
@@ -352,10 +354,27 @@ it("surfaces DM selection failures through the directory action error", async ()
 
 it("openMessage selects the room and exposes targetMessageId on roomProps, clearing it after 3s", () => {
   vi.useFakeTimers();
+  state.historyComplete = true;
   compose();
   act(() => { workspaceValue.openMessage("room-1", "msg-1"); });
   expect(state.selectRoom).toHaveBeenCalledWith("room-1");
   expect(panel.targetMessageId).toBe("msg-1");
+  act(() => { vi.advanceTimersByTime(3000); });
+  expect(panel.targetMessageId).toBeNull();
+  vi.useRealTimers();
+});
+
+it("loads older history for a message link before expiring its target", () => {
+  vi.useFakeTimers();
+  const view = compose();
+  act(() => { workspaceValue.openMessage("room-1", "old-message"); });
+  expect(state.loadHistory).toHaveBeenCalledOnce();
+  act(() => { vi.advanceTimersByTime(3000); });
+  expect(panel.targetMessageId).toBe("old-message");
+  state.historyComplete = true;
+  view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <CaptureContext /><MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
   act(() => { vi.advanceTimersByTime(3000); });
   expect(panel.targetMessageId).toBeNull();
   vi.useRealTimers();
@@ -934,6 +953,23 @@ it("stays out of focus when closeSession runs before a slow colleague DM resolve
   await act(async () => { resolveDm("dm-colleague"); await opening; });
 
   expect(workspaceValue.sessionFocus).toBeNull();
+});
+
+it("consumes room links once, ahead of the default agent, and honors a new message target", () => {
+  const view = render(<MessagingWorkspace initialAgentId="agent-atlas" roomId={room.roomId} messageId="first" />);
+  expect(mocks.rooms.mock.lastCall?.[0]).toBeNull();
+  expect(state.selectRoom).toHaveBeenCalledWith(room.roomId);
+  expect(panel.targetMessageId).toBe("first");
+  state.selectRoom.mockClear();
+
+  view.rerender(<MessagingWorkspace initialAgentId="agent-atlas" roomId={room.roomId} messageId="first" />);
+  expect(state.selectRoom).not.toHaveBeenCalled();
+  view.rerender(<MessagingWorkspace initialAgentId="agent-atlas" roomId={room.roomId} messageId="second" />);
+  expect(panel.targetMessageId).toBe("second");
+  expect(state.selectRoom).toHaveBeenCalledWith(room.roomId);
+
+  view.rerender(<MessagingWorkspace initialAgentId="agent-atlas" />);
+  expect(mocks.rooms.mock.lastCall?.[0]).toBe("agent-atlas");
 });
 
 it("keeps history action inputs stable while the provider draft or live run changes", () => {

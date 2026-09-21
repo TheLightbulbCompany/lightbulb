@@ -56,6 +56,7 @@ def _build_provision_org_doubles(monkeypatch):
     # doubles play the WINNER by default so the chain proceeds; fence-losing
     # behavior is exercised end-to-end in the moto suite.
     repo.try_acquire_seed_claim = AsyncMock(return_value=True)
+    repo.stage_signup_credentials = AsyncMock(side_effect=lambda uid, **kw: (kw["email"], kw["password_encrypted"]))
 
     # Stub admin-session helper imported lazily inside provision_org.
     import core.services.paperclip_provisioning as mod
@@ -233,6 +234,7 @@ async def test_provision_member_mints_service_token_with_owner_id(monkeypatch):
     repo.get = AsyncMock(side_effect=_get)
     repo.get_org_company_id = AsyncMock(return_value="co_xyz")
     repo.try_acquire_seed_claim = AsyncMock(return_value=True)
+    repo.stage_signup_credentials = AsyncMock(side_effect=lambda uid, **kw: (kw["email"], kw["password_encrypted"]))
     repo.put = AsyncMock()
 
     # find_org_owner queries the by-org-id GSI directly via repo._table().query.
@@ -462,6 +464,7 @@ async def test_provision_member_replicates_seeded_agent_ids(monkeypatch):
     repo.get = AsyncMock(return_value=None)
     repo.get_org_company_id = AsyncMock(return_value="co_xyz")
     repo.try_acquire_seed_claim = AsyncMock(return_value=True)
+    repo.stage_signup_credentials = AsyncMock(side_effect=lambda uid, **kw: (kw["email"], kw["password_encrypted"]))
     repo.put = AsyncMock()
 
     import core.services.paperclip_provisioning as prov_mod
@@ -751,6 +754,7 @@ async def test_provision_member_skips_approve_when_accept_auto_approved(monkeypa
     repo.get = AsyncMock(return_value=None)  # brand-new member
     repo.get_org_company_id = AsyncMock(return_value="co_xyz")
     repo.try_acquire_seed_claim = AsyncMock(return_value=True)
+    repo.stage_signup_credentials = AsyncMock(side_effect=lambda uid, **kw: (kw["email"], kw["password_encrypted"]))
     repo.put = AsyncMock()
 
     import core.services.paperclip_provisioning as prov_mod
@@ -796,6 +800,7 @@ async def test_provision_member_approves_when_accept_left_pending(monkeypatch):
     repo.get = AsyncMock(return_value=None)
     repo.get_org_company_id = AsyncMock(return_value="co_xyz")
     repo.try_acquire_seed_claim = AsyncMock(return_value=True)
+    repo.stage_signup_credentials = AsyncMock(side_effect=lambda uid, **kw: (kw["email"], kw["password_encrypted"]))
     repo.put = AsyncMock()
 
     import core.services.paperclip_provisioning as prov_mod
@@ -861,6 +866,13 @@ class _StatefulRepo:
         row.seeding_claim_id = claim_id
         self._rows[user_id] = row
         return True
+
+    async def stage_signup_credentials(self, user_id, *, claim_id, email, password_encrypted):
+        row = self._rows[user_id]
+        assert row.seeding_claim_id == claim_id
+        row.paperclip_email = row.paperclip_email or email
+        row.paperclip_password_encrypted = row.paperclip_password_encrypted or password_encrypted
+        return row.paperclip_email, row.paperclip_password_encrypted
 
     async def update_status(
         self,
@@ -1215,6 +1227,7 @@ def _member_fence_doubles(monkeypatch, *, claimed: bool, winner_row=None):
     repo.get_org_company_id = AsyncMock(return_value="co_xyz")
     repo.put = AsyncMock()
     repo.try_acquire_seed_claim = AsyncMock(return_value=claimed)
+    repo.stage_signup_credentials = AsyncMock(side_effect=lambda uid, **kw: (kw["email"], kw["password_encrypted"]))
     return admin, repo
 
 

@@ -1352,3 +1352,48 @@ async def test_member_seed_claim_carries_company_id_and_keeps_it_through_reclaim
     # Owner-shaped claim: no company_id attribute at all (never "").
     assert await repo.try_acquire_seed_claim("user_o", org_id="org_beta", claim_id="c3")
     assert "company_id" not in repo._table().get_item(Key={"user_id": "user_o"}, ConsistentRead=True)["Item"]
+
+
+async def test_signup_credentials_remain_fenced_when_seed_claim_is_stolen(repo):
+    await repo.try_acquire_seed_claim("user_new", org_id="org_a", claim_id="first")
+    assert await repo.stage_signup_credentials(
+        "user_new", claim_id="first", email="first@example.com", password_encrypted="first-secret"
+    ) == ("first@example.com", "first-secret")
+    await repo.try_acquire_seed_claim("user_new", org_id="org_a", claim_id="second", stale_after_seconds=0)
+    with pytest.raises(repo._table().meta.client.exceptions.ConditionalCheckFailedException):
+        await repo.stage_signup_credentials(
+            "user_new", claim_id="first", email="stale@example.com", password_encrypted="stale-secret"
+        )
+    assert await repo.stage_signup_credentials(
+        "user_new", claim_id="second", email="new@example.com", password_encrypted="new-secret"
+    ) == ("first@example.com", "first-secret")
+
+
+async def test_seed_takeover_does_not_erase_credentials_staged_after_its_read(repo, monkeypatch):
+    import core.repositories.paperclip_repo as mod
+
+    await repo.try_acquire_seed_claim("user_race", org_id="org_a", claim_id="original")
+    run_in_thread = mod.run_in_thread
+    staged = False
+
+    async def stage_before_takeover_write(func, *args, **kwargs):
+        nonlocal staged
+        if not staged and ":prev" in kwargs.get("ConditionExpression", ""):
+            staged = True
+            await repo.stage_signup_credentials(
+                "user_race", claim_id="original", email="original@example.com", password_encrypted="original-secret"
+            )
+        return await run_in_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(mod, "run_in_thread", stage_before_takeover_write)
+    won = await repo.try_acquire_seed_claim("user_race", org_id="org_a", claim_id="takeover", stale_after_seconds=0)
+    assert staged
+    # A credential CAS may defer this takeover; its next read must keep the
+    # original secret just as an atomic in-place takeover would.
+    if not won:
+        assert await repo.try_acquire_seed_claim(
+            "user_race", org_id="org_a", claim_id="takeover", stale_after_seconds=0
+        )
+    assert await repo.stage_signup_credentials(
+        "user_race", claim_id="takeover", email="replacement@example.com", password_encrypted="replacement-secret"
+    ) == ("original@example.com", "original-secret")

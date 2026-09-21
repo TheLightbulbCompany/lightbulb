@@ -590,11 +590,23 @@ export function MessagingWorkspaceProvider({
     }
     previousSelectedRoom.current = rooms.activeRoomId;
   }, [rooms.activeRoomId, rooms.accessRemoved, sessionTarget, sessionFocus]);
+  const targetRoomId = rooms.activeRoomId;
+  const targetMessages = rooms.messages;
+  const targetHistoryComplete = rooms.historyComplete;
+  const targetHistoryLoading = rooms.historyLoading;
+  const targetHistoryError = rooms.historyError;
+  const loadTargetHistory = rooms.loadHistory;
   useEffect(() => {
     if (!target?.messageId) return;
+    if (target.roomId !== targetRoomId) return;
+    if (!targetMessages.some((message) => message.messageId === target.messageId) && !targetHistoryComplete && !targetHistoryLoading && !targetHistoryError) {
+      loadTargetHistory();
+      return;
+    }
+    if (!targetHistoryComplete && !targetMessages.some((message) => message.messageId === target.messageId) && !targetHistoryError) return;
     const timer = setTimeout(() => setTarget(null), 3_000);
     return () => clearTimeout(timer);
-  }, [target]);
+  }, [target, targetRoomId, targetMessages, targetHistoryComplete, targetHistoryLoading, targetHistoryError, loadTargetHistory]);
 
   const readSeqAtOpen = useRef<{ roomId: string; seq: number | null } | null>(null);
   if (rooms.activeRoom && readSeqAtOpen.current?.roomId !== rooms.activeRoom.roomId) readSeqAtOpen.current = { roomId: rooms.activeRoom.roomId, seq: rooms.activeRoom.lastReadSeq ?? null };
@@ -670,6 +682,7 @@ export function MessagingWorkspaceProvider({
     historyError: rooms.historyError,
     historyErrorMessage: rooms.historyErrorMessage,
     onLoadHistory: rooms.loadHistory,
+    onLoadOlder: rooms.loadOlder,
     pendingMessages: pending,
     typingMembers: rooms.typingMembers.filter((member) => member.userId !== userId),
     runs: rooms.runs.map(runView),

@@ -324,9 +324,10 @@ async def list_room_messages(
     room_id: str,
     after_seq: Annotated[int, Query(alias="afterSeq", ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    before_seq: Annotated[int | None, Query(alias="beforeSeq", ge=1)] = None,
     auth: AuthContext = Depends(get_current_user),
 ):
-    return await service.list_messages(auth, room_id, after_seq, limit)
+    return await service.list_messages(auth, room_id, after_seq, limit, before_seq)
 
 
 @router.post("/messaging/rooms/{room_id}/messages", response_model=CanonicalMessage, status_code=201)

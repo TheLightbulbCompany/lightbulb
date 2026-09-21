@@ -3,8 +3,12 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
 import type { ReactNode } from "react";
-import type { CanonicalRoomMessage, LiveEvent, RoomDetail, RoomSection, RunStatusResponse } from "../index";
-import { useRooms, type RoomsLiveSource, type RoomsPlatform } from "./useRooms";
+import type { CanonicalRoomMessage, LiveEvent, MessagePage, RoomDetail, RoomSection, RunStatusResponse } from "../index";
+import type { ApiCallOptions } from "../api/client";
+import { useRooms as useSharedRooms, type RoomsLiveSource, type RoomsPlatform, type UseRoomsOptions } from "./useRooms";
+
+const useRooms = (platform: RoomsPlatform, options: UseRoomsOptions = {}) =>
+  useSharedRooms(platform, { boundedHistory: true, ...options });
 
 const room: RoomDetail = {
   roomId: "room-1", name: "Launch", kind: "channel", roomRevision: 1, deliveryKey: "key-1",
@@ -24,8 +28,8 @@ const handlers = new Set<(event: LiveEvent) => void>();
 const messaging = {
   listRooms: vi.fn(async () => ({ rooms: [room], sections: [] as RoomSection[] })),
   getRoom: vi.fn<(roomId: string) => Promise<RoomDetail>>(async () => room),
-  listMessages: vi.fn<(roomId: string, afterSeq: number, limit?: number) => Promise<{ messages: CanonicalRoomMessage[]; nextAfterSeq: number | null }>>(
-    async () => ({ messages: [message], nextAfterSeq: null }),
+  listMessages: vi.fn<(roomId: string, afterSeq: number, limit?: number, options?: ApiCallOptions & { beforeSeq?: number }) => Promise<MessagePage>>(
+    async () => ({ messages: [message], nextAfterSeq: null, nextBeforeSeq: null }),
   ),
   markRead: vi.fn<(roomId: string, request: { lastReadSeq: number }) => Promise<{ roomId: string; lastReadSeq: number }>>(
     async () => ({ roomId: room.roomId, lastReadSeq: 1 }),
@@ -79,10 +83,17 @@ beforeEach(() => {
   for (const fn of Object.values(messaging)) fn.mockClear();
   messaging.listRooms.mockResolvedValue({ rooms: [room], sections: [] });
   messaging.getRoom.mockResolvedValue(room);
-  messaging.listMessages.mockResolvedValue({ messages: [message], nextAfterSeq: null });
+  messaging.listMessages.mockResolvedValue({ messages: [message], nextAfterSeq: null, nextBeforeSeq: null });
 });
 
 describe("useRooms platform seams", () => {
+  it("keeps full history for callers without an older-page control", async () => {
+    const { result } = renderHook(() => useSharedRooms(platform()), { wrapper });
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, { signal: expect.any(AbortSignal) });
+    expect(messaging.listMessages.mock.calls.some(([, , , options]) => options?.beforeSeq !== undefined)).toBe(false);
+  });
+
   it("marks read only while the platform reports itself visible", async () => {
     visible = false;
     const { result } = renderHook(() => useRooms(platform()), { wrapper });
@@ -100,7 +111,7 @@ describe("useRooms platform seams", () => {
     const { result } = renderHook(() => useRooms(platform()), { wrapper });
     act(() => result.current.selectRoom(room.roomId));
     await waitFor(() => expect(result.current.messages).toHaveLength(1));
-    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100);
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, { beforeSeq: 2, signal: expect.any(AbortSignal) });
   });
 
   it("unsubscribes from visibility on unmount", () => {
@@ -214,7 +225,7 @@ describe("useRooms platform seams", () => {
   it("names the reason a history read failed, and clears it on the retry", async () => {
     messaging.listMessages
       .mockRejectedValueOnce(new Error("History is temporarily unavailable"))
-      .mockResolvedValue({ messages: [message], nextAfterSeq: null });
+      .mockResolvedValue({ messages: [message], nextAfterSeq: null, nextBeforeSeq: null });
     const { result } = renderHook(() => useRooms(platform()), { wrapper });
     act(() => result.current.selectRoom(room.roomId));
     await waitFor(() => expect(result.current.historyErrorMessage).toBe("History is temporarily unavailable"));
@@ -279,7 +290,7 @@ describe("useRooms platform seams", () => {
 
     const { result } = renderHook(() => useRooms(platform()), { wrapper });
     await waitFor(() => expect(result.current.messages).toHaveLength(1));
-    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100);
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, { beforeSeq: 2, signal: expect.any(AbortSignal) });
 
     await act(async () => { result.current.selectRoom(other.roomId); });
     await waitFor(() => expect(result.current.messages.map((m) => m.messageId)).toEqual(["msg-2"]));
@@ -291,8 +302,8 @@ describe("useRooms platform seams", () => {
     // window in which the timeline is empty, and the refetch is a delta rather
     // than a replay of the room from sequence zero.
     expect(result.current.messages.map((m) => m.messageId)).toEqual(["msg-1"]);
-    await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 1, 100));
-    expect(messaging.listMessages).not.toHaveBeenCalledWith(room.roomId, 0, 100);
+    await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 1, 100, { signal: expect.any(AbortSignal) }));
+    expect(messaging.listMessages).not.toHaveBeenCalledWith(room.roomId, 0, 100, { beforeSeq: 2, signal: expect.any(AbortSignal) });
   });
 
   it("forgets cached history when the signed-in scope changes", async () => {
@@ -308,7 +319,7 @@ describe("useRooms platform seams", () => {
     // A different person must never be shown the previous one's messages, even
     // for the frame before their own history arrives.
     expect(result.current.messages).toHaveLength(0);
-    await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100));
+    await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, { beforeSeq: 2, signal: expect.any(AbortSignal) }));
   });
 
   describe("optimistic send reconciled by a live event", () => {

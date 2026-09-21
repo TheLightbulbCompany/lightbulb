@@ -116,6 +116,16 @@ it("navigates search results into controlled threads and focuses main results", 
   expect(screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]")).toHaveFocus();
 });
 
+it("loads missing replies when a thread opens from a bounded history page", () => {
+  const onLoadHistory = vi.fn();
+  const view = render(<RoomPanel {...props} selectedThreadId={message.messageId}
+    historyComplete={false} historyLoading={false} onLoadHistory={onLoadHistory} />);
+  expect(onLoadHistory).toHaveBeenCalledOnce();
+  view.rerender(<RoomPanel {...props} selectedThreadId={message.messageId}
+    historyComplete={false} historyLoading={false} onLoadHistory={onLoadHistory} />);
+  expect(onLoadHistory).toHaveBeenCalledOnce();
+});
+
 it("does not leave focus on a stale thread trigger when a search result targets a main message", async () => {
   HTMLElement.prototype.scrollIntoView = vi.fn();
   const reply = { ...message, messageId: "reply", messageSeq: 2, text: "Reply text", threadRootMessageId: message.messageId };

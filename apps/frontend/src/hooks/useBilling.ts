@@ -31,7 +31,7 @@ export interface BillingAccount {
   // higher $150/mo tier that unlocks larger marketplace companies). Backend
   // defaults a plan-less row to "standard"; optional here so pre-plan
   // response shapes (and test fixtures) don't have to carry it.
-  plan?: "standard" | "ultra_pro";
+  plan?: "base" | "standard" | "ultra_pro";
   // Workspace prices are server-owned so every client shows the deployed
   // catalog instead of a stale price baked into a release.
   workspace_price_usd: number;

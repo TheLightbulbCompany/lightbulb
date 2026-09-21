@@ -261,7 +261,7 @@ function UltraUpgradeRow({
   ultraPriceUsd,
   startCheckout,
 }: {
-  plan: "standard" | "ultra_pro" | undefined;
+  plan: "base" | "standard" | "ultra_pro" | undefined;
   ultraPriceUsd?: number;
   startCheckout: (plan: "base" | "workspace" | "ultra") => Promise<void>;
 }) {
@@ -300,6 +300,11 @@ function UltraUpgradeRow({
 
   return (
     <div style={{ marginTop: 14 }}>
+      {plan === "base" && (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "color-mix(in srgb, var(--midnight) 8%, transparent)", padding: "3px 10px", borderRadius: 999 }}>
+          Base
+        </span>
+      )}
       <button type="button" className="settings-btn-save" onClick={handleUpgrade} disabled={loading}>
         {loading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
         {ultraPriceUsd === undefined ? "Upgrade to Ultra" : `Upgrade to Ultra — $${ultraPriceUsd}/mo`}

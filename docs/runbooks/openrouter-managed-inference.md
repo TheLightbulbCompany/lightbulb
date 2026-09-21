@@ -23,6 +23,7 @@ login. Its two Metronome POSTs call documented **read** endpoints.
 | OpenRouter workspaces | On 2026-09-21, a dedicated `Lightbulb Dev` workspace was created with slug `lightbulb-dev` and ID `5db3e7d3-4447-43b8-ac39-b1e35e3f54a9`. Set that exact ID as `OPENROUTER_WORKSPACE_ID_DEV`; do not repurpose the account's existing default workspace. |
 | Workspace-specific key proof | The management key created and deleted a disposable daily-capped key inside `Lightbulb Dev` (create 201, delete 200), and the returned workspace ID matched `5db3e7d3-4447-43b8-ac39-b1e35e3f54a9`. No inference request was made. |
 | OpenRouter credits | `GET /api/v1/credits` returned 200 with `total_credits=0` and `total_usage=0`. Funding the dev credit pool is required before a paid inference or settlement smoke. |
+| Free-model smoke | On 2026-09-21, `liquid/lfm-2.5-2.6b:free` returned `LIGHTBULB_FREE_MODEL_OK` from a fixed harmless prompt in `Lightbulb Dev` (completion 200; reported cost 0). The disposable daily-capped key was deleted (200). A 512-token ceiling was needed because the currently available free models spend part of their response budget on hidden reasoning. |
 
 The existing [workspace billing runbook](workspace-stripe-metronome-configuration.md)
 describes the repair order. Until the integration and Product mapping are

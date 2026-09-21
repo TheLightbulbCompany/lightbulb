@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @typescript-eslint/no-explicit-any -- DCV's browser SDK ships without types. */
+
 import { useEffect, useRef, useState } from "react";
 
 let nextViewerId = 0;

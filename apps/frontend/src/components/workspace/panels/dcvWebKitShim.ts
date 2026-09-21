@@ -39,9 +39,13 @@ let webcamRejectionHandled = false;
 export function suppressDcvWebcamRejection(): void {
   if (typeof window === "undefined" || webcamRejectionHandled) return;
   webcamRejectionHandled = true;
+  const isUnsupportedWebcam = (reason: unknown) => reason instanceof Error && reason.message === "The webcam system is not supported.";
   window.addEventListener("unhandledrejection", (event) => {
-    if (event.reason instanceof Error && event.reason.message === "The webcam system is not supported.") {
+    if (isUnsupportedWebcam(event.reason)) {
       event.preventDefault();
     }
+  });
+  window.addEventListener("error", (event) => {
+    if (isUnsupportedWebcam(event.error)) event.preventDefault();
   });
 }

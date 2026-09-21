@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 
+from core.services.hermes_profiles import _BEDROCK_TRIAL_CHOICE as BEDROCK_TRIAL_CHOICE  # noqa: F401
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)

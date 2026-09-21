@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ensureDcvMediaShim } from "../panels/dcvWebKitShim";
 
@@ -40,6 +40,24 @@ describe("ensureDcvMediaShim", () => {
     } finally {
       if (original) Object.defineProperty(navigator, "mediaDevices", original);
       else delete (navigator as Navigator & { mediaDevices?: MediaDevices }).mediaDevices;
+    }
+  });
+
+  it("replaces WebKit's unsupported media probe inside Tauri", async () => {
+    const originalMedia = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
+    const originalTauri = Object.getOwnPropertyDescriptor(window, "__TAURI_INTERNALS__");
+    const unsupported = vi.fn(() => Promise.reject(new Error("unsupported")));
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: unsupported } });
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+
+    try {
+      ensureDcvMediaShim();
+      await expect(navigator.mediaDevices.getUserMedia({ video: true })).resolves.toMatchObject({ getTracks: expect.any(Function) });
+      expect(unsupported).not.toHaveBeenCalled();
+    } finally {
+      if (originalMedia) Object.defineProperty(navigator, "mediaDevices", originalMedia);
+      if (originalTauri) Object.defineProperty(window, "__TAURI_INTERNALS__", originalTauri);
+      else delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     }
   });
 });

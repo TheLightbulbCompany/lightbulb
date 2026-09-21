@@ -86,7 +86,7 @@ function Conversation() {
       };
     }, [roomId, preview]),
   );
-  const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused });
+  const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused, boundedHistory: true });
   // The room's own timeline drafts separately from each of its threads.
   const composerDraftKey = useDraftKey(roomId, null);
 
@@ -322,6 +322,7 @@ function Conversation() {
         inverted
         data={newestFirst}
         keyExtractor={(item) => item.key}
+        maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 48 }}
         contentContainerStyle={[styles.list, items.length === 0 && styles.listEmpty]}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
@@ -357,13 +358,16 @@ function Conversation() {
           <View style={styles.emptyUpright}>
             {rooms.historyLoading ? (
               <TimelineSkeleton />
+            ) : !rooms.historyComplete && rooms.messages.length > 0 ? (
+              <Text style={styles.olderHint}>Older messages are available.</Text>
             ) : (
               <EmptyState agentName={title} subtitle={dmWithAgent ? undefined : "No messages yet"} />
             )}
           </View>
         }
         ListFooterComponent={
-          rooms.historyError ? (
+          <View>
+          {rooms.historyError ? (
             <View style={styles.errorCard}>
               <Text style={styles.errorText}>{rooms.historyErrorMessage ? `Couldn't load history: ${rooms.historyErrorMessage}` : "Couldn't load history."}</Text>
               <Pressable
@@ -374,7 +378,20 @@ function Conversation() {
                 <Text style={styles.retryText}>Retry</Text>
               </Pressable>
             </View>
-          ) : null
+          ) : null}
+          {!rooms.historyComplete && rooms.messages.length > 0 && !rooms.historyError ? (
+            <Pressable
+              onPress={rooms.loadOlder}
+              disabled={rooms.historyLoading}
+              accessibilityRole="button"
+              accessibilityLabel="Load older messages"
+              accessibilityState={{ disabled: rooms.historyLoading }}
+              style={styles.olderButton}
+            >
+              <Text style={styles.olderText}>{rooms.historyLoading ? "Loading older messages…" : "Load older messages"}</Text>
+            </Pressable>
+          ) : null}
+          </View>
         }
         renderItem={({ item }) => {
           if (item.kind === "date") {
@@ -483,6 +500,7 @@ const styles = StyleSheet.create({
   list: { paddingHorizontal: spacing.md, paddingTop: spacing.lg, paddingBottom: spacing.sm },
   listEmpty: { flexGrow: 1 },
   emptyUpright: { flexGrow: 1, transform: [{ scaleY: -1 }] },
+  olderHint: { ...type.caption, textAlign: "center", paddingTop: spacing.lg },
   headerTitle: { alignItems: "center" },
   // System font, not Source Sans 3 — see `type.navTitle`.
   headerName: type.navTitle,
@@ -527,6 +545,8 @@ const styles = StyleSheet.create({
   },
   errorText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.errorText },
   retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest },
+  olderButton: { minHeight: 44, alignItems: "center", justifyContent: "center", marginBottom: spacing.sm },
+  olderText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest },
   typing: { ...type.caption, paddingHorizontal: spacing.lg, paddingTop: spacing.xs },
   jump: {
     position: "absolute",

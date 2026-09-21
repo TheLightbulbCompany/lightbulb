@@ -158,7 +158,7 @@ const mockLive = {
     // identical keys across the fast-firing tests in this file, so reusing
     // "room-1" would just replay ITS cached success and never call this mock).
     getRoom: jest.fn(async (roomId: string) => ({ ...mockRoom, roomId })),
-    listMessages: jest.fn(async (roomId: string) => ({
+    listMessages: jest.fn(async (roomId: string, _afterSeq?: number, _limit?: number, _options?: { beforeSeq?: number }) => ({
       messages: mockMessages.map((message) => ({ ...message, roomId })),
       nextAfterSeq: null,
     })),
@@ -214,6 +214,11 @@ describe("conversation screen", () => {
     mockRoomId = "room-1";
     mockIsPreview = false;
     mockFocused = true;
+    mockLive.messaging.listRooms.mockReset().mockImplementation(async () => ({ rooms: [mockRoom] }));
+    mockLive.messaging.getRoom.mockReset().mockImplementation(async (roomId: string) => ({ ...mockRoom, roomId }));
+    mockLive.messaging.listMessages.mockReset().mockImplementation(async (roomId: string) => ({
+      messages: mockMessages.map((message) => ({ ...message, roomId })), nextAfterSeq: null,
+    }));
   });
 
   it("shows the author name once per run and a day divider above the first message", async () => {
@@ -444,6 +449,54 @@ describe("conversation screen", () => {
     expect(data[0]?.message?.text).toBe("mine");
     // Oldest item last — the date divider that opens the day, not a message.
     expect(data.at(-1)?.message).toBeUndefined();
+  });
+
+  it("opens at the newest page and loads older messages without losing the visible row", async () => {
+    const server = Array.from({ length: 201 }, (_, index) => mockMsg({
+      messageId: `m${index + 1}`, messageSeq: index + 1, text: `message ${index + 1}`,
+    }));
+    mockLive.messaging.listRooms.mockResolvedValue({ rooms: [{ ...mockRoom, lastMessageSeq: 201 }] });
+    mockLive.messaging.getRoom.mockResolvedValue({ ...mockRoom, lastMessageSeq: 201 });
+    mockLive.messaging.listMessages.mockImplementation(async (_roomId, afterSeq = 0, limit = 100, options) => {
+      if (options?.beforeSeq !== undefined) {
+        const messages = server.filter((item) => item.messageSeq < options.beforeSeq!).slice(-limit);
+        return { messages, nextAfterSeq: null, nextBeforeSeq: messages[0]?.messageSeq > 1 ? messages[0].messageSeq : null };
+      }
+      return { messages: server.filter((item) => item.messageSeq > afterSeq).slice(0, limit), nextAfterSeq: null };
+    });
+    await render(<Conversation />);
+    await waitFor(() => expect((screen.getByTestId("room-timeline").props.data as { message?: CanonicalRoomMessage }[])[0]?.message?.messageSeq).toBe(201));
+    expect((screen.getByTestId("room-timeline").props.data as { message?: CanonicalRoomMessage }[]).some((item) => item.message?.messageSeq === 1)).toBe(false);
+    const list = screen.getByTestId("room-timeline");
+    // FlatList counts ListHeaderComponent as index 0 before forwarding this to ScrollView.
+    expect(list.props.maintainVisibleContentPosition).toEqual({ minIndexForVisible: 1, autoscrollToTopThreshold: 48 });
+    expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-1", 0, 100, expect.objectContaining({ beforeSeq: 202 }));
+    await fireEvent.press(screen.getByLabelText("Load older messages"));
+    await waitFor(() => expect((screen.getByTestId("room-timeline").props.data as { message?: CanonicalRoomMessage }[]).some((item) => item.message?.messageSeq === 2)).toBe(true));
+    await fireEvent.press(screen.getByLabelText("Load older messages"));
+    await waitFor(() => expect((screen.getByTestId("room-timeline").props.data as { message?: CanonicalRoomMessage }[]).some((item) => item.message?.messageSeq === 1)).toBe(true));
+    expect(screen.queryByLabelText("Load older messages")).toBeNull();
+  });
+
+  it("does not call a room empty when its newest page contains only thread replies", async () => {
+    const server = Array.from({ length: 201 }, (_, index) => mockMsg({
+      messageId: `m${index + 1}`, messageSeq: index + 1,
+      threadRootMessageId: index === 0 ? null : "m1",
+      text: `message ${index + 1}`,
+    }));
+    mockLive.messaging.listRooms.mockResolvedValue({ rooms: [{ ...mockRoom, lastMessageSeq: 201 }] });
+    mockLive.messaging.getRoom.mockResolvedValue({ ...mockRoom, lastMessageSeq: 201 });
+    mockLive.messaging.listMessages.mockImplementation(async (_roomId, afterSeq = 0, limit = 100, options) => {
+      if (options?.beforeSeq !== undefined) {
+        const messages = server.filter((item) => item.messageSeq < options.beforeSeq!).slice(-limit);
+        return { messages, nextAfterSeq: null, nextBeforeSeq: messages[0]?.messageSeq > 1 ? messages[0].messageSeq : null };
+      }
+      return { messages: server.filter((item) => item.messageSeq > afterSeq).slice(0, limit), nextAfterSeq: null };
+    });
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByLabelText("Load older messages")).toBeTruthy());
+    expect(screen.queryByText("No messages yet")).toBeNull();
+    expect(screen.getByText("Older messages are available.")).toBeTruthy();
   });
 
   // Nothing wrote the push handler's target before this task: the signal existed

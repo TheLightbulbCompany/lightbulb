@@ -1,3 +1,4 @@
+import type { BillingAccount } from "@/hooks/useBilling";
 import type { Connection } from "@/hooks/useConnections";
 import type { RoomParticipant } from "./types";
 
@@ -9,7 +10,7 @@ import type { RoomParticipant } from "./types";
 // reality. Disconnect Stripe and its card comes back on its own.
 // =============================================================================
 
-export type SetupStepId = "stripe" | "github" | "notion" | "invite" | "name-agents";
+export type SetupStepId = "starter-model" | "stripe" | "github" | "notion" | "invite" | "name-agents";
 
 export interface SetupStep {
   id: SetupStepId;
@@ -95,13 +96,43 @@ export interface SetupStepInputs {
    * seeded), so a teammate who joined would never flip the card.
    */
   workspaceMembers: number;
+  /** `GET /billing/account`; null/undefined while unknown, which shows no billing card. */
+  billing?: Pick<BillingAccount, "is_subscribed" | "plan" | "provider_choice"> | null;
 }
 
-export function buildSetupSteps({ participants, connections, agentNames, workspaceMembers }: SetupStepInputs): SetupStep[] {
+/**
+ * A paid Workspace/Ultra row with no provider runs on the capped starter model
+ * (trial_cap.is_managed_capped). Base is excluded — the managed model IS that
+ * plan — and so is the trial, whose plan-less row the backend reports as
+ * "standard", which is why `is_subscribed` is checked rather than `plan` alone.
+ */
+function onStarterModel(billing: SetupStepInputs["billing"]): boolean {
+  return Boolean(
+    billing?.is_subscribed &&
+      (billing.plan === "standard" || billing.plan === "ultra_pro") &&
+      !billing.provider_choice,
+  );
+}
+
+export function buildSetupSteps({ participants, connections, agentNames, workspaceMembers, billing }: SetupStepInputs): SetupStep[] {
   const status = new Map(connections.map((entry) => [entry.provider, entry.status] as const));
   const agents = participants.filter((participant) => participant.kind === "agent");
 
   return [
+    // Present only while outstanding: choosing a provider drops it rather than
+    // marking it done, so it can hold the band open but never close it early.
+    // Admin-only because POST /billing/provider is (require_org_admin).
+    ...(onStarterModel(billing)
+      ? [{
+          id: "starter-model" as const,
+          label: "You're on the starter model",
+          detail: "Pick Claude (Bedrock), ChatGPT, or your own key",
+          doneDetail: "Provider chosen",
+          done: false,
+          repeatable: false,
+          adminOnly: true,
+        }]
+      : []),
     // A connector this owner cannot start — gated, runtime-unsupported, or
     // absent from the catalog — is dropped, not shown dead: its authorize leg
     // would refuse, and a card nobody can finish would keep the band up forever.

@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import * as React from "react";
 import { render, screen } from "@testing-library/react";
 
 import { ChatErrorCard } from "../ChatErrorCard";
+
+const billing = vi.hoisted(() => ({ account: null as Record<string, unknown> | null }));
+vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: billing.account }) }));
 
 describe("ChatErrorCard", () => {
   it("renders the rate_limit variant with the three-remedies copy and Switch provider action", () => {
@@ -166,5 +169,70 @@ describe("ChatErrorCard", () => {
     render(<ChatErrorCard message="session file locked" />);
     expect(screen.queryByText("Provider timeout")).not.toBeInTheDocument();
     expect(screen.getByText("Failed to generate")).toBeInTheDocument();
+  });
+
+  describe("included_daily_cap — a PAYING workspace's daily allowance", () => {
+    const paid = (plan: string, provider_choice: string | null = null) => ({
+      is_subscribed: true, subscription_status: "active", plan, provider_choice,
+    });
+    const TITLE = "Today's included usage is used up";
+    const RESET = "You've used today's included usage. It resets at 00:00 UTC.";
+    const expectNoTrialCopy = () => {
+      expect(screen.queryByText(/free/i)).not.toBeInTheDocument();
+      expect(screen.queryByText("Daily free limit reached")).not.toBeInTheDocument();
+    };
+
+    afterEach(() => { billing.account = null; });
+
+    it("points Base at the Workspace upgrade", () => {
+      billing.account = paid("base");
+      render(<ChatErrorCard code="included_daily_cap" message="server copy" />);
+      expect(screen.getByText(TITLE)).toBeInTheDocument();
+      expect(screen.getByText(new RegExp(`${RESET.replace(/[.]/g, "\\.")}`))).toBeInTheDocument();
+      expect(screen.getByText(/Upgrade to Workspace for pay-as-you-go credits/)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Upgrade" })).toHaveAttribute("href", "/settings?panel=billing");
+      expectNoTrialCopy();
+    });
+
+    it.each(["standard", "ultra_pro"])("points a %s workspace with no provider at the provider picker", (plan) => {
+      billing.account = paid(plan);
+      render(<ChatErrorCard code="included_daily_cap" message="server copy" />);
+      expect(screen.getByText(TITLE)).toBeInTheDocument();
+      expect(screen.getByText(/Pick a model provider — Claude with credits, ChatGPT, or your own key/)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Pick provider" })).toHaveAttribute(
+        "href",
+        "/chat?panel=llm&action=change-provider",
+      );
+      expectNoTrialCopy();
+    });
+
+    it("falls back to the server's neutral copy and Billing otherwise", () => {
+      billing.account = paid("standard", "bedrock_claude");
+      render(<ChatErrorCard code="included_daily_cap" message="Neutral server text." />);
+      expect(screen.getByText(TITLE)).toBeInTheDocument();
+      expect(screen.getByText("Neutral server text.")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Billing" })).toHaveAttribute("href", "/settings?panel=billing");
+      expectNoTrialCopy();
+    });
+
+    it("never shows trial copy while billing is still unknown", () => {
+      render(<ChatErrorCard code="included_daily_cap" message="" />);
+      expect(screen.getByText(TITLE)).toBeInTheDocument();
+      expect(screen.getByText(RESET)).toBeInTheDocument();
+      expectNoTrialCopy();
+    });
+
+    it("renders a legacy trial_daily_cap for a PAYING workspace as included usage, not the free limit", () => {
+      billing.account = paid("base");
+      render(<ChatErrorCard code="trial_daily_cap" message="You've used today's free allowance" />);
+      expect(screen.getByText(TITLE)).toBeInTheDocument();
+      expectNoTrialCopy();
+    });
+
+    it("keeps the free-limit card for an actual trial", () => {
+      billing.account = { is_subscribed: false, subscription_status: "trial_local", plan: "standard", provider_choice: null };
+      render(<ChatErrorCard code="trial_daily_cap" message="" />);
+      expect(screen.getByText("Daily free limit reached")).toBeInTheDocument();
+    });
   });
 });

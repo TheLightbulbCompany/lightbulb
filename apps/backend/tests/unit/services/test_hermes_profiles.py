@@ -390,3 +390,39 @@ def test_build_profile_config_takes_no_listening_paid_parameter_and_emits_no_gua
 def test_bedrock_region_is_sourced_from_settings_not_hardcoded(monkeypatch):
     monkeypatch.setattr(hermes_profiles.settings, "AWS_REGION", "eu-west-1")
     assert cfg()["bedrock"]["region"] == "eu-west-1"
+
+
+def test_dotenv_carries_the_paperclip_identity_a_chat_turn_needs(monkeypatch):
+    """A chat turn's shell env is the profile's .env alone (bridge/turn.py ``_secret_scope``); only a
+    Paperclip-woken run adds the identity on top. Without URL/agent/company here, every
+    ``paperclip-api.sh`` call from a room/DM turn dies with "Missing PAPERCLIP_API_URL"."""
+    monkeypatch.setattr(hermes_profiles.settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal:3100/")
+    files = hermes_profiles.write_agent_profile(
+        "org_1",
+        {"id": "agent-1", "name": "Friday", "role": "ceo", "companyId": "company-1"},
+        provider_choice="bedrock_claude",
+        aip_arns={"sonnet": "arn:aip:sonnet"},
+        paperclip_api_key="pcp_x",
+        integrations={},
+        env_vars={},
+    )
+    assert 'PAPERCLIP_API_KEY="pcp_x"' in files.dotenv or "PAPERCLIP_API_KEY=pcp_x" in files.dotenv
+    for line in ("PAPERCLIP_API_URL", "http://paperclip.internal:3100\n", "PAPERCLIP_AGENT_ID", "agent-1"):
+        assert line.strip() in files.dotenv
+    assert "PAPERCLIP_COMPANY_ID" in files.dotenv and "company-1" in files.dotenv
+    assert "3100/" not in files.dotenv
+
+
+def test_dotenv_omits_an_unknown_company_rather_than_writing_it_empty(monkeypatch):
+    monkeypatch.setattr(hermes_profiles.settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal:3100")
+    files = hermes_profiles.write_agent_profile(
+        "org_1",
+        {"id": "agent-1", "name": "Friday", "role": "ceo"},
+        provider_choice="bedrock_claude",
+        aip_arns={"sonnet": "arn:aip:sonnet"},
+        paperclip_api_key="pcp_x",
+        integrations={},
+        env_vars={},
+    )
+    assert "PAPERCLIP_AGENT_ID" in files.dotenv
+    assert "PAPERCLIP_COMPANY_ID" not in files.dotenv

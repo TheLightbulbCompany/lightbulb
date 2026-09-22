@@ -85,6 +85,11 @@ const PURCHASE_GATE_COPY: Record<string, { title: string; body: string }> = {
     title: "Out of credits",
     body: "This account has run out of inference credits.",
   },
+  // A paying owner at today's included usage — never trial wording.
+  included_daily_cap: {
+    title: "Today's included usage is used up",
+    body: "You've used today's included usage. It resets at 00:00 UTC.",
+  },
 };
 
 export function isPurchaseGate(code: string | null | undefined): boolean {

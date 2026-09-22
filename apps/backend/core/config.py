@@ -546,6 +546,11 @@ class Settings(BaseSettings):
             raise ValueError(f"CLERK_AZP_MODE must be 'audit' or 'enforce'; got {v!r}")
         return v
 
+    @field_validator("OPENROUTER_MANAGED_ENABLED", mode="before")
+    @classmethod
+    def empty_openrouter_managed_enabled_means_disabled(cls, v: object) -> object:
+        return False if isinstance(v, str) and not v.strip() else v
+
     @model_validator(mode="after")
     def _validate_deployed_security(self) -> "Settings":
         """Fail LOUD at boot rather than silently fail open in a deployment.

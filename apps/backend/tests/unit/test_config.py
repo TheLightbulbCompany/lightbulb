@@ -71,6 +71,11 @@ def test_workspace_price_settings_have_expected_defaults():
     assert s.ULTRA_PRICE_USD == 150
 
 
+@patch.dict(os.environ, {"OPENROUTER_MANAGED_ENABLED": ""})
+def test_empty_openrouter_managed_enabled_means_disabled():
+    assert Settings().OPENROUTER_MANAGED_ENABLED is False
+
+
 def test_apex_domain_collapses_subdomains():
     """The cookie scope, the same-site return-URL allowlist and the SES parent
     identity all key on the registrable apex, not on a brand literal."""

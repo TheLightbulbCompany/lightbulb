@@ -340,14 +340,13 @@ export class LightbulbStage extends cdk.Stage {
     observability.addDependency(database);
     observability.addDependency(paperclip);
 
-    // Dev-only and policy-disabled until key, Hermes, and money-path acceptance.
-    if (env === "dev") {
-      const openrouterGate = new OpenRouterGateStack(this, `lightbulb-${env}-openrouter-gate`, {
-        stackName: `lightbulb-${env}-openrouter-gate`,
-        environment: env,
-      });
-      openrouterGate.addDependency(database);
-    }
+    // Both envs: OPENROUTER_MANAGED_ENABLED_* gates the rollout, but a runtime resolved to
+    // openrouter_managed needs this stack's gate URL, so the stack itself can't be env-gated.
+    const openrouterGate = new OpenRouterGateStack(this, `lightbulb-${env}-openrouter-gate`, {
+      stackName: `lightbulb-${env}-openrouter-gate`,
+      environment: env,
+    });
+    openrouterGate.addDependency(database);
 
     // BedrockMeterStack — account-scoped usage meter, direct Metronome
     // ingest. Bedrock model-invocation logging is account+region-global (one

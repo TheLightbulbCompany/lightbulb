@@ -58,6 +58,18 @@ def _reset_shutdown_flag():
 
 
 @pytest.fixture(autouse=True)
+def _clear_inflight_reconciles():
+    """``reconcile_in_background`` records its task in a process-global set that the app's
+    lifespan shutdown gathers. A test that patches ``asyncio.create_task`` to a MagicMock leaves
+    that mock in the set (its done-callback never fires), and the NEXT test's lifespan then fails
+    gathering a non-awaitable. Clear it after every test."""
+    yield
+    from core.services import hermes_provisioning
+
+    hermes_provisioning._INFLIGHT_RECONCILES.clear()
+
+
+@pytest.fixture(autouse=True)
 def _launch_settings_read_defaults():
     """Default every test to a launch-settings row that reads cleanly as
     "nothing saved yet" (feature off).

@@ -26,6 +26,9 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
     class FakeSecretsManager:
         def get_secret_value(self, SecretId):
             assert SecretId == "lightbulb/dev/hermes/org_test"
+            # providerSwitchFrozen/providerSwitchGeneration: an OLD backend may still write
+            # these into the boot secret (Task 11 retired the gate they used to drive) --
+            # they must be accepted and ignored, not raise on an unrecognized key.
             return {"SecretString": json.dumps(
                 {"hookToken": "boot-hook", "gatewayToken": "boot-gw", "bedrockBearer": "boot-bearer",
                  "providerChoice": "openrouter_managed", "providerSwitchFrozen": True,
@@ -52,9 +55,12 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
         assert turn.HOOK_TOKEN == "boot-hook", "turn.py captured a stale value, not the boot fetch"
         assert server.GATEWAY_TOKEN == "boot-gw", "server.py captured a stale value, not the boot fetch"
         assert os.environ["AWS_BEARER_TOKEN_BEDROCK"] == "boot-bearer"
-        assert os.environ["LIGHTBULB_PROVIDER_SWITCH_GENERATION"] == "gen-new"
-        assert turn._turns_frozen is True
-        assert turn.reserve_turn() is False
+        # An old boot secret's providerSwitchFrozen/providerSwitchGeneration are ignored
+        # outright (Task 11): no env export, and turns still admit.
+        assert "LIGHTBULB_PROVIDER_SWITCH_GENERATION" not in os.environ
+        assert "LIGHTBULB_PROVIDER_SWITCH_FROZEN" not in os.environ
+        assert turn.reserve_turn() is True
+        turn.release_turn()
         # M2-R12: lightbulb_node reads OPENCLAW_HOOK_TOKEN off the process env directly (it has
         # no per-turn context file -- exec isn't turn-scoped), so the boot fetch must reach that
         # env var too, not just the `bridge.HOOK_TOKEN` module attribute.

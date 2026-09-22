@@ -56,9 +56,7 @@ def _clear_run_registry():
     turn.RUNS.clear()
     with turn._busy_lock:
         turn._busy = 0
-        turn._turns_frozen = False
     yield
     turn.RUNS.clear()
     with turn._busy_lock:
         turn._busy = 0
-        turn._turns_frozen = False

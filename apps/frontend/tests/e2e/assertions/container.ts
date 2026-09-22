@@ -1,6 +1,6 @@
 import type { AuthedFetch } from '../fixtures/api';
 
-type StatusResponse = { status: string; substatus?: string };
+type StatusResponse = { container_status?: string; container_substatus?: string | null };
 
 export async function containerHealthy(
   api: AuthedFetch,
@@ -25,12 +25,12 @@ export async function containerHealthy(
       continue;
     }
 
-    if (data.substatus === 'gateway_healthy') return;
-    last = `${data.status}/${data.substatus}`;
+    if (data.container_substatus === 'gateway_healthy') return;
+    last = `${data.container_status}/${data.container_substatus}`;
     // Terminal error state — fail fast instead of polling for the full 10
     // minutes (Codex P2 on PR #309). The catch block above can't see this
     // throw because it's outside the try.
-    if (data.status === 'error') {
+    if (data.container_status === 'error') {
       throw new Error(`Container in error state: ${last}`);
     }
 

@@ -208,8 +208,10 @@ export function ChatLayout({
   // ?panel cleanup, and the sidebar all behave exactly like a sidebar click.
   // ChatLayout's own dispatches carry no source, so this cannot loop.
   const handleSelectAgentRef = useRef(handleSelectAgent);
+  const onClearPanelRef = useRef(onClearPanel);
   useEffect(() => {
     handleSelectAgentRef.current = handleSelectAgent;
+    onClearPanelRef.current = onClearPanel;
   });
   useEffect(() => {
     function onExternalSelectAgent(e: Event) {
@@ -217,8 +219,18 @@ export function ChatLayout({
       if (detail?.source !== "notification" || !detail.agentId) return;
       handleSelectAgentRef.current(detail.agentId);
     }
+    // A run toast's View opens the run's room (MessagingWorkspaceContext selects
+    // it); on this shell that room only shows once ?panel is dropped back to chat.
+    function onOpenRoom() {
+      onClearPanelRef.current?.();
+      setSidebarOpen(false);
+    }
     window.addEventListener("selectAgent", onExternalSelectAgent);
-    return () => window.removeEventListener("selectAgent", onExternalSelectAgent);
+    window.addEventListener("openRoom", onOpenRoom);
+    return () => {
+      window.removeEventListener("selectAgent", onExternalSelectAgent);
+      window.removeEventListener("openRoom", onOpenRoom);
+    };
   }, []);
 
   async function handleCreateAgent(): Promise<void> {

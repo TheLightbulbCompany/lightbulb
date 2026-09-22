@@ -197,3 +197,15 @@ describe("ChatLayout — needsInvitationFlow", () => {
     expect(replaceMock).not.toHaveBeenCalled();
   });
 });
+
+describe("ChatLayout — run toast opens a room", () => {
+  it("drops ?panel on openRoom so the selected room is visible", async () => {
+    clerkState = { isSignedIn: true, user: { id: "user_1" }, organization: { id: "org_a" },
+      memberships: [{ organization: { id: "org_a" } }], invitations: [] };
+    const { ChatLayout } = await import("../ChatLayout");
+    const onClearPanel = vi.fn();
+    await act(async () => { render(<ChatLayout onClearPanel={onClearPanel}><div /></ChatLayout>); });
+    act(() => { window.dispatchEvent(new CustomEvent("openRoom", { detail: { roomId: "r1", threadId: null } })); });
+    expect(onClearPanel).toHaveBeenCalledTimes(1);
+  });
+});

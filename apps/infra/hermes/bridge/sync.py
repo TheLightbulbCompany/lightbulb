@@ -263,8 +263,10 @@ def _s3():
     global _S3_CLIENT
     if _S3_CLIENT is None:
         import boto3
+        from botocore.config import Config
 
-        _S3_CLIENT = boto3.client("s3")
+        # botocore pools 10 connections by default; _fan_out runs _SYNC_WORKERS transfers at once.
+        _S3_CLIENT = boto3.client("s3", config=Config(max_pool_connections=_SYNC_WORKERS * 2))
     return _S3_CLIENT
 
 

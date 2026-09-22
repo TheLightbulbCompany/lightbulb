@@ -242,7 +242,9 @@ export class ContainerStack extends cdk.Stack {
     this.workspaceMemory = new bedrockagentcore.CfnMemory(this, "WorkspaceMemory", {
       name: `lightbulb_${props.environment}_workspace_memory`,
       description: "Long-term memory shared by the agents of each workspace (namespace per owner).",
-      eventExpiryDuration: 30,
+      // The shortest AWS allows: events are only extraction input (records are the memory), and the
+      // wipe deletes them in a best-effort background tail, so expiry bounds any residue.
+      eventExpiryDuration: 7,
       memoryStrategies: [
         {
           semanticMemoryStrategy: {

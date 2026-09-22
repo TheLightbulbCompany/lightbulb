@@ -18,7 +18,7 @@ Every agent in a workspace shares one long-term memory. Facts said in any room a
   - Semantic strategy only.
   - Namespace `/owners/{actorId}/`.
   - `actorId` = owner id.
-  - 30-day event expiry.
+  - 7-day event expiry (the minimum).
 - **Isolation is per-owner IAM**, proven in the dev spike:
   - Events are scoped by `actorId`.
   - Records are scoped by an exact `namespace` match.
@@ -41,7 +41,7 @@ Message `lightbulb-nosync-a5 [c1fde6]` before opening this PR.
    - name `lightbulb_<env>_workspace_memory`
    - **AWS-owned encryption, deliberately.** A CMK needs a service key-policy grant plus kms grants on every owner role, and `EncryptionKeyArn` is create-only. Adding one later means a new resource name plus a data migration.
    - semantic strategy with namespace `/owners/{actorId}/`
-   - `eventExpiryDuration` 30
+   - `eventExpiryDuration` 7 (the minimum; events are only extraction input)
    - The stack exposes the memory id as a prop (one export). The service stack derives the ARN from it.
 2. **Boundary.** `OwnerBedrockBoundary` gets `BoundaryAgentCoreMemoryUse` on the memory ARN:
    - `CreateEvent`, `ListEvents`, `GetEvent`, `ListSessions`

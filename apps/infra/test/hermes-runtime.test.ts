@@ -332,7 +332,7 @@ describe("hermes runtime wiring", () => {
     dev.containerTemplate.resourceCountIs("AWS::BedrockAgentCore::Memory", 1);
     dev.containerTemplate.hasResourceProperties("AWS::BedrockAgentCore::Memory", {
       Name: "lightbulb_dev_workspace_memory",
-      EventExpiryDuration: 30,
+      EventExpiryDuration: 7,
       MemoryStrategies: [
         { SemanticMemoryStrategy: Match.objectLike({ Namespaces: ["/owners/{actorId}/"] }) },
       ],

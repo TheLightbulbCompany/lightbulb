@@ -68,8 +68,8 @@ export class OpenRouterGateStack extends cdk.Stack {
           ? (process.env.OPENROUTER_MODEL_POLICY_JSON_DEV ?? "{}")
           : (process.env.OPENROUTER_MODEL_POLICY_JSON_PROD ?? "{}"),
         OPENROUTER_MANAGED_ENABLED: env === "dev"
-          ? (process.env.OPENROUTER_MANAGED_ENABLED_DEV ?? "false")
-          : (process.env.OPENROUTER_MANAGED_ENABLED_PROD ?? "false"),
+          ? (process.env.OPENROUTER_MANAGED_ENABLED_DEV || "false")
+          : (process.env.OPENROUTER_MANAGED_ENABLED_PROD || "false"),
         MAX_BODY_BYTES: "262144",
         MAX_OUTPUT_TOKENS: "4096",
         RESERVE_ESTIMATE_MICROCENTS: "300000",

@@ -762,13 +762,13 @@ you cannot guess from the filename:
   race); `ensure_user_ready` seeds on the poll thread only as reconcile for
   already-running rows.
 - `provision_dispatch.py` — `dispatch_provision`, the single provisioning
-  funnel. A fresh claim starts the SFN watchdog execution FIRST, then runs
-  attempt 0 as a backend child process for speed. The machine watches the
-  row (watch loop in `service-stack.ts`) and takes over by running
-  `provision_runner.py` as an ECS task on the **platform** cluster on error or
-  after its tick backstop — custody never depends on a client poll. (That ECS
-  RunTask is the one place provisioning still touches ECS; the thing it
-  provisions is an AgentCore runtime.)
+  funnel. A fresh claim starts the SFN execution, which STARTS at
+  `RunProvisioner`: `provision_runner.py` runs immediately as an ECS task on the
+  **platform** cluster, with the machine's own retry/classify states around it —
+  custody never depends on a client poll. There is no inline attempt and no
+  watch loop (the old 40-tick backstop idled every fresh provision ~40 min once
+  #2875 removed the inline attempt). (That ECS RunTask is the one place
+  provisioning still touches ECS; the thing it provisions is an AgentCore runtime.)
 - `paperclip_provisioning.py` — owns `provision_org`, which creates the generic six-agent starter roster for fresh workspaces and preserves legacy/founder rosters. Every agent it seeds carries Paperclip's native `hermes_gateway` adapter pointed at the hook-token-authenticated backend facade; the device-paired `openclaw_gateway` shape is gone (no ws relay to dial, no operator device to mint). An agent row still on `openclaw_gateway` fails its routines, issue runs and Teams Run/Retry **silently** while room chat keeps working — `repoint_agent_adapter` is kept with zero callers precisely because it is the only repair path for that.
 - `owner_lifecycle.py` — the single-writer fence on the path that writes an
   owner's credentials (the OAuth connect-vs-disconnect race). It is a DynamoDB

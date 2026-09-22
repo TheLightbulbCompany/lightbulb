@@ -61,6 +61,15 @@ async def _require_org_oauth_owner(ctx: AuthContext) -> None:
     require_org_admin(ctx)
     row = await billing_repo.get_by_owner_id(resolve_owner_id(ctx))
     if not caller_may_manage_connector(row, ctx.user_id):
+        # Phantom-connector self-heal: a recorded id naming no Clerk user
+        # wedges every real admin here with no recovery path. Clear it (CAS
+        # on the exact phantom value) and let this caller's normal flow
+        # proceed; a real owner keeps their 403 below.
+        from core.services.oauth_service import maybe_clear_phantom_connector
+
+        owner_id = resolve_owner_id(ctx)
+        if await maybe_clear_phantom_connector(owner_id, row):
+            return
         raise HTTPException(
             status_code=403,
             detail="Only the workspace owner who connected ChatGPT can manage this connection.",

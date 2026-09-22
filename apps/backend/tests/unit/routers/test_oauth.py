@@ -780,3 +780,53 @@ class TestDisconnectOrgRules:
         assert resp.status_code == 403
         mock_revoke.assert_not_awaited()
         mock_clear.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_self_heals_phantom_connector(async_client):
+    """A recorded connector naming no Clerk user must not 403 a real admin.
+
+    The reclaim clears the phantom (CAS) and the /start flow proceeds as
+    unclaimed — this is the recovery path for checkout-recorded ghost ids.
+    """
+    phantom_row = {
+        "owner_id": "org_test_456",
+        "owner_type": "org",
+        "oauth_connector_user_id": "user_ghost",
+    }
+    fake_resp = DeviceCodeResponse(
+        user_code="TEST-1234",
+        verification_uri="https://chatgpt.com/codex",
+        expires_in=900,
+        interval=5,
+    )
+    with (
+        patch("routers.oauth.billing_repo.get_by_owner_id", new=AsyncMock(return_value=phantom_row)),
+        patch(
+            "core.services.oauth_service.maybe_clear_phantom_connector",
+            new=AsyncMock(return_value=True),
+        ),
+        patch("routers.oauth.request_device_code", new=AsyncMock(return_value=fake_resp)),
+    ):
+        resp = await async_client.post("/api/v1/oauth/chatgpt/start")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["user_code"] == "TEST-1234"
+
+
+@pytest.mark.asyncio
+async def test_start_keeps_403_for_real_connector(async_client):
+    """Reclaim refusing (recorded owner is real) keeps the 403 — no hijack."""
+    real_row = {
+        "owner_id": "org_test_456",
+        "owner_type": "org",
+        "oauth_connector_user_id": "user_real_owner",
+    }
+    with (
+        patch("routers.oauth.billing_repo.get_by_owner_id", new=AsyncMock(return_value=real_row)),
+        patch(
+            "core.services.oauth_service.maybe_clear_phantom_connector",
+            new=AsyncMock(return_value=False),
+        ),
+    ):
+        resp = await async_client.post("/api/v1/oauth/chatgpt/start")
+    assert resp.status_code == 403

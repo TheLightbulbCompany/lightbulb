@@ -957,12 +957,17 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 account["owner_id"],
                 provider_choice=metadata_provider,
                 byo_provider=metadata_byo if metadata_provider == "byo_key" else None,
-                # Legacy subscription Checkout threaded the subscribing human's
-                # Clerk id through subscription metadata; for chatgpt_oauth
-                # that human is the workspace owner / initial connector.
-                # None just leaves any synchronously-written connector
-                # untouched.
-                connector_user_id=(metadata.get("clerk_user_id") if metadata_provider == "chatgpt_oauth" else None),
+                # Never record the connector here. Subscription metadata is
+                # unauthenticated snapshot data, and a stale or bogus
+                # ``clerk_user_id`` recorded onto the row wedges the workspace
+                # permanently: the provision gate waits on a ghost's tokens
+                # while /start and the provider switch 403 every real human
+                # (issue #2864 follow-up). The connector is recorded only by
+                # authenticated writers — the synchronous trial-checkout
+                # write, change-provider, and the poll-time set-once claim —
+                # so an unset row stays claimable by the first real admin's
+                # device flow instead of stranding on a phantom.
+                connector_user_id=None,
             )
             provider_persisted = True
         except Exception:

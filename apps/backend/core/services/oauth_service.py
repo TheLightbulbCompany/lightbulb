@@ -537,6 +537,47 @@ def caller_may_manage_connector(account: dict | None, caller_user_id: str) -> bo
     return not recorded or recorded == caller_user_id
 
 
+async def maybe_clear_phantom_connector(owner_id: str, account: dict | None) -> bool:
+    """Clear a recorded connector that names no existing Clerk user.
+
+    Phantom-connector recovery (issue #2864 follow-up): checkout metadata
+    once recorded an unverified ``clerk_user_id`` onto billing rows, and the
+    id can dangle — no such Clerk user, ever. The provision gate then waits
+    on a ghost (permanent ``oauth_required``) while ``/start`` and the
+    provider switch 403 every real human, and the set-once claim can never
+    repoint. This lets those two already-admin-gated doors self-heal: verify
+    the recorded id via Clerk, and CAS-remove it when Clerk 404s so the
+    caller's normal first-connect flow proceeds as unclaimed.
+
+    Fail-CLOSED on uncertainty: a Clerk blip, missing key, or any non-404
+    returns False without touching the row — a legitimate owner keeps their
+    claim. The CAS additionally refuses when the field already changed under
+    us, so a concurrent real claim is never clobbered. Returns True only
+    when this call cleared the phantom.
+    """
+    from core.observability.metrics import put_metric
+    from core.services import clerk_admin
+
+    recorded = (account or {}).get("oauth_connector_user_id")
+    if not recorded:
+        return False
+    try:
+        user = await clerk_admin.get_user_strict(recorded)
+    except clerk_admin.ClerkLookupError:
+        logger.warning(
+            "phantom-connector check inconclusive for owner %s — leaving connector in place",
+            owner_id,
+        )
+        return False
+    if user is not None:
+        return False
+    cleared = await billing_repo.clear_phantom_oauth_connector(owner_id, expected_user_id=recorded)
+    if cleared:
+        put_metric("billing.oauth_connector.phantom_cleared")
+        logger.info("cleared phantom oauth connector %s for owner %s", recorded, owner_id)
+    return cleared
+
+
 async def revoke_user_oauth(*, user_id: str, purpose: str = PURPOSE_PROVIDER) -> None:
     """Delete the user's OAuth row. The staged profile copy is the caller's job
     (``hermes_profiles.unstage_codex_auth``)."""

@@ -355,3 +355,32 @@ async def test_clear_provider_choice_existing_row_clears_fields(dynamodb_table):
     assert row.get("provider_choice") is None
     assert row.get("byo_provider") is None
     assert row.get("stripe_customer_id") == "cus_xyz"  # original fields preserved
+
+
+@pytest.mark.asyncio
+async def test_clear_phantom_connector_removes_matching_value(dynamodb_table):
+    """CAS clear drops the recorded connector when it still equals the phantom id."""
+    await billing_repo.create_if_not_exists("org_ph", "cus_ph1", owner_type="org")
+    await billing_repo.claim_oauth_connector("org_ph", connector_user_id="user_ghost")
+    assert await billing_repo.clear_phantom_oauth_connector("org_ph", expected_user_id="user_ghost") is True
+    row = await billing_repo.get_by_owner_id("org_ph")
+    assert "oauth_connector_user_id" not in row
+
+
+@pytest.mark.asyncio
+async def test_clear_phantom_connector_refuses_on_mismatch(dynamodb_table):
+    """A changed value (e.g. a concurrent real claim) must NOT be clobbered."""
+    await billing_repo.create_if_not_exists("org_ph2", "cus_ph2", owner_type="org")
+    await billing_repo.claim_oauth_connector("org_ph2", connector_user_id="user_real")
+    assert await billing_repo.clear_phantom_oauth_connector("org_ph2", expected_user_id="user_ghost") is False
+    row = await billing_repo.get_by_owner_id("org_ph2")
+    assert row["oauth_connector_user_id"] == "user_real"
+
+
+@pytest.mark.asyncio
+async def test_clear_phantom_connector_noop_without_row(dynamodb_table):
+    """Missing row or missing attribute → False, and no phantom row is created."""
+    assert await billing_repo.clear_phantom_oauth_connector("org_nonexistent", expected_user_id="user_ghost") is False
+    assert await billing_repo.get_by_owner_id("org_nonexistent") is None
+    await billing_repo.create_if_not_exists("org_bare", "cus_ph3", owner_type="org")
+    assert await billing_repo.clear_phantom_oauth_connector("org_bare", expected_user_id="user_ghost") is False

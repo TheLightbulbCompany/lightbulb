@@ -309,6 +309,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     try:
         await join_default_room(owner_id, auth.user_id)
     except Exception:
+        put_metric("messaging.default_room.error")
         logger.exception("default room join failed for owner %s user %s", owner_id, auth.user_id)
 
     # Nightly CEO loop: the DETERMINISTIC arm is the provision executor's

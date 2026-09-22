@@ -1417,17 +1417,11 @@ async def join_default_room(owner_id: str, user_id: str) -> bool:
         return False
     if await messaging_repo.get_room(room_id) is None:
         return False
-    await _validate_human_in_owner(owner_id, user_id)
+    member = await _resolved_member(
+        owner_id, CreateRoomMember(kind="human", id=user_id, role="member", listen_mode=None), []
+    )
     if not await messaging_repo.claim_autojoin(room_id, user_id):
         return False
-    member = {
-        "kind": "human",
-        "id": user_id,
-        "displayName": await human_display_name(user_id),
-        "mentionHandle": None,
-        "role": "member",
-        "listenMode": None,
-    }
     try:
         await messaging_repo.ensure_user_stream(owner_id, user_id)
         meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)

@@ -441,6 +441,7 @@ async def _handle_organization_membership_created(
         await join_default_room(org_id, user_id)
     except Exception:
         logger.exception("membership.created: default room join failed org=%s user=%s", org_id, user_id)
+        put_metric("messaging.default_room.error")
 
 
 async def _handle_organization_membership_deleted(

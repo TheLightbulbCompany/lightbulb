@@ -4,7 +4,7 @@ import type { RoomParticipant } from "./types";
 // =============================================================================
 // The onboarding setup band's state — derived, never stored.
 //
-// Every step's done-state comes from data the room already holds, so there is
+// Every step's done-state comes from data the client already holds, so there is
 // no completion record to write, migrate, or let drift out of sync with
 // reality. Disconnect Stripe and its card comes back on its own.
 // =============================================================================
@@ -89,21 +89,30 @@ export interface SetupStepInputs {
    * the live truth; the member row is the fallback while it loads.
    */
   agentNames: ReadonlyMap<string, string>;
+  /**
+   * Clerk's `organization.membersCount`. Not #general's human members:
+   * nothing adds a new workspace member to that room (only the owner is
+   * seeded), so a teammate who joined would never flip the card.
+   */
+  workspaceMembers: number;
 }
 
-export function buildSetupSteps({ participants, connections, agentNames }: SetupStepInputs): SetupStep[] {
-  const connected = new Set(
-    connections.filter((entry) => entry.status === "connected").map((entry) => entry.provider),
-  );
-  const humans = participants.filter((participant) => participant.kind === "human");
+export function buildSetupSteps({ participants, connections, agentNames, workspaceMembers }: SetupStepInputs): SetupStep[] {
+  const status = new Map(connections.map((entry) => [entry.provider, entry.status] as const));
   const agents = participants.filter((participant) => participant.kind === "agent");
 
   return [
-    ...CONNECTOR_STEPS.map((connector) => ({
+    // A connector this owner cannot start — gated, runtime-unsupported, or
+    // absent from the catalog — is dropped, not shown dead: its authorize leg
+    // would refuse, and a card nobody can finish would keep the band up forever.
+    ...CONNECTOR_STEPS.filter((connector) => {
+      const current = status.get(connector.id);
+      return current !== undefined && current !== "unavailable";
+    }).map((connector) => ({
       ...connector,
       doneDetail: CONNECTED,
       repeatable: false,
-      done: connected.has(connector.id),
+      done: status.get(connector.id) === "connected",
       adminOnly: true,
     })),
     {
@@ -112,7 +121,7 @@ export function buildSetupSteps({ participants, connections, agentNames }: Setup
       detail: "Share the workspace join link",
       doneDetail: "Teammates joined",
       repeatable: true,
-      done: humans.length > 1,
+      done: workspaceMembers > 1,
       adminOnly: true,
     },
     {

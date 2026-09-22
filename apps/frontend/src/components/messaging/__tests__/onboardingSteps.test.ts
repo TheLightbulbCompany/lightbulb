@@ -12,6 +12,7 @@ const connection = (provider: string, status: Connection["status"]): Connection 
 });
 
 const ALL_CONNECTED = ["stripe", "github", "notion"].map((p) => connection(p, "connected"));
+const CATALOG = ["stripe", "github", "notion"].map((p) => connection(p, "disconnected"));
 
 const participant = (kind: "human" | "agent", id: string, displayName: string): RoomParticipant => ({
   kind,
@@ -32,7 +33,11 @@ const step = (
   connections: readonly Connection[],
   id: string,
   agentNames: ReadonlyMap<string, string> = new Map(),
-) => buildSetupSteps({ participants, connections, agentNames }).find((s) => s.id === id)!;
+  workspaceMembers = 1,
+) => buildSetupSteps({ participants, connections, agentNames, workspaceMembers }).find((s) => s.id === id)!;
+
+const build = (connections: readonly Connection[], participants: readonly RoomParticipant[] = SOLO, workspaceMembers = 1) =>
+  buildSetupSteps({ participants, connections, agentNames: new Map(), workspaceMembers });
 
 describe("connector steps", () => {
   it("is done once the provider reports connected", () => {
@@ -43,28 +48,34 @@ describe("connector steps", () => {
     expect(step(SOLO, [connection("stripe", "disconnected")], "stripe").done).toBe(false);
   });
 
-  it("is not done when the provider is missing from the catalog entirely", () => {
-    expect(step(SOLO, [], "github").done).toBe(false);
+  it("offers exactly stripe, github and notion", () => {
+    expect(build(CATALOG).map((s) => s.id)).toEqual(["stripe", "github", "notion", "invite", "name-agents"]);
   });
 
-  it("offers exactly stripe, github and notion", () => {
-    expect(buildSetupSteps({ participants: SOLO, connections: [], agentNames: new Map() }).map((s) => s.id))
-      .toEqual(["stripe", "github", "notion", "invite", "name-agents"]);
+  it("drops a connector this owner cannot connect, rather than offering a dead card", () => {
+    // "unavailable" covers both a gated provider and one this runtime cannot
+    // deliver; the authorize leg would refuse either.
+    const connections = [connection("stripe", "unavailable"), ...CATALOG.slice(1)];
+    expect(build(connections).map((s) => s.id)).toEqual(["github", "notion", "invite", "name-agents"]);
+  });
+
+  it("drops a connector missing from the catalog entirely", () => {
+    expect(build(CATALOG.slice(0, 2)).map((s) => s.id)).not.toContain("notion");
   });
 });
 
 describe("invite step", () => {
-  it("is done once a second human is in the room", () => {
+  it("is done once the workspace has a second member", () => {
+    expect(step(SOLO, [], "invite", new Map(), 2).done).toBe(true);
+  });
+
+  it("is not done while the owner is the only member", () => {
+    expect(step(SOLO, [], "invite", new Map(), 1).done).toBe(false);
+  });
+
+  it("reads workspace membership, not #general, which nothing adds a new member to", () => {
     const withTeammate = [...SOLO, participant("human", "user_b", "Sam")];
-    expect(step(withTeammate, [], "invite").done).toBe(true);
-  });
-
-  it("is not done while the owner is the only human", () => {
-    expect(step(SOLO, [], "invite").done).toBe(false);
-  });
-
-  it("does not count agents as teammates", () => {
-    expect(step([participant("human", "user_a", "Aden"), ...STARTER_SIX], [], "invite").done).toBe(false);
+    expect(step(withTeammate, [], "invite", new Map(), 1).done).toBe(false);
   });
 });
 
@@ -101,7 +112,7 @@ describe("name-agents step", () => {
 
 describe("permissions", () => {
   it("marks every connector and the invite as admin-only", () => {
-    const steps = buildSetupSteps({ participants: SOLO, connections: [], agentNames: new Map() });
+    const steps = build(CATALOG);
     expect(steps.filter((s) => s.adminOnly).map((s) => s.id))
       .toEqual(["stripe", "github", "notion", "invite"]);
   });
@@ -113,15 +124,17 @@ describe("permissions", () => {
 
 describe("isBandComplete", () => {
   it("is false while any step is outstanding", () => {
-    expect(isBandComplete(buildSetupSteps({ participants: SOLO, connections: ALL_CONNECTED, agentNames: new Map() }))).toBe(false);
+    expect(isBandComplete(build(ALL_CONNECTED))).toBe(false);
   });
 
   it("is true once every step is done", () => {
-    const participants = [
-      participant("human", "user_a", "Aden"),
-      participant("human", "user_b", "Sam"),
-      participant("agent", "agent_0", "Ada"),
-    ];
-    expect(isBandComplete(buildSetupSteps({ participants, connections: ALL_CONNECTED, agentNames: new Map() }))).toBe(true);
+    const participants = [participant("human", "user_a", "Aden"), participant("agent", "agent_0", "Ada")];
+    expect(isBandComplete(build(ALL_CONNECTED, participants, 2))).toBe(true);
+  });
+
+  it("does not wait on a connector it dropped as unavailable", () => {
+    const participants = [participant("human", "user_a", "Aden"), participant("agent", "agent_0", "Ada")];
+    const connections = [connection("stripe", "unavailable"), ...ALL_CONNECTED.slice(1)];
+    expect(isBandComplete(build(connections, participants, 2))).toBe(true);
   });
 });

@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useState, useSyncExternalStore, type ReactElement } from "react";
 import { Check, Users, Pencil, Plus, X } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
+import Link from "next/link";
 
 import { useApi } from "@/lib/api";
 import { useConnections } from "@/hooks/useConnections";
@@ -10,7 +11,7 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { buildSetupSteps, isBandComplete, type SetupStep } from "./onboardingSteps";
+import { buildSetupSteps, isBandComplete, type SetupStep, type SetupStepId } from "./onboardingSteps";
 import { openPanel } from "@/components/workspace/workspaceController";
 import { ConnectorIcon } from "./ConnectorIcons";
 import type { RoomParticipant } from "./types";
@@ -69,7 +70,7 @@ interface OnboardingBandProps {
 }
 
 export function OnboardingBand({ participants }: OnboardingBandProps): ReactElement | null {
-  const { connections, startOAuth, isLoading: connectionsLoading } = useConnections();
+  const { connections, startOAuth, isLoading: connectionsLoading, error: connectionsError } = useConnections();
   const { organization, membership } = useOrganization();
   const teams = useTeamsApi();
   // Same SWR key MessagingWorkspaceContext already reads, so this shares its
@@ -90,15 +91,18 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   const [dismissedNow, setDismissedNow] = useState(false);
 
   const [naming, setNaming] = useState(false);
-  const [invite, setInvite] = useState<"idle" | "working" | "copied" | "failed">("idle");
+  const [invite, setInvite] = useState<InviteState>("idle");
+  const [connecting, setConnecting] = useState<SetupStepId | null>(null);
+  const [connectFailed, setConnectFailed] = useState<SetupStepId | null>(null);
 
   const agentNames = useMemo(
     () => new Map((roster?.agents ?? []).map((agent) => [agent.id, agent.name] as const)),
     [roster],
   );
+  const workspaceMembers = organization?.membersCount ?? 0;
   const steps = useMemo(
-    () => buildSetupSteps({ participants, connections, agentNames }),
-    [participants, connections, agentNames],
+    () => buildSetupSteps({ participants, connections, agentNames, workspaceMembers }),
+    [participants, connections, agentNames, workspaceMembers],
   );
 
   const isAdmin = membership?.role === "org:admin";
@@ -108,12 +112,14 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
     setInvite("working");
     try {
       const path = `/orgs/${encodeURIComponent(organization.id)}/join-link`;
-      // A workspace that has never shared a link has none to read; minting one
-      // is the same action from the owner's point of view, so do it silently
-      // rather than making them click twice.
       const existing = (await api.get(path)) as JoinLinkStatus;
-      const url = existing?.exists && existing.join_url
-        ? existing.join_url
+      // POST is revoke-and-regenerate, so it only runs when there is no link
+      // to strand. `exists` with no `join_url` is a legacy link the backend
+      // cannot show: rotating it would silently break every copy already
+      // shared, so the owner makes that call in Settings, not a copy button.
+      if (existing?.exists && !existing.join_url) return setInvite("legacy");
+      const url = existing?.exists
+        ? existing.join_url!
         : ((await api.post(path, {})) as CreatedJoinLink).join_url;
       await navigator.clipboard.writeText(url);
       setInvite("copied");
@@ -125,14 +131,21 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   const onStep = useCallback((step: SetupStep) => {
     if (step.id === "invite") return void copyJoinLink();
     if (step.id === "name-agents") return setNaming((open) => !open);
-    void startOAuth(step.id);
+    // startOAuth rethrows on purpose (403, a failed browser open), and on
+    // desktop it stays pending until the grant lands — so the card shows both.
+    setConnecting(step.id);
+    setConnectFailed(null);
+    startOAuth(step.id)
+      .catch(() => setConnectFailed(step.id))
+      .finally(() => setConnecting(null));
   }, [copyJoinLink, startOAuth]);
 
   // Both reads must have ANSWERED before any judgement about what is left to
   // do. While they are in flight `connections` is [] and `roster` undefined,
   // which derives "nothing is done" — so a fully set-up workspace would flash
   // the whole band on every cold load and then have it vanish.
-  if (connectionsLoading || rosterLoading || !ownerId) return null;
+  // A failed catalog read would derive every connector as outstanding.
+  if (connectionsLoading || connectionsError || rosterLoading || !ownerId) return null;
   if (storedDismissal || dismissedNow || isBandComplete(steps)) return null;
 
   const connectors = steps.filter((step) => step.id !== "invite" && step.id !== "name-agents");
@@ -167,6 +180,8 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
             step={step}
             isAdmin={isAdmin}
             icon={<ConnectorIcon provider={step.id} />}
+            busy={connecting === step.id}
+            status={connecting === step.id ? "Connecting…" : connectFailed === step.id ? "Couldn’t connect — try again" : undefined}
             onSelect={onStep}
           />
         ))}
@@ -199,6 +214,13 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
         ))}
       </div>
 
+      {invite === "legacy" && (
+        <p className="onboarding-card-detail">
+          This workspace&apos;s link can&apos;t be shown here. Reset it in{" "}
+          <Link href="/settings?panel=members">Settings → Members</Link>.
+        </p>
+      )}
+
       {naming && (
         <AgentNames
           participants={participants}
@@ -211,20 +233,24 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   );
 }
 
-function inviteStatus(state: "idle" | "working" | "copied" | "failed"): string | undefined {
+type InviteState = "idle" | "working" | "copied" | "failed" | "legacy";
+
+function inviteStatus(state: InviteState): string | undefined {
   if (state === "working") return "Copying…";
+  if (state === "legacy") return "Reset the link in Settings";
   if (state === "copied") return "Link copied";
   if (state === "failed") return "Couldn’t copy — try again";
   return undefined;
 }
 
-function StepCard({ step, isAdmin, onSelect, wide, icon, status }: {
+function StepCard({ step, isAdmin, onSelect, wide, icon, status, busy }: {
   step: SetupStep;
   isAdmin: boolean;
   onSelect: (step: SetupStep) => void;
   wide?: boolean;
   icon?: ReactElement;
   status?: string;
+  busy?: boolean;
 }): ReactElement {
   const blocked = step.adminOnly && !isAdmin;
   // A done card stays on screen until the whole band goes, so the row does not
@@ -237,7 +263,7 @@ function StepCard({ step, isAdmin, onSelect, wide, icon, status }: {
       className="onboarding-card"
       data-wide={wide ? "true" : undefined}
       data-done={step.done ? "true" : undefined}
-      disabled={blocked || (step.done && !step.repeatable)}
+      disabled={blocked || busy || (step.done && !step.repeatable)}
       onClick={() => onSelect(step)}
     >
       <span className="onboarding-card-label">

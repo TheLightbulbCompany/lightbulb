@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
 
@@ -20,15 +20,19 @@ const h = vi.hoisted(() => ({
   rosterLoading: false,
   orgId: "org_a",
   patch: vi.fn(),
+  membersCount: 1,
+  connectionsError: undefined as unknown,
 }));
 
 vi.mock("@/hooks/useConnections", () => ({
-  useConnections: () => ({ connections: h.connections, startOAuth: h.startOAuth, isLoading: h.connectionsLoading }),
+  useConnections: () => ({
+    connections: h.connections, startOAuth: h.startOAuth, isLoading: h.connectionsLoading, error: h.connectionsError,
+  }),
 }));
 
 vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({
-    organization: { id: h.orgId },
+    organization: { id: h.orgId, membersCount: h.membersCount },
     membership: { role: h.role },
   }),
 }));
@@ -56,14 +60,23 @@ const participant = (kind: "human" | "agent", id: string, displayName: string): 
 
 const STARTER_SIX = [...STARTER_AGENT_DEFAULT_NAMES].map((n, i) => participant("agent", `agent_${i}`, n));
 const FRESH: RoomParticipant[] = [participant("human", "user_a", "Aden"), ...STARTER_SIX];
-const connected = (provider: string): Connection => ({
-  provider, display_name: provider, acquisition: "direct_oauth", status: "connected",
+const row = (provider: string, status: Connection["status"]): Connection => ({
+  provider, display_name: provider, acquisition: "direct_oauth", status,
 });
+const connected = (provider: string) => row(provider, "connected");
+const CATALOG = ["stripe", "github", "notion"].map((p) => row(p, "disconnected"));
+const clipboard = vi.fn();
 
 beforeEach(() => {
-  h.connections = [];
+  h.connections = CATALOG;
+  h.membersCount = 1;
+  h.connectionsError = undefined;
+  clipboard.mockReset();
+  clipboard.mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { value: { writeText: clipboard }, configurable: true });
   h.role = "org:admin";
   h.startOAuth.mockReset();
+  h.startOAuth.mockResolvedValue(undefined);
   h.get.mockReset();
   h.post.mockReset();
   h.agents = [];
@@ -103,9 +116,9 @@ describe("OnboardingBand", () => {
 
   it("renders nothing at all once every step is done", () => {
     h.connections = ["stripe", "github", "notion"].map(connected);
+    h.membersCount = 2;
     const { container } = render(<OnboardingBand participants={[
       participant("human", "user_a", "Aden"),
-      participant("human", "user_b", "Sam"),
       participant("agent", "agent_0", "Ada"),
     ]} />);
     expect(container).toBeEmptyDOMElement();
@@ -121,9 +134,9 @@ describe("OnboardingBand", () => {
     // All five real steps done. The See more card is still on screen, and the
     // band must still retire; counting it would keep the band up forever.
     h.connections = ["stripe", "github", "notion"].map(connected);
+    h.membersCount = 2;
     const { container } = render(<OnboardingBand participants={[
       participant("human", "user_a", "Aden"),
-      participant("human", "user_b", "Sam"),
       participant("agent", "agent_0", "Ada"),
     ]} />);
     expect(container).toBeEmptyDOMElement();
@@ -164,11 +177,8 @@ describe("a member who is not an org admin", () => {
 
 describe("done-state copy", () => {
   it("does not call an invited teammate a connection", () => {
-    render(<OnboardingBand participants={[
-      participant("human", "user_a", "Aden"),
-      participant("human", "user_b", "Sam"),
-      ...STARTER_SIX,
-    ]} />);
+    h.membersCount = 2;
+    render(<OnboardingBand participants={FRESH} />);
     const invite = screen.getByRole("button", { name: /Invite your teammates/ });
     expect(invite).not.toHaveTextContent(/Connected/);
     expect(invite).toHaveTextContent(/Teammates joined/);
@@ -207,11 +217,8 @@ describe("a done card", () => {
   });
 
   it("stays clickable for invite, so the link can be copied again", () => {
-    render(<OnboardingBand participants={[
-      participant("human", "user_a", "Aden"),
-      participant("human", "user_b", "Sam"),
-      ...STARTER_SIX,
-    ]} />);
+    h.membersCount = 2;
+    render(<OnboardingBand participants={FRESH} />);
     expect(screen.getByRole("button", { name: /Invite your teammates/ })).toBeEnabled();
   });
 });
@@ -282,5 +289,68 @@ describe("renaming agents", () => {
     render(<OnboardingBand participants={FRESH} />);
     fireEvent.click(screen.getByRole("button", { name: /Name your agents/ }));
     expect(screen.getByDisplayValue("Ada")).toBeInTheDocument();
+  });
+});
+
+describe("connector cards", () => {
+  it("hides a connector the catalog marks unavailable", () => {
+    h.connections = [row("stripe", "unavailable"), ...CATALOG.slice(1)];
+    render(<OnboardingBand participants={FRESH} />);
+    expect(screen.queryByRole("button", { name: /Stripe/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /GitHub/ })).toBeInTheDocument();
+  });
+
+  it("renders nothing when the catalog failed to load, rather than calling everything undone", () => {
+    h.connectionsError = new Error("boom");
+    const { container } = render(<OnboardingBand participants={FRESH} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("is busy and inert while the connect call is in flight", async () => {
+    h.startOAuth.mockReturnValue(new Promise(() => {}));
+    render(<OnboardingBand participants={FRESH} />);
+    fireEvent.click(screen.getByRole("button", { name: /Stripe/ }));
+    const card = await screen.findByRole("button", { name: /Stripe/ });
+    await waitFor(() => expect(card).toBeDisabled());
+    expect(card).toHaveTextContent(/Connecting/);
+  });
+
+  it("says so on the card when the connect call fails", async () => {
+    h.startOAuth.mockRejectedValue(new Error("403"));
+    render(<OnboardingBand participants={FRESH} />);
+    fireEvent.click(screen.getByRole("button", { name: /Stripe/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Stripe/ })).toHaveTextContent(/Couldn’t connect/));
+    expect(screen.getByRole("button", { name: /Stripe/ })).toBeEnabled();
+  });
+});
+
+describe("copying the join link", () => {
+  const invite = () => fireEvent.click(screen.getByRole("button", { name: /Invite your teammates/ }));
+
+  it("copies the existing link without minting a new one", async () => {
+    h.get.mockResolvedValue({ exists: true, join_url: "https://x/join/abc" });
+    render(<OnboardingBand participants={FRESH} />);
+    invite();
+    await waitFor(() => expect(clipboard).toHaveBeenCalledWith("https://x/join/abc"));
+    expect(h.post).not.toHaveBeenCalled();
+  });
+
+  it("mints one only when the workspace has never had a link", async () => {
+    h.get.mockResolvedValue({ exists: false });
+    h.post.mockResolvedValue({ join_url: "https://x/join/new" });
+    render(<OnboardingBand participants={FRESH} />);
+    invite();
+    await waitFor(() => expect(clipboard).toHaveBeenCalledWith("https://x/join/new"));
+  });
+
+  it("never rotates a link it cannot display — that strands everyone holding it", async () => {
+    // exists + null join_url is a legacy link; POST would revoke it.
+    h.get.mockResolvedValue({ exists: true, join_url: null });
+    render(<OnboardingBand participants={FRESH} />);
+    invite();
+    const link = await screen.findByRole("link", { name: /Settings → Members/ });
+    expect(link).toHaveAttribute("href", "/settings?panel=members");
+    expect(h.post).not.toHaveBeenCalled();
+    expect(clipboard).not.toHaveBeenCalled();
   });
 });

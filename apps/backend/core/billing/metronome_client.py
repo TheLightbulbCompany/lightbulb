@@ -18,6 +18,15 @@ import httpx
 
 from core.config import settings
 
+
+def _stripe_delivery() -> dict[str, str]:
+    """Metronome takes exactly one of delivery_method / delivery_method_id, and rejects the bare
+    method once an env has two Stripe integrations (sandbox-verified 2026-09-22)."""
+    if settings.METRONOME_STRIPE_DELIVERY_METHOD_ID:
+        return {"delivery_method_id": settings.METRONOME_STRIPE_DELIVERY_METHOD_ID}
+    return {"delivery_method": "direct_to_billing_provider"}
+
+
 # Prepaid credits never expire on our side; commit schedule items still need
 # an end, so they get one far past any plausible product lifetime.
 _NO_EXPIRY = "9999-12-31T00:00:00.000Z"
@@ -143,10 +152,7 @@ class MetronomeClient:
         if rate_card_id:
             payload["rate_card_id"] = rate_card_id
         if with_stripe_billing:
-            payload["billing_provider_configuration"] = {
-                "billing_provider": "stripe",
-                "delivery_method": "direct_to_billing_provider",
-            }
+            payload["billing_provider_configuration"] = {"billing_provider": "stripe", **_stripe_delivery()}
         body = await self._post("/contracts/create", payload)
         contract_id = body.get("data", {}).get("id")
         if not contract_id:
@@ -204,7 +210,7 @@ class MetronomeClient:
                     {
                         "customer_id": metronome_customer_id,
                         "billing_provider": "stripe",
-                        "delivery_method": "direct_to_billing_provider",
+                        **_stripe_delivery(),
                         "configuration": {
                             "stripe_customer_id": stripe_customer_id,
                             "stripe_collection_method": "charge_automatically",

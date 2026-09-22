@@ -377,3 +377,25 @@ async def test_raises_on_http_error():
     client, _ = _client_with(bad)
     with pytest.raises(httpx.HTTPStatusError):
         await client.ingest([{"transaction_id": "x"}])
+
+
+@pytest.mark.asyncio
+async def test_a_configured_delivery_method_id_replaces_the_bare_method(monkeypatch):
+    """Sandbox-verified 2026-09-22: with two Stripe integrations Metronome rejects the bare
+    delivery_method ("'delivery_method_id' is a required parameter...") and takes exactly one of
+    the two keys."""
+    from core.billing import metronome_client
+
+    monkeypatch.setattr(metronome_client.settings, "METRONOME_STRIPE_DELIVERY_METHOD_ID", "dm-1")
+    client, fake = _client_with(_resp(200, {"data": {"id": "contract-uuid-1"}}))
+    await client.create_contract(customer_id="cust-uuid-1", rate_card_id="rc-1", with_stripe_billing=True)
+    assert fake.post.call_args.kwargs["json"]["billing_provider_configuration"] == {
+        "billing_provider": "stripe",
+        "delivery_method_id": "dm-1",
+    }
+
+    client, fake = _client_with(_resp(200, {}))
+    await client.set_stripe_billing_config(metronome_customer_id="cust-uuid-1", stripe_customer_id="cus_123")
+    entry = fake.post.call_args.kwargs["json"]["data"][0]
+    assert entry["delivery_method_id"] == "dm-1"
+    assert "delivery_method" not in entry

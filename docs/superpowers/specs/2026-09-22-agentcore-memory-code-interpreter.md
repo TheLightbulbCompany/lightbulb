@@ -43,7 +43,7 @@ Load assumed: 50 workspaces × 200 turns/day ≈ 300k turns/month.
 
 | Option | Shared across agents | Tenancy | Where LLM/embedding calls run, and who pays | Infra | ≈ $/month | Top risk |
 |---|---|---|---|---|---|---|
-| **AgentCore Memory** | yes (`actorId = ownerId`) | IAM `namespace`/`namespacePath` conditions | An AWS-bundled model, outside our gate. The platform pays. | one `CfnMemory` + our plugin | **~$300** all-in | Is `CreateEvent` write-scoping enforceable? (spike) |
+| **AgentCore Memory** | yes (`actorId = ownerId`) | IAM `actorId` (events) + `namespace` (records) conditions — **proven in dev spike** | An AWS-bundled model, outside our gate. The platform pays. | one `CfnMemory` + our plugin | **~$300** all-in | record get/delete actions have no condition keys → must be explicitly denied |
 | **Mem0 OSS in-process** | yes (`user_id = ownerId`) | IAM on a per-owner S3 Vectors index | Bedrock **through our gate**, so billed and capped per owner | S3 Vectors bucket | ~$60 on Nova Micro; ~$2k on Haiku | Gate changes on the money path; extraction latency inside the turn |
 | **Honcho self-hosted** (AGPL) | yes (best model: workspace → peers) | workspace-scoped JWTs | OpenAI/Anthropic/Gemini only, **no Bedrock** (would need a LiteLLM proxy). Spend is central and not attributable per owner. | ECS API + deriver, Redis, pgvector DB | ~$1.1–1.6k | Ops burden, AGPL, central store of every tenant's memory |
 | **Hindsight self-hosted** (MIT) | yes (a bank per owner) | Postgres schema per tenant; needs a custom extension | Bedrock, central | ECS + Postgres | Honcho-class or higher | Heaviest ops |
@@ -77,10 +77,30 @@ Ruled out:
 
 ### First slice (AgentCore Memory)
 
-0. **Spike (1 day, dev).**
-   - Can IAM conditions deny `CreateEvent` and `RetrieveMemoryRecords` across owners?
-   - What is the retrieval p95?
-   - If writes can't be scoped, fall back to **one memory resource per owner**, created at provision time and torn down in the shared teardown seam. That needs a quota raise above 150.
+0. **Spike: DONE 2026-09-22 (dev, `spike-g-*` resources, all deleted).** Isolation works on ONE shared memory resource, so no per-owner resource is needed.
+   - **Condition keys**, from AWS's service reference:
+     - `CreateEvent`, `ListEvents`, `GetEvent`, `DeleteEvent`: `actorId` and `sessionId`.
+     - `ListSessions`: `actorId`.
+     - `RetrieveMemoryRecords`, `ListMemoryRecords`: `namespace` (exact match) and `strategyId`.
+     - `GetMemoryRecord`, `DeleteMemoryRecord`, `BatchDeleteMemoryRecords`, `ListActors`: **none**, so they must be explicitly Denied.
+     - There is **no `namespacePath` key**. A `namespacePath` call fails closed under a `namespace` Allow, so the plugin must always pass `namespace`.
+   - **The per-owner policy that worked:**
+     - Allow `CreateEvent`, `ListEvents`, `GetEvent` and `ListSessions` when `actorId` equals the owner.
+     - Allow `RetrieveMemoryRecords` and `ListMemoryRecords` when `namespace` equals `/owners/<owner>/`.
+     - Deny `BatchCreate`, `BatchUpdate`, `BatchDelete`, `DeleteMemoryRecord`, `DeleteEvent`, `GetMemoryRecord` and `ListActors`.
+   - **Isolation results.** Owner B was AccessDenied on every cross-owner call:
+     - `CreateEvent` as owner A (the write-poisoning case);
+     - list and retrieve on A's namespace, on `/` and on `/owners/`;
+     - `namespacePath`;
+     - record get and delete by id.
+     - Sending `namespace` and `namespacePath` together is rejected with a ValidationException.
+   - **Latency**, measured from a laptop over the public endpoint:
+     - memory resource to ACTIVE: 142 s;
+     - `CreateEvent`: p50 115 ms;
+     - `RetrieveMemoryRecords`: p50 256 ms, p95 411 ms;
+     - **extraction: 96–133 s**, so a fact is not recallable on the very next turn.
+   - **Wipe.** `ListMemoryRecords(namespace)` + `BatchDeleteMemoryRecords` in chunks of 100, and `ListSessions(actorId)` → `ListEvents` → `DeleteEvent`. 2 records and 12 events took 1.8 s, and were gone from reads within about 22 s (eventually consistent).
+     - Empty session and actor shells stay listed (`ListActors` still shows the owner id) until events expire. No API deletes them. This is metadata-only residue; note it for GDPR.
 1. **CDK.**
    - One `CfnMemory` per environment: a semantic strategy only, namespace `/owners/{actorId}/`, 30-day event expiry, existing KMS key.
    - A boundary statement in `container-stack.ts`.
@@ -96,8 +116,19 @@ Ruled out:
    - **N-1 safe:** an old image ignores the env var.
    - Rollout is the usual two steps: flip the image pin, then roll the runtimes.
 4. **Dev acceptance.**
-   - Tell the CEO a fact in #general. About 60 s later, Engineering recalls it in a DM.
+   - Tell the CEO a fact in #general. About 2–3 min later, Engineering recalls it in a DM.
    - A second owner's role gets AccessDenied, checked in CloudTrail.
+
+**Which LLM does extraction, and who pays** (per CROSS-TRACK §1):
+- The built-in semantic strategy runs on an AWS-managed model that AWS doesn't name.
+- It is billed to our AWS account through the Memory record price ($0.75 per 1k records per month).
+- It adds **zero** OpenRouter calls and no bedrock-gate traffic, so it cannot drain the shared free-model pool.
+- Free-tier workspaces get memory at platform cost, about $0.001 per turn.
+
+**Shared files** (per CROSS-TRACK §4/§5). Message these owners before editing:
+- `hermes_provisioning.py` (one env line) → provisioning.
+- `service-stack.ts` (backend grants for the wipe path) → provisioning and Jev.
+- The image plugin under `apps/infra/hermes/` → coordinator. It is one bridge change on the serialized train.
 
 **Skipped:** summary, preference and episodic strategies; private per-agent memory; a memory UI; per-owner metering (under 1% of cost).
 

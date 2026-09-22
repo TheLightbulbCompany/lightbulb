@@ -141,10 +141,12 @@ export default function SessionScreen() {
         own={own}
         name={name}
         bottomInset={insets.bottom}
-        // Steady backstop poll while this screen is live (same 5s cadence as
-        // web): transcript hints are throttled server-side with no trailing
-        // edge. Stopped when the screen blurs or the app backgrounds.
-        pollMs={live ? 5000 : 0}
+        // Backstop poll while this screen is live AND the session is producing
+        // output (same 5s cadence as web): transcript hints are throttled
+        // server-side with no trailing edge. Idle sessions stay on hints plus
+        // the resources safety poll. Stopped when the screen blurs or the app
+        // backgrounds.
+        pollMs={live && session.status === "busy" ? 5000 : 0}
       />
     </View>
   );

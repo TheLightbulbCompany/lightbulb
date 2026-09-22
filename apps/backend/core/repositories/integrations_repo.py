@@ -19,7 +19,9 @@ def _table():
     return get_table("integrations")  # short name; table prefix auto-applied
 
 
-async def put_status(owner_id: str, provider: str, status: str = "connected", identity: str | None = None) -> None:
+async def put_status(
+    owner_id: str, provider: str, status: str = "connected", identity: str | None = None, tenant_id: str | None = None
+) -> None:
     """Record that this owner has this provider connected.
 
     ``identity`` is the human-readable handle the materializer resolved for the
@@ -28,6 +30,9 @@ async def put_status(owner_id: str, provider: str, status: str = "connected", id
     wired up, which matters most where an owner could plausibly have several.
     Optional because it only lands on connects made after this shipped: older rows
     have none and the UI simply omits the line.
+
+    ``tenant_id`` is the Microsoft Entra tenant (``tid``) the grant is bound to —
+    also metadata, never a credential.
     """
     now = int(time.time())
     item: dict = {
@@ -39,6 +44,8 @@ async def put_status(owner_id: str, provider: str, status: str = "connected", id
     }
     if identity:
         item["identity"] = identity
+    if tenant_id:
+        item["tenant_id"] = tenant_id
     await run_in_thread(_table().put_item, Item=item)
 
 

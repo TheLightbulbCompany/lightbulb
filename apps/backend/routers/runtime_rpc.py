@@ -29,7 +29,11 @@ class RuntimeCredentialRequest(BaseModel):
 async def runtime_credentials(
     owner_id: str, body: RuntimeCredentialRequest, request: Request, response: Response
 ) -> dict:
-    """Vend short-lived remote-MCP tokens to this workspace's Hermes bridge."""
+    """Vend short-lived OAuth access tokens to this workspace's Hermes bridge.
+
+    One per connected backend-refreshed provider, keyed by its MCP server key (the
+    bridge maps it to ``MCP_<KEY>_ACCESS_TOKEN`` in the turn's secret scope) or, for
+    a provider with no MCP server (microsoft365, called with curl), its own key."""
     from routers.agent_builder import _require_hook_token
 
     await _require_hook_token(owner_id, request)
@@ -47,13 +51,14 @@ async def runtime_credentials(
     for provider in registry.all_providers().values():
         if (
             provider.key not in connected
-            or not provider.mcp_remote
+            or not provider.oauth
             or registry.refresh_owner_for(provider) != "backend"
             or not registry.available_for(provider, owner_id)
         ):
             continue
+        key = provider.mcp_remote.key if provider.mcp_remote else provider.key
         try:
-            tokens[provider.mcp_remote.key] = await access_token.get(owner_id, provider.key)
+            tokens[key] = await access_token.get(owner_id, provider.key)
         except (access_token.ReconnectRequired, httpx.HTTPError):
             unavailable.append(provider.key)
     response.headers["Cache-Control"] = "no-store"

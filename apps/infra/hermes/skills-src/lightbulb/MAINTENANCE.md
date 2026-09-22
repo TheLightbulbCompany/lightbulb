@@ -114,6 +114,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/routers/platform_info.py (live GET /api/v1/platform-info);
                                  core/services/credentials/registry.py (all_providers);
                                  core/services/hermes_profiles.py (build_profile_env — the ISOL8_API_URL the runtime reads)
+  - Microsoft 365 (Graph) ... references/integrations.md
+                              <- apps/backend/core/services/credentials/providers.yaml (microsoft365 scopes);
+                                 apps/backend/routers/runtime_rpc.py (runtime_credentials — the per-turn token key);
+                                 bridge/turn.py (runtime_mcp_env — the MCP_<KEY>_ACCESS_TOKEN name)
   - Agent-started connect ... references/integrations.md
                               <- apps/backend/routers/connections.py (authorize_from_container — hook-token sibling of authorize;
                                  ISOL8_OWNER_ID + OPENCLAW_HOOK_TOKEN env in hermes_profiles.build_profile_env);

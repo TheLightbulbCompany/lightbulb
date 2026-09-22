@@ -1104,7 +1104,10 @@ async def oauth_callback(
                 if _retains_secret(p):
                     await integration_secret_store.delete(owner_id, prov)
                 return _done("error=apply_failed")
-            await integrations_repo.put_status(owner_id, prov, "connected")
+            # Secret-free metadata from the id_token (Microsoft: account + tenant).
+            await integrations_repo.put_status(
+                owner_id, prov, "connected", identity=credential.get("account"), tenant_id=credential.get("tenant_id")
+            )
     except OwnerLifecycleBusyError:
         # The OAuth state is already consumed at this point, so nothing is
         # written before the guard -- land back on the connections page with a

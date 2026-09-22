@@ -69,6 +69,7 @@ from dataclasses import dataclass
 
 from core.config import settings
 from core.dynamodb import run_in_thread
+from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.services import browser_sessions
 from core.services.agentcore_runtime import (
@@ -671,6 +672,18 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
         attempt_token=attempt_token,
         release_lease=False,
     )
+    if not hook_token_reused:
+        # A re-created row minted a NEW hook_token, but a surviving Paperclip company's agents
+        # still carry the old one as their snapshotted apiKey -- every run would 401 silently.
+        # Best-effort: a no-op on a first provision (no company yet); on failure the repair is
+        # scripts/resync_paperclip_adapter_tokens.py.
+        from core.services import paperclip_agent_lifecycle
+
+        try:
+            await paperclip_agent_lifecycle.sync_agent_adapter_tokens(owner_id)
+        except Exception:  # noqa: BLE001 -- never abort the provision over the adapter resync
+            logger.exception("hermes prepare owner=%s: paperclip adapter token resync FAILED", owner_id)
+            put_metric("paperclip.adapter_token_sync.error")
 
 
 def build_runtime_request_for_owner(

@@ -75,6 +75,19 @@ When agent A's run ends:
    - At most 3 follow-ups per room+agent per hour.
    - The existing bridge loop guard (409) still applies.
 
+**Evidence from prod (reliability track, 09-21, founder org, #report-bugs):**
+- 18:10:14: a human asks Forge to root-cause and fix a bug.
+- 18:22:05: Forge dispatches a Hermes **async delegation** (`deleg_3e55140f`, a pre-commit review).
+- 18:22:13: Forge ends its turn ("review is running now before I open the PR"), run outcome `completed`.
+- 18:26:22: the delegate finishes. **Nothing wakes Forge**, so the PR is never opened and the fix sits uncommitted in the saved profile.
+
+This adds two triggers the newer-traffic check above does not catch:
+
+5. **Async-delegation completion wakes the parent.** When a delegate that a room run spawned finishes, the bridge reports it to the backend. That report is either a new hook-token event on the existing run-events route or a `run.ended` field `pendingDelegations`. The backend then writes the same `WORK#FOLLOWUP#…` row, with no Jev call, because it is deterministic: the agent itself asked for the result. The trigger is the original request, and placement is that run's own placement.
+   - Bounded by the per-room+agent cap.
+   - Needs a bridge change: find the Hermes delegation-completion hook. It is not in the bridge today (`grep delegat bridge/` finds nothing).
+6. **A turn that ends on a stated pending step** ("X is running, then I'll do Y"). This is the "stopped short" case. The 09-16 ruling routes it to the Paperclip-task rule. Forge shows that the rule did not fire here: no task was filed. Proposal: after `run.ended` with outcome `completed`, one Jev `boolean` on the final reply, "Does this reply say the agent will do something after something else finishes?" A yes with **no** delegation pending means one follow-up wake after a delay (next sweeper tick ≥ 5 min), bounded by the same cap. Needs the owner's OK, because it reopens the 09-16 ruling.
+
 Deliberately out of scope: "stopped short / promised but did not deliver". Per the 2026-09-16 ruling, a promise made in chat becomes a Paperclip task (skill rule, #2708), and the task's lifecycle is the wake. Revisit only if that rule is observed failing.
 
 ## 4. Latency, cost, billing

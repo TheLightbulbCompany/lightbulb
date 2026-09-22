@@ -1261,6 +1261,7 @@ async def update_container_leased(
     generation: str | None = None,
     attempt_token: str | None = None,
     release_lease: bool = False,
+    expected: dict | None = None,
 ) -> None:
     """Scoped, fenced row write: applies ``fields`` (may be empty — a pure
     lease-refresh checkpoint) and refreshes the lease stamp, conditioned on
@@ -1287,6 +1288,12 @@ async def update_container_leased(
       SFN per-retry-attempt hazard (see ``claim_attempt`` docstring): a
       straggler from a superseded attempt carries a stale token and is
       rejected here.
+    - ``expected`` -- when given, additionally requires each named field to
+      still hold the given value. For a write that CLEARS a field a concurrent
+      run might have already moved on from (e.g. the CREATE_FAILED ARN clear),
+      this stops a stale writer from wiping out a value a newer attempt has
+      since written — raises ``ProvisionSuperseded`` the same as any other
+      fence miss.
 
     ``release_lease``: set on the TERMINAL SUCCESS write (the fenced
     status="running" transition) to atomically REMOVE the lease fields with
@@ -1325,6 +1332,11 @@ async def update_container_leased(
     if attempt_token is not None:
         condition += " AND (attribute_not_exists(provision_attempt_token) OR provision_attempt_token = :atok)"
         values[":atok"] = attempt_token
+    for i, (key, value) in enumerate((expected or {}).items()):
+        alias = f"#e{i}"
+        names[alias] = key
+        condition += f" AND {alias} = :ev{i}"
+        values[f":ev{i}"] = value
     update_expr = "SET " + ", ".join(set_parts)
     if release_lease:
         update_expr += (

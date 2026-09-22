@@ -1135,9 +1135,20 @@ class PaperclipRepo:
             return False
 
     async def stage_signup_credentials(
-        self, user_id: str, *, claim_id: str, email: str, password_encrypted: str
+        self, user_id: str, *, claim_id: str | None = None, email: str, password_encrypted: str
     ) -> tuple[str, str]:
-        """Persist the signup secret before sending it, fenced on our lease."""
+        """Persist the signup secret before sending it.
+
+        NOT fenced on the caller's claim (dropped: no more leases — two
+        concurrent provision runs, holding different or even stale claim_ids,
+        must both succeed and converge). ``if_not_exists`` is the convergence
+        primitive: whichever run's write lands first fixes the value, and
+        ``ReturnValues=ALL_NEW`` hands every caller — regardless of which
+        claim it holds — that same converged (email, password) pair, so a
+        retry never mints a second random password for an account that may
+        already have signed up with the first one. ``claim_id`` is accepted
+        for call-site compatibility only; it no longer participates in the
+        condition."""
         response = await run_in_thread(
             self._table().update_item,
             Key={"user_id": user_id},
@@ -1145,11 +1156,10 @@ class PaperclipRepo:
                 "SET paperclip_email = if_not_exists(paperclip_email, :email), "
                 "paperclip_password_encrypted = if_not_exists(paperclip_password_encrypted, :password)"
             ),
-            ConditionExpression="#s = :seeding AND seeding_claim_id = :claim",
+            ConditionExpression="#s = :seeding",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={
                 ":seeding": "seeding",
-                ":claim": claim_id,
                 ":email": email,
                 ":password": password_encrypted,
             },

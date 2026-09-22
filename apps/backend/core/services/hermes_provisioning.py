@@ -232,12 +232,20 @@ _ROLE_PROPAGATION_INTERVAL_S = 5.0
 
 def _create_runtime(request: dict) -> str:
     """Sync — call via ``run_in_thread``. Retries only the IAM trust-propagation rejection
-    (M6-R44, see the constants above)."""
+    (M6-R44, see the constants above). A ConflictException (a concurrent provision run already
+    created this owner's uniquely-named runtime) adopts the existing ARN via the same by-name
+    lookup ``provision_hermes_runtime`` uses for a crash-recovered ARN, instead of failing — the
+    owner ruling: no leases, both runs must converge."""
 
     client = _agentcore_control_client()
     for attempt in range(1, _ROLE_PROPAGATION_ATTEMPTS + 1):
         try:
             return client.create_agent_runtime(**request)["agentRuntimeArn"]
+        except client.exceptions.ConflictException:
+            arn = _find_existing_runtime_arn(request["agentRuntimeName"])
+            if arn is None:
+                raise
+            return arn
         except client.exceptions.ValidationException as exc:
             if "Role validation failed" not in str(exc) or attempt == _ROLE_PROPAGATION_ATTEMPTS:
                 raise
@@ -1374,9 +1382,17 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
             )
         # A lost fence here means a concurrent takeover now owns the row -- ProvisionSuperseded
         # propagates in place of the runtime failure, which matches every other fenced write in
-        # this module (provision_runner.run's existing handler already covers both).
+        # this module (provision_runner.run's existing handler already covers both). Also
+        # conditioned on the row still naming THIS arn: another concurrent run may have already
+        # observed the same dead arn, deleted it, and created a fresh one -- this clear must not
+        # then wipe out that newer, healthy arn.
         await container_repo.update_container_leased(
-            owner_id, claim_id, {"agentcore_runtime_arn": None}, attempt_token=attempt_token, release_lease=False
+            owner_id,
+            claim_id,
+            {"agentcore_runtime_arn": None},
+            attempt_token=attempt_token,
+            release_lease=False,
+            expected={"agentcore_runtime_arn": arn},
         )
         raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to start: {status}")
 

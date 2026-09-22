@@ -579,6 +579,34 @@ class TestEnsureRole:
         assert row["bedrock_role_arn"]["S"] == role_arn
 
     @pytest.mark.asyncio
+    async def test_create_role_conflict_adopts_existing_role(self, aip_tables, monkeypatch):
+        """Two concurrent provision runs both see NoSuchEntity on get_role and
+        both call create_role. The loser must ADOPT the winner's role (a second
+        get_role) instead of raising EntityAlreadyExists, so both runs converge
+        on the same role_arn (the owner ruling: no more leases, both must succeed)."""
+        import core.billing.bedrock_aip as mod
+
+        arns = _aip_arns()
+        fake = MagicMock()
+        fake.get_role.side_effect = [
+            _no_such_entity(),
+            {"Role": {"Arn": "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"}},
+        ]
+        fake.create_role.side_effect = ClientError(
+            {"Error": {"Code": "EntityAlreadyExists", "Message": "already exists"}}, "CreateRole"
+        )
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod, "_caller_account_id", AsyncMock(return_value="877352799272"))
+        monkeypatch.setattr(mod.settings, "AWS_REGION", "us-east-1", raising=False)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1", raising=False)
+
+        role_arn = await mod.ensure_owner_bedrock_role("org_abc", arns)
+
+        assert role_arn == "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"
+        assert fake.get_role.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_new_role_trust_policy_carries_sourcearn_sourceaccount(self, aip_tables, monkeypatch):
         """A freshly minted per-owner role's trust policy must condition the
         ecs-tasks assumption on aws:SourceAccount + aws:SourceArn so a confused
@@ -636,6 +664,35 @@ class TestEnsureRole:
         # Convergence is marked so later calls skip the backfill.
         fake.tag_role.assert_called_once()
         assert fake.tag_role.call_args.kwargs["Tags"] == [{"Key": "trust_hardened", "Value": "1"}]
+
+    @pytest.mark.asyncio
+    async def test_trust_backfill_grants_agentcore_trust_too(self, aip_tables, monkeypatch):
+        """The legacy trust backfill must build its document via the AgentCore
+        superset helper (trust_policy_with_agentcore), not the ECS-only
+        _assume_role_doc — otherwise a backfill racing after
+        ensure_agentcore_trust already added the AgentCore statement would
+        clobber it back to ECS-only, and AgentCore could never assume the role."""
+        import core.billing.bedrock_aip as mod
+
+        arns = _aip_arns()
+        fake = MagicMock()
+        fake.get_role.return_value = {
+            "Role": {"Arn": "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_abc"}
+        }
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "AWS_REGION", "us-east-1", raising=False)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(
+            mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "arn:aws:iam::877352799272:policy/base", raising=False
+        )
+        monkeypatch.setattr(mod.settings, "BEDROCK_AIP_FAN_OUT_REGIONS", "us-east-1", raising=False)
+
+        await mod.ensure_owner_bedrock_role("org_abc", arns)
+
+        trust = json.loads(fake.update_assume_role_policy.call_args.kwargs["PolicyDocument"])
+        principals = [s["Principal"].get("Service") for s in trust["Statement"]]
+        assert "ecs-tasks.amazonaws.com" in principals
+        assert "bedrock-agentcore.amazonaws.com" in principals
 
     @pytest.mark.asyncio
     async def test_already_hardened_role_skips_trust_backfill(self, aip_tables, monkeypatch):

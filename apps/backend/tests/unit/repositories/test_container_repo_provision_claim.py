@@ -549,6 +549,36 @@ async def test_update_container_leased_generation_absent_on_row_is_permissive(dy
 
 
 @pytest.mark.asyncio
+async def test_update_container_leased_expected_value_mismatch_raises_superseded(dynamodb_table):
+    """A write conditioned on a field's current value (e.g. clearing
+    agentcore_runtime_arn only if it still names the arn this run determined
+    was dead) must not clobber a value a concurrent run has since changed."""
+    from core.repositories import container_repo
+    from core.repositories.container_repo import ProvisionSuperseded
+
+    claim = await container_repo.try_claim_provision("user_exp")
+    await container_repo.update_container_leased("user_exp", claim, {"agentcore_runtime_arn": "arn:new"})
+
+    with pytest.raises(ProvisionSuperseded):
+        await container_repo.update_container_leased(
+            "user_exp",
+            claim,
+            {"agentcore_runtime_arn": None},
+            expected={"agentcore_runtime_arn": "arn:dead"},
+        )
+    assert _row(dynamodb_table, "user_exp")["agentcore_runtime_arn"] == "arn:new"
+
+    # Matching expectation succeeds.
+    await container_repo.update_container_leased(
+        "user_exp",
+        claim,
+        {"agentcore_runtime_arn": None},
+        expected={"agentcore_runtime_arn": "arn:new"},
+    )
+    assert _row(dynamodb_table, "user_exp")["agentcore_runtime_arn"] is None
+
+
+@pytest.mark.asyncio
 async def test_release_provision_to_error_attempt_token_mismatch_is_a_noop(dynamodb_table):
     """Mirrors update_container_leased's attempt_token fence on the error
     transition: a straggler's release must not clobber the current attempt's

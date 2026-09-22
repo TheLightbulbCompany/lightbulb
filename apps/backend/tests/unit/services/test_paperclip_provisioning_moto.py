@@ -863,6 +863,49 @@ async def test_provision_org_company_recreated_mints_a_new_onboarding_generation
     assert second.onboarding_project_id is None
 
 
+async def test_provision_org_retry_with_no_company_preserves_a_concurrently_set_generation(repo):
+    """#20 / no more leases: a confirmed-identity, company-less failed row
+    (create_company itself raised, after signup already succeeded) is
+    retried WITHOUT the seed-claim fence -- reconciling_company is False
+    because ``company_id`` is empty, so the "not reconciling_company" mint
+    branch is reachable UNCLAIMED. If a concurrent peer's retry already
+    minted and persisted onboarding_generation before this read, this retry
+    must adopt it (if_not_exists semantics) rather than stomping it with a
+    fresh random ULID -- exactly the clobber the reconcile branch already
+    guards against for the company_id-bearing case."""
+    from core.encryption import encrypt
+
+    now = datetime.now(timezone.utc)
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_owner",
+            org_id="org_acme",
+            company_id="",
+            paperclip_user_id="pc_user_owner",
+            paperclip_password_encrypted=encrypt("owner-password-plain"),
+            paperclip_email="owner@acme.test",
+            service_token_encrypted="",
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            onboarding_generation="peer-minted-generation",
+            funnel_state="not_started",
+        )
+    )
+
+    admin = _make_admin_mock()
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
+    admin.create_company = AsyncMock(return_value={"id": "co_acme"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    row = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
+
+    assert row.company_id == "co_acme"  # confirms the not-reconciling create path ran
+    assert row.onboarding_generation == "peer-minted-generation"  # NOT re-minted
+    fetched = await repo.get("user_owner")
+    assert fetched.onboarding_generation == "peer-minted-generation"
+
+
 async def test_provision_member_does_not_mint_onboarding_generation(repo):
     """INV-3: a seat-join (provision_member) is NEVER a generation bump --
     the member's own row carries no onboarding fields at all."""

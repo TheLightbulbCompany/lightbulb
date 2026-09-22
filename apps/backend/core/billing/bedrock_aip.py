@@ -681,12 +681,18 @@ async def ensure_owner_bedrock_role(
         # tag means the next provision retries the converge.
         existing_tags = {t["Key"]: t["Value"] for t in got["Role"].get("Tags", [])}
         if existing_tags.get("trust_hardened") != "1":
+            from core.services.agentcore_runtime import trust_policy_with_agentcore
+
             account_id = role_arn.split(":")[4]
             try:
+                # Superset, not ECS-only: a concurrent ensure_agentcore_trust may have
+                # already added the AgentCore statement, and overwriting with the
+                # ECS-only document here would silently clobber it back off.
+                hardened_doc = trust_policy_with_agentcore(_assume_role_doc(account_id), account_id)
                 await run_in_thread(
                     client.update_assume_role_policy,
                     RoleName=role_name,
-                    PolicyDocument=json.dumps(_assume_role_doc(account_id)),
+                    PolicyDocument=json.dumps(hardened_doc),
                 )
                 await run_in_thread(
                     client.tag_role,
@@ -768,7 +774,15 @@ async def _create_owner_role(client, role_name: str, owner_id: str) -> str:
     }
     if settings.BEDROCK_OWNER_BOUNDARY_ARN:
         create_kwargs["PermissionsBoundary"] = settings.BEDROCK_OWNER_BOUNDARY_ARN
-    resp = await run_in_thread(client.create_role, **create_kwargs)
+    try:
+        resp = await run_in_thread(client.create_role, **create_kwargs)
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "EntityAlreadyExists":
+            raise
+        # A concurrent provision run won the create race; adopt its role
+        # instead of failing (the owner ruling: no leases, both runs converge).
+        got = await run_in_thread(client.get_role, RoleName=role_name)
+        return got["Role"]["Arn"]
     return resp["Role"]["Arn"]
 
 

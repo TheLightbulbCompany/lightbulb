@@ -1354,16 +1354,23 @@ async def test_member_seed_claim_carries_company_id_and_keeps_it_through_reclaim
     assert "company_id" not in repo._table().get_item(Key={"user_id": "user_o"}, ConsistentRead=True)["Item"]
 
 
-async def test_signup_credentials_remain_fenced_when_seed_claim_is_stolen(repo):
+async def test_signup_credentials_converge_regardless_of_which_claim_stages_them(repo):
+    """No more leases: two concurrent provision runs (the original claim holder
+    and whoever won a later takeover) must both succeed and converge on the
+    SAME staged email/password, rather than the loser hitting a
+    ConditionalCheckFailedException. ``if_not_exists`` + read-back is the
+    convergence primitive — first writer's values win, every caller reads
+    them back regardless of which claim_id is doing the staging."""
     await repo.try_acquire_seed_claim("user_new", org_id="org_a", claim_id="first")
     assert await repo.stage_signup_credentials(
         "user_new", claim_id="first", email="first@example.com", password_encrypted="first-secret"
     ) == ("first@example.com", "first-secret")
     await repo.try_acquire_seed_claim("user_new", org_id="org_a", claim_id="second", stale_after_seconds=0)
-    with pytest.raises(repo._table().meta.client.exceptions.ConditionalCheckFailedException):
-        await repo.stage_signup_credentials(
-            "user_new", claim_id="first", email="stale@example.com", password_encrypted="stale-secret"
-        )
+    # The ORIGINAL claim staging again (e.g. a slow holder that wasn't really
+    # dead) must still succeed and read back the converged values.
+    assert await repo.stage_signup_credentials(
+        "user_new", claim_id="first", email="stale@example.com", password_encrypted="stale-secret"
+    ) == ("first@example.com", "first-secret")
     assert await repo.stage_signup_credentials(
         "user_new", claim_id="second", email="new@example.com", password_encrypted="new-secret"
     ) == ("first@example.com", "first-secret")

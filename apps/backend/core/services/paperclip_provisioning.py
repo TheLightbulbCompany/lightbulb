@@ -773,8 +773,20 @@ class PaperclipProvisioning:
             if reconciling_company:
                 onboarding_fields = _carry_forward_onboarding_fields(existing)
             else:
+                # if_not_exists, mapped onto this whole-item put: a company-less
+                # retry (create_company itself failed after signup succeeded) is
+                # UNCLAIMED (reconciling_company is False with no company_id, so
+                # the seed-claim fence never engages -- see #15/#20). A
+                # concurrent peer's retry may have already minted and persisted
+                # a generation before this read; adopt it instead of stomping it
+                # with a fresh random ULID. Only a genuinely generation-less
+                # existing row (or none at all) mints fresh.
                 onboarding_fields = {
-                    "onboarding_generation": str(ULID()),
+                    "onboarding_generation": (
+                        existing.onboarding_generation
+                        if existing is not None and existing.onboarding_generation
+                        else str(ULID())
+                    ),
                     "funnel_state": "not_started",
                 }
 
@@ -1136,10 +1148,11 @@ class PaperclipProvisioning:
     async def _sign_up_with_staged_credentials(
         self, *, user_id: str, claim_id: str | None, email: str, password: str
     ) -> tuple[dict, str, str]:
-        # A lost response can mean signup succeeded. Save the secret under
-        # the existing claim before making that external side effect.
-        if not claim_id:
-            raise RuntimeError("Paperclip signup requires a seed claim")
+        # A lost response can mean signup succeeded. Save the secret before
+        # making that external side effect. No claim is required here any
+        # more: stage_signup_credentials no longer fences on it (#15 — no
+        # more leases, if_not_exists + read-back converges regardless of
+        # which claim, or none, is staging).
         email, encrypted = await self._repo.stage_signup_credentials(
             user_id, claim_id=claim_id, email=email, password_encrypted=encrypt(password)
         )

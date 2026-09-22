@@ -543,8 +543,9 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
     function is shared by NON-terminal callers -- ``entitlement_teardown`` (a lapsed or
     past-due subscription) and ``routers/debug.py``'s ``DELETE /debug/provision`` (a
     routine reprovision) -- and passing ``True`` from those destroyed a migrated owner's
-    memory / skills / SOUL.md / auth.json. Exactly TWO terminal callers pass ``True``:
-    ``account_wipe`` and ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
+    memory / skills / SOUL.md / auth.json. Exactly THREE terminal callers pass ``True``:
+    ``account_wipe`` (user-keyed), ``workspace_wipe`` (org-keyed), and
+    ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
     empty-slate reset; debug is 403 in prod). Do not re-broaden it.
 
     Returns the containers row as it was at the instant it was deleted, or None when

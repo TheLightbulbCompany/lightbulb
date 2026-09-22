@@ -21,8 +21,19 @@ import { adminPost, type ActionResult } from "./_shared";
  * a guard kept the resource (a workspace member's shared Paperclip company).
  * When `shared_company` is set, execute also needs `confirm_workspace` equal to
  * the workspace name (its org id when Clerk has no name). A 400 surfaces as
- * `result.error === "org_wipe_unsupported"` (org owners aren't supported in
- * v1), `"email_mismatch"`, or `"workspace_mismatch"` (execute only).
+ * `result.error === "org_wipe_unsupported"` (org owners aren't supported by the
+ * USER wipe — use the workspace wipe below), `"email_mismatch"`, or
+ * `"workspace_mismatch"` (execute only).
+ *
+ * Workspace wipe (org-keyed, `core/services/workspace_wipe.py`):
+ *   - `previewWorkspaceWipe` -> `POST /admin/workspaces/{orgId}/wipe/preview`
+ *     (read-only; billing shown preserved/skipped unless `includeBilling`).
+ *   - `executeWorkspaceWipe` -> `POST /admin/workspaces/{orgId}/wipe` with
+ *     `{ confirm_org, layers?, include_billing?, confirm_billing?, preview_fingerprint }`.
+ *     `confirm_org` must equal the org id; `preview_fingerprint` must match the
+ *     confirmed preview (else 409 `stale_preview`); billing moves only with
+ *     `include_billing` + `confirm_billing: "DELETE-BILLING"`.
+ *   - Audit action is `account_wipe_workspace` (not `account_wipe`).
  */
 
 export type WipeStepStatus = "ok" | "skipped" | "failed" | "would_delete" | "refused";
@@ -63,5 +74,35 @@ export async function executeAccountWipe(
   return adminPost(`/admin/users/${encodeURIComponent(userId)}/wipe`, {
     confirm_email: confirmEmail,
     confirm_workspace: confirmWorkspace,
+  });
+}
+
+export interface WorkspaceWipePreview {
+  layers?: string[];
+  includeBilling?: boolean;
+}
+
+export interface WorkspaceWipeConfirm {
+  confirmOrg: string;
+  layers?: string[];
+  includeBilling?: boolean;
+  confirmBilling?: string;
+  previewFingerprint: string;
+}
+
+export async function previewWorkspaceWipe(orgId: string, opts?: WorkspaceWipePreview): Promise<ActionResult> {
+  return adminPost(`/admin/workspaces/${encodeURIComponent(orgId)}/wipe/preview`, {
+    layers: opts?.layers,
+    include_billing: opts?.includeBilling ?? false,
+  });
+}
+
+export async function executeWorkspaceWipe(orgId: string, confirm: WorkspaceWipeConfirm): Promise<ActionResult> {
+  return adminPost(`/admin/workspaces/${encodeURIComponent(orgId)}/wipe`, {
+    confirm_org: confirm.confirmOrg,
+    layers: confirm.layers,
+    include_billing: confirm.includeBilling ?? false,
+    confirm_billing: confirm.confirmBilling,
+    preview_fingerprint: confirm.previewFingerprint,
   });
 }

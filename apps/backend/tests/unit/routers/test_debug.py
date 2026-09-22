@@ -380,7 +380,8 @@ class TestDeleteUserData:
         assert res.status_code == 200
         # Critical: teardown WAS attempted despite no container row.
         # Critical: teardown WAS attempted despite no container row, and with delete_profiles --
-        # this and ``account_wipe`` are the only two terminal callers that pass it (M6-R42).
+        # this, ``account_wipe`` and ``workspace_wipe`` are the only three terminal callers
+        # that pass it (M6-R42).
         runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True)
         assert res.json()["deleted"]["runtime"] is True
 

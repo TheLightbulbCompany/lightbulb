@@ -1,87 +1,134 @@
-# AgentCore Memory + Code Interpreter — design and recommendation
+# Workspace memory + code execution: options and recommendation
 
 Status: **for owner review** (2026-09-22). Nothing is implemented. Delete this file in the PR that ships the approved slice.
 
+**Owner decisions so far:**
+- Memory is shared by **all agents in a workspace**.
+- The owner asked for a comparison of memory backends (self-hosted Honcho, AgentCore Memory, and others).
+- The owner asked for a comparison of code-execution options (crabbox, the Hermes ssh backend, and others).
+
 ## TL;DR
 
-| | Recommendation | Why |
+| | Recommendation | Runner-up |
 |---|---|---|
-| **AgentCore Memory** | **Adopt, one narrow slice**: long-term memory that all agents in a workspace share | Today every agent's memory is private and tiny (~2.2k + 1.4k chars). A CEO decision is invisible to Engineering. Memory fills that gap for roughly 0.3% of a turn's cost. |
-| **AgentCore Code Interpreter** | **Do not adopt now** | Hermes already runs shell and code inside the workspace's own per-owner microVM, on the same hardware class at the same price. A Code Interpreter sandbox can't see the profile, the git trees or the connector CLIs. Revisit once there is a concrete untrusted-code or heavy-compute need. |
+| **Memory** | **AgentCore Memory**, via our own Hermes MemoryProvider plugin. Gated on a 1-day isolation spike. | Mem0 OSS in-process, on Bedrock with a per-owner S3 Vectors index. Choose this if every inference must go through the bedrock-gate. |
+| **Code execution** | **An EC2 exec box per owner, reached through Hermes' built-in `ssh` backend.** Start with the founder workspace only. | AgentCore Code Interpreter with a per-owner S3 Files mount. It needs a new Hermes backend and a tenancy spike. |
 
-## What we have today (verified on `eb60c16d8`)
+## Today (verified on `eb60c16d8`)
 
 - **Memory:**
-  - Hermes built-in only. `hermes_profiles.py:366-373` sets `memory.provider: ""` and caps `memory_char_limit` at 2200 and `user_char_limit` at 1375.
-  - Files are `memories/MEMORY.md` and `memories/USER.md`, plus an FTS-indexed SQLite `state.db` for searching past sessions.
-  - Each file is per agent (`<owner>/hermes/<agent>/`) and saved to S3 at the end of the turn. **Nothing is shared between agents.**
+  - Hermes built-in only (`hermes_profiles.py:366-373`, `provider: ""`).
+  - `MEMORY.md` (about 2.2k chars), `USER.md` (about 1.4k chars) and an FTS-indexed `state.db`.
+  - All of it is per agent under `<owner>/hermes/<agent>/`. **Agents share nothing.**
 - **Code execution:**
-  - `terminal.backend: local`. The shell runs as uid 1000 inside the AgentCore microVM (`hermes_profiles.py:388`).
-  - `execute_code` is enabled. Guards: a 1800 s run budget, stall guards and a short command deny-list.
-- **Precedent:** Browser v2 is how an AgentCore capability was integrated.
-  - A capability flag in the bridge `health` response (`bridge/server.py:292`).
+  - `terminal.backend: local` inside the workspace's AgentCore microVM.
+  - The terminal, the file tools and `execute_code` all share that one backend.
+  - Working trees are lost when the microVM restarts unless they are inside the profile.
+  - Heavy jobs run next to the agent loop and next to the gate bearer and hook token.
+- **Pinned Hermes:** `v0.21.3` is upstream tag `v2026.9.14`.
+  - Memory providers it bundles: byterover, hindsight, holographic, honcho, mem0, openviking, retaindb, supermemory.
+  - Terminal backends it bundles: local, docker, singularity, ssh, modal, managed_modal, daytona, vercel_sandbox.
+  - Neither list has an AgentCore option.
+- **Integration precedent: Browser v2.**
+  - A capability flag in the bridge `health` response.
   - A per-owner inline policy (`bedrock_aip.ensure_owner_browser_policy`).
-  - A new statement in the permissions boundary (`container-stack.ts` `OwnerBedrockBoundary`).
-  - A `pre_tool_call` hook in the `lightbulb` plugin.
-  - Two docs are stale about it: `docs/architecture/current-system.md:90-96` still describes v1, and the browser-v2 spec still says "in progress".
-- **Billing:** AgentCore runtime and Browser compute are **absorbed by the platform**, with no per-owner metering. Only Bedrock inference is metered, through the gate and meter to Metronome.
+  - A statement in the `OwnerBedrockBoundary` permissions boundary.
+  - A `lightbulb` plugin hook.
+  - `docs/architecture/current-system.md:90-96` and the browser-v2 spec are both stale on this (they still describe v1 / "in progress").
+- **Billing:** AgentCore compute is absorbed by the platform. Only Bedrock inference is metered per owner.
 
-## AgentCore Memory
+## Memory options
 
-### Facts that constrain the design
+Load assumed: 50 workspaces × 200 turns/day ≈ 300k turns/month.
 
-- **Short-term memory** is `CreateEvent(actorId, sessionId, messages)`. Events expire after 7 to 365 days.
-- **Long-term memory** runs up to 6 strategies (semantic, summary, user-preference, episodic, custom). They extract records **asynchronously, about 20 to 60 s after the event**, into templated namespaces. Records are read back with `RetrieveMemoryRecords`, which is a semantic search.
-- **Tenancy is the "pool" pattern AWS documents:** one memory resource per environment, with isolation by namespace plus IAM.
-  - Condition keys: `bedrock-agentcore:namespace` (exact match) and `bedrock-agentcore:namespacePath` (prefix match).
-  - Quotas: 150 memory resources per account (adjustable), 30 TPS for retrieval, and 150k extraction tokens per minute per account (adjustable).
-- **Price:** $0.25 per 1k events, $0.50 per 1k retrievals, and $0.75 per 1k records per month with built-in strategies (inference bundled, model undisclosed).
-  - A turn costs about 1 event plus 1 retrieval, so roughly **$0.001 per turn**, against about $0.34 of inference.
-- **Networking:** the data plane is reachable through PrivateLink (`com.amazonaws.us-east-1.bedrock-agentcore`). The control plane is not, so `CreateMemory` belongs in CDK or the backend, never in a runtime.
-- **No Hermes provider exists** for AgentCore Memory, upstream or in AWS samples. Hermes does have a pluggable `MemoryProvider` system (`plugins/memory/<name>/`, one external provider active alongside the built-in files), so we would write about one small plugin.
+| Option | Shared across agents | Tenancy | Where LLM/embedding calls run, and who pays | Infra | ≈ $/month | Top risk |
+|---|---|---|---|---|---|---|
+| **AgentCore Memory** | yes (`actorId = ownerId`) | IAM `namespace`/`namespacePath` conditions | An AWS-bundled model, outside our gate. The platform pays. | one `CfnMemory` + our plugin | **~$300** all-in | Is `CreateEvent` write-scoping enforceable? (spike) |
+| **Mem0 OSS in-process** | yes (`user_id = ownerId`) | IAM on a per-owner S3 Vectors index | Bedrock **through our gate**, so billed and capped per owner | S3 Vectors bucket | ~$60 on Nova Micro; ~$2k on Haiku | Gate changes on the money path; extraction latency inside the turn |
+| **Honcho self-hosted** (AGPL) | yes (best model: workspace → peers) | workspace-scoped JWTs | OpenAI/Anthropic/Gemini only, **no Bedrock** (would need a LiteLLM proxy). Spend is central and not attributable per owner. | ECS API + deriver, Redis, pgvector DB | ~$1.1–1.6k | Ops burden, AGPL, central store of every tenant's memory |
+| **Hindsight self-hosted** (MIT) | yes (a bank per owner) | Postgres schema per tenant; needs a custom extension | Bedrock, central | ECS + Postgres | Honcho-class or higher | Heaviest ops |
+| **Holographic / ByteRover** | **no** (lives in the per-agent profile) | per profile | none | none | $0 | Sharing would need new sync and a single-writer guarantee |
 
-### Proposed first slice: "workspace memory"
+Ruled out:
+- **RetainDB, Supermemory Cloud:** data leaves AWS.
+- **OpenViking:** AGPL server to run.
+- **Memori:** not in our Hermes version.
 
-1. **Infra (CDK).**
-   - One `CfnMemory` per environment with one **semantic** strategy. The namespace is `/owners/{actorId}/` with `actorId = ownerId`, so every agent of an owner shares it.
-   - Event expiry is 30 days, encrypted with the existing KMS key.
-   - A new boundary statement allows `CreateEvent`, `ListEvents` and `RetrieveMemoryRecords` on that memory ARN.
+**Recommendation: AgentCore Memory.** It needs no servers, isolation comes from IAM, data stays in AWS, and extraction is bundled at about $0.001 per turn. Mem0 is the answer only if "every inference through the gate" outranks ops.
+
+### First slice (AgentCore Memory)
+
+0. **Spike (1 day, dev).**
+   - Can IAM conditions deny `CreateEvent` and `RetrieveMemoryRecords` across owners?
+   - What is the retrieval p95?
+   - If writes can't be scoped, fall back to **one memory resource per owner**, created at provision time and torn down in the shared teardown seam. That needs a quota raise above 150.
+1. **CDK.**
+   - One `CfnMemory` per environment: a semantic strategy only, namespace `/owners/{actorId}/`, 30-day event expiry, existing KMS key.
+   - A boundary statement in `container-stack.ts`.
 2. **Backend.**
-   - A per-owner inline policy, `owner-memory`, modelled on `ensure_owner_browser_policy`. It allows `RetrieveMemoryRecords` only where `namespacePath` matches `/owners/<ownerId>/*`.
-   - One new runtime env var, `AGENTCORE_MEMORY_ID`, in `build_hermes_runtime_env`.
+   - A per-owner inline policy, `owner-memory` (`bedrock_aip.py`).
+   - `AGENTCORE_MEMORY_ID` in `hermes_provisioning.build_hermes_runtime_env`.
+   - The wipe paths (`account_wipe`, `DELETE /debug/user-data`) delete the namespace. `DELETE /debug/provision` does not.
 3. **Image.**
-   - A Hermes memory provider, `plugins/memory/agentcore/`. Before the turn it retrieves the top-k records and injects them. After the turn it sends one `CreateEvent` with the user and assistant messages.
-   - The bridge enables `memory.provider: agentcore` only when `AGENTCORE_MEMORY_ID` is set, and reports `memoryProtocol: 1` in `health`.
-   - **N-1 safe with no backend check:** an old image ignores the env var, and a new image without the env var behaves as it does today.
-4. **Wipe.**
-   - `account_wipe` and `DELETE /debug/user-data` also delete the owner's namespace, using the batch record delete.
-   - `DELETE /debug/provision` leaves it alone, the same rule as profiles (M6-R42).
-5. **Acceptance in dev.**
-   - Tell the CEO a fact in #general. About a minute later, a DM to Engineering recalls it.
-   - Check CloudTrail: a second test owner's role gets AccessDenied reading the first owner's namespace.
+   - A `plugins/memory/agentcore/` MemoryProvider:
+     - `prefetch`: top-5 retrieve with a 1.5 s timeout, skip on failure.
+     - `sync_turn`: one `CreateEvent`.
+   - The bridge sets `memory.provider: agentcore` only when the env var is present, and reports `memoryProtocol: 1` in `health`.
+   - **N-1 safe:** an old image ignores the env var.
+   - Rollout is the usual two steps: flip the image pin, then roll the runtimes.
+4. **Dev acceptance.**
+   - Tell the CEO a fact in #general. About 60 s later, Engineering recalls it in a DM.
+   - A second owner's role gets AccessDenied, checked in CloudTrail.
 
-**Skipped until needed:** summary, preference and episodic strategies; a per-agent private namespace; a UI to view or edit memories; per-owner metering (under 1% of cost); a self-managed extraction model routed through our gate.
+**Skipped:** summary, preference and episodic strategies; private per-agent memory; a memory UI; per-owner metering (under 1% of cost).
 
-### Risks and what to verify before implementation (a 1-day spike)
+**Other risks:**
+- Content goes to an extraction model AWS doesn't name. Check against the privacy/Termly copy.
+- Shared memory lets anything said in one room reach every agent, a prompt-injection path. Say so in the `lightbulb` skill.
 
-- **Cross-tenant writes (the key risk).** The IAM namespace keys are documented for *reads*.
-  - If `CreateEvent` cannot be scoped by `actorId` or namespace, owner A's runtime could write events as owner B, and those would be extracted into B's namespace. That is poisoning, not a leak, but it still breaks isolation.
-  - Spike: test the conditions on `CreateEvent`.
-  - Fallback: **one memory resource per owner**, created by the backend at provision time. That needs a quota raise past 150, plus teardown in the shared teardown seam.
-- **Data handling.** Conversation content goes to an AWS-managed extraction model we don't choose. It is the same AWS trust boundary as Bedrock, but check it against the privacy policy and Termly copy.
-- **Latency.** Retrieval adds one call to the start of every turn. Measure it; skip on timeout, never block the turn.
-- **Hermes memory-provider interface in our pinned base.** Verify it in `nousresearch/hermes-agent@sha256:a5b2…` itself, not in upstream `main`.
-- **Prompt injection through shared memory.** A record extracted from one room reaches every agent. That is the same trust level as `#general` today, but say so in the `lightbulb` skill.
+## Code execution options
 
-## AgentCore Code Interpreter — why not now
+Load assumed: 50 workspaces × about 2 exec-hours/day.
 
-- **It adds little.** Sessions are 2 vCPU / 8 GB with 10 GB of disk, 15 min by default and 8 h at most, priced at the same $0.0895 per vCPU-hour as Runtime. Our agents already run code in a per-owner microVM of the same class.
-- **It takes a lot away.** The sandbox cannot see the profile, the working trees or the connector credentials. Files have to be copied in and out explicitly, and nothing persists between sessions.
-- **No Hermes backend exists** (`tools/environments/` has local, docker, ssh, modal, daytona, vercel_sandbox and so on). Adopting it as the terminal would mean writing `agentcore.py` and breaking the git and CLI workflows.
-- **When it would earn a place:** running code the agent did not write and should not trust (for example, a user-uploaded notebook), or heavy jobs that starve the turn. The narrow shape then is one `lightbulb` plugin tool, `run_sandboxed(code, files)`, calling the system `aws.codeinterpreter.v1` in `SANDBOX` network mode. It needs a boundary statement on `code-interpreter/aws.codeinterpreter.v1` and no custom interpreter or role. That is about a day of work when a need appears.
+| Option | Working trees persist | Isolated from agent credentials | Startup | ≈ $/month | Runs where | Hermes support in v0.21.3 | Top risk |
+|---|---|---|---|---|---|---|---|
+| **EC2 box per owner + `ssh` backend** | yes (EBS) | yes (separate box, no credentials unless opted in) | 15–45 s from stopped | ~$220 stop-when-idle; ~$1.35k always on | our VPC | **zero code** (config + key in the boot secret) | a fleet of 50 small VMs to patch, wake and garbage-collect |
+| **AgentCore Code Interpreter + S3 Files access point** | yes (mount persists) | yes (its own role) | seconds (unmeasured) | ≤ ~$650, active CPU only | our account | new `agentcore.py` backend | a shared interpreter role that can mount every owner's access point (spike) |
+| **Daytona** | yes (stopped sandboxes) | yes | sub-second (claimed) | ~$500 | Daytona cloud | zero code | data leaves AWS; one platform key in every microVM |
+| Vercel Sandbox / Modal / E2B | snapshots | yes | ~1 s | $0.6–1.1k | third party | zero code / zero code / new backend | data leaves AWS; cost |
+| Fargate exec worker + `ssh` | no (EFS is gone) | yes | 30–60 s | ~$240 | our account | zero code | no persistent disk |
+| **crabbox** (`openclaw/crabbox`) | yes (it leases EC2 and friends) | yes | same as EC2 | EC2 + a coordinator service | our account + coordinator | none; would sit in front of `ssh` | **wrong way round**: it syncs a local checkout *out* to a throwaway box, while our agent lives in the cloud and needs the box to *keep* state. It also adds a service from the OpenClaw ecosystem. |
+| `managed_modal` | — | — | — | — | Nous gateway | — | needs a Nous account/token. Ruled out. |
+
+**How the `ssh` backend works:**
+- It holds one ControlMaster connection, and each call is a fresh `ssh … bash -c`.
+- The working directory and env persist between calls.
+- `file_sync.py` tar-pushes the credential files registered in `credential_files`, the skills and the cache into the remote `~/.hermes`.
+- Our connector credentials (`gh`, `aws`, `gog`, `xurl`) are plain profile files and are **not** registered. So they don't reach the box unless we opt each one in. That is isolation by default, but those CLIs don't work remotely until we do.
+
+**Recommendation:** EC2 box per owner through `ssh`. It needs no Hermes code, stays in our VPC, keeps working trees on a real disk, and gets heavy or untrusted work out of the agent's microVM. Runner-up: Code Interpreter with S3 Files, if we'd rather not own VMs and can spend a backend's worth of code plus a tenancy spike.
+
+### First slice (founder workspace only)
+
+1. **The box.**
+   - One t4g.medium in a private subnet.
+   - Its security group admits port 22 only from `ContainerSecurityGroup`.
+   - No useful instance role.
+   - sshd `AcceptEnv` limited to our passthrough names.
+2. **The key.** An ed25519 key in the founder's boot secret.
+3. **The profile.** The founder's profile gets `terminal: {backend: ssh, host, user, key}`. This is a one-owner switch at `hermes_profiles.py:388`, applied with `PATCH /debug/provision`.
+4. **Prove it.**
+   - A clone survives a microVM restart.
+   - Tests running on the box don't starve the agent.
+   - Measure per-call latency and `file_sync` time.
+5. **Credentials.** Then opt in `gh` only, through `credential_files`.
+
+**Deferred:** automated box lifecycle (backend starts and stops the box from `last_interactive_at`), a per-agent directory convention, and the fleet rollout.
+
+**Owner-gated:** launching an EC2 box is a new resource. In prod it has to go through CDK, not a hand launch; the hand launch is for the dev spike only.
 
 ## Owner decisions needed
 
-1. **Memory:** adopt the workspace-memory slice above? (Recommended: yes, after the 1-day isolation spike.)
-2. **Memory scope:** shared across all agents of a workspace (recommended), or per agent?
-3. **Code Interpreter:** defer (recommended), or build the `run_sandboxed` tool now?
+1. **Memory backend:** AgentCore Memory (recommended), or Mem0-through-the-gate?
+2. **Code execution:** EC2 + `ssh` (recommended), Code Interpreter + S3 Files, or Daytona?
+3. **Order:** memory first (recommended; it is smaller and nearly independent), or both in parallel?

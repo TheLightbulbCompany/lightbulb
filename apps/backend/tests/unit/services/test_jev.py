@@ -3,8 +3,11 @@
 import json
 import logging
 
+import threading
+
 import httpx
 import pytest
+import yaml
 from unittest.mock import AsyncMock
 
 from core.services import jev
@@ -123,6 +126,60 @@ async def test_missing_secret_disables_and_retries_only_after_backoff(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_key_is_reread_after_an_hour_on_a_bounded_client_off_the_loop(monkeypatch):
+    calls, configs = [], []
+
+    class Sm:
+        def get_secret_value(self, SecretId):
+            calls.append(threading.current_thread().name)
+            return {"SecretString": f"key-{len(calls)}"}
+
+    def client(service, **kw):
+        configs.append((service, kw["config"]))
+        return Sm()
+
+    monkeypatch.setattr(jev.boto3, "client", client)
+    assert await jev._gateway_key() == "key-1"
+    assert await jev._gateway_key() == "key-1"  # cached
+    monkeypatch.setattr(jev, "_key_checked_at", jev._key_checked_at - 3601)
+    assert await jev._gateway_key() == "key-2"  # rotation lands without a restart
+    assert all(name.startswith("jev") for name in calls)
+    service, config = configs[0]
+    assert service == "secretsmanager"
+    assert (config.connect_timeout, config.read_timeout, config.retries) == (2, 3, {"max_attempts": 1})
+
+
+def test_profile_reads_use_a_bounded_s3_client(monkeypatch):
+    seen = []
+
+    class S3:
+        def get_object(self, Bucket, Key):
+            raise jev.botocore.exceptions.ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+
+    monkeypatch.setattr(jev, "_s3_client", None)
+    monkeypatch.setattr(jev.boto3, "client", lambda service, **kw: seen.append((service, kw["config"])) or S3())
+    monkeypatch.setattr(jev.settings, "OWNER_STATE_BUCKET", "b")
+    assert jev._read("org_1/hermes/a1/SOUL.md") is None
+    service, config = seen[0]
+    assert service == "s3"
+    assert (config.connect_timeout, config.read_timeout, config.retries) == (2, 3, {"max_attempts": 1})
+
+
+@pytest.mark.asyncio
+async def test_card_reads_run_on_the_jev_executor(monkeypatch):
+    threads = []
+
+    def get_object(key):
+        threads.append(threading.current_thread().name)
+        return None
+
+    monkeypatch.setattr(jev, "_read", get_object)
+    monkeypatch.setattr(jev, "_paperclip_agent", AsyncMock(return_value={}))
+    await jev.agent_card("org_1", "a1", "Bob")
+    assert threads and all(name.startswith("jev") for name in threads)
+
+
+@pytest.mark.asyncio
 async def test_key_is_never_logged(monkeypatch, caplog):
     class Sm:
         def get_secret_value(self, SecretId):
@@ -151,13 +208,14 @@ async def test_key_is_never_logged(monkeypatch, caplog):
 def _profile(monkeypatch, files: dict[str, str], config: dict, agent: dict | None = None):
     reads: list[str] = []
 
+    files = {**files, "config.yaml": yaml.safe_dump(config)} if config else files
+
     def get_object(key):
         reads.append(key)
         name = key.rsplit("/", 1)[-1]
         return files[name].encode() if name in files else None
 
-    monkeypatch.setattr(jev.hermes_profiles, "get_owner_object", get_object)
-    monkeypatch.setattr(jev.hermes_profiles, "read_profile_config", lambda o, a: config)
+    monkeypatch.setattr(jev, "_read", get_object)
     paperclip = AsyncMock(return_value=agent or {})
     monkeypatch.setattr(jev, "_paperclip_agent", paperclip)
     return reads, paperclip
@@ -240,7 +298,6 @@ async def test_card_sources_failing_degrade_to_display_name(monkeypatch):
     def boom(*_a, **_k):
         raise RuntimeError("s3 down")
 
-    monkeypatch.setattr(jev.hermes_profiles, "get_owner_object", boom)
-    monkeypatch.setattr(jev.hermes_profiles, "read_profile_config", boom)
+    monkeypatch.setattr(jev, "_read", boom)
     monkeypatch.setattr(jev, "_paperclip_agent", AsyncMock(side_effect=RuntimeError("paperclip down")))
     assert await jev.agent_card("org_1", "a1", "Finance") == "Finance. Tools: none."

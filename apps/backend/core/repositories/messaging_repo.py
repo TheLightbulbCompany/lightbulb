@@ -24,7 +24,7 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     OWNER#<owner>   USAGE#<runId>                       first-writer-wins usage-callback receipt (Task 7)
     ROOM#<room>     FOLLOWUP#<followUpId>               a finished async delegation owed back to its agent
     ROOM#<room>     WORK#FOLLOWUP#<agent>#<followUpId>  one-shot outbox for that follow-up turn
-    ROOM#<room>     DECISION#<messageId>                Jev routing decision, put-if-absent (NOT WORK#:
+    ROOM#<room>     DECISION#<messageId>                Jev routing decision, claim-first (NOT WORK#:
                                                        the Pipe must never see it; the projector skips it)
 
 ``WORK#``, ``LIVE#``, ``RUN#``, ``USAGE#``, ``FOLLOWUP#`` and ``DECISION#`` rows carry ``expiresAt`` (7 days). Every read
@@ -1915,21 +1915,43 @@ def decision_sk(message_id: str) -> str:
     return f"DECISION#{message_id}"
 
 
-async def put_decision_if_absent(room_id: str, message_id: str, decision: dict) -> bool:
-    """First writer wins: every candidate's consumer may compute the same decision."""
+#: A pending claim older than this is a dead winner's; the next consumer may take it over.
+_DECISION_CLAIM_STALE_S = 60
+
+
+async def claim_decision(room_id: str, message_id: str) -> bool:
+    """Claim-first, so Jev runs once per message: put a ``pending`` placeholder if the row is
+    absent, or take over a pending claim older than 60 s. Only the winner computes."""
+    now = int(time.time())
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={
+                "pk": room_pk(room_id),
+                "sk": decision_sk(message_id),
+                "decision": {"pending": True, "claimedAt": now},
+                "expiresAt": _expires_at(),
+            },
+            ConditionExpression="attribute_not_exists(sk) OR (#d.#p = :t AND #d.#c < :stale)",
+            ExpressionAttributeNames={"#d": "decision", "#p": "pending", "#c": "claimedAt"},
+            ExpressionAttributeValues={":t": True, ":stale": now - _DECISION_CLAIM_STALE_S},
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+async def put_decision(room_id: str, message_id: str, decision: dict) -> None:
+    """The claim winner overwrites its own placeholder with the result."""
     item = {
         "pk": room_pk(room_id),
         "sk": decision_sk(message_id),
         "decision": _ddb_safe(decision),
         "expiresAt": _expires_at(),
     }
-    try:
-        await run_in_thread(_table().put_item, Item=item, ConditionExpression="attribute_not_exists(sk)")
-        return True
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
+    await run_in_thread(_table().put_item, Item=item)
 
 
 async def get_decision(room_id: str, message_id: str) -> dict | None:

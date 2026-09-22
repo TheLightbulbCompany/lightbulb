@@ -47,17 +47,22 @@ ANSWERS = {
 def store(monkeypatch):
     rows: dict = {}
 
-    async def put(room_id, message_id, decision):
+    async def claim(room_id, message_id):
         if (room_id, message_id) in rows:
             return False
-        rows[(room_id, message_id)] = decision
+        rows[(room_id, message_id)] = {"pending": True, "claimedAt": 0}
         return True
+
+    async def put(room_id, message_id, decision):
+        rows[(room_id, message_id)] = decision
 
     async def get(room_id, message_id):
         return rows.get((room_id, message_id))
 
-    monkeypatch.setattr(jev.messaging_repo, "put_decision_if_absent", put)
+    monkeypatch.setattr(jev.messaging_repo, "claim_decision", claim)
+    monkeypatch.setattr(jev.messaging_repo, "put_decision", put)
     monkeypatch.setattr(jev.messaging_repo, "get_decision", get)
+    monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value="k"))
     monkeypatch.setattr(jev, "agent_card", AsyncMock(side_effect=lambda o, a, name, rec="": f"{name} card. {rec}"))
     return rows
 
@@ -96,15 +101,56 @@ async def test_decision_computed_once_across_two_candidates(monkeypatch, store, 
 
 
 @pytest.mark.asyncio
-async def test_race_loser_meters_against_the_stored_row(monkeypatch, store, metrics):
-    async def decide(*_):
-        store[(ROOM, "m1")] = {"who": "none", "quietChannel": False}  # another consumer wins meanwhile
-        return ANSWERS
+async def test_claim_loser_never_calls_jev_and_meters_pending(monkeypatch, store, metrics):
+    decide = AsyncMock(return_value=ANSWERS)
+    monkeypatch.setattr(jev, "decide", decide)
+    store[(ROOM, "m1")] = {"pending": True, "claimedAt": 0}  # another consumer is mid-decision
+    await jev.shadow(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    decide.assert_not_awaited()
+    jev.agent_card.assert_not_awaited()
+    assert _shadow_dims(metrics) == [{"picked": "pending", "quiet": "unknown"}]
 
+
+@pytest.mark.asyncio
+async def test_claim_loser_meters_against_a_completed_row(monkeypatch, store, metrics):
+    decide = AsyncMock(return_value=ANSWERS)
+    monkeypatch.setattr(jev, "decide", decide)
+    store[(ROOM, "m1")] = {"who": "none", "quietChannel": False}
+    await jev.shadow(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    decide.assert_not_awaited()
+    assert _shadow_dims(metrics) == [{"picked": "none", "quiet": "false"}]
+
+
+@pytest.mark.asyncio
+async def test_missing_key_disables_before_any_io(monkeypatch, store, metrics):
+    monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value=None))
+    claim = AsyncMock()
+    monkeypatch.setattr(jev.messaging_repo, "claim_decision", claim)
+    decide = AsyncMock()
     monkeypatch.setattr(jev, "decide", decide)
     await jev.shadow(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
-    assert store[(ROOM, "m1")]["who"] == "none"
-    assert _shadow_dims(metrics) == [{"picked": "none", "quiet": "false"}]
+    claim.assert_not_awaited()
+    decide.assert_not_awaited()
+    jev.agent_card.assert_not_awaited()
+    assert store == {}
+    assert ("messaging.jev.decision", {"dimensions": {"outcome": "disabled"}}) in metrics
+    assert _shadow_dims(metrics) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "answers",
+    [
+        {**ANSWERS, "who": {"choice": "a9"}},  # not a candidate
+        {**ANSWERS, "placement": {"choice": "dm"}},
+    ],
+)
+async def test_invalid_choice_is_stored_as_fallback(monkeypatch, store, metrics, answers):
+    monkeypatch.setattr(jev, "decide", AsyncMock(return_value=answers))
+    await jev.shadow(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    row = store[(ROOM, "m1")]
+    assert row["fallback"] is True and row["reason"] == "invalid_choice" and "who" not in row
+    assert _shadow_dims(metrics)[0]["picked"] == "fallback"
 
 
 @pytest.mark.asyncio
@@ -118,7 +164,8 @@ async def test_jev_unavailable_stores_fallback(monkeypatch, store, metrics):
 
 @pytest.mark.asyncio
 async def test_shadow_errors_are_swallowed(monkeypatch, metrics):
-    monkeypatch.setattr(jev.messaging_repo, "get_decision", AsyncMock(side_effect=RuntimeError("ddb down")))
+    monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value="k"))
+    monkeypatch.setattr(jev.messaging_repo, "claim_decision", AsyncMock(side_effect=RuntimeError("ddb down")))
     await jev.shadow(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
     assert _shadow_dims(metrics) == [{"picked": "error", "quiet": "unknown"}]
 
@@ -209,7 +256,8 @@ async def test_hook_never_runs_when_plan_gate_drops(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_real_shadow_failing_still_dispatches(monkeypatch):
-    monkeypatch.setattr(jev.messaging_repo, "get_decision", AsyncMock(side_effect=RuntimeError("ddb down")))
+    monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value="k"))
+    monkeypatch.setattr(jev.messaging_repo, "claim_decision", AsyncMock(side_effect=RuntimeError("ddb down")))
     monkeypatch.setattr(jev, "put_metric", lambda *a, **k: None)
     _, posted, created = await _dispatch(monkeypatch, "room_event", shadow=jev.shadow)
     assert len(posted) == 1 and len(created) == 1

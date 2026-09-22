@@ -8,6 +8,9 @@ what Jev WOULD do for Listening (``room_event``) traffic; dispatch is unchanged.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import functools
+import json
 import logging
 import re
 import time
@@ -15,10 +18,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 import boto3
+import botocore.exceptions
 import httpx
+import yaml
+from botocore.config import Config
 
 from core.config import settings
-from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
 from core.services import hermes_profiles
@@ -29,10 +34,17 @@ MODEL = "typesafe-ai/jev"
 _URL = "https://ai-gateway.vercel.sh/v1/evaluate"
 _TIMEOUT_S = 3.0
 _KEY_RETRY_S = 300
+_KEY_TTL_S = 3600
 _CARD_TTL_S = 600
 _QUIET_S = 600
 #: Whole shadow budget: cards (S3 + Paperclip) plus the 3 s Jev call, so it can never stall dispatch.
 _SHADOW_BUDGET_S = 8.0
+
+#: Its own small pool and short, no-retry clients: ``wait_for`` cancels the await, not the thread,
+#: so a slow S3/Secrets Manager read must never pin the default executor DynamoDB shares.
+_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="jev")
+_AWS_CONFIG = Config(connect_timeout=2, read_timeout=3, retries={"max_attempts": 1})
+_s3_client = None
 
 _key: str | None = None
 _key_checked_at = 0.0
@@ -52,16 +64,38 @@ _ROLE_DESCRIPTIONS = {
 }
 
 
+async def _off(fn, *args):
+    return await asyncio.get_running_loop().run_in_executor(_EXECUTOR, functools.partial(fn, *args))
+
+
+def _read_secret(name: str) -> str | None:
+    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION, config=_AWS_CONFIG)
+    return (sm.get_secret_value(SecretId=name).get("SecretString") or "").strip() or None
+
+
+def _read(key: str) -> bytes | None:
+    """One owner-state object on jev's bounded client; ``None`` means absent."""
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client("s3", config=_AWS_CONFIG)
+    try:
+        return _s3_client.get_object(Bucket=settings.OWNER_STATE_BUCKET, Key=key)["Body"].read()
+    except botocore.exceptions.ClientError as exc:
+        if (exc.response or {}).get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+            return None
+        raise
+
+
 async def _gateway_key() -> str | None:
-    """The gateway key, read once and cached; a failed/missing read is retried after 5 min."""
+    """The gateway key, re-read hourly (rotation needs no restart); a failed/missing read is
+    retried after 5 min."""
     global _key, _key_checked_at
-    if _key or time.monotonic() - _key_checked_at < _KEY_RETRY_S and _key_checked_at:
+    if _key_checked_at and time.monotonic() - _key_checked_at < (_KEY_TTL_S if _key else _KEY_RETRY_S):
         return _key
     _key_checked_at = time.monotonic()
     name = f"lightbulb/{settings.ENVIRONMENT or 'dev'}/vercel-ai-gateway"
     try:
-        sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-        _key = ((await run_in_thread(sm.get_secret_value, SecretId=name)).get("SecretString") or "").strip() or None
+        _key = await _off(_read_secret, name)
     except Exception as exc:  # noqa: BLE001 -- missing secret == feature off
         logger.info("Jev disabled: %s unreadable (%s)", name, type(exc).__name__)
         _key = None
@@ -188,8 +222,6 @@ def _tool_names(config: dict, facts: dict) -> list[str]:
 
 async def _card_parts(owner_id: str, agent_id: str, display_name: str) -> tuple[str, str, str]:
     """``(head, soul text, tools)`` -- every source optional; a failure degrades, never raises."""
-    import json
-
     prefix = hermes_profiles.profile_prefix(owner_id, agent_id)
     agent: dict = {}
     persona = what = ""
@@ -200,18 +232,19 @@ async def _card_parts(owner_id: str, agent_id: str, display_name: str) -> tuple[
     except Exception as exc:  # noqa: BLE001
         logger.info("Jev card: paperclip agent unavailable (%s)", type(exc).__name__)
     try:
-        raw = await run_in_thread(hermes_profiles.get_owner_object, f"{prefix}SOUL.md")
+        raw = await _off(_read, f"{prefix}SOUL.md")
         if raw:
             persona, what = _soul_parts(raw.decode())
     except Exception as exc:  # noqa: BLE001
         logger.info("Jev card: SOUL.md unavailable (%s)", type(exc).__name__)
     try:
         # config.yaml only -- read_profile_config never opens .env (the secrets file).
-        config = await run_in_thread(hermes_profiles.read_profile_config, owner_id, agent_id) or {}
+        raw = await _off(_read, f"{prefix}config.yaml")
+        config = (yaml.safe_load(raw) if raw else None) or {}
     except Exception as exc:  # noqa: BLE001
         logger.info("Jev card: config.yaml unavailable (%s)", type(exc).__name__)
     try:
-        raw = await run_in_thread(hermes_profiles.get_owner_object, f"{prefix}{hermes_profiles.FACTS_FILENAME}")
+        raw = await _off(_read, f"{prefix}{hermes_profiles.FACTS_FILENAME}")
         facts = json.loads(raw) if raw else {}
     except Exception as exc:  # noqa: BLE001
         logger.info("Jev card: facts unavailable (%s)", type(exc).__name__)
@@ -238,9 +271,7 @@ async def agent_card(owner_id: str, agent_id: str, display_name: str, recency: s
     connection or a facts write bumps it), with a 10-minute backstop for Paperclip-only edits."""
     revision = None
     try:
-        raw = await run_in_thread(
-            hermes_profiles.get_owner_object, f"{hermes_profiles.profile_prefix(owner_id, agent_id)}.revision"
-        )
+        raw = await _off(_read, f"{hermes_profiles.profile_prefix(owner_id, agent_id)}.revision")
         revision = raw.decode() if raw else None
     except Exception as exc:  # noqa: BLE001
         logger.info("Jev card: .revision unavailable (%s)", type(exc).__name__)
@@ -330,8 +361,16 @@ async def _decide_for_message(
     answers = await decide(state, questions)
     decided_at = datetime.now(timezone.utc).isoformat()
     who, placement = (answers or {}).get("who") or {}, (answers or {}).get("placement") or {}
-    if not who.get("choice") or not placement.get("choice"):
+    if answers is None:
         return {"fallback": True, "quietChannel": quiet, "candidates": candidates, "decidedAt": decided_at}
+    if who.get("choice") not in (*candidates, "none") or placement.get("choice") not in ("main", "thread"):
+        return {
+            "fallback": True,
+            "reason": "invalid_choice",
+            "quietChannel": quiet,
+            "candidates": candidates,
+            "decidedAt": decided_at,
+        }
     return {
         "who": who["choice"],
         "whoP": who.get("probabilities") or {},
@@ -347,19 +386,27 @@ async def _decide_for_message(
 async def shadow(
     meta: dict, agent_id: str, message: dict, *, latest: dict, members: list[dict], history: list[dict]
 ) -> None:
-    """Record (once per message) and meter what Jev would pick. Never raises: shadow only."""
+    """Record (once per message) and meter what Jev would pick. Never raises: shadow only.
+    Latency is inline by design (shadow); a retried delivery re-meters, which is accepted."""
     try:
-        decision = await messaging_repo.get_decision(meta["roomId"], message["messageId"])
-        if decision is None:
+        # Disabled means NO work: no cards, no S3/Paperclip reads, no DECISION row.
+        if not await _gateway_key():
+            put_metric("messaging.jev.decision", dimensions={"outcome": "disabled"})
+            return
+        room_id, message_id = meta["roomId"], message["messageId"]
+        if await messaging_repo.claim_decision(room_id, message_id):
             decision = await asyncio.wait_for(
                 _decide_for_message(meta, message, latest, members, history), _SHADOW_BUDGET_S
             )
-            if not await messaging_repo.put_decision_if_absent(meta["roomId"], message["messageId"], decision):
-                # Another candidate's consumer won the race; meter against the stored row.
-                decision = await messaging_repo.get_decision(meta["roomId"], message["messageId"]) or decision
+            await messaging_repo.put_decision(room_id, message_id, decision)
+        else:
+            # Another candidate's consumer holds the claim: never call Jev twice for one message.
+            decision = await messaging_repo.get_decision(room_id, message_id) or {"pending": True}
         who = decision.get("who")
         picked = (
-            "fallback"
+            "pending"
+            if decision.get("pending")
+            else "fallback"
             if decision.get("fallback")
             else "none"
             if who == "none"
@@ -369,7 +416,10 @@ async def shadow(
         )
         put_metric(
             "messaging.jev.shadow",
-            dimensions={"picked": picked, "quiet": "true" if decision.get("quietChannel") else "false"},
+            dimensions={
+                "picked": picked,
+                "quiet": "unknown" if picked == "pending" else "true" if decision.get("quietChannel") else "false",
+            },
         )
     except Exception:  # noqa: BLE001 -- shadow must never affect dispatch
         logger.warning("Jev shadow decision failed", exc_info=True)

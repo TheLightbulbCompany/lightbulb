@@ -297,7 +297,9 @@ def gate_ambient(body: dict, agent_name: str, agent_role: str, *, converse=None)
             return _gate_failed("stop_reason")
         verdict = "".join(c.get("text", "") for c in res["output"]["message"]["content"]).strip().upper()
     except Exception as exc:  # noqa: BLE001
-        code = (getattr(exc, "response", None) or {}).get("Error", {}).get("Code")
+        response = getattr(exc, "response", None)
+        error = response.get("Error") if isinstance(response, dict) else None
+        code = error.get("Code") if isinstance(error, dict) else None
         log.warning("ambient gate call raised: %s", exc)
         return _gate_failed(code or type(exc).__name__)
     if verdict == "IGNORE":

@@ -51,6 +51,10 @@ class _Throttled(Exception):
     response = {"Error": {"Code": "ThrottlingException", "Message": "billing is not set up"}}
 
 
+class _OddResponse(Exception):
+    response = "not-a-dict"
+
+
 def test_a_failed_gate_fails_open_and_logs_why(caplog):
     """The gate always calls Bedrock whatever the owner's provider, so on an OpenRouter,
     ChatGPT or BYO workspace (or one with no credits) it can never answer. Dropping the
@@ -67,6 +71,7 @@ def test_a_failed_gate_fails_open_and_logs_why(caplog):
         (_converse("DISPATCH", stop="max_tokens"), "stop_reason"),
         (raises(_Throttled()), "ThrottlingException"),
         (raises(RuntimeError("timeout")), "RuntimeError"),
+        (raises(_OddResponse()), "_OddResponse"),
     ]
     for converse, reason in cases:
         caplog.clear()

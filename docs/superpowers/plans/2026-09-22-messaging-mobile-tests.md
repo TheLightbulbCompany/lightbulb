@@ -72,9 +72,35 @@ Sources: messaging HTTP API (`/messaging/rooms/*/messages?afterSeq=`), run ledge
 - Ships: projector via dev deploy on merge; mobile/shared via OTA on merge. Prod projector
   needs a prod dispatch → owner go-ahead.
 
-## Phase 5 — Test-suite proposal (doc for owner sign-off, no build)
-Split: hermetic per-PR (unit/contract: dispatch targets, projector fanout, useRooms reducer,
-bridge lock behaviour) vs on-demand dev (concurrency harness, journey spec, push delivery).
+## Phase 5 — Test-suite proposal (FOR SIGN-OFF, nothing built)
+
+**Today.** Every PR runs, path-filtered: backend pytest (~9k) plus 4 Lambda suites; frontend
+lint, tsc and vitest; mobile/shared lint and jest on the self-hosted Mac; infra (bridge
+tests, gate tests, image smokes, synth). On demand only: `e2e-dev.yml` (Playwright against
+dev). Nothing runs after a dev deploy. Evidence of the gap: `containerHealthy` read retired
+field names, so every E2E wait timed out, and nobody noticed because nothing ran it.
+
+**Proposal: three tiers, split by cost, not by code area.**
+1. **Per PR, hermetic (keep; small additions).** Anything with no live runtime, no LLM, no
+   AWS. Add only where a real bug escaped: a contract test pinning the `/container/status`
+   field names the E2E helpers read (the drift above), and a bridge unit test that two turns
+   for one agent serialize while two agents don't (locks today's measured behaviour so a
+   change is deliberate).
+2. **After every dev deploy, no LLM, about 2 min (NEW; the main ask).** One Playwright smoke
+   against dev with a persistent dev test account and human-only rooms: sign-in → room list
+   → send → live `room.message.available` moves the room to the top → read cursor. It proves
+   the deploy works end to end with zero model spend, so it can run on every deploy. It
+   would have caught the containerHealthy rot and the dead-deploy-queue class. A failure
+   pages the coordinator; it does not block.
+3. **On demand, spends inference (keep on-demand).** `workspace.spec.ts` journey (fresh
+   workspace, free tier) and `@concurrency` (now excluded from the default `e2e-dev.yml`
+   run). Run before a prod dispatch that touches messaging, provisioning or the bridge.
+   Concurrency runs in an EXISTING paid workspace so it never draws on the shared
+   free-model cap.
+
+**Decisions needed:** (a) OK to add tier 2 as a `deploy.yml` post-dev job, or a separate
+workflow triggered by it (no prod gating)? (b) Which persistent dev account owns the tier 2
+rooms? (c) OK for tier 3 to run in a named paid workspace, and whose?
 
 ## Overlaps to coordinate
 - `packages/shared`, `apps/mobile` — onboarding session (e765df).

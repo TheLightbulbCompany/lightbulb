@@ -133,6 +133,14 @@ def ws_mocks():
     clerk_delete_user = AsyncMock(return_value=None)
     clerk_delete_org = AsyncMock(return_value=None)
     clerk_memberships = AsyncMock(return_value=[])
+    clerk_org_members = AsyncMock(return_value=[])
+    openrouter_get = AsyncMock(return_value=None)
+    openrouter_retire = AsyncMock(return_value=True)
+    openrouter_delete = AsyncMock(return_value=None)
+    join_link_get = AsyncMock(return_value={"org_id": ORG_ID, "token_hash": "h"})
+    join_link_delete = AsyncMock(return_value=None)
+    fast_gate_instance = MagicMock()
+    fast_gate_instance.delete_row = AsyncMock(return_value=None)
 
     _patches = [
         ("core.services.workspace_wipe.container_repo.get_by_owner_id", container_get),
@@ -172,6 +180,13 @@ def ws_mocks():
         ("core.services.workspace_wipe.clerk_admin.delete_user", clerk_delete_user),
         ("core.services.workspace_wipe.clerk_admin.delete_organization", clerk_delete_org),
         ("core.services.workspace_wipe.clerk_admin.list_user_organizations", clerk_memberships),
+        ("core.services.workspace_wipe.clerk_admin.list_organization_members", clerk_org_members),
+        ("core.services.workspace_wipe.openrouter_key_repo.get", openrouter_get),
+        ("core.services.workspace_wipe.openrouter_key_repo.mark_retiring", openrouter_retire),
+        ("core.services.workspace_wipe._delete_openrouter_key", openrouter_delete),
+        ("core.services.workspace_wipe.workspace_join_repo.get_link", join_link_get),
+        ("core.services.workspace_wipe.workspace_join_repo.delete_link", join_link_delete),
+        ("core.services.workspace_wipe.MetronomeFastGate", MagicMock(return_value=fast_gate_instance)),
     ]
     with ExitStack() as _stack:
         for _target, _new in _patches:
@@ -204,6 +219,12 @@ def ws_mocks():
             clerk_delete_user=clerk_delete_user,
             clerk_delete_org=clerk_delete_org,
             clerk_memberships=clerk_memberships,
+            clerk_org_members=clerk_org_members,
+            openrouter_get=openrouter_get,
+            openrouter_retire=openrouter_retire,
+            openrouter_delete=openrouter_delete,
+            join_link_delete=join_link_delete,
+            fast_gate_delete=fast_gate_instance.delete_row,
         )
 
 
@@ -323,11 +344,13 @@ async def test_execute_preserves_billing_by_default(ws_mocks):
     ws_mocks.metronome_archive.assert_not_awaited()
     ws_mocks.company_stripe_release.assert_not_awaited()
     ws_mocks.billing_delete.assert_not_awaited()
+    ws_mocks.fast_gate_delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_billing_override_requires_the_phrase(ws_mocks):
-    preview = await preview_workspace_wipe(ORG_ID, include_billing=True)
+    all_layers = ["runtime", "paperclip", "messaging", "secrets", "identity", "billing"]
+    preview = await preview_workspace_wipe(ORG_ID, layers=all_layers, include_billing=True)
     with pytest.raises(BillingPreservedError):
         await wipe_workspace(
             ORG_ID,
@@ -350,6 +373,7 @@ async def test_billing_override_requires_the_phrase(ws_mocks):
         expected_fingerprint=preview.fingerprint,
     )
     assert report.billing_preserved is False
+    ws_mocks.fast_gate_delete.assert_awaited_once_with(ORG_ID)
     ws_mocks.stripe_delete.assert_awaited_once_with(ORG_ID)
     ws_mocks.metronome_archive.assert_awaited_once_with("met_ws")
     ws_mocks.billing_delete.assert_awaited_once_with(ORG_ID)
@@ -408,6 +432,179 @@ async def test_layer_selection_skips_unselected(ws_mocks):
     ws_mocks.paperclip_company_delete.assert_not_awaited()
     ws_mocks.clerk_delete_org.assert_not_awaited()
     assert any(s.system == "runtime" and s.status == "skipped" for s in report.steps)
+
+
+async def _preview_then_wipe(**kwargs):
+    preview = await preview_workspace_wipe(ORG_ID, **kwargs)
+    return preview, await wipe_workspace(
+        ORG_ID, actor_admin_id="admin_1", confirm_org=ORG_ID, expected_fingerprint=preview.fingerprint, **kwargs
+    )
+
+
+def _step(report, system, action=None):
+    return next(s for s in report.steps if s.system == system and (action is None or s.action == action))
+
+
+@pytest.mark.asyncio
+async def test_members_come_from_clerk_when_paperclip_rows_are_gone(ws_mocks):
+    """A prior user-keyed half-wipe deleted the paperclip rows: Clerk still
+    names the members, so their accounts are still found and deleted."""
+    ws_mocks.paperclip_instance.list_by_org_id.return_value = []
+    ws_mocks.paperclip_instance.get_org_company_id.return_value = None
+    ws_mocks.clerk_org_members.return_value = [{"user_id": MEMBER_A, "email": "a@example.com"}]
+
+    _, report = await _preview_then_wipe()
+
+    ws_mocks.clerk_delete_user.assert_awaited_once_with(MEMBER_A)
+    ws_mocks.user_delete.assert_awaited_once_with(MEMBER_A)
+    assert any(c.args == (MEMBER_A,) for c in ws_mocks.secrets_delete.await_args_list)
+    assert report.members == [
+        {"user_id": MEMBER_A, "email": "a@example.com", "action": "delete_account", "other_orgs": []}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rerun_after_clerk_user_failure_finishes(ws_mocks):
+    ws_mocks.clerk_org_members.return_value = [{"user_id": MEMBER_A}, {"user_id": MEMBER_B}]
+    ws_mocks.clerk_delete_user.side_effect = lambda uid: (
+        (_ for _ in ()).throw(RuntimeError("clerk 500")) if uid == MEMBER_B else None
+    )
+
+    _, first = await _preview_then_wipe()
+    assert _step(first, "clerk_user").status == "failed"
+    # The org is KEPT so its member list stays recoverable for the re-run.
+    assert _step(first, "clerk_org").status == "failed"
+    ws_mocks.clerk_delete_org.assert_not_awaited()
+
+    # Second run: paperclip rows are gone; Clerk still lists B.
+    ws_mocks.paperclip_instance.list_by_org_id.return_value = []
+    ws_mocks.clerk_org_members.return_value = [{"user_id": MEMBER_B}]
+    ws_mocks.clerk_delete_user.side_effect = None
+    ws_mocks.clerk_delete_user.reset_mock()
+    _, second = await _preview_then_wipe()
+
+    ws_mocks.clerk_delete_user.assert_awaited_once_with(MEMBER_B)
+    ws_mocks.clerk_delete_org.assert_awaited_once_with(ORG_ID)
+    assert _step(second, "clerk_org").status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_shared_member_keeps_account_unless_opted_in(ws_mocks):
+    ws_mocks.clerk_memberships.side_effect = lambda uid, **_: (
+        [{"id": ORG_ID}, {"id": "org_other"}] if uid == MEMBER_B else [{"id": ORG_ID}]
+    )
+
+    preview, report = await _preview_then_wipe()
+
+    by_uid = {m["user_id"]: m for m in preview.members}
+    assert by_uid[MEMBER_A]["action"] == "delete_account"
+    assert by_uid[MEMBER_B] == {
+        "user_id": MEMBER_B,
+        "email": "b@example.com",
+        "action": "remove_membership",
+        "other_orgs": ["org_other"],
+    }
+    assert "remove membership only (also in org_other)" in _step(preview, "clerk_user").detail
+    ws_mocks.clerk_delete_user.assert_awaited_once_with(MEMBER_A)
+    ws_mocks.user_delete.assert_awaited_once_with(MEMBER_A)
+    ws_mocks.paperclip_user_delete_fn.assert_awaited_once()
+    assert ws_mocks.paperclip_user_delete_fn.await_args.kwargs["paperclip_user_id"] == "pc_a"
+    assert all(c.args != (MEMBER_B,) for c in ws_mocks.secrets_delete.await_args_list)
+    # B's org-scoped paperclip row still goes.
+    ws_mocks.paperclip_instance.delete.assert_any_await(MEMBER_B)
+    ws_mocks.clerk_delete_org.assert_awaited_once_with(ORG_ID)
+
+    ws_mocks.clerk_delete_user.reset_mock()
+    await _preview_then_wipe(delete_shared_members=True)
+    assert {c.args[0] for c in ws_mocks.clerk_delete_user.await_args_list} == {MEMBER_A, MEMBER_B}
+
+
+@pytest.mark.asyncio
+async def test_vendor_org_is_refused(ws_mocks):
+    from core.config import settings
+
+    with patch.object(settings, "VENDOR_ORG_ID", ORG_ID):
+        with pytest.raises(WorkspaceWipeError, match="vendor"):
+            await preview_workspace_wipe(ORG_ID)
+        with pytest.raises(WorkspaceWipeError, match="vendor"):
+            await wipe_workspace(ORG_ID, actor_admin_id="admin_1", confirm_org=ORG_ID, expected_fingerprint="x")
+    ws_mocks.delete_runtime.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_acting_admin_member_is_refused(ws_mocks):
+    preview = await preview_workspace_wipe(ORG_ID)
+    with pytest.raises(WorkspaceWipeError, match="member"):
+        await wipe_workspace(
+            ORG_ID, actor_admin_id=MEMBER_A, confirm_org=ORG_ID, expected_fingerprint=preview.fingerprint
+        )
+    ws_mocks.delete_runtime.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_openrouter_active_key_is_retired_and_flagged_for_rerun(ws_mocks):
+    ws_mocks.openrouter_get.return_value = {"owner_id": ORG_ID, "state": "active", "secret_name": "s"}
+    _, report = await _preview_then_wipe()
+    ws_mocks.openrouter_retire.assert_awaited_once_with(ORG_ID)
+    ws_mocks.openrouter_delete.assert_not_awaited()
+    step = _step(report, "openrouter_key")
+    assert step.status == "failed"
+    assert "re-run" in step.error
+
+
+@pytest.mark.asyncio
+async def test_openrouter_disabled_key_row_and_secret_deleted(ws_mocks):
+    ws_mocks.openrouter_get.return_value = {"owner_id": ORG_ID, "state": "disabled", "secret_name": "s"}
+    _, report = await _preview_then_wipe()
+    ws_mocks.openrouter_delete.assert_awaited_once_with(ORG_ID)
+    assert _step(report, "openrouter_key").status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_binds_layers_billing_and_shared_opt_in(ws_mocks):
+    base = (await preview_workspace_wipe(ORG_ID)).fingerprint
+    assert (await preview_workspace_wipe(ORG_ID, layers=["messaging"])).fingerprint != base
+    assert (await preview_workspace_wipe(ORG_ID, delete_shared_members=True)).fingerprint != base
+    all_layers = ["runtime", "paperclip", "messaging", "secrets", "identity", "billing"]
+    assert (await preview_workspace_wipe(ORG_ID, layers=all_layers)).fingerprint != (
+        await preview_workspace_wipe(ORG_ID, layers=all_layers, include_billing=True)
+    ).fingerprint
+    # Executing different layers than the confirmed preview is drift.
+    with pytest.raises(StaleWorkspacePreviewError):
+        await wipe_workspace(
+            ORG_ID, actor_admin_id="admin_1", confirm_org=ORG_ID, layers=["messaging"], expected_fingerprint=base
+        )
+
+
+@pytest.mark.asyncio
+async def test_execute_requires_a_fingerprint(ws_mocks):
+    for fp in ("", None, "  "):
+        with pytest.raises(WorkspaceWipeError, match="fingerprint"):
+            await wipe_workspace(ORG_ID, actor_admin_id="admin_1", confirm_org=ORG_ID, expected_fingerprint=fp)
+    ws_mocks.delete_runtime.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_org_scoped_leftovers_are_deleted(ws_mocks):
+    await _preview_then_wipe()
+    ws_mocks.join_link_delete.assert_awaited_once_with(ORG_ID)
+    ws_mocks.paperclip_instance.delete.assert_any_await(f"__org_create_claim__:{ORG_ID}")
+    # The org's own pending brief is attempted even though members exist.
+    ws_mocks.paperclip_instance.delete_pending_brief.assert_any_await(ORG_ID)
+
+
+@pytest.mark.asyncio
+async def test_messaging_skips_foreign_room_and_continues(ws_mocks):
+    with patch(
+        "core.services.workspace_wipe.messaging_repo.get_room",
+        new=AsyncMock(side_effect=lambda rid: {"ownerId": "org_vendor"} if rid == "room-1" else {"ownerId": ORG_ID}),
+    ):
+        _, report = await _preview_then_wipe()
+    ws_mocks.messaging_delete_room.assert_awaited_once_with("room-2")
+    ws_mocks.messaging_delete_owner.assert_awaited_once_with(ORG_ID)
+    step = _step(report, "messaging")
+    assert step.status == "ok"
+    assert "room-1" in step.detail
 
 
 # ---------------------------------------------------------------------------

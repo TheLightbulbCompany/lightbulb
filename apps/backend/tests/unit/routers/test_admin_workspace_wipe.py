@@ -21,6 +21,7 @@ from core.auth import AuthContext, get_current_user
 from core.services.workspace_wipe import (
     StaleWorkspacePreviewError,
     WorkspaceConfirmMismatchError,
+    WorkspaceWipeError,
     WorkspaceWipeReport,
     WipeStep,
 )
@@ -82,7 +83,7 @@ class TestWorkspaceWipePreview:
             )
         assert res.status_code == 200
         assert res.json()["fingerprint"] == "fp123"
-        mock_preview.assert_awaited_once_with(ORG_ID, layers=None, include_billing=False)
+        mock_preview.assert_awaited_once_with(ORG_ID, layers=None, include_billing=False, delete_shared_members=False)
         mock_audit_repo.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -114,6 +115,7 @@ class TestWorkspaceWipeExecute:
             include_billing=False,
             confirm_billing=None,
             expected_fingerprint="fp123",
+            delete_shared_members=False,
         )
         mock_audit_repo.assert_awaited_once()
         kwargs = mock_audit_repo.await_args.kwargs
@@ -133,7 +135,7 @@ class TestWorkspaceWipeExecute:
                 f"/api/v1/admin/workspaces/{ORG_ID}/wipe", json=self._body(confirm_org="org_other")
             )
         assert res.status_code == 400
-        assert res.json()["detail"] == "workspace_mismatch"
+        assert res.json()["detail"].startswith("workspace_mismatch: ")
         mock_wipe.assert_awaited_once()
         mock_audit_repo.assert_not_awaited()
 
@@ -145,8 +147,30 @@ class TestWorkspaceWipeExecute:
         ):
             res = await async_client.post(f"/api/v1/admin/workspaces/{ORG_ID}/wipe", json=self._body())
         assert res.status_code == 409
-        assert "stale_preview" in res.json()["detail"]
+        assert res.json()["detail"].startswith("stale_preview: ")
         mock_audit_repo.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_fingerprint_400_and_no_wipe(self, async_client, admin_env, mock_audit_repo):
+        with patch("routers.admin.wipe_workspace", new=AsyncMock()) as mock_wipe:
+            res = await async_client.post(
+                f"/api/v1/admin/workspaces/{ORG_ID}/wipe", json=self._body(preview_fingerprint="  ")
+            )
+        assert res.status_code == 400
+        assert res.json()["detail"].startswith("workspace_wipe_refused: ")
+        mock_wipe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refusal_detail_is_code_then_message(self, async_client, admin_env, mock_audit_repo):
+        with patch(
+            "routers.admin.wipe_workspace",
+            new=AsyncMock(side_effect=WorkspaceWipeError("org_x is the vendor (Lightbulb) org; refusing.")),
+        ):
+            res = await async_client.post(
+                f"/api/v1/admin/workspaces/{ORG_ID}/wipe", json=self._body(delete_shared_members=True)
+            )
+        assert res.status_code == 400
+        assert res.json()["detail"] == "workspace_wipe_refused: org_x is the vendor (Lightbulb) org; refusing."
 
     @pytest.mark.asyncio
     async def test_partial_failure_still_200_with_audit(self, async_client, admin_env, mock_audit_repo):

@@ -111,6 +111,13 @@ class WorkspaceWipePreviewRequest(BaseModel):
         False,
         description="Also enumerate the billing layer (shown preserved/skipped unless set).",
     )
+    delete_shared_members: bool = Field(
+        False,
+        description=(
+            "Also delete the accounts of members who belong to another org. Default: they keep "
+            "their account and only lose this workspace's membership."
+        ),
+    )
 
 
 class WorkspaceWipeConfirmRequest(BaseModel):
@@ -133,6 +140,13 @@ class WorkspaceWipeConfirmRequest(BaseModel):
     preview_fingerprint: str = Field(
         ...,
         description="Fingerprint from the preview report being confirmed; execute aborts on drift.",
+    )
+    delete_shared_members: bool = Field(
+        False,
+        description=(
+            "Also delete the accounts of members who belong to another org. Default: they keep "
+            "their account and only lose this workspace's membership."
+        ),
     )
 
 
@@ -712,7 +726,12 @@ async def admin_workspace_wipe_preview(
 ):
     body = body or WorkspaceWipePreviewRequest()
     try:
-        report = await preview_workspace_wipe(org_id, layers=body.layers, include_billing=body.include_billing)
+        report = await preview_workspace_wipe(
+            org_id,
+            layers=body.layers,
+            include_billing=body.include_billing,
+            delete_shared_members=body.delete_shared_members,
+        )
     except WorkspaceWipeError as e:
         raise HTTPException(status_code=400, detail=f"workspace_wipe_refused: {e}")
     except BootstrapAccountProtectedError:
@@ -738,6 +757,10 @@ async def admin_workspace_wipe_execute(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
+    # Error details are "<code>: <message>" (bootstrap_account_protected has no
+    # message); the admin UI keys on the code before the separator.
+    if not body.preview_fingerprint.strip():
+        raise HTTPException(status_code=400, detail="workspace_wipe_refused: preview_fingerprint required")
     started = time.monotonic()
     try:
         report = await wipe_workspace(
@@ -748,11 +771,12 @@ async def admin_workspace_wipe_execute(
             include_billing=body.include_billing,
             confirm_billing=body.confirm_billing,
             expected_fingerprint=body.preview_fingerprint,
+            delete_shared_members=body.delete_shared_members,
         )
     except StaleWorkspacePreviewError as e:
         raise HTTPException(status_code=409, detail=f"stale_preview: {e}")
-    except WorkspaceConfirmMismatchError:
-        raise HTTPException(status_code=400, detail="workspace_mismatch")
+    except WorkspaceConfirmMismatchError as e:
+        raise HTTPException(status_code=400, detail=f"workspace_mismatch: {e}")
     except WorkspaceWipeError as e:
         raise HTTPException(status_code=400, detail=f"workspace_wipe_refused: {e}")
     except BootstrapAccountProtectedError:

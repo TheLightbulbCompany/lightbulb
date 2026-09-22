@@ -100,6 +100,10 @@ class MetronomeFastGate:
         resp = await run_in_thread(_table().get_item, Key={"owner_id": owner_id}, ConsistentRead=True)
         return resp.get("Item")
 
+    async def delete_row(self, owner_id: str) -> None:
+        """Remove the owner's projection row — the workspace wipe's billing layer only."""
+        await run_in_thread(_table().delete_item, Key={"owner_id": owner_id})
+
     async def set_balance(self, owner_id: str, *, remaining_microcents: int) -> None:
         """Authoritative set (from a Metronome webhook or a fresh balance read).
 

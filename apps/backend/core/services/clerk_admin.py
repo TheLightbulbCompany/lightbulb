@@ -276,7 +276,7 @@ async def get_organization(org_id: str) -> dict | None:
     return response.json()
 
 
-async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict]:
+async def list_user_organizations(user_id: str, *, limit: int = 25, strict: bool = False) -> list[dict]:
     """Return the orgs a Clerk user belongs to.
 
     Each element: {"id": "org_...", "slug": "...", "name": "...", "role": "org:admin" | "org:member" | ...}
@@ -287,6 +287,10 @@ async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict
     Uses Clerk Backend API GET /v1/users/{user_id}/organization_memberships,
     which returns an envelope {data: [...memberships], total_count: N}. Each
     membership has shape {id, role, organization: {id, slug, name, ...}, ...}.
+
+    ``strict=True`` RAISES on a network / HTTP error instead of returning [] —
+    for callers (the workspace wipe) where "no other orgs" decides whether an
+    account is deleted, so a Clerk blip must fail closed.
     """
     if not settings.CLERK_SECRET_KEY:
         return []
@@ -301,12 +305,16 @@ async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict
                 params=params,
             )
     except Exception as e:  # noqa: BLE001
+        if strict:
+            raise
         logger.warning("clerk_admin.list_user_organizations network error: %s", e)
         return []
 
     if response.status_code == 404:
         return []
     if response.status_code >= 400:
+        if strict:
+            raise RuntimeError(f"clerk_admin.list_user_organizations failed: http_{response.status_code}")
         logger.warning("clerk_admin.list_user_organizations HTTP %s", response.status_code)
         return []
 

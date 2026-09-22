@@ -25,11 +25,22 @@ This module snapshots by ORG id instead:
 Layers (each independently selectable): ``runtime`` (gate tokens, AgentCore
 runtime + S3 profiles + containers row, provisioning workflows,
 usage counters), ``paperclip`` (company, per-member Aurora users, per-member
-DDB rows + pending briefs, agent-key secrets), ``messaging`` (room partitions
-+ owner partition), ``secrets`` (owner secrets, integrations, OAuth tokens,
-agent email, slack installs), ``identity`` (per-member users rows, slug,
-per-member Clerk users, Clerk org — ALWAYS LAST), ``billing`` (Metronome,
-Stripe customer + company-stripe deauthorize, billing row).
+DDB rows + pending briefs + org-create claim, agent-key secrets), ``messaging``
+(room partitions + owner partition), ``secrets`` (owner secrets, OpenRouter
+key, integrations, OAuth tokens, agent email, slack installs), ``identity``
+(per-member users rows, slug, join link, per-member Clerk users, Clerk org —
+ALWAYS LAST), ``billing`` (Metronome + fast-gate row, Stripe customer +
+company-stripe deauthorize, billing row).
+
+Members are the union of the org's Clerk memberships and its paperclip rows,
+read ONCE into the snapshot before any delete, so a re-run after a partial
+failure still finds everyone (and the Clerk org is kept while any member delete
+failed). A member who also belongs to another org keeps their account — only
+this org's membership goes, with the org — unless ``delete_shared_members``.
+The vendor org (``VENDOR_ORG_ID``) and an org the acting admin belongs to are
+refused. The managed OpenRouter key is retired (entitlement_teardown's path)
+and its row + secrets deleted only once the settlement worker has disabled it;
+until then that step fails and asks for a re-run.
 
 Billing/Stripe default PRESERVE: the billing layer runs only with
 ``include_billing=True`` AND ``confirm_billing="DELETE-BILLING"``. Anything
@@ -66,9 +77,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
+import boto3
+
 from core.auth import is_org_owner_id
 from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes
+from core.billing.metronome_fast_gate import MetronomeFastGate
 from core.config import settings
+from core.dynamodb import get_table, run_in_thread
 from core.repositories import (
     agent_email_repo,
     billing_repo,
@@ -76,15 +91,16 @@ from core.repositories import (
     container_repo,
     integrations_repo,
     messaging_repo,
+    openrouter_key_repo,
     provisioning_workflow_repo,
     slack_installs_repo,
     usage_repo,
     user_repo,
+    workspace_join_repo,
 )
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.repositories.paperclip_repo import PaperclipRepo, _org_create_claim_key
 from core.services import clerk_admin, company_stripe
 from core.services.account_wipe import (
-    BootstrapAccountProtectedError,
     WipeReport,
     WipeStep,
     _archive_metronome_customer,
@@ -99,12 +115,12 @@ from core.services.account_wipe import (
 from core.services.billing_service import delete_stripe_customer
 from core.services.hermes_provisioning import delete_workspace_runtime
 from core.services.oauth_service import PURPOSE_HARNESS, revoke_user_oauth
-from core.services.owner_secret_sweep import delete_owner_secrets, list_owner_secret_names
+from core.services.owner_secret_sweep import _list_names_with_prefix, delete_owner_secrets, list_owner_secret_names
 from core.services.paperclip_api_key import (
     delete_owner_agent_key_secrets,
     list_owner_agent_key_secret_names,
 )
-from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS, delete_paperclip_user
+from core.services.paperclip_user_delete import delete_paperclip_user
 
 logger = logging.getLogger(__name__)
 
@@ -184,8 +200,15 @@ class WorkspaceSnapshot:
     workspace_name: str | None
     container: dict | None
     billing: dict | None
+    #: This org's paperclip-companies rows (by-org-id GSI) — the only rows the
+    #: wipe deletes by user id, so a member's row for ANOTHER org is never touched.
     member_rows: list[dict]
-    member_emails: dict[str, str]
+    #: Every person in the workspace: the union of Clerk memberships and
+    #: paperclip rows, read ONCE before any delete. Each carries user_id,
+    #: email, emails (every known address, for the bootstrap guard),
+    #: paperclip_user_id and other_orgs — so no step re-derives its member list
+    #: from rows an earlier step deletes, and a re-run still finds them via Clerk.
+    members: list[dict]
     company_id: str | None
     room_ids: list[str]
     secret_names: list[str]
@@ -196,36 +219,81 @@ class WorkspaceSnapshot:
     slug_row: dict | None
     open_workflows: list[dict]
     gate_hashes: list[str]
+    join_link: dict | None = None
+    openrouter_row: dict | None = None
+    # The options this snapshot was taken FOR — part of the fingerprint, so a
+    # preview binds exactly what executes.
+    layers: tuple[str, ...] = ()
+    include_billing: bool = False
+    delete_shared_members: bool = False
     fingerprint: str = ""
+    #: Execute-time: member ids (and "paperclip_company") whose delete failed.
+    #: Steps that would destroy the handle a re-run needs check this first.
+    unfinished: set[str] = field(default_factory=set)
 
 
 def member_user_ids(snapshot: WorkspaceSnapshot) -> list[str]:
-    """Deduped member user ids, snapshot order."""
-    return list(dict.fromkeys(r.get("user_id") for r in snapshot.member_rows if r.get("user_id")))
+    """Every member user id, snapshot order."""
+    return [m["user_id"] for m in snapshot.members]
 
 
-async def _read_workspace_snapshot(org_id: str) -> WorkspaceSnapshot:
+def deletable_member_ids(snapshot: WorkspaceSnapshot) -> list[str]:
+    """Members whose ACCOUNT this wipe deletes. A member who also belongs to
+    another org keeps their account (only this org's membership goes, with the
+    org itself) unless ``delete_shared_members`` opted in."""
+    return [m["user_id"] for m in snapshot.members if snapshot.delete_shared_members or not m["other_orgs"]]
+
+
+async def _read_members(org_id: str, member_rows: list[dict]) -> list[dict]:
+    rows = {r["user_id"]: r for r in member_rows if r.get("user_id")}
+    clerk = {m["user_id"]: m for m in await clerk_admin.list_organization_members(org_id) if m.get("user_id")}
+    members: list[dict] = []
+    for uid in dict.fromkeys([*rows, *clerk]):
+        row = rows.get(uid, {})
+        try:
+            user_row = await user_repo.get(uid)
+        except Exception:  # noqa: BLE001 -- best-effort; the other two sources still apply
+            user_row = None
+        emails = [
+            e
+            for e in dict.fromkeys(
+                [row.get("paperclip_email"), (clerk.get(uid) or {}).get("email"), (user_row or {}).get("email")]
+            )
+            if e
+        ]
+        # strict: "no other orgs" decides an account delete, so a Clerk blip
+        # must fail the snapshot rather than read as "sole workspace".
+        orgs = await clerk_admin.list_user_organizations(uid, strict=True)
+        members.append(
+            {
+                "user_id": uid,
+                "email": emails[0] if emails else "",
+                "emails": emails,
+                "paperclip_user_id": row.get("paperclip_user_id") or "",
+                "other_orgs": [o["id"] for o in orgs if o.get("id") and o["id"] != org_id],
+            }
+        )
+    return members
+
+
+async def _read_workspace_snapshot(
+    org_id: str,
+    *,
+    layers: tuple[str, ...] = DEFAULT_LAYERS,
+    include_billing: bool = False,
+    delete_shared_members: bool = False,
+) -> WorkspaceSnapshot:
     container = await container_repo.get_by_owner_id(org_id)
     billing = await billing_repo.get_by_owner_id(org_id)
     paperclip_repo = PaperclipRepo(table_name="paperclip-companies")
     member_rows = await paperclip_repo.list_by_org_id(org_id)
-    company_id = await paperclip_repo.get_org_company_id(org_id)
-    if not company_id:
-        for row in member_rows:
-            if row.get("company_id"):
-                company_id = row["company_id"]
-                break
-    member_emails: dict[str, str] = {}
-    for row in member_rows:
-        uid = row.get("user_id")
-        if not uid or uid in member_emails:
-            continue
-        try:
-            user_row = await user_repo.get(uid)
-        except Exception:  # noqa: BLE001 -- best-effort; execute re-checks per member
-            user_row = None
-        if user_row and user_row.get("email"):
-            member_emails[uid] = user_row["email"]
+    # ponytail: once every paperclip-companies row is gone (a prior half-wipe),
+    # the company id is unrecoverable from DDB and the Aurora company survives;
+    # there is no org->company lookup against Paperclip itself to fall back on.
+    company_id = await paperclip_repo.get_org_company_id(org_id) or next(
+        (r["company_id"] for r in member_rows if r.get("company_id")), None
+    )
+    members = await _read_members(org_id, member_rows)
     room_ids = await messaging_repo.list_owner_room_ids(org_id)
     secret_names = await list_owner_secret_names(org_id)
     agent_key_names = await list_owner_agent_key_secret_names(org_id)
@@ -242,7 +310,7 @@ async def _read_workspace_snapshot(org_id: str) -> WorkspaceSnapshot:
         container=container,
         billing=billing,
         member_rows=member_rows,
-        member_emails=member_emails,
+        members=members,
         company_id=company_id,
         room_ids=room_ids,
         secret_names=secret_names,
@@ -253,13 +321,19 @@ async def _read_workspace_snapshot(org_id: str) -> WorkspaceSnapshot:
         slug_row=slug_row,
         open_workflows=open_workflows,
         gate_hashes=owner_gate_token_hashes(container),
+        join_link=await workspace_join_repo.get_link(org_id),
+        openrouter_row=await openrouter_key_repo.get(org_id),
+        layers=layers,
+        include_billing=include_billing,
+        delete_shared_members=delete_shared_members,
     )
     snapshot.fingerprint = snapshot_fingerprint(snapshot)
     return snapshot
 
 
 def snapshot_fingerprint(snapshot: WorkspaceSnapshot) -> str:
-    """Stable hash of the snapshot's SHAPE (ids, counts, names — no values).
+    """Stable hash of the snapshot's SHAPE (ids, counts, names — no values)
+    plus the options it was taken for (layers, billing, shared-member opt-in).
 
     Preview stamps this onto its report; execute re-snapshots and aborts on
     drift. Sorted + JSON-canonical so key order and DDB page order cannot
@@ -274,7 +348,7 @@ def snapshot_fingerprint(snapshot: WorkspaceSnapshot) -> str:
         },
         "billing_row": snapshot.billing is not None,
         "company_id": snapshot.company_id or "",
-        "member_ids": sorted(member_user_ids(snapshot)),
+        "members": sorted([m["user_id"], sorted(m["other_orgs"])] for m in snapshot.members),
         "room_ids": sorted(snapshot.room_ids),
         "secret_names": sorted(snapshot.secret_names),
         "agent_key_names": sorted(snapshot.agent_key_names),
@@ -284,6 +358,11 @@ def snapshot_fingerprint(snapshot: WorkspaceSnapshot) -> str:
         "slug": (snapshot.slug_row or {}).get("slug", ""),
         "open_workflows": sorted(r.get("workflow_id", "?") for r in snapshot.open_workflows),
         "gate_hash_count": len(snapshot.gate_hashes),
+        "join_link": snapshot.join_link is not None,
+        "openrouter_state": (snapshot.openrouter_row or {}).get("state", ""),
+        "layers": sorted(snapshot.layers),
+        "include_billing": snapshot.include_billing,
+        "delete_shared_members": snapshot.delete_shared_members,
     }
     return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
 
@@ -365,12 +444,21 @@ def _company_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
 async def _company_run(snap: WorkspaceSnapshot) -> str:
     if not snap.company_id:
         return "no paperclip company for workspace " + _NO_PAPERCLIP_ROW
-    await _delete_paperclip_company_call(snap.company_id)
+    try:
+        await _delete_paperclip_company_call(snap.company_id)
+    except Exception:
+        snap.unfinished.add("paperclip_company")
+        raise
     return f"company_id={snap.company_id}"
 
 
+def _aurora_targets(snap: WorkspaceSnapshot) -> list[dict]:
+    deletable = set(deletable_member_ids(snap))
+    return [m for m in snap.members if m["user_id"] in deletable and m["paperclip_user_id"]]
+
+
 def _aurora_users_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
-    ids = [r.get("paperclip_user_id", "?") for r in snap.member_rows if r.get("paperclip_user_id")]
+    ids = [m["paperclip_user_id"] for m in _aurora_targets(snap)]
     if not ids:
         return False, _NO_PAPERCLIP_ROW
     return True, f"{len(ids)} Better Auth user(s): {', '.join(ids)}"
@@ -380,17 +468,15 @@ async def _aurora_users_run(snap: WorkspaceSnapshot) -> str:
     env = settings.ENVIRONMENT or "dev"
     failures: list[str] = []
     deleted = 0
-    for row in snap.member_rows:
-        pc_user_id = row.get("paperclip_user_id")
-        uid = row.get("user_id", "?")
-        if not pc_user_id:
-            failures.append(f"{uid}: no paperclip_user_id on row")
-            continue
+    for m in _aurora_targets(snap):
         try:
-            await delete_paperclip_user(paperclip_user_id=pc_user_id, email=snap.member_emails.get(uid, ""), env=env)
+            await delete_paperclip_user(paperclip_user_id=m["paperclip_user_id"], email=m["email"], env=env)
             deleted += 1
         except Exception as e:  # noqa: BLE001 -- per-member partial failure, aggregated below
-            failures.append(f"{uid}: {e}")
+            # Keep this member's paperclip row: it is the only record of the
+            # paperclip_user_id a re-run needs.
+            snap.unfinished.add(m["user_id"])
+            failures.append(f"{m['user_id']}: {e}")
     if failures:
         raise RuntimeError(f"deleted {deleted} Better Auth user(s); failures: {'; '.join(failures)}")
     if not deleted:
@@ -503,41 +589,55 @@ async def _messaging_run(snap: WorkspaceSnapshot) -> str:
     # partial failure retries from a complete inventory.
     room_ids = await messaging_repo.list_owner_room_ids(snap.org_id)
     deleted = 0
+    foreign: list[str] = []
+    owned = 0
     for room_id in room_ids:
         meta = await messaging_repo.get_room(room_id)
         if meta is not None and meta.get("ownerId") != snap.org_id:
-            raise RuntimeError("messaging owner catalog referenced a room owned elsewhere")
+            # A room another owner owns (e.g. a shared channel) is not ours to
+            # delete; only this owner's catalog entry for it goes, with the
+            # owner partition below.
+            foreign.append(room_id)
+            continue
         deleted += await messaging_repo.delete_room_partition(room_id)
+        owned += 1
     deleted += await messaging_repo.delete_owner_partition(snap.org_id)
-    return f"deleted {len(room_ids)} room partition(s) and {deleted} messaging row(s)"
+    detail = f"deleted {owned} room partition(s) and {deleted} messaging row(s)"
+    if foreign:
+        detail += f"; skipped {len(foreign)} room(s) owned elsewhere: {', '.join(foreign)}"
+    return detail
 
 
 def _paperclip_rows_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
-    parts = []
-    if snap.member_rows:
-        parts.append(f"{len(snap.member_rows)} paperclip-companies row(s)")
-    # Pending briefs are per-member prefixed items; count what the snapshot
-    # knows, but execute always attempts each member's (idempotent).
-    if parts:
-        return True, " + ".join(parts) + " (+ per-member pending_brief items, always attempted)"
-    return False, "no paperclip-companies rows for workspace"
+    # Pending briefs + the org-create claim are always attempted (idempotent).
+    return True, (
+        f"{len(snap.member_rows)} paperclip-companies row(s) + org and member pending_brief items "
+        "+ org-create claim (always attempted)"
+    )
 
 
 async def _paperclip_rows_run(snap: WorkspaceSnapshot) -> str:
+    if "paperclip_company" in snap.unfinished:
+        raise RuntimeError("kept paperclip-companies rows: company delete failed and they carry its id; re-run")
     repo = PaperclipRepo(table_name="paperclip-companies")
     deleted: list[str] = []
-    for uid in member_user_ids(snap):
+    kept: list[str] = []
+    # Only rows the by-org-id index returned for THIS org: a shared member's
+    # row for another org is never deleted.
+    for uid in dict.fromkeys(r["user_id"] for r in snap.member_rows if r.get("user_id")):
+        if uid in snap.unfinished:
+            kept.append(uid)
+            continue
         await repo.delete(uid)
-        if await repo.delete_pending_brief(uid):
-            deleted.append(f"{uid}: row + pending_brief")
-        else:
-            deleted.append(f"{uid}: row")
-    if not deleted:
-        # Still attempt the org id itself: a funnel answer can sit under it.
-        if await repo.delete_pending_brief(snap.org_id):
-            return "pending_brief row deleted"
-        return "no paperclip-companies or pending_brief rows"
-    return "deleted " + "; ".join(deleted)
+        deleted.append(f"{uid}: row")
+    for owner in [snap.org_id, *deletable_member_ids(snap)]:
+        if await repo.delete_pending_brief(owner):
+            deleted.append(f"{owner}: pending_brief")
+    await repo.delete(_org_create_claim_key(snap.org_id))
+    detail = ("deleted " + "; ".join(deleted)) if deleted else "no paperclip-companies or pending_brief rows"
+    if kept:
+        detail += f"; kept row(s) for re-run (Better Auth delete failed): {', '.join(kept)}"
+    return detail + "; org-create claim cleared"
 
 
 async def _billing_row_run(snap: WorkspaceSnapshot) -> str:
@@ -551,7 +651,7 @@ async def _billing_row_run(snap: WorkspaceSnapshot) -> str:
 
 
 async def _user_rows_run(snap: WorkspaceSnapshot) -> str:
-    members = member_user_ids(snap)
+    members = deletable_member_ids(snap)
     for uid in members:
         await user_repo.delete(uid)
     if not members:
@@ -567,7 +667,7 @@ def _agent_keys_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
 
 async def _agent_keys_run(snap: WorkspaceSnapshot) -> str:
     total = await delete_owner_agent_key_secrets(snap.org_id)
-    for uid in member_user_ids(snap):
+    for uid in deletable_member_ids(snap):
         total += await delete_owner_agent_key_secrets(uid)
     return f"deleted {total} per-agent key secret(s)"
 
@@ -585,7 +685,7 @@ def _owner_secrets_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
 
 async def _owner_secrets_run(snap: WorkspaceSnapshot) -> str:
     names = await delete_owner_secrets(snap.org_id)
-    for uid in member_user_ids(snap):
+    for uid in deletable_member_ids(snap):
         names += await delete_owner_secrets(uid)
     return f"deleted {len(names)} owner secret(s) (BYOK keys, integration creds, OAuth apps)"
 
@@ -598,13 +698,13 @@ def _integrations_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
 
 async def _integrations_run(snap: WorkspaceSnapshot) -> str:
     providers = await integrations_repo.delete_all_for_owner(snap.org_id)
-    for uid in member_user_ids(snap):
+    for uid in deletable_member_ids(snap):
         providers += await integrations_repo.delete_all_for_owner(uid)
     return f"deleted {len(providers)} integration row(s): {', '.join(providers) or 'none'}"
 
 
 async def _oauth_run(snap: WorkspaceSnapshot) -> str:
-    targets = [snap.org_id, *member_user_ids(snap)]
+    targets = [snap.org_id, *deletable_member_ids(snap)]
     for uid in targets:
         await revoke_user_oauth(user_id=uid)
         await revoke_user_oauth(user_id=uid, purpose=PURPOSE_HARNESS)
@@ -618,6 +718,9 @@ def _agent_email_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
     return True, f"{len(snap.email_rows)} address(es): {addrs}"
 
 
+# ponytail: agent-mail-inbox rows for these addresses are left to their 30-day
+# TTL — the repo has no delete and list_messages caps at 50 per call. Add a
+# delete-by-address to agent_mail_inbox_repo if TTL expiry is not enough.
 async def _agent_email_run(snap: WorkspaceSnapshot) -> str:
     addresses = await agent_email_repo.delete_all_for_owner(snap.org_id)
     return f"deleted {len(addresses)} agent email address(es): {', '.join(addresses) or 'none'}"
@@ -636,14 +739,86 @@ def _slug_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
 
 async def _slug_run(snap: WorkspaceSnapshot) -> str:
     slug = await company_slug_repo.delete_for_owner(snap.org_id)
-    for uid in member_user_ids(snap):
+    for uid in deletable_member_ids(snap):
         member_slug = await company_slug_repo.delete_for_owner(uid)
         slug = slug or member_slug
     return f"released slug {slug}" if slug else "no slug reservation"
 
 
+def _openrouter_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
+    if snap.openrouter_row is None:
+        return False, "no managed OpenRouter key"
+    return True, f"managed OpenRouter key (state={snap.openrouter_row.get('state')}): retire, then row + secret"
+
+
+async def _delete_openrouter_key(owner_id: str) -> None:
+    """Drop the key row and every secret under the owner's OpenRouter prefix
+    (earlier hashes included). Only called once the key is ``disabled``."""
+    prefix = f"lightbulb/{settings.ENVIRONMENT or 'dev'}/openrouter/owners/{owner_id}/"
+
+    def _delete() -> None:
+        sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+        for name in _list_names_with_prefix(sm, prefix):
+            sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+        get_table("openrouter-keys").delete_item(Key={"owner_id": owner_id})
+
+    await run_in_thread(_delete)
+
+
+async def _openrouter_run(snap: WorkspaceSnapshot) -> str:
+    row = await openrouter_key_repo.get(snap.org_id)
+    if row is None:
+        return "no managed OpenRouter key"
+    if row.get("state") != "disabled":
+        # The same retirement entitlement_teardown uses. The settlement worker
+        # drains pending generations with the key's secret, then disables it
+        # upstream — deleting row + secret now would strand a LIVE upstream key.
+        await openrouter_key_repo.mark_retiring(snap.org_id)
+        raise RuntimeError(
+            f"OpenRouter key {row.get('state')} -> retiring; re-run the wipe once the settlement worker disables it"
+        )
+    await _delete_openrouter_key(snap.org_id)
+    return "disabled OpenRouter key row + secrets deleted"
+
+
+async def _join_link_run(snap: WorkspaceSnapshot) -> str:
+    await workspace_join_repo.delete_link(snap.org_id)
+    return "workspace join link deleted"
+
+
+async def _fast_gate_run(snap: WorkspaceSnapshot) -> str:
+    await MetronomeFastGate().delete_row(snap.org_id)
+    return "metronome fast-gate row deleted"
+
+
+def member_plan(snap: WorkspaceSnapshot) -> list[dict]:
+    """Per person: delete the account, or remove only this org's membership."""
+    deletable = set(deletable_member_ids(snap))
+    return [
+        {
+            "user_id": m["user_id"],
+            "email": m["email"],
+            "action": "delete_account" if m["user_id"] in deletable else "remove_membership",
+            "other_orgs": m["other_orgs"],
+        }
+        for m in snap.members
+    ]
+
+
+def _clerk_users_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
+    if not snap.members:
+        return False, "no member Clerk users"
+    lines = [
+        f"{p['user_id']}: delete account"
+        if p["action"] == "delete_account"
+        else f"{p['user_id']}: remove membership only (also in {', '.join(p['other_orgs'])})"
+        for p in member_plan(snap)
+    ]
+    return True, "; ".join(lines)
+
+
 async def _clerk_users_run(snap: WorkspaceSnapshot) -> str:
-    members = member_user_ids(snap)
+    members = deletable_member_ids(snap)
     failures: list[str] = []
     deleted = 0
     for uid in members:
@@ -651,17 +826,23 @@ async def _clerk_users_run(snap: WorkspaceSnapshot) -> str:
             await clerk_admin.delete_user(uid)
             deleted += 1
         except Exception as e:  # noqa: BLE001 -- per-member partial failure
+            snap.unfinished.add(uid)
             failures.append(f"{uid}: {e}")
     if failures:
         raise RuntimeError(f"deleted {deleted} Clerk user(s); failures: {'; '.join(failures)}")
-    if not deleted:
-        return "no member Clerk users"
-    return f"deleted {deleted} member Clerk user(s)"
+    kept = len(snap.members) - len(members)
+    detail = f"deleted {deleted} member Clerk user(s)" if deleted else "no member Clerk users deleted"
+    return detail + (f"; kept {kept} shared member account(s) (membership goes with the org)" if kept else "")
 
 
 async def _clerk_org_run(snap: WorkspaceSnapshot) -> str:
     # ALWAYS LAST: leaving the org alive lets everything regrow on the next
-    # /container/status poll.
+    # /container/status poll. But a failed member delete keeps it: the org's
+    # Clerk member list is what lets a re-run find that member again.
+    if snap.unfinished - {"paperclip_company"}:
+        raise RuntimeError(
+            f"kept Clerk org: member delete(s) failed for {', '.join(sorted(snap.unfinished))}; re-run to finish"
+        )
     await clerk_admin.delete_organization(snap.org_id)
     return snap.org_id
 
@@ -676,6 +857,13 @@ WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
     ),
     WorkspaceStepDef("runtime", "delete_workspace_runtime", LAYER_RUNTIME, _runtime_preview, _runtime_run),
     WorkspaceStepDef("metronome", "archive_customer", LAYER_BILLING, _metronome_preview, _metronome_run),
+    WorkspaceStepDef(
+        "metronome_fast_gate",
+        "delete_row",
+        LAYER_BILLING,
+        lambda snap: (True, "metronome fast-gate row"),
+        _fast_gate_run,
+    ),
     WorkspaceStepDef("stripe", "delete_stripe_customer", LAYER_BILLING, _stripe_preview, _stripe_run),
     WorkspaceStepDef(
         "stripe", "deauthorize_company_account", LAYER_BILLING, _company_stripe_preview, _company_stripe_run
@@ -712,8 +900,8 @@ WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
         "user_repo.delete",
         LAYER_IDENTITY,
         lambda snap: (
-            (True, f"{len(member_user_ids(snap))} users row(s)")
-            if member_user_ids(snap)
+            (True, f"{len(deletable_member_ids(snap))} users row(s)")
+            if deletable_member_ids(snap)
             else (False, "no users rows for workspace")
         ),
         _user_rows_run,
@@ -739,12 +927,13 @@ WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
     WorkspaceStepDef(
         "owner_secrets", "delete_owner_secrets", LAYER_SECRETS, _owner_secrets_preview, _owner_secrets_run
     ),
+    WorkspaceStepDef("openrouter_key", "retire_and_delete", LAYER_SECRETS, _openrouter_preview, _openrouter_run),
     WorkspaceStepDef("integrations", "delete_all_for_owner", LAYER_SECRETS, _integrations_preview, _integrations_run),
     WorkspaceStepDef(
         "oauth_tokens",
         "revoke_user_oauth",
         LAYER_SECRETS,
-        lambda snap: (True, f"stored tokens for workspace + {len(member_user_ids(snap))} member(s)"),
+        lambda snap: (True, f"stored tokens for workspace + {len(deletable_member_ids(snap))} member(s)"),
         _oauth_run,
     ),
     WorkspaceStepDef(
@@ -759,16 +948,13 @@ WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
     ),
     WorkspaceStepDef("company_slug", "delete_for_owner", LAYER_IDENTITY, _slug_preview, _slug_run),
     WorkspaceStepDef(
-        "clerk_user",
-        "delete_user",
+        "workspace_join_link",
+        "delete_link",
         LAYER_IDENTITY,
-        lambda snap: (
-            (True, f"{len(member_user_ids(snap))} member Clerk user(s)")
-            if member_user_ids(snap)
-            else (False, "no member Clerk users")
-        ),
-        _clerk_users_run,
+        lambda snap: (True, "workspace join link") if snap.join_link else (False, "no workspace join link"),
+        _join_link_run,
     ),
+    WorkspaceStepDef("clerk_user", "delete_user", LAYER_IDENTITY, _clerk_users_preview, _clerk_users_run),
     WorkspaceStepDef(
         "clerk_org",
         "delete_organization",
@@ -810,12 +996,15 @@ class WorkspaceWipeReport(WipeReport):
     fingerprint: str = ""
     layers: list[str] = field(default_factory=list)
     billing_preserved: bool = True
+    #: Per person: ``action`` is "delete_account" or "remove_membership".
+    members: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         base = super().to_dict()
         base["fingerprint"] = self.fingerprint
         base["layers"] = self.layers
         base["billing_preserved"] = self.billing_preserved
+        base["members"] = self.members
         return base
 
 
@@ -829,17 +1018,19 @@ async def preview_workspace_wipe(
     *,
     layers: list[str] | tuple[str, ...] | None = None,
     include_billing: bool = False,
+    delete_shared_members: bool = False,
 ) -> WorkspaceWipeReport:
     """Read-only blast-radius enumeration for a workspace wipe.
 
     Calls NO delete method. Billing steps are shown ``skipped`` (preserved by
     default) unless ``include_billing`` — the override is confirmed at
-    execute time, not here.
+    execute time, not here. The fingerprint binds these exact options.
     """
-    if not is_org_owner_id(org_id):
-        raise WorkspaceWipeError(f"{org_id!r} is not a workspace (Clerk organization) id.")
+    _refuse_org(org_id)
     selected_layers = normalize_layers(layers)
-    snap = await _read_workspace_snapshot(org_id)
+    snap = await _read_workspace_snapshot(
+        org_id, layers=selected_layers, include_billing=include_billing, delete_shared_members=delete_shared_members
+    )
     steps: list[WipeStep] = []
     # One loop over the registry, in order: unselected layers and the
     # preserved-by-default billing layer are shown as skipped (not omitted),
@@ -877,6 +1068,7 @@ async def preview_workspace_wipe(
         fingerprint=snap.fingerprint,
         layers=list(selected_layers),
         billing_preserved=not include_billing,
+        members=member_plan(snap),
     )
 
 
@@ -894,6 +1086,7 @@ async def wipe_workspace(
     include_billing: bool = False,
     confirm_billing: str | None = None,
     expected_fingerprint: str | None = None,
+    delete_shared_members: bool = False,
 ) -> WorkspaceWipeReport:
     """Execute the workspace teardown for the selected layers.
 
@@ -901,11 +1094,13 @@ async def wipe_workspace(
     match (the typed workspace id must name THIS workspace), billing override
     (``include_billing`` + ``confirm_billing == "DELETE-BILLING"``), bootstrap
     (any member email on the protection list refuses the whole wipe), stale
-    preview (fresh re-snapshot vs ``expected_fingerprint``). Clerk org delete
-    runs last so nothing regrows.
+    preview (fresh re-snapshot vs ``expected_fingerprint``, which is REQUIRED —
+    an empty one would skip the drift check), acting admin not a member.
+    Clerk org delete runs last so nothing regrows.
     """
-    if not is_org_owner_id(org_id):
-        raise WorkspaceWipeError(f"{org_id!r} is not a workspace (Clerk organization) id.")
+    _refuse_org(org_id)
+    if not (expected_fingerprint or "").strip():
+        raise WorkspaceWipeError("preview fingerprint required; run the preview and confirm it.")
     if (confirm_org or "").strip() != org_id:
         raise WorkspaceConfirmMismatchError(
             f"confirm_org {confirm_org!r} does not match workspace {org_id!r}; refusing."
@@ -920,20 +1115,21 @@ async def wipe_workspace(
     if include_billing and confirm_billing != BILLING_CONFIRM_PHRASE:
         raise BillingPreservedError(f"billing override requires confirm_billing={BILLING_CONFIRM_PHRASE!r}; refusing.")
 
-    snap = await _read_workspace_snapshot(org_id)
-    if expected_fingerprint and expected_fingerprint != snap.fingerprint:
+    snap = await _read_workspace_snapshot(
+        org_id, layers=selected_layers, include_billing=include_billing, delete_shared_members=delete_shared_members
+    )
+    if expected_fingerprint != snap.fingerprint:
         raise StaleWorkspacePreviewError(expected_fingerprint, snap.fingerprint)
+    if actor_admin_id in member_user_ids(snap):
+        raise WorkspaceWipeError(f"acting admin {actor_admin_id} is a member of {org_id}; refusing to wipe it.")
 
     # Bootstrap guard up front, before any teardown: any member carrying a
-    # bootstrap admin identity refuses the whole wipe (deleting it breaks the
+    # bootstrap admin identity (under ANY known email: paperclip row, Clerk,
+    # users row) refuses the whole wipe (deleting it breaks the
     # PaperclipAdminClient session every provision depends on).
-    for uid, email in snap.member_emails.items():
-        if email:
-            _refuse_bootstrap_account(uid, [email])
-    # The org id itself is never a bootstrap identity, but a member row whose
-    # email lookup missed ("" above) still reaches delete_paperclip_user's own
-    # per-row guard — defense in depth, not a silent pass.
-    _assert_no_bootstrap_members(snap)
+    for m in snap.members:
+        if m["emails"]:
+            _refuse_bootstrap_account(m["user_id"], m["emails"])
 
     logger.info(
         "workspace_wipe.wipe_workspace: starting for org=%s actor=%s layers=%s billing_armed=%s",
@@ -979,20 +1175,15 @@ async def wipe_workspace(
         fingerprint=snap.fingerprint,
         layers=list(selected_layers),
         billing_preserved=not billing_armed,
+        members=member_plan(snap),
     )
 
 
-def _assert_no_bootstrap_members(snap: WorkspaceSnapshot) -> None:
-    """Refuse when any member's Paperclip-row email is a bootstrap identity.
-
-    ``member_emails`` comes from the users rows (unreliable webhook write, may
-    be absent); the Paperclip row carries its own ``paperclip_email`` copy —
-    check both so a missing users-row email cannot sail through.
-    """
-    for row in snap.member_rows:
-        for email in (row.get("paperclip_email") or "",):
-            if email and email.lower() in {b.lower() for b in BOOTSTRAP_EMAILS}:
-                raise BootstrapAccountProtectedError(row.get("user_id") or snap.org_id)
+def _refuse_org(org_id: str) -> None:
+    if not is_org_owner_id(org_id):
+        raise WorkspaceWipeError(f"{org_id!r} is not a workspace (Clerk organization) id.")
+    if settings.VENDOR_ORG_ID and org_id == settings.VENDOR_ORG_ID:
+        raise WorkspaceWipeError(f"{org_id} is the vendor (Lightbulb) org; refusing.")
 
 
 def _bind(defn: WorkspaceStepDef, snap: WorkspaceSnapshot) -> Callable[[], Awaitable[str]]:

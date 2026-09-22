@@ -34,10 +34,12 @@ async def test_overdue_runs_close_as_error_with_an_error_and_run_ended_frame(mon
         patch.object(run_ledger.messaging_repo, "get_run", AsyncMock(return_value=_row(status, 900))),
         patch.object(run_ledger.messaging_repo, "end_run", AsyncMock(return_value=ended_row)) as end,
         patch.object(run_ledger, "publish_run_error_frames", AsyncMock()) as frames,
+        patch.object(run_ledger, "post_run_failure_message", AsyncMock()) as note,
     ):
         assert await run_ledger.sweep_runs_once() == 1
     end.assert_awaited_once_with("o", "r1", outcome="error", error_kind=error_kind)
     frames.assert_awaited_once_with(ended_row, error_kind)
+    note.assert_awaited_once_with("o", ended_row, "error", error_kind)
 
 
 @pytest.mark.asyncio
@@ -77,6 +79,7 @@ async def test_one_poisoned_candidate_does_not_stop_the_tick(monkeypatch):
         ),
         patch.object(run_ledger.messaging_repo, "end_run", AsyncMock(return_value=ended_row)) as end,
         patch.object(run_ledger, "publish_run_error_frames", AsyncMock()),
+        patch.object(run_ledger, "post_run_failure_message", AsyncMock()),
     ):
         assert await run_ledger.sweep_runs_once() == 1
     end.assert_awaited_once_with("o", "r2", outcome="error", error_kind="agent_did_not_start")

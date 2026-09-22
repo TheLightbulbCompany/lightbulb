@@ -9,7 +9,7 @@ import time
 
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
-from core.services.messaging import publish_run_error_frames
+from core.services.messaging import post_run_failure_message, publish_run_error_frames
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ async def sweep_runs_once() -> int:
             )
             put_metric("messaging.run.swept", dimensions={"error": error_kind})
             await publish_run_error_frames(ended, error_kind)
+            await post_run_failure_message(row["ownerId"], ended, "error", error_kind)
         except Exception:
             put_metric("messaging.run.swept", dimensions={"error": "candidate_error"})
             logger.warning("sweeper candidate failed", exc_info=True)

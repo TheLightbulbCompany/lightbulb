@@ -235,3 +235,96 @@ async def test_post_processing_failure_never_5xxes_an_applied_ended_callback(met
     assert publisher.publish_room.await_count == 2
     frame_types = [call.args[1]["payload"]["frame"]["type"] for call in publisher.publish_room.await_args_list]
     assert frame_types == ["error", "run_ended"]
+
+
+# ---------------------------------------------------------------------------
+# A failed run leaves one durable agent-authored message in its room (frames are
+# ephemeral; a user who was not watching must still see what happened).
+# ---------------------------------------------------------------------------
+
+
+def _failure_patches(create, trigger=None):
+    return (
+        patch.object(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=trigger)),
+        patch.object(messaging.messaging_repo, "create_message", create),
+        patch.object(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": "a1", "name": "Friday"}])),
+        patch.object(messaging, "record_usage", AsyncMock()),
+        patch.object(messaging, "send_push_to_user", AsyncMock()),
+        patch.object(messaging, "get_live_event_publisher", lambda: AsyncMock()),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome,error_kind,usage,expected",
+    [
+        (
+            "error",
+            "agent_stopped_responding",
+            USAGE,
+            "I couldn't finish that (error: agent_stopped_responding). The agent stopped responding. "
+            "Try again, or check Settings → Model & Credits if this keeps happening.",
+        ),
+        (
+            "error",
+            None,
+            USAGE,
+            "I couldn't finish that (error). Agent run failed. "
+            "Try again, or check Settings → Model & Credits if this keeps happening.",
+        ),
+        (
+            "gate_error",
+            None,
+            None,
+            "I couldn't finish that (gate_error). My check on whether to reply failed. "
+            "Try again, or check Settings → Model & Credits if this keeps happening.",
+        ),
+    ],
+)
+async def test_failed_run_posts_one_silent_agent_message(metrics, outcome, error_kind, usage, expected):
+    create = AsyncMock(return_value=({"messageId": "x"}, False))
+    patches = _failure_patches(create, trigger={"author": {"kind": "human", "id": "user_bob"}})
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": outcome})):
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            await messaging.handle_run_event(
+                "o", _event(type="run.ended", outcome=outcome, error_kind=error_kind, usage=usage)
+            )
+    create.assert_awaited_once()
+    kw = create.await_args.kwargs
+    assert kw["text"] == expected
+    assert kw["author"] == {"kind": "agent", "id": "a1", "displayName": "Friday"}
+    assert kw["mentions"] == [] and kw["dispatch_targets"] == []
+    assert kw["room_id"] == ROOM and kw["run_id"] == RUN and kw["owner_id"] == "o"
+    assert kw["thread_root_message_id"] is None
+    # Keyed on the run, so a retried run.ended or a sweeper race replays instead of doubling.
+    assert kw["idemp_sk"] == messaging.messaging_repo.agent_idemp_sk(f"run-failed:{RUN}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome,usage", [("completed", USAGE), ("aborted", USAGE), ("ignored", None)])
+async def test_non_failure_outcomes_post_nothing(metrics, outcome, usage):
+    create = AsyncMock()
+    patches = _failure_patches(create)
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": outcome})):
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            await messaging.handle_run_event("o", _event(type="run.ended", outcome=outcome, usage=usage))
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failure_message_lands_in_the_triggers_thread(metrics):
+    create = AsyncMock(return_value=({"messageId": "x"}, False))
+    patches = _failure_patches(create, trigger={"author": {"kind": "human", "id": "u"}, "threadRootMessageId": "root"})
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": "error"})):
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            await messaging.handle_run_event("o", _event(type="run.ended", outcome="error", usage=USAGE))
+    assert create.await_args.kwargs["thread_root_message_id"] == "root"
+
+
+@pytest.mark.asyncio
+async def test_failure_message_write_error_never_5xxes_the_callback(metrics):
+    patches = _failure_patches(AsyncMock(side_effect=RuntimeError("ddb down")))
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": "error"})):
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            result = await messaging.handle_run_event("o", _event(type="run.ended", outcome="error", usage=USAGE))
+    assert result.status == "applied"

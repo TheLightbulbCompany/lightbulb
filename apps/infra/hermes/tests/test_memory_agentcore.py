@@ -1,8 +1,8 @@
 """PR 3 (AgentCore workspace memory): the bundled provider, its enablement, and health."""
 import importlib
 import pathlib
+import re
 import sys
-import threading
 import types
 
 import pytest
@@ -36,19 +36,23 @@ def mod(monkeypatch):
     outside the image, where Hermes is not installed)."""
     fake = types.ModuleType("agent.memory_provider")
     fake.MemoryProvider = type("MemoryProvider", (), {})
-    fake.spawn_context_thread = lambda target, *, name, daemon=True, args=(): threading.Thread(
-        target=target, args=args, name=name, daemon=daemon)
+    redact = types.ModuleType("agent.redact")
+    # Stand-in for upstream's redact_for_egress: masks anything shaped like an sk- key.
+    redact.redact_for_egress = lambda text: re.sub(r"sk-[A-Za-z0-9_-]+", "sk-***", text)
     monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
     monkeypatch.setitem(sys.modules, "agent.memory_provider", fake)
+    monkeypatch.setitem(sys.modules, "agent.redact", redact)
     monkeypatch.syspath_prepend(str(PLUGINS / "memory"))
     monkeypatch.setenv("AGENTCORE_MEMORY_ID", MEMORY_ID)
     sys.modules.pop("agentcore", None)
-    return importlib.import_module("agentcore")
+    m = importlib.import_module("agentcore")
+    m._CLIENT = None
+    return m
 
 
 def provider(mod, client, session="room:ceo"):
+    mod._CLIENT = client
     p = mod.AgentCoreMemoryProvider()
-    p._client = client
     p.initialize(session, hermes_home="/tmp", platform="lightbulb")
     return p
 
@@ -85,23 +89,19 @@ def test_client_has_short_timeouts_and_no_retries(mod, monkeypatch):
     seen = {}
     fake_boto3 = types.SimpleNamespace(client=lambda service, **kw: seen.update(service=service, **kw) or FakeClient())
     monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
-    mod.AgentCoreMemoryProvider()._get_client()
+    assert mod._client() is mod._client()  # built once per process, not per turn
     cfg = seen["config"]
     assert seen["service"] == "bedrock-agentcore"
     assert cfg.connect_timeout <= 1 and cfg.read_timeout <= 1.5
     assert cfg.retries == {"total_max_attempts": 1}
 
 
-def test_sync_turn_writes_one_owner_event_off_thread(mod):
-    gate = threading.Event()
+def test_sync_turn_writes_one_owner_event_inline(mod):
+    """Hermes already runs sync_turn on its own serialized background worker, so the write is
+    inline there: ordering is kept and nothing escapes Hermes's bounded shutdown drain."""
     client = FakeClient()
-    original = client.create_event
-    client.create_event = lambda **kw: (gate.wait(5), original(**kw))
     p = provider(mod, client, session="room:ceo/thread#1")
     p.sync_turn("our codename is PERIWINKLE-42", "noted")
-    assert client.calls == []  # returned while the write is still blocked
-    gate.set()
-    p._last_sync.join(5)
     (op, kw), = client.calls
     assert op == "create" and kw["actorId"] == OWNER and kw["memoryId"] == MEMORY_ID
     assert kw["sessionId"] == "room-ceo-thread-1"
@@ -111,21 +111,20 @@ def test_sync_turn_writes_one_owner_event_off_thread(mod):
 
 def test_sync_turn_never_raises_and_skips_empty_sides(mod):
     p = provider(mod, FakeClient(fail=True))
-    p.sync_turn("hi there", "")
-    p._last_sync.join(5)
+    p.sync_turn("hi there", "")  # must not raise
     client = FakeClient()
     p = provider(mod, client)
     p.sync_turn("", "")
     assert client.calls == []
 
 
-def test_sync_turn_skips_non_primary_contexts(mod):
+def test_sync_turn_redacts_secrets_before_they_reach_shared_memory(mod):
+    """Memory is shared by every agent: a key pasted in one DM must not resurface in #general."""
     client = FakeClient()
-    p = mod.AgentCoreMemoryProvider()
-    p._client = client
-    p.initialize("s", hermes_home="/tmp", platform="lightbulb", agent_context="subagent")
-    p.sync_turn("u", "a")
-    assert client.calls == []
+    provider(mod, client).sync_turn("here is the key sk-live-abc123", "stored sk-live-abc123")
+    (_, kw), = client.calls
+    texts = [m["conversational"]["content"]["text"] for m in kw["payload"]]
+    assert all("abc123" not in t for t in texts)
 
 
 def test_sanitized_session_id_fits_the_api_pattern(mod):

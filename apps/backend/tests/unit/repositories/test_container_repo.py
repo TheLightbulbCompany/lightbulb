@@ -1296,3 +1296,24 @@ async def test_daily_system_notice_claim_is_per_owner_and_per_kind(dynamodb_tabl
     # A different owner, and a different notice kind, each have their own slot.
     assert await container_repo.try_claim_daily_system_notice("user_b", day="2026-07-26") is True
     assert await container_repo.try_claim_daily_system_notice("user_a", day="2026-07-26", kind="other") is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_owner_tokens_first_writer_wins_and_existing_tokens_are_kept(dynamodb_table):
+    """Two provision runs each offer fresh tokens; the row keeps the first pair
+    and both runs read that winner back. An owner who already has tokens (they
+    are snapshotted into Paperclip adapters) is never rotated."""
+    from core.repositories import container_repo
+    from core.repositories.container_repo import ProvisionSuperseded
+
+    await container_repo.upsert("org_t", {"status": "provisioning"})
+
+    first = await container_repo.ensure_owner_tokens("org_t", hook_token="h1", gateway_token="g1")
+    second = await container_repo.ensure_owner_tokens("org_t", hook_token="h2", gateway_token="g2")
+
+    assert (first["hook_token"], first["gateway_token"]) == ("h1", "g1")
+    assert (second["hook_token"], second["gateway_token"]) == ("h1", "g1")
+
+    with pytest.raises(ProvisionSuperseded):
+        await container_repo.ensure_owner_tokens("org_missing", hook_token="h", gateway_token="g")
+    assert await container_repo.get_by_owner_id("org_missing") is None

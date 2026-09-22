@@ -10,7 +10,8 @@ it is returned to the caller for the owner's boot secret, from which the runtime
 exports ``AWS_BEARER_TOKEN_BEDROCK``. Nothing persists the
 plaintext (mirrors ``api_key_repo`` / hook-token posture): a leaked table row
 cannot be turned back into a usable token, and a compromised token is handled by
-rotate (reprovision) or deny (kill switch), never by reading it back.
+rotate (bump the row's ``gate_bearer_generation``; the plaintext is re-derivable, see
+``derive_gate_bearer``) or deny (kill switch), never by reading it back.
 
 The token row's ``aip_tiers`` map is the INVERSE of the owner's
 ``bedrock_aip_arns`` map. The gateway authorizes + prices a request by looking
@@ -60,11 +61,12 @@ it.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
-import secrets
 
 import boto3
 from botocore.exceptions import ClientError
@@ -148,6 +150,27 @@ def hash_token(token: str) -> str:
     the raw bearer string) so a token minted here resolves there.
     """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def derive_gate_bearer(owner_id: str, generation: int = 0) -> str:
+    """The owner's gate bearer for ``generation``: deterministic, so every concurrent
+    provision run for one owner derives the SAME bearer and writes the same boot secret,
+    token row and pointer instead of racing to rotate.
+
+    ``urlsafe_b64(HMAC-SHA256(key=ENCRYPTION_KEY, msg="lightbulb-gate-bearer:v1:<owner_id>:<generation>"))``,
+    padding stripped (the ``token_urlsafe(32)`` shape the random mint had). The key is the
+    ``ENCRYPTION_KEY`` string's UTF-8 bytes. Rotation is an explicit bump of the containers
+    row's ``gate_bearer_generation``; nothing else changes the value. Rotating
+    ``ENCRYPTION_KEY`` changes every owner's NEXT derivation, not a live runtime's bearer.
+
+    Refuses an empty key: without one every bearer is computable from the owner id alone.
+    """
+    key = settings.ENCRYPTION_KEY
+    if not key:
+        raise RuntimeError("ENCRYPTION_KEY is not configured; refusing to derive a gate bearer")
+    msg = f"lightbulb-gate-bearer:v1:{owner_id}:{int(generation)}".encode()
+    digest = hmac.new(key.encode("utf-8"), msg, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
 def _describe_agent_runtime(runtime_arn: str) -> dict:
@@ -422,13 +445,16 @@ async def expire_superseded_gate_tokens(owner_id: str) -> None:
         logger.warning("expire_superseded_gate_tokens failed for owner %s", owner_id, exc_info=True)
 
 
-async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
-    """Mint (rotating) a per-owner bedrock-gate bearer token; return the PLAINTEXT.
+async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, generation: int = 0) -> str:
+    """Ensure the per-owner bedrock-gate bearer for ``generation``; return the PLAINTEXT.
 
-    - 32 random bytes, urlsafe-base64 (``secrets.token_urlsafe(32)``).
+    - ``derive_gate_bearer(owner_id, generation)`` -- the same value on every run, so a
+      second run for the same generation is a no-op below; only a bumped generation rotates.
     - Writes a hash-keyed row ``{token_hash, owner_id, denied=False,
-      aip_tiers={arn: tier}, created_at}``. ``aip_tiers`` is the INVERSE of the
-      owner's ``{tier: arn}`` map — the gateway keys authorization + pricing on
+      aip_tiers={arn: tier}, created_at}``, CREATE-ONLY: a row that already exists (an
+      earlier or concurrent run) is left exactly as it is, including a ``denied`` flag.
+      Its tiers are ``reconcile_gate_token_tiers``' to update. ``aip_tiers`` is the INVERSE
+      of the owner's ``{tier: arn}`` map — the gateway keys authorization + pricing on
       the AIP ARN.
     - Points the containers row's ``bedrock_gate_token_hash`` at the new hash,
       through ``container_repo.swap_gate_token_hash`` — a conditional write, so
@@ -470,23 +496,28 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     # row still carries the one-hour ttl the old code wrote.
     superseded = await _drain_superseded(owner_id, tracked, current_hash=prior_hash, adopt_orphans=True)
 
-    token = secrets.token_urlsafe(32)
+    token = derive_gate_bearer(owner_id, generation)
     token_hash = hash_token(token)
     # Invert {tier: arn} -> {arn: tier}: the gateway looks a request's model-id
     # (an AIP ARN) up in this map to authorize + price it.
     aip_tiers = {arn: tier for tier, arn in (aip_arns or {}).items()}
 
     table = _tokens_table()
-    await run_in_thread(
-        table.put_item,
-        Item={
-            "token_hash": token_hash,
-            "owner_id": owner_id,
-            "denied": False,
-            "aip_tiers": aip_tiers,
-            "created_at": utc_now_iso(),
-        },
-    )
+    try:
+        await run_in_thread(
+            table.put_item,
+            Item={
+                "token_hash": token_hash,
+                "owner_id": owner_id,
+                "denied": False,
+                "aip_tiers": aip_tiers,
+                "created_at": utc_now_iso(),
+            },
+            ConditionExpression="attribute_not_exists(token_hash)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
 
     if prior_hash and prior_hash != token_hash and prior_hash not in superseded:
         superseded.append(prior_hash)
@@ -502,7 +533,8 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     if prior_hash and prior_hash in superseded:
         await _disarm_ttl(table, prior_hash)
 
-    await _swap_hash_pointer(owner_id, token_hash, superseded=superseded, expected_prior_hash=prior_hash)
+    if prior_hash != token_hash:
+        await _swap_hash_pointer(owner_id, token_hash, superseded=superseded, expected_prior_hash=prior_hash)
 
     logger.info(
         "bedrock-gate token minted for owner %s: new=%s.. prior=%s tiers=%s",
@@ -604,6 +636,10 @@ async def _swap_hash_pointer(
             attempt_token=attempt_token,
         )
         if outcome != "conflict":
+            break
+        if conflicting and conflicting.get("bedrock_gate_token_hash") == token_hash:
+            # A concurrent run for the same generation already pointed the row here.
+            outcome = "written"
             break
         if not conflicting:
             # Conflicted but the prior row could not be parsed (see

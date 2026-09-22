@@ -8,7 +8,7 @@ new-workspace provisioning (report 04, risk 5).
 Two steps, in order, both fenced on the SAME claim/attempt-token lease ``provision_runner.run``
 already holds (M4-R28/M4-R33):
 
-1. ``prepare_hermes_workspace`` — mints (or reuses) ``hook_token``/``gateway_token``, mints a fresh
+1. ``prepare_hermes_workspace`` — mints (or reuses) ``hook_token``/``gateway_token``, derives the
    gate bearer, writes the ONE JSON boot secret, and writes the two tokens onto the containers row.
    Runs BEFORE step 0 (the Paperclip seed): the starter-agent loop bakes ``hook_token`` into the
    native Hermes adapter's ``apiKey`` at seed time, so seeding before minting it would ship every
@@ -595,16 +595,19 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
 
 
 async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_token: str | None = None) -> None:
-    """M4-R33: mint the owner's hook/gateway tokens + a fresh gate bearer, write the ONE JSON boot
+    """M4-R33: settle the owner's hook/gateway tokens + gate bearer, write the ONE JSON boot
     secret, and persist ``hook_token``/``gateway_token`` onto the row — BEFORE step 0 seeds the
     roster, so the native Hermes adapter's ``apiKey`` bakes in a real token instead of the empty
     string a missing row field falls back to.
 
     An existing runtime with no pending provider switch is a no-op. A pending switch updates
-    only the boot secret's provider marker and preserves its live tokens. NOT idempotent on the
-    bearer itself while unprovisioned: a retry of a
-    still-unprovisioned owner re-mints (``mint_gate_token`` always rotates), which is safe — nothing
-    ever presented the prior one, since the runtime was never created.
+    only the boot secret's provider marker and preserves its live tokens.
+
+    IDEMPOTENT AT THE SOURCE, so two concurrent runs for one owner converge: the tokens are one
+    ``if_not_exists`` write whose RETURNED winner every later step uses
+    (``container_repo.ensure_owner_tokens``), and the bearer is derived from the owner and the
+    row's ``gate_bearer_generation`` (``derive_gate_bearer``), so both runs write identical boot
+    secret bytes, the same create-only token row and the same pointer.
 
     I3/M4-R37 freshness guard: a dispatch reaches owners who are ALREADY live (a self-heal, a
     reconcile, any ordinary re-dispatch), not just fresh ones. Minting for one of those would
@@ -615,10 +618,8 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
     with the ECS runtime -- it named a service that no longer exists, and on a legacy row that
     still carries the field it would have refused a reprovision forever.
 
-    ``hook_token``/``gateway_token`` are re-minted only when the row does not already carry one —
-    the same "reuse if present" convention the ECS provisioner had (``container.get("hook_token")
-    or secrets.token_urlsafe(32)``) — so a retry never orphans a token some other seam already
-    handed out.
+    ``hook_token``/``gateway_token`` are minted only when the row does not already carry one, so
+    a retry never orphans a token some other seam already handed out (Paperclip snapshots them).
 
     Fenced the same way as the terminal write (M4-R28), but NON-terminal: ``release_lease=False``,
     since the provision is not done yet.
@@ -650,15 +651,17 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
     from core.billing.bedrock_gate_tokens import mint_gate_token
     from core.services.container_provision import resolve_provider_choice
 
-    hook_token_reused = bool(row.get("hook_token"))
-    gateway_token_reused = bool(row.get("gateway_token"))
-    hook_token = row.get("hook_token") or _secrets.token_urlsafe(32)
-    gateway_token = row.get("gateway_token") or _secrets.token_urlsafe(32)
+    hook_candidate = _secrets.token_urlsafe(32)
+    gateway_candidate = _secrets.token_urlsafe(32)
+    row = await container_repo.ensure_owner_tokens(owner_id, hook_token=hook_candidate, gateway_token=gateway_candidate)
+    hook_token, gateway_token = row["hook_token"], row["gateway_token"]
+    hook_token_reused = hook_token != hook_candidate
+    gateway_token_reused = gateway_token != gateway_candidate
 
     aip_arns = await reconcile_hermes_aips(owner_id)
     role_arn = await ensure_owner_bedrock_role(owner_id, aip_arns)
     await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), role_arn.split(":")[4])
-    bedrock_bearer = await mint_gate_token(owner_id, aip_arns)
+    bedrock_bearer = await mint_gate_token(owner_id, aip_arns, generation=int(row.get("gate_bearer_generation") or 0))
     provider_choice, _ = await resolve_provider_choice(owner_id)
     if provider_choice == "openrouter_managed":
         from core.services.openrouter_keys import ensure_owner_key_for_settings
@@ -676,7 +679,7 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
     # m2: the one step that mints three credentials and writes a secret was otherwise invisible
     # in the provision log. Never logs a value -- only which tokens were reused vs freshly minted.
     logger.info(
-        "hermes prepare owner=%s hook_token=%s gateway_token=%s bedrock_bearer=minted",
+        "hermes prepare owner=%s hook_token=%s gateway_token=%s bedrock_bearer=derived",
         owner_id,
         "reused" if hook_token_reused else "minted",
         "reused" if gateway_token_reused else "minted",

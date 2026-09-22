@@ -295,10 +295,10 @@ class TestMint:
         assert _tracked(gate_tables) == [live_hash]
 
     @pytest.mark.asyncio
-    async def test_returned_tokens_are_unique_per_mint(self, gate_tables, fake_runtime):
+    async def test_a_bumped_generation_rotates_the_token(self, gate_tables, fake_runtime):
         _put_container_row(gate_tables, "org_abc")
         t1 = await mod.mint_gate_token("org_abc", _AIPS)
-        t2 = await mod.mint_gate_token("org_abc", _AIPS)
+        t2 = await mod.mint_gate_token("org_abc", _AIPS, generation=1)
         assert t1 != t2
         # The superseded token OUTLIVES the mint by design — it is tracked, not
         # scheduled — and only goes when the predicate proves it unreachable.
@@ -313,6 +313,55 @@ class TestMint:
 
         assert [r["token_hash"]["S"] for r in _token_rows(gate_tables)] == [mod.hash_token(t2)]
 
+    @pytest.mark.asyncio
+    async def test_the_same_generation_is_the_same_token_and_a_second_mint_changes_nothing(
+        self, gate_tables, fake_runtime
+    ):
+        """Two provision runs for one owner must converge, not rotate: the bearer is
+        derived, the token row is create-only (a deny survives), and the pointer
+        already names the hash so nothing is superseded."""
+        _put_container_row(gate_tables, "org_abc", agentcore_runtime_arn="")
+        t1 = await mod.mint_gate_token("org_abc", _AIPS)
+        await mod.deny_gate_token("org_abc", True)
+
+        t2 = await mod.mint_gate_token("org_abc", _AIPS)
+
+        assert t1 == t2 == mod.derive_gate_bearer("org_abc", 0)
+        rows = _token_rows(gate_tables)
+        assert [r["token_hash"]["S"] for r in rows] == [mod.hash_token(t1)]
+        assert rows[0]["denied"]["BOOL"] is True  # the second run did not un-deny it
+        assert _container_row(gate_tables)["bedrock_gate_token_hash"]["S"] == mod.hash_token(t1)
+        assert _tracked(gate_tables) == []
+
+
+class TestDeriveGateBearer:
+    def test_stable_per_owner_and_generation(self):
+        assert mod.derive_gate_bearer("org_a", 0) == mod.derive_gate_bearer("org_a", 0)
+
+    def test_differs_across_generation_and_owner(self):
+        tokens = {
+            mod.derive_gate_bearer("org_a", 0),
+            mod.derive_gate_bearer("org_a", 1),
+            mod.derive_gate_bearer("org_b", 0),
+        }
+        assert len(tokens) == 3
+
+    def test_is_hmac_sha256_of_the_versioned_label_keyed_by_encryption_key(self, monkeypatch):
+        import base64
+        import hmac
+
+        monkeypatch.setattr(mod.settings, "ENCRYPTION_KEY", "k")
+        want = base64.urlsafe_b64encode(
+            hmac.new(b"k", b"lightbulb-gate-bearer:v1:org_a:3", hashlib.sha256).digest()
+        ).rstrip(b"=")
+        assert mod.derive_gate_bearer("org_a", 3) == want.decode()
+
+    def test_refuses_an_empty_key(self, monkeypatch):
+        """An empty HMAC key would make every bearer computable from the owner id alone."""
+        monkeypatch.setattr(mod.settings, "ENCRYPTION_KEY", "")
+        with pytest.raises(RuntimeError):
+            mod.derive_gate_bearer("org_a", 0)
+
 
 class TestConcurrentMints:
     """Two mints for the same owner, both reading before either writes.
@@ -325,7 +374,7 @@ class TestConcurrentMints:
     """
 
     @staticmethod
-    def _interleave(monkeypatch, owner_id: str = "org_abc") -> dict:
+    def _interleave(monkeypatch, owner_id: str = "org_abc", generation: int = 1) -> dict:
         """Force mint B to run to completion between mint A's read and its write.
 
         No sleeps and no real concurrency: the wrapper runs the whole second
@@ -340,7 +389,7 @@ class TestConcurrentMints:
         async def swap(*args, **kwargs):
             if not state.get("started"):
                 state["started"] = True  # set BEFORE the await, or B recurses
-                state["token_b"] = await mod.mint_gate_token(owner_id, _AIPS)
+                state["token_b"] = await mod.mint_gate_token(owner_id, _AIPS, generation=generation)
             return await real_swap(*args, **kwargs)
 
         monkeypatch.setattr(container_repo, "swap_gate_token_hash", swap)
@@ -366,6 +415,21 @@ class TestConcurrentMints:
         assert reachable == {hash_a, hash_b}
         # Both token rows still exist — the loser was tracked, not orphaned.
         assert {r["token_hash"]["S"] for r in _token_rows(gate_tables)} == {hash_a, hash_b}
+
+    @pytest.mark.asyncio
+    async def test_two_same_generation_mints_converge_on_one_row_and_one_pointer(
+        self, gate_tables, fake_runtime, monkeypatch
+    ):
+        """The ordinary shape once leases go: two provision runs, same generation."""
+        _put_container_row(gate_tables, "org_abc", agentcore_runtime_arn="")
+        state = self._interleave(monkeypatch, generation=0)
+
+        token_a = await mod.mint_gate_token("org_abc", _AIPS)
+
+        assert token_a == state["token_b"]
+        assert [r["token_hash"]["S"] for r in _token_rows(gate_tables)] == [mod.hash_token(token_a)]
+        assert _container_row(gate_tables)["bedrock_gate_token_hash"]["S"] == mod.hash_token(token_a)
+        assert _tracked(gate_tables) == []
 
     @pytest.mark.asyncio
     async def test_deny_reaches_the_race_loser(self, gate_tables, fake_runtime, monkeypatch):
@@ -481,8 +545,8 @@ class TestConcurrentMints:
         _put_token_row(gate_tables, h0)
         fake_runtime.bearer = h0_plaintext  # H0 is live: the drain must keep it
 
-        token_b = await mod.mint_gate_token("org_abc", _AIPS)
-        token_a = await mod.mint_gate_token("org_abc", _AIPS)
+        token_b = await mod.mint_gate_token("org_abc", _AIPS, generation=1)
+        token_a = await mod.mint_gate_token("org_abc", _AIPS, generation=2)
         assert _tracked(gate_tables) == [h0, mod.hash_token(token_b)]
 
         # The survivor's create_user_service upsert. It names NEITHER gate
@@ -528,7 +592,7 @@ class TestConcurrentMints:
             # read has already been taken.
             if getattr(fn, "__name__", "") == "put_item" and not state.get("fired"):
                 state["fired"] = True  # set BEFORE the await, or the rival recurses
-                state["token_b"] = await mod.mint_gate_token("org_abc", _AIPS)
+                state["token_b"] = await mod.mint_gate_token("org_abc", _AIPS, generation=1)
             return await real_run_in_thread(fn, **kwargs)
 
         monkeypatch.setattr(container_repo, "run_in_thread", racing_run_in_thread)

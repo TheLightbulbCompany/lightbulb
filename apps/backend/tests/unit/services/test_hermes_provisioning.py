@@ -369,6 +369,73 @@ def _patch_owner_aws(monkeypatch, *, hook_token=None, gateway_token=None, existi
 
     monkeypatch.setattr(lifecycle, "resolve_company_id_for_owner", AsyncMock(return_value=None))
 
+    # The row as DynamoDB holds it: ensure_owner_tokens is `SET x = if_not_exists(x, :x)`.
+    state = dict(existing_row or {})
+
+    async def _ensure_owner_tokens(owner_id, *, hook_token, gateway_token):
+        import asyncio
+
+        await asyncio.sleep(0)  # let a concurrent prepare interleave here
+        state["hook_token"] = state.get("hook_token") or hook_token
+        state["gateway_token"] = state.get("gateway_token") or gateway_token
+        return dict(state)
+
+    monkeypatch.setattr(hermes_provisioning.container_repo, "ensure_owner_tokens", _ensure_owner_tokens)
+    return state
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_prepares_write_the_identical_row_secret_and_bearer(monkeypatch):
+    """No lease: two provision runs for one owner must converge on one credential set."""
+    import asyncio
+
+    import core.billing.bedrock_gate_tokens as bedrock_gate_tokens_mod
+
+    _patch_owner_aws(monkeypatch, existing_row={"owner_id": "org_a"})
+    monkeypatch.setattr(
+        bedrock_gate_tokens_mod,
+        "mint_gate_token",
+        AsyncMock(
+            side_effect=lambda owner_id, aips, *, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
+                owner_id, generation
+            )
+        ),
+    )
+    secrets_written, rows_written = [], []
+
+    async def _write_boot_secret(owner_id, **kwargs):
+        secrets_written.append(kwargs)
+        return f"lightbulb/dev/hermes/{owner_id}/boot"
+
+    async def _update_container_leased(owner_id, claim_id, fields, **kwargs):
+        rows_written.append(fields)
+
+    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _write_boot_secret)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _update_container_leased)
+
+    await asyncio.gather(
+        hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1"),
+        hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-2"),
+    )
+
+    assert len(secrets_written) == 2 and secrets_written[0] == secrets_written[1]
+    assert len(rows_written) == 2 and rows_written[0] == rows_written[1]
+    assert secrets_written[0]["bedrock_bearer"] == bedrock_gate_tokens_mod.derive_gate_bearer("org_a", 0)
+    assert secrets_written[0]["hook_token"] == rows_written[0]["hook_token"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_derives_the_bearer_at_the_rows_generation(monkeypatch):
+    import core.billing.bedrock_gate_tokens as bedrock_gate_tokens_mod
+
+    _patch_owner_aws(monkeypatch, existing_row={"owner_id": "org_a", "gate_bearer_generation": 2})
+    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _noop_async_returns("boot"))
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", AsyncMock())
+
+    await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1")
+
+    assert bedrock_gate_tokens_mod.mint_gate_token.await_args.kwargs["generation"] == 2
+
 
 @pytest.mark.asyncio
 async def test_prepare_hermes_workspace_mints_tokens_and_writes_one_json_boot_secret(monkeypatch):

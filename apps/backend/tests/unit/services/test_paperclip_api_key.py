@@ -157,17 +157,17 @@ async def test_mints_and_stores_when_no_existing_key(admin_client, fake_sm):
 
 
 @pytest.mark.asyncio
-async def test_falls_back_to_put_when_create_races(admin_client, fake_sm):
-    """SM read misses (store empty), so we mint; but a concurrent writer
-    has landed the secret by the time create_secret runs → ResourceExists →
-    put_secret_value overwrites and we still return the freshly minted token."""
+async def test_a_racing_writer_wins_and_our_duplicate_is_revoked(admin_client, fake_sm):
+    """SM read misses (store empty), so we mint; but a concurrent provision has
+    stored ITS key by the time create_secret runs. Create-only: the stored key
+    wins, we return it, and the key we just minted is revoked best-effort so the
+    agent is not left holding two live credentials."""
     name = _secret_name()
+    admin_client.revoke_agent_api_key = AsyncMock(return_value={})
 
     real_create = fake_sm.create_secret
 
     def racing_create(*, Name, SecretString):
-        # Simulate a concurrent writer that created the secret between our
-        # read-miss and our create attempt.
         fake_sm.store[Name] = "pcli_live_from_racer"
         return real_create(Name=Name, SecretString=SecretString)
 
@@ -179,11 +179,29 @@ async def test_falls_back_to_put_when_create_races(admin_client, fake_sm):
         admin_client=admin_client,
     )
 
-    assert result == "pcli_live_abc"
-    admin_client.create_agent_api_key.assert_awaited_once()
-    # create raised ResourceExists, so put_secret_value did the write.
-    assert fake_sm.put_calls == [(name, "pcli_live_abc")]
-    assert fake_sm.store[name] == "pcli_live_abc"
+    assert result == "pcli_live_from_racer"
+    assert fake_sm.put_calls == []
+    assert fake_sm.store[name] == "pcli_live_from_racer"
+    admin_client.revoke_agent_api_key.assert_awaited_once_with(
+        session_cookie="session=admin", agent_id="friday-uuid", key_id="key-1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_revoke_of_the_duplicate_still_returns_the_winner(admin_client, fake_sm):
+    admin_client.revoke_agent_api_key = AsyncMock(side_effect=httpx.ConnectError("down"))
+    fake_sm.store[_secret_name()] = "pcli_live_from_racer"
+    fake_sm.get_secret_value = MagicMock(
+        side_effect=[FakeSM.ResourceNotFoundException("miss"), {"SecretString": "pcli_live_from_racer"}]
+    )
+
+    result = await paperclip_api_key.ensure_paperclip_api_key(
+        owner_id="user_x",
+        paperclip_agent_id="friday-uuid",
+        admin_client=admin_client,
+    )
+
+    assert result == "pcli_live_from_racer"
 
 
 @pytest.mark.asyncio

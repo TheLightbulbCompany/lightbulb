@@ -797,6 +797,10 @@ class PaperclipAdminClient:
             idempotency_key=idempotency_key,
         )
 
+    async def revoke_agent_api_key(self, *, session_cookie: str, agent_id: str, key_id: str) -> dict:
+        """Revoke one agent API key. Maps to ``DELETE /api/agents/{agentId}/keys/{keyId}``."""
+        return await self._delete(f"/api/agents/{agent_id}/keys/{key_id}", session_cookie)
+
     async def list_agents(
         self,
         *,

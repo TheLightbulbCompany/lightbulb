@@ -1766,6 +1766,34 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
     return response.get("Attributes")
 
 
+async def ensure_owner_tokens(owner_id: str, *, hook_token: str, gateway_token: str) -> dict:
+    """Set ``hook_token``/``gateway_token`` only where the row has none; return the row.
+
+    ONE ``if_not_exists`` UpdateItem, so concurrent provision runs each offering fresh
+    tokens converge on the first writer's pair, and an owner that already has tokens keeps
+    them (they are snapshotted into Paperclip adapters, so rotating one silently breaks
+    every run). Callers use the RETURNED values, never their own candidates.
+
+    Raises ``ProvisionSuperseded`` when there is no row: the claim that created it is gone,
+    and an UpdateItem would otherwise create a token-only ghost row.
+    """
+    try:
+        response = await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET hook_token = if_not_exists(hook_token, :h), "
+            "gateway_token = if_not_exists(gateway_token, :g)",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeValues={":h": hook_token, ":g": gateway_token},
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise ProvisionSuperseded(f"no containers row for {owner_id}; its provision claim is gone") from e
+        raise
+    return response["Attributes"]
+
+
 async def swap_gate_token_hash(
     owner_id: str,
     *,

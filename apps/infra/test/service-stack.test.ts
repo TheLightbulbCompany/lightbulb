@@ -695,11 +695,97 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
 describe("ServiceStack — provisioning executor (state machine, live)", () => {
   const template = SERVICE_TEMPLATE_DEV;
 
-  test("provision state machine and provisioner task-def exist", () => {
+  const provisionerFunction = (): any => {
+    const fns = Object.values(
+      template.findResources("AWS::Lambda::Function", {
+        Properties: { FunctionName: "lightbulb-dev-provisioner" },
+      }),
+    );
+    expect(fns).toHaveLength(1);
+    return (fns[0] as any).Properties;
+  };
+
+  test("provision state machine exists and the ECS provisioner task-def is gone", () => {
     template.resourceCountIs("AWS::StepFunctions::StateMachine", 1);
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "lightbulb-dev-provisioner",
+    expect(
+      Object.keys(
+        template.findResources("AWS::ECS::TaskDefinition", {
+          Properties: { Family: "lightbulb-dev-provisioner" },
+        }),
+      ),
+    ).toHaveLength(0);
+  });
+
+  test("the provisioner is a VPC DockerImageFunction on the backend image running awslambdaric", () => {
+    const fn = provisionerFunction();
+    expect(fn.PackageType).toBe("Image");
+    expect(fn.Architectures ?? ["x86_64"]).toEqual(["x86_64"]);
+    expect(fn.ImageConfig.EntryPoint).toEqual(["/app/.venv/bin/python", "-m", "awslambdaric"]);
+    expect(fn.ImageConfig.Command).toEqual(["scripts.provision_lambda.handler"]);
+    expect(fn.Timeout).toBe(300);
+    expect(fn.MemorySize).toBe(2048);
+    expect(fn.ReservedConcurrentExecutions).toBeUndefined();
+    expect(fn.VpcConfig.SubnetIds.length).toBeGreaterThan(0);
+    expect(fn.VpcConfig.SecurityGroupIds).toHaveLength(1);
+    // The same role (and so the same grants) the ECS provisioner task ran with.
+    expect(fn.Role["Fn::GetAtt"][0]).toMatch(/^TaskRole/);
+  });
+
+  test("the provisioner env is the backend env (via SSM) plus the backend's secret map", () => {
+    const backend = (
+      Object.values(
+        template.findResources("AWS::ECS::TaskDefinition", {
+          Properties: { Family: "lightbulb-dev-backend" },
+        }),
+      )[0] as any
+    ).Properties.ContainerDefinitions.find((c: any) => c.Name === "backend");
+    const fnEnv = provisionerFunction().Environment.Variables;
+    const params = template.findResources("AWS::SSM::Parameter", {
+      Properties: { Name: "/lightbulb/dev/provisioner-env" },
     });
+    const [paramId] = Object.keys(params);
+    expect(fnEnv.LAMBDA_ENV_PARAMETER).toEqual({ Ref: paramId });
+    const param = params[paramId] as any;
+    expect(param.Properties.Tier).toBe("Advanced");
+    const plain = JSON.stringify(param.Properties.Value);
+    // Lambda reserves AWS_REGION (and sets it itself); everything else is shared.
+    for (const { Name, Value } of backend.Environment) {
+      if (Name === "PROVISION_STATE_MACHINE_ARN") continue;
+      if (Name === "AWS_REGION") {
+        expect(plain).not.toContain(`${Name}\\"`);
+        continue;
+      }
+      expect(plain).toContain(`\\"${Name}\\":`);
+      if (typeof Value === "string") expect(plain).toContain(JSON.stringify(JSON.stringify(Value)).slice(3, -3));
+    }
+    const secretMap = JSON.stringify(fnEnv.LAMBDA_SECRET_ENV_MAP);
+    // Same keys, and each resolves to the same secret the task def injects.
+    for (const { Name, ValueFrom } of backend.Secrets) {
+      expect(secretMap).toContain(Name);
+      for (const part of ValueFrom["Fn::Join"]?.[1] ?? [ValueFrom]) {
+        if (typeof part === "string") expect(secretMap).toContain(part);
+      }
+    }
+  });
+
+  test("the provisioner may read exactly the backend's injected secrets", () => {
+    const backend = (
+      Object.values(
+        template.findResources("AWS::ECS::TaskDefinition", {
+          Properties: { Family: "lightbulb-dev-backend" },
+        }),
+      )[0] as any
+    ).Properties.ContainerDefinitions.find((c: any) => c.Name === "backend");
+    const docs = [
+      ...Object.values(template.findResources("AWS::IAM::Policy")),
+      ...Object.values(template.findResources("AWS::IAM::ManagedPolicy")),
+    ].map((r: any) => r.Properties.PolicyDocument);
+    const statement = docs
+      .flatMap((d: any) => d.Statement)
+      .find((s: any) => s.Sid === "ProvisionerSecrets");
+    expect(statement).toBeDefined();
+    expect(statement.Action).toEqual("secretsmanager:GetSecretValue");
+    expect(statement.Resource).toHaveLength(backend.Secrets.length);
   });
 
   test("backend task definition carries PROVISION_STATE_MACHINE_ARN and no PROVISION_EXECUTOR flag", () => {
@@ -722,12 +808,16 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     expect(envNames).not.toContain("PROVISION_EXECUTOR");
   });
 
-  const flatDefinition = (): string => {
+  const stateMachineResource = (): any => {
     const stateMachines = Object.values(
       template.findResources("AWS::StepFunctions::StateMachine"),
     );
     expect(stateMachines).toHaveLength(1);
-    const def = (stateMachines[0] as any).Properties?.DefinitionString;
+    return stateMachines[0];
+  };
+
+  const flatDefinition = (): string => {
+    const def = stateMachineResource().Properties?.DefinitionString;
     // DefinitionString synthesizes as an Fn::Join of literal strings and Refs;
     // flatten the literal parts to assert on the ASL content.
     return (def?.["Fn::Join"]?.[1] ?? [def])
@@ -735,34 +825,45 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
       .join("");
   };
 
-  test("state machine definition pins the load-bearing ASL (status condition, missing-exit-code guard, exit-code routing)", () => {
+  test("state machine definition pins the load-bearing ASL (status condition, typed-error Retry/Catch)", () => {
     const flat = flatDefinition();
-    // (a) Status-conditioned DDB writes — the SIGKILL backstop. No claim:
+    // (a) Status-conditioned DDB writes — the crash backstop. No claim:
     // a RUNNING execution owns the provision.
     expect(flat).toContain('"ConditionExpression":"#s = :prov OR #s = :err"');
     expect(flat).not.toContain("provision_claim_id");
-    // (b) A task that never started (image-pull failure) stops with NO exit
-    // code in the Cause. A Choice rule referencing the missing path throws
-    // States.Runtime, Choice states cannot Catch, and the execution dies with
-    // the row stuck at "provisioning" — so ClassifyFailure MUST guard on
-    // IsPresent and route the no-exit-code case to the retry loop before any
-    // numeric comparison (Choice rules evaluate in order).
+    // (b) RunProvisioner is a Lambda invoke retried on the runner's typed
+    // transient error and Lambda's own service errors — 3 attempts, 10 s, x2.
+    // payloadResponseOnly: the Resource IS the function (a GetAtt, blank when
+    // flattened) and the Lambda receives the execution input unwrapped.
+    expect(flat).toContain('"TimeoutSeconds":360,"ResultPath":null,"Resource":""}');
+    expect(JSON.stringify(stateMachineResource().Properties.DefinitionString)).toContain("Provisioner");
     expect(flat).toContain(
-      '"Variable":"$.cause.Containers[0].ExitCode","IsPresent":true',
+      '"ErrorEquals":["ProvisionTransient","Lambda.ServiceException","Lambda.AWSLambdaException","Lambda.SdkClientException","Lambda.TooManyRequestsException"],"IntervalSeconds":10,"MaxAttempts":3,"BackoffRate":2',
     );
-    const isPresentIdx = flat.indexOf('"IsPresent":true');
-    const exit10Idx = flat.indexOf('"NumericEquals":10');
-    expect(isPresentIdx).toBeGreaterThanOrEqual(0);
-    expect(exit10Idx).toBeGreaterThan(isPresentIdx);
-    const guardNextIdx = flat.indexOf('"Next":"AttemptsRemain"', isPresentIdx);
-    expect(guardNextIdx).toBeGreaterThan(isPresentIdx);
-    expect(guardNextIdx).toBeLessThan(exit10Idx);
-    // (c) Exit-code ABI routing: 10 deterministic. The runner never exits 20
-    // any more (no lease to lose), so no route for it.
+    // The task outlives the 5-min function.
+    expect(flat).toContain('"TimeoutSeconds":360');
+    // (c) Exhausted transients stay retryable; the runner's own deterministic
+    // failure keeps the last_error it wrote; anything else (timeout, crash) is
+    // deterministic and the machine writes last_error itself.
     expect(flat).toContain(
-      '"Variable":"$.cause.Containers[0].ExitCode","NumericEquals":10',
+      '"Catch":[{"ErrorEquals":["ProvisionTransient","Lambda.ServiceException","Lambda.AWSLambdaException","Lambda.SdkClientException","Lambda.TooManyRequestsException"],"ResultPath":"$.error","Next":"MarkFailedExhausted"},{"ErrorEquals":["ProvisionFailed"],"ResultPath":"$.error","Next":"MarkFailedDeterministic"},{"ErrorEquals":["States.ALL"],"ResultPath":"$.error","Next":"MarkFailedUnhandled"}]',
     );
-    expect(flat).not.toContain('"NumericEquals":20');
+    expect(flat).toContain("last_error = :le");
+    // The ECS exit-code plumbing is gone.
+    for (const gone of [
+      "ClassifyFailure",
+      "ParseFailureCause",
+      "ShapeForRetry",
+      "AttemptsRemain",
+      "BumpAttempt",
+      "WaitBeforeRetry",
+      "MarkRetrying",
+      "ExitCode",
+      "ecs:runTask",
+      "$.command",
+    ]) {
+      expect(flat).not.toContain(gone);
+    }
     // (d) Terminal-write backstop resilience: the DDB writes retry transient
     // failures, with the condition miss (ConditionalCheckFailed) excluded
     // FIRST so a moved-on row falls to the Superseded catch, never a retry.
@@ -784,14 +885,13 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     expect(flat).not.toContain("watch_ticks");
   });
 
-  test("machine timeout covers every ECS attempt", () => {
-    // Up to 3 x 30-min attempts + retry waits. The timeout lives INSIDE the
-    // ASL (TimeoutSeconds), not as a CFN prop.
-    expect(flatDefinition()).toContain('"TimeoutSeconds":10800');
+  test("machine timeout is 30 minutes", () => {
+    // The timeout lives INSIDE the ASL (TimeoutSeconds), not as a CFN prop.
+    expect(flatDefinition()).toMatch(/"TimeoutSeconds":1800}$/);
   });
 
   test("state machine may write the containers row it marks", () => {
-    // The MarkRetrying/MarkFailed* writes need dynamodb:UpdateItem AND the
+    // The MarkFailed* writes need dynamodb:UpdateItem AND the
     // CMK grant on the SAME role: the containers table is CUSTOMER_MANAGED-
     // encrypted and the key crosses stacks as a bare ARN, so nothing
     // auto-grants it (the 2026-08-10 KMS class of bug).

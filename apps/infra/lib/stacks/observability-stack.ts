@@ -2177,7 +2177,7 @@ def handler(event, context):
     this.createAlarm({
       id: "W58",
       name: "per-user-crash-loop",
-      description: ">=3 unexpected task stops in 5 min on the platform cluster (backend, provisioner, paperclip) - a crash/restart loop. Provisional threshold.",
+      description: ">=3 unexpected task stops in 5 min on the platform cluster (backend, paperclip) - a crash/restart loop. Provisional threshold.",
       metric: crashLoopMetric,
       threshold: 3,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,

@@ -267,8 +267,8 @@ await fetch('https://api-dev.flickmeon.ai/api/v1/debug/provision', {method:'POST
 a routine reprovision door, and destroying a workspace's memory / skills /
 `SOUL.md` / `auth.json` is `DELETE /debug/user-data`'s job (M6-R42). Exactly two
 callers ever pass `delete_profiles=True`: that endpoint and `account_wipe`.
-`POST` runs the **same** funnel production uses (SFN watchdog +
-`scripts/provision_runner.py`), not a hand-rolled sequence, because the DELETE
+`POST` runs the **same** funnel production uses (the SFN execution +
+`scripts/provision_runner.py` in the provisioner Lambda), not a hand-rolled sequence, because the DELETE
 destroyed the owner's Bedrock AIPs along with the row that named them and only
 the runner re-mints them.
 
@@ -763,13 +763,19 @@ you cannot guess from the filename:
   funnel, and stateless: a RUNNING SFN execution named `provision-{owner}-…`
   owns the provision (no-op), otherwise it starts one. No claim, lease or
   fence — every provision step is idempotent, so two racing executions
-  converge. The execution STARTS at `RunProvisioner`: `provision_runner.py`
-  runs immediately as an ECS task on the **platform** cluster, with the
-  machine's own retry/classify states around it. There is no inline attempt
-  and no watch loop (the old 40-tick backstop idled every fresh provision
-  ~40 min once #2875 removed the inline attempt). (That ECS RunTask is the one
-  place provisioning still touches ECS; the thing it provisions is an
-  AgentCore runtime.)
+  converge. The execution STARTS at `RunProvisioner`: a Lambda
+  (`scripts/provision_lambda.py`, the backend image run under `awslambdaric`)
+  calls `provision_runner.run` and maps its exit code to a typed error —
+  `ProvisionTransient` is retried by the machine (3x, 10 s, backoff 2),
+  `ProvisionFailed` and anything else land in a `MarkFailed*` row write. It
+  was an ECS RunTask until 2026-09-22; the task's ~60 s cold start was most
+  of a fresh provision. The Lambda runs as the backend task role in the
+  backend's VPC/SG, and rebuilds the task def's environment at cold start:
+  plain env from the SSM parameter `/lightbulb/{env}/provisioner-env` (it
+  exceeds Lambda's 4 KB env limit), secrets from `LAMBDA_SECRET_ENV_MAP` —
+  both derived by CDK from the task def's own maps. There is no inline
+  attempt and no watch loop (the old 40-tick backstop idled every fresh
+  provision ~40 min once #2875 removed the inline attempt).
 - `paperclip_provisioning.py` — owns `provision_org`, which creates the generic six-agent starter roster for fresh workspaces and preserves legacy/founder rosters. Every agent it seeds carries Paperclip's native `hermes_gateway` adapter pointed at the hook-token-authenticated backend facade; the device-paired `openclaw_gateway` shape is gone (no ws relay to dial, no operator device to mint). An agent row still on `openclaw_gateway` fails its routines, issue runs and Teams Run/Retry **silently** while room chat keeps working — `repoint_agent_adapter` is kept with zero callers precisely because it is the only repair path for that.
 - `owner_lifecycle.py` — the single-writer fence on the path that writes an
   owner's credentials (the OAuth connect-vs-disconnect race). It is a DynamoDB
@@ -1362,7 +1368,7 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 | `network-stack.ts` | VPC (public/private subnets, NAT), ALB, security groups. (No NLB — the old WS chain is gone.) |
 | `auth-stack.ts` | Secrets Manager secrets (Clerk, Stripe, encryption keys) + KMS key |
 | `database-stack.ts` | The core DynamoDB tables (`lightbulb-{env}-{suffix}`) **and the Paperclip Aurora Serverless v2 cluster** (Postgres, 0–4 ACU, Data API). Four tables live elsewhere: `ws-connections` AND `messaging` (api-stack), `bedrock-gate-tokens` (gate stack), `bedrock-invocation-dedup` (meter stack). |
-| `container-stack.ts` | Despite the name, no per-user container lives here any more. It holds the **platform** ECS cluster (the backend Fargate service and the SFN provisioner's `EcsRunTask`), the Cloud Map namespace (kept — `paperclip-stack.ts` registers into it and derives `PAPERCLIP_INTERNAL_URL` from it; only the per-user *Service* was retired), the owner-state replicas bucket, the per-owner Bedrock base policy + permissions boundary (that per-owner role **is** each workspace's AgentCore execution role), the Hermes ECR grants, the ECS task-state event trail, and `ContainerSecurityGroup` — which is NOT a leftover: it is the SG every live AgentCore runtime ENI carries, threaded to the backend as `ECS_SECURITY_GROUP_ID`. ⚠️ **Eight `exportValue` pins over six resources** sit at the bottom of the stack for exactly one deploy — CloudFormation refuses to drop an `Output` whose `Export` a consumer template still imports, and the container stack deploys before `-service`/`-observability`. **PR-6b deletes five of the six** (EFS filesystem ×2 pins, `EfsSecurityGroup`, the per-user Cloud Map service ×2 pins, and the two per-user ECS roles); the sixth, the Cloud Map **namespace** ARN, stays with the namespace itself. |
+| `container-stack.ts` | Despite the name, no per-user container lives here any more. It holds the **platform** ECS cluster (the backend Fargate service; the SFN provisioner is a Lambda now), the Cloud Map namespace (kept — `paperclip-stack.ts` registers into it and derives `PAPERCLIP_INTERNAL_URL` from it; only the per-user *Service* was retired), the owner-state replicas bucket, the per-owner Bedrock base policy + permissions boundary (that per-owner role **is** each workspace's AgentCore execution role), the Hermes ECR grants, the ECS task-state event trail, and `ContainerSecurityGroup` — which is NOT a leftover: it is the SG every live AgentCore runtime ENI carries, threaded to the backend as `ECS_SECURITY_GROUP_ID`. ⚠️ **Eight `exportValue` pins over six resources** sit at the bottom of the stack for exactly one deploy — CloudFormation refuses to drop an `Output` whose `Export` a consumer template still imports, and the container stack deploys before `-service`/`-observability`. **PR-6b deletes five of the six** (EFS filesystem ×2 pins, `EfsSecurityGroup`, the per-user Cloud Map service ×2 pins, and the two per-user ECS roles); the sixth, the Cloud Map **namespace** ARN, stays with the namespace itself. |
 | `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, target-group wiring, DynamoDB/secrets IAM, the AgentCore runtime/workload-identity + Hermes boot-secret + Hermes-profiles grants, the SFN provision watchdog, and the marketplace artifacts S3 bucket. It mounts no filesystem. `LitestreamReplicaLifecycle` is KEPT under its old name and is load-bearing: `s3:ListBucket` is a BUCKET-scoped action, so the object-level `*/hermes/*` grant cannot cover it, and every profile read, write and delete paginates `list_objects_v2` on that bucket. **Autoscaled 2-4 on CPU** (`desiredCount: 2`, `scaleOnCpuUtilization` targeting 60%) — sub-project D moved the machine WebSocket relays' remaining per-connection state (node/operator sockets, RPC waiters) out of process and onto DynamoDB (TTL presence rows, claim leases), so a second+ instance shares load instead of fighting an in-process map. Rolling deploys run at `maxHealthyPercent: 200`, so N is transiently one generation higher on every deploy — which is why the provisioning/bootstrap claim-leases exist. |
 | `api-stack.ts` | Both front doors: the HTTP API (REST) with VPC Link **V2** → ALB + custom-domain host dispatch (`X-Isol8-Public-Host`) + Route53 records, AND the WebSocket API with **Lambda integrations** (`ws-connect`/`ws-disconnect`/`ws-message`), the machine-only Lambda authorizer, the `ws-connections` table, and the `bv-` CloudFront VpcOrigin distribution for raw WS. **Also the whole messaging plane** (it grew here, not in `database-stack.ts`): the `messaging` table + stream, the AppSync **Event API** with its `rooms`/`users` channel namespaces and OIDC-subscribe/IAM-publish split, the `messaging-projector` Lambda, and `openclaw-work.fifo` + the EventBridge Pipe that feeds it. |
 | `bedrock-gate-stack.ts` | The streaming Lambda fronting bedrock-runtime — the enforcement fence for all Bedrock inference (+ the gate-tokens table). See the Billing section. |

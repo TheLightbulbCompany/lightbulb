@@ -556,7 +556,10 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
         Statement: Match.arrayWith([
           Match.objectLike({
             Sid: "OwnerBedrockRoleManage",
-            Action: Match.arrayWith(["iam:DeleteRole"]),
+            // ListRolePolicies: teardown ENUMERATES inline policies (owner-browser,
+            // owner-memory) before DeleteRole; without it every owner-role delete
+            // AccessDenies (dev, 2026-09-22).
+            Action: Match.arrayWith(["iam:ListRolePolicies", "iam:DeleteRole"]),
             Resource: "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-*",
           }),
         ]),

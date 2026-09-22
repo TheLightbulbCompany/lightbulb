@@ -145,6 +145,9 @@ export interface ServiceStackProps extends cdk.StackProps {
     // CfnOutput/ImportValue — matching how taskRole is already passed through.
     ownerBedrockBasePolicy: iam.IManagedPolicy;
     ownerBedrockBoundary: iam.IManagedPolicy;
+    /** The env's shared AgentCore Memory id (ContainerStack.workspaceMemory). One export, not two:
+     *  the ARN is derived here, so the container stack pins as little as possible. */
+    workspaceMemoryId: string;
   };
   managementApiUrl: string;
   /** Public wss:// endpoint returned by /api/v1/desktop/pair so desktop clients
@@ -486,6 +489,23 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:ConnectBrowserAutomationStream",
         ],
         resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
+      }),
+    );
+
+    // Workspace memory wipe (account_wipe / DELETE /debug/user-data -> workspace_memory.
+    // delete_owner_memory). The backend never reads or writes memory content itself; runtimes do,
+    // under their per-owner `owner-memory` policy.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AgentCoreMemoryWipe",
+        actions: [
+          "bedrock-agentcore:ListMemoryRecords",
+          "bedrock-agentcore:BatchDeleteMemoryRecords",
+          "bedrock-agentcore:ListSessions",
+          "bedrock-agentcore:ListEvents",
+          "bedrock-agentcore:DeleteEvent",
+        ],
+        resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
       }),
     );
 
@@ -1375,6 +1395,9 @@ export class ServiceStack extends cdk.Stack {
       AGENTCORE_HERMES_IMAGE: currentHermesTag
         ? `${this.account}.dkr.ecr.${this.region}.amazonaws.com/lightbulb/hermes-agent-arm64:${currentHermesTag}`
         : "",
+      // Stamped into every runtime spec as AGENTCORE_MEMORY_ID; the image enables its memory
+      // provider only when it is set (N-1 safe: an older image ignores it).
+      AGENTCORE_MEMORY_ID: props.container.workspaceMemoryId,
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       GATEWAY_RELAY_URL: props.gatewayRelayUrl,

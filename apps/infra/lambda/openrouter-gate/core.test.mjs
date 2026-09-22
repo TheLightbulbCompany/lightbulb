@@ -6,12 +6,12 @@ const policy = { revision: 'test-1', models: ['anthropic/claude-sonnet-4.5', 'op
 const env = { TOKENS_TABLE: 'tokens', BILLING_TABLE: 'billing', FAST_GATE_TABLE: 'fast', OPENROUTER_KEYS_TABLE: 'keys', REQUESTS_TABLE: 'requests', RESERVE_ESTIMATE_MICROCENTS: '300000', RESERVE_TTL_SECONDS: '1200', MODEL_POLICY_JSON: JSON.stringify(policy), MAX_BODY_BYTES: '100000', MAX_OUTPUT_TOKENS: '8192', OPENROUTER_MANAGED_ENABLED: 'true' };
 const AV = (s) => ({ S: s });
 
-function fixture({ token = 'good', status = 'active', balance = 1000000, provider = 'openrouter_managed', plan, keyState = 'active' } = {}) {
-  const calls = { forwards: [], puts: [], updates: [], errors: [], chunks: [] };
+function fixture({ token = 'good', status = 'active', balance = 1000000, provider = 'openrouter_managed', plan, keyState = 'active', cappedDay, metronome = true } = {}) {
+  const calls = { forwards: [], puts: [], updates: [], errors: [], chunks: [], logs: [] };
   const ddb = {
     async getItem(p) {
       if (p.TableName === 'tokens') return { Item: token === 'good' ? { owner_id: AV('owner-1') } : undefined };
-      if (p.TableName === 'billing') return { Item: { provider_choice: AV(provider), ...(plan ? { plan: AV(plan) } : {}), subscription_status: AV(status), metronome_customer_id: AV('mc'), metronome_contract_id: AV('ct') } };
+      if (p.TableName === 'billing') return { Item: { ...(provider ? { provider_choice: AV(provider) } : {}), ...(plan ? { plan: AV(plan) } : {}), ...(cappedDay ? { openrouter_capped_day: AV(cappedDay) } : {}), subscription_status: AV(status), ...(metronome ? { metronome_customer_id: AV('mc'), metronome_contract_id: AV('ct') } : {}) } };
       if (p.TableName === 'fast') return { Item: balance == null ? undefined : { remaining_microcents: { N: String(balance) }, reserved_microcents: { N: '0' } } };
       if (p.TableName === 'keys') return { Item: { state: AV(keyState), key_hash: AV('hash-1'), secret_name: AV('secret-1') } };
     },
@@ -26,7 +26,7 @@ function fixture({ token = 'good', status = 'active', balance = 1000000, provide
     end() { calls.ended = true; },
     error(err) { calls.errors.push(err); },
   };
-  const deps = { ddb, env, secrets: { async getSecretValue() { return { SecretString: 'sk-or-secret' }; } }, forwardImpl: async (p) => { calls.forwards.push(p); p.writeHead(200, { 'content-type': 'text/event-stream' }); p.write(Buffer.from('data: {"id":"gen-1","choices":[]}\n\n')); p.end(); return { status: 200, generationId: 'gen-1' }; } };
+  const deps = { ddb, env, log: line => calls.logs.push(JSON.parse(line)), secrets: { async getSecretValue() { return { SecretString: 'sk-or-secret' }; } }, forwardImpl: async (p) => { calls.forwards.push(p); p.writeHead(200, { 'content-type': 'text/event-stream' }); p.write(Buffer.from('data: {"id":"gen-1","choices":[]}\n\n')); p.end(); return { status: 200, generationId: 'gen-1' }; } };
   const event = (body = { model: policy.models[0], messages: [{ role: 'user', content: 'Hi' }], stream: true }) => ({ rawPath: '/v1/chat/completions', requestContext: { http: { method: 'POST' } }, headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
   return { calls, deps, responder, event };
 }
@@ -58,3 +58,81 @@ test('server-side tools that can add unpriced spend are rejected', async () => {
 test('reservation covers policy prompt context and requested output at price ceilings', async () => { const f = fixture(); await handleRequest(f.event(), f.responder, f.deps); assert.equal(f.calls.puts[0].Item.reservation_microcents.N, '66384'); });
 test('zero-price policy is not held to the byte-for-token bound (a Hermes first turn is >100 KB)', async () => { const f = fixture({ balance: null, status: 'trial_local', provider: 'none' }); f.deps.env = { ...env, MAX_BODY_BYTES: '262144', MODEL_POLICY_JSON: JSON.stringify({ ...policy, models: ['nvidia/nemotron-3-ultra-550b-a55b:free'], max_price: { prompt: 0, completion: 0 }, max_prompt_tokens: 100000 }) }; await handleRequest(f.event({ model: 'nvidia/nemotron-3-ultra-550b-a55b:free', messages: [{ role: 'system', content: 'x'.repeat(150000) }, { role: 'user', content: 'Hi' }], stream: true }), f.responder, f.deps); assert.equal(f.calls.errors.length, 0, f.calls.errors[0]?.message); assert.equal(f.calls.forwards.length, 1); });
 test('zero-price requests still stop at the hard body cap', async () => { const f = fixture({ balance: null, status: 'trial_local', provider: 'none' }); f.deps.env = { ...env, MAX_BODY_BYTES: '262144', MODEL_POLICY_JSON: JSON.stringify({ ...policy, models: ['nvidia/nemotron-3-ultra-550b-a55b:free'], max_price: { prompt: 0, completion: 0 } }) }; await handleRequest(f.event({ model: 'nvidia/nemotron-3-ultra-550b-a55b:free', messages: [{ role: 'user', content: 'x'.repeat(300000) }], stream: true }), f.responder, f.deps); assert.equal(f.calls.errors[0].status, 413); assert.equal(f.calls.forwards.length, 0); });
+
+// Cheap paid model for capped owners: OpenRouter's per-key daily $ limit is the valve.
+const deepseek = { revision: 'deepseek-v4-flash-trial-v1', models: ['deepseek/deepseek-v4-flash'], max_prompt_tokens: 400000, max_price: { prompt: 0.1, completion: 0.2 } };
+const dsEnv = { ...env, MAX_BODY_BYTES: '262144', GATE_ENV: 'dev', MODEL_POLICY_JSON: JSON.stringify(deepseek) };
+const dsBody = (content = 'Hi') => ({ model: 'deepseek/deepseek-v4-flash', messages: [{ role: 'user', content }], stream: true });
+const today = () => new Date().toISOString().slice(0, 10);
+const cappedOwners = { trial: { status: 'trial_local', provider: null }, base: { plan: 'base', provider: null }, paid_default: { plan: 'standard', provider: null }, paid_default_ultra: { plan: 'ultra_pro', status: 'trialing', provider: null } };
+async function runDs(options, body = dsBody(), setup = () => {}) { const f = fixture({ balance: null, metronome: false, ...options }); f.deps.env = dsEnv; setup(f); await handleRequest(f.event(body), f.responder, f.deps); return f; }
+
+test('capped owners are admitted on a priced policy with no provider choice, Metronome contract, or reservation', async () => {
+  for (const [name, options] of Object.entries(cappedOwners)) {
+    const f = await runDs(options);
+    assert.equal(f.calls.errors.length, 0, `${name}: ${f.calls.errors[0]?.message}`);
+    assert.equal(f.calls.forwards.length, 1, name);
+    assert.equal(f.calls.puts.length, 1, name);
+    assert.equal(f.calls.puts[0].Item.billing_mode.S, 'capped', name);
+    assert.equal(f.calls.puts[0].Item.reservation_microcents.N, '0', name);
+    assert.equal(f.calls.forwards[0].body.provider.data_collection, 'deny', name);
+  }
+});
+test('a paid plan without a provider choice is not capped once its subscription lapses', async () => { const f = await runDs({ plan: 'standard', provider: null, status: 'canceled' }); assert.equal(f.calls.errors[0].status, 403); assert.equal(f.calls.forwards.length, 0); });
+test('a paid plan that explicitly chose managed keeps the Metronome-reserved path', async () => { const f = fixture({ plan: 'standard' }); f.deps.env = dsEnv; await handleRequest(f.event(dsBody()), f.responder, f.deps); assert.equal(f.calls.errors.length, 0, f.calls.errors[0]?.message); assert.equal(f.calls.puts[0].Item.billing_mode.S, 'paid'); assert.notEqual(f.calls.puts[0].Item.reservation_microcents.N, '0'); });
+test('capped requests are bounded by MAX_BODY_BYTES alone, not the byte-for-token bound', async () => {
+  const setup = f => { f.deps.env = { ...dsEnv, MODEL_POLICY_JSON: JSON.stringify({ ...deepseek, max_prompt_tokens: 1000 }) }; };
+  const ok = await runDs(cappedOwners.trial, dsBody('x'.repeat(150000)), setup);
+  assert.equal(ok.calls.errors.length, 0, ok.calls.errors[0]?.message);
+  const big = await runDs(cappedOwners.trial, dsBody('x'.repeat(300000)), setup);
+  assert.equal(big.calls.errors[0].status, 413);
+  const paid = fixture({ plan: 'standard' }); setup(paid); await handleRequest(paid.event(dsBody('x'.repeat(2000))), paid.responder, paid.deps);
+  assert.equal(paid.calls.errors[0].status, 413);
+});
+test('a capped definite pre-generation failure releases the outbox row without a Metronome hold', async () => {
+  const f = await runDs(cappedOwners.trial, dsBody(), f => { f.deps.forwardImpl = async p => { p.writeHead(400, { 'content-type': 'application/json' }); p.end(); return { status: 400, preGeneration: true }; }; });
+  assert.equal(f.calls.updates.length, 1);
+  assert.equal(f.calls.updates[0].TableName, 'requests');
+  assert.equal(f.calls.updates[0].ExpressionAttributeValues[':released'].S, 'released');
+});
+test('prepareBody passes the policy provider routing through and keeps deny', () => {
+  const routed = { ...deepseek, provider: { order: ['deepinfra', 'azure'], ignore: ['baidu'], allow_fallbacks: true } };
+  assert.deepEqual(prepareBody(dsBody(), routed, 'owner-1', env).provider, { max_price: deepseek.max_price, data_collection: 'deny', order: ['deepinfra', 'azure'], ignore: ['baidu'], allow_fallbacks: true });
+  assert.deepEqual(prepareBody(dsBody(), deepseek, 'owner-1', env).provider, { max_price: deepseek.max_price, data_collection: 'deny' });
+  for (const provider of [{ order: 'deepinfra' }, { ignore: [1] }, { allow_fallbacks: 'yes' }, { data_collection: 'allow' }]) assert.throws(() => prepareBody(dsBody(), { ...deepseek, provider }, 'owner-1', env), e => e.status === 503);
+});
+test('an upstream 402 for a capped owner stamps the capped day and returns the daily-cap 429', async () => {
+  const f = await runDs(cappedOwners.base, dsBody(), f => { f.deps.forwardImpl = async p => { p.writeHead(402, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":"key limit"}')); p.end(); return { status: 402, preGeneration: true }; }; });
+  assert.equal(f.calls.head.status, 429);
+  const error = JSON.parse(Buffer.concat(f.calls.chunks).toString());
+  assert.equal(error.error.code, 'trial_daily_cap');
+  assert.equal(error.error.message, 'Lightbulb: daily limit reached — resets at midnight UTC');
+  const stamp = f.calls.updates.find(u => u.TableName === 'billing');
+  assert.equal(stamp.Key.owner_id.S, 'owner-1');
+  assert.equal(stamp.ExpressionAttributeValues[':day'].S, today());
+  assert.ok(f.calls.updates.some(u => u.TableName === 'requests' && u.ExpressionAttributeValues[':released']));
+});
+test('a capped owner already stamped today is refused before upstream', async () => {
+  const f = await runDs({ ...cappedOwners.trial, cappedDay: today() });
+  assert.equal(f.calls.errors[0].status, 429);
+  assert.equal(JSON.parse(f.calls.errors[0].body()).error.code, 'trial_daily_cap');
+  assert.equal(f.calls.forwards.length, 0);
+  assert.equal(f.calls.puts.length, 0);
+  const yesterday = await runDs({ ...cappedOwners.trial, cappedDay: '2000-01-01' });
+  assert.equal(yesterday.calls.forwards.length, 1);
+});
+test('an explicit managed owner 402 is passed through, not stamped', async () => { const f = fixture({ plan: 'standard' }); f.deps.env = dsEnv; f.deps.forwardImpl = async p => { p.writeHead(402, { 'content-type': 'application/json' }); p.end(); return { status: 402, preGeneration: true }; }; await handleRequest(f.event(dsBody()), f.responder, f.deps); assert.equal(f.calls.head.status, 402); assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false); });
+test('each admitted request emits one EMF request metric with tier and billing mode', async () => {
+  const expected = { trial: ['trial', 'capped'], base: ['base', 'capped'], paid_default: ['paid_default', 'capped'] };
+  for (const [name, [tier, mode]] of Object.entries(expected)) {
+    const f = await runDs(cappedOwners[name]);
+    assert.equal(f.calls.logs.length, 1, name);
+    const [log] = f.calls.logs;
+    assert.deepEqual(log._aws.CloudWatchMetrics[0], { Namespace: 'LightbulbAI', Dimensions: [['env', 'tier', 'billing_mode']], Metrics: [{ Name: 'openrouter.gate.request', Unit: 'Count' }] });
+    assert.deepEqual([log.env, log.tier, log.billing_mode, log['openrouter.gate.request']], ['dev', tier, mode, 1]);
+  }
+  const paid = fixture({ plan: 'standard' }); paid.deps.env = dsEnv; await handleRequest(paid.event(dsBody()), paid.responder, paid.deps);
+  assert.deepEqual([paid.calls.logs[0].tier, paid.calls.logs[0].billing_mode], ['managed_paid', 'paid']);
+  const refused = await runDs({ plan: 'standard', provider: null, status: 'canceled' });
+  assert.equal(refused.calls.logs.length, 0);
+});

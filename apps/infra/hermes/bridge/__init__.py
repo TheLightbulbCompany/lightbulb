@@ -59,7 +59,6 @@ if _secret_id:
     os.environ["GATEWAY_TOKEN"] = GATEWAY_TOKEN
     if _boot_secrets.get("bedrockBearer"):
         os.environ["AWS_BEARER_TOKEN_BEDROCK"] = _boot_secrets["bedrockBearer"]
-    os.environ["LIGHTBULB_PROVIDER_CHOICE"] = _boot_secrets.get("providerChoice") or "bedrock_claude"
     os.environ["LIGHTBULB_PROVIDER_SWITCH_FROZEN"] = "1" if _boot_secrets.get("providerSwitchFrozen") is True else "0"
     os.environ["LIGHTBULB_PROVIDER_SWITCH_GENERATION"] = _boot_secrets.get("providerSwitchGeneration") or ""
 

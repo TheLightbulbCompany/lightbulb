@@ -52,7 +52,6 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
         assert turn.HOOK_TOKEN == "boot-hook", "turn.py captured a stale value, not the boot fetch"
         assert server.GATEWAY_TOKEN == "boot-gw", "server.py captured a stale value, not the boot fetch"
         assert os.environ["AWS_BEARER_TOKEN_BEDROCK"] == "boot-bearer"
-        assert os.environ["LIGHTBULB_PROVIDER_CHOICE"] == "openrouter_managed"
         assert os.environ["LIGHTBULB_PROVIDER_SWITCH_GENERATION"] == "gen-new"
         assert turn._turns_frozen is True
         assert turn.reserve_turn() is False
@@ -69,7 +68,6 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
             if mod is not None:
                 sys.modules[name] = mod
         os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
-        os.environ.pop("LIGHTBULB_PROVIDER_CHOICE", None)
         os.environ.pop("LIGHTBULB_PROVIDER_SWITCH_FROZEN", None)
         os.environ.pop("LIGHTBULB_PROVIDER_SWITCH_GENERATION", None)
         os.environ.pop("OPENCLAW_HOOK_TOKEN", None)

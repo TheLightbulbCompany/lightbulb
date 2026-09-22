@@ -484,7 +484,7 @@ def _dotenv_has(agent_id: str, key: str) -> bool:
 def _provider_credential(agent_id: str, provider: str) -> tuple[bool, str]:
     if provider == "bedrock":
         return bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK")), "bedrock-gate"
-    if provider == "custom" and os.environ.get("LIGHTBULB_PROVIDER_CHOICE") == "openrouter_managed":
+    if provider == "custom" and sync.is_managed_route(sync.read_profile_config(agent_id)):
         return bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK")), "lightbulb-gate"
     if provider == "anthropic":
         return _dotenv_has(agent_id, "ANTHROPIC_API_KEY"), "byo-key"

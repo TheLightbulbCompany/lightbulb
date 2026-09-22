@@ -968,6 +968,19 @@ def normalize_profile_backends(agent_id: str) -> dict:
     return existing
 
 
+def is_managed_route(config: dict) -> bool:
+    """Is this profile on the managed OpenRouter gate? Decided from the profile the bridge just
+    pulled, never a boot-time provider choice: a warm process outlives a provider switch, and the
+    backend's profile rewrite is what reaches it on the next turn. The gate-bearer reference
+    counts too, so an edited ``base_url`` (or a runtime spec with no gate URL) still validates --
+    and fails closed -- instead of passing as an ordinary custom route."""
+    block = config.get("model") or {}
+    gate_url = os.environ.get("LIGHTBULB_MANAGED_GATE_URL", "")
+    return block.get("provider") == "custom" and (
+        bool(gate_url) and block.get("base_url") == gate_url
+        or block.get("api_key") == "${LIGHTBULB_GATE_BEARER}")
+
+
 def pin_profile_defaults(agent_id: str, model: str) -> dict:
     """Fill-missing, not force-pin (fix round, M4-R2).
 
@@ -996,11 +1009,7 @@ def pin_profile_defaults(agent_id: str, model: str) -> dict:
     by ``bridge.turn._run_hermes``/``_run_native_paperclip``.
     """
     existing = normalize_profile_backends(agent_id)
-    provider = (existing.get("model") or {}).get("provider")
-    managed = os.environ.get("LIGHTBULB_PROVIDER_CHOICE") == "openrouter_managed"
-    if managed and provider != "custom":
-        raise RuntimeError("managed gate model route is missing or changed")
-    if managed:
+    if is_managed_route(existing):
         tasks = (existing.get("auxiliary") or {})
         gate_url = os.environ.get("LIGHTBULB_MANAGED_GATE_URL", "")
         approved_model = os.environ.get("LIGHTBULB_MANAGED_MODEL_ID", "")

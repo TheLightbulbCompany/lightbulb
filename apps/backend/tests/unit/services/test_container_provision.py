@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.services.container_provision import BEDROCK_TRIAL_CHOICE, resolve_provider_choice
+from core.services.container_provision import BEDROCK_TRIAL_CHOICE, provider_choice_from_row, resolve_provider_choice
 
 
 # ---------------------------------------------------------------------------
@@ -141,3 +141,18 @@ async def test_container_provision_never_touches_ecs_directly():
     assert not hasattr(container_provision, "container_repo")
     for gone in ("get_ecs_manager", "container_rpc", "runtime_transport", "hermes_provisioning"):
         assert not hasattr(container_provision, gone), gone
+
+
+@pytest.mark.parametrize("plan", ["base", "standard", "ultra_pro"])
+def test_plan_without_stored_choice_resolves_to_managed(plan):
+    row = {"plan": plan, "subscription_status": "active"}
+    assert provider_choice_from_row(row) == ("openrouter_managed", None)
+
+
+def test_paid_plan_with_stored_choice_is_never_remapped():
+    row = {"plan": "standard", "subscription_status": "active", "provider_choice": "chatgpt_oauth"}
+    assert provider_choice_from_row(row) == ("chatgpt_oauth", None)
+
+
+def test_no_plan_and_no_choice_keeps_legacy_bedrock_default():
+    assert provider_choice_from_row({"subscription_status": "active"}) == ("bedrock_claude", None)

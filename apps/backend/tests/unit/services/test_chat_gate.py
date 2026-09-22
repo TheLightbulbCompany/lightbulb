@@ -456,3 +456,24 @@ async def test_legacy_billing_row_without_status_does_not_block():
     ):
         result = await gate_chat(user_id="u_1", owner_id="u_1", session_key="sk_test")
     assert result == {"blocked": False}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "account",
+    [
+        {"subscription_status": "active", "plan": "base"},
+        {"subscription_status": "active", "plan": "standard"},
+    ],
+)
+async def test_gate_blocks_capped_paid_owner_at_the_daily_cap(account):
+    """Base and paid-with-no-provider owners run on the same per-key daily cap as the trial, so
+    a stamped cap blocks the send with the card instead of a run that fails at the gate."""
+    with (
+        patch("core.repositories.billing_repo.get_by_owner_id", new=AsyncMock(return_value=account)),
+        patch("core.services.trial_cap.reason_for_account", new=AsyncMock(return_value=trial_cap.DAILY_CAP)),
+        patch("core.observability.product_analytics.capture_once_per_owner_per_day"),
+    ):
+        gate = await gate_chat(user_id="u", owner_id="u", session_key="sk1")
+    assert gate["blocked"] is True
+    assert gate["code"] == "trial_daily_cap"

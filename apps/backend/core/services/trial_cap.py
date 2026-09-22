@@ -108,6 +108,22 @@ async def trial_block_reason(owner_id: str) -> str | None:
     return await reason_for_account(owner_id, account)
 
 
+def is_managed_capped(account: dict | None) -> bool:
+    """True for an owner on the cheap managed model whose OpenRouter per-key
+    daily $ limit is the valve: a trial_local row, a Base row, or (interim) a
+    paid Workspace/Ultra row that never stored a provider_choice. Lockstep with
+    the openrouter-gate's ``capped`` predicate (apps/infra/lambda/openrouter-gate/core.mjs)."""
+    if not account:
+        return False
+    status = account.get("subscription_status")
+    if status == "trial_local":
+        return True
+    live = status in {"active", "trialing"}
+    if account.get("plan") == "base":
+        return live
+    return account.get("plan") in {"standard", "ultra_pro"} and not account.get("provider_choice") and live
+
+
 async def reason_for_account(owner_id: str, account: dict | None) -> str | None:
     """``trial_block_reason``'s predicate over an ALREADY-FETCHED billing
     account.
@@ -119,10 +135,17 @@ async def reason_for_account(owner_id: str, account: dict | None) -> str | None:
     same answer. ``trial_block_reason`` delegates here after its own read, so
     the two can never diverge.
     """
-    if not account or account.get("subscription_status") != "trial_local":
+    if not is_managed_capped(account):
         return None
-    if _is_expired(account):
+    trial = account.get("subscription_status") == "trial_local"
+    if trial and _is_expired(account):
         return TRIAL_EXPIRED
+    # The openrouter-gate stamps this when OpenRouter's per-key daily limit
+    # 402s a capped owner; it clears itself at the UTC rollover.
+    if account.get("openrouter_capped_day") == utc_today():
+        return DAILY_CAP
+    if not trial:
+        return None
     spent = await billing_repo.get_trial_daily_spend(owner_id, utc_today())
     # `>` (not `>=`) mirrors the gate's own inequality exactly, so spend of
     # precisely CAP - RESERVE still admits. `reserved` is deliberately NOT read

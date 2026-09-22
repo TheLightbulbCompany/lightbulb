@@ -1117,3 +1117,37 @@ class TestMaybeRestoreTrialBedrock:
         # A non-positive confirming read must abort the restore — unchanged
         # behavior, and no dependency on trial_cap whatsoever.
         restore.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("plan", ["base", "standard", "ultra_pro"])
+async def test_capped_plan_without_provider_skips_picker_and_credits(plan):
+    """Base, and (interim) Workspace/Ultra with no stored choice, run on the
+    capped managed model: no provider picker, no Metronome credits check."""
+    blocked = AsyncMock(return_value=True)
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.metronome_gate.is_owner_blocked", new=blocked),
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={"subscription_status": "active", "stripe_subscription_id": "sub_x", "plan": plan}
+        )
+        assert await evaluate_provision_gate(owner_id="org_x") is None
+    blocked.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_capped_plan_over_its_daily_limit_returns_trial_daily_cap():
+    from core.services.trial_cap import utc_today
+
+    with patch("core.services.provision_gate.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_x",
+                "plan": "base",
+                "openrouter_capped_day": utc_today(),
+            }
+        )
+        gate = await evaluate_provision_gate(owner_id="org_x")
+    assert gate is not None and gate.code == "trial_daily_cap"

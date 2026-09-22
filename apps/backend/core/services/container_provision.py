@@ -27,9 +27,12 @@ def provider_choice_from_row(row: dict | None) -> tuple[str, str | None]:
     if (row or {}).get("subscription_status") == "trial_local":
         # Cardless Free rows intentionally store no provider_choice. Resolve
         # them through the managed gate so provisioning/key/profile code has
-        # one path; the gate admits this mode only for its zero-price policy.
+        # one path; the owner's OpenRouter per-key daily limit is the valve.
         return "openrouter_managed", None
-    if (row or {}).get("plan") == "base" and not (row or {}).get("provider_choice"):
+    if (row or {}).get("plan") in {"base", "standard", "ultra_pro"} and not (row or {}).get("provider_choice"):
+        # Base, and (interim) a paid Workspace/Ultra row that never chose a
+        # provider, run on the cheap capped model through the managed gate.
+        # A stored choice is never re-mapped.
         return "openrouter_managed", None
     provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
     byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None

@@ -128,3 +128,20 @@ async def test_invalid_subscription_shape_fails_closed_before_durable_writes(ite
 
     repo.set_subscription.assert_not_awaited()
     repo.set_plan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_plan_change_relimits_the_owner_openrouter_key(monkeypatch):
+    monkeypatch.setattr("core.config.settings.OPENROUTER_WORKSPACE_ID", "workspace-uuid")
+    relimit = AsyncMock(return_value=True)
+    monkeypatch.setattr("core.services.openrouter_keys.relimit_owner_key", relimit)
+    await _drive(_event(), account=_account())
+    relimit.assert_awaited_once_with("org_workspace")
+
+
+@pytest.mark.asyncio
+async def test_a_relimit_failure_never_raises_into_the_webhook(monkeypatch):
+    monkeypatch.setattr("core.config.settings.OPENROUTER_WORKSPACE_ID", "workspace-uuid")
+    monkeypatch.setattr("core.services.openrouter_keys.relimit_owner_key", AsyncMock(side_effect=RuntimeError("boom")))
+    repo = await _drive(_event(), account=_account())
+    assert repo.set_plan.await_args.kwargs["plan"] == "standard"

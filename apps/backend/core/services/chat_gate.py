@@ -97,7 +97,7 @@ async def gate_chat(*, user_id: str, owner_id: str, session_key: str) -> dict:
     # paid owner's chat never pays for the extra billing read
     # ``reason_for_account`` does. That helper self-gates on the same
     # predicate, so this is belt-and-braces, not a second contract.
-    if account is not None and account.get("subscription_status") == "trial_local":
+    if account is not None and trial_cap.is_managed_capped(account):
         # ONE predicate, shared with the provision gate, the container-start
         # chokepoint, /container/recover and the Teams run guards, so no door
         # can disagree about whether a trial owner has runway. This branch

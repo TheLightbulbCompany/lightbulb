@@ -1235,6 +1235,20 @@ async def clear_provider_choice(owner_id: str) -> None:
         raise
 
 
+async def clear_openrouter_capped_day(owner_id: str) -> None:
+    """Remove the openrouter-gate's daily-cap marker. No-op without a row."""
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="REMOVE openrouter_capped_day",
+            ConditionExpression="attribute_exists(owner_id)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})

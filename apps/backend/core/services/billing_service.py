@@ -678,11 +678,20 @@ async def change_provider(
         and owner_type == "org"
         and not caller_may_manage_connector(account, clerk_user_id)
     ):
-        raise ChangeProviderError(
-            "not_workspace_owner",
-            "Only the workspace owner who connected ChatGPT can select this provider.",
-            status_code=403,
-        )
+        # Phantom-connector self-heal (same wedge as oauth /start): a recorded
+        # id naming no Clerk user 403s every real admin with no recovery.
+        # Clear it and let this switch proceed as the first claim; a real
+        # owner keeps their 403 below.
+        from core.services.oauth_service import maybe_clear_phantom_connector
+
+        if await maybe_clear_phantom_connector(owner_id, account):
+            account = await billing_repo.get_by_owner_id(owner_id)
+        else:
+            raise ChangeProviderError(
+                "not_workspace_owner",
+                "Only the workspace owner who connected ChatGPT can select this provider.",
+                status_code=403,
+            )
 
     # Fast-path same-choice retry/no-op. A matching choice normally does no
     # work, but a matching choice with a pending profile rewrite must

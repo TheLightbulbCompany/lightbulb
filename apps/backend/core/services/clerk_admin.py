@@ -171,6 +171,41 @@ async def get_user(user_id: str) -> dict | None:
     return response.json()
 
 
+class ClerkLookupError(RuntimeError):
+    """Clerk user lookup failed without answering (no key, network, non-404).
+
+    Distinct from "user does not exist": callers that gate a destructive or
+    ownership-changing action on absence must fail CLOSED on this, and only
+    treat a positive 404 as absence. ``get_user`` above collapses both to
+    None for lenient read-side callers; use ``get_user_strict`` when the
+    difference matters.
+    """
+
+
+async def get_user_strict(user_id: str) -> dict | None:
+    """Single user by Clerk user_id. Returns None ONLY on Clerk 404.
+
+    Raises ``ClerkLookupError`` when CLERK_SECRET_KEY is unset, on network
+    errors, or on non-404 HTTP errors — the caller cannot tell absence from
+    a blip, so it must not act as if the user is gone.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        raise ClerkLookupError("CLERK_SECRET_KEY is unset — cannot verify user existence")
+
+    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            response = await client.get(f"{_CLERK_API_BASE}/users/{user_id}", headers=headers)
+    except Exception as e:  # noqa: BLE001
+        raise ClerkLookupError(f"clerk_admin.get_user_strict network error: {e}") from e
+
+    if response.status_code == 404:
+        return None
+    if response.status_code >= 400:
+        raise ClerkLookupError(f"clerk_admin.get_user_strict HTTP {response.status_code}")
+    return response.json()
+
+
 async def get_primary_email(user_id: str) -> str:
     """The user's primary email address, falling back to their first one.
 

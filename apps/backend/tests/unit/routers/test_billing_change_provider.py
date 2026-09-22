@@ -789,3 +789,66 @@ async def test_change_provider_bedrock_to_byo_always_cold_path(async_client, rep
     assert resp.status_code == 200
     assert resp.json()["restart"] is True
     reprovision.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_phantom_connector_self_heals_on_switch_into_chatgpt(
+    async_client_org_admin,
+):
+    """A recorded connector naming no Clerk user must not 403 a real admin's
+    switch INTO chatgpt_oauth: the reclaim clears the phantom (CAS) and the
+    switch proceeds as the first claim, recording the switching admin."""
+    from unittest.mock import MagicMock
+
+    org_account = {
+        "owner_id": "org_test_456",
+        "owner_type": "org",
+        "stripe_subscription_id": "sub_x",
+        "subscription_status": "active",
+        "provider_choice": "bedrock_claude",
+        # Phantom: names no Clerk user. The caller (user_test_123) is a real
+        # admin who would otherwise eat a permanent 403 here.
+        "oauth_connector_user_id": "user_ghost",
+    }
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=org_account),
+        ),
+        patch(
+            "core.services.oauth_service.maybe_clear_phantom_connector",
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            "core.repositories.billing_repo.set_provider_choice",
+            new=AsyncMock(return_value=None),
+        ) as mock_set_pc,
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new=AsyncMock(return_value={"access_token": "tok", "account_id": "acc"}),
+        ),
+        patch(
+            "core.repositories.container_repo.update_fields",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "org_test_456", "status": "running"}),
+        ),
+        patch("core.repositories.container_repo.takeover_provision", new=AsyncMock(return_value="lease")),
+        patch("core.services.provision_dispatch.dispatch_provision", MagicMock()),
+        patch("asyncio.create_task", lambda coro: coro.close() or MagicMock()),
+    ):
+        resp = await async_client_org_admin.post(
+            "/api/v1/billing/provider",
+            json={"provider_choice": "chatgpt_oauth"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    mock_set_pc.assert_awaited_once_with(
+        "org_test_456",
+        provider_choice="chatgpt_oauth",
+        byo_provider=None,
+        connector_user_id="user_test_123",
+        return_switch_mark=True,
+    )

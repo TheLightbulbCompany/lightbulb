@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
+import jwt
 
 from core.repositories import oauth_state_repo
 from core.services.credentials import oauth_app_store, platform_oauth_app_store, registry
@@ -314,6 +315,18 @@ async def exchange(
     # API path is /v3/company/{realmId}/..., so a connect without it cannot work.
     if realm_id:
         credential["realm_id"] = realm_id
+    # OIDC providers (Microsoft) name the signed-in account and its tenant in the
+    # id_token. It came straight from the token endpoint over TLS, which OIDC Core
+    # §3.1.3.7 accepts in place of a signature check. Only the claims are kept.
+    if tok.get("id_token"):
+        try:
+            claims = jwt.decode(tok["id_token"], options={"verify_signature": False})
+        except jwt.PyJWTError:
+            claims = {}  # identity is cosmetic; a malformed id_token must not fail the connect
+        if claims.get("tid"):
+            credential["tenant_id"] = claims["tid"]
+        if account := claims.get("preferred_username") or claims.get("email"):
+            credential["account"] = account
     # The platform app's secret is Isol8's, not the owner's. It must exist only in
     # its own Secrets Manager entry — never inside a per-owner credential payload,
     # where downstream rails (materializers, client_information) would carry it
@@ -336,3 +349,45 @@ async def exchange(
             info["client_secret"] = credential["client_secret"]
         credential["client_information"] = info
     return rec["owner_id"], rec["provider"], credential, rec.get("origin")
+
+
+async def refresh(owner_id: str, provider_key: str, credential: dict) -> dict:
+    """Trade a backend-held refresh grant for a fresh access token.
+
+    Returns the updated credential; the caller persists it. Microsoft (and Intuit)
+    ROTATE the refresh token on every use, so a returned one replaces the old; a
+    provider that returns none keeps the old. The client secret is re-read from its
+    own store every time — a platform app's is never inside the owner's credential.
+    """
+    p = registry.get_provider(provider_key)
+    store_id, client_secret = await _oauth_client(owner_id, provider_key)
+    # The grant belongs to the client it was issued to; a later DCR re-registration
+    # must not swap it out from under an existing refresh token.
+    client_id = credential.get("client_id") or store_id
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": credential["refresh_token"],
+        "client_id": client_id,
+        "scope": p.oauth.scope_separator.join(p.oauth.scopes),
+    }
+    auth = None
+    if client_secret:
+        if p.oauth.token_endpoint_auth_method == "client_secret_basic":
+            auth = httpx.BasicAuth(client_id, client_secret)
+            data.pop("client_id")
+        else:
+            data["client_secret"] = client_secret
+    if p.mcp_remote is not None:
+        data["resource"] = p.mcp_remote.url
+    async with httpx.AsyncClient(timeout=15) as http:
+        resp = await http.post(p.oauth.token_url, data=data, headers={"Accept": "application/json"}, auth=auth)
+        resp.raise_for_status()
+        tok = resp.json()
+    expires_in = tok.get("expires_in")
+    return {
+        **credential,
+        "access_token": tok["access_token"],
+        "refresh_token": tok.get("refresh_token") or credential["refresh_token"],
+        "token_expiry": _expiry_iso(expires_in),
+        "expires_in": int(expires_in) if expires_in else None,
+    }

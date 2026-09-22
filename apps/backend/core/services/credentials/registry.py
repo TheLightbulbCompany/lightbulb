@@ -168,7 +168,10 @@ class Wiring(BaseModel):
     # written into the config is silently dropped on the next image roll while
     # the integration row still reads "connected" — a credential that vanishes
     # without telling anyone. So a backend-read key does not go there at all;
-    # Secrets Manager (via `_retains_secret`) is its only custodian.
+    # Secrets Manager (via `_retains_secret`) is its only custodian. A backend_only
+    # provider with refresh_owner: backend (microsoft365) still reaches the agent,
+    # but only as a short-lived access token vended per turn by
+    # routers/runtime_rpc.runtime_credentials — never the stored grant.
     backend_only: bool = False
 
     @model_validator(mode="after")

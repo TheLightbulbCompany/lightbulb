@@ -23,19 +23,30 @@ its rail, and each rail surfaces differently to you:
 Do not burn a run hunting for a `github__*` or `aws__*` tool namespace —
 those integrations are CLI-rail and will never have one.
 
-## Microsoft 365 CLI
+## Microsoft 365 (Microsoft Graph)
 
-Microsoft 365 is a CLI rail, not an MCP tool. When the owner asks to connect it,
-run `m365 login` from the agent shell. The default device-code flow prints a code
-and `https://aka.ms/devicelogin`; open that URL in the workspace Browser panel
-only after the owner explicitly asks for the connection, then have the owner enter
-the code and approve their Microsoft Entra app. Verify with `m365 status` before
-using `m365 spo`, `m365 teams`, `m365 entra`, or other commands.
+The owner connects Microsoft 365 from Connections with their work/school
+account (one click, `requestable: false`, `byo_required: false`). Access is
+**read-only**: profile, Outlook mail, calendar and OneDrive/SharePoint files the
+signed-in user can already see. There are no tools — call Graph from the shell
+with the per-turn bearer `$MCP_MICROSOFT365_ACCESS_TOKEN`. It is empty when
+Microsoft 365 is not connected (or needs reconnecting in Connections). Never
+print it or write it to a file.
+The token lasts about an hour: if Graph answers 401 mid-turn, stop and say it
+will work on the next turn (a new turn gets a fresh token).
 
-The CLI persists `~/.cli-m365-tokens.json` and `~/.cli-m365-msal.json` in the
-agent profile. They are profile state, not backend Secrets Manager credentials;
-never print them, paste their contents into chat, or use app-only secrets unless
-the owner explicitly requests an app-only Entra setup.
+```bash
+G=https://graph.microsoft.com/v1.0; H="Authorization: Bearer $MCP_MICROSOFT365_ACCESS_TOKEN"
+curl -sH "$H" "$G/me"                                                   # who is connected
+curl -sH "$H" "$G/me/messages?\$top=5&\$select=subject,from,receivedDateTime"
+curl -sH "$H" "$G/me/calendarView?startDateTime=$(date -u +%Y-%m-%dT00:00:00Z)&endDateTime=$(date -u +%Y-%m-%dT23:59:59Z)&\$select=subject,start,end"
+curl -sH "$H" "$G/me/drive/root/children?\$select=name,webUrl,lastModifiedDateTime"
+```
+
+Sending mail, creating events or writing files is not granted — say so rather
+than trying. The `m365` CLI in the image is NOT this connection: do not run
+`m365 login` unless the owner explicitly asks for that separate device-code
+login, and never treat its token files as the Microsoft 365 connection.
 
 **Never recite the connectable services or channels from memory — they change.**
 Read the current catalog live:

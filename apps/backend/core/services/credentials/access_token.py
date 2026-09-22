@@ -14,10 +14,10 @@ class ReconnectRequired(RuntimeError):
 
 
 async def get(owner_id: str, provider_key: str) -> str:
-    """Return a fresh access token for a connected remote MCP provider."""
+    """Return a fresh access token for a connected backend-refreshed OAuth provider."""
     provider = registry.get_provider(provider_key)
-    if not provider.mcp_remote or not provider.oauth:
-        raise ValueError(f"{provider_key} is not a remote OAuth MCP provider")
+    if not provider.oauth or registry.refresh_owner_for(provider) != "backend":
+        raise ValueError(f"{provider_key} is not a backend-refreshed OAuth provider")
 
     # ponytail: one owner-wide lease and Secrets Manager read per request keep
     # refresh correct; use provider leases/access-token caching if latency grows.

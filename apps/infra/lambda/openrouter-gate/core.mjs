@@ -49,7 +49,11 @@ export function prepareBody(input, policy, ownerId, env) {
   }
   if (!Number.isFinite(policy?.max_price?.prompt) || !Number.isFinite(policy?.max_price?.completion) || policy.max_price.prompt < 0 || policy.max_price.completion < 0) fail(503, 'Model policy unavailable');
   const { session_id: _ignoredSession, ...safeInput } = input;
-  const body = { ...safeInput, provider: { max_price: policy.max_price, data_collection: 'deny' }, stream_options: { include_usage: true } };
+  // Free models are training-subsidized: no endpoint serves them under a deny
+  // policy, so a zero-price policy allows training while any priced policy
+  // keeps deny. Paid inference stays deny-only.
+  const freePolicy = policy.max_price?.prompt === 0 && policy.max_price?.completion === 0;
+  const body = { ...safeInput, provider: { max_price: policy.max_price, data_collection: freePolicy ? 'allow' : 'deny' }, stream_options: { include_usage: true } };
   if (body.max_tokens === undefined && body.max_completion_tokens === undefined) body.max_tokens = Number(env.MAX_OUTPUT_TOKENS);
   if (input.model === 'openrouter/auto') {
     if (!Array.isArray(policy.auto?.allowed_models) || !policy.auto.allowed_models.length || !policy.auto.allowed_models.every(m => policy.models.includes(m) && m !== 'openrouter/auto')) fail(503, 'Auto policy unavailable');

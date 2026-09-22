@@ -1308,6 +1308,42 @@ async def test_write_profiles_resolves_owner_level_inputs_exactly_once_for_a_six
     assert calls == ["org_a"]
 
 
+@pytest.mark.asyncio
+async def test_two_concurrent_write_profiles_calls_produce_byte_identical_config_and_env(monkeypatch):
+    """#12: provision_hermes_runtime's whole path -- including write_profiles -- must converge
+    for two concurrent provision runs of the same owner, not just the runtime-create step.
+    write_agent_profile/build_profile_config/build_profile_env are pure functions of their
+    arguments (no clock, no random id), and Task 1 already made every credential that feeds
+    those arguments (the boot secret's hook/gateway/bearer tokens) converge at the source --
+    so two independent write_profiles calls with the same converged inputs (aip_arns, provider
+    choice, paperclip api key, integrations, env vars) must render byte-identical config.yaml
+    and .env for every agent, regardless of which of the two concurrent runs' S3 PUT lands
+    last."""
+    roster = [
+        {"id": f"1111111{i}-1111-1111-1111-111111111111", "name": f"Agent{i}", "role": "general"} for i in range(6)
+    ]
+    _patch_write_profiles_collaborators(
+        monkeypatch, env_vars={"SOME_INTEGRATION_TOKEN": "tok-abc"}, paperclip_api_key="pcp_key_fixed"
+    )
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+
+    uploaded: dict[int, dict[str, tuple[str, str]]] = {0: {}, 1: {}}
+
+    def _make_capturing_upload(run_index):
+        async def _capture(owner_id, agent_id, files):
+            uploaded[run_index][agent_id] = (files.config_yaml, files.dotenv)
+
+        return _capture
+
+    for run_index in range(2):
+        monkeypatch.setattr("core.services.hermes_profiles.upload_profile", _make_capturing_upload(run_index))
+        await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+
+    assert set(uploaded[0]) == set(uploaded[1]) == {row["id"] for row in roster}
+    for agent_id in uploaded[0]:
+        assert uploaded[0][agent_id] == uploaded[1][agent_id], f"profile diverged across runs for agent {agent_id}"
+
+
 # --- owner facts staged at provision (fix round 1, Important 2) --------------------------------
 # A freshly provisioned AgentCore workspace never runs ecs_manager.write_user_configs (the only
 # caller of owner_facts.write_owner_facts), so it had no lightbulb-facts.json at all while the

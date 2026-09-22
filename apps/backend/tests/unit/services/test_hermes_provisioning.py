@@ -8,13 +8,6 @@ from core.services import hermes_provisioning
 
 
 @pytest.fixture(autouse=True)
-def _no_stored_soul(monkeypatch):
-    """write_profile_for_agent reads the stored SOUL.md to keep an owner-edited one; no test
-    here has one unless it says so."""
-    monkeypatch.setattr("core.services.hermes_profiles.read_soul_md", lambda owner_id, agent_id: None)
-
-
-@pytest.fixture(autouse=True)
 def _no_billing_row(monkeypatch):
     """Provisioning resolves the provider from billing on every path; default to no row
     (bedrock_claude). Tests that care patch billing_repo themselves, which wins."""

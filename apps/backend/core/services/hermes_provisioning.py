@@ -1146,8 +1146,8 @@ async def write_profile_for_agent(
 
     ``soul_md_override``, when given, replaces the derived SOUL.md (``write_agent_profile``'s own
     ``build_soul_md(agent_row)``) verbatim -- for a caller staging identity text that isn't purely
-    roster-derived. ``None`` (the default) writes the derived one unless the stored SOUL.md is
-    not backend-generated (``is_generated_soul``), which is kept as is.
+    roster-derived. ``None`` (the default) writes the derived one; ``write_profiles`` passes the
+    stored SOUL.md here when it is owner-edited, so a re-render keeps it.
 
     ``inputs``, when given, is used AS-IS instead of calling ``resolve_profile_inputs`` again --
     Q9a fix round 1, I3: ``write_profiles``'s six-agent roster fan-out resolves the SAME
@@ -1198,15 +1198,6 @@ async def write_profile_for_agent(
         ) from exc
     if soul_md_override is not None:
         files.soul_md = soul_md_override
-    else:
-        # Every reconcile rewrites every profile: keep a SOUL.md the owner saved on the
-        # Instructions tab (or a migrated/marketplace one) -- the same generated-marker rule
-        # refresh_agent_soul applies to a rename.
-        from core.services import hermes_profiles
-
-        current = await run_in_thread(hermes_profiles.read_soul_md, owner_id, agent_id)
-        if current and not hermes_profiles.is_generated_soul(current):
-            files.soul_md = current
     await upload_profile(owner_id, agent_id, files)
     await _stage_owner_facts(owner_id, [agent_id], inputs)
 

@@ -17,6 +17,7 @@ const PURCHASE = [
   "payment_past_due",
   "team_billing_required",
   "credits_required",
+  "included_daily_cap",
 ];
 
 const NOT_PURCHASE = [
@@ -35,6 +36,14 @@ describe("purchaseCta", () => {
   it.each(NOT_PURCHASE)("leaves %s alone", (code) => {
     expect(isPurchaseGate(code)).toBe(false);
     expect(purchaseGateCopy(code)).toBeNull();
+  });
+
+  // A paying owner at today's included usage: never trial wording, and no plan
+  // paywall — they already have a plan.
+  it("gives included_daily_cap paid copy, not trial copy", () => {
+    const copy = purchaseGateCopy("included_daily_cap");
+    expect(`${copy?.title} ${copy?.body}`).not.toMatch(/free|trial/i);
+    expect(isSubscriptionGate("included_daily_cap")).toBe(false);
   });
 
   it("treats an unknown or absent code as not-a-purchase-gate", () => {

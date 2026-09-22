@@ -532,13 +532,28 @@ class TestEnvGatedProvider:
 
     @pytest.mark.asyncio
     async def test_unsupported_oauth_does_not_start_provider_consent(self, monkeypatch):
+        # Fail-closed 503 gate: consent never starts when the provider has no usable
+        # Hermes credential path. No real provider currently trips this in prod (the
+        # broker promotion moved every remote MCP onto the workspace broker), so the
+        # unsupported leg is forced directly rather than pinned to registry data.
         monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
+        monkeypatch.setattr(connections.apply_connection, "runtime_supported", lambda p: False)
         started = AsyncMock()
         monkeypatch.setattr(connections.oauth_dance, "start", started)
         with pytest.raises(connections.HTTPException) as exc:
             await connections._start_oauth("org_1", "stripe")
         assert exc.value.status_code == 503
         started.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_brokered_oauth_starts_provider_consent_in_prod(self, monkeypatch):
+        # The broker promotion made stripe runtime-supported in prod, so consent starts.
+        monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
+        started = AsyncMock(return_value="https://provider.example/authorize")
+        monkeypatch.setattr(connections.oauth_dance, "start", started)
+        result = await connections._start_oauth("org_1", "stripe")
+        assert result == {"authorize_url": "https://provider.example/authorize"}
+        started.assert_awaited_once()
 
     def test_allowlisted_owner_is_not_requestable(self, monkeypatch):
         monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")

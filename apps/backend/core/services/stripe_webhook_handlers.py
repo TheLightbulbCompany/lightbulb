@@ -507,8 +507,7 @@ async def run_conversion_reprovision(owner_id: str) -> None:
     try:
         from core.services.provision_dispatch import dispatch_provision
 
-        await dispatch_provision(owner_id)
-        succeeded = True
+        succeeded = await dispatch_provision(owner_id)
     except Exception:
         logger.exception("Trial-conversion reprovision failed for owner %s", owner_id)
     put_metric(

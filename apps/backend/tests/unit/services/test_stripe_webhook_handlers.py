@@ -767,7 +767,7 @@ async def test_non_conversion_event_does_not_stamp_the_container_row(mock_repo, 
 async def test_reprovision_success_clears_substatus_and_pending(mock_container_repo):
     """Success: the converting marker is cleared AND conversion_pending drops,
     so the self-heal below never re-fires a conversion that already landed."""
-    dispatch = AsyncMock(return_value={"status": "reprovisioning"})
+    dispatch = AsyncMock(return_value=True)
     with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
@@ -775,6 +775,18 @@ async def test_reprovision_success_clears_substatus_and_pending(mock_container_r
     fields = _stamped_fields(mock_container_repo.update_conversion_fields)
     assert fields["substatus"] is None
     assert fields["conversion_pending"] is False
+
+
+@pytest.mark.asyncio
+async def test_reprovision_claim_loss_keeps_recovery_markers(mock_container_repo):
+    dispatch = AsyncMock(return_value=False)
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+        await handlers.run_conversion_reprovision("org_x")
+
+    fields = _stamped_fields(mock_container_repo.update_conversion_fields)
+    assert fields["substatus"] is None
+    assert "conversion_pending" not in fields
+    assert "conversion_started_at" not in fields
 
 
 @pytest.mark.asyncio

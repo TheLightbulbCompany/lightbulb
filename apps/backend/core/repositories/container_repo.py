@@ -483,10 +483,11 @@ async def try_claim_provision(
     lease was taken over aborts at its next checkpoint instead of poisoning the
     winner's writes.
 
-    Claimable: no row, ``error``, ``stopped``, or a ``provisioning`` row whose
-    lease is stale (``provision_claimed_at`` absent — legacy/wedged rows — or
-    older than PROVISION_CLAIM_STALE_S with no checkpoint refresh). NOT
-    claimable: ``running``, or a fresh ``provisioning`` lease. Release is by
+    Claimable: no row, ``error``, ``stopped``, a ``running`` row explicitly
+    marked ``needs_provision``, or a ``provisioning`` row whose lease is stale
+    (``provision_claimed_at`` absent — legacy/wedged rows — or older than
+    PROVISION_CLAIM_STALE_S with no checkpoint refresh). NOT claimable: an
+    ordinary ``running`` row or a fresh ``provisioning`` lease. Release is by
     normal status transitions: failure paths flip the row to ``error``
     (immediately re-claimable, and the status poll's existing error auto-retry
     re-dispatches), success ends at ``running``.
@@ -521,6 +522,8 @@ async def try_claim_provision(
         ":newid": str(uuid.uuid4()),
         ":error": "error",
         ":stopped": "stopped",
+        ":running": "running",
+        ":true": True,
         ":stale": now_epoch - PROVISION_CLAIM_STALE_S,
     }
     if execution_name is not None:
@@ -533,6 +536,7 @@ async def try_claim_provision(
             UpdateExpression=update_expr,
             ConditionExpression=(
                 "(attribute_not_exists(owner_id) OR #s = :error OR #s = :stopped "
+                "OR (#s = :running AND needs_provision = :true) "
                 "OR (#s = :prov AND (attribute_not_exists(provision_claimed_at) OR provision_claimed_at < :stale))) "
                 "AND attribute_not_exists(release_update_id)"
             ),

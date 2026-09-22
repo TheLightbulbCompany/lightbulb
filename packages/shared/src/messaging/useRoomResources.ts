@@ -136,6 +136,9 @@ export function useRoomResources(
  * newer-page poll on a steady cadence so an open transcript keeps advancing
  * through throttled or dropped hints (the relay throttles transcript hints to
  * one per second per session with no trailing edge). Pass 0 to disable.
+ * Intended for live output only: callers pass a nonzero cadence while the
+ * session is `busy` and 0 otherwise, so idle sessions stay on hints plus the
+ * 30s resources safety poll instead of steady polling.
  */
 export function useLocalSessionHistory(
   client: RoomResourceSource["client"], roomId: string, sessionId: string,

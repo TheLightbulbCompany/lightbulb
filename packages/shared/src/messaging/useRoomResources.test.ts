@@ -346,4 +346,22 @@ describe("useLocalSessionHistory tail stability", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
     expect(listLocalSessionEvents).toHaveBeenCalledTimes(1);
   });
+
+  it("stops polling when pollMs flips to 0, e.g. the session goes idle", async () => {
+    vi.useFakeTimers();
+    const listLocalSessionEvents = vi.fn(async () => ({ events: [ev(1)], nextAfterSeq: null }));
+    const client = { listLocalSessionEvents } as unknown as RoomResourceSource["client"];
+    const onAccessLost = () => {};
+    const { rerender } = renderHook(
+      ({ pollMs }) => useLocalSessionHistory(client, "room-1", "session-1", 1, 0, onAccessLost, { pollMs }),
+      { initialProps: { pollMs: 5000 } },
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(listLocalSessionEvents).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(listLocalSessionEvents).toHaveBeenCalledTimes(2);
+    rerender({ pollMs: 0 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    expect(listLocalSessionEvents).toHaveBeenCalledTimes(2); // idle: hints plus the safety poll only
+  });
 });

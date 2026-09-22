@@ -82,8 +82,8 @@ def _no_container_row():
 
 @pytest.fixture
 def _container_running(_no_container_row):
-    """Owner already has a RUNNING container: try_claim_provision refuses that
-    row, so no executor run — the seed must be reconciled on this thread."""
+    """Owner already has a RUNNING container: no executor run is dispatched, so
+    the seed must be reconciled on this thread."""
     _no_container_row.return_value = {"status": "running", "service_name": "openclaw-x"}
     return _no_container_row
 
@@ -797,6 +797,31 @@ async def test_ensure_user_ready_dispatches_container_for_owner(_stub_trial_defa
     )
 
 
+@pytest.mark.parametrize(
+    ("row", "dispatched"),
+    [
+        # A deterministic failure waits for /container/recover, a user action or an input
+        # change; re-dispatching it on every ~3s poll just re-fails it forever.
+        ({"status": "error", "retryable": False}, False),
+        ({"status": "error", "retryable": True}, True),
+        ({"status": "error"}, True),  # legacy cause-less error row stays self-healing
+        ({"status": "provisioning"}, True),  # wedged or live: dispatch no-ops while one runs
+        ({"status": "stopped"}, True),
+    ],
+)
+async def test_poll_dispatch_skips_a_deterministic_error_row(_no_container_row, row, dispatched):
+    _no_container_row.return_value = row
+    with (
+        patch("core.services.user_provision.dispatch_provision", new=MagicMock()) as dispatch,
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda coro: None),
+        patch.object(user_provision.wake_policy, "is_parked_trial", AsyncMock(return_value=False)),
+        patch.object(user_provision, "_reconcile_owner_seed", AsyncMock()) as reconcile,
+    ):
+        await user_provision._provision_or_reconcile(_org_admin_auth(), "org_456")
+    assert dispatch.called is dispatched
+    reconcile.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_ensure_user_ready_dispatches_container_for_org_admin():
     """Org-admin (no company yet) → dispatch_provision dispatched (admin owns the box)."""
@@ -1110,10 +1135,8 @@ async def test_member_joins_company_but_does_not_dispatch_container():
 @pytest.mark.asyncio
 async def test_running_container_skips_container_dispatch_for_admin(_container_running):
     """RUNNING-container poll path: the org admin's poll must run paperclip
-    provisioning but NOT dispatch the executor. try_claim_provision refuses a
-    running row anyway, so the dispatch could only lose its claim — and the old
-    caller-passed provision_container=False flag is gone; the decision comes
-    from the row."""
+    provisioning but NOT dispatch the executor — the old caller-passed
+    provision_container=False flag is gone; the decision comes from the row."""
     fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_first")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
@@ -1951,7 +1974,7 @@ async def test_ensure_user_ready_does_not_invoke_arm_for_org_member(_stub_arm_ni
 # the duplicate-company source (a load-balanced poll fan-out each running
 # provision_org) is gone from the poll thread. The ONE case that stays here is
 # the state where no provision will run at all: the container is already
-# running (try_claim_provision refuses that row) or is a deliberately parked
+# running or is a deliberately parked
 # trial box (which a passive read must not wake).
 # ---------------------------------------------------------------------------
 
@@ -2039,9 +2062,9 @@ async def test_gate_up_org_member_branch_is_unchanged():
 async def test_concurrent_polls_run_no_inline_owner_seed(_stub_trial_default):
     """The #1442 fix at the poll boundary: 15 concurrent /container/status polls
     for an owner with no container run ZERO inline provision_org — the
-    duplicate-company source is gone. Each poll instead dispatches, and the
-    executor's try_claim_provision (proven in test_provision_dispatch) collapses
-    the 15 dispatches to one execution -> one runner -> one seed."""
+    duplicate-company source is gone. Each poll instead dispatches; dispatch
+    no-ops while an execution is RUNNING (test_provision_dispatch), and a racing
+    duplicate execution is fenced by the seed's own claims."""
     dispatched: list[str] = []
 
     def capture_task(coro):

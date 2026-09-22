@@ -197,6 +197,74 @@ async def ensure_owner_browser_policy(owner_id: str, profile_id: str) -> None:
     )
 
 
+async def ensure_owner_memory_policy(owner_id: str) -> None:
+    """Per-owner workspace-memory grant, inline on the owner's runtime role, as its own
+    ``PolicyName`` (same reason as ``owner-browser``: break-glass swaps ``owner-bedrock`` wholesale).
+
+    The memory resource is SHARED by every tenant in the env, so this document IS the isolation --
+    exactly the shape the 2026-09-22 dev spike proved (a second owner was AccessDenied on every
+    cross-owner call, including ``CreateEvent`` under the first owner's actor id):
+
+    - events only under ``actorId`` = this owner;
+    - records only in the EXACT namespace ``/owners/<owner>/`` (there is no ``namespacePath``
+      condition key; a prefix call fails closed under this Allow);
+    - an explicit Deny on the actions that carry no condition keys at all -- allowed anywhere,
+      they reach any tenant's record by id. The CDK boundary omits them too; this is the belt.
+
+    A no-op when the env has no memory configured."""
+    from core.dynamodb import run_in_thread
+    from core.services.workspace_memory import owner_namespace
+
+    memory_id = settings.AGENTCORE_MEMORY_ID
+    if not memory_id:
+        return
+    memory_arn = f"arn:aws:bedrock-agentcore:{settings.AWS_REGION}:{await _caller_account_id()}:memory/{memory_id}"
+    doc = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "WorkspaceMemoryOwnEvents",
+                "Effect": "Allow",
+                "Action": [
+                    "bedrock-agentcore:CreateEvent",
+                    "bedrock-agentcore:ListEvents",
+                    "bedrock-agentcore:GetEvent",
+                    "bedrock-agentcore:ListSessions",
+                ],
+                "Resource": memory_arn,
+                "Condition": {"StringEquals": {"bedrock-agentcore:actorId": owner_id}},
+            },
+            {
+                "Sid": "WorkspaceMemoryOwnRecords",
+                "Effect": "Allow",
+                "Action": ["bedrock-agentcore:RetrieveMemoryRecords", "bedrock-agentcore:ListMemoryRecords"],
+                "Resource": memory_arn,
+                "Condition": {"StringEquals": {"bedrock-agentcore:namespace": owner_namespace(owner_id)}},
+            },
+            {
+                "Sid": "WorkspaceMemoryNoUnconditionable",
+                "Effect": "Deny",
+                "Action": [
+                    "bedrock-agentcore:GetMemoryRecord",
+                    "bedrock-agentcore:DeleteMemoryRecord",
+                    "bedrock-agentcore:BatchCreateMemoryRecords",
+                    "bedrock-agentcore:BatchUpdateMemoryRecords",
+                    "bedrock-agentcore:BatchDeleteMemoryRecords",
+                    "bedrock-agentcore:DeleteEvent",
+                    "bedrock-agentcore:ListActors",
+                ],
+                "Resource": "*",
+            },
+        ],
+    }
+    await run_in_thread(
+        _iam_client().put_role_policy,
+        RoleName=_owner_role_name(owner_id),
+        PolicyName="owner-memory",
+        PolicyDocument=json.dumps(doc),
+    )
+
+
 def build_owner_bedrock_policy(
     *,
     owner_id: str,

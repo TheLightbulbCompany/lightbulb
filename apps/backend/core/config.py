@@ -355,6 +355,9 @@ class Settings(BaseSettings):
     # The Hermes bridge image a workspace's AgentCore runtime runs. Empty = provision_hermes_runtime
     # refuses rather than guessing an image (mirrors AGENTCORE_GATEWAY_IMAGE above).
     AGENTCORE_HERMES_IMAGE: str = ""
+    # The env's shared AgentCore Memory (CDK ContainerStack.workspaceMemory). Empty = no workspace
+    # memory: no per-owner grant, no AGENTCORE_MEMORY_ID in the runtime env, no wipe.
+    AGENTCORE_MEMORY_ID: str = ""
 
     # Provisioned agent email (set by CDK ServiceStack). This is the BASE
     # domain (e.g. "isol8.co" in prod) — each company gets its own subdomain,

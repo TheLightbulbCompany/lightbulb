@@ -517,13 +517,6 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
         logger.warning("hermes teardown: could not delete boot secret for owner=%s", owner_id, exc_info=True)
 
     if delete_profiles:
-        from core.services import workspace_memory
-
-        try:
-            await workspace_memory.delete_owner_memory(owner_id)
-        except Exception:  # noqa: BLE001 — best-effort, like the S3 profiles below
-            logger.warning("hermes teardown: could not wipe workspace memory for owner=%s", owner_id, exc_info=True)
-    if delete_profiles:
         try:
             await run_in_thread(_delete_profile_prefix_objects, owner_id)
         except Exception:  # noqa: BLE001 — best-effort cleanup
@@ -551,6 +544,7 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
          reporting success: the runtime is already gone, so a raise honestly means
          "teardown incomplete, retry me", and every step is idempotent.
       4. Sweep the owner's ``channel_links`` rows (non-fatal).
+      5. (``delete_profiles`` only) wipe the owner's workspace memory. Raises on failure.
 
     ``delete_profiles`` (M6-R42) defaults to **False** and must stay that way: this
     function is shared by NON-terminal callers -- ``entitlement_teardown`` (a lapsed or
@@ -587,6 +581,15 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
             logger.info("Swept %d channel_link rows for deleted workspace (owner=%s)", link_count, owner_id)
     except Exception:  # noqa: BLE001 — the runtime is already gone; orphan link rows are cheap
         logger.exception("Failed to sweep channel_link rows for owner %s after teardown", owner_id)
+
+    if delete_profiles:
+        # Workspace memory is the owner's data like the profiles are. LAST and not swallowed: its
+        # records never expire, so a failure must say "teardown incomplete, retry me" -- and a
+        # retry arrives row-less, which is why this sits outside the ``if container`` branch
+        # (and after the reap, which needs this call's ``deleted`` image).
+        from core.services import workspace_memory
+
+        await workspace_memory.delete_owner_memory(owner_id)
 
     return deleted
 

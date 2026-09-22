@@ -1,5 +1,5 @@
-"""The workspace-memory wipe: every record in the owner's namespace, then every event of every
-session under the owner's actor id -- and nothing of anyone else's."""
+"""The workspace-memory wipe: the owner's records now (loudly), then a background tail that deletes
+the owner's events and re-sweeps records extraction produced late -- and nothing of anyone else's."""
 
 import asyncio
 from unittest.mock import MagicMock
@@ -9,19 +9,24 @@ import pytest
 from core.services import workspace_memory
 
 
-def _fake_client(record_ids: list[str], sessions: dict[str, list[str]]) -> MagicMock:
+def _fake_client(record_pages: list[tuple[list[str], bool]], sessions: dict[str, list[list[str]]]) -> MagicMock:
+    """``record_pages``: (ids, has_next) per ListMemoryRecords call, in order. ``sessions``: event
+    pages per session."""
     fake = MagicMock()
-    # Two pages of records, so pagination is exercised.
-    half = len(record_ids) // 2
     fake.list_memory_records.side_effect = [
-        {"memoryRecordSummaries": [{"memoryRecordId": r} for r in record_ids[:half]], "nextToken": "p2"},
-        {"memoryRecordSummaries": [{"memoryRecordId": r} for r in record_ids[half:]]},
-        # The late re-sweep finds one record extraction produced after the first pass.
-        {"memoryRecordSummaries": [{"memoryRecordId": "late"}]},
+        {"memoryRecordSummaries": [{"memoryRecordId": r} for r in page], **({"nextToken": "n"} if nxt else {})}
+        for page, nxt in record_pages
     ]
     fake.batch_delete_memory_records.return_value = {"successfulRecords": [], "failedRecords": []}
     fake.list_sessions.return_value = {"sessionSummaries": [{"sessionId": s} for s in sessions]}
-    fake.list_events.side_effect = lambda **kw: {"events": [{"eventId": e} for e in sessions[kw["sessionId"]]]}
+    pages = {sid: list(ps) for sid, ps in sessions.items()}
+
+    def _list_events(**kw):
+        page = pages[kw["sessionId"]].pop(0)
+        more = bool(pages[kw["sessionId"]])
+        return {"events": [{"eventId": e} for e in page], **({"nextToken": "t"} if more else {})}
+
+    fake.list_events.side_effect = _list_events
     return fake
 
 
@@ -31,17 +36,20 @@ def configured(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_wipe_deletes_the_owners_records_in_chunks_and_every_event(monkeypatch, configured):
+async def test_wipe_deletes_records_now_and_events_plus_late_records_in_the_tail(monkeypatch, configured):
     records = [f"r{i}" for i in range(250)]
-    fake = _fake_client(records, {"s1": ["e1", "e2"], "s2": ["e3"]})
+    fake = _fake_client(
+        # first pass: two pages; the late re-sweep finds one record extraction produced afterwards
+        [(records[:125], True), (records[125:], False), (["late"], False)],
+        {"s1": [["e1", "e2"], ["e3"]], "s2": [["e4"]]},
+    )
     monkeypatch.setattr(workspace_memory, "_client", lambda: fake)
 
     await workspace_memory.delete_owner_memory("org_x", resweep_after_s=0)
-    await asyncio.gather(*workspace_memory._resweeps)
+    # Records are gone before the call returns; events are the tail's job.
+    assert fake.batch_delete_memory_records.call_count == 3
+    await asyncio.gather(*workspace_memory._tails)
 
-    # Events go first: they are what extraction reads.
-    names = [c[0] for c in fake.method_calls]
-    assert names.index("delete_event") < names.index("batch_delete_memory_records")
     for call in fake.list_memory_records.call_args_list:
         # EXACT namespace, never namespacePath (a prefix match would also reach /owners/org_xy/).
         assert call.kwargs["namespace"] == "/owners/org_x/"
@@ -51,8 +59,19 @@ async def test_wipe_deletes_the_owners_records_in_chunks_and_every_event(monkeyp
     assert [r["memoryRecordId"] for c in chunks for r in c] == [*records, "late"]
     fake.list_sessions.assert_called_once_with(memoryId="mem-1", actorId="org_x")
     deleted = {(c.kwargs["sessionId"], c.kwargs["eventId"]) for c in fake.delete_event.call_args_list}
-    assert deleted == {("s1", "e1"), ("s1", "e2"), ("s2", "e3")}
+    # Multi-page sessions are fully listed BEFORE deletion starts, so nothing is skipped.
+    assert deleted == {("s1", "e1"), ("s1", "e2"), ("s1", "e3"), ("s2", "e4")}
     assert all(c.kwargs["actorId"] == "org_x" for c in fake.delete_event.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_fails_to_delete_fails_the_wipe(monkeypatch, configured):
+    """Records never expire: a partial delete must say 'retry me', not report success."""
+    fake = _fake_client([(["r1", "r2"], False)], {})
+    fake.batch_delete_memory_records.return_value = {"successfulRecords": [], "failedRecords": [{"id": "r2"}]}
+    monkeypatch.setattr(workspace_memory, "_client", lambda: fake)
+    with pytest.raises(RuntimeError, match="1 of 2 records"):
+        await workspace_memory.delete_owner_memory("org_x", resweep_after_s=0)
 
 
 @pytest.mark.asyncio

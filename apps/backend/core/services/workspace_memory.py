@@ -6,17 +6,21 @@ backend only ever DELETES from it, when an owner's data is wiped. An owner's dat
 
 - the long-term records AgentCore extracted into ``/owners/<owner>/`` (exact namespace -- never
   ``namespacePath``, whose prefix match would also reach ``/owners/<owner>x/``), and
-- the raw events under ``actorId = <owner>``, one set per session.
+- the raw events under ``actorId = <owner>``, which expire on their own (``eventExpiryDuration``).
 
-Deletes are eventually consistent (gone from reads within ~22 s in the 2026-09-22 dev spike).
-Empty session/actor shells stay listed until their events would have expired; AgentCore has no
-API to delete them, and they carry no content.
+The wipe deletes the RECORDS in the caller's request and raises if any fail -- they never expire,
+so a silent miss would outlive the wipe. The events (one per turn, possibly thousands) and a late
+re-sweep of records whose extraction was still in flight (96-133 s in the 2026-09-22 dev spike)
+run as a background tail: a lost tail is bounded by the event expiry, a lost records pass is not.
+Deletes are eventually consistent (~22 s). Empty session/actor shells stay listed until their
+events would have expired; AgentCore has no API to delete them and they carry no content.
 """
 
 import asyncio
 import logging
 
 import boto3
+from botocore.config import Config
 
 from core.config import settings
 from core.dynamodb import run_in_thread
@@ -24,10 +28,8 @@ from core.dynamodb import run_in_thread
 logger = logging.getLogger(__name__)
 
 _BATCH = 100  # BatchDeleteMemoryRecords' per-call cap
-#: Extraction lands records 96-133 s after an event (dev spike), so events written just before a
-#: wipe can still produce records after its sweep. One late re-sweep catches them.
 RESWEEP_AFTER_S = 180.0
-_resweeps: set[asyncio.Task] = set()
+_tails: set[asyncio.Task] = set()
 
 
 def owner_namespace(owner_id: str) -> str:
@@ -38,74 +40,87 @@ def owner_namespace(owner_id: str) -> str:
 
 
 def _client():
-    return boto3.client("bedrock-agentcore", region_name=settings.AWS_REGION)
+    return boto3.client(
+        "bedrock-agentcore",
+        region_name=settings.AWS_REGION,
+        config=Config(retries={"mode": "adaptive", "max_attempts": 8}),
+    )
 
 
-def _pages(call, key: str, **kwargs):
-    token = None
+def _pages(call, key: str, **kwargs) -> list:
+    """Every item across all pages, collected BEFORE the caller deletes anything -- deleting while
+    paging could shift an offset-style token and skip items."""
+    items, token = [], None
     while True:
         resp = call(**kwargs, **({"nextToken": token} if token else {}))
-        yield from resp.get(key, [])
+        items.extend(resp.get(key, []))
         token = resp.get("nextToken")
         if not token:
-            return
+            return items
 
 
-def _delete_records(client, owner_id: str, namespace: str, memory_id: str) -> int:
+def _delete_records(client, owner_id: str, memory_id: str) -> int:
     record_ids = [
         r["memoryRecordId"]
-        for r in _pages(client.list_memory_records, "memoryRecordSummaries", memoryId=memory_id, namespace=namespace)
+        for r in _pages(
+            client.list_memory_records,
+            "memoryRecordSummaries",
+            memoryId=memory_id,
+            namespace=owner_namespace(owner_id),
+        )
     ]
+    failed = 0
     for i in range(0, len(record_ids), _BATCH):
         resp = client.batch_delete_memory_records(
             memoryId=memory_id, records=[{"memoryRecordId": r} for r in record_ids[i : i + _BATCH]]
         )
-        if resp.get("failedRecords"):
-            logger.warning("memory wipe: %d records failed for owner=%s", len(resp["failedRecords"]), owner_id)
+        failed += len(resp.get("failedRecords") or [])
+    if failed:
+        raise RuntimeError(f"memory wipe: {failed} of {len(record_ids)} records failed to delete for {owner_id}")
     return len(record_ids)
 
 
-def _delete_owner_memory_sync(owner_id: str, namespace: str, memory_id: str) -> None:
+def _delete_events(client, owner_id: str, memory_id: str) -> int:
+    count = 0
+    for session in _pages(client.list_sessions, "sessionSummaries", memoryId=memory_id, actorId=owner_id):
+        sid = session["sessionId"]
+        events = _pages(
+            client.list_events, "events", memoryId=memory_id, sessionId=sid, actorId=owner_id, includePayloads=False
+        )
+        for event in events:
+            client.delete_event(memoryId=memory_id, sessionId=sid, eventId=event["eventId"], actorId=owner_id)
+        count += len(events)
+    return count
+
+
+async def _tail(owner_id: str, memory_id: str, resweep_after_s: float) -> None:
     client = _client()
-    # Events FIRST: they are what extraction reads, so nothing new is queued behind this wipe.
-    sessions = [
-        s["sessionId"] for s in _pages(client.list_sessions, "sessionSummaries", memoryId=memory_id, actorId=owner_id)
-    ]
-    for session_id in sessions:
-        for event in _pages(
-            client.list_events,
-            "events",
-            memoryId=memory_id,
-            sessionId=session_id,
-            actorId=owner_id,
-            includePayloads=False,
-        ):
-            client.delete_event(memoryId=memory_id, sessionId=session_id, eventId=event["eventId"], actorId=owner_id)
-    records = _delete_records(client, owner_id, namespace, memory_id)
-    logger.info("memory wipe: owner=%s records=%d sessions=%d", owner_id, records, len(sessions))
-
-
-async def _resweep(owner_id: str, namespace: str, memory_id: str, delay_s: float) -> None:
-    await asyncio.sleep(delay_s)
     try:
-        late = await run_in_thread(_delete_records, _client(), owner_id, namespace, memory_id)
+        events = await run_in_thread(_delete_events, client, owner_id, memory_id)
+        logger.info("memory wipe: deleted %d events for owner=%s", events, owner_id)
+    except Exception:  # noqa: BLE001 — a background tail; bounded by the event expiry
+        logger.warning("memory wipe: event deletion failed for owner=%s", owner_id, exc_info=True)
+    await asyncio.sleep(resweep_after_s)
+    try:
+        late = await run_in_thread(_delete_records, client, owner_id, memory_id)
         if late:
             logger.info("memory wipe: re-sweep removed %d late records for owner=%s", late, owner_id)
-    except Exception:  # noqa: BLE001 — a background tail; nothing awaits it
-        logger.warning("memory wipe: re-sweep failed for owner=%s", owner_id, exc_info=True)
+    except Exception:  # noqa: BLE001 — nothing awaits the tail
+        logger.error("memory wipe: re-sweep failed for owner=%s", owner_id, exc_info=True)
 
 
 async def delete_owner_memory(owner_id: str, *, resweep_after_s: float = RESWEEP_AFTER_S) -> None:
-    """Delete every event and record this owner has in workspace memory, then schedule one late
-    re-sweep of records for extraction that was still in flight. No-op when the env has no memory
-    configured. Raises on AWS errors -- the teardown seam decides whether that is fatal."""
-    namespace = owner_namespace(owner_id)
+    """Delete this owner's long-term records now (raising if any fail), then start the background
+    tail: their events, and one late re-sweep of records. No-op when the env has no memory."""
+    owner_namespace(owner_id)
     memory_id = settings.AGENTCORE_MEMORY_ID
     if not memory_id:
         return
-    await run_in_thread(_delete_owner_memory_sync, owner_id, namespace, memory_id)
-    # ponytail: in-process re-sweep, lost if this backend task stops within RESWEEP_AFTER_S; a
-    # durable follow-up (SFN wait / DDB TTL job) if a wipe audit ever demands it.
-    task = asyncio.create_task(_resweep(owner_id, namespace, memory_id, resweep_after_s))
-    _resweeps.add(task)
-    task.add_done_callback(_resweeps.discard)
+    records = await run_in_thread(_delete_records, _client(), owner_id, memory_id)
+    logger.info("memory wipe: deleted %d records for owner=%s", records, owner_id)
+    # ponytail: in-process tail, lost if this backend task stops within ~RESWEEP_AFTER_S; events
+    # then just expire, and a late record needs a retried wipe. Durable follow-up (SFN wait) if a
+    # wipe audit ever demands it.
+    task = asyncio.create_task(_tail(owner_id, memory_id, resweep_after_s))
+    _tails.add(task)
+    task.add_done_callback(_tails.discard)

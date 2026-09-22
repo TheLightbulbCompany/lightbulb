@@ -182,22 +182,53 @@ async def test_teardown_s3_delete_failure_is_also_best_effort(monkeypatch):
     await hermes_provisioning.teardown_hermes_runtime("org_a", container_row=ROW, delete_profiles=True)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("delete_profiles", [True, False])
-async def test_teardown_wipes_workspace_memory_only_with_the_profiles(monkeypatch, delete_profiles):
-    """Workspace memory is the owner's data like the profiles are: an account wipe or the debug
-    user-data delete removes it; a reprovision/rollback keeps it. A memory failure is best-effort."""
-    monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", lambda *a: None)
-    monkeypatch.setattr(hermes_provisioning, "_delete_runtime", lambda *a: None)
-    monkeypatch.setattr(hermes_provisioning, "_delete_boot_secret", lambda *a: None)
+def _seam(monkeypatch, *, row):
+    """delete_workspace_runtime with every collaborator stubbed; returns the call log."""
+    calls: list[str] = []
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr("core.repositories.container_repo.delete", AsyncMock(return_value=row))
+    monkeypatch.setattr("core.repositories.container_repo.delete_browser_state", AsyncMock())
+    monkeypatch.setattr(hermes_provisioning, "teardown_hermes_runtime", AsyncMock())
     monkeypatch.setattr(hermes_provisioning, "_delete_profile_prefix_objects", lambda *a: None)
-    monkeypatch.setattr("core.billing.bedrock_gate_tokens.delete_gate_token_rows", AsyncMock())
-    wipe = AsyncMock(side_effect=RuntimeError("agentcore down"))
-    monkeypatch.setattr("core.services.workspace_memory.delete_owner_memory", wipe)
 
-    await hermes_provisioning.teardown_hermes_runtime("org_a", container_row=ROW, delete_profiles=delete_profiles)
+    async def _reap(*a, **kw):
+        calls.append("reap")
+        return {}
 
-    if delete_profiles:
-        wipe.assert_awaited_once_with("org_a")
-    else:
-        wipe.assert_not_awaited()
+    monkeypatch.setattr("core.billing.bedrock_aip.reap_owner_bedrock_resources", _reap)
+    monkeypatch.setattr("core.repositories.channel_link_repo.sweep_by_owner", AsyncMock(return_value=0))
+
+    async def _wipe(owner_id):
+        calls.append(f"memory:{owner_id}")
+
+    monkeypatch.setattr("core.services.workspace_memory.delete_owner_memory", _wipe)
+    return calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("row", [ROW, None], ids=["with-row", "row-less-retry"])
+async def test_the_seam_wipes_workspace_memory_with_the_profiles_even_on_a_row_less_retry(monkeypatch, row):
+    """Workspace memory is the owner's data like the profiles are. A retried wipe arrives with the
+    row already gone, so the memory wipe cannot live inside the ``if container`` branch. It runs
+    AFTER the reap, which needs this call's deleted-row image."""
+    calls = _seam(monkeypatch, row=row)
+    await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True)
+    assert calls == ["reap", "memory:org_a"]
+
+
+@pytest.mark.asyncio
+async def test_a_reprovision_keeps_workspace_memory(monkeypatch):
+    calls = _seam(monkeypatch, row=ROW)
+    await hermes_provisioning.delete_workspace_runtime("org_a")
+    assert "memory:org_a" not in calls
+
+
+@pytest.mark.asyncio
+async def test_a_failed_memory_wipe_fails_the_seam(monkeypatch):
+    """Records never expire: 'teardown incomplete, retry me', like a partial reap."""
+    _seam(monkeypatch, row=ROW)
+    monkeypatch.setattr(
+        "core.services.workspace_memory.delete_owner_memory", AsyncMock(side_effect=RuntimeError("throttled"))
+    )
+    with pytest.raises(RuntimeError, match="throttled"):
+        await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True)

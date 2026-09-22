@@ -138,3 +138,45 @@ describe("isBandComplete", () => {
     expect(isBandComplete(build(connections, participants, 2))).toBe(true);
   });
 });
+
+describe("starter-model step", () => {
+  const paid = (plan: "base" | "standard" | "ultra_pro", provider_choice: string | null = null) => ({
+    is_subscribed: true, subscription_status: "active", plan, provider_choice,
+  });
+  const withBilling = (billing: Parameters<typeof buildSetupSteps>[0]["billing"]) =>
+    buildSetupSteps({ participants: SOLO, connections: CATALOG, agentNames: new Map(), workspaceMembers: 1, billing });
+
+  it.each(["standard", "ultra_pro"] as const)("leads the band for a paid %s workspace with no provider", (plan) => {
+    const steps = withBilling(paid(plan));
+    expect(steps[0]).toMatchObject({
+      id: "starter-model",
+      label: "You're on the starter model",
+      detail: "Pick Claude (Bedrock), ChatGPT, or your own key",
+      done: false,
+      adminOnly: true,
+    });
+  });
+
+  it("is absent on Base, whose managed model is the plan", () => {
+    expect(withBilling(paid("base")).some((s) => s.id === "starter-model")).toBe(false);
+  });
+
+  it("is absent on the free trial, even though the backend defaults its plan to standard", () => {
+    const trial = { is_subscribed: false, subscription_status: "trial_local", plan: "standard" as const, provider_choice: null };
+    expect(withBilling(trial).some((s) => s.id === "starter-model")).toBe(false);
+  });
+
+  it("disappears once a provider is chosen", () => {
+    expect(withBilling(paid("standard", "bedrock_claude")).some((s) => s.id === "starter-model")).toBe(false);
+  });
+
+  it("is absent while billing is unknown", () => {
+    expect(withBilling(null).some((s) => s.id === "starter-model")).toBe(false);
+    expect(withBilling(undefined).some((s) => s.id === "starter-model")).toBe(false);
+  });
+
+  it("leaves the other steps unchanged", () => {
+    const ids = (steps: { id: string }[]) => steps.map((s) => s.id);
+    expect(ids(withBilling(paid("standard")).slice(1))).toEqual(ids(build(CATALOG)));
+  });
+});

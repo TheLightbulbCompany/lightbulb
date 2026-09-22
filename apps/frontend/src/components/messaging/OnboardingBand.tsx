@@ -1,12 +1,15 @@
 "use client";
 
 import { useCallback, useMemo, useState, useSyncExternalStore, type ReactElement } from "react";
-import { Check, Users, Pencil, Plus, X } from "lucide-react";
+import { Check, Cpu, Users, Pencil, Plus, X } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
 import Link from "next/link";
 
 import { useApi } from "@/lib/api";
 import { useConnections } from "@/hooks/useConnections";
+import { useBilling } from "@/hooks/useBilling";
+import { navigateShell } from "@/lib/shellNav";
+import { PROVIDER_PICKER } from "@/components/chat/ChatErrorCard";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import { Button } from "@/components/ui/button";
@@ -78,6 +81,7 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   const { data: roster, isLoading: rosterLoading, mutate: refreshRoster } =
     teams.read<{ agents?: CompanyAgent[] }>("/agents");
   const api = useApi();
+  const { account: billing, isLoading: billingLoading } = useBilling();
 
   // localStorage read through useSyncExternalStore rather than an effect:
   // `react-hooks/set-state-in-effect` is an ERROR in this repo, and the server
@@ -101,8 +105,8 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   );
   const workspaceMembers = organization?.membersCount ?? 0;
   const steps = useMemo(
-    () => buildSetupSteps({ participants, connections, agentNames, workspaceMembers }),
-    [participants, connections, agentNames, workspaceMembers],
+    () => buildSetupSteps({ participants, connections, agentNames, workspaceMembers, billing }),
+    [participants, connections, agentNames, workspaceMembers, billing],
   );
 
   const isAdmin = membership?.role === "org:admin";
@@ -131,6 +135,7 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   const onStep = useCallback((step: SetupStep) => {
     if (step.id === "invite") return void copyJoinLink();
     if (step.id === "name-agents") return setNaming((open) => !open);
+    if (step.id === "starter-model") return navigateShell(PROVIDER_PICKER);
     // startOAuth rethrows on purpose (403, a failed browser open), and on
     // desktop it stays pending until the grant lands — so the card shows both.
     setConnecting(step.id);
@@ -145,10 +150,12 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   // which derives "nothing is done" — so a fully set-up workspace would flash
   // the whole band on every cold load and then have it vanish.
   // A failed catalog read would derive every connector as outstanding.
-  if (connectionsLoading || connectionsError || rosterLoading || !ownerId) return null;
+  // Billing only has to settle, not succeed: a failed read just omits its card.
+  if (connectionsLoading || connectionsError || rosterLoading || billingLoading || !ownerId) return null;
   if (storedDismissal || dismissedNow || isBandComplete(steps)) return null;
 
-  const connectors = steps.filter((step) => step.id !== "invite" && step.id !== "name-agents");
+  const starter = steps.find((step) => step.id === "starter-model");
+  const connectors = steps.filter((step) => step.id !== "invite" && step.id !== "name-agents" && step !== starter);
   const actions = steps.filter((step) => step.id === "invite" || step.id === "name-agents");
 
   return (
@@ -172,6 +179,12 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
           <X size={16} aria-hidden="true" />
         </Button>
       </header>
+
+      {starter && (
+        <div className="onboarding-band-actions">
+          <StepCard step={starter} isAdmin={isAdmin} wide icon={<Cpu size={16} aria-hidden="true" />} onSelect={onStep} />
+        </div>
+      )}
 
       <div className="onboarding-band-grid">
         {connectors.map((step) => (

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { handleShellLinkClick } from "@/lib/shellNav";
+import { useBilling, type BillingAccount } from "@/hooks/useBilling";
 
 /**
  * Typed error card rendered when an agent run terminates with an error.
@@ -31,6 +32,13 @@ import { handleShellLinkClick } from "@/lib/shellNav";
  * before it ever reaches OpenClaw (core/gateway/connection_pool.py). It gets
  * its own branch below so a free-tier user sees a distinct "come back
  * tomorrow or upgrade" state rather than a generic failure.
+ *
+ * `included_daily_cap` is the PAYING counterpart: a Base workspace, or a
+ * Workspace/Ultra one still on the starter model (no provider chosen), used
+ * today's included usage (trial_cap.is_managed_capped). It must never read
+ * as a free limit, so its next step comes from the plan: Base upgrades,
+ * Workspace/Ultra picks a provider. A `trial_daily_cap` reaching a paid
+ * account (a backend that predates the split) renders the same way.
  *
  * `trial_expired` is the sibling local-trial code for the 30-day
  * `trial_local` window itself running out (as opposed to the daily cost
@@ -70,7 +78,41 @@ interface ErrorPresentation {
   action?: { label: string; href: string; crossRoute?: boolean };
 }
 
-function describeError(code: string | undefined, message: string): ErrorPresentation {
+/** The LLM panel with its change-provider modal open — the provision gate's `provider_required` CTA. */
+export const PROVIDER_PICKER = "/chat?panel=llm&action=change-provider";
+
+function describeIncludedCap(account: BillingAccount | null | undefined, message: string): ErrorPresentation {
+  const title = "Today's included usage is used up";
+  const reset = "You've used today's included usage. It resets at 00:00 UTC.";
+  if (account?.plan === "base") {
+    return {
+      title,
+      description: `${reset} Need more today? Upgrade to Workspace for pay-as-you-go credits.`,
+      action: { label: "Upgrade", href: "/settings?panel=billing", crossRoute: true },
+    };
+  }
+  if ((account?.plan === "standard" || account?.plan === "ultra_pro") && !account.provider_choice) {
+    return {
+      title,
+      description: `${reset} Need more today? Pick a model provider — Claude with credits, ChatGPT, or your own key.`,
+      action: { label: "Pick provider", href: PROVIDER_PICKER },
+    };
+  }
+  return {
+    title,
+    description: message || reset,
+    action: { label: "Billing", href: "/settings?panel=billing", crossRoute: true },
+  };
+}
+
+function describeError(
+  code: string | undefined,
+  message: string,
+  account: BillingAccount | null | undefined,
+): ErrorPresentation {
+  if (code === "included_daily_cap" || (code === "trial_daily_cap" && account?.is_subscribed)) {
+    return describeIncludedCap(account, message);
+  }
   switch (code) {
     case "rate_limit":
       // Generic "switch provider" framing is wrong here — switching to a BYO
@@ -90,7 +132,7 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
         title: "Provider rate limit reached",
         description:
           "Your model provider hit its usage cap. Three ways to keep going: wait for your quota to reset, upgrade your plan with the provider, or switch this workspace to Lightbulb's Bedrock-managed credits.",
-        action: { label: "Switch provider", href: "/chat?panel=llm&action=change-provider" },
+        action: { label: "Switch provider", href: PROVIDER_PICKER },
       };
     case "context_length":
       return {
@@ -98,7 +140,7 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
         description:
           message ||
           "The conversation exceeded the model's context window. Start a new chat or pick a model with a larger context.",
-        action: { label: "Change provider", href: "/chat?panel=llm&action=change-provider" },
+        action: { label: "Change provider", href: PROVIDER_PICKER },
       };
     case "timeout":
       return {
@@ -175,7 +217,8 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
 }
 
 export function ChatErrorCard({ message, code }: ChatErrorCardProps) {
-  const { title, description, action } = describeError(code, message);
+  const { account } = useBilling();
+  const { title, description, action } = describeError(code, message, account);
 
   return (
     <div

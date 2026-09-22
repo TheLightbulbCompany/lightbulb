@@ -126,6 +126,12 @@ describe("notifyApiError — free-tier gates convert instead of erroring", () =>
     expect(toastError.mock.calls.at(-1)![0]).toBe(GATE_COPY);
   });
 
+  it("keeps a paying workspace's included_daily_cap off the free-tier conversion toast", () => {
+    notifyApiError(gateError("included_daily_cap"));
+    expect(toastInfo).not.toHaveBeenCalled();
+    expect(toastError.mock.calls.at(-1)![0]).toBe(GATE_COPY);
+  });
+
   it("leaves non-blocked ApiErrors on the reportable error path", () => {
     notifyApiError(new ApiError(402, { detail: "plain string detail" }, "plain string detail"));
     expect(toastInfo).not.toHaveBeenCalled();

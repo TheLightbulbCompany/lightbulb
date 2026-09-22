@@ -22,6 +22,16 @@ const h = vi.hoisted(() => ({
   patch: vi.fn(),
   membersCount: 1,
   connectionsError: undefined as unknown,
+  billing: null as Record<string, unknown> | null,
+  navigateShell: vi.fn(),
+}));
+
+vi.mock("@/hooks/useBilling", () => ({
+  useBilling: () => ({ account: h.billing, isLoading: false }),
+}));
+
+vi.mock("@/lib/shellNav", () => ({
+  navigateShell: (...args: unknown[]) => h.navigateShell(...args),
 }));
 
 vi.mock("@/hooks/useConnections", () => ({
@@ -86,6 +96,8 @@ beforeEach(() => {
   h.connectionsLoading = false;
   h.rosterLoading = false;
   h.orgId = "org_a";
+  h.billing = null;
+  h.navigateShell.mockReset();
   window.localStorage.clear();
 });
 
@@ -352,5 +364,37 @@ describe("copying the join link", () => {
     expect(link).toHaveAttribute("href", "/settings?panel=members");
     expect(h.post).not.toHaveBeenCalled();
     expect(clipboard).not.toHaveBeenCalled();
+  });
+});
+
+describe("starter-model card", () => {
+  const PAID_NO_PROVIDER = { is_subscribed: true, subscription_status: "active", plan: "standard", provider_choice: null };
+
+  it("renders first in the band for a paid workspace on the starter model", () => {
+    h.billing = PAID_NO_PROVIDER;
+    render(<OnboardingBand participants={FRESH} />);
+    const cards = screen.getAllByRole("button").filter((b) => b.classList.contains("onboarding-card"));
+    expect(cards[0]).toHaveTextContent("You're on the starter model");
+    expect(cards[0]).toHaveTextContent("Pick Claude (Bedrock), ChatGPT, or your own key");
+  });
+
+  it("opens the provider picker on click", async () => {
+    h.billing = PAID_NO_PROVIDER;
+    render(<OnboardingBand participants={FRESH} />);
+    await userEvent.click(screen.getByRole("button", { name: /starter model/ }));
+    expect(h.navigateShell).toHaveBeenCalledWith("/chat?panel=llm&action=change-provider");
+  });
+
+  it("is inert for a plain member, since only an admin can change the provider", () => {
+    h.billing = PAID_NO_PROVIDER;
+    h.role = "org:member";
+    render(<OnboardingBand participants={FRESH} />);
+    expect(screen.getByRole("button", { name: /starter model/ })).toBeDisabled();
+  });
+
+  it("is absent once a provider is chosen", () => {
+    h.billing = { ...PAID_NO_PROVIDER, provider_choice: "chatgpt_oauth" };
+    render(<OnboardingBand participants={FRESH} />);
+    expect(screen.queryByRole("button", { name: /starter model/ })).toBeNull();
   });
 });

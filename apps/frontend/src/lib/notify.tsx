@@ -113,7 +113,8 @@ export function notifyError(message: string, opts?: NotifyErrorOptions): string 
  * paying. Today those arrive in a different payload shape anyway
  * (provision_gate.Gate.to_payload puts the object under a top-level `blocked`
  * key, not `blocked: true`), but the allowlist makes the rule explicit rather
- * than an accident of shape.
+ * than an accident of shape. `included_daily_cap` is the paid counterpart of
+ * `trial_daily_cap` and is deliberately absent for the same reason.
  */
 const CONVERSION_GATE_CODES: ReadonlySet<string> = new Set([
   "trial_daily_cap",

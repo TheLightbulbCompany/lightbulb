@@ -42,7 +42,8 @@ export function prepareBody(input, policy, ownerId, env) {
     if (!Array.isArray(content) || !content.every(part => part?.type === 'text' && typeof part.text === 'string' && Object.keys(part).every(key => key === 'type' || key === 'text'))) fail(400, 'Multimodal input unavailable');
   }
   if (input.tools !== undefined && (!Array.isArray(input.tools) || !input.tools.every(tool => tool?.type === 'function' && typeof tool.function?.name === 'string' && Object.keys(tool).every(key => key === 'type' || key === 'function')))) fail(400, 'Server tools unavailable');
-  for (const field of Object.keys(input)) if (routeFields.includes(field) || !allowedFields.has(field)) fail(400, 'Request option not allowed');
+  const rejected = Object.keys(input).filter(field => routeFields.includes(field) || !allowedFields.has(field));
+  if (rejected.length) fail(400, `Request option not allowed: ${rejected.join(',')}`);
   for (const name of ['max_tokens', 'max_completion_tokens']) {
     const value = input[name];
     if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > Number(env.MAX_OUTPUT_TOKENS))) fail(400, 'Output limit exceeded');

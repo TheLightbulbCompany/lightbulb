@@ -5,7 +5,6 @@ and restore stops pulling back reinstallable home caches an older image already 
 import threading
 
 import pytest
-
 from bridge import sync
 from tests.test_sync_recency import FakeS3
 

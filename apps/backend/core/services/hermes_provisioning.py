@@ -808,7 +808,7 @@ async def _wait_for_idle_session(owner_id: str) -> bool:
         await asyncio.sleep(ROLL_IDLE_POLL_S)
 
 
-async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
+async def roll_runtime_image(owner_id: str, *, dry_run: bool = False, respec: bool = False) -> str:
     """Bring an AgentCore owner's runtime onto ``settings.AGENTCORE_HERMES_IMAGE`` after a
     ``hermes-version.json`` tag flip (M6 Task 3 flip tooling): ``UpdateAgentRuntime`` on drift,
     wait for READY, then stop the warm session so the NEXT invoke boots the new image.
@@ -822,7 +822,15 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     Returns ``"current"`` (nothing to do), ``"would-update"`` (dry run), ``"updated"``, or
     ``"updated-session-busy"`` -- the runtime IS on the new image but a turn was still running
     at the deadline, so the warm session was left alone and picks the image up when it next
-    starts. Raises ``ValueError`` for a row with no provisioned runtime."""
+    starts. Raises ``ValueError`` for a row with no provisioned runtime.
+
+    ``respec=True`` re-specs even when the image is current, and rewrites the profiles once the
+    session is idle: the managed model lives in the runtime env AND each profile (bridge
+    ``sync.py`` refuses a mismatch), so a model flip needs both moved. Profiles are written only
+    once the session is idle and stopped -- a warm process keeps its old env, and re-pulls a
+    changed profile, so writing under a busy session refuses its next turns -- so a busy owner
+    comes back ``updated-session-busy`` with its env already moved and its profile NOT: it breaks
+    on its next cold start unless re-run (the script exits 1)."""
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     arn = row.get("agentcore_runtime_arn")
     if not arn:
@@ -830,7 +838,7 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     if not settings.AGENTCORE_HERMES_IMAGE:
         raise RuntimeError("AGENTCORE_HERMES_IMAGE is not configured for this environment")
     current = await run_in_thread(_runtime_image_uri, arn)
-    if current == settings.AGENTCORE_HERMES_IMAGE:
+    if current == settings.AGENTCORE_HERMES_IMAGE and not respec:
         return "current"
     if dry_run:
         return "would-update"
@@ -865,6 +873,11 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
             await run_in_thread(_stop_runtime_session, arn, session_id_for(owner_id))
         except Exception as exc:  # noqa: BLE001 -- no warm session is the common case
             logger.info("roll_runtime_image: no live session to stop for owner=%s (%s)", owner_id, type(exc).__name__)
+    if idle and respec:
+        # config.yaml is backend-owned (never saved back by the bridge), so nothing reverts this.
+        # Either order leaves a gap where one turn sees a new/old env-profile pair and is refused
+        # (sync.py); after the stop, that gap is a cold start that has no old env to fall back on.
+        await write_profiles(owner_id, aip_arns)
     else:
         logger.warning(
             "roll_runtime_image: owner=%s updated but a turn was still running after %.0fs -- warm session "

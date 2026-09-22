@@ -140,3 +140,15 @@ async def test_a_starved_microvm_arrives_as_an_apiproblem_and_is_not_idle(monkey
 
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated-session-busy"
     assert [c[0] for c in calls] == ["update", "ready"]  # no stop
+
+
+@pytest.mark.asyncio
+async def test_busy_respec_owner_fails_the_script(monkeypatch):
+    from scripts import roll_hermes_runtimes
+
+    async def _busy(owner_id, *, dry_run=False, respec=False):
+        return "updated-session-busy"
+
+    monkeypatch.setattr(roll_hermes_runtimes, "roll_runtime_image", _busy)
+    assert await roll_hermes_runtimes.main(["--owner-id", "org_a", "--respec"]) == 1
+    assert await roll_hermes_runtimes.main(["--owner-id", "org_a"]) == 0

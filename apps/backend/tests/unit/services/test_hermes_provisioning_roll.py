@@ -133,3 +133,15 @@ async def test_roll_refuses_an_ecs_row(monkeypatch):
     with pytest.raises(ValueError):
         await hermes_provisioning.roll_runtime_image("org_a")
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_respec_moves_a_current_runtime_and_rewrites_profiles_after_the_stop(monkeypatch):
+    calls = _wire(monkeypatch, current_image=IMAGE)
+
+    async def _write(owner_id, aip_arns):
+        calls.append(("profiles", owner_id))
+
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _write)
+    assert await hermes_provisioning.roll_runtime_image("org_a", respec=True) == "updated"
+    assert [c[0] for c in calls] == ["update", "ready", "health", "stop", "profiles"]

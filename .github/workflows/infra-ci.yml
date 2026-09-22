@@ -67,6 +67,35 @@ jobs:
         working-directory: apps/infra/hermes
         run: uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q
 
+  # The OpenRouter streaming gate (apps/infra/lambda/openrouter-gate) is
+  # Node.js, so the backend job never collects it and the vitest suite never
+  # touches it. Its `node --test` suite (auth, model policy, reserve/outbox,
+  # SSE forwarding, release paths) ran only on a developer's machine. No path
+  # filter here: the workflow is already filtered to apps/infra/**, and the
+  # suite takes under a second once dependencies are installed.
+  openrouter-gate-tests:
+    name: OpenRouter gate tests
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: apps/infra/lambda/openrouter-gate/package-lock.json
+
+      - name: Install gate dependencies
+        working-directory: apps/infra/lambda/openrouter-gate
+        run: npm ci --no-audit --no-fund
+
+      - name: Run gate tests
+        working-directory: apps/infra/lambda/openrouter-gate
+        run: npm test
+
   # The suite above is unit tests with everything Hermes-shaped mocked out. The
   # bridge's credential/identity leg only proves anything against the REAL
   # mechanism inside the pinned image (see apps/infra/hermes/tests/smoke/*.py's

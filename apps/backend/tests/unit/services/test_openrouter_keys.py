@@ -366,7 +366,10 @@ async def test_resubscribe_reuses_key_before_retirement_worker_claims_it(monkeyp
         ({"subscription_status": "trial_local"}, 0.25),
         ({"subscription_status": "active", "plan": "base"}, 0.66),
         ({"subscription_status": "active", "plan": "standard"}, 0.66),
-        (None, 0.66),
+        # An explicit managed paid owner is Metronome-valved: never cut to Base's cap.
+        ({"subscription_status": "active", "plan": "standard", "provider_choice": "openrouter_managed"}, 50.0),
+        ({"subscription_status": "canceled", "plan": "base"}, 50.0),
+        (None, 50.0),
     ],
 )
 def test_limit_for_account_is_per_plan(account, expected):
@@ -448,3 +451,26 @@ async def test_relimit_is_a_no_op_when_the_limit_already_matches(monkeypatch):
             assert await relimit_owner_key("owner-123", http=http, sm=sm) is False
     assert [r.method for r in requests] == ["GET"]
     clear.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_every_provision_moves_an_existing_key_onto_its_plan_limit(monkeypatch):
+    """A key minted before per-plan limits keeps its old limit until something re-limits it;
+    the provision path is that something, and a failed re-limit never fails the provision."""
+    from unittest.mock import AsyncMock
+
+    from core.services import openrouter_keys
+
+    monkeypatch.setattr(openrouter_keys.settings, "OPENROUTER_WORKSPACE_ID", "ws-1")
+    monkeypatch.setattr(
+        openrouter_keys.billing_repo, "get_by_owner_id", AsyncMock(return_value={"subscription_status": "trial_local"})
+    )
+    monkeypatch.setattr(openrouter_keys, "ensure_owner_key", AsyncMock(return_value="hash-1"))
+    monkeypatch.setattr(openrouter_keys.boto3, "client", lambda *a, **k: object())
+    relimit = AsyncMock(return_value=True)
+    monkeypatch.setattr(openrouter_keys, "relimit_owner_key", relimit)
+    assert await openrouter_keys.ensure_owner_key_for_settings("org_a") == "hash-1"
+    relimit.assert_awaited_once()
+
+    relimit.side_effect = RuntimeError("openrouter down")
+    assert await openrouter_keys.ensure_owner_key_for_settings("org_a") == "hash-1"

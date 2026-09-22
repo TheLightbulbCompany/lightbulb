@@ -1,6 +1,7 @@
 """Lightbulb-owned OpenRouter key lifecycle."""
 
 import contextlib
+import logging
 
 import httpx
 import boto3
@@ -12,6 +13,8 @@ from core.dynamodb import run_in_thread
 from core.config import settings
 from core.repositories import billing_repo, openrouter_key_repo
 from core.secrets_manager import create_or_update_secret
+
+logger = logging.getLogger(__name__)
 
 
 _SAFE_OWNER_ID = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -49,10 +52,16 @@ async def create_completion_key(
 
 
 def limit_for_account(account: dict | None) -> float:
-    """The owner key's OpenRouter daily $ limit: the valve for capped owners."""
+    """The owner key's OpenRouter daily $ limit. For capped owners (trial, Base, paid with no
+    provider choice) it IS the valve. An explicit managed paid owner is valved by Metronome
+    reservations instead, so their key only carries a high backstop and is never cut to Base's."""
+    from core.services.trial_cap import is_managed_capped
+
     if (account or {}).get("subscription_status") == "trial_local":
         return settings.OPENROUTER_TRIAL_KEY_DAILY_LIMIT_USD
-    return settings.OPENROUTER_BASE_KEY_DAILY_LIMIT_USD
+    if is_managed_capped(account):
+        return settings.OPENROUTER_BASE_KEY_DAILY_LIMIT_USD
+    return settings.OPENROUTER_PAID_KEY_DAILY_LIMIT_USD
 
 
 async def update_key_limit(http, *, management_key, key_hash, limit_usd):
@@ -198,7 +207,7 @@ async def ensure_owner_key_for_settings(owner_id: str) -> str:
         raise RuntimeError("OpenRouter owner key daily limit is not configured")
     sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
     async with httpx.AsyncClient(timeout=10) as http:
-        return await ensure_owner_key(
+        key_hash = await ensure_owner_key(
             owner_id,
             http=http,
             sm=sm,
@@ -207,3 +216,10 @@ async def ensure_owner_key_for_settings(owner_id: str) -> str:
             limit_usd=limit_usd,
             now_sec=int(time.time()),
         )
+        # An existing key keeps whatever limit it was minted with; every provision moves it onto
+        # its plan's limit, so a pre-DeepSeek key can't outlive the per-plan valve.
+        try:
+            await relimit_owner_key(owner_id, http=http, sm=sm)
+        except Exception:  # noqa: BLE001 — a failed re-limit keeps the old key usable
+            logger.warning("OpenRouter key relimit failed for %s", owner_id, exc_info=True)
+        return key_hash

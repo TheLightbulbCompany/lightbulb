@@ -2233,6 +2233,10 @@ async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error
     Never raises: the run is already closed by the time this runs."""
     try:
         run_id, room_id, agent_id = row["runId"], row["roomId"], row["agentId"]
+        # error_kind is bridge-supplied; only an identifier (an exception class
+        # name) is shown, so nothing like a URL or key can reach the room.
+        if error_kind and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,63}", error_kind):
+            error_kind = None
         label = f"{outcome}: {error_kind}" if error_kind else outcome
         reason = RUN_ERROR_MESSAGES.get(error_kind or outcome) or "Agent run failed."
         text = (

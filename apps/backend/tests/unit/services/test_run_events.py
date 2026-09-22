@@ -267,6 +267,13 @@ def _failure_patches(create, trigger=None):
         ),
         (
             "error",
+            "https://x.example/key=sk-live-abc",
+            USAGE,
+            "I couldn't finish that (error). Agent run failed. "
+            "Try again, or check Settings → Model & Credits if this keeps happening.",
+        ),
+        (
+            "error",
             None,
             USAGE,
             "I couldn't finish that (error). Agent run failed. "

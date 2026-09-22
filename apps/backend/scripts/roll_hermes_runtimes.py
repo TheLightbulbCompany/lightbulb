@@ -61,6 +61,8 @@ async def main(argv: list[str] | None = None) -> int:
             logger.error("roll: owner=%s FAILED: %s: %s", owner_id, type(exc).__name__, exc)
             continue
         print(f"{owner_id} {result}")
+        # A busy --respec owner has the new env but the old profile: re-run it or it breaks.
+        failed += args.respec and result == "updated-session-busy"
     return 1 if failed else 0
 
 

@@ -396,8 +396,9 @@ def _status_response(contract: dict) -> dict:
         "created_at": contract.get("created_at"),
         "updated_at": contract.get("updated_at"),
         "region": settings.AWS_REGION,
-        "last_error": contract.get("last_error"),
-        "last_error_at": contract.get("last_error_at"),
+        # Only an errored row explains itself: a live one may carry a stale earlier failure.
+        "last_error": contract.get("last_error") if contract.get("container_status") == "error" else None,
+        "last_error_at": contract.get("last_error_at") if contract.get("container_status") == "error" else None,
         # Per-CONTAINER onboarding fact. RECONCILE-WITH-ONBOARD: this was
         # `container.get("onboarded_at") is not None`; the
         # composer now derives it as `funnel_state == "complete"` once

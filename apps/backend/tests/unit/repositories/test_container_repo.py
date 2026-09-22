@@ -212,6 +212,20 @@ async def test_update_fields(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_a_running_write_removes_the_previous_attempts_error(dynamodb_table):
+    """A row that reaches running must not carry the error of an earlier failed attempt."""
+    from core.repositories import container_repo
+
+    await _seed(
+        "user_e",
+        {"status": "error", "last_error": "boom", "last_error_at": "2026-01-01T00:00:00Z", "retryable": False},
+    )
+    result = await container_repo.update_fields("user_e", {"status": "running", "agentcore_runtime_arn": "arn:rt"})
+    assert result["status"] == "running"
+    assert not {"last_error", "last_error_at", "retryable"} & set(result)
+
+
+@pytest.mark.asyncio
 async def test_delete(dynamodb_table):
     from core.repositories import container_repo
 

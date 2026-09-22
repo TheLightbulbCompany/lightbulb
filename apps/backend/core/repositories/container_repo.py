@@ -945,7 +945,8 @@ async def update_fields(owner_id: str, fields: dict, *, expected: dict | None = 
 
     EVERY attribute name is aliased, uniformly: ``status`` is a DynamoDB
     reserved word and the commonest field written here. A ``None`` value is
-    written as NULL, never REMOVE'd.
+    written as NULL, never REMOVE'd. A write that sets ``status="running"``
+    also REMOVEs ``last_error``/``last_error_at``/``retryable``.
     """
     _reject_gate_owned_fields("update_fields", fields)
     names: dict[str, str] = {}
@@ -964,9 +965,13 @@ async def update_fields(owner_id: str, fields: dict, *, expected: dict | None = 
             condition += f" AND (attribute_not_exists(#e{i}) OR #e{i} = :e{i})"
         else:
             condition += f" AND #e{i} = :e{i}"
+    update_expression = "SET " + ", ".join(set_parts)
+    if fields.get("status") == "running":
+        # A row that reached running carries no error from an earlier failed attempt.
+        update_expression += " REMOVE last_error, last_error_at, retryable"
     kwargs: dict = {
         "Key": {"owner_id": owner_id},
-        "UpdateExpression": "SET " + ", ".join(set_parts),
+        "UpdateExpression": update_expression,
         "ConditionExpression": condition,
         "ExpressionAttributeValues": values,
         "ReturnValues": "ALL_NEW",

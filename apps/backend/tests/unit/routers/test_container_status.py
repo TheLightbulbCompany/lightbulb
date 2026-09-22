@@ -329,26 +329,21 @@ class TestContainerStatus:
 
     @pytest.mark.asyncio
     @patch("routers.container.container_repo.get_by_owner_id")
-    async def test_returns_last_error_fields(self, mock_get_row, async_client):
-        """Should include last_error and last_error_at when present on the container."""
+    async def test_a_running_row_hides_a_leftover_last_error(self, mock_get_row, async_client):
+        """A stale last_error from an earlier failed attempt must not show on a live workspace."""
         mock_get_row.return_value = {
             "owner_id": "user_test_123",
-            "gateway_token": "secret-token-value",
             "status": "running",
             "substatus": None,
-            "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
-            "access_point_id": "fsap-test123",
-            "created_at": "2026-01-15T12:00:00+00:00",
-            "updated_at": "2026-01-15T14:00:00+00:00",
-            "last_error": "OutOfMemoryError",
+            "last_error": "AgentCore runtime failed to start",
             "last_error_at": "2026-01-15T13:00:00+00:00",
         }
 
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
         data = response.json()
-        assert data["last_error"] == "OutOfMemoryError"
-        assert data["last_error_at"] == "2026-01-15T13:00:00+00:00"
+        assert data["last_error"] is None
+        assert data["last_error_at"] is None
 
     @pytest.mark.asyncio
     @patch("routers.container.container_repo.get_by_owner_id")

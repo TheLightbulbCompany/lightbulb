@@ -58,8 +58,8 @@ class _Client:
 def test_registry_entry_is_platform_app_backend_custody_read_only():
     p = registry.get_provider("microsoft365")
     assert p.oauth.platform_app == "microsoft365"
-    assert p.oauth.authorization_url == "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize"
-    assert p.oauth.token_url == "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
+    assert p.oauth.authorization_url == "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+    assert p.oauth.token_url == "https://login.microsoftonline.com/common/oauth2/v2.0/token"
     assert p.oauth.scopes == [
         "offline_access",
         "openid",

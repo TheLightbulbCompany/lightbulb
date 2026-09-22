@@ -381,6 +381,10 @@ async def list_organization_members(org_id: str, *, strict: bool = False) -> lis
                     headers=headers,
                     params={"limit": _ORG_MEMBERS_PAGE, "offset": offset},
                 )
+                if response.status_code == 404:
+                    # The org is gone: no members. A re-run after a wipe already
+                    # deleted the Clerk org must not fail closed on that.
+                    return []
                 if response.status_code >= 400:
                     if strict:
                         raise RuntimeError(f"clerk_admin.list_organization_members failed: http_{response.status_code}")

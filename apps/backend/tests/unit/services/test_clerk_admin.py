@@ -371,3 +371,26 @@ async def test_create_organization_unrelated_422_returns_none(monkeypatch):
         result = await create_organization(name="Acme", slug="acme", created_by="user_1")
 
     assert result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,expect_raise", [(404, False), (503, True)])
+async def test_list_organization_members_strict_404_is_empty_other_errors_raise(monkeypatch, status, expect_raise):
+    """A re-run of the workspace wipe meets a Clerk org the first run deleted:
+    404 means "no members", while any other error still fails closed."""
+    from core.services import clerk_admin
+
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+
+    @asynccontextmanager
+    async def fake_client(*a, **k):
+        client = MagicMock()
+        client.get = AsyncMock(return_value=_make_response(status, {"errors": []}))
+        yield client
+
+    with patch("core.services.clerk_admin.httpx.AsyncClient", new=fake_client):
+        if expect_raise:
+            with pytest.raises(RuntimeError):
+                await clerk_admin.list_organization_members("org_gone", strict=True)
+        else:
+            assert await clerk_admin.list_organization_members("org_gone", strict=True) == []

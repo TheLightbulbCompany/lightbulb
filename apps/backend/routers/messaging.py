@@ -15,6 +15,7 @@ from typing import Annotated
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 
+from core.observability.metrics import put_metric
 from core.dynamodb import run_in_thread
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
@@ -222,14 +223,25 @@ async def presence_snapshot(auth: AuthContext = Depends(get_current_user)) -> di
     return {"online": _online_user_ids(resolve_owner_id(auth), time.monotonic())}
 
 
+def _count_hook_auth_failure(owner_id: str, request: Request) -> None:
+    """A Paperclip agent's hermes_gateway apiKey is a SNAPSHOT of the owner's hook token, so a
+    re-minted token 401s every Paperclip-woken run (nightly CEO, issue runs) while room chat keeps
+    working. Counted so that silence pages; the owner goes to the log (never a metric dimension)."""
+    route = "paperclip_run" if "/internal/paperclip/hermes/" in request.url.path else "other"
+    logger.warning("internal hook auth failed owner=%s route=%s", owner_id, route)
+    put_metric("internal_hook.auth_failed", dimensions={"route": route})
+
+
 async def _require_hook_token(owner_id: str, request: Request) -> dict:
     authorization = request.headers.get("Authorization", "")
     if not authorization.startswith("Bearer "):
+        _count_hook_auth_failure(owner_id, request)
         raise HTTPException(status_code=401, detail="missing hook token")
     presented = authorization.removeprefix("Bearer ")
     container = await container_repo.get_by_owner_id(owner_id, consistent=True)
     expected = (container or {}).get("hook_token") or ""
     if not expected or not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
+        _count_hook_auth_failure(owner_id, request)
         # Internal hook auth intentionally remains 401 at the router boundary.
         raise HTTPException(status_code=401, detail="invalid hook token")
     return container

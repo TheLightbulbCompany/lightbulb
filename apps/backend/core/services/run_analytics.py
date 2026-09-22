@@ -194,6 +194,9 @@ async def _enrich_and_capture(*, owner_id: str, props: dict, needs_enrichment: b
                 )
                 props["run_source"] = "unknown"
                 props["enrichment_failed"] = True
+        if props.get("is_nightly_ceo"):
+            # The only per-run signal that the retention loop actually fired and how it ended.
+            put_metric("nightly_ceo.run", dimensions={"outcome": props["outcome"]})
         props["initiation_type"] = _initiation_type(props["run_source"])
         props["is_internal"] = await _is_internal_owner(owner_id)
         run_id = props.get("run_id")

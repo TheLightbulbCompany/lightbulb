@@ -378,6 +378,7 @@ def _patch_owner_aws(monkeypatch, *, hook_token=None, gateway_token=None, existi
         await asyncio.sleep(0)  # let a concurrent prepare interleave here
         state["hook_token"] = state.get("hook_token") or hook_token
         state["gateway_token"] = state.get("gateway_token") or gateway_token
+        state["id"] = state.get("id") or "row-new"
         return dict(state)
 
     monkeypatch.setattr(hermes_provisioning.container_repo, "ensure_owner_tokens", _ensure_owner_tokens)
@@ -391,13 +392,13 @@ async def test_two_concurrent_prepares_write_the_identical_row_secret_and_bearer
 
     import core.billing.bedrock_gate_tokens as bedrock_gate_tokens_mod
 
-    _patch_owner_aws(monkeypatch, existing_row={"owner_id": "org_a"})
+    _patch_owner_aws(monkeypatch, existing_row={"owner_id": "org_a", "id": "row-1"})
     monkeypatch.setattr(
         bedrock_gate_tokens_mod,
         "mint_gate_token",
         AsyncMock(
-            side_effect=lambda owner_id, aips, *, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
-                owner_id, generation
+            side_effect=lambda owner_id, aips, *, row_id, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
+                owner_id, row_id, generation
             )
         ),
     )
@@ -420,7 +421,7 @@ async def test_two_concurrent_prepares_write_the_identical_row_secret_and_bearer
 
     assert len(secrets_written) == 2 and secrets_written[0] == secrets_written[1]
     assert len(rows_written) == 2 and rows_written[0] == rows_written[1]
-    assert secrets_written[0]["bedrock_bearer"] == bedrock_gate_tokens_mod.derive_gate_bearer("org_a", 0)
+    assert secrets_written[0]["bedrock_bearer"] == bedrock_gate_tokens_mod.derive_gate_bearer("org_a", "row-1", 0)
     assert secrets_written[0]["hook_token"] == rows_written[0]["hook_token"]
 
 
@@ -435,6 +436,37 @@ async def test_prepare_derives_the_bearer_at_the_rows_generation(monkeypatch):
     await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1")
 
     assert bedrock_gate_tokens_mod.mint_gate_token.await_args.kwargs["generation"] == 2
+    assert bedrock_gate_tokens_mod.mint_gate_token.await_args.kwargs["row_id"] == "row-new"
+
+
+@pytest.mark.asyncio
+async def test_teardown_then_reprovision_yields_a_different_bearer(monkeypatch):
+    """Teardown deletes the containers row; the next provision's row has a new id, so a bearer
+    copied out of the old runtime is not re-issued. A generation bump rotates too."""
+    import core.billing.bedrock_gate_tokens as bedrock_gate_tokens_mod
+
+    bearers = []
+
+    async def _write_boot_secret(owner_id, **kwargs):
+        bearers.append(kwargs["bedrock_bearer"])
+        return "boot"
+
+    for existing in ({"id": "row-old"}, {"id": "row-old", "gate_bearer_generation": 1}, {"id": "row-after-teardown"}):
+        _patch_owner_aws(monkeypatch, existing_row={"owner_id": "org_a", **existing})
+        monkeypatch.setattr(
+            bedrock_gate_tokens_mod,
+            "mint_gate_token",
+            AsyncMock(
+                side_effect=lambda owner_id, aips, *, row_id, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
+                    owner_id, row_id, generation
+                )
+            ),
+        )
+        monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _write_boot_secret)
+        monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", AsyncMock())
+        await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1")
+
+    assert len(set(bearers)) == 3
 
 
 @pytest.mark.asyncio

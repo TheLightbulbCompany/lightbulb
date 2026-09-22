@@ -41,6 +41,15 @@ describe("AuthStack — gog file-keyring password secret", () => {
   });
 });
 
+describe("AuthStack — gate bearer HMAC key", () => {
+  test("creates a dedicated generated secret, separate from encryption_key", () => {
+    buildStack("dev").hasResourceProperties("AWS::SecretsManager::Secret", {
+      Name: "lightbulb/dev/gate_bearer_hmac_key",
+      GenerateSecretString: Match.objectLike({ PasswordLength: 64, ExcludePunctuation: true }),
+    });
+  });
+});
+
 describe("AuthStack — the pinned cloudflare-warp export", () => {
   test("keeps the exact logical id AND export name the live stack has", () => {
     // container-stack's retired per-user ECS task-execution role was this

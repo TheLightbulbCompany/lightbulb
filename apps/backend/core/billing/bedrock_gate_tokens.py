@@ -152,23 +152,38 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def derive_gate_bearer(owner_id: str, generation: int = 0) -> str:
-    """The owner's gate bearer for ``generation``: deterministic, so every concurrent
-    provision run for one owner derives the SAME bearer and writes the same boot secret,
-    token row and pointer instead of racing to rotate.
+def derive_gate_bearer(owner_id: str, row_id: str, generation: int = 0) -> str:
+    """The owner's gate bearer for this containers-row incarnation and ``generation``:
+    deterministic, so every concurrent provision run for one owner derives the SAME bearer
+    and writes the same boot secret, token row and pointer instead of racing to rotate.
 
-    ``urlsafe_b64(HMAC-SHA256(key=ENCRYPTION_KEY, msg="lightbulb-gate-bearer:v1:<owner_id>:<generation>"))``,
-    padding stripped (the ``token_urlsafe(32)`` shape the random mint had). The key is the
-    ``ENCRYPTION_KEY`` string's UTF-8 bytes. Rotation is an explicit bump of the containers
-    row's ``gate_bearer_generation``; nothing else changes the value. Rotating
-    ``ENCRYPTION_KEY`` changes every owner's NEXT derivation, not a live runtime's bearer.
+    ``urlsafe_b64(HMAC-SHA256(key=GATE_BEARER_HMAC_KEY,
+    msg="lightbulb-gate-bearer:v1:<owner_id>:<row_id>:<generation>"))``, padding stripped
+    (the ``token_urlsafe(32)`` shape the random mint had). The key is the
+    ``GATE_BEARER_HMAC_KEY`` string's UTF-8 bytes -- a DEDICATED secret
+    (``lightbulb/{env}/gate_bearer_hmac_key``), never ``ENCRYPTION_KEY``: rotating that one
+    must not silently change every bearer, and holding it must not let anyone derive them.
 
-    Refuses an empty key: without one every bearer is computable from the owner id alone.
+    ``row_id`` is the containers row's ``id``: every creator writes it ``if_not_exists``, so
+    concurrent runs read back the same one, and teardown deletes the row, so a reprovision
+    gets a new id and therefore a new bearer (a bearer copied out of the old runtime stays
+    dead). Within one incarnation, rotation is an explicit bump of the row's
+    ``gate_bearer_generation``. Rotating ``GATE_BEARER_HMAC_KEY`` changes every owner's NEXT
+    derivation, not a live runtime's bearer.
+
+    A derived bearer cannot be un-issued, so revocation stays where it always was: the
+    token row's ``denied`` flag (``deny_gate_token``) and deleting the row.
+
+    Refuses an empty key (no fallback to any other key) or row id: without the key every
+    bearer is computable from public ids, and without the row id a teardown would no longer
+    change it.
     """
-    key = settings.ENCRYPTION_KEY
+    key = settings.GATE_BEARER_HMAC_KEY
     if not key:
-        raise RuntimeError("ENCRYPTION_KEY is not configured; refusing to derive a gate bearer")
-    msg = f"lightbulb-gate-bearer:v1:{owner_id}:{int(generation)}".encode()
+        raise RuntimeError("GATE_BEARER_HMAC_KEY is not configured; refusing to derive a gate bearer")
+    if not row_id:
+        raise ValueError(f"no containers row id for {owner_id}; refusing to derive a gate bearer")
+    msg = f"lightbulb-gate-bearer:v1:{owner_id}:{row_id}:{int(generation)}".encode()
     digest = hmac.new(key.encode("utf-8"), msg, hashlib.sha256).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
@@ -445,11 +460,12 @@ async def expire_superseded_gate_tokens(owner_id: str) -> None:
         logger.warning("expire_superseded_gate_tokens failed for owner %s", owner_id, exc_info=True)
 
 
-async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, generation: int = 0) -> str:
+async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, row_id: str, generation: int = 0) -> str:
     """Ensure the per-owner bedrock-gate bearer for ``generation``; return the PLAINTEXT.
 
-    - ``derive_gate_bearer(owner_id, generation)`` -- the same value on every run, so a
-      second run for the same generation is a no-op below; only a bumped generation rotates.
+    - ``derive_gate_bearer(owner_id, row_id, generation)`` -- the same value on every run
+      against one row incarnation, so a second run is a no-op below; a bumped generation or
+      a new row (teardown + reprovision) rotates.
     - Writes a hash-keyed row ``{token_hash, owner_id, denied=False,
       aip_tiers={arn: tier}, created_at}``, CREATE-ONLY: a row that already exists (an
       earlier or concurrent run) is left exactly as it is, including a ``denied`` flag.
@@ -496,7 +512,7 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, generation
     # row still carries the one-hour ttl the old code wrote.
     superseded = await _drain_superseded(owner_id, tracked, current_hash=prior_hash, adopt_orphans=True)
 
-    token = derive_gate_bearer(owner_id, generation)
+    token = derive_gate_bearer(owner_id, row_id, generation)
     token_hash = hash_token(token)
     # Invert {tier: arn} -> {arn: tier}: the gateway looks a request's model-id
     # (an AIP ARN) up in this map to authorize + price it.

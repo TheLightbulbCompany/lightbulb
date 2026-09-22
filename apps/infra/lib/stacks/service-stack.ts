@@ -1755,6 +1755,12 @@ export class ServiceStack extends cdk.Stack {
       ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),
       ),
+      // Keys bedrock_gate_tokens.derive_gate_bearer. By name, like the Stripe
+      // Connect secret above: AuthStack deploys first and creates it. Same CMK,
+      // so KmsDecryptForSecrets covers decrypt.
+      GATE_BEARER_HMAC_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportGateBearerHmacKey", `lightbulb/${env}/gate_bearer_hmac_key`),
+      ),
       // PostHog personal API key for the admin Activity tab. Empty value
       // → posthog_admin.py returns {stubbed: true}; populated value →
       // real Persons API calls. Rotate via `aws secretsmanager update-secret`.

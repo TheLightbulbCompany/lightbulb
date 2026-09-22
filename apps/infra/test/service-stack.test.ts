@@ -199,6 +199,14 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
+  test("backend receives the dedicated gate bearer HMAC key as a secret", () => {
+    const backend = Object.values(template.findResources("AWS::ECS::TaskDefinition"))
+      .flatMap((td: any) => td.Properties.ContainerDefinitions)
+      .find((c: any) => c.Name === "backend");
+    const entry = backend.Secrets.find((sec: any) => sec.Name === "GATE_BEARER_HMAC_KEY");
+    expect(JSON.stringify(entry.ValueFrom)).toContain("secret:lightbulb/dev/gate_bearer_hmac_key");
+  });
+
   test("backend can manage install metadata outside runtime owner prefixes", () => {
     const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap(
       (type) => Object.values(template.findResources(type)).flatMap(

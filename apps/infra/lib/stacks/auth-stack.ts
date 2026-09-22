@@ -37,6 +37,7 @@ export class AuthStack extends cdk.Stack {
   public readonly metronomeApiKey: secretsmanager.Secret;
   public readonly metronomeWebhookSecret: secretsmanager.Secret;
   public readonly sesIngestSecret: secretsmanager.Secret;
+  public readonly gateBearerHmacKey: secretsmanager.Secret;
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
 
@@ -198,6 +199,19 @@ export class AuthStack extends cdk.Stack {
       "ses_ingest_secret",
       { passwordLength: 64, excludePunctuation: true },
       "Shared secret the SES-ingest Lambda attaches so /webhooks/ses-inbound can distinguish it from a forged caller.",
+    );
+
+    // HMAC key the backend derives each workspace's bedrock-gate bearer from
+    // (bedrock_gate_tokens.derive_gate_bearer). Dedicated rather than
+    // encryption_key: rotating that one must not silently change every bearer,
+    // and holding it must not let anyone derive them. Rotating THIS one changes
+    // every owner's next derivation (live runtimes keep the bearer their boot
+    // secret carries). The backend reads it by name (service-stack).
+    this.gateBearerHmacKey = createSecret(
+      "GateBearerHmacKey",
+      "gate_bearer_hmac_key",
+      { passwordLength: 64, excludePunctuation: true },
+      "HMAC key for deriving per-workspace bedrock-gate bearer tokens. Never rotate casually.",
     );
 
     // Bootstrap admin Better Auth credentials. CDK creates the secret

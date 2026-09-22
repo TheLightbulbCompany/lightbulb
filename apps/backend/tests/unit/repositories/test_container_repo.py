@@ -1313,7 +1313,46 @@ async def test_ensure_owner_tokens_first_writer_wins_and_existing_tokens_are_kep
 
     assert (first["hook_token"], first["gateway_token"]) == ("h1", "g1")
     assert (second["hook_token"], second["gateway_token"]) == ("h1", "g1")
+    # The row id seeds the gate bearer: both runs read back the SAME one, the creator's.
+    assert first["id"] and second["id"] == first["id"]
+    tokenless = await container_repo.ensure_owner_tokens("org_t", hook_token="x", gateway_token="y")
+    assert tokenless["id"] == first["id"]
 
     with pytest.raises(ProvisionSuperseded):
         await container_repo.ensure_owner_tokens("org_missing", hook_token="h", gateway_token="g")
     assert await container_repo.get_by_owner_id("org_missing") is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_owner_tokens_gives_an_id_less_row_one_stable_id(dynamodb_table):
+    """A row created by a writer that sets no id still hands every run the same id."""
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "org_noid", "status": "provisioning"})
+    a = await container_repo.ensure_owner_tokens("org_noid", hook_token="h", gateway_token="g")
+    b = await container_repo.ensure_owner_tokens("org_noid", hook_token="h2", gateway_token="g2")
+    assert a["id"] and a["id"] == b["id"]
+
+
+@pytest.mark.asyncio
+async def test_upsert_never_replaces_an_id_a_concurrent_creator_wrote(dynamodb_table, monkeypatch):
+    """upsert read no row, then a concurrent creator wrote the row with its id (the gate
+    bearer's seed): the put must not swap in a second id -- it rebuilds on the winner's."""
+    from core.repositories import container_repo
+
+    real_get = container_repo.get_by_owner_id
+    state = {"calls": 0}
+
+    async def racing_get(owner_id, *, consistent=False):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            dynamodb_table.put_item(Item={"owner_id": owner_id, "id": "creator-id", "created_at": "t0"})
+            return None  # this read predates the creator's write
+        return await real_get(owner_id, consistent=consistent)
+
+    monkeypatch.setattr(container_repo, "get_by_owner_id", racing_get)
+    result = await container_repo.upsert("org_race", {"status": "provisioning"})
+    monkeypatch.setattr(container_repo, "get_by_owner_id", real_get)
+
+    assert result["id"] == "creator-id"
+    assert (await container_repo.get_by_owner_id("org_race", consistent=True))["id"] == "creator-id"

@@ -472,6 +472,11 @@ class Settings(BaseSettings):
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
     ENCRYPTION_KEY: str = ""
 
+    # HMAC key for bedrock_gate_tokens.derive_gate_bearer (secret
+    # lightbulb/{env}/gate_bearer_hmac_key). Dedicated, never ENCRYPTION_KEY; empty makes the
+    # derivation refuse rather than fall back.
+    GATE_BEARER_HMAC_KEY: str = ""
+
     # Shared password for the gog CLI file-keyring backend. The gog_cli
     # materializer runs gog with GOG_KEYRING_BACKEND=file and this password to
     # encrypt the owner's Google OAuth keyring on EFS; the identical value is

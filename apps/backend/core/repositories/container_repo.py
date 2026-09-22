@@ -232,6 +232,10 @@ _UPSERT_CAS_ATTEMPTS = 3
 _LEASE_CAS_FIELDS = ("provision_claim_id", "provision_attempt_token")
 _UPSERT_PRESERVED_FIELDS += _RELEASE_OWNED_FIELDS
 _UPSERT_CAS_FIELDS = (
+    # ``id`` seeds the gate bearer (``derive_gate_bearer``): pinned so an upsert that read no
+    # row (or no id) cannot replace the id a concurrent creator already wrote -- the refusal
+    # rebuilds on the winner's id.
+    "id",
     "bedrock_gate_token_hash",
     "last_interactive_at",
     *_LEASE_CAS_FIELDS,
@@ -421,7 +425,7 @@ async def upsert(owner_id: str, fields: dict) -> dict:
         now = utc_now_iso()
         item = {
             "owner_id": owner_id,
-            "id": existing["id"] if existing else str(uuid.uuid4()),
+            "id": (existing or {}).get("id") or str(uuid.uuid4()),
             "created_at": existing["created_at"] if existing else now,
             "updated_at": now,
             **fields,
@@ -1767,7 +1771,7 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
 
 
 async def ensure_owner_tokens(owner_id: str, *, hook_token: str, gateway_token: str) -> dict:
-    """Set ``hook_token``/``gateway_token`` only where the row has none; return the row.
+    """Set ``hook_token``/``gateway_token`` (and ``id``) only where the row has none; return the row.
 
     ONE ``if_not_exists`` UpdateItem, so concurrent provision runs each offering fresh
     tokens converge on the first writer's pair, and an owner that already has tokens keeps
@@ -1781,10 +1785,12 @@ async def ensure_owner_tokens(owner_id: str, *, hook_token: str, gateway_token: 
         response = await run_in_thread(
             _get_table().update_item,
             Key={"owner_id": owner_id},
+            # ``id`` too: the gate bearer is derived from it, and a row created by a writer
+            # that sets no id must still hand every concurrent run the same one.
             UpdateExpression="SET hook_token = if_not_exists(hook_token, :h), "
-            "gateway_token = if_not_exists(gateway_token, :g)",
+            "gateway_token = if_not_exists(gateway_token, :g), id = if_not_exists(id, :newid)",
             ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeValues={":h": hook_token, ":g": gateway_token},
+            ExpressionAttributeValues={":h": hook_token, ":g": gateway_token, ":newid": str(uuid.uuid4())},
             ReturnValues="ALL_NEW",
         )
     except ClientError as e:

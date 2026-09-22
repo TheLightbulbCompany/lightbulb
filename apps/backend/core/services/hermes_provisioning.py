@@ -605,9 +605,10 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
 
     IDEMPOTENT AT THE SOURCE, so two concurrent runs for one owner converge: the tokens are one
     ``if_not_exists`` write whose RETURNED winner every later step uses
-    (``container_repo.ensure_owner_tokens``), and the bearer is derived from the owner and the
-    row's ``gate_bearer_generation`` (``derive_gate_bearer``), so both runs write identical boot
-    secret bytes, the same create-only token row and the same pointer.
+    (``container_repo.ensure_owner_tokens``), and the bearer is derived from the owner, the row's
+    ``id`` from that same read-back and its ``gate_bearer_generation`` (``derive_gate_bearer``),
+    so both runs write identical boot secret bytes, the same create-only token row and the same
+    pointer -- and a teardown (new row, new id) yields a new bearer.
 
     I3/M4-R37 freshness guard: a dispatch reaches owners who are ALREADY live (a self-heal, a
     reconcile, any ordinary re-dispatch), not just fresh ones. Minting for one of those would
@@ -661,7 +662,9 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
     aip_arns = await reconcile_hermes_aips(owner_id)
     role_arn = await ensure_owner_bedrock_role(owner_id, aip_arns)
     await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), role_arn.split(":")[4])
-    bedrock_bearer = await mint_gate_token(owner_id, aip_arns, generation=int(row.get("gate_bearer_generation") or 0))
+    bedrock_bearer = await mint_gate_token(
+        owner_id, aip_arns, row_id=row["id"], generation=int(row.get("gate_bearer_generation") or 0)
+    )
     provider_choice, _ = await resolve_provider_choice(owner_id)
     if provider_choice == "openrouter_managed":
         from core.services.openrouter_keys import ensure_owner_key_for_settings

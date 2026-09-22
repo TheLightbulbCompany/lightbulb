@@ -91,48 +91,52 @@ Deliberately out of scope: "stopped short / promised but did not deliver". Per t
 2. **Enforce routing:** the backend decision gates `room_event`, then delete `gate_ambient` from the bridge (image build → dev pin → roll → prod pin → roll).
 3. **Follow-up wake** (backend only).
 
-## 5a. Where replies land: thread or main channel (owner sign-off needed before building)
+## 5a. Where replies land: thread or main channel (owner decision 2026-09-22: "reply where the conversation lives")
 
-**Today's rule** (bridge `reply_thread_root`, turn.py:876):
-- In a channel or group DM, every agent reply goes in the **thread under the message that woke it**. A top-level message becomes a thread root; a message inside a thread keeps that thread's root.
-- A DM has no threads.
-- Only humans (and the CEO's seeded welcome) post top-level.
+Today's rule (bridge `reply_thread_root`, turn.py:876) is "always thread under the trigger" in channels and group DMs, and linear in DMs. The owner rejected "always thread": *some conversations live in the main channel, others in the threads under a message.*
 
-**Proposal: keep that rule and extend it to the three new cases.**
+**Rule:**
 
-| Case | Where it goes | Why |
+| Trigger | Placement | Decided by |
 |---|---|---|
-| Routed answer (Jev picked Finance for a plain question) | Thread under the question | Same as a mention today. The channel shows one "1 reply · Finance" line, not a pile of messages. |
-| Proactive (an agent speaks up unasked) | Thread under the message it reacts to | It is a reaction to something specific. The main channel stays human-paced. |
-| Follow-up ("coming back to finish") | **The original request's thread**, not the latest message's | The asker is subscribed to that thread. An answer under someone else's message would be lost. |
-| Agent-to-agent back-and-forth | Stays inside the thread it started in. It never creates a new top-level post. | This contains any ping-pong, and the `none` option plus the no-follow-up-from-agent-only-messages rule (D4) bound it. |
-| An outcome worth everyone's eyes ("PR merged", "budget approved") | Thread reply, with Slack's "Also send to #channel" | This is the only way anything agent-authored reaches the main channel. It is opt-in per message, by the agent's skill rule, and only for outcomes. |
+| The trigger message is **inside a thread** | That thread | Deterministic |
+| A **top-level request or task** (an @mention with an ask, or a routed "can someone do X") | A thread under it. The work and any agent↔agent exchange stay there. | Jev `placement` answer = `thread`. An @mention on a top-level message defaults to `thread` if Jev is unavailable. |
+| A **top-level message in an ongoing main-channel conversation** that an agent can add to (the proactive chime-in Jev exists for) | **Main channel, inline** (top-level) | Jev `placement` answer = `main` |
+| **Follow-up** ("coming back to finish") | The original request's thread (or the main channel, if the original reply was inline) | Deterministic: the placement of the run it continues |
+| **Outcome** of threaded work worth everyone's eyes | A thread reply plus "also send to #channel" | Agent skill rule; outcomes only |
+| DM | Linear | Deterministic (unchanged) |
 
-Mockup of #general after two plain messages, with Finance and Engineering Listening:
+**Mechanism:** placement is a second question in the **same** Jev call (no extra latency or cost):
+- `who`: choice among the candidates + `none`.
+- `placement`: choice with `main` ("part of a flowing conversation in the channel; a short contribution") vs `thread` ("a specific request, task, or question that will take work or back-and-forth").
+
+The backend passes the result to the bridge as an optional ingress field `replyThreadRootId` (a string = that thread; `null` = top-level). An old bridge ignores the field and threads as today, so this is N-1 safe. The field rides the slice-2 bridge change. Until then, everything threads, which is today's behaviour.
+
+Mockup of #general with Finance, Engineering and Growth Listening:
 
 ```
 #general
-────────────────────────────────────────────────
-Aden   What did we spend on cloud hosting last month?
-       └ 1 reply · Finance · 2m                         ← routed answer, threaded
-Aden   lol the coffee machine is broken again
-                                                        ← Jev: none. Nobody wakes.
-Leo    @Engineering can you look at the flaky login test?
-       └ 3 replies · Engineering, Finance · 5m          ← Engineering (mention) + Finance
-                                                           spoke up in the thread (proactive)
-Finance  ↪ replied in a thread: "Cloud spend is $412, 8% over budget"  [also sent to #general]
-────────────────────────────────────────────────
-Thread: "What did we spend on cloud hosting…"
-  Finance   $412 across AWS + Vercel; details below…
-  Engineering  (earlier interrupted) — back on this: the Vercel line includes preview builds…
-                                                        ← follow-up lands HERE, in the original thread
+──────────────────────────────────────────────────────────────
+Aden     we're thinking of moving the launch to next Thursday
+Leo      works for me, marketing needs the extra days anyway
+Growth   Thursday also lines up with the newsletter send — I'd    ← proactive, INLINE (main):
+         hold the announcement for that, open rates are ~2x          a short contribution to a
+                                                                     conversation living in #general
+Aden     good call
+                                                                  ← Jev: none. Nobody speaks.
+Aden     can someone pull last month's cloud spend vs budget?
+         └ 3 replies · Finance, Engineering · 4m                  ← a top-level TASK → Jev placement
+                                                                     = thread; the work lives under it
+Finance  ↪ replied in a thread: "Cloud spend $412, 8% over —      ← outcome, "also sent to #general"
+           preview builds are the driver"  [also sent to #general]
+──────────────────────────────────────────────────────────────
+Thread: "can someone pull last month's cloud spend vs budget?"
+  Finance      Pulling it from Stripe + AWS billing…
+  Engineering  FYI preview deployments doubled after the 9/10 change
+  Finance      $412 total, 8% over budget; the driver is preview builds.   ← Finance was mid-task when
+                                                                              Engineering replied, and came
+                                                                              BACK here (follow-up, same thread)
 ```
-
-**Implementation consequence** (why this needs sign-off): the bridge derives the thread from the *trigger* message. A follow-up triggered by the newest message would therefore land in the wrong thread when that message is top-level. There are two options:
-- (a) Pick the newest message *inside the original thread* as the trigger. There is no bridge change, but if nothing new arrived in that thread, there is no trigger to pick.
-- (b) Add one optional ingress field, `replyThreadRootId`, which the bridge prefers over the trigger's thread. This is a small bridge change, rolled in with slice 2.
-
-Recommendation: **(b)**.
 
 ## 6. Decisions (2026-09-22, owner via coordinator)
 
@@ -143,7 +147,7 @@ Recommendation: **(b)**.
 - **D5:** Shadow first.
 - **D6:** Jev-as-judge stays in this track. The messaging session's test harness calls it.
 - **New slice 0:** prove today's Listening end to end in dev before any Jev code (§7).
-- **Open:** §5a thread placement, and option (a) vs (b) for follow-up threading.
+- **§5a:** approved with the amendment "reply where the conversation lives". Placement is a Jev output. Option (b), the `replyThreadRootId` ingress field, is approved; it is N-1 safe and rides the slice-2 bridge change.
 
 ## 7. Slice 0 findings (dev, 2026-09-22, org_3JhR0rr1ZGMFnZc2D6dQ8BHhh9G)
 

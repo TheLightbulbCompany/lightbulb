@@ -2216,11 +2216,12 @@ def parse_agent_mentions(text: str, members: list[dict]) -> tuple[list[dict], li
 RUN_ERROR_MESSAGES = {
     "agent_did_not_start": "The agent did not start this run.",
     "agent_stopped_responding": "The agent stopped responding.",
-    # Keyed by outcome, not error_kind: the bridge's ambient gate (should an `active`
-    # agent answer plain room traffic?) failed, so the agent never decided to reply.
-    "gate_error": "My check on whether to reply failed.",
 }
-RUN_FAILURE_OUTCOMES = frozenset({"error", "gate_error"})
+# `gate_error` is deliberately absent: it is the ambient "should an `active` agent
+# answer this plain message?" classifier failing, not a run the user asked for. A
+# note there would repeat on every plain message from every listening agent while
+# the classifier is down.
+RUN_FAILURE_OUTCOMES = frozenset({"error"})
 
 
 async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error_kind: str | None) -> None:

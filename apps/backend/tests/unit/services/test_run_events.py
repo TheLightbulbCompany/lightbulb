@@ -272,13 +272,6 @@ def _failure_patches(create, trigger=None):
             "I couldn't finish that (error). Agent run failed. "
             "Try again, or check Settings → Model & Credits if this keeps happening.",
         ),
-        (
-            "gate_error",
-            None,
-            None,
-            "I couldn't finish that (gate_error). My check on whether to reply failed. "
-            "Try again, or check Settings → Model & Credits if this keeps happening.",
-        ),
     ],
 )
 async def test_failed_run_posts_one_silent_agent_message(metrics, outcome, error_kind, usage, expected):
@@ -301,7 +294,9 @@ async def test_failed_run_posts_one_silent_agent_message(metrics, outcome, error
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome,usage", [("completed", USAGE), ("aborted", USAGE), ("ignored", None)])
+@pytest.mark.parametrize(
+    "outcome,usage", [("completed", USAGE), ("aborted", USAGE), ("ignored", None), ("gate_error", None)]
+)
 async def test_non_failure_outcomes_post_nothing(metrics, outcome, usage):
     create = AsyncMock()
     patches = _failure_patches(create)

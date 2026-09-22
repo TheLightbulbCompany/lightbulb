@@ -213,3 +213,74 @@ async def test_repoint_refuses_an_agent_row_with_no_id(monkeypatch):
         await lifecycle.repoint_agent_adapter("org_1", {"adapterType": "openclaw_gateway"})
 
     admin.patch_agent.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# sync_agent_adapter_tokens -- a re-created containers row mints a new hook_token, but the
+# surviving company's hermes_gateway agents still carry the old one as their apiKey
+# ---------------------------------------------------------------------------
+
+
+def _wire_sync(monkeypatch, *, agents, company_id="co-1", hook_token="new-tok"):
+    admin = _wire_repoint(monkeypatch, hook_token=hook_token)
+    admin.list_agents = AsyncMock(return_value=agents)
+    monkeypatch.setattr(lifecycle, "resolve_company_id_for_owner", AsyncMock(return_value=company_id))
+    return admin
+
+
+@pytest.mark.asyncio
+async def test_sync_repatches_every_hermes_agent_with_the_rows_current_token(monkeypatch):
+    admin = _wire_sync(
+        monkeypatch,
+        agents=[
+            {"id": "a1", "adapterType": lifecycle.HERMES_GATEWAY_TYPE},
+            {"id": "a2", "adapterType": lifecycle.HERMES_GATEWAY_TYPE},
+            {"id": "a3", "adapterType": "openclaw_gateway"},
+        ],
+    )
+
+    assert await lifecycle.sync_agent_adapter_tokens("org_1") == 2
+
+    patched = {c.kwargs["agent_id"]: c.kwargs["body"] for c in admin.patch_agent.await_args_list}
+    assert set(patched) == {"a1", "a2"}  # openclaw_gateway is repoint_agent_adapter's job
+    for body in patched.values():
+        assert body["adapterConfig"]["apiKey"] == "new-tok"
+        assert body["replaceAdapterConfig"] is True
+
+
+@pytest.mark.asyncio
+async def test_sync_reads_the_token_consistently_at_patch_time(monkeypatch):
+    """Two concurrent provisions: last writer must win with the row's CURRENT token, so the
+    token is re-read (consistent) inside the sync, never captured by a caller earlier."""
+    admin = _wire_sync(monkeypatch, agents=[{"id": "a1", "adapterType": lifecycle.HERMES_GATEWAY_TYPE}])
+    reads = []
+
+    async def _get(owner_id, *, consistent=False):
+        reads.append(consistent)
+        return {"hook_token": "fresh-tok"}
+
+    monkeypatch.setattr(lifecycle.container_repo, "get_by_owner_id", _get)
+
+    await lifecycle.sync_agent_adapter_tokens("org_1")
+
+    assert reads == [True]
+    assert admin.patch_agent.await_args.kwargs["body"]["adapterConfig"]["apiKey"] == "fresh-tok"
+
+
+@pytest.mark.asyncio
+async def test_sync_is_a_noop_without_a_company(monkeypatch):
+    admin = _wire_sync(monkeypatch, agents=[], company_id=None)
+
+    assert await lifecycle.sync_agent_adapter_tokens("org_1") == 0
+
+    admin.list_agents.assert_not_awaited()
+    admin.patch_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_raises_on_a_failed_patch(monkeypatch):
+    admin = _wire_sync(monkeypatch, agents=[{"id": "a1", "adapterType": lifecycle.HERMES_GATEWAY_TYPE}])
+    admin.patch_agent.side_effect = RuntimeError("paperclip 503")
+
+    with pytest.raises(RuntimeError, match="paperclip 503"):
+        await lifecycle.sync_agent_adapter_tokens("org_1")

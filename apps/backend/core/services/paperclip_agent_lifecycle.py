@@ -107,6 +107,54 @@ async def repoint_agent_adapter(owner_id: str, agent: dict[str, Any]) -> bool:
     return True
 
 
+async def list_hermes_gateway_agents(owner_id: str) -> tuple[str | None, list[str]]:
+    """The owner's active Paperclip company id and its ``hermes_gateway`` agent ids -- what
+    ``sync_agent_adapter_tokens`` would patch. ``(None, [])`` when no company exists yet."""
+    company_id = await resolve_company_id_for_owner(
+        owner_id=owner_id, repo=PaperclipRepo(table_name="paperclip-companies")
+    )
+    if company_id is None:
+        return None, []
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+        admin = PaperclipAdminClient(http_client=http)
+        cookie = await get_admin_session_cookie(http)
+        agents = _rows(await admin.list_agents(session_cookie=cookie, company_id=company_id), "agents")
+    return company_id, [a["id"] for a in agents if a.get("adapterType") == HERMES_GATEWAY_TYPE and a.get("id")]
+
+
+async def sync_agent_adapter_tokens(owner_id: str) -> int:
+    """Re-snapshot the row's CURRENT ``hook_token`` into every ``hermes_gateway`` agent's apiKey.
+
+    The adapter config is a snapshot (Paperclip stores the apiKey as a managed company secret),
+    and ``provision_org`` short-circuits on an already-active company -- so when an owner's
+    containers row is re-created and ``prepare_hermes_workspace`` mints a new hook_token, the
+    surviving company's agents keep the OLD one and every run 401s at the facade while room
+    chat keeps working. ``repoint_agent_adapter`` skips agents already on ``hermes_gateway``,
+    so it cannot fix this; ``openclaw_gateway`` agents stay its job.
+
+    The token is read CONSISTENTLY here, right before the PATCHes, so two concurrent provisions
+    converge on the row's latest token (last writer wins with the current value, never a stale
+    one a caller captured). Idempotent. Returns the number patched (0 without a company).
+    **Raises** on failure: a half-synced workspace looks healthy.
+    """
+    company_id, agent_ids = await list_hermes_gateway_agents(owner_id)
+    if not agent_ids:
+        return 0
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+    adapter_config = build_hermes_gateway_adapter_config(owner_id, hook_token=row.get("hook_token") or "")
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+        admin = PaperclipAdminClient(http_client=http)
+        cookie = await get_admin_session_cookie(http)
+        for agent_id in agent_ids:
+            await admin.patch_agent(
+                session_cookie=cookie,
+                agent_id=agent_id,
+                body={"adapterConfig": adapter_config, "replaceAdapterConfig": True},
+            )
+    logger.info("sync_agent_adapter_tokens: owner=%s company=%s patched=%d", owner_id, company_id, len(agent_ids))
+    return len(agent_ids)
+
+
 _ISSUE_PAGE_SIZE = 1000
 FINAL_ROOT_CEO_CONFLICT = "The final root CEO cannot be deleted or demoted."
 

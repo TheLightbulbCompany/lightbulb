@@ -553,6 +553,10 @@ export class ServiceStack extends cdk.Stack {
             // made under a previous policy ARN. Without this the enumeration
             // AccessDenies and the role can never be deleted.
             "iam:ListAttachedRolePolicies",
+            // delete_owner_bedrock_role ENUMERATES inline policies too (#2793 --
+            // owner-browser/owner-memory are inline), and IAM refuses DeleteRole while
+            // any remain. Without this every owner-role teardown AccessDenies.
+            "iam:ListRolePolicies",
             "iam:TagRole",
             "iam:GetRole",
             // Lets ensure_owner_bedrock_role converge a previously-minted role's

@@ -49,6 +49,17 @@ async def test_resolve_provider_choice_trial_local_writes_nothing():
     repo.upsert.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_resolve_provider_choice_reads_strongly_consistent():
+    """A fresh trial row must be visible to the provision that follows its
+    creation — an eventually consistent miss returns None and silently falls
+    back to bedrock_claude (no owner key minted, Bedrock profiles written)."""
+    with patch("core.services.container_provision.billing_repo") as repo:
+        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
+        await resolve_provider_choice("user_x")
+    repo.get_by_owner_id.assert_awaited_once_with("user_x", consistent_read=True)
+
+
 def _literal_values(annotation) -> set[str]:
     """Flatten the string values out of a (possibly optional) Literal."""
     values: set[str] = set()

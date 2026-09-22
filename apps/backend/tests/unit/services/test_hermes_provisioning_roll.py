@@ -45,7 +45,9 @@ def _wire(monkeypatch, *, current_image, row=ROW):
     monkeypatch.setattr(
         hermes_provisioning, "_update_runtime_image", lambda arn, req: calls.append(("update", arn, req))
     )
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: calls.append(("ready", arn)))
+    # Optimistic roll: a single status read replaces the READY poll. The "ready"
+    # tag keeps the sequence assertions below unchanged.
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: calls.append(("ready", arn)) or "READY")
     monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", lambda arn, sid: calls.append(("stop", arn, sid)))
 
     # The busy probe is part of the sequence now (Hazard 2). Stubbed here so these tests never

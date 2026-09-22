@@ -384,3 +384,20 @@ async def test_clear_phantom_connector_noop_without_row(dynamodb_table):
     assert await billing_repo.get_by_owner_id("org_nonexistent") is None
     await billing_repo.create_if_not_exists("org_bare", "cus_ph3", owner_type="org")
     assert await billing_repo.clear_phantom_oauth_connector("org_bare", expected_user_id="user_ghost") is False
+
+
+@pytest.mark.asyncio
+async def test_running_provider_change_reaches_dispatch_executor(dynamodb_table, monkeypatch):
+    """A provider switch on a running workspace re-dispatches through the
+    SFN-only funnel: dispatch submits (StartExecution) and returns ownership,
+    with no inline attempt. The machine runs the attempt."""
+    from unittest.mock import AsyncMock
+    from core.repositories import container_repo
+    from core.services import provision_dispatch
+
+    await billing_repo.create_if_not_exists("org_dispatch", "cus_dispatch", owner_type="org")
+    container_repo._get_table().put_item(Item={"owner_id": "org_dispatch", "status": "running"})
+    await billing_repo.set_provider_choice("org_dispatch", provider_choice="bedrock_claude", byo_provider=None)
+    await container_repo.takeover_provision("org_dispatch")
+    monkeypatch.setattr(provision_dispatch, "_start", AsyncMock(return_value="ok"))
+    assert await provision_dispatch.dispatch_provision("org_dispatch") is True

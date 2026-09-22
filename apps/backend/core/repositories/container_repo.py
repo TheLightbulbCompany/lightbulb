@@ -930,18 +930,20 @@ async def update_status(owner_id: str, status: str, substatus: str | None = None
     return await update_fields(owner_id, fields)
 
 
-async def update_fields(owner_id: str, fields: dict, *, expected: dict | None = None) -> dict | None:
+async def update_fields(
+    owner_id: str, fields: dict, *, expected_field: str | None = None, expected_value=None
+) -> dict | None:
     """Merge ``fields`` into an EXISTING row. Returns the updated item, or
-    ``None`` when there is no row or ``expected`` no longer holds.
+    ``None`` when there is no row or ``expected_field`` no longer holds ``expected_value``.
 
     A SCOPED ``update_item`` — it writes the caller's fields and nothing else.
     It used to be a get→put of the whole item, which resurrected a concurrent
     writer's ``status`` or gate-token pointer from a read milliseconds old.
 
-    ``expected`` — optional ``{field: value}`` the row must still hold for the
-    write to land (``None`` matches an absent field too). For a write that
-    CLEARS a value a concurrent run may already have replaced, e.g. the
-    CREATE_FAILED ARN clear in ``hermes_provisioning``.
+    ``expected_field``/``expected_value`` — the row must still hold this value
+    (plain equality) for the write to land. For a write that CLEARS a value a
+    concurrent run may already have replaced, e.g. the CREATE_FAILED ARN clear
+    in ``hermes_provisioning``.
 
     EVERY attribute name is aliased, uniformly: ``status`` is a DynamoDB
     reserved word and the commonest field written here. A ``None`` value is
@@ -958,13 +960,9 @@ async def update_fields(owner_id: str, fields: dict, *, expected: dict | None = 
         values[f":v{i}"] = value
     set_parts.append("updated_at = :iso")
     condition = "attribute_exists(owner_id)"
-    for i, (key, value) in enumerate((expected or {}).items()):
-        names[f"#e{i}"] = key
-        values[f":e{i}"] = value
-        if value is None:
-            condition += f" AND (attribute_not_exists(#e{i}) OR #e{i} = :e{i})"
-        else:
-            condition += f" AND #e{i} = :e{i}"
+    if expected_field is not None:
+        names["#e"], values[":e"] = expected_field, expected_value
+        condition += " AND #e = :e"
     update_expression = "SET " + ", ".join(set_parts)
     if fields.get("status") == "running":
         # A row that reached running carries no error from an earlier failed attempt.

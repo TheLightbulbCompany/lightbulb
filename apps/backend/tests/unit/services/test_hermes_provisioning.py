@@ -897,7 +897,7 @@ async def test_a_create_failed_arn_clear_is_conditioned_on_the_arn_still_matchin
 
     clear_call = calls[-1]
     assert clear_call["fields"]["agentcore_runtime_arn"] is None
-    assert clear_call.get("expected") == {"agentcore_runtime_arn": "arn:dead"}
+    assert (clear_call.get("expected_field"), clear_call.get("expected_value")) == ("agentcore_runtime_arn", "arn:dead")
 
 
 @pytest.mark.asyncio

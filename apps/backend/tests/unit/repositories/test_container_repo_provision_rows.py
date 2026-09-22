@@ -1,5 +1,5 @@
 """Provision row writes: the dispatch's status projection, the error record,
-``update_fields``' ``expected=`` condition (the CREATE_FAILED ARN clear), and
+``update_fields``' ``expected_field`` condition (the CREATE_FAILED ARN clear), and
 the conversion-marker writers. There is no lease: a RUNNING Step Functions
 execution owns a provision, and every provision step is idempotent.
 
@@ -130,7 +130,7 @@ async def test_mark_provision_error_noops_on_an_absent_row(dynamodb_table):
 
 
 # ---------------------------------------------------------------------------
-# update_fields(expected=...) — the #14 CREATE_FAILED ARN clear's condition
+# update_fields(expected_field=...) — the #14 CREATE_FAILED ARN clear's condition
 
 
 @pytest.mark.asyncio
@@ -144,7 +144,10 @@ async def test_update_fields_expected_value_mismatch_writes_nothing(dynamodb_tab
 
     assert (
         await container_repo.update_fields(
-            "org_exp", {"agentcore_runtime_arn": None}, expected={"agentcore_runtime_arn": "arn:dead"}
+            "org_exp",
+            {"agentcore_runtime_arn": None},
+            expected_field="agentcore_runtime_arn",
+            expected_value="arn:dead",
         )
         is None
     )
@@ -152,33 +155,9 @@ async def test_update_fields_expected_value_mismatch_writes_nothing(dynamodb_tab
 
     # Matching expectation succeeds.
     await container_repo.update_fields(
-        "org_exp", {"agentcore_runtime_arn": None}, expected={"agentcore_runtime_arn": "arn:new"}
+        "org_exp", {"agentcore_runtime_arn": None}, expected_field="agentcore_runtime_arn", expected_value="arn:new"
     )
     assert _row(dynamodb_table, "org_exp")["agentcore_runtime_arn"] is None
-
-
-@pytest.mark.asyncio
-async def test_update_fields_expected_none_matches_an_absent_field(dynamodb_table):
-    """ "No value yet" must match a field that was NEVER written (absent), not
-    only one explicitly cleared to null."""
-    from core.repositories import container_repo
-
-    dynamodb_table.put_item(Item={"owner_id": "org_fresh", "status": "provisioning"})
-    await container_repo.update_fields(
-        "org_fresh", {"agentcore_runtime_arn": "arn:new"}, expected={"agentcore_runtime_arn": None}
-    )
-    assert _row(dynamodb_table, "org_fresh")["agentcore_runtime_arn"] == "arn:new"
-
-
-@pytest.mark.asyncio
-async def test_update_fields_expected_none_also_matches_an_explicit_null(dynamodb_table):
-    from core.repositories import container_repo
-
-    dynamodb_table.put_item(Item={"owner_id": "org_cleared", "status": "provisioning", "agentcore_runtime_arn": None})
-    await container_repo.update_fields(
-        "org_cleared", {"agentcore_runtime_arn": "arn:fresh"}, expected={"agentcore_runtime_arn": None}
-    )
-    assert _row(dynamodb_table, "org_cleared")["agentcore_runtime_arn"] == "arn:fresh"
 
 
 # ---------------------------------------------------------------------------

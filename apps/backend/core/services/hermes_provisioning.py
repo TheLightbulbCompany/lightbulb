@@ -31,7 +31,7 @@ builder, the SFN watchdog and the long ``wait_for_running`` ECS-boot poll (``Cre
 one synchronous call; readiness is discovered at first invoke, not waited on).
 
 Row writes are plain scoped ``container_repo.update_fields`` calls. The one conditional write is
-the CREATE_FAILED ARN clear (``expected=``): it must not wipe a newer, healthy ARN a concurrent run
+the CREATE_FAILED ARN clear (``expected_field=``): it must not wipe a newer, healthy ARN a concurrent run
 recorded after deleting the same dead runtime.
 
 Boot secret (M4-R4/R5): the runtime's ``environmentVariables`` carry NO credential value. One JSON
@@ -1424,11 +1424,10 @@ async def provision_hermes_runtime(owner_id: str) -> str:
         # CreateAgentRuntime, forever. A retry that sees this row field takes the `if arn:`
         # branch above instead of creating again.
         #
-        # Fix round 2 (deliberately NOT conditioned on `expected=`, unlike #14's clear): this
+        # Fix round 2 (deliberately NOT conditioned on `expected_field=`, unlike #14's clear): this
         # write is also reached by the M6-R43 recovery path above, where the row's
         # agentcore_runtime_arn still names a dead/DELETING runtime -- `_RuntimeGone` resets the
-        # LOCAL `arn` variable to None but never clears the ROW field. An `expected={"...":
-        # None}` here would then fail against that still-dead value and leave the row stuck on
+        # LOCAL `arn` variable to None but never clears the ROW field. An expected-None condition here would then fail against that still-dead value and leave the row stuck on
         # the dead arn forever. Runtime names are unique per owner, so two concurrent creators
         # for the same owner always converge on the SAME arn anyway -- the condition would
         # guard nothing real.
@@ -1462,7 +1461,7 @@ async def provision_hermes_runtime(owner_id: str) -> str:
         # observed the same dead arn, deleted it, and created a fresh one -- this clear must not
         # then wipe out that newer, healthy arn (a miss is a silent no-op).
         await container_repo.update_fields(
-            owner_id, {"agentcore_runtime_arn": None}, expected={"agentcore_runtime_arn": arn}
+            owner_id, {"agentcore_runtime_arn": None}, expected_field="agentcore_runtime_arn", expected_value=arn
         )
         raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to start: {status}")
 

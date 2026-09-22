@@ -449,8 +449,9 @@ class OpenClawWorkWorker:
             sessions=sessions,
             history_through_seq=int(meta.get("lastSeq") or message["messageSeq"]) if follow_up is not None else None,
         )
-        if event_kind == "room_event":
+        if event_kind == "room_event" and follow_up is None:
             # Slice-1 SHADOW: record what Jev would route; never raises, dispatch is unchanged.
+            # A follow-up is deterministic (the agent asked for that result): never routed.
             from core.services import jev
 
             await jev.shadow(

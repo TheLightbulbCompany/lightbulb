@@ -126,7 +126,7 @@ async def test_shadow_errors_are_swallowed(monkeypatch, metrics):
 # --------------------------------------------------------------------------- the hook in _dispatch_message
 
 
-async def _dispatch(monkeypatch, event_kind, *, listening=True, shadow=None):
+async def _dispatch(monkeypatch, event_kind, *, listening=True, shadow=None, follow_up=None):
     posted: list = []
     created: list = []
     monkeypatch.setattr(work, "put_metric", lambda *a, **k: None)
@@ -171,7 +171,7 @@ async def _dispatch(monkeypatch, event_kind, *, listening=True, shadow=None):
         return Answer()
 
     monkeypatch.setattr(worker, "_post", post)
-    await worker._dispatch_message(META, {"kind": "agent", "id": "a1"}, MESSAGE, event_kind)
+    await worker._dispatch_message(META, {"kind": "agent", "id": "a1"}, MESSAGE, event_kind, follow_up=follow_up)
     return shadow, posted, created
 
 
@@ -187,6 +187,15 @@ async def test_hook_runs_for_room_event_and_dispatch_is_unchanged(monkeypatch):
 @pytest.mark.asyncio
 async def test_hook_never_runs_for_user_request(monkeypatch):
     shadow, posted, _ = await _dispatch(monkeypatch, "user_request")
+    shadow.assert_not_awaited()
+    assert len(posted) == 1
+
+
+@pytest.mark.asyncio
+async def test_hook_never_runs_for_a_follow_up(monkeypatch):
+    # A follow-up is the agent's own delegation result: deterministic, never routed.
+    follow_up = {"id": "11111111-1111-1111-1111-111111111111", "reason": "delegation_completed", "text": "done"}
+    shadow, posted, _ = await _dispatch(monkeypatch, "room_event", follow_up=follow_up)
     shadow.assert_not_awaited()
     assert len(posted) == 1
 

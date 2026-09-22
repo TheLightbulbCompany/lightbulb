@@ -518,7 +518,7 @@ class PaperclipProvisioning:
             else:
                 owner_auth_email = owner_email
                 signup, owner_auth_email, password = await self._sign_up_with_staged_credentials(
-                    user_id=owner_user_id, claim_id=seed_claim_id, email=owner_email, password=password
+                    user_id=owner_user_id, email=owner_email, password=password
                 )
                 paperclip_user_id = signup["user"]["id"]
                 new_user_session_cookie = signup["_session_cookie"]
@@ -991,7 +991,7 @@ class PaperclipProvisioning:
                 member_session_cookie = member_signin["_session_cookie"]
             else:
                 member_signup, member_auth_email, member_password = await self._sign_up_with_staged_credentials(
-                    user_id=user_id, claim_id=member_claim_id, email=email, password=member_password
+                    user_id=user_id, email=email, password=member_password
                 )
                 member_paperclip_user_id = member_signup["user"]["id"]
                 member_session_cookie = member_signup["_session_cookie"]
@@ -1166,15 +1166,12 @@ class PaperclipProvisioning:
             raise
 
     async def _sign_up_with_staged_credentials(
-        self, *, user_id: str, claim_id: str | None, email: str, password: str
+        self, *, user_id: str, email: str, password: str
     ) -> tuple[dict, str, str]:
         # A lost response can mean signup succeeded. Save the secret before
-        # making that external side effect. No claim is required here any
-        # more: stage_signup_credentials no longer fences on it (#15 — no
-        # more leases, if_not_exists + read-back converges regardless of
-        # which claim, or none, is staging).
+        # making that external side effect (if_not_exists + read-back converges).
         email, encrypted = await self._repo.stage_signup_credentials(
-            user_id, claim_id=claim_id, email=email, password_encrypted=encrypt(password)
+            user_id, email=email, password_encrypted=encrypt(password)
         )
         password = decrypt(encrypted)
         try:

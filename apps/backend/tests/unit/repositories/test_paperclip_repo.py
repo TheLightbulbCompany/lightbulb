@@ -1403,16 +1403,16 @@ async def test_signup_credentials_converge_regardless_of_which_claim_stages_them
     them back regardless of which claim_id is doing the staging."""
     await repo.try_acquire_seed_claim("user_new", org_id="org_a", claim_id="first")
     assert await repo.stage_signup_credentials(
-        "user_new", claim_id="first", email="first@example.com", password_encrypted="first-secret"
+        "user_new", email="first@example.com", password_encrypted="first-secret"
     ) == ("first@example.com", "first-secret")
     await repo.try_acquire_seed_claim("user_new", org_id="org_a", claim_id="second", stale_after_seconds=0)
     # The ORIGINAL claim staging again (e.g. a slow holder that wasn't really
     # dead) must still succeed and read back the converged values.
     assert await repo.stage_signup_credentials(
-        "user_new", claim_id="first", email="stale@example.com", password_encrypted="stale-secret"
+        "user_new", email="stale@example.com", password_encrypted="stale-secret"
     ) == ("first@example.com", "first-secret")
     assert await repo.stage_signup_credentials(
-        "user_new", claim_id="second", email="new@example.com", password_encrypted="new-secret"
+        "user_new", email="new@example.com", password_encrypted="new-secret"
     ) == ("first@example.com", "first-secret")
 
 
@@ -1428,7 +1428,7 @@ async def test_seed_takeover_does_not_erase_credentials_staged_after_its_read(re
         if not staged and ":prev" in kwargs.get("ConditionExpression", ""):
             staged = True
             await repo.stage_signup_credentials(
-                "user_race", claim_id="original", email="original@example.com", password_encrypted="original-secret"
+                "user_race", email="original@example.com", password_encrypted="original-secret"
             )
         return await run_in_thread(func, *args, **kwargs)
 
@@ -1442,5 +1442,5 @@ async def test_seed_takeover_does_not_erase_credentials_staged_after_its_read(re
             "user_race", org_id="org_a", claim_id="takeover", stale_after_seconds=0
         )
     assert await repo.stage_signup_credentials(
-        "user_race", claim_id="takeover", email="replacement@example.com", password_encrypted="replacement-secret"
+        "user_race", email="replacement@example.com", password_encrypted="replacement-secret"
     ) == ("original@example.com", "original-secret")

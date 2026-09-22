@@ -70,7 +70,8 @@ export class OpenRouterGateStack extends cdk.Stack {
         OPENROUTER_MANAGED_ENABLED: env === "dev"
           ? (process.env.OPENROUTER_MANAGED_ENABLED_DEV || "false")
           : (process.env.OPENROUTER_MANAGED_ENABLED_PROD || "false"),
-        MAX_BODY_BYTES: "262144",
+        // The hard cap for zero-price requests (no byte-for-token bound applies to them).
+        MAX_BODY_BYTES: "1048576",
         MAX_OUTPUT_TOKENS: "4096",
         RESERVE_ESTIMATE_MICROCENTS: "300000",
         RESERVE_TTL_SECONDS: "1200",

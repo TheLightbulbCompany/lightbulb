@@ -206,3 +206,8 @@ async def test_disconnect_deletes_the_secret_and_the_row(mock_repo, mock_store, 
     assert response.status_code == 200
     mock_store.delete.assert_awaited_once_with("org_test_456", "microsoft365")
     mock_repo.delete.assert_awaited_once_with("org_test_456", "microsoft365")
+
+
+def test_microsoft365_available_in_prod():
+    # Both Entra apps and both platform secrets exist; the provider ships everywhere.
+    assert registry.get_provider("microsoft365").environments is None

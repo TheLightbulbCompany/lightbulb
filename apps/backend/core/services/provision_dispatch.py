@@ -6,8 +6,7 @@ re-driveable. There is no claim, lease, attempt token or row fence: every
 provision step is idempotent at its source (credentials converge through
 ``if_not_exists`` + read-back, the IAM role / runtime / trust document adopt
 on conflict), so two concurrent executions for one owner converge on the same
-end state. See
-docs/superpowers/specs/2026-09-22-provisioning-simplification-design.md.
+end state.
 
 Return contract: ``True`` when an execution owns the work (started now or
 already RUNNING), ``False`` when nothing does — start failed, or non-org

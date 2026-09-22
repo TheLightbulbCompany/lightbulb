@@ -386,13 +386,13 @@ class TestContainerRecover:
         mock_container_repo.update_error.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_recover_never_probes_a_provisioning_row_it_re_drives_it(
+    async def test_recover_stands_down_on_a_provisioning_row(
         self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
         """recover must not probe a provisioning row's half-booted gateway or write
         status="error" over it (the 2026-08-10 conversion incident: four recover stomps
-        during one provision). It dispatches instead: a no-op while an execution runs, a
-        re-drive when the row is wedged with nothing running."""
+        during one provision). Nor does it dispatch before any trial gate: the status poll
+        re-drives a wedged row."""
         mock_container_repo.get_by_owner_id = AsyncMock(
             return_value={"owner_id": "user_test_123", "status": "provisioning", "gateway_token": "tok"}
         )
@@ -402,6 +402,6 @@ class TestContainerRecover:
         assert response.status_code == 200
         assert response.json()["action"] == "already_recovering"
         mock_call_gateway_rpc.assert_not_called()
-        mock_dispatch_provision.assert_called_once()
+        mock_dispatch_provision.assert_not_called()
         mock_container_repo.update_status.assert_not_called()
         mock_container_repo.update_error.assert_not_called()

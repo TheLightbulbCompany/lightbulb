@@ -34,26 +34,43 @@ async def _compute_status(_owner_id: str, *, container: dict, onboarding: dict) 
     }
 
 
-def _patches(row: dict, *, trial_reason=None):
-    """The full patch stack for driving the auto-retry branch in isolation."""
+def _patches(row: dict, *, trial_reason=None, dispatch=None):
+    """The full patch stack for driving the auto-retry branch. ensure_user_ready runs its
+    REAL dispatch decision (``_provision_or_reconcile``) against the SAME dispatch mock the
+    router could call, so a test counts every dispatch one poll makes."""
+    from core.services import user_provision
+
+    dispatch = dispatch or AsyncMock()
+
+    async def _ensure_user_ready(auth):
+        await user_provision._provision_or_reconcile(auth, "org_w")
+
     return [
         patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
         patch("routers.container.maybe_restore_trial_bedrock", new=AsyncMock()),
         patch("routers.container.maybe_resume_stuck_conversion", new=AsyncMock(return_value=False)),
         patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=trial_reason)),
         patch("routers.container._assert_provision_allowed", new=AsyncMock()),
-        patch("routers.container.dispatch_provision", new=AsyncMock()),
+        patch("routers.container.dispatch_provision", new=dispatch),
         patch("routers.container.ensure_workspace_trial_default", new=AsyncMock()),
-        patch("routers.container.ensure_user_ready", new=AsyncMock()),
+        patch("routers.container.ensure_user_ready", new=_ensure_user_ready),
         patch("routers.container.readiness_state.resolve_onboarding_state", new=AsyncMock(return_value={})),
         patch("routers.container.readiness_state.compute_status", new=_compute_status),
+        patch.object(user_provision, "dispatch_provision", new=dispatch),
+        patch.object(user_provision.wake_policy, "is_parked_trial", new=AsyncMock(return_value=False)),
+        patch.object(user_provision, "_reconcile_owner_seed", new=AsyncMock()),
     ]
 
 
 async def _call(patches):
+    """Run one poll and drain every task it spawned (nested ones included)."""
+    pending: list = []
     with ExitStack() as stack:
         entered = [stack.enter_context(item) for item in patches]
+        stack.enter_context(patch("asyncio.create_task", side_effect=pending.append))
         body = await container_status(auth=_auth())
+        while pending:
+            await pending.pop(0)
         return body, entered[5]
 
 
@@ -73,6 +90,13 @@ class TestAutoRetry:
         dispatch.assert_called_once()
         assert body["container_status"] == "error"
         assert body["container_substatus"] == "error_retrying"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("row", [{"status": "error", "retryable": True}, {"status": "stopped"}])
+    async def test_one_poll_dispatches_exactly_once(self, row):
+        """The router shapes the response; ensure_user_ready is the ONE dispatcher."""
+        _body, dispatch = await _call(_patches(row))
+        assert dispatch.await_count == 1
 
     @pytest.mark.asyncio
     async def test_a_non_retryable_error_row_is_not_re_dispatched(self):

@@ -178,6 +178,8 @@ async def _mark_error(owner_id: str, last_error: str, *, retryable: bool) -> Non
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--owner", required=True)
+    # Accepted and ignored: executions started by pre-deploy backend tasks still pass it. Task 6 deletes it.
+    parser.add_argument("--claim", help=argparse.SUPPRESS)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     sys.exit(asyncio.run(run(args.owner)))

@@ -91,10 +91,10 @@ async def container_recover(
 
     # A provisioning row must never be probed: /recover used to fire during a
     # conversion's provision, probe the mid-boot gateway, write status="error"
-    # over the in-flight run (prod 2026-08-10). Dispatch instead: a no-op while
-    # an execution runs, a re-drive when the row is wedged with nothing running.
+    # over the in-flight run (prod 2026-08-10). Stand down; a wedged row with
+    # nothing running is re-driven by the status poll (ensure_user_ready), which
+    # carries the gates this branch would otherwise skip.
     if status == "provisioning":
-        await dispatch_provision(owner_id)
         return {
             "action": "already_recovering",
             "state": "RECOVERING",

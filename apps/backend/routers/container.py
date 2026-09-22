@@ -281,12 +281,13 @@ async def container_status(
         await arm_workspace_trial_if_unset(owner_id)
 
     # Auto-retry: if the workspace is in a failed/stuck state AND the owner can
-    # currently afford to provision, trigger re-provisioning in the
-    # background. The same gate as /provision (audit C1) — bare
-    # subscription-id existence wasn't enough; we need active/trialing
-    # status, and bedrock_claude users need a positive credit balance.
-    # (A wedged "provisioning" row needs nothing here: ensure_user_ready below
-    # dispatches every non-running row, and dispatch no-ops while an execution runs.)
+    # currently afford to provision, SAY it is re-provisioning. The same gate as
+    # /provision (audit C1) — bare subscription-id existence wasn't enough; we
+    # need active/trialing status, and bedrock_claude users need a positive
+    # credit balance. The dispatch itself is ensure_user_ready's, below — the
+    # ONE dispatcher per poll (it carries the provision gate, the parked-trial
+    # check and the deterministic-error skip); this branch only gates and
+    # shapes the response.
     retryable_states = ("error", "stopped")
     if container.get("status") in retryable_states and not conversion_active:
         # The FULL trial predicate, not just the cap. An over-cap or expired
@@ -320,7 +321,6 @@ async def container_status(
                 #     render the error card immediately.
                 # Default True keeps a cause-less legacy error row self-healing.
                 if container.get("retryable", True):
-                    asyncio.create_task(dispatch_provision(owner_id))
                     container["substatus"] = "error_retrying"
                     _sync_contract_with_container(contract, container)
             else:
@@ -329,7 +329,6 @@ async def container_status(
                 # stays "running". dispatch_provision writes the "provisioning"
                 # status itself; the local dict mutation below only shapes THIS
                 # response.
-                asyncio.create_task(dispatch_provision(owner_id))
                 container["status"] = "provisioning"
                 container["substatus"] = "auto_retry"
                 _sync_contract_with_container(contract, container)

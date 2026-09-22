@@ -54,6 +54,18 @@ def test_module_is_invocable_as_dash_m():
     assert "--claim" not in result.stdout
 
 
+def test_a_legacy_claim_argument_is_accepted_and_ignored(monkeypatch):
+    """Executions started by pre-deploy backend tasks still pass --claim; the runner must
+    not exit 2 on it (3 wasted ECS attempts), and must not thread it anywhere."""
+    run = AsyncMock(return_value=provision_runner.EXIT_OK)
+    monkeypatch.setattr(provision_runner, "run", run)
+    monkeypatch.setattr(sys, "argv", ["provision_runner", "--owner", "org_a", "--claim", "claim-old"])
+    with pytest.raises(SystemExit) as exc:
+        provision_runner.main()
+    assert exc.value.code == provision_runner.EXIT_OK
+    run.assert_called_once_with("org_a")
+
+
 async def test_happy_path_runs_every_leg_and_exits_0(monkeypatch, hermes, repo):
     assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
     hermes.prepare.assert_awaited_once_with("org_a")

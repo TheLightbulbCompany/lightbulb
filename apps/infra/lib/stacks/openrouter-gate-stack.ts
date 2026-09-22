@@ -16,7 +16,7 @@ export interface OpenRouterGateStackProps extends cdk.StackProps {
   environment: string;
 }
 
-/** Disabled until policy, exact metering, and Hermes smoke are proven in dev. */
+/** Managed OpenRouter inference gate + settlement worker, one per env. */
 export class OpenRouterGateStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: OpenRouterGateStackProps) {
     super(scope, id, props);

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { OpenRouterGateStack } from "../lib/stacks/openrouter-gate-stack";
@@ -104,4 +106,12 @@ test("dev settlement worker is scheduled but cannot ingest money before contract
     Targets: Match.arrayWith([Match.objectLike({ Input: '{"audit_previous_day":true}' })]),
   });
   template.resourceCountIs("AWS::SQS::Queue", 1);
+});
+
+test("the gate deploys in prod too: a runtime resolved to openrouter_managed needs its URL", () => {
+  // 2026-09-22: prod shipped OPENROUTER_MANAGED_ENABLED_PROD with the stack still dev-only, so
+  // every prod provision/roll onto the managed route failed with GateUrlUnavailable.
+  const yaml = readFileSync(join(__dirname, "../../../.github/workflows/deploy.yml"), "utf8");
+  expect(yaml).toMatch(/^ {2}prod-lightbulb-prod-openrouter-gate-Deploy:$/m);
+  expect(yaml).toMatch(/^ {2}dev-lightbulb-dev-openrouter-gate-Deploy:$/m);
 });

@@ -396,6 +396,91 @@ describe("useRooms platform seams", () => {
       expect(result.current.optimisticMessages.some((m) => m.clientMessageId === "client-1")).toBe(false);
     });
   });
+
+  describe("room list jumps on a live message hint", () => {
+    // A new message must move its room to the top of the list (clients sort by
+    // lastMessageAt) the moment the hint arrives — not after the coalesced
+    // listRooms refetch lands ~400ms + a round trip later.
+    const older: RoomDetail = {
+      ...room, roomId: "room-old", name: "Old",
+      lastMessageSeq: 1, lastMessageAt: "2026-09-11T00:00:00Z", unreadCount: 0, lastReadSeq: 1,
+    };
+    const newer: RoomDetail = {
+      ...room, roomId: "room-new", name: "New",
+      lastMessageSeq: 4, lastMessageAt: "2026-09-14T00:00:00Z", unreadCount: 0, lastReadSeq: 4,
+    };
+    const available = (messageSeq = 2, notify = true): LiveEvent => ({
+      schemaVersion: 1, eventId: "evt-avail", type: "room.message.available",
+      occurredAt: "2026-09-15T00:00:01Z", roomId: older.roomId, messageSeq,
+      payload: { roomId: older.roomId, messageId: "msg-new", messageSeq, threadRootMessageId: null, notify },
+    } as LiveEvent);
+
+    beforeEach(() => {
+      messaging.listRooms.mockResolvedValue({ rooms: [newer, older], sections: [] });
+    });
+
+    it("bumps recency and unread synchronously, ahead of the coalesced refetch", async () => {
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+      messaging.listRooms.mockClear();
+
+      act(() => { for (const handler of handlers) handler(available()); });
+
+      const bumped = result.current.rooms.find((r) => r.roomId === older.roomId);
+      expect(bumped).toMatchObject({
+        lastMessageSeq: 2, lastMessageAt: "2026-09-15T00:00:01Z", unreadCount: 1,
+      });
+      // The coalesced list refetch hasn't fired: this render came from the
+      // optimistic patch, not the server.
+      expect(messaging.listRooms).not.toHaveBeenCalled();
+    });
+
+    it("moves recency without unread when the hint is not a notify", async () => {
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+
+      act(() => { for (const handler of handlers) handler(available(2, false)); });
+
+      const bumped = result.current.rooms.find((r) => r.roomId === older.roomId);
+      expect(bumped).toMatchObject({
+        lastMessageSeq: 2, lastMessageAt: "2026-09-15T00:00:01Z", unreadCount: 0,
+      });
+    });
+
+    it("ignores a stale or replayed hint without moving the room or double-counting", async () => {
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+
+      act(() => {
+        for (const handler of handlers) handler(available());
+        for (const handler of handlers) handler(available());
+        for (const handler of handlers) handler(available(1));
+      });
+
+      const bumped = result.current.rooms.find((r) => r.roomId === older.roomId);
+      expect(bumped).toMatchObject({
+        lastMessageSeq: 2, lastMessageAt: "2026-09-15T00:00:01Z", unreadCount: 1,
+      });
+    });
+
+    it("leaves unread alone for the room on screen — read-marking owns that case", async () => {
+      messaging.getRoom.mockImplementation(async (id: string) => (id === older.roomId ? older : newer));
+      messaging.listMessages.mockImplementation(async (roomId: string) => ({
+        messages: [{ ...message, roomId, messageId: `msg-${roomId}` }],
+        nextAfterSeq: null, nextBeforeSeq: null,
+      }));
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+      act(() => result.current.selectRoom(older.roomId));
+      await waitFor(() => expect(result.current.messages).toHaveLength(1));
+
+      act(() => { for (const handler of handlers) handler(available()); });
+
+      const bumped = result.current.rooms.find((r) => r.roomId === older.roomId);
+      expect(bumped?.lastMessageSeq).toBe(2);
+      expect(bumped?.unreadCount).toBe(0);
+    });
+  });
 });
 
 // A run enters the map from the live `room.run.frame` carrying `run_active`,

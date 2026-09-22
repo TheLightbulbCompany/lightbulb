@@ -613,6 +613,29 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       return;
     }
     if (event.type === "room.message.available") {
+      // The room jumps to the top of the list NOW, not after the coalesced
+      // listRooms refetch (~400ms + a round trip) lands. Guarded by messageSeq
+      // so a stale or replayed event never moves a room backwards or
+      // double-counts unread; the trailing refresh reconciles with server
+      // truth. Unread bumps only when the event says to notify AND the room
+      // isn't the one on screen (markVisibleRead owns that case).
+      const { roomId, messageSeq, notify } = event.payload;
+      void mutateRooms((current) => {
+        if (!current) return current;
+        let changed = false;
+        const rooms = current.rooms.map((room) => {
+          if (room.roomId !== roomId || messageSeq <= room.lastMessageSeq) return room;
+          changed = true;
+          const bump = notify && !(roomId === activeRoomId && isVisible()) ? 1 : 0;
+          return {
+            ...room,
+            lastMessageSeq: messageSeq,
+            lastMessageAt: event.occurredAt,
+            unreadCount: room.unreadCount + bump,
+          };
+        });
+        return changed ? { ...current, rooms } : current;
+      }, false);
       refreshRoomsSoon();
       return;
     }
@@ -680,7 +703,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
         return new Map(current).set(key, next);
       });
     }
-  }), [activeRoomId, boundedHistory, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon, clearPersistedOptimistic, removeActiveAccess]);
+  }), [activeRoomId, boundedHistory, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon, clearPersistedOptimistic, removeActiveAccess, isVisible]);
 
   useEffect(() => {
     if (typing.size === 0) return;

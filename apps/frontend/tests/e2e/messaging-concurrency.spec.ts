@@ -19,8 +19,8 @@ import { containerHealthy } from './assertions/container';
 // owner's, with their go-ahead). Only two new channels are created and nothing is cleaned up.
 
 type Member = { kind: string; id: string; displayName: string; mentionHandle: string | null };
-type Room = { roomId: string; lastMessageSeq: number; members: Member[]; activeRuns?: { agentId: string; runId: string }[] };
-type Message = { messageId: string; messageSeq: number; author: { kind: string; id: string }; text: string; createdAt: string };
+type Room = { roomId: string; members: Member[]; activeRuns?: { agentId: string; runId: string }[] };
+type Message = { messageSeq: number; author: { kind: string; id: string }; text: string };
 type Timing = { scenario: string; room: string; agent: string; tag: string; replyMs: number; idleMs: number; overlapped?: boolean };
 
 const REPLY_TIMEOUT_MS = 6 * 60_000;
@@ -118,8 +118,9 @@ test.describe('E2E: messaging concurrency @concurrency', () => {
   async function pair(scenario: string, a: [string, Member], b: [string, Member]) {
     const t0 = Date.now();
     const [x, y] = await Promise.all([turn(scenario, a[0], a[1], t0), turn(scenario, b[0], b[1], t0)]);
-    // Serialized turns: the later reply lands after the earlier one has finished.
-    const overlapped = Math.max(x.replyMs, y.replyMs) < Math.min(x.idleMs, y.idleMs) + 5_000;
+    // Overlapped = the later reply landed before the earlier run ended (within one poll).
+    // Serialized turns (the per-agent lock) read false.
+    const overlapped = Math.max(x.replyMs, y.replyMs) < Math.min(x.idleMs, y.idleMs) + POLL_MS;
     for (const r of [x, y]) timings.push({ ...r, overlapped });
   }
 
@@ -169,9 +170,7 @@ test.describe('E2E: messaging concurrency @concurrency', () => {
   });
 
   test('c: same agent, same room, back-to-back', async () => {
-    const t0 = Date.now();
-    const [x, y] = await Promise.all([turn('same-room-back-to-back', roomA, ceo, t0), turn('same-room-back-to-back', roomA, ceo, t0)]);
-    timings.push(x, y);
+    await pair('same-room-back-to-back', [roomA, ceo], [roomA, ceo]);
   });
 
   test('correctness: no reply leaked into the other room', async () => {

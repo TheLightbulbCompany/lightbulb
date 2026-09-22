@@ -58,8 +58,11 @@ def event_for(row, generation):
 
 
 def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_free=None):
-    free = row.get("billing_mode") == "free"
-    if not verified and not free:
+    mode = row.get("billing_mode")
+    # free and capped rows never touch Metronome: a capped owner's valve is the
+    # OpenRouter per-key daily limit, so its cost is recorded, not debited.
+    unmetered = mode in ("free", "capped")
+    if not verified and not unmetered:
         raise MoneyContractUnverified("Metronome OpenRouter rate contract is unverified")
     if row.get("state") != "pending":
         return "already_processed"
@@ -72,12 +75,12 @@ def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_fre
         return "metadata_pending"
     event = event_for(row, generation)
     amount = cost_nanodollars(generation["total_cost"])
-    if free:
-        if amount:
+    if unmetered:
+        if mode == "free" and amount:
             raise PendingSettlement("Free OpenRouter generation reported positive cost")
         if commit_free is None:
             raise RuntimeError("Free OpenRouter settlement commit is unavailable")
-        return commit_free(row, event, now)
+        return commit_free(row, event, now, amount)
     ingest(event)  # Metronome deduplicates by generation ID for 34 days.
     return commit(row, event, amount, now)
 
@@ -276,7 +279,7 @@ class Store:
                 "ExpressionAttributeNames": {"#state": "state", "#date": "date"},
                 "ExpressionAttributeValues": {
                     ":settled": {"S": "settled"}, ":pending": {"S": "pending"},
-                    ":generation": {"S": generation_id}, ":cost": {"S": format(Decimal(actual_nanodollars) / Decimal(1_000_000_000), "f")},
+                    ":generation": {"S": generation_id}, ":cost": {"S": format(Decimal(actual_nanodollars) / Decimal(1_000_000_000), "f") if actual_nanodollars else "0"},
                     ":actual": {"N": str(actual_nanodollars)}, ":now": {"N": str(now)},
                     ":date": {"S": event["timestamp"][:10]},
                     ":model": {"S": event["properties"]["model"]},
@@ -304,7 +307,11 @@ class Store:
             self._mark_duplicate(row, now)
             return "duplicate_generation"
 
-    def commit_free(self, row, event, now):
+    def commit_free(self, row, event, now, actual_nanodollars=0):
+        """Settle a free or capped row: no Metronome, no fast-gate hold."""
+        mode = row.get("billing_mode")
+        if mode not in ("free", "capped") or (mode == "free" and actual_nanodollars):
+            raise ValueError("Only capped rows may record a positive unmetered cost")
         generation_id = event["transaction_id"]
         request_id = row["request_id"]
         transaction = [
@@ -317,12 +324,14 @@ class Store:
             {"Update": {
                 "TableName": self.requests_table,
                 "Key": {"request_id": {"S": request_id}},
-                "UpdateExpression": "SET #state = :settled, total_cost = :zero, provider_cost_nanodollars = :actual, settled_at = :now, #date = :date, actual_model = :model, provider_name = :provider",
-                "ConditionExpression": "#state = :pending AND generation_id = :generation AND billing_mode = :free",
+                "UpdateExpression": "SET #state = :settled, total_cost = :cost, provider_cost_nanodollars = :actual, settled_at = :now, #date = :date, actual_model = :model, provider_name = :provider",
+                "ConditionExpression": "#state = :pending AND generation_id = :generation AND billing_mode = :mode",
                 "ExpressionAttributeNames": {"#state": "state", "#date": "date"},
                 "ExpressionAttributeValues": {
-                    ":settled": {"S": "settled"}, ":pending": {"S": "pending"}, ":free": {"S": "free"},
-                    ":generation": {"S": generation_id}, ":zero": {"S": "0"}, ":actual": {"N": "0"},
+                    ":settled": {"S": "settled"}, ":pending": {"S": "pending"}, ":mode": {"S": mode},
+                    ":generation": {"S": generation_id},
+                    ":cost": {"S": format(Decimal(actual_nanodollars) / Decimal(1_000_000_000), "f") if actual_nanodollars else "0"},
+                    ":actual": {"N": str(actual_nanodollars)},
                     ":now": {"N": str(now)}, ":date": {"S": event["timestamp"][:10]},
                     ":model": {"S": event["properties"]["model"]},
                     ":provider": {"S": event["properties"]["provider"]},

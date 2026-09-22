@@ -96,6 +96,19 @@ class SettlementTests(unittest.TestCase):
                 verified=True, now=1_700_000_001,
             )
 
+    def test_capped_positive_cost_settles_without_metronome_even_unverified(self):
+        row = {**self.row, "billing_mode": "capped", "reservation_microcents": 0}
+        calls = []
+        result = worker.settle_one(
+            row, get_generation=lambda *_: self.generation,
+            ingest=lambda *_: self.fail("capped generation ingested into Metronome"),
+            commit=lambda *_: self.fail("paid commit used"),
+            commit_free=lambda *args: calls.append(args) or "settled",
+            verified=False, now=1_700_000_001,
+        )
+        self.assertEqual(result, "settled")
+        self.assertEqual(calls[0][3], 12345678)
+
     def test_rotation_uses_historical_secret_and_retry_is_idempotent(self):
         seen = []
         committed = set()
@@ -170,6 +183,21 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(result, "settled")
         self.assertEqual(len(calls[0]["TransactItems"]), 2)
         self.assertTrue(all(operation.get("Update", {}).get("TableName") != "fast" for operation in calls[0]["TransactItems"]))
+
+    def test_capped_commit_records_cost_and_never_touches_fast_gate(self):
+        calls = []
+        class Ddb:
+            def transact_write_items(self, **kwargs):
+                calls.append(kwargs)
+        row = {**self.row, "billing_mode": "capped", "reservation_microcents": 0}
+        store = worker.Store(Ddb(), requests_table="requests", fast_table="fast")
+        result = store.commit_free(row, worker.event_for(row, self.generation), 1_700_000_001, 12345678)
+        self.assertEqual(result, "settled")
+        self.assertEqual(len(calls[0]["TransactItems"]), 2)
+        values = calls[0]["TransactItems"][1]["Update"]["ExpressionAttributeValues"]
+        self.assertEqual(values[":mode"]["S"], "capped")
+        self.assertEqual(values[":actual"]["N"], "12345678")
+        self.assertEqual(values[":cost"]["S"], "0.012345678")
 
     def test_late_settlement_releases_only_openrouter_hold_without_stale_reset(self):
         calls = []

@@ -472,8 +472,9 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, row_id: st
     - ``derive_gate_bearer(owner_id, row_id, generation)`` -- the same value on every run
       against one row incarnation, so a second run is a no-op below; a bumped generation or
       a new row (teardown + reprovision) rotates.
-    - Writes a hash-keyed row ``{token_hash, owner_id, denied=False,
-      aip_tiers={arn: tier}, created_at}``, CREATE-ONLY: a row that already exists (an
+    - Writes a hash-keyed row ``{token_hash, owner_id, denied, aip_tiers={arn: tier},
+      created_at}``, CREATE-ONLY; ``denied`` is True when any hash the owner still tracks
+      is denied (a trial cap / kill must survive a rotation): a row that already exists (an
       earlier or concurrent run) is left exactly as it is, including a ``denied`` flag.
       Its tiers are ``reconcile_gate_token_tiers``' to update. ``aip_tiers`` is the INVERSE
       of the owner's ``{tier: arn}`` map — the gateway keys authorization + pricing on
@@ -521,13 +522,21 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, row_id: st
     aip_tiers = {arn: tier for tier, arn in (aip_arns or {}).items()}
 
     table = _tokens_table()
+    # A capped/killed owner stays denied across the rotation: the new row inherits a deny
+    # from ANY hash the owner can still present, or the mint itself would lift the kill.
+    denied = False
+    for tracked_hash in dict.fromkeys([*owner_gate_token_hashes(prior), *superseded]):
+        resp = await run_in_thread(table.get_item, Key={"token_hash": tracked_hash}, ConsistentRead=True)
+        if (resp.get("Item") or {}).get("denied"):
+            denied = True
+            break
     try:
         await run_in_thread(
             table.put_item,
             Item={
                 "token_hash": token_hash,
                 "owner_id": owner_id,
-                "denied": False,
+                "denied": denied,
                 "aip_tiers": aip_tiers,
                 "created_at": utc_now_iso(),
             },

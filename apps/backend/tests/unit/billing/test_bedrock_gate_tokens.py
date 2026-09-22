@@ -955,6 +955,38 @@ class TestDeny:
         assert row["denied"]["BOOL"] is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("denied_slot", ["current", "superseded"])
+    async def test_a_denied_owners_new_derived_row_is_born_denied(self, gate_tables, fake_runtime, denied_slot):
+        """A capped/killed owner's reconcile mints the derived bearer: its NEW row must not
+        start at denied=False, or the rotation itself lifts the kill."""
+        current, old = mod.hash_token("token-B"), mod.hash_token("token-A")
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=current, superseded=[old])
+        _put_token_row(gate_tables, current)
+        _put_token_row(gate_tables, old)
+        gate_tables.update_item(
+            TableName="test-gate-tokens",
+            Key={"token_hash": {"S": current if denied_slot == "current" else old}},
+            UpdateExpression="SET denied = :t",
+            ExpressionAttributeValues={":t": {"BOOL": True}},
+        )
+        fake_runtime.bearer = "token-A"
+
+        token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
+
+        assert _token_row(gate_tables, mod.hash_token(token))["denied"]["BOOL"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_undenied_owners_new_row_is_not_denied(self, gate_tables, fake_runtime):
+        current = mod.hash_token("token-B")
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=current)
+        _put_token_row(gate_tables, current)
+        fake_runtime.bearer = "token-B"
+
+        token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
+
+        assert _token_row(gate_tables, mod.hash_token(token))["denied"]["BOOL"] is False
+
+    @pytest.mark.asyncio
     async def test_denies_the_superseded_rows_too(self, gate_tables):
         """IMPORTANT 2. THE INCIDENT'S OWN SHAPE: mint B, the roll never lands,
         the service's task definition still carries A — so the container does

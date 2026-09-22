@@ -28,7 +28,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from bridge import HOME, S3_BUCKET, S3_PREFIX
@@ -102,7 +102,10 @@ CLI_CREDENTIAL_PREFIXES = (
 #: folded together: ``_pull_cli_credentials`` deletes local files under ITS prefixes that S3
 #: lacks, which must never be pointed at an agent-owned path.
 #: NB ``fnmatch``'s ``*`` spans ``/``, so one pattern per name covers the whole subtree.
-_HOME_UNSYNCED = (".cache", ".npm", ".ssh", ".gnupg", ".local/state", ".local/share/uv")
+# ``.local/share/uv/python`` = uv-managed CPython installs (hundreds of MB, reinstalled on demand).
+# NOT all of ``.local/share/uv``: ``uv tool install`` envs live in ``tools/`` and their
+# ``~/.local/bin`` entry points break if the env does not survive a cold start.
+_HOME_UNSYNCED = (".cache", ".npm", ".ssh", ".gnupg", ".local/state", ".local/share/uv/python")
 # pnpm puts its reproducible package store under XDG_DATA_HOME, which points into this
 # profile. Old S3 copies must also be skipped on cold restore, not just future uploads.
 PNPM_STORE_PREFIX = f"{PROFILE_HOME}/.local/share/pnpm/store/"
@@ -236,10 +239,17 @@ _SYNC_WORKERS = 32
 
 
 def _fan_out(fn, items) -> None:
-    """Run ``fn`` over ``items`` on a bounded pool; the first worker exception re-raises here."""
-    with ThreadPoolExecutor(max_workers=_SYNC_WORKERS) as pool:
-        for _ in pool.map(fn, items):
-            pass
+    """Run ``fn`` over ``items`` on a bounded pool. The first worker exception cancels every
+    transfer not yet started and re-raises here -- a throttle on a 90k-object restore must fail
+    now, not after every other object has downloaded."""
+    pool = ThreadPoolExecutor(max_workers=_SYNC_WORKERS)
+    try:
+        for future in as_completed([pool.submit(fn, item) for item in items]):
+            future.result()
+    except BaseException:
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
 
 
 def load_boot_secrets(secret_id: str, client=None) -> dict[str, str]:

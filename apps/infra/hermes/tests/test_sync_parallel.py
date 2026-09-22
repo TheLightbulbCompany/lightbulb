@@ -58,6 +58,8 @@ def test_restore_records_baselines_and_seeds_revision_after_every_download(home,
 def test_restore_skips_stale_reinstallable_home_caches_but_keeps_backend_owned_home_files(home, s3):
     s3.objects = {
         _p("home/.local/share/uv/python/cpython-3.12/bin/python3"): ("x", 1.0),
+        # a `uv tool install` env: its ~/.local/bin entry point needs it after a cold start
+        _p("home/.local/share/uv/tools/ruff/bin/ruff"): ("tool", 1.0),
         _p("home/.cache/pip/wheel"): ("x", 1.0),
         _p("home/.npm/_cacache/index"): ("x", 1.0),
         _p("home/.local/share/pnpm/store/v3/x"): ("x", 1.0),
@@ -73,6 +75,7 @@ def test_restore_skips_stale_reinstallable_home_caches_but_keeps_backend_owned_h
     assert sorted(s3.downloaded) == sorted(
         [
             _p("home/.local/share/gogcli/credentials.json"),
+            _p("home/.local/share/uv/tools/ruff/bin/ruff"),
             _p(".env"),
             _p("skills/tool/build/index.js"),
             _p(".run/repo/src/app.py"),
@@ -100,3 +103,28 @@ def test_save_runs_uploads_concurrently_and_never_pushes_uv(home, s3, monkeypatc
     sync.save_profile("a1")
     assert sorted(s3.uploaded) == [_p("memories/a.md"), _p("memories/b.md")]
     assert set(sync._MTIMES["a1"]) >= {"memories/a.md", "memories/b.md"}
+
+
+def test_a_failed_restore_raises_without_downloading_the_rest(home, s3, monkeypatch):
+    """The first error cancels every transfer not yet started instead of draining the queue."""
+    s3.objects = {_p(f"f/{i:05d}.md"): ("x", 1.0) for i in range(2000)}
+
+    def throttled(bucket, key, dest):
+        raise RuntimeError("SlowDown")
+
+    monkeypatch.setattr(s3, "download_file", throttled)
+    calls = []
+    real = sync._fan_out
+
+    def counting(fn, items):
+        def wrapped(item):
+            calls.append(item)
+            return fn(item)
+
+        return real(wrapped, items)
+
+    monkeypatch.setattr(sync, "_fan_out", counting)
+    with pytest.raises(RuntimeError, match="SlowDown"):
+        sync.restore_profile("a1")
+    assert len(calls) < 2000
+    assert "a1" not in sync._restored

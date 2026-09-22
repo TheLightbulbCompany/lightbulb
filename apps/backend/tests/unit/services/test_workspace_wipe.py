@@ -703,3 +703,28 @@ async def test_user_wipe_names_workspace_when_container_missing():
     assert runtime.status == "skipped"
     assert ORG_ID in runtime.detail
     assert f"/admin/workspaces/{ORG_ID}/wipe" in runtime.detail
+
+
+@pytest.mark.asyncio
+async def test_clerk_member_list_failure_fails_closed(ws_mocks):
+    """Clerk is the only way to find members with no paperclip row: a Clerk
+    error must refuse the wipe, never read as an empty member list."""
+    ws_mocks.clerk_org_members.side_effect = RuntimeError("clerk 503")
+    with pytest.raises(RuntimeError):
+        await preview_workspace_wipe(ORG_ID)
+    ws_mocks.clerk_org_members.assert_awaited_with(ORG_ID, strict=True)
+    ws_mocks.clerk_delete_org.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_member_secret_failure_keeps_clerk_org(ws_mocks):
+    """A failed member-keyed step keeps the org, so a re-run can still find
+    that member through the org's Clerk member list."""
+    ws_mocks.clerk_org_members.return_value = [{"user_id": MEMBER_A}]
+    ws_mocks.secrets_delete.side_effect = RuntimeError("throttled")
+
+    _, report = await _preview_then_wipe()
+
+    assert _step(report, "owner_secrets").status == "failed"
+    assert _step(report, "clerk_org").status == "failed"
+    ws_mocks.clerk_delete_org.assert_not_awaited()

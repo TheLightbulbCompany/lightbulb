@@ -246,7 +246,9 @@ def deletable_member_ids(snapshot: WorkspaceSnapshot) -> list[str]:
 
 async def _read_members(org_id: str, member_rows: list[dict]) -> list[dict]:
     rows = {r["user_id"]: r for r in member_rows if r.get("user_id")}
-    clerk = {m["user_id"]: m for m in await clerk_admin.list_organization_members(org_id) if m.get("user_id")}
+    clerk = {
+        m["user_id"]: m for m in await clerk_admin.list_organization_members(org_id, strict=True) if m.get("user_id")
+    }
     members: list[dict] = []
     for uid in dict.fromkeys([*rows, *clerk]):
         row = rows.get(uid, {})
@@ -847,6 +849,13 @@ async def _clerk_org_run(snap: WorkspaceSnapshot) -> str:
     return snap.org_id
 
 
+# Steps whose targets include per-member keys; a failure in any of them must
+# hold back the Clerk org delete (see wipe_workspace).
+_MEMBER_KEYED_SYSTEMS = frozenset(
+    {"paperclip_agent_keys", "owner_secrets", "integrations", "oauth_tokens", "company_slug", "user_row"}
+)
+
+
 WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
     WorkspaceStepDef("paperclip_company", "delete_company", LAYER_PAPERCLIP, _company_preview, _company_run),
     WorkspaceStepDef(
@@ -1153,6 +1162,12 @@ async def wipe_workspace(
                 "PRESERVED by default — billing/Stripe moves only with include_billing + confirm_billing",
             )
         else:
+            if defn.system == "clerk_org":
+                # Member-keyed data is found again only through the org's Clerk
+                # member list: any failure there keeps the org for the re-run.
+                snap.unfinished |= {
+                    f"step:{s.system}" for s in steps if s.status == "failed" and s.system in _MEMBER_KEYED_SYSTEMS
+                }
             await _step(steps, system=defn.system, action=defn.action, fn=_bind(defn, snap))
     logger.warning(
         "workspace_wipe.wipe_workspace: billing %s for org=%s",

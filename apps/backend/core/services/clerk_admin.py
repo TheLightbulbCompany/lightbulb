@@ -351,7 +351,7 @@ async def list_user_organizations(user_id: str, *, limit: int = 25, strict: bool
 _ORG_MEMBERS_PAGE = 100
 
 
-async def list_organization_members(org_id: str) -> list[dict]:
+async def list_organization_members(org_id: str, *, strict: bool = False) -> list[dict]:
     """Return every member of a Clerk organization.
 
     Each element: {"user_id", "first_name", "last_name", "email", "image_url", "role"}
@@ -362,6 +362,10 @@ async def list_organization_members(org_id: str) -> list[dict]:
 
     Uses Clerk Backend API GET /v1/organizations/{org_id}/memberships, paged
     by limit/offset; the envelope is {data: [...memberships], total_count: N}.
+
+    ``strict=True`` RAISES instead of returning [] on a network / HTTP error —
+    the workspace wipe finds members only through this list, so a Clerk blip
+    must fail closed rather than read as "no members".
     """
     if not settings.CLERK_SECRET_KEY:
         return []
@@ -378,6 +382,8 @@ async def list_organization_members(org_id: str) -> list[dict]:
                     params={"limit": _ORG_MEMBERS_PAGE, "offset": offset},
                 )
                 if response.status_code >= 400:
+                    if strict:
+                        raise RuntimeError(f"clerk_admin.list_organization_members failed: http_{response.status_code}")
                     logger.warning("clerk_admin.list_organization_members HTTP %s", response.status_code)
                     return []
                 payload = response.json()
@@ -403,6 +409,8 @@ async def list_organization_members(org_id: str) -> list[dict]:
                     return members
                 offset += _ORG_MEMBERS_PAGE
     except Exception as e:  # noqa: BLE001
+        if strict:
+            raise
         logger.warning("clerk_admin.list_organization_members network error: %s", e)
         return []
 

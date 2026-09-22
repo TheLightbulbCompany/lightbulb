@@ -436,6 +436,22 @@ def build_profile_env(
     return env
 
 
+def paperclip_identity_env(agent: dict) -> dict[str, str]:
+    """The Paperclip identity a CHAT turn's shell needs next to ``PAPERCLIP_API_KEY``.
+
+    A room/DM turn's shell env is the profile's ``.env`` alone (bridge/turn.py ``_secret_scope``);
+    only a Paperclip-woken run layers these on top. Without them every ``paperclip-api.sh`` call
+    from chat dies "Missing PAPERCLIP_API_URL" -- while the skill and the credential rule both
+    promise they are always set. Roster and create-agent rows are Paperclip agent objects, so
+    ``companyId`` rides on the row; an unknown value is omitted, never written empty."""
+    identity = {
+        "PAPERCLIP_API_URL": settings.PAPERCLIP_INTERNAL_URL.rstrip("/"),
+        "PAPERCLIP_AGENT_ID": agent.get("id"),
+        "PAPERCLIP_COMPANY_ID": agent.get("companyId"),
+    }
+    return {name: value for name, value in identity.items() if value}
+
+
 def render_dotenv(env: dict[str, str]) -> str:
     """Render Hermes's exact ``.env`` grammar — verified against ``agent/secret_scope.py``'s
     ``load_env_file``/``_parse_env_value``/``_strip_inline_comment`` in the
@@ -707,6 +723,7 @@ def write_agent_profile(
         byo_provider=byo_provider,
         byo_api_key=byo_api_key,
     )
+    env.update(paperclip_identity_env(agent))
     return ProfileFiles(
         config_yaml=yaml.safe_dump(config, sort_keys=False),
         dotenv=render_dotenv(env),

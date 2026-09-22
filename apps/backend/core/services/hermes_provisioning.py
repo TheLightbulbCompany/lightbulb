@@ -121,6 +121,7 @@ def build_hermes_runtime_env(
     browser_profile_id: str = "",
     managed_gate_url: str = "",
     managed_model_id: str = "",
+    memory_id: str = "",
 ) -> dict[str, str]:
     """The bridge's environment (M4-R19). Identifiers ONLY — every credential lives in the ONE
     Secrets Manager boot secret ``boot_secret_id`` names; nothing here is a bearer, a hook token,
@@ -163,6 +164,11 @@ def build_hermes_runtime_env(
         "PYTHONUNBUFFERED": "1",
         BOOT_SECRET_ENV_VAR: boot_secret_id,
     }
+    # Workspace memory: present iff configured (the roll diffs env keys, so never an empty value).
+    # The image enables its agentcore memory provider only when this is set; an older image
+    # ignores it.
+    if memory_id:
+        env["AGENTCORE_MEMORY_ID"] = memory_id
     if managed_gate_url:
         env["LIGHTBULB_MANAGED_GATE_URL"] = managed_gate_url
         env["LIGHTBULB_MANAGED_MODEL_ID"] = managed_model_id
@@ -511,6 +517,13 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
         logger.warning("hermes teardown: could not delete boot secret for owner=%s", owner_id, exc_info=True)
 
     if delete_profiles:
+        from core.services import workspace_memory
+
+        try:
+            await workspace_memory.delete_owner_memory(owner_id)
+        except Exception:  # noqa: BLE001 — best-effort, like the S3 profiles below
+            logger.warning("hermes teardown: could not wipe workspace memory for owner=%s", owner_id, exc_info=True)
+    if delete_profiles:
         try:
             await run_in_thread(_delete_profile_prefix_objects, owner_id)
         except Exception:  # noqa: BLE001 — best-effort cleanup
@@ -725,6 +738,7 @@ def build_runtime_request_for_owner(
             browser_profile_id=browser_profile_id,
             managed_gate_url=openrouter_gate_url() if provider_choice == "openrouter_managed" else "",
             managed_model_id=settings.OPENROUTER_MANAGED_MODEL_ID if provider_choice == "openrouter_managed" else "",
+            memory_id=settings.AGENTCORE_MEMORY_ID,
         ),
     )
 
@@ -824,6 +838,10 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     # The roll is how an ALREADY-provisioned workspace gets its first Browser profile: a
     # create-or-adopt, then the env block. Never raises -- "" just means no browser.
     browser_profile_id = await browser_sessions.ensure_browser_profile(owner_id)
+    # Grant before the env names the memory: a runtime told AGENTCORE_MEMORY_ID must be able to use it.
+    from core.billing.bedrock_aip import ensure_owner_memory_policy
+
+    await ensure_owner_memory_policy(owner_id)
     await run_in_thread(
         _update_runtime_image,
         arn,
@@ -1221,6 +1239,10 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
     # request is built: its id is what turns the browser env block on. Never raises -- ""
     # means the runtime simply advertises no browser tools this round.
     browser_profile_id = await browser_sessions.ensure_browser_profile(owner_id)
+    # Grant before the env names the memory: a runtime told AGENTCORE_MEMORY_ID must be able to use it.
+    from core.billing.bedrock_aip import ensure_owner_memory_policy
+
+    await ensure_owner_memory_policy(owner_id)
     if switching:
         from core.services import container_rpc
 

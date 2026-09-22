@@ -197,6 +197,16 @@ def test_runtime_env_omits_every_browser_var_without_a_profile():
     assert not [k for k in _env() if k.startswith(("AGENTCORE_", "AGENT_BROWSER_"))]
 
 
+def test_runtime_env_carries_the_workspace_memory_id_only_when_configured():
+    """The image enables its AgentCore memory provider only when this is set, so an unset id
+    must mean an absent key -- never an empty string the provider would try to call."""
+    assert _env(memory_id="lightbulb_dev_workspace_memory-abc")["AGENTCORE_MEMORY_ID"] == (
+        "lightbulb_dev_workspace_memory-abc"
+    )
+    assert "AGENTCORE_MEMORY_ID" not in _env()
+    assert "AGENTCORE_MEMORY_ID" not in _env(memory_id="")
+
+
 # --- _runtime_status: one status read, never a poll ------------------------------------------
 # Optimistic create: readiness is discovered at first invoke (retry-at-use). The ONLY read
 # here exists so a TERMINAL runtime is swept (deleted + ARN cleared) instead of reused

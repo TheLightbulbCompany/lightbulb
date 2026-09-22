@@ -180,3 +180,24 @@ async def test_teardown_s3_delete_failure_is_also_best_effort(monkeypatch):
 
     # Must not raise.
     await hermes_provisioning.teardown_hermes_runtime("org_a", container_row=ROW, delete_profiles=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delete_profiles", [True, False])
+async def test_teardown_wipes_workspace_memory_only_with_the_profiles(monkeypatch, delete_profiles):
+    """Workspace memory is the owner's data like the profiles are: an account wipe or the debug
+    user-data delete removes it; a reprovision/rollback keeps it. A memory failure is best-effort."""
+    monkeypatch.setattr(hermes_provisioning, "_stop_runtime_session", lambda *a: None)
+    monkeypatch.setattr(hermes_provisioning, "_delete_runtime", lambda *a: None)
+    monkeypatch.setattr(hermes_provisioning, "_delete_boot_secret", lambda *a: None)
+    monkeypatch.setattr(hermes_provisioning, "_delete_profile_prefix_objects", lambda *a: None)
+    monkeypatch.setattr("core.billing.bedrock_gate_tokens.delete_gate_token_rows", AsyncMock())
+    wipe = AsyncMock(side_effect=RuntimeError("agentcore down"))
+    monkeypatch.setattr("core.services.workspace_memory.delete_owner_memory", wipe)
+
+    await hermes_provisioning.teardown_hermes_runtime("org_a", container_row=ROW, delete_profiles=delete_profiles)
+
+    if delete_profiles:
+        wipe.assert_awaited_once_with("org_a")
+    else:
+        wipe.assert_not_awaited()

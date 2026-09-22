@@ -1032,6 +1032,76 @@ class TestOwnerBrowserPolicy:
         fake.put_role_policy.assert_not_called()
 
 
+class TestOwnerMemoryPolicy:
+    """The per-owner workspace-memory grant. ONE shared memory resource per env, so isolation IS
+    this document -- the exact shape the 2026-09-22 dev spike proved (owner B AccessDenied on every
+    cross-owner call, including CreateEvent with owner A's actorId)."""
+
+    MEMORY_ARN = "arn:aws:bedrock-agentcore:us-east-1:877352799272:memory/lightbulb_dev_workspace_memory-abc"
+
+    def _put(self, monkeypatch, memory_id: str = "lightbulb_dev_workspace_memory-abc") -> MagicMock:
+        import core.billing.bedrock_aip as mod
+
+        fake = MagicMock()
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod, "_caller_account_id", AsyncMock(return_value="877352799272"))
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(mod.settings, "AWS_REGION", "us-east-1", raising=False)
+        monkeypatch.setattr(mod.settings, "AGENTCORE_MEMORY_ID", memory_id, raising=False)
+        return fake
+
+    @pytest.mark.asyncio
+    async def test_owner_memory_policy_is_the_spike_proven_document(self, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        fake = self._put(monkeypatch)
+        await mod.ensure_owner_memory_policy("org_x")
+
+        kw = fake.put_role_policy.call_args.kwargs
+        assert kw["RoleName"] == "lightbulb-dev-owner-bedrock-org_x"
+        assert kw["PolicyName"] == "owner-memory"
+        doc = json.loads(kw["PolicyDocument"])
+        by_sid = {st["Sid"]: st for st in doc["Statement"]}
+        events = by_sid["WorkspaceMemoryOwnEvents"]
+        assert events["Effect"] == "Allow" and events["Resource"] == self.MEMORY_ARN
+        assert sorted(events["Action"]) == [
+            "bedrock-agentcore:CreateEvent",
+            "bedrock-agentcore:GetEvent",
+            "bedrock-agentcore:ListEvents",
+            "bedrock-agentcore:ListSessions",
+        ]
+        assert events["Condition"] == {"StringEquals": {"bedrock-agentcore:actorId": "org_x"}}
+        records = by_sid["WorkspaceMemoryOwnRecords"]
+        assert records["Resource"] == self.MEMORY_ARN
+        assert sorted(records["Action"]) == [
+            "bedrock-agentcore:ListMemoryRecords",
+            "bedrock-agentcore:RetrieveMemoryRecords",
+        ]
+        # EXACT namespace, never a prefix: there is no namespacePath condition key, and a
+        # namespacePath call fails closed under this Allow (spike).
+        assert records["Condition"] == {"StringEquals": {"bedrock-agentcore:namespace": "/owners/org_x/"}}
+        deny = by_sid["WorkspaceMemoryNoUnconditionable"]
+        assert deny["Effect"] == "Deny" and deny["Resource"] == "*"
+        # These carry NO condition keys: allowed at all, they reach any owner's record by id.
+        assert set(deny["Action"]) == {
+            "bedrock-agentcore:GetMemoryRecord",
+            "bedrock-agentcore:DeleteMemoryRecord",
+            "bedrock-agentcore:BatchCreateMemoryRecords",
+            "bedrock-agentcore:BatchUpdateMemoryRecords",
+            "bedrock-agentcore:BatchDeleteMemoryRecords",
+            "bedrock-agentcore:DeleteEvent",
+            "bedrock-agentcore:ListActors",
+        }
+
+    @pytest.mark.asyncio
+    async def test_owner_memory_policy_writes_nothing_when_memory_is_not_configured(self, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        fake = self._put(monkeypatch, memory_id="")
+        await mod.ensure_owner_memory_policy("org_x")
+        fake.put_role_policy.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_trial_repair_keeps_resource_inventory_but_returns_only_sonnet(aip_tables, monkeypatch):
     from core.billing import bedrock_aip as mod

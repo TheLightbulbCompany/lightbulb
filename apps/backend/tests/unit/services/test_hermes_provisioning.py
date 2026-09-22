@@ -1091,11 +1091,17 @@ async def test_create_record_statuscheck_happen_in_that_order(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_freshly_created_arn_record_is_conditioned_on_no_arn_yet(monkeypatch):
-    """Fix round 1 (Important #1): the write that records a freshly created/adopted ARN must be
-    conditioned the same way #14's clear is -- on the row still showing no arn -- so a concurrent
-    peer that already recorded its OWN (possibly different) arn in the interim is never
-    clobbered by this one."""
+async def test_the_freshly_created_arn_record_is_not_conditioned_on_no_arn_yet(monkeypatch):
+    """Fix round 2 (reverts fix round 1's Important #1 follow-up): this write must NOT carry
+    expected={"agentcore_runtime_arn": None} -- it is also reached by the M6-R43 recovery path,
+    where the row's OWN agentcore_runtime_arn still names a dead/DELETING runtime (only the
+    LOCAL `arn` variable is reset to None; the row field is never cleared). Conditioning on
+    "no arn yet" there would fail against that still-present value, raise ProvisionSuperseded,
+    and strand the row on the dead ARN forever -- see
+    test_fresh_arn_record_succeeds_against_real_conditional_semantics_when_row_holds_a_dead_arn
+    for the regression proof against real conditional semantics. Runtime names are unique per
+    owner, so two concurrent creators for the same owner converge on the SAME arn anyway -- the
+    condition would guard nothing real."""
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:r1")
     monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
     monkeypatch.setattr(
@@ -1119,7 +1125,7 @@ async def test_the_freshly_created_arn_record_is_conditioned_on_no_arn_yet(monke
 
     record_call = calls[0]
     assert record_call[0] == {"agentcore_runtime_arn": "arn:r1"}
-    assert record_call[1].get("expected") == {"agentcore_runtime_arn": None}
+    assert "expected" not in record_call[1]
 
 
 @pytest.mark.asyncio
@@ -1811,6 +1817,67 @@ async def test_provision_creates_fresh_when_the_row_arn_names_a_deleted_runtime(
     assert arn == "arn:fresh"
     assert writes[0] == {"agentcore_runtime_arn": "arn:fresh"}  # stale ARN replaced before the status check
     assert writes[-1]["status"] == "running" and writes[-1]["agentcore_runtime_arn"] == "arn:fresh"
+
+
+@pytest.mark.asyncio
+async def test_fresh_arn_record_succeeds_against_real_conditional_semantics_when_row_holds_a_dead_arn(monkeypatch):
+    """Fix round 2 regression: the freshly-created ARN record must NOT be conditioned on
+    expected={"agentcore_runtime_arn": None}. That write is also reached by this exact M6-R43
+    recovery path -- the row's OWN agentcore_runtime_arn still names the dead/DELETING runtime
+    (``_RuntimeGone`` resets only the LOCAL `arn` variable to None; the ROW field is never
+    cleared). A bare-equality `expected=None` -- or even the OR-absent form -- would fail against
+    that still-present non-null value, raise ProvisionSuperseded, and strand the row on the dead
+    ARN forever. The sibling test above uses a spy that ignores `expected=` and therefore cannot
+    catch this; this one runs the REAL container_repo.update_container_leased against a
+    moto-backed table so the write's actual conditional semantics are exercised."""
+    import boto3
+    from moto import mock_aws
+
+    with mock_aws():
+        resource = boto3.resource("dynamodb", region_name="us-east-1")
+        resource.create_table(
+            TableName="test-containers",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setattr("core.dynamodb._table_prefix", "test-")
+        monkeypatch.setattr("core.dynamodb._dynamodb_resource", resource)
+        table = resource.Table("test-containers")
+        # Seeded exactly like the live M6-R43 scenario: a dead/DELETING runtime's ARN is still
+        # stamped on the row.
+        table.put_item(
+            Item={
+                "owner_id": "org_a",
+                "status": "provisioning",
+                "agentcore_runtime_arn": "arn:rolled-back",
+                "provision_claim_id": "claim-1",
+            }
+        )
+
+        _configure_hermes_settings(monkeypatch)
+        monkeypatch.setattr(
+            hermes_provisioning,
+            "_load_role_and_aips",
+            _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+        )
+        monkeypatch.setattr(hermes_provisioning, "write_profiles", _explode)
+        monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", _explode)
+        monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _explode)
+
+        def _gone(arn):
+            raise hermes_provisioning._RuntimeGone(arn)
+
+        monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", _gone)
+        monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:fresh")
+        monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
+
+        arn = await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
+
+        assert arn == "arn:fresh"
+        row = table.get_item(Key={"owner_id": "org_a"})["Item"]
+        assert row["agentcore_runtime_arn"] == "arn:fresh"
+        assert row["status"] == "running"
 
 
 def test_runtime_image_uri_raises_gone_on_not_found_and_on_deleting(monkeypatch):

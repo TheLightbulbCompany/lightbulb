@@ -1362,16 +1362,18 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         # with nothing to reconcile it: AgentCore runtime
         # names are unique per account, so every future retry then hits a name conflict on
         # CreateAgentRuntime, forever. A retry that sees this row field takes the `if arn:`
-        # branch above instead of creating again. Conditioned the same way as #14's clear: a
-        # concurrent peer (its own retry, or a Conflict-adopt of a DIFFERENT runtime) may have
-        # already recorded its own arn in the interim, and this write must not clobber it.
+        # branch above instead of creating again.
+        #
+        # Fix round 2 (deliberately NOT conditioned on `expected=`, unlike #14's clear): this
+        # write is also reached by the M6-R43 recovery path above, where the row's
+        # agentcore_runtime_arn still names a dead/DELETING runtime -- `_RuntimeGone` resets the
+        # LOCAL `arn` variable to None but never clears the ROW field. An `expected={"...":
+        # None}` here would then fail against that still-dead value, raise
+        # ProvisionSuperseded, and leave the row stuck on the dead arn forever. Runtime names
+        # are unique per owner, so two concurrent creators for the same owner always converge on
+        # the SAME arn anyway -- the condition would guard nothing real.
         await container_repo.update_container_leased(
-            owner_id,
-            claim_id,
-            {"agentcore_runtime_arn": arn},
-            attempt_token=attempt_token,
-            release_lease=False,
-            expected={"agentcore_runtime_arn": None},
+            owner_id, claim_id, {"agentcore_runtime_arn": arn}, attempt_token=attempt_token, release_lease=False
         )
 
     # Optimistic create: the ARN record above is the commit. Readiness is

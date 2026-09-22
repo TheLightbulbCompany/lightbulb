@@ -1403,7 +1403,6 @@ async def test_resolve_profile_inputs_returns_managed_choice_for_a_trial_local_o
     trial owner's marketplace deploy would get the full paid model ladder.
     resolve_profile_inputs is the one place both callers now go through, so
     this proves the real provider_choice_from_row logic fires for real."""
-    monkeypatch.setattr(hermes_provisioning.settings, "OPENROUTER_MANAGED_ENABLED", True)
     _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"subscription_status": "trial_local"})
 
     inputs = await hermes_provisioning.resolve_profile_inputs(

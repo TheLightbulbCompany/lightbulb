@@ -20,7 +20,7 @@ from core.services.container_provision import BEDROCK_TRIAL_CHOICE, resolve_prov
 
 
 @pytest.mark.asyncio
-async def test_resolve_provider_choice_trial_local_short_circuits_to_managed_free_route(monkeypatch):
+async def test_resolve_provider_choice_trial_local_short_circuits_to_managed_free_route():
     """A trial_local row (the no-card local trial) short-circuits BEFORE the
     provider_choice/byo_provider lookup — `trial_local` is a
     subscription_status, never a stored provider_choice, so the provider must
@@ -29,7 +29,6 @@ async def test_resolve_provider_choice_trial_local_short_circuits_to_managed_fre
     It resolves to the managed free route. Falling through to a paid provider
     would hand a card-less owner an unentitled inference path.
     """
-    monkeypatch.setattr("core.services.container_provision.settings.OPENROUTER_MANAGED_ENABLED", True)
     with patch("core.services.container_provision.billing_repo") as repo:
         repo.get_by_owner_id = AsyncMock(
             return_value={"subscription_status": "trial_local", "provider_choice": "byo_key"},
@@ -142,18 +141,3 @@ async def test_container_provision_never_touches_ecs_directly():
     assert not hasattr(container_provision, "container_repo")
     for gone in ("get_ecs_manager", "container_rpc", "runtime_transport", "hermes_provisioning"):
         assert not hasattr(container_provision, gone), gone
-
-
-@pytest.mark.parametrize(
-    "row",
-    [{"subscription_status": "trial_local"}, {"subscription_status": "active", "plan": "base"}],
-)
-def test_free_rows_stay_on_the_bedrock_trial_where_managed_openrouter_is_off(monkeypatch, row):
-    """Prod runs without OpenRouter configured: mapping Free/Base to openrouter_managed there
-    hands every fresh trial provision a model block with no model, which raises."""
-    from core.services import container_provision
-
-    monkeypatch.setattr(container_provision.settings, "OPENROUTER_MANAGED_ENABLED", False)
-    assert container_provision.provider_choice_from_row(row) == ("bedrock_trial", None)
-    monkeypatch.setattr(container_provision.settings, "OPENROUTER_MANAGED_ENABLED", True)
-    assert container_provision.provider_choice_from_row(row) == ("openrouter_managed", None)

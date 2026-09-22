@@ -579,6 +579,54 @@ async def test_update_container_leased_expected_value_mismatch_raises_superseded
 
 
 @pytest.mark.asyncio
+async def test_update_container_leased_expected_none_matches_an_absent_field(dynamodb_table):
+    """Fix round 1 (Important #1): the adopt-time ARN record conditions its write on
+    ``expected={"agentcore_runtime_arn": None}`` -- "no arn yet". On a genuinely FRESH row that
+    attribute has never been written at all (absent), not merely cleared to null, so the
+    condition must match attribute-absent too, or every fresh provision's first ARN record
+    would spuriously raise ProvisionSuperseded."""
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision("user_fresh")
+    # agentcore_runtime_arn has never been written on this row -- absent, not null.
+
+    await container_repo.update_container_leased(
+        "user_fresh",
+        claim,
+        {"agentcore_runtime_arn": "arn:new"},
+        expected={"agentcore_runtime_arn": None},
+    )
+
+    assert _row(dynamodb_table, "user_fresh")["agentcore_runtime_arn"] == "arn:new"
+
+
+@pytest.mark.asyncio
+async def test_update_container_leased_expected_none_also_matches_an_explicit_null(dynamodb_table):
+    """The other half of the OR: a field explicitly cleared to null (e.g. #14's CREATE_FAILED
+    clear) must also satisfy expected={"field": None} -- "no value yet" covers both a never-set
+    field and one that was set and then cleared."""
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision("user_cleared")
+    await container_repo.update_container_leased("user_cleared", claim, {"agentcore_runtime_arn": "arn:dead"})
+    await container_repo.update_container_leased(
+        "user_cleared",
+        claim,
+        {"agentcore_runtime_arn": None},
+        expected={"agentcore_runtime_arn": "arn:dead"},
+    )
+    assert _row(dynamodb_table, "user_cleared")["agentcore_runtime_arn"] is None
+
+    await container_repo.update_container_leased(
+        "user_cleared",
+        claim,
+        {"agentcore_runtime_arn": "arn:fresh"},
+        expected={"agentcore_runtime_arn": None},
+    )
+    assert _row(dynamodb_table, "user_cleared")["agentcore_runtime_arn"] == "arn:fresh"
+
+
+@pytest.mark.asyncio
 async def test_release_provision_to_error_attempt_token_mismatch_is_a_noop(dynamodb_table):
     """Mirrors update_container_leased's attempt_token fence on the error
     transition: a straggler's release must not clobber the current attempt's

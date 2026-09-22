@@ -1335,7 +1335,15 @@ async def update_container_leased(
     for i, (key, value) in enumerate((expected or {}).items()):
         alias = f"#e{i}"
         names[alias] = key
-        condition += f" AND {alias} = :ev{i}"
+        if value is None:
+            # "no value yet" must match a field that was NEVER written (absent), not only one
+            # explicitly cleared to null -- DynamoDB's `=` against a NULL-typed value is false
+            # for an absent attribute (a bare equality here would raise ProvisionSuperseded on
+            # every fresh row's first write). Mirrors the generation/attempt_token OR-absent
+            # shape above.
+            condition += f" AND (attribute_not_exists({alias}) OR {alias} = :ev{i})"
+        else:
+            condition += f" AND {alias} = :ev{i}"
         values[f":ev{i}"] = value
     update_expr = "SET " + ", ".join(set_parts)
     if release_lease:

@@ -235,16 +235,28 @@ def _create_runtime(request: dict) -> str:
     (M6-R44, see the constants above). A ConflictException (a concurrent provision run already
     created this owner's uniquely-named runtime) adopts the existing ARN via the same by-name
     lookup ``provision_hermes_runtime`` uses for a crash-recovered ARN, instead of failing — the
-    owner ruling: no leases, both runs must converge."""
+    owner ruling: no leases, both runs must converge.
+
+    Fix round 1 (Important #1): ``_find_existing_runtime_arn``'s ``list_agent_runtimes`` still
+    lists a runtime that is DELETING (M6-R43), so the name conflict can be held by a runtime
+    that is about to not exist — e.g. a peer run saw CREATE_FAILED, deleted it, and is mid-clear
+    on the row. Adopting it blind would record a dead ARN as a SUCCESS. ``_runtime_image_uri``
+    already raises ``_RuntimeGone`` for exactly that (DELETING or already gone); on that, the
+    ORIGINAL conflict is re-raised so it classifies transient and retries once the delete
+    finishes, instead of the adopt succeeding."""
 
     client = _agentcore_control_client()
     for attempt in range(1, _ROLE_PROPAGATION_ATTEMPTS + 1):
         try:
             return client.create_agent_runtime(**request)["agentRuntimeArn"]
-        except client.exceptions.ConflictException:
+        except client.exceptions.ConflictException as conflict:
             arn = _find_existing_runtime_arn(request["agentRuntimeName"])
             if arn is None:
                 raise
+            try:
+                _runtime_image_uri(arn)
+            except _RuntimeGone:
+                raise conflict from None
             return arn
         except client.exceptions.ValidationException as exc:
             if "Role validation failed" not in str(exc) or attempt == _ROLE_PROPAGATION_ATTEMPTS:
@@ -1350,9 +1362,16 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         # with nothing to reconcile it: AgentCore runtime
         # names are unique per account, so every future retry then hits a name conflict on
         # CreateAgentRuntime, forever. A retry that sees this row field takes the `if arn:`
-        # branch above instead of creating again.
+        # branch above instead of creating again. Conditioned the same way as #14's clear: a
+        # concurrent peer (its own retry, or a Conflict-adopt of a DIFFERENT runtime) may have
+        # already recorded its own arn in the interim, and this write must not clobber it.
         await container_repo.update_container_leased(
-            owner_id, claim_id, {"agentcore_runtime_arn": arn}, attempt_token=attempt_token, release_lease=False
+            owner_id,
+            claim_id,
+            {"agentcore_runtime_arn": arn},
+            attempt_token=attempt_token,
+            release_lease=False,
+            expected={"agentcore_runtime_arn": None},
         )
 
     # Optimistic create: the ARN record above is the commit. Readiness is

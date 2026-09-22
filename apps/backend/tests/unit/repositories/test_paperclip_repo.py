@@ -121,6 +121,46 @@ async def test_seeded_agent_ids_absent_round_trips_as_none(repo):
     assert retrieved.seeded_agent_ids is None
 
 
+async def test_put_condition_passes_when_generation_absent_or_matching(repo):
+    """Fix round 1 (Important #2): put()'s optional condition — used only at the G2 mint site —
+    is (attribute_not_exists(onboarding_generation) OR onboarding_generation = :g). It must
+    succeed on a genuinely fresh row (attribute absent) and on a self-retry with the SAME
+    generation it already holds."""
+    company = _make_company(user_id="user_cond", onboarding_generation="gen-a")
+    await repo.put(
+        company,
+        condition="attribute_not_exists(onboarding_generation) OR onboarding_generation = :g",
+        condition_values={":g": "gen-a"},
+    )
+    assert (await repo.get("user_cond")).onboarding_generation == "gen-a"
+
+    # Self-retry with the identical generation still satisfies the condition.
+    await repo.put(
+        company,
+        condition="attribute_not_exists(onboarding_generation) OR onboarding_generation = :g",
+        condition_values={":g": "gen-a"},
+    )
+    assert (await repo.get("user_cond")).onboarding_generation == "gen-a"
+
+
+async def test_put_condition_raises_when_a_different_generation_already_won(repo):
+    """A peer already minted a DIFFERENT generation onto the row -- the conditioned put must
+    fail (ClientError/ConditionalCheckFailedException), not silently clobber the winner."""
+    from botocore.exceptions import ClientError
+
+    await repo.put(_make_company(user_id="user_race", onboarding_generation="gen-winner"))
+
+    losing_company = _make_company(user_id="user_race", onboarding_generation="gen-loser")
+    with pytest.raises(ClientError) as exc_info:
+        await repo.put(
+            losing_company,
+            condition="attribute_not_exists(onboarding_generation) OR onboarding_generation = :g",
+            condition_values={":g": "gen-loser"},
+        )
+    assert exc_info.value.response["Error"]["Code"] == "ConditionalCheckFailedException"
+    assert (await repo.get("user_race")).onboarding_generation == "gen-winner"
+
+
 async def test_starter_agent_ids_round_trip(repo):
     starter_ids = {
         "ceo": "agent-ceo",

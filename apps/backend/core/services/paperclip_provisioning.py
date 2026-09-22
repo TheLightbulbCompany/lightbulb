@@ -55,6 +55,7 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
+from botocore.exceptions import ClientError
 from ulid import ULID
 
 from core.auth import is_org_owner_id
@@ -813,7 +814,26 @@ class PaperclipProvisioning:
                 ),
                 **onboarding_fields,
             )
-            await self._repo.put(row)
+            if reconciling_company:
+                await self._repo.put(row)
+            else:
+                # Fix round 1 (Important #2): the read that decided onboarding_fields above and
+                # this put are not atomic -- a peer's own mint can land in between. Condition the
+                # put so a peer who landed first WINS instead of being silently overwritten; on
+                # loss, adopt the stored generation with one consistent re-read and put once
+                # more (a single retry, not a new lease).
+                try:
+                    await self._repo.put(
+                        row,
+                        condition="attribute_not_exists(onboarding_generation) OR onboarding_generation = :g",
+                        condition_values={":g": row.onboarding_generation},
+                    )
+                except ClientError as e:
+                    if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                        raise
+                    winner = await self._repo.get(owner_user_id, consistent_read=True)
+                    row.onboarding_generation = winner.onboarding_generation if winner else row.onboarding_generation
+                    await self._repo.put(row)
             if seed_ok:
                 logger.info(
                     "paperclip_provisioning.provision_org: owner_id %s active (company=%s, owner=%s)",

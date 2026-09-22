@@ -1091,6 +1091,38 @@ async def test_create_record_statuscheck_happen_in_that_order(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_the_freshly_created_arn_record_is_conditioned_on_no_arn_yet(monkeypatch):
+    """Fix round 1 (Important #1): the write that records a freshly created/adopted ARN must be
+    conditioned the same way #14's clear is -- on the row still showing no arn -- so a concurrent
+    peer that already recorded its OWN (possibly different) arn in the interim is never
+    clobbered by this one."""
+    monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:r1")
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_load_role_and_aips",
+        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+    )
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
+    _configure_hermes_settings(monkeypatch)
+    monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
+    _no_runtime_found_by_name(monkeypatch)
+
+    calls = []
+
+    async def _spy_update(owner_id, claim_id, fields, **kwargs):
+        calls.append((fields, kwargs))
+
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _spy_update)
+
+    await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1", attempt_token="tok-1")
+
+    record_call = calls[0]
+    assert record_call[0] == {"agentcore_runtime_arn": "arn:r1"}
+    assert record_call[1].get("expected") == {"agentcore_runtime_arn": None}
+
+
+@pytest.mark.asyncio
 async def test_provision_writes_through_the_fenced_lease_helper_not_a_bare_update(monkeypatch):
     calls = []
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:r1")
@@ -1817,18 +1849,36 @@ class _ConflictException(Exception):
     pass
 
 
-class _CreateClient:
-    exceptions = SimpleNamespace(ValidationException=_ValidationException, ConflictException=_ConflictException)
+class _ResourceNotFoundException(Exception):
+    pass
 
-    def __init__(self, failures):
+
+class _CreateClient:
+    exceptions = SimpleNamespace(
+        ValidationException=_ValidationException,
+        ConflictException=_ConflictException,
+        ResourceNotFoundException=_ResourceNotFoundException,
+    )
+
+    def __init__(self, failures, *, runtime_status="READY"):
         self.failures = list(failures)
         self.calls = 0
+        # Backs the liveness check the Conflict handler runs on an adopted ARN
+        # (_runtime_image_uri) -- READY by default so every pre-existing test in this group,
+        # which never cared about it, keeps adopting a healthy runtime unchanged.
+        self.runtime_status = runtime_status
 
     def create_agent_runtime(self, **request):
         self.calls += 1
         if self.failures:
             raise self.failures.pop(0)
         return {"agentRuntimeArn": "arn:created"}
+
+    def get_agent_runtime(self, agentRuntimeId):
+        return {
+            "status": self.runtime_status,
+            "agentRuntimeArtifact": {"containerConfiguration": {"containerUri": "img"}},
+        }
 
 
 def test_create_runtime_adopts_existing_arn_on_conflict(monkeypatch):
@@ -1858,6 +1908,42 @@ def test_create_runtime_reraises_conflict_when_no_existing_runtime_is_found(monk
     client = _CreateClient([_ConflictException("already exists")])
     monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
     monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: None)
+
+    with pytest.raises(_ConflictException):
+        hermes_provisioning._create_runtime({"agentRuntimeName": "x"})
+
+
+def test_create_runtime_refuses_to_adopt_a_deleting_runtime(monkeypatch):
+    """Fix round 1 (Important #1): the by-name lookup a Conflict adopts from also lists
+    DELETING runtimes (M6-R43), and DELETING is not a terminal status this module ever sees on
+    its own row -- so without a liveness check, the race where run A saw CREATE_FAILED, deleted
+    runtime X and cleared the row's ARN, while run B's CreateAgentRuntime hits Conflict because
+    the name is STILL held by the deleting X, ends with B adopting X and recording a runtime
+    that is about to not exist as a SUCCESS. The ORIGINAL ConflictException must surface instead
+    (classified transient, retried) rather than the adopt succeeding."""
+    import boto3
+
+    client = _CreateClient([_ConflictException("already exists")], runtime_status="DELETING")
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:deleting")
+
+    with pytest.raises(_ConflictException):
+        hermes_provisioning._create_runtime({"agentRuntimeName": "x"})
+
+
+def test_create_runtime_refuses_to_adopt_a_runtime_that_is_already_gone(monkeypatch):
+    """Same fix, the other _RuntimeGone trigger: the adopted ARN 404s outright (deleted between
+    the list and the describe)."""
+    import boto3
+
+    client = _CreateClient([_ConflictException("already exists")])
+
+    def _gone(agentRuntimeId):
+        raise _ResourceNotFoundException("gone")
+
+    client.get_agent_runtime = _gone
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: client)
+    monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:gone")
 
     with pytest.raises(_ConflictException):
         hermes_provisioning._create_runtime({"agentRuntimeName": "x"})

@@ -834,7 +834,22 @@ class _StatefulRepo:
     async def get(self, user_id: str, *, consistent_read: bool = False):
         return self._rows.get(user_id)
 
-    async def put(self, row):
+    async def put(self, row, *, condition: str | None = None, condition_values: dict | None = None):
+        # Fix round 1 (Important #2): mirrors the real repo's
+        # (attribute_not_exists(onboarding_generation) OR onboarding_generation = :g) condition
+        # closely enough for this double's callers -- provision_org's G2 mint site is the only
+        # caller that ever passes one.
+        if condition is not None:
+            existing = self._rows.get(row.user_id)
+            current = getattr(existing, "onboarding_generation", None) if existing else None
+            expected = (condition_values or {}).get(":g")
+            if current is not None and current != expected:
+                from botocore.exceptions import ClientError
+
+                raise ClientError(
+                    {"Error": {"Code": "ConditionalCheckFailedException", "Message": "conditional check failed"}},
+                    "PutItem",
+                )
         self._rows[row.user_id] = row
 
     async def try_acquire_seed_claim(

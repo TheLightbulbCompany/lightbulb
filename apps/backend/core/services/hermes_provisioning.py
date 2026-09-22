@@ -675,8 +675,8 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
     if not hook_token_reused:
         # A re-created row minted a NEW hook_token, but a surviving Paperclip company's agents
         # still carry the old one as their snapshotted apiKey -- every run would 401 silently.
-        # Best-effort: a no-op on a first provision (no company yet); on failure the repair is
-        # scripts/resync_paperclip_adapter_tokens.py.
+        # Best-effort: a no-op on a first provision (no company yet); on failure the metric fires
+        # and the repair is a one-shot sync_agent_adapter_tokens run (see the PR).
         from core.services import paperclip_agent_lifecycle
 
         try:

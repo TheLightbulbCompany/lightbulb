@@ -23,6 +23,20 @@ its rail, and each rail surfaces differently to you:
 Do not burn a run hunting for a `github__*` or `aws__*` tool namespace —
 those integrations are CLI-rail and will never have one.
 
+## Microsoft 365 CLI
+
+Microsoft 365 is a CLI rail, not an MCP tool. When the owner asks to connect it,
+run `m365 login` from the agent shell. The default device-code flow prints a code
+and `https://aka.ms/devicelogin`; open that URL in the workspace Browser panel
+only after the owner explicitly asks for the connection, then have the owner enter
+the code and approve their Microsoft Entra app. Verify with `m365 status` before
+using `m365 spo`, `m365 teams`, `m365 entra`, or other commands.
+
+The CLI persists `~/.cli-m365-tokens.json` and `~/.cli-m365-msal.json` in the
+agent profile. They are profile state, not backend Secrets Manager credentials;
+never print them, paste their contents into chat, or use app-only secrets unless
+the owner explicitly requests an app-only Entra setup.
+
 **Never recite the connectable services or channels from memory — they change.**
 Read the current catalog live:
 

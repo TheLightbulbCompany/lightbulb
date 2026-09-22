@@ -2268,12 +2268,17 @@ async def test_every_poll_offers_an_armed_trial_row_to_the_30_day_heal():
 
 
 @pytest.mark.asyncio
-async def test_running_reconcile_joins_the_caller_to_the_default_room_best_effort():
+async def test_any_org_members_poll_joins_them_to_the_default_room_best_effort():
+    """A plain MEMBER who joined before the membership webhook seated them lands in #general on
+    their next poll -- not behind the admin-only container path -- and a failure never breaks it."""
     with (
-        patch.object(user_provision.wake_policy, "is_parked_trial", AsyncMock(return_value=False)),
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
         patch.object(user_provision.container_repo, "get_by_owner_id", AsyncMock(return_value={"status": "running"})),
+        patch.object(user_provision.wake_policy, "is_parked_trial", AsyncMock(return_value=False)),
         patch("core.services.user_provision._reconcile_owner_seed", new=AsyncMock()),
+        patch("core.services.messaging.ensure_vendor_room", new=AsyncMock()),
         patch("core.services.messaging.join_default_room", new=AsyncMock(side_effect=RuntimeError("boom"))) as join,
     ):
-        await user_provision._provision_or_reconcile(_org_admin_auth("user_a", "org_o"), "org_o")
-    join.assert_awaited_once_with("org_o", "user_a")
+        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
+    join.assert_awaited_once_with("org_o", "user_m")

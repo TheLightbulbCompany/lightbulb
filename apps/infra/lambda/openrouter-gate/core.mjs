@@ -8,8 +8,8 @@ class GateError extends Error {
 }
 const fail = (status, message) => { throw new GateError(status, message); };
 const S = (item, field) => item?.[field]?.S;
-const routeFields = ['models', 'plugins', 'provider', 'route', 'user', 'metadata', 'trace', 'debug', 'service_tier', 'modalities', 'audio', 'prediction', 'stream_options'];
-const allowedFields = new Set(['model', 'messages', 'stream', 'session_id', 'max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'stop', 'tools', 'tool_choice', 'parallel_tool_calls', 'response_format', 'reasoning', 'reasoning_effort', 'frequency_penalty', 'presence_penalty', 'seed']);
+const routeFields = ['models', 'plugins', 'provider', 'route', 'user', 'metadata', 'trace', 'debug', 'service_tier', 'modalities', 'audio', 'prediction'];
+const allowedFields = new Set(['model', 'messages', 'stream', 'stream_options', 'session_id', 'max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'stop', 'tools', 'tool_choice', 'parallel_tool_calls', 'response_format', 'reasoning', 'reasoning_effort', 'frequency_penalty', 'presence_penalty', 'seed']);
 
 function ceilPricedTokens(tokens, price) {
   const match = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(String(price));

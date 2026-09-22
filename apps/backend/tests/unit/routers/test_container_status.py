@@ -1137,7 +1137,9 @@ class TestContainerStatusTrialConversion:
         # only dispatches and shapes its own response.
         repo.update_status.assert_not_awaited()
         assert initialized is True
-        assert captured == ["dispatch_provision"], f"expected the ordinary auto-retry, got {captured}"
+        assert captured == [], (
+            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
+        )
         assert result["container_status"] == "provisioning"
         assert result["container_substatus"] == "auto_retry"
 
@@ -1252,7 +1254,9 @@ class TestContainerStatusTrialBedrockRestore:
 
         restore.assert_awaited_once_with("org_x")
         assert row["bedrock_revoked"] is False
-        assert captured == ["dispatch_provision"], f"expected auto-retry to still fire, got {captured}"
+        assert captured == [], (
+            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
+        )
         assert result["container_status"] == "provisioning"
 
     @pytest.mark.asyncio
@@ -1407,7 +1411,9 @@ class TestContainerStatusHonestError:
         assert result["container_substatus"] == "error_retrying"
         assert result["container_substatus"] != "provisioning", "an error must never be masked as provisioning"
         assert result["last_error"] == "EcsManagerError: spot reclaimed"
-        assert captured == ["dispatch_provision"], f"transient error must re-dispatch, got {captured}"
+        assert captured == [], (
+            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
+        )
 
     @pytest.mark.asyncio
     async def test_error_defaults_to_retryable_when_flag_absent(self):
@@ -1424,7 +1430,9 @@ class TestContainerStatusHonestError:
 
         assert result["container_status"] == "error"
         assert result["container_substatus"] == "error_retrying"
-        assert captured == ["dispatch_provision"]
+        assert captured == [], (
+            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
+        )
 
     @pytest.mark.asyncio
     async def test_stopped_row_still_auto_wakes_as_provisioning(self):
@@ -1442,7 +1450,9 @@ class TestContainerStatusHonestError:
 
         assert result["container_status"] == "provisioning"
         assert result["container_substatus"] == "auto_retry"
-        assert captured == ["dispatch_provision"]
+        assert captured == [], (
+            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
+        )
 
 
 class TestContainerStatusTeamsStatus:

@@ -99,3 +99,19 @@ async def test_a_full_room_keeps_the_marker(repo):
     repo["upsert_member"].side_effect = messaging.messaging_repo.MemberLimitExceeded("full")
     assert await messaging.join_default_room(OWNER, USER) is False
     repo["release_autojoin"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("room_id,marked", [(ROOM, True), ("00000000-0000-4000-8000-000000000001", False)])
+async def test_removing_a_human_from_general_marks_them_so_polls_never_reseat(monkeypatch, repo, room_id, marked):
+    monkeypatch.setattr(
+        messaging.messaging_repo, "list_members", AsyncMock(return_value=[{"kind": "human", "id": USER}])
+    )
+    monkeypatch.setattr(messaging.messaging_repo, "remove_member", AsyncMock(return_value=META))
+
+    await messaging._remove_member_with_notices({**META, "roomId": room_id}, "human", USER)
+
+    if marked:
+        repo["claim_autojoin"].assert_awaited_once_with(ROOM, USER)
+    else:
+        repo["claim_autojoin"].assert_not_awaited()

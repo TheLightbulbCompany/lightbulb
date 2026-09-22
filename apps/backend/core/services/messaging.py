@@ -1899,13 +1899,17 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
             room_revision=revision,
         )
         notices.append({"userId": human["id"], "ownerId": home, "channelKey": key, "event": event})
-    return await messaging_repo.remove_member(
+    new_meta = await messaging_repo.remove_member(
         meta=meta,
         kind="human",
         member_id=member_id,
         new_delivery_key=new_key,
         live_events=notices,
     )
+    if meta["roomId"] == default_room_id(meta["ownerId"]):
+        # A removal (or leave) must stick: join_default_room never re-seats a marked user.
+        await messaging_repo.claim_autojoin(meta["roomId"], member_id)
+    return new_meta
 
 
 async def revoke_human_membership(owner_id: str, user_id: str) -> None:

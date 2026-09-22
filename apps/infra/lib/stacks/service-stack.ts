@@ -145,8 +145,9 @@ export interface ServiceStackProps extends cdk.StackProps {
     // CfnOutput/ImportValue — matching how taskRole is already passed through.
     ownerBedrockBasePolicy: iam.IManagedPolicy;
     ownerBedrockBoundary: iam.IManagedPolicy;
-    /** The env's shared AgentCore Memory (ContainerStack.workspaceMemory). */
-    workspaceMemory: { memoryId: string; memoryArn: string };
+    /** The env's shared AgentCore Memory id (ContainerStack.workspaceMemory). One export, not two:
+     *  the ARN is derived here, so the container stack pins as little as possible. */
+    workspaceMemoryId: string;
   };
   managementApiUrl: string;
   /** Public wss:// endpoint returned by /api/v1/desktop/pair so desktop clients
@@ -504,7 +505,7 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:ListEvents",
           "bedrock-agentcore:DeleteEvent",
         ],
-        resources: [props.container.workspaceMemory.memoryArn],
+        resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
       }),
     );
 
@@ -1396,7 +1397,7 @@ export class ServiceStack extends cdk.Stack {
         : "",
       // Stamped into every runtime spec as AGENTCORE_MEMORY_ID; the image enables its memory
       // provider only when it is set (N-1 safe: an older image ignores it).
-      AGENTCORE_MEMORY_ID: props.container.workspaceMemory.memoryId,
+      AGENTCORE_MEMORY_ID: props.container.workspaceMemoryId,
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       GATEWAY_RELAY_URL: props.gatewayRelayUrl,

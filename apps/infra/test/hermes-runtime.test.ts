@@ -79,7 +79,7 @@ function buildStacks(environment: "dev" | "prod"): {
       containerSecurityGroup: container.containerSecurityGroup,
       ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
       ownerBedrockBoundary: container.ownerBedrockBoundary,
-      workspaceMemory: { memoryId: container.workspaceMemory.attrMemoryId, memoryArn: container.workspaceMemory.attrMemoryArn },
+      workspaceMemoryId: container.workspaceMemory.attrMemoryId,
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
@@ -337,8 +337,11 @@ describe("hermes runtime wiring", () => {
         { SemanticMemoryStrategy: Match.objectLike({ Namespaces: ["/owners/{actorId}/"] }) },
       ],
     });
-    prod.containerTemplate.hasResourceProperties("AWS::BedrockAgentCore::Memory", {
-      Name: "lightbulb_prod_workspace_memory",
+    // Prod memory is owner data: a later edit that drops applyRemovalPolicy must fail here.
+    prod.containerTemplate.hasResource("AWS::BedrockAgentCore::Memory", {
+      Properties: Match.objectLike({ Name: "lightbulb_prod_workspace_memory" }),
+      DeletionPolicy: "Retain",
+      UpdateReplacePolicy: "Retain",
     });
   });
 
@@ -353,6 +356,8 @@ describe("hermes runtime wiring", () => {
       "bedrock-agentcore:ListSessions",
       "bedrock-agentcore:RetrieveMemoryRecords",
     ]);
+    // Scoped to THE memory (a GetAtt), never "*".
+    expect(JSON.stringify(stmt?.Resource)).toContain("WorkspaceMemory");
     const all = JSON.stringify(boundary);
     for (const forbidden of ["GetMemoryRecord", "DeleteMemoryRecord", "BatchDeleteMemoryRecords",
       "BatchCreateMemoryRecords", "BatchUpdateMemoryRecords", "ListActors"]) {

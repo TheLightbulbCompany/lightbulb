@@ -39,10 +39,10 @@ Message `lightbulb-nosync-a5 [c1fde6]` before opening this PR.
 
 1. **Memory resource.** `container-stack.ts` gets a `CfnMemory`:
    - name `lightbulb_<env>_workspace_memory`
-   - existing KMS key
+   - **AWS-owned encryption, deliberately.** A CMK needs a service key-policy grant plus kms grants on every owner role, and `EncryptionKeyArn` is create-only. Adding one later means a new resource name plus a data migration.
    - semantic strategy with namespace `/owners/{actorId}/`
    - `eventExpiryDuration` 30
-   - The stack exposes the memory id and ARN as props.
+   - The stack exposes the memory id as a prop (one export). The service stack derives the ARN from it.
 2. **Boundary.** `OwnerBedrockBoundary` gets `BoundaryAgentCoreMemoryUse` on the memory ARN:
    - `CreateEvent`, `ListEvents`, `GetEvent`, `ListSessions`
    - `RetrieveMemoryRecords`, `ListMemoryRecords`
@@ -75,8 +75,9 @@ Coordinate with c1fde6's T1 on `bedrock_aip.py`.
    - `build_runtime_request_for_owner` passes `settings.AGENTCORE_MEMORY_ID`.
    - Both callers (the provision at line 812 and the roll at line 1209) call `ensure_owner_memory_policy` next to `ensure_browser_profile`.
 4. **Wipe.** `workspace_memory.delete_owner_memory(owner_id)`:
-   - List records in the owner's namespace and `BatchDelete` them in chunks of 100.
-   - `ListSessions(actorId)` → `ListEvents` → `DeleteEvent`.
+   - `ListSessions(actorId)` → `ListEvents` → `DeleteEvent` FIRST (events are what extraction reads).
+   - Then list records in the owner's namespace and `BatchDelete` them in chunks of 100.
+   - Then one in-process re-sweep of records 180 s later, for extraction that was in flight (96–133 s).
    - It is best-effort and logs on failure.
    - It is called from `teardown_hermes_runtime` **only when `delete_profiles=True`** (account wipe and `/debug/user-data`). A reprovision keeps memory.
 5. **Tests (TDD).**

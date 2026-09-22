@@ -382,7 +382,7 @@ describe("ContainerStack — CFN exports", () => {
     template = Template.fromStack(containerStack!);
   });
 
-  test("publishes exactly the eight exports its live consumers import", () => {
+  test("publishes exactly the seven exports its live consumers import", () => {
     // The eight transitional `exportValue` pins are gone, together with the EFS
     // filesystem, the EFS security group, the two per-user ECS roles and the
     // per-user Cloud Map service they named. What is left is exactly what
@@ -400,9 +400,8 @@ describe("ContainerStack — CFN exports", () => {
       "lightbulb-dev-container:ExportsOutputFnGetAttClusterEB0386A7Arn2F2E3C3F",
       "lightbulb-dev-container:ExportsOutputFnGetAttContainerSecurityGroup38DC7A88GroupId12565082",
       "lightbulb-dev-container:ExportsOutputFnGetAttNamespaceV2A3FDDFD9Id65EAD270",
-      // Workspace memory (Track G): -service stamps the id into the backend env and scopes the
-      // wipe grant to the ARN.
-      "lightbulb-dev-container:ExportsOutputFnGetAttWorkspaceMemoryMemoryArnC6C8CD0F",
+      // Workspace memory (Track G): -service stamps the id into the backend env and derives the
+      // wipe grant's ARN from it -- one export, not two.
       "lightbulb-dev-container:ExportsOutputFnGetAttWorkspaceMemoryMemoryIdFA6E3207",
       "lightbulb-dev-container:ExportsOutputRefClusterEB0386A796A0E3FE",
       "lightbulb-dev-container:ExportsOutputRefOwnerBedrockBasePolicy975142B0B0F2F85F",

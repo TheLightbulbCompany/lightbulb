@@ -235,8 +235,10 @@ export class ContainerStack extends cdk.Stack {
     // the 2026-09-22 dev spike: the per-owner `owner-memory` inline policy
     // (bedrock_aip.ensure_owner_memory_policy) scopes events by `actorId` = owner and records by
     // the exact `namespace` /owners/<owner>/ that this strategy extracts into. Semantic only.
-    // ponytail: AWS-owned encryption, not the stack CMK -- a CMK needs a key-policy grant to the
-    // service plus kms grants on every owner role; add it if compliance asks.
+    // Encryption: AWS-owned key, DELIBERATELY (Track G, 2026-09-22). A CMK needs a key-policy grant
+    // to the service plus kms grants on every owner role. EncryptionKeyArn (like Name) is
+    // create-only: changing it later REPLACES this resource, and with a fixed Name the prod
+    // replacement fails on the name clash -- a CMK later means a new name and a data migration.
     this.workspaceMemory = new bedrockagentcore.CfnMemory(this, "WorkspaceMemory", {
       name: `lightbulb_${props.environment}_workspace_memory`,
       description: "Long-term memory shared by the agents of each workspace (namespace per owner).",

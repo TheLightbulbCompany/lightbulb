@@ -1151,13 +1151,25 @@ async def write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
     see ``owner_facts.write_owner_facts``'s docstring for why this must happen here rather than
     through that function directly (it has no AgentCore branch of its own).
     """
+    from core.services import hermes_profiles
     from core.services.messaging import load_agent_roster
 
     container_row = {"bedrock_aip_arns": aip_arns}
     inputs = await resolve_profile_inputs(owner_id, container_row=container_row)
     roster = await load_agent_roster(owner_id)
     for agent in roster:
-        await write_profile_for_agent(owner_id, agent, container_row=container_row, inputs=inputs)
+        # M6-R48 on the re-render path (PATCH /debug/provision, a provider switch): a SOUL.md
+        # without the generated marker is the owner's, so carry it through verbatim -- the same
+        # rule ``refresh_agent_soul`` applies to a rename. Absent/empty/generated is regenerated.
+        current = (
+            await run_in_thread(hermes_profiles.read_soul_md, owner_id, agent["id"])
+            if settings.OWNER_STATE_BUCKET
+            else None
+        )
+        keep = current if current and not hermes_profiles.is_generated_soul(current) else None
+        await write_profile_for_agent(
+            owner_id, agent, container_row=container_row, soul_md_override=keep, inputs=inputs
+        )
 
 
 async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: ProfileInputs) -> None:

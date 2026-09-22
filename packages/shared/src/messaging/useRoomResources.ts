@@ -128,10 +128,19 @@ export function useRoomResources(
   return { data, error, loading, revision, accessRevision, refresh, revoke };
 }
 
-/** A recoverable window over canonical history, never an unbounded transcript cache. */
+/**
+ * A recoverable window over canonical history, never an unbounded transcript cache.
+ *
+ * `revision` (from `useRoomResources`) is the primary tail signal, driven by the
+ * relay's `room.resources.changed` hint. `pollMs` is the backstop: a quiet
+ * newer-page poll on a steady cadence so an open transcript keeps advancing
+ * through throttled or dropped hints (the relay throttles transcript hints to
+ * one per second per session with no trailing edge). Pass 0 to disable.
+ */
 export function useLocalSessionHistory(
   client: RoomResourceSource["client"], roomId: string, sessionId: string,
   latestEventSeq: number, revision: number, onAccessLost: () => void,
+  { pollMs = 0 }: { pollMs?: number } = {},
 ) {
   const [events, setEvents] = useState<LocalSessionEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -201,6 +210,13 @@ export function useLocalSessionHistory(
   useEffect(() => {
     if (initialized.current && follow.current) void load("newer", { quiet: true });
   }, [revision, load]);
+  useEffect(() => {
+    if (!pollMs) return;
+    const timer = setInterval(() => {
+      if (initialized.current && follow.current) void load("newer", { quiet: true });
+    }, pollMs);
+    return () => clearInterval(timer);
+  }, [pollMs, load]);
   return { events, loading, error, load, retry: () => load(lastDirection.current), hasOlder: (events[0]?.seq ?? 1) > 1,
     hasNewer: more || latestEventSeq > (events.at(-1)?.seq ?? 0) };
 }

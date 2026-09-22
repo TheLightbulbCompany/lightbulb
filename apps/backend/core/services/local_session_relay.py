@@ -292,6 +292,15 @@ class LocalSessionRelay:
                     row.pop("endedAt", None)
                     row.pop("endedReason", None)
                     await repo.put_session(row, previous, enrollment, extra=[self._connection_check(cid, connection)])
+                    # The workspace session list enumerates humans via their
+                    # private user stream, which a desktop-only sharer never
+                    # creates by opening chat. First register carries it so the
+                    # sharer is enumerable (and reachable by workspace hints).
+                    # Best-effort: registration itself already succeeded.
+                    try:
+                        await store.ensure_user_stream(owner, human)
+                    except Exception:
+                        logger.warning("Local session register left without a user stream for %s", human)
                     await self.dispatch_session(owner, sid)
                     response = {
                         "type": "local.session.registered",

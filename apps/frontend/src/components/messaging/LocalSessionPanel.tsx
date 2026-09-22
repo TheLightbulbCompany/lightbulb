@@ -13,7 +13,10 @@ export function LocalSessionPanel({ session, ownerName, own, roomId, client, rev
   participants?: readonly Person[];
 }) {
   const busy = session.status === "busy";
-  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost);
+  // Steady backstop poll: the relay throttles transcript hints (1/s per
+  // session, no trailing edge), so hints alone can leave an open transcript
+  // behind during sustained output. Quiet: no spinner, no focus steal.
+  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs: 5000 });
   const [text, setText] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
   const id = useId();

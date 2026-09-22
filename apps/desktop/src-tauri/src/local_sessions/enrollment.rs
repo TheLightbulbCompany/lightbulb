@@ -532,7 +532,11 @@ pub async fn local_sessions_set(
         .as_ref()
         != Some(&Some(human.clone()))
     {
-        return Err("Sign in before enabling sharing".into());
+        // Distinct from the never-signed-in case above: the Settings click
+        // arrived before the webview reported this user (or for another
+        // user). The frontend re-reports auth before calling here; reaching
+        // this means that report has not landed yet.
+        return Err("Desktop sign-in report is stale. Wait a moment and try again.".into());
     }
     let identity = crate::keychain::load_or_generate(
         crate::keychain::KeychainSlot::Mac,
@@ -567,7 +571,9 @@ pub async fn local_sessions_set(
         attempt: Some(EnrollmentAttempt { previous_revision }),
     };
     let body = enable_body(&enrollment);
-    let token = token.as_deref().ok_or("Sign in before enabling sharing")?;
+    let token = token
+        .as_deref()
+        .ok_or("Sign-in token unavailable. Sign in again and retry enabling.")?;
     let hooks = settings.parent().is_some_and(|p| p.is_dir());
     complete_enable(
         &path,

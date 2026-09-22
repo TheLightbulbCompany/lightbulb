@@ -332,6 +332,9 @@ async def test_backend_local_admission_uses_canonical_mac_and_never_opens_gatewa
 @pytest.mark.asyncio
 async def test_ingestion_is_bounded_ordered_deduplicated_and_emits_only_room_hints(transport, db):
     sid = await start(transport)
+    # Registration's own room + workspace hints are covered elsewhere; transcript
+    # batches must emit room hints only.
+    transport[4].clear()
     body = {
         "type": "local.session.events",
         "sessionId": sid,

@@ -844,24 +844,29 @@ async def test_list_resources_sorts_by_activity_hides_ended_and_caps_recent(db):
     assert with_ended.sessions[:2] == live.sessions
 
 
-async def test_list_workspace_sessions_is_live_only_owner_wide_and_sorted(db):
-    # Only users with an active private stream are enumerated; a sharer has one because pairing runs in the app.
+async def test_list_workspace_sessions_is_owner_wide_sorted_and_keeps_offline(db):
+    # Only users with an active private stream are enumerated; enrollment now
+    # guarantees the sharer has one (see the next test), so the pair here is belt and braces.
     await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
     await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
     sids = []
     for stamp in (10000, 10100, 10200):
         with patch("time.time", return_value=stamp):
-            # A generous onlineUntil (vs. registered()'s default +60s) keeps both
-            # surviving sessions' leases alive at the 10300 listing time below --
-            # otherwise sids[0]'s default 60s lease (expires 10060) and sids[2]'s
-            # (expires 10260) never overlap, and "live" would exclude both.
+            # A generous onlineUntil (vs. registered()'s default +60s) keeps the
+            # surviving sessions' leases positioned for the 10300 listing time
+            # below -- otherwise sids[0]'s default 60s lease (expires 10060) and
+            # sids[2]'s (expires 10260) never overlap.
             sids.append(await registered(conversation=f"conv-{stamp}", onlineUntil=stamp + 500))
     rows = [await repo.get_session(OWNER, s) for s in sids]
     enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
     await repo.put_session({**rows[1], "endedAt": 10150, "lastEventAt": 10150}, rows[1], enrollment)
+    # sids[0]'s lease lapses before listing time: it stays listed as offline so
+    # a sleeping Mac reads as Offline instead of vanishing from the workspace list.
+    await repo.put_session({**rows[0], "onlineUntil": 10200}, rows[0], enrollment)
     with patch("time.time", return_value=10300):
         listed = await service.list_workspace_sessions(BOB)
     assert [s.session_id for s in listed.sessions] == [sids[2], sids[0]]
+    assert [s.status for s in listed.sessions] == ["idle", "offline"]
     assert all(s.status != "ended" for s in listed.sessions)
     # An outsider org sees nothing: the owner partition is the fence.
     with patch("time.time", return_value=10300):
@@ -869,16 +874,23 @@ async def test_list_workspace_sessions_is_live_only_owner_wide_and_sorted(db):
     assert other.sessions == []
 
 
-async def test_list_workspace_sessions_skips_humans_without_a_stream_and_offline_rows(db):
+async def test_list_workspace_sessions_enrolls_a_stream_and_keeps_offline_rows(db):
+    # Enrollment (and first register) carries the sharer's private user stream,
+    # so a desktop-only sharer is enumerable without ever opening chat.
     sid = await registered(conversation="conv-a")
-    with patch("time.time", return_value=int(time.time()) + 3600):
-        # No ensure_user_stream for ALICE yet: nothing is enumerated.
-        assert (await service.list_workspace_sessions(BOB)).sessions == []
+    assert (await messaging_repo.get_user_stream(OWNER, ALICE.user_id))["active"] is True
+    assert [s.session_id for s in (await service.list_workspace_sessions(BOB)).sessions] == [sid]
+    # A legacy enrollment from before that change has no stream: nothing is enumerated.
+    stream = await messaging_repo.get_user_stream(OWNER, ALICE.user_id)
+    db[0].delete_item(Key={"pk": messaging_repo.owner_pk(OWNER), "sk": messaging_repo.userstream_sk(ALICE.user_id)})
+    db[0].delete_item(Key={"pk": messaging_repo.stream_pk(stream["channelKey"]), "sk": "META"})
+    assert (await service.list_workspace_sessions(BOB)).sessions == []
     await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    # Lease lapsed → status offline → still listed (see the previous test).
     with patch("time.time", return_value=int(time.time()) + 3600):
-        # Lease lapsed → status offline → excluded from the live list.
-        assert (await service.list_workspace_sessions(BOB)).sessions == []
-    assert (await service.list_workspace_sessions(BOB)).sessions[0].session_id == sid
+        listed = await service.list_workspace_sessions(BOB)
+    assert [s.session_id for s in listed.sessions] == [sid]
+    assert listed.sessions[0].status == "offline"
 
 
 async def test_workspace_sessions_route_binds(db):

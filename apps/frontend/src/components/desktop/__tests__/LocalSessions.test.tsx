@@ -195,6 +195,25 @@ it("only offers a new enable after confirmed remote disable and never cleans up 
   expect(screen.queryByText(/retained server history may still be shared/i)).toBeNull();
 });
 
+it("re-reports desktop auth before enabling to heal the sign-in race", async () => {
+  invoke.mockResolvedValue({enrollment:null,pairedWorkspaceId:"org",status:""});
+  render(<LocalSessions />);
+  await userEvent.click(await screen.findByRole("checkbox"));
+  await userEvent.click(screen.getByRole("button",{name:"Enable local-session sharing"}));
+  await waitFor(()=>expect(invoke).toHaveBeenCalledWith("local_sessions_auth",{humanUserId:"alice"}));
+  await waitFor(()=>expect(invoke).toHaveBeenCalledWith("local_sessions_set",{enabled:true,token:"jwt",humanUserId:"alice",workspaceId:"org"}));
+  const calls = invoke.mock.calls.map(([command])=>command);
+  expect(calls.indexOf("local_sessions_auth")).toBeLessThan(calls.indexOf("local_sessions_set"));
+});
+it("reports a token failure instead of a misleading sign-in error", async () => {
+  auth.getToken.mockRejectedValueOnce(new Error("network down"));
+  invoke.mockResolvedValue({enrollment:null,pairedWorkspaceId:"org",status:""});
+  render(<LocalSessions />);
+  await userEvent.click(await screen.findByRole("checkbox"));
+  await userEvent.click(screen.getByRole("button",{name:"Enable local-session sharing"}));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Could not get a sign-in token");
+  expect(invoke.mock.calls.some(([command])=>command==="local_sessions_set")).toBe(false);
+});
 it("refreshes a failed enable into stopped recovery instead of losing its Disable action", async()=>{
   let pending=false;
   invoke.mockImplementation(async(command)=>{

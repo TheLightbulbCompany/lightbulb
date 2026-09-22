@@ -394,6 +394,15 @@ async def set_enrollment(auth: AuthContext, request: EnrollmentRequest) -> Enrol
         if request.expected_revision is not None or request.enable_revision is not None:
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "Enrollment changed; cleanup is obsolete.") from exc
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Device pairing changed. Try again.") from exc
+    # The workspace session list enumerates humans via their private user
+    # stream, which is otherwise only created when someone opens web/mobile
+    # chat. A desktop-only sharer would stay invisible (and miss workspace
+    # hints) until they did, so enrollment carries the stream with it.
+    # Best-effort: enrollment itself already succeeded.
+    try:
+        await messaging_repo.ensure_user_stream(owner, auth.user_id)
+    except Exception:
+        logger.warning("Local session enrollment left without a user stream for %s", auth.user_id)
     return _public(EnrollmentResponse, row)
 
 
@@ -438,6 +447,14 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
         }
         try:
             await repo.put_session(row, previous, enrollment)
+            # Defense in depth for enrollments that predate the
+            # ensure-on-enroll above: the first register after this change
+            # makes the sharer enumerable in the workspace list.
+            # Best-effort: registration itself already succeeded.
+            try:
+                await messaging_repo.ensure_user_stream(owner_id, user_id)
+            except Exception:
+                logger.warning("Local session register left without a user stream for %s", user_id)
             return row
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc):
@@ -533,10 +550,11 @@ async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = Fa
     return RoomResources(devices=devices, sessions=sessions, paired_nodes=paired_nodes)
 
 
-async def _live_public_sessions(owner: str, humans: list[str]) -> list[LocalSession]:
+async def _live_public_sessions(owner: str, humans: list[str], *, include_offline: bool = False) -> list[LocalSession]:
     """Per-human fetch/filter loop shared by every workspace-wide listing. Skips rows
     whose owner mismatches, whose device is no longer enrolled, or whose projected
-    status is not live. Returned newest-`last_event_at`-first, every caller's order."""
+    status is not live (plus `offline` when the caller opts in). Returned
+    newest-`last_event_at`-first, every caller's order."""
     projections = await asyncio.gather(*(repo.list_user_sessions(owner, human) for human in humans))
     sessions: list[LocalSession] = []
     # One enrollment verdict per (human, device) per call: history piles up on one Mac.
@@ -559,19 +577,20 @@ async def _live_public_sessions(owner: str, humans: list[str]) -> list[LocalSess
             if not enrolled[key]:
                 continue
             public = _session_public(row)
-            if public.status in LIVE_STATUSES:
+            if public.status in LIVE_STATUSES or (include_offline and public.status == "offline"):
                 sessions.append(public)
     sessions.sort(key=lambda s: s.last_event_at or "", reverse=True)
     return sessions
 
 
 async def list_workspace_sessions(auth: Caller) -> WorkspaceSessions:
-    """Every live session in the workspace. Visibility is workspace-wide by
-    owner ruling (spec §2.3); membership is not consulted."""
+    """Every live session in the workspace, plus lapsed-lease (`offline`) ones
+    so a sleeping Mac reads as Offline rather than vanishing. Visibility is
+    workspace-wide by owner ruling (spec §2.3); membership is not consulted."""
     owner = caller_owner(auth)
     humans = [row["userId"] for row in await messaging_repo.list_active_user_streams(owner)]
     # ponytail: one query per human per call; add an owner-keyed directory row when workspaces pass ~50 humans.
-    sessions = [s for s in await _live_public_sessions(owner, humans) if s.kind == "interactive"]
+    sessions = [s for s in await _live_public_sessions(owner, humans, include_offline=True) if s.kind == "interactive"]
     return WorkspaceSessions(sessions=sessions[:WORKSPACE_SESSION_CAP])
 
 

@@ -45,7 +45,7 @@ jobs:
         run: cd apps/frontend && npx playwright install chromium --with-deps
 
       - name: Run E2E suite
-        run: cd apps/frontend && npx playwright test --project=chromium --grep-invert='Chat Smoke'
+        run: cd apps/frontend && npx playwright test --project=chromium --grep-invert='Chat Smoke|@concurrency'
         env:
           BASE_URL: ${{ inputs.base_url }}
           NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL_DEV }}

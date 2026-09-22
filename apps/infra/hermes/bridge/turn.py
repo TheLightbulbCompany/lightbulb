@@ -25,7 +25,6 @@ log = logging.getLogger("bridge")
 
 _busy = 0
 _busy_lock = threading.Lock()
-_turns_frozen = os.environ.get("LIGHTBULB_PROVIDER_SWITCH_FROZEN") == "1"
 _last_turn: dict[str, float] = {}
 _brokered_mcp_overlay: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
     "brokered_mcp_overlay", default=None
@@ -39,13 +38,13 @@ def _busy_add(n: int) -> None:
 
 
 def reserve_turn() -> bool:
-    """Atomically admit a turn and count it before its worker thread starts."""
-    global _busy
-    with _busy_lock:
-        if _turns_frozen:
-            return False
-        _busy += 1
-        return True
+    """Count a turn before its worker thread starts. Always admits -- the provider-switch
+    generation/freeze gate was retired (Task 11: a provider switch is now just a profile
+    rewrite the bridge picks up on its next turn, per-turn `.revision` check). Kept returning
+    bool and named `reserve_*`/`release_*` so callers keep one admit/release pair for the busy
+    count, which `health` and `provider.freeze` still report."""
+    _busy_add(1)
+    return True
 
 
 def release_turn() -> None:
@@ -53,10 +52,11 @@ def release_turn() -> None:
 
 
 def freeze_turns() -> int:
-    """Reject later turns and return the number already admitted, including queued threads."""
-    global _turns_frozen
+    """No-op kept for backend N-1 compatibility: the OLD backend still calls the
+    `provider.freeze` RPC during a provider switch and expects a busy count back to complete
+    that flow. Freezes nothing any more -- just reports how many turns are in flight. Delete
+    once the backend no longer calls provider.freeze."""
     with _busy_lock:
-        _turns_frozen = True
         return _busy
 
 

@@ -59,8 +59,10 @@ if _secret_id:
     os.environ["GATEWAY_TOKEN"] = GATEWAY_TOKEN
     if _boot_secrets.get("bedrockBearer"):
         os.environ["AWS_BEARER_TOKEN_BEDROCK"] = _boot_secrets["bedrockBearer"]
-    os.environ["LIGHTBULB_PROVIDER_SWITCH_FROZEN"] = "1" if _boot_secrets.get("providerSwitchFrozen") is True else "0"
-    os.environ["LIGHTBULB_PROVIDER_SWITCH_GENERATION"] = _boot_secrets.get("providerSwitchGeneration") or ""
+    # providerSwitchFrozen/providerSwitchGeneration used to be exported here for turn.py's
+    # freeze gate and server.py's generation check -- both retired (Task 11). A provider switch
+    # is now just a profile rewrite the bridge picks up on its next turn; an old boot secret
+    # that still carries these keys is simply ignored.
 
 # Task 13b: mark this process as a profile multiplexer once, at boot -- agent.secret_scope's
 # get_secret() then fails CLOSED (raises) for any direct caller that reads a credential with no

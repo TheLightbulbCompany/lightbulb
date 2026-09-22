@@ -47,12 +47,6 @@ def _header(headers: dict, name: str) -> str | None:
     return next((v for k, v in headers.items() if k.lower() == name), None)
 
 
-def _provider_generation_matches(headers: dict) -> bool:
-    return (_header(headers, "X-Lightbulb-Provider-Generation") or "") == os.environ.get(
-        "LIGHTBULB_PROVIDER_SWITCH_GENERATION", ""
-    )
-
-
 _RUN_CONTROL_RE = re.compile(r"^/plugins/lightbulb-channel/runs/([0-9a-f-]{36})/(abort|steer)$")
 # Underscore included deliberately: it must not be NARROWER than the backend facade's own
 # run-id charset (routers/messaging.py's _HERMES_RUN_ID_RE), or a run id the facade accepts
@@ -98,10 +92,7 @@ def _handle_paperclip_run(path: str, method: str, headers: dict, body) -> tuple[
         parsed = _paperclip_envelope(body, require_request=True)
         if parsed is None:
             return 400, {"error": "invalid_paperclip_run"}
-        if not _provider_generation_matches(headers):
-            return 503, {"error": "provider_generation_stale"}
-        if not turn.reserve_turn():
-            return 503, {"error": "provider_switch_frozen"}
+        turn.reserve_turn()
         identity, request = parsed
         registered = False
         try:
@@ -175,10 +166,10 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
                 raise turn.IngressError("targetAgentId does not match the path")
         except turn.IngressError as exc:
             return 400, {"error": "invalid_ingress", "message": exc.message}
-        if not _provider_generation_matches(headers):
-            return 503, {"error": "provider_generation_stale"}
-        if not turn.reserve_turn():
-            return 503, {"error": "provider_switch_frozen"}
+        # An old backend may still send X-Lightbulb-Provider-Generation; the header is ignored --
+        # the generation-stale/switch-frozen gates were retired (Task 11, the backend no longer
+        # tracks a provider-switch generation at all). Turns always admit.
+        turn.reserve_turn()
         # agent_mail (Task 20) and paperclip_run (Task 21) carry no `run` block at all -- the
         # registry/replay/run.started steps below are for a room turn's run lifecycle, which
         # run-less ingresses have none of; run_turn's own has_run=False path handles the rest.
@@ -297,6 +288,11 @@ RPC_METHODS: dict = {"health": _health}
 
 
 def _provider_freeze(_params: dict, **_kwargs) -> dict:
+    """Kept for backend N-1 compatibility: the OLD backend still calls provider.freeze during
+    a provider switch and needs {frozen: true, busy: N} to complete that flow. The switch is
+    now just a profile rewrite the bridge picks up on its next turn (Task 11) -- turn.freeze_turns
+    no longer freezes anything, it only reports the current busy count. Delete this handler once
+    the backend no longer calls provider.freeze."""
     return {"ok": True, "payload": {"frozen": True, "busy": turn.freeze_turns()}}
 
 

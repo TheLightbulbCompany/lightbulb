@@ -1,4 +1,10 @@
-"""A switch freezes admission and drains turns already accepted by either ingress."""
+"""Turns always admit (Task 11): the provider-switch generation header and the switch-frozen
+gate were retired -- a provider switch is now just a profile rewrite the bridge picks up on
+its next turn (per-turn `.revision` check), not a flag the bridge enforces. What remains here
+is N-1 compatibility with an OLD backend that still sends the stale header and still calls the
+`provider.freeze` RPC during its switch flow, plus the ordinary reserve/release admission
+accounting (busy count, reservation released on a failed accept).
+"""
 
 import threading
 
@@ -11,57 +17,61 @@ from tests.test_paperclip_gateway import BODY, CREATE_PATH
 AUTH = {"authorization": "Bearer gw-test"}
 
 
-def test_reservation_and_freeze_are_atomic_under_concurrent_arrival():
+def test_reservation_and_release_are_atomic_under_concurrent_arrival():
     outcomes = []
-    start = threading.Barrier(3)
+    start = threading.Barrier(2)
 
     def admit():
         start.wait()
-        outcomes.append(("admit", turn.reserve_turn()))
+        outcomes.append(turn.reserve_turn())
 
-    def freeze():
-        start.wait()
-        outcomes.append(("freeze", turn.freeze_turns()))
-
-    first = threading.Thread(target=admit)
-    second = threading.Thread(target=freeze)
-    first.start()
-    second.start()
-    start.wait()
-    first.join()
-    second.join()
-    accepted = next(value for kind, value in outcomes if kind == "admit")
-    busy_at_freeze = next(value for kind, value in outcomes if kind == "freeze")
-    assert busy_at_freeze == (1 if accepted else 0)
-    assert turn.reserve_turn() is False
-    if accepted:
-        turn.release_turn()
+    threads = [threading.Thread(target=admit) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert outcomes == [True, True]
+    assert turn._busy == 2
+    turn.release_turn()
+    turn.release_turn()
 
 
-def test_room_and_native_paperclip_reserve_before_spawning(monkeypatch, posted):
-    started_busy = []
-
+def test_stale_or_missing_generation_header_is_admitted(monkeypatch, posted):
+    """An old backend may still send X-Lightbulb-Provider-Generation (stale, or naming a
+    generation this process never set) -- the bridge ignores the header entirely now."""
     class FakeThread:
         def __init__(self, *args, **kwargs):
-            self.target = kwargs["target"]
-            self.args = kwargs["args"]
+            pass
 
         def start(self):
-            started_busy.append(turn._busy)
+            pass
 
     monkeypatch.setattr(server.threading, "Thread", FakeThread)
-    room = f.ingress()
-    assert server.handle_plugin("/plugins/lightbulb-channel/inbound/ceo", "POST", AUTH, room)[0] == 202
+    stale = {**AUTH, "X-Lightbulb-Provider-Generation": "gen-old"}
+    assert server.handle_plugin("/plugins/lightbulb-channel/inbound/ceo", "POST", stale, f.ingress())[0] == 202
+    turn.release_turn()
+    # No header at all -- the ordinary case now that the backend never sends one.
     assert server.handle_plugin(CREATE_PATH, "POST", AUTH, BODY)[0] == 202
-    assert started_busy == [1, 2]
-    assert turn.freeze_turns() == 2
-    assert server.handle_plugin("/plugins/lightbulb-channel/inbound/ceo", "POST", AUTH, f.ingress())[0] == 503
-    assert server.handle_plugin(CREATE_PATH, "POST", AUTH, BODY)[0] == 503
-    turn.release_turn()
     turn.release_turn()
 
 
-def test_freeze_rpc_sees_a_reserved_turn_before_its_thread_starts(monkeypatch, posted):
+def test_provider_switch_frozen_boot_secret_no_longer_blocks_turns(monkeypatch, posted):
+    """A boot secret with providerSwitchFrozen=true (an old backend's shape) does nothing --
+    there is no `_turns_frozen` flag left to set, so a turn is admitted regardless."""
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(server.threading, "Thread", FakeThread)
+    assert not hasattr(turn, "_turns_frozen")
+    assert server.handle_plugin("/plugins/lightbulb-channel/inbound/ceo", "POST", AUTH, f.ingress())[0] == 202
+    turn.release_turn()
+
+
+def test_freeze_rpc_returns_ok_and_busy_and_does_not_block_a_following_turn(monkeypatch, posted):
     class FakeThread:
         def __init__(self, *args, **kwargs):
             pass
@@ -77,24 +87,8 @@ def test_freeze_rpc_sees_a_reserved_turn_before_its_thread_starts(monkeypatch, p
     assert status == 200
     assert response["payload"] == {"frozen": True, "busy": 1}
     turn.release_turn()
-
-
-def test_delayed_pre_switch_turn_is_rejected_after_cold_thaw(monkeypatch, posted):
-    class FakeThread:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def start(self):
-            pass
-
-    monkeypatch.setattr(server.threading, "Thread", FakeThread)
-    monkeypatch.setenv("LIGHTBULB_PROVIDER_SWITCH_GENERATION", "gen-new")
-    old = {**AUTH, "X-Lightbulb-Provider-Generation": "gen-old"}
-    new = {**AUTH, "X-Lightbulb-Provider-Generation": "gen-new"}
-    assert server.handle_plugin("/plugins/lightbulb-channel/inbound/ceo", "POST", old, f.ingress())[0] == 503
-    assert server.handle_plugin(CREATE_PATH, "POST", old, BODY)[0] == 503
-    assert turn._busy == 0
-    assert server.handle_plugin("/plugins/lightbulb-channel/inbound/ceo", "POST", new, f.ingress())[0] == 202
+    # The RPC froze nothing -- a turn arriving right after is still admitted.
+    assert server.handle_plugin(CREATE_PATH, "POST", AUTH, BODY)[0] == 202
     turn.release_turn()
 
 

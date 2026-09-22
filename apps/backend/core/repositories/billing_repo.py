@@ -1007,8 +1007,6 @@ async def set_provider_choice(
     provider_choice: str,
     byo_provider: str | None,
     connector_user_id: str | None = None,
-    requires_reprovision: bool = True,
-    return_switch_mark: bool = False,
 ) -> dict:
     """Persist the provider choice on a billing row.
 
@@ -1034,12 +1032,8 @@ async def set_provider_choice(
     if provider_choice not in _VALID_PROVIDER_CHOICES:
         raise ValueError(f"unknown provider_choice: {provider_choice!r}")
 
-    # Mark the container BEFORE committing the billing write, and only for
-    # switches that change the runtime. The marker blocks new turn ingress
-    # while the old provider can still be warm. If the billing write fails,
-    # restore the previous marker/generation with a conditional write below.
-    # The explicit rollback path passes requires_reprovision=False.
-    # Lazy import: container_repo is a sibling; no cycle back here.
+    # Only the billing row: the runtime follows through the caller's
+    # hermes_provisioning.reconcile_runtime, which reads this row.
     now = utc_now_iso()
     table = _get_table()
     sets = ["provider_choice = :pc", "updated_at = :t"]
@@ -1067,29 +1061,15 @@ async def set_provider_choice(
     if removes:
         update_expr += " REMOVE " + ", ".join(removes)
 
-    mark = None
-    if requires_reprovision:
-        from core.repositories import container_repo
-
-        mark = await container_repo.mark_needs_provision(owner_id)
-    try:
-        response = await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression=update_expr,
-            ExpressionAttributeValues=values,
-            ReturnValues="ALL_NEW",
-        )
-    except Exception:
-        if mark is not None:
-            try:
-                await container_repo.restore_needs_provision(owner_id, mark)
-            except Exception:
-                logger.exception("provider marker rollback failed for owner=%s", owner_id)
-        raise
+    response = await run_in_thread(
+        table.update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression=update_expr,
+        ExpressionAttributeValues=values,
+        ReturnValues="ALL_NEW",
+    )
     publish_status_changed(owner_id)
-    row = response["Attributes"]
-    return {**row, "_switch_mark": mark} if return_switch_mark else row
+    return response["Attributes"]
 
 
 async def claim_oauth_connector(owner_id: str, *, connector_user_id: str) -> None:

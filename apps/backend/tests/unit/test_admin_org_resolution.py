@@ -354,20 +354,20 @@ class TestAdminMutationOwnerResolution:
     async def test_container_reprovision_uses_org_owner_id(self, async_client, admin_env, org_mode):
         """The whole point of this suite: an org member's workspace is keyed on the ORG, so a
         dispatch on the raw URL path param provisions a workspace that belongs to nobody."""
-        with patch("routers.admin.dispatch_provision", new_callable=AsyncMock) as dispatch:
+        with patch("routers.admin.reconcile_runtime", new_callable=AsyncMock) as dispatch:
             res = await async_client.post("/api/v1/admin/users/user_123/container/reprovision")
         assert res.status_code == 200
         assert res.json()["owner_id"] == "org_abc"
-        dispatch.assert_awaited_once_with("org_abc")
+        dispatch.assert_called_once_with("org_abc")
         org_mode.assert_awaited_once_with("user_123")
 
     @pytest.mark.asyncio
     async def test_container_reprovision_personal_mode_uses_user_id(self, async_client, admin_env, personal_mode):
         """Negative test: a caller with no org resolves to the Clerk user_id unchanged."""
-        with patch("routers.admin.dispatch_provision", new_callable=AsyncMock) as dispatch:
+        with patch("routers.admin.reconcile_runtime", new_callable=AsyncMock) as dispatch:
             res = await async_client.post("/api/v1/admin/users/user_123/container/reprovision")
         assert res.status_code == 200
-        dispatch.assert_awaited_once_with("user_123")
+        dispatch.assert_called_once_with("user_123")
 
     # -- Billing mutations ---------------------------------------------------
 

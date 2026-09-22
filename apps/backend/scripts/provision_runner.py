@@ -10,8 +10,11 @@ and boot secret; step 0 seeds the owner's Paperclip company (see
 ``_seed_owner_paperclip``); the runtime leg provisions the workspace's
 AgentCore runtime and writes every roster profile
 (``hermes_provisioning.provision_hermes_runtime``) — a NO-OP when the
-workspace is already running. That is what makes a dispatch safe for callers
-whose workspace is already up: they get the seed reconcile and nothing else.
+workspace is already running. Then ``reconcile_runtime`` makes the (now
+running) runtime match billing, so a provider or plan that changed while this
+execution ran still lands, and a dispatch against a live workspace is a plain
+reconcile. Its failure is reported by its own metric, never as a provision
+failure: the runtime it would have adjusted is already serving.
 
 No lease: every step is idempotent at its source, so two concurrent runs for
 one owner converge. A failure is recorded on the row with its retryability
@@ -152,6 +155,7 @@ async def run(owner_id: str) -> int:
         await hermes_provisioning.provision_hermes_runtime(owner_id)
     except Exception as exc:  # noqa: BLE001 — classified + recorded
         return await _record_failure(owner_id, exc, "runtime provision")
+    await hermes_provisioning.reconcile_runtime(owner_id)
     return EXIT_OK
 
 

@@ -32,13 +32,14 @@ async def revoke_provider_auth_in_container(owner_id: str, *, provider: str = "o
     return True
 
 
-async def push_oauth_credential_to_container(*, owner_id: str, connector_id: str) -> bool:
+async def push_oauth_credential_to_container(*, owner_id: str, connector_id: str, only_if_absent: bool = False) -> bool:
     """Stage the connector's CURRENT ChatGPT token for ``owner_id``.
 
     Call ONLY on a genuine credential-change event — reconnect (``routers/oauth.py``
     ``/poll``) or a provider switch — where the token is freshly minted and unspent. NEVER from
     a reprovision or config rewrite: those must not overwrite a token the runtime has since
-    rotated.
+    rotated. ``only_if_absent=True`` is the one exception: a reconcile may fill a MISSING grant,
+    never replace one.
 
     ``False`` when there are no active tokens to stage. Never raises.
     """
@@ -51,6 +52,6 @@ async def push_oauth_credential_to_container(*, owner_id: str, connector_id: str
         return False
     if not tokens:
         return False
-    await run_in_thread(stage_codex_auth, owner_id, tokens)
+    await run_in_thread(stage_codex_auth, owner_id, tokens, only_if_absent=only_if_absent)
     logger.info("push_oauth_credential: staged fresh ChatGPT token", extra={"owner_id": owner_id})
     return True

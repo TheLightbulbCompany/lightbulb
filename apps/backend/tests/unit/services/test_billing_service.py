@@ -180,42 +180,6 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_change_provider_dispatches_the_reprovision(monkeypatch):
-    """ONE path: re-provision, which re-derives the owner's Bedrock AIPs and rewrites every agent
-    profile from the committed provider_choice. Nothing is stopped or drained -- the provision is
-    two S3 writes, and the agent reads the rewritten profile on its next turn.
-    """
-    monkeypatch.setattr(
-        billing_service.billing_repo,
-        "get_by_owner_id",
-        AsyncMock(return_value={"subscription_status": "active", "stripe_subscription_id": "sub_1"}),
-    )
-    # change_provider imports is_subscription_active LAZILY from
-    # core.services.provision_gate, so patch it at the source module.
-    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda a: True)
-    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
-    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"owner_id": "user_x"})
-    )
-    dispatch = MagicMock()
-    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
-    created: list = []
-    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: created.append(coro) or MagicMock())
-
-    result = await billing_service.change_provider(
-        owner_id="user_x",
-        clerk_user_id="user_x",
-        owner_type="personal",
-        provider_choice="bedrock_claude",
-    )
-
-    assert result["restart"] is True
-    dispatch.assert_called_once_with("user_x")
-    assert len(created) == 1
-
-
-@pytest.mark.asyncio
 async def test_managed_switch_ensures_owner_key_before_provider_commit(monkeypatch):
     monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_ENABLED", True)
     monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
@@ -319,55 +283,56 @@ async def test_managed_switch_requires_a_selected_server_model_before_commit(mon
 
 
 @pytest.mark.asyncio
-async def test_retry_of_committed_provider_with_pending_marker_dispatches_again(monkeypatch):
+async def test_reselecting_the_committed_provider_reruns_the_reconcile(monkeypatch):
+    """Re-selecting is how an owner retries a switch whose reconcile was lost: it commits
+    nothing and schedules the idempotent reconcile again."""
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",
         AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
     )
     monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda row: True)
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"needs_provision": True})
-    )
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
-    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
-
-    async def dispatch(owner):
-        pass
-
-    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
-    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: coro.close())
+    reconcile = AsyncMock(return_value="current")
+    monkeypatch.setattr("core.services.hermes_provisioning.reconcile_runtime", reconcile)
+    scheduled = []
+    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: scheduled.append(coro) or coro.close())
 
     result = await billing_service.change_provider(
         owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="bedrock_claude"
     )
-    assert result["restart"] is True
+    assert result["status"] == "noop"
     billing_service.billing_repo.set_provider_choice.assert_not_awaited()
+    reconcile.assert_called_once_with("org_a")
+    assert len(scheduled) == 1
 
 
 @pytest.mark.asyncio
-async def test_change_provider_refuses_different_choice_while_switch_pending(monkeypatch):
+async def test_a_switch_commits_billing_then_schedules_the_reconcile(monkeypatch):
+    """No switch marker, no dispatch: the committed row is the only state, and the reconcile
+    reads it."""
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",
         AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
     )
     monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda row: True)
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"needs_provision": True})
-    )
     commit = AsyncMock()
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", commit)
-    monkeypatch.setattr(
-        "core.services.key_service.get_secret_arn", AsyncMock(return_value="arn:aws:secretsmanager:key")
-    )
+    monkeypatch.setattr("core.services.key_service.get_secret_arn", AsyncMock(return_value="arn:key"))
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
+    reconcile = AsyncMock(return_value="current")
+    monkeypatch.setattr("core.services.hermes_provisioning.reconcile_runtime", reconcile)
+    dispatch = AsyncMock(side_effect=AssertionError("a switch no longer dispatches a provision"))
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
+    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: coro.close())
 
-    with pytest.raises(billing_service.ChangeProviderError) as exc:
-        await billing_service.change_provider(
-            owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="byo_key", byo_provider="openai"
-        )
-    assert exc.value.code == "provider_switch_pending"
-    commit.assert_not_awaited()
+    result = await billing_service.change_provider(
+        owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="byo_key", byo_provider="openai"
+    )
+    assert result["status"] == "ok"
+    commit.assert_awaited_once()
+    reconcile.assert_called_once_with("org_a")
 
 
 @pytest.mark.asyncio

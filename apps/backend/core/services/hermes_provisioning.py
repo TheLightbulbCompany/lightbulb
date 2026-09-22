@@ -43,13 +43,14 @@ function of ``owner_id`` (``boot_secret_name``), so it is recomputed, not looked
 of the secret's CONTENTS is ``prepare_hermes_workspace``, which MUST have already run for this owner
 (``provision_runner.run`` always calls it first).
 
-Rotation (M4-R16): this module never rotates an already-provisioned owner's bearer —
-``prepare_hermes_workspace`` no-ops once the owner already has an ``agentcore_runtime_arn`` (avoids
-rotating a live bearer on every reconcile dispatch against an already-Hermes owner), and
-``provision_hermes_runtime`` is idempotent-return on the same field. The ``StopRuntimeSession`` call
-the ruling requires before revoking an old token generation is therefore OWED WHEREVER an
-already-Hermes owner's gate token is rotated (``core.billing.bedrock_gate_tokens.mint_gate_token`` /
-the revoke-restore paths that call it) — not implemented in this module.
+Rotation (M4-R16): this module never rotates an already-provisioned owner's bearer -- it is
+DERIVED from the row incarnation and its ``gate_bearer_generation``, so ``prepare_hermes_workspace``
+re-running for a live owner (every ``reconcile_runtime``) reproduces the bearer the runtime already
+holds. When a generation bump does change it, ``write_boot_secret`` reports a boot-time change and
+``reconcile_runtime`` stops the idle session so the next invoke reads the new one.
+
+Provider switches (Task 8a): there is no switch state. ``reconcile_runtime`` rewrites the profiles
+from billing and bumps ``.revision``; the bridge re-reads it every turn.
 
 BYO key (M4-R32): the plaintext value is read from Secrets Manager at provision time via
 ``core.services.key_service.read_byo_key`` — the same ``lightbulb/{env}/user-keys/{user}/{provider}``
@@ -289,7 +290,17 @@ class _RuntimeGone(Exception):
 
 def _runtime_image_uri(runtime_arn: str) -> str | None:
     """The image URI an existing runtime is currently configured with. Sync — call via
-    ``run_in_thread``.
+    ``run_in_thread``. Raises ``_RuntimeGone`` exactly as ``_runtime_description`` does."""
+    return _image_of(_runtime_description(runtime_arn))
+
+
+def _image_of(desc: dict) -> str | None:
+    return (desc.get("agentRuntimeArtifact") or {}).get("containerConfiguration", {}).get("containerUri")
+
+
+def _runtime_description(runtime_arn: str) -> dict:
+    """One ``GetAgentRuntime`` -- the runtime's live spec (image, ``environmentVariables``).
+    Sync — call via ``run_in_thread``.
 
     M6-R43: raises ``_RuntimeGone`` when the runtime is DELETING or already gone. A rollback
     (``teardown_hermes_runtime``) deletes the runtime, but a re-migration can still meet its
@@ -306,7 +317,7 @@ def _runtime_image_uri(runtime_arn: str) -> str | None:
         raise _RuntimeGone(runtime_arn) from None
     if desc.get("status") == "DELETING":
         raise _RuntimeGone(runtime_arn)
-    return (desc.get("agentRuntimeArtifact") or {}).get("containerConfiguration", {}).get("containerUri")
+    return desc
 
 
 def _runtime_status(runtime_arn: str) -> str:
@@ -386,61 +397,6 @@ def _delete_boot_secret(owner_id: str) -> None:
         sm.delete_secret(SecretId=boot_secret_name(owner_id), ForceDeleteWithoutRecovery=True)
     except sm.exceptions.ResourceNotFoundException:
         pass
-
-
-def _refresh_boot_secret_provider_choice(
-    owner_id: str, provider_choice: str, *, frozen: bool = True, generation: str | None = None
-) -> None:
-    """Publish a provider marker only for the current switch generation.
-
-    AWSCURRENT's old VersionId is the compare-and-swap fence: a delayed writer
-    cannot replace a marker that another attempt has already published.
-    """
-    import json
-    import boto3
-
-    if generation is None:
-        raise ValueError("provider switch generation is required")
-    sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-    secret_id = boot_secret_name(owner_id)
-    current = sm.get_secret_value(SecretId=secret_id)
-    # Read DDB AFTER AWSCURRENT. If a newer switch has already published its
-    # secret, its marker necessarily landed first, so a stale writer sees it.
-    # If it lands after this read, the stage move below loses the CAS instead.
-    row = container_repo._get_table().get_item(Key={"owner_id": owner_id}, ConsistentRead=True).get("Item") or {}
-    if row.get("provider_switch_generation", "") != generation or not row.get("needs_provision"):
-        raise container_repo.ProvisionSuperseded(f"provider switch for {owner_id} was superseded")
-    payload = json.loads(current["SecretString"])
-    if not all(payload.get(key) for key in ("hookToken", "gatewayToken", "bedrockBearer")):
-        raise RuntimeError("Hermes boot secret is missing a required token")
-    # A thaw is valid only for the generation it froze. A late preparation of
-    # the same generation cannot re-freeze a switch that already thawed.
-    if not frozen and payload.get("providerSwitchGeneration") != generation:
-        raise container_repo.ProvisionSuperseded(f"provider switch for {owner_id} was superseded")
-    if (
-        frozen
-        and payload.get("providerSwitchGeneration") == generation
-        and payload.get("providerSwitchFrozen") is False
-    ):
-        return
-    if (
-        payload.get("providerChoice") != provider_choice
-        or payload.get("providerSwitchFrozen") != frozen
-        or (generation is not None and payload.get("providerSwitchGeneration") != generation)
-    ):
-        payload["providerChoice"] = provider_choice
-        payload["providerSwitchFrozen"] = frozen
-        if generation is not None:
-            payload["providerSwitchGeneration"] = generation
-        candidate = sm.put_secret_value(
-            SecretId=secret_id, SecretString=json.dumps(payload), VersionStages=["LIGHTBULB_PROVIDER_PENDING"]
-        )
-        sm.update_secret_version_stage(
-            SecretId=secret_id,
-            VersionStage="AWSCURRENT",
-            MoveToVersionId=candidate["VersionId"],
-            RemoveFromVersionId=current["VersionId"],
-        )
 
 
 def _delete_profile_prefix_objects(owner_id: str) -> None:
@@ -611,52 +567,29 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
     return deleted
 
 
-async def prepare_hermes_workspace(owner_id: str) -> None:
+async def prepare_hermes_workspace(owner_id: str) -> bool:
     """M4-R33: settle the owner's hook/gateway tokens + gate bearer, write the ONE JSON boot
     secret, and persist ``hook_token``/``gateway_token`` onto the row — BEFORE step 0 seeds the
     roster, so the native Hermes adapter's ``apiKey`` bakes in a real token instead of the empty
     string a missing row field falls back to.
 
-    An existing runtime with no pending provider switch is a no-op. A pending switch updates
-    only the boot secret's provider marker and preserves its live tokens.
+    Also the credential half of ``reconcile_runtime``: it runs for a LIVE workspace too, and
+    converges everything billing decides -- the AIPs, the owner role, the gate token row with
+    its allowed AIPs, the OpenRouter key, the boot secret's provider marker and, on ChatGPT
+    OAuth, a staged grant. Returns whether a BOOT-time input changed (``write_boot_secret``),
+    which a live runtime only picks up on its next cold start.
 
     IDEMPOTENT AT THE SOURCE, so two concurrent runs for one owner converge: the tokens are one
     ``if_not_exists`` write whose RETURNED winner every later step uses
     (``container_repo.ensure_owner_tokens``), and the bearer is derived from the owner, the row's
     ``id`` from that same read-back and its ``gate_bearer_generation`` (``derive_gate_bearer``),
     so both runs write identical boot secret bytes, the same create-only token row and the same
-    pointer -- and a teardown (new row, new id) yields a new bearer.
-
-    I3/M4-R37 freshness guard: a dispatch reaches owners who are ALREADY live (a self-heal, a
-    reconcile, any ordinary re-dispatch), not just fresh ones. Minting for one of those would
-    rotate ``mint_gate_token``'s bearer into a boot secret their RUNNING workspace never reads
-    (it keeps using its OWN, now-superseded bearer until the liveness predicate expires it).
-    The ``agentcore_runtime_arn`` early return above is what that guard is now: a provisioned
-    workspace always carries one. The extra ``service_name`` refusal that stood beside it went
-    with the ECS runtime -- it named a service that no longer exists, and on a legacy row that
-    still carries the field it would have refused a reprovision forever.
+    pointer -- and a teardown (new row, new id) yields a new bearer. That derivation is also why
+    a live workspace is safe here: re-running cannot rotate the bearer it is presenting.
 
     ``hook_token``/``gateway_token`` are minted only when the row does not already carry one, so
     a retry never orphans a token some other seam already handed out (Paperclip snapshots them).
     """
-    row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
-    if row.get("agentcore_runtime_arn"):
-        if row.get("needs_provision"):
-            from core.services.container_provision import resolve_provider_choice
-
-            provider_choice, _ = await resolve_provider_choice(owner_id)
-            if provider_choice == "openrouter_managed":
-                from core.services.openrouter_keys import ensure_owner_key_for_settings
-
-                await ensure_owner_key_for_settings(owner_id)
-            await run_in_thread(
-                _refresh_boot_secret_provider_choice,
-                owner_id,
-                provider_choice,
-                generation=row.get("provider_switch_generation") or "",
-            )
-        return
-
     import secrets as _secrets
 
     from core.billing.bedrock_aip import _owner_role_name, ensure_owner_bedrock_role
@@ -681,23 +614,40 @@ async def prepare_hermes_workspace(owner_id: str) -> None:
         from core.services.openrouter_keys import ensure_owner_key_for_settings
 
         await ensure_owner_key_for_settings(owner_id)
-    await write_boot_secret(
+    elif provider_choice == "chatgpt_oauth":
+        await _ensure_codex_auth_staged(owner_id)
+    boot_changed = await write_boot_secret(
         owner_id,
         hook_token=hook_token,
         gateway_token=gateway_token,
         bedrock_bearer=bedrock_bearer,
         provider_choice=provider_choice,
-        generation=row.get("provider_switch_generation") or "",
     )
 
     # m2: the one step that mints three credentials and writes a secret was otherwise invisible
     # in the provision log. Never logs a value -- only which tokens were reused vs freshly minted.
     logger.info(
-        "hermes prepare owner=%s hook_token=%s gateway_token=%s bedrock_bearer=derived",
+        "hermes prepare owner=%s hook_token=%s gateway_token=%s bedrock_bearer=derived boot_changed=%s",
         owner_id,
         "reused" if hook_token_reused else "minted",
         "reused" if gateway_token_reused else "minted",
+        boot_changed,
     )
+    return boot_changed
+
+
+async def _ensure_codex_auth_staged(owner_id: str) -> None:
+    """Stage the connector's ChatGPT grant into root ``auth.json`` ONLY when none is there: an
+    existing grant may carry a refresh token the runtime has since rotated, and overwriting it
+    with the stored one would revoke the whole token family (``container_auth``)."""
+    from core.repositories import billing_repo
+    from core.services.container_auth import push_oauth_credential_to_container
+
+    connector = ((await billing_repo.get_by_owner_id(owner_id, consistent_read=True)) or {}).get(
+        "oauth_connector_user_id"
+    )
+    if connector:
+        await push_oauth_credential_to_container(owner_id=owner_id, connector_id=connector, only_if_absent=True)
 
     if not hook_token_reused:
         # A re-created row minted a NEW hook_token, but a surviving Paperclip company's agents
@@ -728,11 +678,18 @@ def build_runtime_request_for_owner(
     ``browser_profile_id`` is the workspace's AgentCore Browser profile (``""`` = no browser);
     both callers resolve it with ``browser_sessions.ensure_browser_profile`` just before
     building the request, so a roll is also the door through which an existing runtime gets
-    its first profile."""
+    its first profile.
+
+    The managed OpenRouter vars ride along whenever managed inference is CONFIGURED, whatever
+    ``provider_choice`` is: the env block is a boot-time input, so carrying it for every
+    provider is what makes a switch into or out of ``openrouter_managed`` a pure profile
+    rewrite instead of a runtime re-spec plus session restart. ``provider_choice`` is only the
+    guard below."""
     from core.billing.bedrock_gate_url import gate_url
     from core.billing.openrouter_gate_url import gate_url as openrouter_gate_url
 
-    if provider_choice == "openrouter_managed" and not settings.OPENROUTER_MANAGED_MODEL_ID:
+    managed_model_id = settings.OPENROUTER_MANAGED_MODEL_ID
+    if provider_choice == "openrouter_managed" and not managed_model_id:
         raise RuntimeError("managed OpenRouter model is not configured")
 
     return build_hermes_runtime_request(
@@ -749,8 +706,8 @@ def build_runtime_request_for_owner(
             gate_endpoint=gate_url(),
             sonnet_aip_arn=aip_arns["sonnet"],
             browser_profile_id=browser_profile_id,
-            managed_gate_url=openrouter_gate_url() if provider_choice == "openrouter_managed" else "",
-            managed_model_id=settings.OPENROUTER_MANAGED_MODEL_ID if provider_choice == "openrouter_managed" else "",
+            managed_gate_url=openrouter_gate_url() if managed_model_id else "",
+            managed_model_id=managed_model_id,
             memory_id=settings.AGENTCORE_MEMORY_ID,
         ),
     )
@@ -818,40 +775,34 @@ async def _wait_for_idle_session(owner_id: str) -> bool:
         await asyncio.sleep(ROLL_IDLE_POLL_S)
 
 
-async def roll_runtime_image(owner_id: str, *, dry_run: bool = False, respec: bool = False) -> str:
-    """Bring an AgentCore owner's runtime onto ``settings.AGENTCORE_HERMES_IMAGE`` after a
-    ``hermes-version.json`` tag flip (M6 Task 3 flip tooling): ``UpdateAgentRuntime`` on drift,
-    wait for READY, then stop the warm session so the NEXT invoke boots the new image.
+async def roll_runtime_image(owner_id: str, *, dry_run: bool = False, restart_session: bool = False, respec: bool = False) -> str:
+    """Bring an AgentCore owner's runtime onto its DESIRED spec -- the currently configured
+    image AND the env block ``build_runtime_request_for_owner`` derives from billing -- then
+    stop the idle warm session so the NEXT invoke boots it. After a ``hermes-version.json`` tag
+    flip (M6 Task 3 flip tooling) the difference is the image; it can equally be the env.
 
     ``UpdateAgentRuntime`` alone does NOT move a live session -- the explicit ``StopRuntimeSession``
     is what does, immediately and regardless of what is running inside it. So the stop waits for
     the bridge to report idle first (Hazard 2, ``_wait_for_idle_session``): a roll landing
     mid-turn destroys every filesystem write that turn has made, because the profile is only
-    pushed to S3 when the turn ends.
+    pushed to S3 when the turn ends. ``restart_session`` asks for that same idle stop with no
+    spec change -- a boot-secret input (tokens, gate bearer) changed under a warm session.
 
     Returns ``"current"`` (nothing to do), ``"would-update"`` (dry run), ``"updated"``, or
-    ``"updated-session-busy"`` -- the runtime IS on the new image but a turn was still running
-    at the deadline, so the warm session was left alone and picks the image up when it next
-    starts. Raises ``ValueError`` for a row with no provisioned runtime.
+    ``"updated-session-busy"`` -- the runtime IS on the desired spec but a turn was still running
+    at the deadline, so the warm session was left alone and picks it up when it next starts.
+    Raises ``ValueError`` for a row with no provisioned runtime.
 
-    ``respec=True`` re-specs even when the image is current, and rewrites the profiles once the
-    session is idle: the managed model lives in the runtime env AND each profile (bridge
-    ``sync.py`` refuses a mismatch), so a model flip needs both moved. Profiles are written only
-    once the session is idle and stopped -- a warm process keeps its old env, and re-pulls a
-    changed profile, so writing under a busy session refuses its next turns -- so a busy owner
-    comes back ``updated-session-busy`` with its env already moved and its profile NOT: it breaks
-    on its next cold start unless re-run (the script exits 1)."""
+    ``respec=True`` (the script's ``--respec``, a managed-model flip) also rewrites the profiles
+    once the session is idle and stopped: the model lives in the env AND each profile (bridge
+    ``sync.py`` refuses a mismatch). A busy owner comes back ``updated-session-busy`` with its
+    env moved and its profile NOT -- it breaks on its next cold start unless re-run."""
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     arn = row.get("agentcore_runtime_arn")
     if not arn:
         raise ValueError(f"roll_runtime_image: owner={owner_id} has no provisioned runtime")
     if not settings.AGENTCORE_HERMES_IMAGE:
         raise RuntimeError("AGENTCORE_HERMES_IMAGE is not configured for this environment")
-    current = await run_in_thread(_runtime_image_uri, arn)
-    if current == settings.AGENTCORE_HERMES_IMAGE and not respec:
-        return "current"
-    if dry_run:
-        return "would-update"
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
     from core.services.container_provision import resolve_provider_choice
 
@@ -863,18 +814,25 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False, respec: bo
     from core.billing.bedrock_aip import ensure_owner_memory_policy
 
     await ensure_owner_memory_policy(owner_id)
-    await run_in_thread(
-        _update_runtime_image,
-        arn,
-        build_runtime_request_for_owner(
-            owner_id, role_arn, aip_arns, browser_profile_id=browser_profile_id, provider_choice=provider_choice
-        ),
+    request = build_runtime_request_for_owner(
+        owner_id, role_arn, aip_arns, browser_profile_id=browser_profile_id, provider_choice=provider_choice
     )
-    # Optimistic: no READY wait. A single status read still sweeps a dead
-    # runtime (UPDATE_FAILED never becomes usable); anything else — CREATING,
-    # UPDATING, READY — is left to retry-at-use at first invoke.
-    if (await run_in_thread(_runtime_status, arn)) in _TERMINAL_STATUSES:
-        raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to update")
+    actual = await run_in_thread(_runtime_description, arn)
+    current = _image_of(actual)
+    drifted = current != settings.AGENTCORE_HERMES_IMAGE or (actual.get("environmentVariables") or {}) != (
+        request.get("environmentVariables") or {}
+    )
+    if not (drifted or restart_session or respec):
+        return "current"
+    if dry_run:
+        return "would-update"
+    if drifted:
+        await run_in_thread(_update_runtime_image, arn, request)
+        # Optimistic: no READY wait. A single status read still sweeps a dead
+        # runtime (UPDATE_FAILED never becomes usable); anything else — CREATING,
+        # UPDATING, READY — is left to retry-at-use at first invoke.
+        if (await run_in_thread(_runtime_status, arn)) in _TERMINAL_STATUSES:
+            raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to update")
     idle = await _wait_for_idle_session(owner_id)
     if idle:
         try:
@@ -883,20 +841,62 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False, respec: bo
             await run_in_thread(_stop_runtime_session, arn, session_id_for(owner_id))
         except Exception as exc:  # noqa: BLE001 -- no warm session is the common case
             logger.info("roll_runtime_image: no live session to stop for owner=%s (%s)", owner_id, type(exc).__name__)
-    if idle and respec:
-        # config.yaml is backend-owned (never saved back by the bridge), so nothing reverts this.
-        # Either order leaves a gap where one turn sees a new/old env-profile pair and is refused
-        # (sync.py); after the stop, that gap is a cold start that has no old env to fall back on.
-        await write_profiles(owner_id, aip_arns)
+        if respec:
+            # config.yaml is backend-owned (never saved back by the bridge), so nothing reverts this.
+            # Either order leaves a gap where one turn sees a new/old env-profile pair and is refused
+            # (sync.py); after the stop, that gap is a cold start that has no old env to fall back on.
+            await write_profiles(owner_id, aip_arns)
     else:
         logger.warning(
             "roll_runtime_image: owner=%s updated but a turn was still running after %.0fs -- warm session "
-            "left alive; it picks the new image up on its next session",
+            "left alive; it picks the new spec up on its next session",
             owner_id,
             ROLL_IDLE_WAIT_S,
         )
-    logger.info("roll_runtime_image: owner=%s %s -> %s", owner_id, current, settings.AGENTCORE_HERMES_IMAGE)
+    logger.info(
+        "roll_runtime_image: owner=%s %s -> %s (drifted=%s restart=%s)",
+        owner_id,
+        current,
+        settings.AGENTCORE_HERMES_IMAGE,
+        drifted,
+        restart_session,
+    )
     return "updated" if idle else "updated-session-busy"
+
+
+async def reconcile_runtime(owner_id: str) -> str:
+    """Make the owner's runtime match billing. ONE idempotent function, safe to run
+    concurrently (every step converges at its source), with no provider-specific logic of its
+    own: the same steps provisioning runs, then the spec check.
+
+    1. ``prepare_hermes_workspace`` -- tokens, derived gate bearer, AIPs + owner role + gate
+       token row, OpenRouter key, ChatGPT grant, boot secret.
+    2. ``write_profiles`` -- every roster profile from the billing provider (BYO key read back),
+       each bumping ``.revision``, which the bridge re-reads on every turn. THAT is how a
+       provider switch lands: no session stop, no idle wait.
+    3. ``roll_runtime_image`` -- UpdateAgentRuntime only when the image or env block differs,
+       and an idle-only session stop only for a boot-time change (spec, or step 1's secret).
+
+    A workspace with no live runtime is not reconciled here: the provision funnel creates it,
+    and that execution runs this at its end (``provision_runner``), reading the same billing.
+
+    Returns ``"dispatched"``, ``"failed"``, or ``roll_runtime_image``'s answer. A failure NEVER
+    flips the running row to error -- the old runtime keeps serving; it is logged and counted
+    on ``provision.reconcile.failed`` (paged). A caller retries by calling this again."""
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+    if not (row.get("agentcore_runtime_arn") and row.get("status") == "running"):
+        from core.services.provision_dispatch import dispatch_provision
+
+        return "dispatched" if await dispatch_provision(owner_id) else "failed"
+    try:
+        boot_changed = await prepare_hermes_workspace(owner_id)
+        _role_arn, aip_arns = await _load_role_and_aips(owner_id)
+        await write_profiles(owner_id, aip_arns)
+        return await roll_runtime_image(owner_id, restart_session=boot_changed)
+    except Exception:  # noqa: BLE001 -- the old runtime keeps serving; the metric pages
+        logger.exception("reconcile_runtime failed for owner=%s", owner_id)
+        put_metric("provision.reconcile.failed")
+        return "failed"
 
 
 async def reconcile_hermes_aips(owner_id: str) -> dict[str, str]:
@@ -1241,8 +1241,7 @@ async def provision_hermes_runtime(owner_id: str) -> str:
     secret this reads the NAME of (not the contents) and the ``hook_token``/``gateway_token`` this
     never re-writes. ``provision_runner.run`` always calls it first.
 
-    Fully idempotent: a row with ``agentcore_runtime_arn`` AND ``status="running"`` and no pending
-    ``needs_provision`` returns as-is,
+    Fully idempotent: a row with ``agentcore_runtime_arn`` AND ``status="running"`` returns as-is,
     with no AWS call and no row write. A row with the ARN but NOT yet ``running`` (a retry that
     reached the create but not the terminal write) skips straight to the READY poll instead of
     creating again (M4-R35/C1) — see the ARN-recording comment below for why that field exists.
@@ -1262,8 +1261,7 @@ async def provision_hermes_runtime(owner_id: str) -> str:
         raise RuntimeError("OWNER_STATE_BUCKET is not configured for this environment")
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     arn = row.get("agentcore_runtime_arn")
-    switching = bool(arn and row.get("needs_provision"))
-    if arn and row.get("status") == "running" and not switching:
+    if arn and row.get("status") == "running":
         return arn
 
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
@@ -1278,16 +1276,7 @@ async def provision_hermes_runtime(owner_id: str) -> str:
     from core.billing.bedrock_aip import ensure_owner_memory_policy
 
     await ensure_owner_memory_policy(owner_id)
-    if switching:
-        from core.services import container_rpc
-
-        frozen = await container_rpc.call(owner_id, "provider.freeze")
-        if not isinstance(frozen, dict) or frozen.get("frozen") is not True:
-            raise RuntimeError("Hermes provider switch could not freeze turn admission")
-        if not await _wait_for_idle_session(owner_id):
-            raise RuntimeError("Hermes provider switch deferred: runtime is busy")
-        await write_profiles(owner_id, aip_arns)
-    elif not arn:
+    if not arn:
         # N4/M4-R42: write_profiles runs BEFORE CreateAgentRuntime, so a row that already
         # carries an ARN has its profiles in S3 already. Idempotence now keys on
         # status == "running" (M4-R35/C1), so an ARN row sitting in error/stopped -- which C2's
@@ -1328,7 +1317,7 @@ async def provision_hermes_runtime(owner_id: str) -> str:
             logger.info("hermes provision: runtime %s for owner=%s is gone/deleting -- creating fresh", arn, owner_id)
             arn = None
         else:
-            if switching or (current_image and current_image != settings.AGENTCORE_HERMES_IMAGE):
+            if current_image and current_image != settings.AGENTCORE_HERMES_IMAGE:
                 await run_in_thread(_update_runtime_image, arn, _build_request())
             if not row.get("agentcore_runtime_arn"):
                 # Found by name lookup only -- the row never got it. Record now, before polling,
@@ -1385,30 +1374,12 @@ async def provision_hermes_runtime(owner_id: str) -> str:
         )
         raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to start: {status}")
 
-    if switching:
-        from botocore.exceptions import ClientError
-        from core.services.runtime_transport import session_id_for
-
-        try:
-            await run_in_thread(_stop_runtime_session, arn, session_id_for(owner_id))
-        except ClientError as exc:
-            # AgentCore returns 404 when the session was already parked or terminated.
-            if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
-                raise
-        await run_in_thread(
-            _refresh_boot_secret_provider_choice,
-            owner_id,
-            provider_choice,
-            frozen=False,
-            generation=row.get("provider_switch_generation") or "",
-        )
-
     # `running` from here: AgentCore wakes on invoke, so every "stopped -> start" door must see a
     # live workspace. hook_token/gateway_token are NOT repeated here -- prepare_hermes_workspace
     # already wrote them.
     await container_repo.update_fields(
         owner_id,
-        {"runtime_host": "agentcore", "agentcore_runtime_arn": arn, "status": "running", "needs_provision": False},
+        {"runtime_host": "agentcore", "agentcore_runtime_arn": arn, "status": "running"},
     )
     logger.info("hermes runtime created owner=%s arn=%s", owner_id, arn)
     return arn

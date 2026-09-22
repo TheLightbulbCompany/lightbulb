@@ -19,12 +19,6 @@ logger = logging.getLogger(__name__)
 _DESERIALIZER = TypeDeserializer()
 
 
-class ProvisionSuperseded(Exception):
-    """A provider switch's generation moved under this writer, or a switch is
-    already pending (``mark_needs_provision``). The writer must stop; the newer
-    switch owns convergence."""
-
-
 def _get_table():
     return get_table("containers")
 
@@ -818,8 +812,8 @@ async def mark_provisioning(owner_id: str) -> None:
 
     A display projection, not a lease: nothing reads it to decide who may
     provision (a RUNNING Step Functions execution is that answer). A ``running``
-    row is left alone unless it is ``needs_provision`` -- a reconcile dispatch
-    against a live workspace must not flip its UI into the provisioning stepper.
+    row is left alone -- a reconcile dispatch against a live workspace must not
+    flip its UI into the provisioning stepper.
     """
     try:
         await run_in_thread(
@@ -829,7 +823,7 @@ async def mark_provisioning(owner_id: str) -> None:
                 "SET #s = :prov, substatus = :sub, updated_at = :iso, "
                 "id = if_not_exists(id, :newid), created_at = if_not_exists(created_at, :iso)"
             ),
-            ConditionExpression="attribute_not_exists(owner_id) OR #s <> :running OR needs_provision = :true",
+            ConditionExpression="attribute_not_exists(owner_id) OR #s <> :running",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={
                 ":prov": "provisioning",
@@ -837,7 +831,6 @@ async def mark_provisioning(owner_id: str) -> None:
                 ":iso": utc_now_iso(),
                 ":newid": str(uuid.uuid4()),
                 ":running": "running",
-                ":true": True,
             },
         )
     except ClientError as e:
@@ -930,64 +923,6 @@ def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
     if "byo_provider is required" in message or "unknown provider_choice" in message:
         return cause, False
     return cause, True
-
-
-async def mark_needs_provision(owner_id: str) -> dict | None:
-    """Block new turn ingress and stamp a generation for provider convergence.
-
-    Return the prior state so a failed billing write can restore it only while
-    this generation is still current. No-op when no container row exists.
-    """
-    generation = uuid.uuid4().hex
-    try:
-        response = await run_in_thread(
-            _get_table().update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET needs_provision = :yes, provider_switch_generation = :gen, updated_at = :now",
-            ConditionExpression="attribute_exists(owner_id) "
-            "AND (attribute_not_exists(needs_provision) OR needs_provision = :no)",
-            ExpressionAttributeValues={":yes": True, ":no": False, ":gen": generation, ":now": utc_now_iso()},
-            ReturnValues="ALL_OLD",
-            ReturnValuesOnConditionCheckFailure="ALL_OLD",
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            if exc.response.get("Item") or await get_by_owner_id(owner_id, consistent=True):
-                raise ProvisionSuperseded(f"owner mutation row for {owner_id} is reserved") from exc
-            return None
-        raise
-    previous = response.get("Attributes") or {}
-    publish_status_changed(owner_id)
-    return {
-        "generation": generation,
-        "previous_needs_provision": previous.get("needs_provision", False),
-        "previous_generation": previous.get("provider_switch_generation"),
-    }
-
-
-async def restore_needs_provision(owner_id: str, mark: dict) -> bool:
-    """Undo only this switch's marker; a newer generation wins the race."""
-    values = {":gen": mark["generation"], ":prior": bool(mark["previous_needs_provision"]), ":now": utc_now_iso()}
-    update = "SET needs_provision = :prior, updated_at = :now"
-    if mark.get("previous_generation") is None:
-        update += " REMOVE provider_switch_generation"
-    else:
-        update += ", provider_switch_generation = :oldgen"
-        values[":oldgen"] = mark["previous_generation"]
-    try:
-        await run_in_thread(
-            _get_table().update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression=update,
-            ConditionExpression="provider_switch_generation = :gen",
-            ExpressionAttributeValues=values,
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-    publish_status_changed(owner_id)
-    return True
 
 
 async def update_status(owner_id: str, status: str, substatus: str | None = None) -> dict | None:

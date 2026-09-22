@@ -317,11 +317,10 @@ async def test_agentcore_ingress_budget_outlasts_a_cold_microvm_start(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_pending_switch_retries_on_the_switch_timescale(monkeypatch):
-    """30 receives at the 10s cold-start pace dead-letter a message before a switch that waits up
-    to 10 min for idle can land; a switch-pending refusal must come back slower."""
+async def test_every_503_retries_at_the_cold_start_pace(monkeypatch):
+    """Task 8a: a provider switch no longer refuses turns, so there is no switch timescale --
+    even an N-1 bridge's own freeze refusal retries like any other 503."""
     from core.services import openclaw_work as work
-    from core.services import runtime_transport
 
     meta = {"ownerId": "owner_test", "roomId": _ROOM, "workspaceId": WS, "deliveryKey": KEY}
     member = {"id": "friday"}
@@ -335,20 +334,8 @@ async def test_pending_switch_retries_on_the_switch_timescale(monkeypatch):
     monkeypatch.setattr(work, "build_ingress_body", AsyncMock(side_effect=lambda **kw: {}))
     monkeypatch.setattr(work.messaging_repo, "create_run", AsyncMock(return_value=True))
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
-    monkeypatch.setattr(
-        worker, "_post", AsyncMock(return_value=httpx.Response(503, text=runtime_transport.PROVIDER_SWITCH_PENDING))
-    )
-    with pytest.raises(WorkRetry) as caught:
-        await worker._dispatch_message(meta, member, {"messageId": "m1"}, "user_request")
-    assert caught.value.visibility == work._SWITCH_RETRY_VISIBILITY_SECONDS > _RETRY_VISIBILITY_SECONDS
-
-    frozen = httpx.Response(503, json={"error": "provider_switch_frozen"})
-    monkeypatch.setattr(worker, "_post", AsyncMock(return_value=frozen))
-    with pytest.raises(WorkRetry) as caught:
-        await worker._dispatch_message(meta, member, {"messageId": "m1"}, "user_request")
-    assert caught.value.visibility == work._SWITCH_RETRY_VISIBILITY_SECONDS
-
-    monkeypatch.setattr(worker, "_post", AsyncMock(return_value=httpx.Response(503, text="busy")))
-    with pytest.raises(WorkRetry) as caught:
-        await worker._dispatch_message(meta, member, {"messageId": "m1"}, "user_request")
-    assert caught.value.visibility is None
+    for refusal in (httpx.Response(503, json={"error": "provider_switch_frozen"}), httpx.Response(503, text="busy")):
+        monkeypatch.setattr(worker, "_post", AsyncMock(return_value=refusal))
+        with pytest.raises(WorkRetry) as caught:
+            await worker._dispatch_message(meta, member, {"messageId": "m1"}, "user_request")
+        assert caught.value.visibility is None

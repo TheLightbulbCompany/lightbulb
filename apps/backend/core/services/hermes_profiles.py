@@ -1559,7 +1559,7 @@ def _mutate_root_auth(owner_id: str, mutate) -> bool:
     raise RuntimeError(f"root auth document for {owner_id} changed during three conditional writes")
 
 
-def stage_codex_auth(owner_id: str, tokens: dict) -> None:
+def stage_codex_auth(owner_id: str, tokens: dict, *, only_if_absent: bool = False) -> None:
     """Write the owner's ChatGPT grant into the ROOT ``auth.json``, once per connect — not into
     any per-profile ``config.yaml``/``.env``.
 
@@ -1585,6 +1585,8 @@ def stage_codex_auth(owner_id: str, tokens: dict) -> None:
     def _stage(blob: dict, _exists: bool) -> bool:
         providers = blob.get("providers")
         providers = dict(providers) if isinstance(providers, dict) else {}
+        if only_if_absent and providers.get("openai-codex"):
+            return False  # a reconcile never replaces a grant the runtime may have rotated
         providers["openai-codex"] = {
             "tokens": payload,
             "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),

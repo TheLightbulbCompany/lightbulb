@@ -23,18 +23,12 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
 import httpx
 
-from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
-
-#: The ingress body while the row carries ``needs_provision``. ``openclaw_work`` matches it to
-#: retry on the switch's timescale (minutes) rather than a cold start's (seconds).
-PROVIDER_SWITCH_PENDING = '{"error":"provider_switch_pending"}'
 
 #: F4 (predeploy review, M6-R37): the RPC budget for a call to a possibly-parked AgentCore
 #: workspace -- AgentCore holds an invoke through the microVM start (~35s) and the gateway boot
@@ -138,27 +132,6 @@ async def request(
     ``httpx.ConnectError`` for anything else in the way — so a caller's existing
     ``except httpx.…`` covers a microVM exactly as it used to cover a task IP.
     """
-    if method == "POST" and (
-        path.startswith("/plugins/lightbulb-channel/inbound/") or path == "/internal/paperclip/v1/runs"
-    ):
-        # The caller may hold a stale container snapshot. Check the switch marker against DDB
-        # just before invoke; the bridge's atomic admission freeze closes the remaining race.
-        from core.repositories import container_repo
-
-        try:
-            row = await container_repo.get_by_owner_id(container.get("owner_id") or "", consistent=True)
-        except Exception:
-            row = None
-        if not row:
-            return RuntimeResponse(status_code=503, text='{"error":"container_row_unavailable"}')
-        if row.get("needs_provision"):
-            # Paged on (observability-stack P23): a flag nothing converges wedges every turn.
-            put_metric("runtime.ingress.provider_switch_pending")
-            _converge_stuck_switch(row)
-            return RuntimeResponse(status_code=503, text=PROVIDER_SWITCH_PENDING)
-        generation = row.get("provider_switch_generation")
-        if generation:
-            headers = {**(headers or {}), "X-Lightbulb-Provider-Generation": generation}
     return await _request_agentcore(
         container,
         path,
@@ -168,26 +141,6 @@ async def request(
         headers=headers,
         timeout_s=timeout_s,
     )
-
-
-#: A billing switch flips its row to ``provisioning`` within seconds of flagging it, so a row still
-#: ``running`` + ``needs_provision`` this long after its last write has no run coming for it.
-_STUCK_SWITCH_S = 120
-
-
-def _converge_stuck_switch(row: dict) -> None:
-    """Dispatch the provision a stuck switch flag is waiting for (the 2026-09-22 outage: a
-    pre-#2852 flag on a running row that nothing ever claimed). Keyed on the turn that hit the
-    flag, not on who polls, and never on a fresh flag, whose billing switch is mid-takeover."""
-    try:
-        age = time.time() - datetime.fromisoformat(row["updated_at"]).timestamp()
-    except (KeyError, TypeError, ValueError):
-        return
-    if row.get("status") != "running" or age < _STUCK_SWITCH_S:
-        return
-    from core.services.provision_dispatch import dispatch_provision
-
-    asyncio.create_task(dispatch_provision(row["owner_id"]))
 
 
 async def _request_agentcore(

@@ -127,21 +127,34 @@ def test_managed_gate_url_is_a_runtime_identifier_without_a_bearer():
     assert "LIGHTBULB_GATE_BEARER" not in env
 
 
-def test_bedrock_runtime_does_not_discover_managed_gate_when_candidate_is_configured(monkeypatch):
+def test_every_provider_carries_the_managed_gate_once_it_is_configured(monkeypatch):
+    """Task 8a: the env block is a boot-time input, so it carries the managed route for EVERY
+    provider -- a switch into openrouter_managed is then a profile rewrite, not a re-spec."""
     monkeypatch.setattr(hermes_provisioning.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
+    monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", lambda: "https://bedrock-gate.example")
+    monkeypatch.setattr("core.billing.openrouter_gate_url.gate_url", lambda: "https://openrouter-gate.example/v1")
+    envs = [
+        hermes_provisioning.build_runtime_request_for_owner(
+            "org_a", "arn:aws:iam::123456789012:role/owner", {"sonnet": "arn:aip:sonnet"}, provider_choice=choice
+        )["environmentVariables"]
+        for choice in ("bedrock_claude", "chatgpt_oauth", "byo_key", "openrouter_managed")
+    ]
+    assert all(env == envs[0] for env in envs)
+    assert envs[0]["LIGHTBULB_MANAGED_GATE_URL"] == "https://openrouter-gate.example/v1"
+    assert envs[0]["LIGHTBULB_MANAGED_MODEL_ID"] == "candidate/model"
+
+
+def test_no_managed_gate_is_discovered_while_managed_inference_is_unconfigured(monkeypatch):
+    monkeypatch.setattr(hermes_provisioning.settings, "OPENROUTER_MANAGED_MODEL_ID", "")
     monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", lambda: "https://bedrock-gate.example")
     monkeypatch.setattr(
         "core.billing.openrouter_gate_url.gate_url",
         lambda: (_ for _ in ()).throw(AssertionError("must not read OpenRouter SSM")),
     )
     request = hermes_provisioning.build_runtime_request_for_owner(
-        "org_a",
-        "arn:aws:iam::123456789012:role/owner",
-        {"sonnet": "arn:aip:sonnet"},
-        provider_choice="bedrock_claude",
+        "org_a", "arn:aws:iam::123456789012:role/owner", {"sonnet": "arn:aip:sonnet"}, provider_choice="bedrock_claude"
     )
-    env = request["environmentVariables"]
-    assert "LIGHTBULB_MANAGED_GATE_URL" not in env
+    assert "LIGHTBULB_MANAGED_GATE_URL" not in request["environmentVariables"]
 
 
 def test_the_runtime_env_never_carries_the_nous_guest_launch_gate(monkeypatch):
@@ -469,25 +482,21 @@ async def test_prepare_hermes_workspace_mints_tokens_and_writes_one_json_boot_se
 
     written = {}
 
-    async def _fake_write_boot_secret(
-        owner_id, *, hook_token, gateway_token, bedrock_bearer, provider_choice, generation
-    ):
+    async def _fake_write_boot_secret(owner_id, *, hook_token, gateway_token, bedrock_bearer, provider_choice):
         written.update(
             hookToken=hook_token,
             gatewayToken=gateway_token,
             bedrockBearer=bedrock_bearer,
             providerChoice=provider_choice,
-            generation=generation,
         )
-        return f"lightbulb/dev/hermes/{owner_id}/boot"
+        return True
 
     monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _fake_write_boot_secret)
 
-    await hermes_provisioning.prepare_hermes_workspace("org_a")
+    assert await hermes_provisioning.prepare_hermes_workspace("org_a") is True
 
-    assert set(written) == {"hookToken", "gatewayToken", "bedrockBearer", "providerChoice", "generation"}
+    assert set(written) == {"hookToken", "gatewayToken", "bedrockBearer", "providerChoice"}
     assert written["providerChoice"] == "bedrock_claude"
-    assert written["generation"] == ""
     assert written["bedrockBearer"] == "bearer-plaintext"
     # The tokens on the row are the ones in the secret (ensure_owner_tokens' read-back).
     assert row["hook_token"] == written["hookToken"]
@@ -538,17 +547,34 @@ async def test_prepare_hermes_workspace_reuses_existing_tokens_on_a_retry(monkey
 
 
 @pytest.mark.asyncio
-async def test_prepare_hermes_workspace_is_a_noop_once_already_fully_provisioned(monkeypatch):
-    """No AWS call, no bearer rotation, no row write for an owner that already has a runtime --
-    avoids rotating a LIVE bearer on every reconcile dispatch against an already-Hermes owner."""
+async def test_prepare_converges_a_live_workspace_without_rotating_its_bearer(monkeypatch):
+    """reconcile_runtime runs prepare against a LIVE runtime: the bearer is derived, so the
+    re-run reproduces the one the runtime holds instead of rotating it."""
+    import core.billing.bedrock_gate_tokens as bedrock_gate_tokens_mod
+
+    live = {"owner_id": "org_a", "id": "row-1", "agentcore_runtime_arn": "arn:existing", "status": "running"}
+    _patch_owner_aws(monkeypatch, existing_row={**live, "hook_token": "hook", "gateway_token": "gw"})
     monkeypatch.setattr(
-        hermes_provisioning.container_repo, "get_by_owner_id", _row({"agentcore_runtime_arn": "arn:existing"})
+        bedrock_gate_tokens_mod,
+        "mint_gate_token",
+        AsyncMock(
+            side_effect=lambda owner_id, aips, *, row_id, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
+                owner_id, row_id, generation
+            )
+        ),
     )
-    monkeypatch.setattr(hermes_provisioning, "ensure_agentcore_trust", _explode)
-    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _explode)
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", _explode)
+    bearers = []
+
+    async def _write_boot_secret(owner_id, **kwargs):
+        bearers.append(kwargs["bedrock_bearer"])
+        return False
+
+    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _write_boot_secret)
 
     await hermes_provisioning.prepare_hermes_workspace("org_a")
+    await hermes_provisioning.prepare_hermes_workspace("org_a")
+
+    assert bearers == [bedrock_gate_tokens_mod.derive_gate_bearer("org_a", "row-1", 0)] * 2
 
 
 @pytest.mark.asyncio
@@ -1063,7 +1089,6 @@ async def test_create_record_statuscheck_happen_in_that_order(monkeypatch):
                 "runtime_host": "agentcore",
                 "agentcore_runtime_arn": "arn:r1",
                 "status": "running",
-                "needs_provision": False,
             },
         ),
     ]

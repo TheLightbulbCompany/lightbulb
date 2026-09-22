@@ -130,10 +130,19 @@ async def write_boot_secret(
     gateway_token: str,
     bedrock_bearer: str,
     provider_choice: str = "bedrock_claude",
-    generation: str = "",
-) -> str:
-    """Create or update the owner's boot secret; returns its name (the value a runtime's
-    ``BOOT_SECRET_ENV_VAR`` carries). Plaintext lives in exactly one place: this secret."""
+) -> bool:
+    """Converge the owner's boot secret (named ``boot_secret_name(owner_id)``, the value a
+    runtime's ``BOOT_SECRET_ENV_VAR`` carries). Plaintext lives in exactly one place: this secret.
+
+    Returns whether a BOOT-TIME input changed -- anything but ``providerChoice``, which no
+    current bridge reads (it decides the route from the profile it pulls each turn) and which
+    is still written only for N-1 bridges. A warm session reads the rest once, at cold start,
+    so a True answer is the caller's cue to restart the idle session. Identical bytes are not
+    rewritten, so concurrent runs converge without churning secret versions.
+
+    ``providerSwitchFrozen: False`` stays for the same N-1 bridges, which refuse every turn when
+    it is absent-and-truthy; ``providerSwitchGeneration`` is dropped -- those bridges admit a
+    turn only when its (now never sent) generation header matches it."""
     import boto3
 
     from core.secrets_manager import create_or_update_secret
@@ -146,9 +155,20 @@ async def write_boot_secret(
         "providerChoice": provider_choice,
         "providerSwitchFrozen": False,
     }
-    if generation:
-        payload["providerSwitchGeneration"] = generation
-    value = json.dumps(payload)
     sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-    await run_in_thread(create_or_update_secret, sm, name, value)
-    return name
+
+    def _converge() -> bool:
+        try:
+            prior = json.loads(sm.get_secret_value(SecretId=name)["SecretString"])
+        except (sm.exceptions.ResourceNotFoundException, sm.exceptions.InvalidRequestException):
+            prior = None  # absent, or scheduled for deletion (create_or_update_secret retries that)
+        if prior == payload:
+            return False
+        create_or_update_secret(sm, name, json.dumps(payload))
+
+        def boot_inputs(value):
+            return {k: v for k, v in (value or {}).items() if k != "providerChoice"}
+
+        return boot_inputs(prior) != boot_inputs(payload)
+
+    return await run_in_thread(_converge)

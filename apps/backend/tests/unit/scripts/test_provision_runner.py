@@ -28,7 +28,9 @@ def hermes(monkeypatch):
     provision = AsyncMock(return_value="arn:hermes-1")
     monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", prepare)
     monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", provision)
-    return SimpleNamespace(prepare=prepare, provision=provision)
+    reconcile = AsyncMock(return_value="current")
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "reconcile_runtime", reconcile)
+    return SimpleNamespace(prepare=prepare, provision=provision, reconcile=reconcile)
 
 
 @pytest.fixture
@@ -70,7 +72,21 @@ async def test_happy_path_runs_every_leg_and_exits_0(monkeypatch, hermes, repo):
     assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
     hermes.prepare.assert_awaited_once_with("org_a")
     hermes.provision.assert_awaited_once_with("org_a")
+    hermes.reconcile.assert_awaited_once_with("org_a")
     repo.mark_provision_error.assert_not_awaited()
+
+
+async def test_a_failed_end_reconcile_is_not_a_provision_failure(monkeypatch, hermes, repo):
+    """The runtime is already serving; reconcile_runtime reports its own failure by metric."""
+    hermes.reconcile.return_value = "failed"
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
+    repo.mark_provision_error.assert_not_awaited()
+
+
+async def test_a_failed_provision_skips_the_end_reconcile(monkeypatch, hermes, repo):
+    hermes.provision.side_effect = RuntimeError("create failed")
+    await provision_runner.run("org_a")
+    hermes.reconcile.assert_not_awaited()
 
 
 async def test_deterministic_error_exits_10_and_is_recorded(monkeypatch, hermes, repo):

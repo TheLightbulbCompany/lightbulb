@@ -693,18 +693,13 @@ async def change_provider(
                 status_code=403,
             )
 
-    # Fast-path same-choice retry/no-op. A matching choice normally does no
-    # work, but a matching choice with a pending profile rewrite must
-    # redispatch that existing generation.
-    from core.repositories import container_repo as _container_repo
+    from core.services.hermes_provisioning import reconcile_runtime
 
+    # Same choice: nothing to commit, but re-run the idempotent reconcile. Re-selecting the
+    # current provider is how an owner retries a switch whose reconcile was lost (a backend
+    # deploy mid-task) or failed.
     if current_choice == provider_choice and current_byo == next_byo:
-        pending_row = await _container_repo.get_by_owner_id(owner_id) or {}
-        if pending_row.get("needs_provision"):
-            from core.services.provision_dispatch import dispatch_provision
-
-            asyncio.create_task(dispatch_provision(owner_id))
-            return {"status": "ok", "provider_choice": provider_choice, "byo_provider": next_byo, "restart": True}
+        asyncio.create_task(reconcile_runtime(owner_id))
         return {"status": "noop", "provider_choice": provider_choice, "byo_provider": next_byo}
 
     if provider_choice == "openrouter_managed":
@@ -783,21 +778,6 @@ async def change_provider(
     # owners with zero balance can still pick Bedrock + see the structured
     # gate UI prompting them to top up.
 
-    # Re-read after validation to fence a switch that started while provider
-    # prerequisites were being checked.
-    pending_row = await _container_repo.get_by_owner_id(owner_id) or {}
-    if pending_row.get("needs_provision"):
-        if current_choice != provider_choice or current_byo != next_byo:
-            raise ChangeProviderError(
-                "provider_switch_pending", "A provider switch is already in progress.", status_code=409
-            )
-        # Retry the existing generation; do not stamp another one or repeat
-        # credential cleanup while the first switch is still converging.
-        from core.services.provision_dispatch import dispatch_provision
-
-        asyncio.create_task(dispatch_provision(owner_id))
-        return {"status": "ok", "provider_choice": provider_choice, "byo_provider": next_byo, "restart": True}
-
     # AgentCore root auth is the live ChatGPT credential. Revoke it before the provider-choice
     # commit: if S3/classification fails, leaving the old choice + OAuth row intact is what makes
     # the same request retry cleanup instead of skipping it as an already-completed switch. The
@@ -817,17 +797,12 @@ async def change_provider(
     # Commit the new provider state. Done BEFORE side-effect cleanup so a
     # crash mid-cleanup leaves the owner in a coherent state (new provider
     # + a bit of stale OAuth/BYOK data, which the next sweep can reclaim).
-    try:
-        await billing_repo.set_provider_choice(
-            owner_id,
-            provider_choice=provider_choice,
-            byo_provider=next_byo,
-            connector_user_id=clerk_user_id if provider_choice == "chatgpt_oauth" else None,
-        )
-    except _container_repo.ProvisionSuperseded as exc:
-        raise ChangeProviderError(
-            "provider_switch_pending", "A provider switch is already in progress.", status_code=409
-        ) from exc
+    await billing_repo.set_provider_choice(
+        owner_id,
+        provider_choice=provider_choice,
+        byo_provider=next_byo,
+        connector_user_id=clerk_user_id if provider_choice == "chatgpt_oauth" else None,
+    )
 
     # Keep the agents' view of plan/provider current — the owner-facts file
     # is what the bundled lightbulb skill points them at. The hot-swap path never
@@ -901,9 +876,9 @@ async def change_provider(
                 current_byo,
             )
 
-    # Apply the swap. ONE path: re-provision the workspace, which re-derives the owner's
+    # Apply the swap. ONE path: reconcile the workspace, which re-derives the owner's
     # Bedrock AIPs and rewrites every agent profile (config.yaml + .env) from the committed
-    # provider_choice. The agent reads the rewritten profile on its next turn.
+    # provider_choice. The bridge re-reads the profile's .revision on its next turn.
     #
     # The old hot/cold split is gone with openclaw.json. The "hot" half patched the three
     # provider-block subtrees in place and relied on the gateway's chokidar reload to swap
@@ -919,11 +894,9 @@ async def change_provider(
         },
     )
 
-    # The AgentCore convergence waits for an idle turn, rewrites profiles, updates the
-    # runtime spec, then stops the warm session so the next invoke boots the new choice.
-    from core.services.provision_dispatch import dispatch_provision
-
-    asyncio.create_task(dispatch_provision(owner_id))
+    # Background: a boot-time change (never the provider itself) can wait up to
+    # ROLL_IDLE_WAIT_S for an idle session. A lost task is retried by re-selecting.
+    asyncio.create_task(reconcile_runtime(owner_id))
 
     return {
         "status": "ok",

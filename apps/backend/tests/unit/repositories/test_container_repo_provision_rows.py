@@ -80,12 +80,13 @@ async def test_mark_provisioning_leaves_a_live_workspace_alone(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_mark_provisioning_flips_a_running_row_pending_a_provider_switch(dynamodb_table):
+async def test_a_legacy_provider_switch_flag_no_longer_flips_a_running_row(dynamodb_table):
+    """Task 8a: needs_provision is inert data on rows written before it was deleted."""
     from core.repositories import container_repo
 
     dynamodb_table.put_item(Item={"owner_id": "org_sw", "status": "running", "needs_provision": True})
     await container_repo.mark_provisioning("org_sw")
-    assert _row(dynamodb_table, "org_sw")["status"] == "provisioning"
+    assert _row(dynamodb_table, "org_sw")["status"] == "running"
 
 
 # ---------------------------------------------------------------------------

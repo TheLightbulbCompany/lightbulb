@@ -1,6 +1,5 @@
 """The transport seam: one way to reach a gateway, whichever platform hosts it."""
 
-import asyncio
 import json
 
 import pytest
@@ -54,44 +53,27 @@ class TestNoTransportSelection:
 
 class TestAgentCoreTransport:
     @pytest.mark.asyncio
-    async def test_pending_switch_blocks_room_and_paperclip_turn_invokes(self, monkeypatch):
-        from unittest.mock import AsyncMock
+    async def test_a_turn_invoke_reads_no_row_and_carries_no_switch_state(self, monkeypatch):
+        """Task 8a: there is no provider-switch state to gate or stamp a turn with -- a switch
+        is a profile rewrite the bridge picks up on its next turn."""
 
+        async def _boom(owner_id, **kw):
+            raise AssertionError("a turn must not read the containers table")
+
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _boom)
         owner = {"owner_id": "org_a", "agentcore_runtime_arn": "arn:runtime/abc"}
-        get_row = AsyncMock(return_value={**owner, "needs_provision": True})
-        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", get_row)
-        monkeypatch.setattr("boto3.client", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("no invoke")))
-        for path in ("/plugins/lightbulb-channel/inbound/ceo", "/internal/paperclip/v1/runs"):
-            response = await rt.request(owner, path, method="POST", json_body={})
-            assert response.status_code == 503
-        assert get_row.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_turn_invoke_carries_current_provider_generation(self, monkeypatch):
-        from unittest.mock import AsyncMock
-
-        owner = {"owner_id": "org_a", "agentcore_runtime_arn": "arn:runtime/abc"}
-        monkeypatch.setattr(
-            "core.repositories.container_repo.get_by_owner_id",
-            AsyncMock(return_value={**owner, "provider_switch_generation": "gen-new"}),
-        )
-        captured = {}
+        captured = []
 
         class Client:
             def invoke_agent_runtime(self, **kwargs):
-                captured.update(kwargs)
+                captured.append(json.loads(kwargs["payload"].decode()))
                 return {"statusCode": 200, "response": b'{"status":202,"body":"accepted"}'}
 
         monkeypatch.setattr("boto3.client", lambda *a, **kw: Client())
-        await rt.request(
-            owner,
-            "/plugins/lightbulb-channel/inbound/ceo",
-            method="POST",
-            headers={"Authorization": "Bearer gw"},
-            json_body={},
-        )
-        envelope = json.loads(captured["payload"].decode())
-        assert envelope["headers"]["X-Lightbulb-Provider-Generation"] == "gen-new"
+        for path in ("/plugins/lightbulb-channel/inbound/ceo", "/internal/paperclip/v1/runs"):
+            await rt.request(owner, path, method="POST", headers={"Authorization": "Bearer gw"}, json_body={})
+        assert all("X-Lightbulb-Provider-Generation" not in e["headers"] for e in captured)
+        assert len(captured) == 2
 
     @pytest.mark.asyncio
     async def test_unwraps_the_contract_server_envelope(self, monkeypatch):
@@ -351,47 +333,3 @@ class TestNotReadyRetry:
         with pytest.raises(httpx.ConnectError):
             await rt.request({"agentcore_runtime_arn": "arn:x", "owner_id": "o"}, "/x", timeout_s=5.0)
         assert len(calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_pending_switch_refusal_is_metered(monkeypatch):
-    """P23 pages on this metric: a flag nothing converges must never wedge chat silently."""
-    from unittest.mock import AsyncMock
-
-    owner = {"owner_id": "org_a", "agentcore_runtime_arn": "arn:runtime/abc"}
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id",
-        AsyncMock(return_value={**owner, "needs_provision": True}),
-    )
-    emitted = []
-    monkeypatch.setattr(rt, "put_metric", lambda name, **kw: emitted.append(name))
-    response = await rt.request(owner, "/plugins/lightbulb-channel/inbound/ceo", method="POST", json_body={})
-    assert response.text == rt.PROVIDER_SWITCH_PENDING
-    assert emitted == ["runtime.ingress.provider_switch_pending"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("status", "age_s", "dispatched"),
-    [("running", 600, True), ("running", 10, False), ("provisioning", 600, False)],
-)
-async def test_turn_on_a_stuck_switch_flag_dispatches_the_provision(monkeypatch, status, age_s, dispatched):
-    """The converge door is the turn that hit the flag, not an admin's poll: a running row flagged
-    past the takeover window has no run coming (2026-09-22). A fresh flag belongs to its billing
-    switch, and a provisioning row already has a run."""
-    from datetime import datetime, timedelta, timezone
-    from unittest.mock import AsyncMock
-
-    owner = {"owner_id": "org_a", "agentcore_runtime_arn": "arn:runtime/abc"}
-    updated = (datetime.now(timezone.utc) - timedelta(seconds=age_s)).isoformat()
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id",
-        AsyncMock(return_value={**owner, "needs_provision": True, "status": status, "updated_at": updated}),
-    )
-    monkeypatch.setattr(rt, "put_metric", lambda *a, **kw: None)
-    dispatch = AsyncMock(return_value=True)
-    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
-    response = await rt.request(owner, "/plugins/lightbulb-channel/inbound/ceo", method="POST", json_body={})
-    await asyncio.sleep(0)
-    assert response.status_code == 503
-    assert dispatch.await_count == (1 if dispatched else 0)

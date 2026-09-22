@@ -9,7 +9,7 @@ from moto import mock_aws
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
-from core.repositories import billing_repo, container_repo
+from core.repositories import billing_repo
 
 
 @pytest.fixture
@@ -41,11 +41,8 @@ def dynamodb_table():
         )
         table.meta.client.get_waiter("table_exists").wait(TableName="test-billing-accounts")
 
-        # set_provider_choice marks the container for reprovision
-        # (container_repo.mark_needs_provision, added in #1676), which writes the
-        # containers table. Create it so that write reaches a real table; with no
-        # container row it no-ops gracefully (update_fields → ConditionalCheckFailed
-        # → None), the intended behaviour for these billing-only tests.
+        # The containers table exists so a test can prove set_provider_choice
+        # never writes it (Task 8a: no provider-switch marker).
         client.create_table(
             TableName="test-containers",
             KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
@@ -187,51 +184,27 @@ async def test_set_provider_choice_org_byo_key(dynamodb_table):
 @pytest.mark.asyncio
 async def test_set_provider_choice_unknown_provider_rejected(dynamodb_table):
     await billing_repo.create_if_not_exists("user_w", "cus_stu", owner_type="personal")
-    containers = boto3.resource("dynamodb", region_name="us-east-1").Table("test-containers")
-    containers.put_item(Item={"owner_id": "user_w", "needs_provision": False, "provider_switch_generation": "old"})
     with pytest.raises(ValueError, match="unknown provider_choice"):
         await billing_repo.set_provider_choice(
             "user_w",
             provider_choice="invalid_choice",
             byo_provider=None,
         )
-    row = containers.get_item(Key={"owner_id": "user_w"})["Item"]
-    assert row["needs_provision"] is False
-    assert row["provider_switch_generation"] == "old"
 
 
 @pytest.mark.asyncio
-async def test_failed_billing_write_restores_the_previous_turn_gate(dynamodb_table, monkeypatch):
-    await billing_repo.create_if_not_exists("user_failed", "cus_failed", owner_type="personal")
+async def test_set_provider_choice_writes_only_the_billing_row(dynamodb_table):
+    """Task 8a: the runtime follows through reconcile_runtime, so the container row carries
+    no provider-switch marker a stale write could wedge turns on."""
+    await billing_repo.create_if_not_exists("user_sw", "cus_sw", owner_type="personal")
     containers = boto3.resource("dynamodb", region_name="us-east-1").Table("test-containers")
-    containers.put_item(Item={"owner_id": "user_failed", "needs_provision": False, "provider_switch_generation": "old"})
+    containers.put_item(Item={"owner_id": "user_sw", "status": "running"})
 
-    async def fail_write(*args, **kwargs):
-        raise RuntimeError("billing table unavailable")
+    row = await billing_repo.set_provider_choice("user_sw", provider_choice="chatgpt_oauth", byo_provider=None)
 
-    monkeypatch.setattr(billing_repo, "run_in_thread", fail_write)
-    with pytest.raises(RuntimeError, match="billing table unavailable"):
-        await billing_repo.set_provider_choice("user_failed", provider_choice="byo_key", byo_provider="openai")
-
-    row = containers.get_item(Key={"owner_id": "user_failed"})["Item"]
-    assert row["needs_provision"] is False
-    assert row["provider_switch_generation"] == "old"
-
-
-@pytest.mark.asyncio
-async def test_marker_rollback_never_clears_a_newer_switch(dynamodb_table):
-    containers = boto3.resource("dynamodb", region_name="us-east-1").Table("test-containers")
-    containers.put_item(Item={"owner_id": "user_race", "needs_provision": False, "provider_switch_generation": "old"})
-    first = await container_repo.mark_needs_provision("user_race")
-    with pytest.raises(container_repo.ProvisionSuperseded):
-        await container_repo.mark_needs_provision("user_race")
-    row = containers.get_item(Key={"owner_id": "user_race"})["Item"]
-    assert row["needs_provision"] is True
-    assert row["provider_switch_generation"] == first["generation"]
-    assert await container_repo.restore_needs_provision("user_race", first) is True
-    row = containers.get_item(Key={"owner_id": "user_race"})["Item"]
-    assert row["needs_provision"] is False
-    assert row["provider_switch_generation"] == "old"
+    assert row["provider_choice"] == "chatgpt_oauth"
+    assert "_switch_mark" not in row
+    assert containers.get_item(Key={"owner_id": "user_sw"})["Item"] == {"owner_id": "user_sw", "status": "running"}
 
 
 @pytest.mark.asyncio
@@ -384,24 +357,3 @@ async def test_clear_phantom_connector_noop_without_row(dynamodb_table):
     assert await billing_repo.get_by_owner_id("org_nonexistent") is None
     await billing_repo.create_if_not_exists("org_bare", "cus_ph3", owner_type="org")
     assert await billing_repo.clear_phantom_oauth_connector("org_bare", expected_user_id="user_ghost") is False
-
-
-@pytest.mark.asyncio
-async def test_running_provider_change_reaches_dispatch_executor(dynamodb_table, monkeypatch):
-    """A provider switch on a running workspace re-dispatches through the
-    SFN-only funnel: dispatch submits (StartExecution) and returns ownership,
-    with no inline attempt. The machine runs the attempt."""
-    from unittest.mock import AsyncMock, MagicMock
-    from core.repositories import container_repo
-    from core.services import provision_dispatch
-
-    await billing_repo.create_if_not_exists("org_dispatch", "cus_dispatch", owner_type="org")
-    container_repo._get_table().put_item(Item={"owner_id": "org_dispatch", "status": "running"})
-    await billing_repo.set_provider_choice("org_dispatch", provider_choice="bedrock_claude", byo_provider=None)
-    monkeypatch.setattr(provision_dispatch, "running_execution", AsyncMock(return_value=None))
-    sfn = MagicMock()
-    monkeypatch.setattr(provision_dispatch, "_client", lambda: sfn)
-    assert await provision_dispatch.dispatch_provision("org_dispatch") is True
-    sfn.start_execution.assert_called_once()
-    # The marked running row is shown as provisioning while the switch converges.
-    assert container_repo._get_table().get_item(Key={"owner_id": "org_dispatch"})["Item"]["status"] == "provisioning"

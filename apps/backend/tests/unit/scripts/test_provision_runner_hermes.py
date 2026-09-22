@@ -75,6 +75,7 @@ async def test_hook_token_exists_before_step_0_seeds_the_roster(monkeypatch, run
     monkeypatch.setattr(
         provision_runner.hermes_provisioning, "provision_hermes_runtime", AsyncMock(return_value="arn:r1")
     )
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "reconcile_runtime", AsyncMock(return_value="current"))
 
     await provision_runner.run("org_a")
     assert hook_token_seen_at_seed_time["value"] == "minted-hook-token"

@@ -32,7 +32,11 @@ async def _roles(owner_id):
 def _wire(monkeypatch, *, current_image, row=ROW):
     monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", IMAGE)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(row))
-    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: current_image)
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_runtime_description",
+        lambda arn: {"agentRuntimeArtifact": {"containerConfiguration": {"containerUri": current_image}}},
+    )
     monkeypatch.setattr(hermes_provisioning, "_load_role_and_aips", _roles)
     calls = []
     # The roll is how an already-provisioned workspace gets its first Browser profile, so

@@ -64,7 +64,7 @@ async def test_push_credential_stages_the_root_auth_json():
         patch("core.services.container_auth.stage_codex_auth") as stage,
     ):
         assert await container_auth.push_oauth_credential_to_container(owner_id="org_1", connector_id="user_c") is True
-    stage.assert_called_once_with("org_1", _TOKENS)
+    stage.assert_called_once_with("org_1", _TOKENS, only_if_absent=False)
 
 
 @pytest.mark.asyncio

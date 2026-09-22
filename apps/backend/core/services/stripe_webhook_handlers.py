@@ -464,10 +464,10 @@ async def run_conversion_reprovision(owner_id: str) -> None:
     re-arm it at once (``rearm_deferred_conversion``).
 
     Release semantics, both paths:
-      - success: substatus cleared AND `conversion_pending` dropped. A fresh
-        provision has been dispatched through the ordinary funnel, which
-        re-derives the owner's AIPs and rewrites every agent profile from the
-        now-paid provider_choice. Nothing is stopped or drained first —
+      - success: substatus cleared AND `conversion_pending` dropped.
+        ``reconcile_runtime`` has re-derived the owner's AIPs and rewritten
+        every agent profile from the now-paid provider_choice (or, with no
+        live runtime yet, dispatched the ordinary provision funnel). Nothing is stopped or drained first —
         AgentCore has no task to scale to zero, and the profile rewrite the
         provision performs is what the next turn reads.
       - failure: substatus cleared — never strand the row in a state nothing
@@ -505,9 +505,9 @@ async def run_conversion_reprovision(owner_id: str) -> None:
 
     succeeded = False
     try:
-        from core.services.provision_dispatch import dispatch_provision
+        from core.services.hermes_provisioning import reconcile_runtime
 
-        succeeded = await dispatch_provision(owner_id)
+        succeeded = await reconcile_runtime(owner_id) != "failed"
     except Exception:
         logger.exception("Trial-conversion reprovision failed for owner %s", owner_id)
     put_metric(
@@ -1100,6 +1100,13 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 # (If the stamp DID land, the conversion_pending self-heal is
                 # the recovery path either way.)
                 await _rollback_conversion_entry(account["owner_id"], event_data["id"])
+    elif provider_persisted or (plan_persisted and account.get("plan") != new_plan):
+        # A committed provider or plan change outside a conversion (which reconciles in
+        # run_conversion_reprovision): the plan decides the CEO's premium tier and, for Base,
+        # the provider itself. Background -- reconcile_runtime never raises.
+        from core.services.hermes_provisioning import reconcile_runtime
+
+        asyncio.create_task(reconcile_runtime(account["owner_id"]))
 
     # Refresh the owner-facts file (plan/provider snapshot the bundled isol8
     # skill points agents at). Subscription-state flips land HERE — not via

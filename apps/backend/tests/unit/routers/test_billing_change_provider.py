@@ -19,22 +19,22 @@ def active_personal_account():
 
 @pytest.fixture
 def patch_dispatch_provision():
-    """Stub the asyncio.create_task path so we don't fire real ECS calls.
+    """Stub the reconcile change_provider schedules so no test reaches AWS.
 
-    change_provider does a local ``from core.services.container_provision
-    import dispatch_provision`` inside the function body, so patching the
+    change_provider does a local ``from core.services.hermes_provisioning
+    import reconcile_runtime`` inside the function body, so patching the
     source module (not the importing module) is what intercepts. The
     AsyncMock returns a coroutine so ``asyncio.create_task`` happily wraps
     it without RuntimeWarning.
     """
     bg = AsyncMock()
-    with patch("core.services.provision_dispatch.dispatch_provision", bg):
+    with patch("core.services.hermes_provisioning.reconcile_runtime", bg):
         yield bg
 
 
 @pytest.fixture
 def reprovision():
-    """Stub the one seam the switch ends on: ``dispatch_provision``.
+    """Stub the one seam the switch ends on: ``reconcile_runtime``.
 
     The stop-first cold path is gone with the ECS runtime -- there is no service to scale to zero
     and no shared EFS-WAL SQLite for two tasks to corrupt, so the switch rewrites the owner's
@@ -56,7 +56,7 @@ def reprovision():
             "core.services.container_auth.revoke_provider_auth_in_container",
             new=AsyncMock(return_value=True),
         ),
-        patch("core.services.provision_dispatch.dispatch_provision", dispatch),
+        patch("core.services.hermes_provisioning.reconcile_runtime", dispatch),
         patch("asyncio.create_task", lambda coro: coro.close() or MagicMock()),
     ):
         yield dispatch
@@ -202,10 +202,8 @@ async def test_org_owner_can_switch_to_chatgpt_oauth_and_is_recorded(
             "core.services.oauth_service.get_decrypted_tokens",
             new=AsyncMock(return_value={"access_token": "tok", "account_id": "acc"}),
         ),
-        # change_provider clears the reprovision marker via
-        # container_repo.update_fields (needs_provision=False); with no moto
-        # containers table this hits real DynamoDB. Stub it — this test asserts
-        # on provider recording, not the marker write.
+        # Defensive: no container write is expected; stubbed so a regression
+        # fails on assertions rather than on real DynamoDB.
         patch(
             "core.repositories.container_repo.update_fields",
             new=AsyncMock(return_value=None),
@@ -529,7 +527,8 @@ async def test_change_provider_same_choice_is_noop(
     active_personal_account,
     patch_dispatch_provision,
 ):
-    """No work + no container restart for an idle re-click."""
+    """No commit for an idle re-click -- only the idempotent reconcile, which is how a lost
+    switch is retried."""
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -550,7 +549,7 @@ async def test_change_provider_same_choice_is_noop(
     body = resp.json()
     assert body["status"] == "noop"
     mock_set_pc.assert_not_awaited()
-    patch_dispatch_provision.assert_not_awaited()
+    patch_dispatch_provision.assert_called_once()
 
 
 @pytest.mark.asyncio

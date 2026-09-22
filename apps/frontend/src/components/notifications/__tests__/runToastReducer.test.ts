@@ -186,6 +186,15 @@ describe("reduceChatFrame — terminals (run_ended only)", () => {
     ]);
   });
 
+  it("carries the room a run ran in onto its terminal action", () => {
+    const s = createRunToastState();
+    const identity = { runId: "r1", agentId: "agent-bg", roomId: "room-1" };
+    reduceChatFrame(s, chunk("r1", "agent-bg"), bgCtx, identity);
+    expect(reduceChatFrame(s, runEnded("r1", "error"), bgCtx, identity)).toEqual([
+      { kind: "failure", key: "r1", agentId: "agent-bg", source: "chat", roomId: "room-1" },
+    ]);
+  });
+
   it("dismisses a shown run on outcome aborted", () => {
     const s = createRunToastState();
     reduceChatFrame(s, chunk("r1", "agent-bg"), bgCtx);

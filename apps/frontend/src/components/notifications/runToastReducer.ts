@@ -24,7 +24,9 @@ export interface RunToastContext {
 }
 
 export type RunToastAction =
-  | { kind: "working" | "success" | "failure"; key: string; agentId: string; source: "chat" | "teams" }
+  // `roomId` is the room a chat run ran in, when the frame named one — the
+  // toast's View opens it instead of the agent's DM.
+  | { kind: "working" | "success" | "failure"; key: string; agentId: string; source: "chat" | "teams"; roomId?: string }
   // Something is waiting on the user. `message` is resolved here (not in the
   // component) because only the payload knows what is actually being asked;
   // `issueId`, when present, is the task the wait is blocking.
@@ -88,6 +90,7 @@ const CHAT_START_TYPES = new Set<ChatIncomingMessage["type"]>([
 export interface RunFrameIdentity {
   runId: string;
   agentId: string;
+  roomId?: string;
 }
 
 export function reduceChatFrame(
@@ -114,6 +117,7 @@ export function reduceChatFrame(
         key: runId,
         agentId,
         source: "chat",
+        ...(identity?.roomId ? { roomId: identity.roomId } : {}),
       },
     ];
   }

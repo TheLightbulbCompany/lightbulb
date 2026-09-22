@@ -2251,6 +2251,59 @@ RUN_ERROR_MESSAGES = {
     "agent_did_not_start": "The agent did not start this run.",
     "agent_stopped_responding": "The agent stopped responding.",
 }
+# `gate_error` is deliberately absent: it is the ambient "should an `active` agent
+# answer this plain message?" classifier failing, not a run the user asked for. A
+# note there would repeat on every plain message from every listening agent while
+# the classifier is down.
+RUN_FAILURE_OUTCOMES = frozenset({"error"})
+
+
+async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error_kind: str | None) -> None:
+    """Leave one durable agent-authored note in the run's room (and the trigger's thread).
+
+    Run frames are ephemeral, so without this a user who was not watching sees nothing.
+    Silent by construction (no mentions, no dispatch targets), and keyed on the runId so a
+    retried run.ended or a sweeper/callback race replays the receipt instead of doubling.
+    Never raises: the run is already closed by the time this runs."""
+    try:
+        run_id, room_id, agent_id = row["runId"], row["roomId"], row["agentId"]
+        # error_kind is bridge-supplied; only an identifier (an exception class
+        # name) is shown, so nothing like a URL or key can reach the room.
+        if error_kind and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,63}", error_kind):
+            error_kind = None
+        label = f"{outcome}: {error_kind}" if error_kind else outcome
+        reason = RUN_ERROR_MESSAGES.get(error_kind or outcome) or "Agent run failed."
+        text = (
+            f"I couldn't finish that ({label}). {reason} "
+            "Try again, or check Settings → Model & Credits if this keeps happening."
+        )
+        trigger = (
+            await messaging_repo.get_message_by_id(room_id, row["triggerMessageId"])
+            if row.get("triggerMessageId")
+            else None
+        )
+        thread_root = (trigger or {}).get("threadRootMessageId")
+        roster = {agent["id"]: agent for agent in await load_agent_roster(owner_id)}
+        name = (roster.get(agent_id) or {}).get("name") or "Agent"
+        await messaging_repo.create_message(
+            room_id=room_id,
+            owner_id=owner_id,
+            idemp_pk=messaging_repo.owner_pk(owner_id),
+            idemp_sk=messaging_repo.agent_idemp_sk(f"run-failed:{run_id}"),
+            req_hash=messaging_repo.request_hash(room_id, agent_id, text, None, thread_root),
+            author={"kind": "agent", "id": agent_id, "displayName": name},
+            text=text,
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=thread_root,
+            run_id=run_id,
+            dispatch_targets=[],
+            source_agent_id=agent_id,
+            client_message_id=None,
+        )
+        put_metric("messaging.run.failure_message", dimensions={"outcome": outcome})
+    except Exception:
+        logger.exception("run failure message failed")
 
 
 async def publish_run_error_frames(row: dict, error_kind: str | None) -> None:
@@ -2305,6 +2358,8 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
                     await publish_run_error_frames(row, event.error_kind)
                 except Exception:
                     logger.exception("run error frames failed")
+            if event.outcome in RUN_FAILURE_OUTCOMES:
+                await post_run_failure_message(owner_id, row, event.outcome, event.error_kind)
             try:
                 await _after_run_ended(owner_id, row, event.outcome, event.usage)
             except Exception:

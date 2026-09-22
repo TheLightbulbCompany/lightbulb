@@ -252,7 +252,7 @@ function sharedCompanyNotice(shared: SharedCompany): string {
   );
 }
 
-function StepList({ steps }: { steps: WipeStep[] }) {
+export function StepList({ steps }: { steps: WipeStep[] }) {
   if (steps.length === 0) {
     return <p className="text-sm text-muted-foreground">No resources found for this owner.</p>;
   }

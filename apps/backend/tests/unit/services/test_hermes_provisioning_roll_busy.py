@@ -18,6 +18,13 @@ from core.services.messaging import ApiProblem
 
 from tests.unit.services.test_hermes_provisioning_roll import _wire
 
+
+@pytest.fixture(autouse=True)
+def _no_billing_row(monkeypatch):
+    """A roll resolves the provider from billing; default to no row (bedrock_claude)."""
+    monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=None))
+
+
 #: Captured at import, before any test's ``_wire`` replaces it: the S1-b test needs the REAL
 #: fold (transport error -> chained ApiProblem), not the stub every other test here installs.
 _REAL_CONTAINER_RPC_CALL = container_rpc.call

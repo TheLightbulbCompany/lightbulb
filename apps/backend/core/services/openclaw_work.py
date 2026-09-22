@@ -38,6 +38,8 @@ _INGRESS_MAX_BYTES = 1_048_576
 _HISTORY_LIMIT = 20
 _VISIBILITY_SECONDS = 60
 _RETRY_VISIBILITY_SECONDS = 10
+#: 30 receives x 60s = 30 min, comfortably past a switch's 10-min idle wait.
+_SWITCH_RETRY_VISIBILITY_SECONDS = 60
 #: F4 (predeploy review, M6-R37): hoisted to runtime_transport (the shared home
 #: container_rpc.call also reads) so a fleet-wide budget change has one source. Kept as a
 #: module attribute here so agent_mail_delivery's existing import keeps working unchanged.
@@ -48,7 +50,9 @@ _DESERIALIZER = TypeDeserializer()
 
 
 class WorkRetry(RuntimeError):
-    pass
+    def __init__(self, message: str = "", *, visibility: int | None = None) -> None:
+        super().__init__(message)
+        self.visibility = visibility
 
 
 def deserialize_pointer(body: str) -> dict[str, Any]:
@@ -281,7 +285,7 @@ class OpenClawWorkWorker:
             # WorkRetry means "try again soon" (waking container, lease race,
             # ...) — release the message early instead of holding the full
             # 300s visibility, or the rest of the FIFO group queues behind it.
-            await self._return_visibility(message, timeout=_RETRY_VISIBILITY_SECONDS)
+            await self._return_visibility(message, timeout=exc.visibility or _RETRY_VISIBILITY_SECONDS)
         except Exception as exc:
             put_metric(
                 "messaging.worker.message",
@@ -451,6 +455,11 @@ class OpenClawWorkWorker:
                 await messaging_repo.end_run(owner_id, run_id, outcome="not_admitted")
                 put_metric("messaging.ambient_gate", dimensions={"outcome": "not_admitted", "event_kind": event_kind})
                 return
+            if response.status_code == 503 and "provider_switch" in response.text:
+                # The backend's pending flag or the bridge's own freeze. A switch waits up to
+                # ROLL_IDLE_WAIT_S for the runtime to idle; 30 receives at the
+                # 10s cold-start pace would dead-letter the message before the switch lands.
+                raise WorkRetry("provider switch pending", visibility=_SWITCH_RETRY_VISIBILITY_SECONDS)
             if response.status_code not in (200, 202):
                 raise WorkRetry(f"plugin refused ingress ({response.status_code})")
             try:

@@ -193,6 +193,7 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   // is a new identity per task per deploy (the _DENIED_DIMENSIONS class).
   "gateway.running.count": [[]],
   "marketplace.path_traversal_attempt": [[]],
+  "runtime.ingress.provider_switch_pending": [[]],
   // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---
   // core/services/messaging.py — create_human_message / create_agent_message.
   "messaging.message.created": [["author_kind", "has_targets", "room_kind"]],

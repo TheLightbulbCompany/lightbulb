@@ -3,7 +3,6 @@ import { execSync } from "child_process";
 import * as fs from "fs";
 import * as cdk from "aws-cdk-lib";
 import { resourcePrefix } from "../table-names";
-import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
@@ -118,24 +117,11 @@ export class BedrockGateStack extends cdk.Stack {
       // CfnOutput logical ids are explicitly Dev/Prod per the plan.
       const outSuffix = gateEnv === "prod" ? "Prod" : "Dev";
 
-      // Gate-private state: the bearer-token table. Holds only SHA-256(token) +
-      // owner_id + a denied flag + created_at — never the plaintext token — so
-      // AWS-owned encryption is sufficient (no cross-stage CMK to reference).
-      // RETAIN + PITR: a lost token row silently breaks an owner's inference.
-      const tokensTable = new dynamodb.Table(this, `GateTokensTable${idSuffix}`, {
-        tableName: `${tablePrefix(gateEnv)}bedrock-gate-tokens`,
-        partitionKey: {
-          name: "token_hash",
-          type: dynamodb.AttributeType.STRING,
-        },
-        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-        removalPolicy: cdk.RemovalPolicy.RETAIN,
-        pointInTimeRecovery: true,
-        // On rotation the superseded token row is grace-expired (a short ttl)
-        // rather than deleted, so the still-running task keeps serving through a
-        // reprovision roll; DynamoDB reaps it after. Current tokens carry no ttl.
-        timeToLiveAttribute: "ttl",
-      });
+      // The bearer-token table is NOT managed here any more: it was detached
+      // (DeletionPolicy Retain) so it survives this stack's deletion, and the
+      // openrouter-gate + backend keep using it by NAME. Rolling back needs
+      // `cdk import`, not a revert — re-adding the construct fails on CREATE.
+      const tokensTableName = `${tablePrefix(gateEnv)}bedrock-gate-tokens`;
 
       // The function name is stable and env-specific: it also becomes the
       // Lambda session-name segment of the gateway's assumed-role ARN in the
@@ -163,8 +149,8 @@ export class BedrockGateStack extends cdk.Stack {
           // The env dimension on the gate's EMF metrics (namespace
           // Isol8/BedrockGate) and the env segment the alarms key off.
           GATE_ENV: gateEnv,
-          // Bearer-token table (this stack) — SHA-256(token) -> owner_id/denied.
-          TOKENS_TABLE: tokensTable.tableName,
+          // Bearer-token table (unmanaged, by name) — SHA-256(token) -> owner_id/denied.
+          TOKENS_TABLE: tokensTableName,
           // Plan + trial daily-spend/reserved counters (billing-accounts) and
           // the paid credit balance projection (metronome-fast-gate).
           BILLING_TABLE: `${tablePrefix(gateEnv)}billing-accounts`,
@@ -300,7 +286,7 @@ export class BedrockGateStack extends cdk.Stack {
             "dynamodb:UpdateItem",
           ],
           resources: [
-            tokensTable.tableArn,
+            ddbArn(tokensTableName),
             // Wildcard prefix so the grant spans the rename: the gate reads
             // these three by NAME and the names move in this same deploy. A
             // grant left on the legacy prefix AccessDenies the gate the instant

@@ -64,9 +64,8 @@ describe("BedrockGateStack", () => {
         Environment: {
           Variables: Match.objectLike({
             GATE_ENV: gateEnv,
-            // TOKENS_TABLE is a CFN Ref to the in-stack table (its physical
-            // name is asserted on the DynamoDB resource below).
-            TOKENS_TABLE: Match.anyValue(),
+            // By physical NAME: the table is detached from this stack (below).
+            TOKENS_TABLE: `${tablePrefix(gateEnv)}bedrock-gate-tokens`,
             BILLING_TABLE: `${tablePrefix(gateEnv)}billing-accounts`,
             FAST_GATE_TABLE: `${tablePrefix(gateEnv)}metronome-fast-gate`,
             INVOCATION_DEDUP_TABLE: `${tablePrefix(gateEnv)}bedrock-invocation-dedup`,
@@ -152,27 +151,16 @@ describe("BedrockGateStack", () => {
     }
   });
 
-  test("one gate-private token table per instance (PK token_hash, PITR, RETAIN)", () => {
-    // Gate-private state — created here, NOT in the database stack. RETAIN +
-    // PITR: a lost token row silently breaks an owner's inference.
-    template.resourceCountIs("AWS::DynamoDB::Table", 2);
+  test("the token tables are NOT managed here (detached, retained, used by name)", () => {
+    // Removing them from the template with DeletionPolicy Retain deployed
+    // detaches them; openrouter-gate and the backend keep using them by name.
+    template.resourceCountIs("AWS::DynamoDB::Table", 0);
+    const policies = JSON.stringify(template.findResources("AWS::IAM::Policy"));
     for (const gateEnv of ["dev", "prod"]) {
-      template.hasResourceProperties("AWS::DynamoDB::Table", {
-        TableName: `${tablePrefix(gateEnv)}bedrock-gate-tokens`,
-        KeySchema: [{ AttributeName: "token_hash", KeyType: "HASH" }],
-        BillingMode: "PAY_PER_REQUEST",
-        PointInTimeRecoverySpecification: {
-          PointInTimeRecoveryEnabled: true,
-        },
-      });
+      expect(policies).toContain(
+        `"arn:aws:dynamodb:us-east-1:877352799272:table/${tablePrefix(gateEnv)}bedrock-gate-tokens"`,
+      );
     }
-    template.hasResource("AWS::DynamoDB::Table", {
-      Properties: Match.objectLike({
-        TableName: "lightbulb-prod-bedrock-gate-tokens",
-      }),
-      DeletionPolicy: "Retain",
-      UpdateReplacePolicy: "Retain",
-    });
   });
 
   test("Invoke on the AIP wildcard is UNCONDITIONED (AWS denies a conditioned profile-resource invoke)", () => {

@@ -97,6 +97,19 @@ async def test_running_row_is_never_claimable(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_running_row_marked_for_provider_refresh_can_be_claimed_once(dynamodb_table):
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "user_refresh", "status": "running", "needs_provision": True})
+    first = await container_repo.try_claim_provision("user_refresh")
+    second = await container_repo.try_claim_provision("user_refresh")
+
+    assert first is not None
+    assert second is None
+    assert _row(dynamodb_table, "user_refresh")["status"] == "provisioning"
+
+
+@pytest.mark.asyncio
 async def test_stale_provisioning_lease_is_reclaimable_fresh_is_not(dynamodb_table):
     """A hard-killed provision leaves the row provisioning with a lease that
     stops being refreshed; after PROVISION_CLAIM_STALE_S the next poll may

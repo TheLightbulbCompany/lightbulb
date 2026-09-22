@@ -158,10 +158,10 @@ def execution_input(owner_id: str, claim_id: str) -> str:
     )
 
 
-async def dispatch_provision(owner_id: str) -> None:
-    """Start (or idempotently re-start) the provisioning state machine for
-    this owner. Never raises — dispatch failure releases the claim to
-    ``error`` so the status poll's normal retry re-dispatches."""
+async def dispatch_provision(owner_id: str) -> bool:
+    """Start or re-start provisioning. Return whether a claim or live attempt
+    owns the work. Never raises; a caller with a recovery marker must retain
+    it when dispatch stands down."""
     # Re-bind correlation ids: dispatched via create_task, this can run in a
     # detached task where the HTTP-middleware binds did not propagate.
     bind_log_context(user_id=owner_id)
@@ -172,14 +172,15 @@ async def dispatch_provision(owner_id: str) -> None:
         # hands this a user_ id). provision_runner step 0 refuses too, as a backstop.
         logger.error("dispatch_provision: %s is not a workspace (org) — refusing to provision", owner_id)
         emit_provision_metric("refused_non_org")
-        return
+        return False
     try:
-        await _dispatch_inner(owner_id)
+        return await _dispatch_inner(owner_id)
     except Exception:  # noqa: BLE001 — dispatch must never take down the caller
         logger.exception("dispatch_provision: dispatch failed for owner %s", owner_id)
+        return False
 
 
-async def _dispatch_inner(owner_id: str) -> None:
+async def _dispatch_inner(owner_id: str) -> bool:
     row = await container_repo.get_by_owner_id(owner_id)
 
     # Branch A (design §3): a row with a self-consistent stamped execution
@@ -210,7 +211,7 @@ async def _dispatch_inner(owner_id: str) -> None:
                     # spawning), so a re-issue is an idempotent no-op. Skip the
                     # redundant API call rather than make one per owner per
                     # ~3s poll.
-                    return
+                    return True
                 # Branch B degraded: this attempt has NO watchdog. Keep trying
                 # to attach one on every poll — otherwise the attempt
                 # suppresses its own recovery for its whole 30-minute life, and
@@ -218,12 +219,12 @@ async def _dispatch_inner(owner_id: str) -> None:
                 if await _start(owner_id, claim) == "ok":
                     live.watched = True
                     logger.info("dispatch_provision: watchdog attached to live attempt for owner %s", owner_id)
-                return
+                return True
             outcome = await _start(owner_id, claim)
             if outcome != "closed":
                 # "ok" → done. "failed" → return WITHOUT touching the row:
                 # the claim is not ours to release, and a later poll retries.
-                return
+                return outcome == "ok"
 
     # Branch B: fresh dispatch — mint claim + name in one atomic write, START
     # the watchdog, then run attempt 0 in-process. The order carries the
@@ -237,7 +238,7 @@ async def _dispatch_inner(owner_id: str) -> None:
     if won is None:
         logger.info("dispatch_provision: claim lost for owner %s — standing down", owner_id)
         emit_provision_metric("claim_lost")
-        return
+        return False
     outcome = await _start(owner_id, claim)
     if outcome != "ok":
         # No watchdog for this claim: either Step Functions is unreachable, or
@@ -264,6 +265,7 @@ async def _dispatch_inner(owner_id: str) -> None:
             outcome,
         )
     _spawn_inline(owner_id, claim, watched=outcome == "ok")
+    return True
 
 
 # Live inline attempts, owner_id -> (claim_id, task). The dict holds the strong

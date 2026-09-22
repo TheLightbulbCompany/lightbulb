@@ -190,7 +190,8 @@ async def test_execution_input_command_shape():
 async def test_claim_lost_starts_nothing(monkeypatch, sfn):
     monkeypatch.setattr(provision_dispatch.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr(provision_dispatch.container_repo, "try_claim_provision", AsyncMock(return_value=None))
-    await provision_dispatch.dispatch_provision("org_abc")
+    accepted = await provision_dispatch.dispatch_provision("org_abc")
+    assert accepted is False
     sfn.start_execution.assert_not_called()
 
 

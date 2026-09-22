@@ -11,8 +11,9 @@ def _no_manual_servers_by_default(monkeypatch):
     in this file; the manual-servers tests below override it per test."""
     from core.services.credentials import mcp_server as m
 
-    # These assertions pin the native actor-owned production rail. Dev uses the
-    # workspace bearer broker for the same remote providers.
+    # These assertions pin the brokered bearer shape in production
+    # (brokered_environments: [dev, prod]): the refresh grant is backend-owned
+    # and the runtime receives a per-turn bearer via ${MCP_<KEY>_ACCESS_TOKEN}.
     monkeypatch.setattr(m.registry.settings, "ENVIRONMENT", "prod")
     monkeypatch.setattr(m.integrations_repo, "get_manual_mcp_servers", AsyncMock(return_value={}))
 
@@ -112,12 +113,12 @@ async def test_build_connected_map_skips_actor_and_unretained(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_build_connected_map_emits_remote_block_without_retained_secret(monkeypatch):
-    # An mcp_remote provider (attio, stripe) rides the materializer rail and
-    # self-refreshes in-container, so it has NO retained Secrets-Manager secret.
-    # Its live {transport, url} block must still be emitted from the registry +
-    # connected status alone — otherwise a reprovision drops the server entry.
-    # The actor-refresh CLI one (google) stays excluded. Uses the real registry
-    # entries, so it pins the YAML mcp_remote wiring.
+    # A brokered mcp_remote provider (attio, stripe) has its refresh grant owned
+    # by the backend, so it has NO retained actor credential in Secrets Manager.
+    # Its live brokered {url, headers} block must still be emitted from the
+    # registry + connected status alone — otherwise a reprovision drops the server
+    # entry. The actor-refresh CLI one (google) stays excluded. Uses the real
+    # registry entries, so it pins the YAML mcp_remote wiring.
     from core.services.credentials import mcp_server as m
 
     monkeypatch.setattr(
@@ -139,31 +140,27 @@ async def test_build_connected_map_emits_remote_block_without_retained_secret(mo
     monkeypatch.setattr(m.integration_secret_store, "get", secret_get)
 
     servers = await m.build_connected_integration_servers("org_1")
-    # The rehydrated remote block carries auth: "oauth" so a reprovision re-arms the
-    # SDK OAuth provider — identical to what the live materializer write publishes.
+    # The brokered block carries a per-turn bearer reference so the runtime never
+    # holds the refresh grant — identical to what the live materializer write publishes.
     assert servers == {
         "attio": {
-            "transport": "streamable-http",
             "url": "https://mcp.attio.com/mcp",
-            "auth": "oauth",
+            "headers": {"Authorization": "Bearer ${MCP_ATTIO_ACCESS_TOKEN}"},
             "requestTimeoutMs": 60000,
         },
         "stripe": {
-            "transport": "streamable-http",
             "url": "https://mcp.stripe.com",
-            "auth": "oauth",
+            "headers": {"Authorization": "Bearer ${MCP_STRIPE_ACCESS_TOKEN}"},
             "requestTimeoutMs": 60000,
         },
         "apollo": {
-            "transport": "streamable-http",
             "url": "https://mcp.apollo.io/mcp",
-            "auth": "oauth",
+            "headers": {"Authorization": "Bearer ${MCP_APOLLO_ACCESS_TOKEN}"},
             "requestTimeoutMs": 60000,
         },
         "cloudflare": {
-            "transport": "streamable-http",
             "url": "https://mcp.cloudflare.com/mcp",
-            "auth": "oauth",
+            "headers": {"Authorization": "Bearer ${MCP_CLOUDFLARE_ACCESS_TOKEN}"},
             "requestTimeoutMs": 60000,
         },
     }
@@ -204,9 +201,8 @@ async def test_build_connected_map_skips_orphan_unknown_provider(monkeypatch):
     servers = await m.build_connected_integration_servers("org_1")
     assert servers == {
         "stripe": {
-            "transport": "streamable-http",
             "url": "https://mcp.stripe.com",
-            "auth": "oauth",
+            "headers": {"Authorization": "Bearer ${MCP_STRIPE_ACCESS_TOKEN}"},
             "requestTimeoutMs": 60000,
         }
     }
@@ -285,9 +281,8 @@ async def test_build_connected_map_connected_integration_wins_manual_collision(m
     servers = await m.build_connected_integration_servers("org_1")
 
     assert servers["stripe"] == {
-        "transport": "streamable-http",
         "url": "https://mcp.stripe.com",
-        "auth": "oauth",
+        "headers": {"Authorization": "Bearer ${MCP_STRIPE_ACCESS_TOKEN}"},
         "requestTimeoutMs": 60000,
     }
     assert servers["my-custom"] == {"command": "keep"}
@@ -346,9 +341,8 @@ async def test_build_connected_map_includes_pending_provider_not_yet_recorded(mo
 
     assert servers == {
         "stripe": {
-            "transport": "streamable-http",
             "url": "https://mcp.stripe.com",
-            "auth": "oauth",
+            "headers": {"Authorization": "Bearer ${MCP_STRIPE_ACCESS_TOKEN}"},
             "requestTimeoutMs": 60000,
         }
     }

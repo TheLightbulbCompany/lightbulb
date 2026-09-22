@@ -378,12 +378,15 @@ def test_posthog_mcp_remote_uses_cli_mode_and_list_timeout():
 
 
 def test_actor_remote_mcp_can_be_brokered_per_environment(monkeypatch):
+    # brokered_environments: [dev, prod] routes the actor-owned remote OAuth MCP
+    # providers through the workspace broker in both environments, keeping refresh
+    # grants out of runtimes.
     p = registry.get_provider("notion")
     assert p.refresh_owner == "actor"
     monkeypatch.setattr(registry.settings, "ENVIRONMENT", "dev")
     assert registry.refresh_owner_for(p) == "backend"
     monkeypatch.setattr(registry.settings, "ENVIRONMENT", "prod")
-    assert registry.refresh_owner_for(p) == "actor"
+    assert registry.refresh_owner_for(p) == "backend"
 
 
 def test_skill_spec_model_shape():

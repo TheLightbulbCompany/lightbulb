@@ -265,12 +265,24 @@ def test_auth_status_reports_bedrock_through_the_gate_bearer(home, monkeypatch):
 
 
 def test_auth_status_reports_managed_custom_through_the_gate_bearer(home, monkeypatch):
+    # The PROFILE decides, not the boot-time provider choice (a warm process outlives a switch).
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-token")
-    monkeypatch.setenv("LIGHTBULB_PROVIDER_CHOICE", "openrouter_managed")
+    monkeypatch.setenv("LIGHTBULB_PROVIDER_CHOICE", "bedrock_trial")
+    monkeypatch.setenv("LIGHTBULB_MANAGED_GATE_URL", "https://gate.example/v1")
     (home / "profiles" / "ceo").mkdir(parents=True)
-    sync.write_profile_config("ceo", {"model": {"provider": "custom"}})
+    sync.write_profile_config("ceo", {"model": {"provider": "custom", "base_url": "https://gate.example/v1"}})
     assert call("models.authStatus")[1]["payload"]["providers"] == [
         {"provider": "custom", "status": "ok", "via": "lightbulb-gate"}]
+
+
+def test_auth_status_does_not_call_a_non_gate_custom_route_the_lightbulb_gate(home, monkeypatch):
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-token")
+    monkeypatch.setenv("LIGHTBULB_PROVIDER_CHOICE", "openrouter_managed")
+    monkeypatch.setenv("LIGHTBULB_MANAGED_GATE_URL", "https://gate.example/v1")
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    sync.write_profile_config("ceo", {"model": {"provider": "custom", "base_url": "https://elsewhere.example/v1"}})
+    assert call("models.authStatus")[1]["payload"]["providers"] == [
+        {"provider": "custom", "status": "missing", "via": "unknown"}]
 
 
 def test_auth_status_reports_chatgpt_oauth_from_the_root_auth_json(home, monkeypatch):

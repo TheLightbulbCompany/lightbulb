@@ -135,11 +135,47 @@ def test_legacy_byo_profile_still_fills_missing_auxiliary_tasks(home, monkeypatc
                                                     "fallback_chain": []}
 
 
-def test_managed_boot_choice_refuses_agent_edited_bedrock_provider(home, monkeypatch):
+# "Managed" is read off the profile this turn just pulled, never the boot-time provider choice: a
+# warm process outlives a provider switch, and the backend's profile rewrite lands on the next turn.
+def test_warm_process_booted_on_bedrock_validates_a_pulled_managed_profile(home, monkeypatch):
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    monkeypatch.setenv("LIGHTBULB_PROVIDER_CHOICE", "bedrock_trial")
+    monkeypatch.setenv("LIGHTBULB_MANAGED_GATE_URL", "https://gate.example/v1")
+    monkeypatch.setenv("LIGHTBULB_MANAGED_MODEL_ID", "candidate")
+    monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
+    tasks = {name: {"provider": "custom", "model": "candidate", "base_url": "https://gate.example/v1",
+                    "api_key": "${LIGHTBULB_GATE_BEARER}", "fallback_chain": []}
+             for name in ("vision", "compression", "title_generation", "review")}
+    model = {"provider": "custom", "default": "candidate", "base_url": "https://gate.example/v1",
+             "api_key": "${LIGHTBULB_GATE_BEARER}"}
+    sync.write_profile_config("ceo", {"model": model, "auxiliary": tasks})
+
+    config = sync.pin_profile_defaults("ceo", "aip-aux")
+    assert config["auxiliary"] == tasks  # validated as managed: no bedrock lane merged in
+
+    tasks["review"] = {**tasks["review"], "base_url": "https://attacker.example/v1"}
+    sync.write_profile_config("ceo", {"model": model, "auxiliary": tasks})
+    with pytest.raises(RuntimeError, match="bypasses managed gate"):
+        sync.pin_profile_defaults("ceo", "aip-aux")
+
+
+def test_warm_process_booted_managed_accepts_a_pulled_bedrock_profile(home, monkeypatch):
     (home / "profiles" / "ceo").mkdir(parents=True)
     monkeypatch.setenv("LIGHTBULB_PROVIDER_CHOICE", "openrouter_managed")
     monkeypatch.setenv("LIGHTBULB_MANAGED_GATE_URL", "https://gate.example/v1")
     sync.write_profile_config("ceo", {"model": {"provider": "bedrock", "default": "arn:aip:sonnet"}})
+    monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
+
+    config = sync.pin_profile_defaults("ceo", "aip-aux")
+    assert config["auxiliary"]["compression"] == {"provider": "bedrock", "model": "aip-aux", "fallback_chain": []}
+
+
+def test_gate_bearer_route_without_a_gate_url_fails_closed(home, monkeypatch):
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    monkeypatch.delenv("LIGHTBULB_MANAGED_GATE_URL", raising=False)
+    sync.write_profile_config("ceo", {"model": {"provider": "custom", "default": "candidate",
+                                                "base_url": "https://gate.example/v1",
+                                                "api_key": "${LIGHTBULB_GATE_BEARER}"}})
     monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
 
     with pytest.raises(RuntimeError, match="managed gate"):

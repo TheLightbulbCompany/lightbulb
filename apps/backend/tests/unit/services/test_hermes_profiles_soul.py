@@ -57,3 +57,24 @@ def test_stripping_the_marker_is_what_hands_the_file_to_the_owner():
 
 def test_stripping_is_a_no_op_on_text_that_never_carried_a_marker():
     assert strip_generated_marker("# Ada\n") == "# Ada\n"
+
+
+# ---------------------------------------------------------------------------
+# The starter roster ships with a persona: Paperclip ``capabilities`` rendered
+# under "## What you do", not a one-line identity.
+# ---------------------------------------------------------------------------
+
+
+def test_every_starter_agent_renders_a_full_persona():
+    from core.services.paperclip_provisioning import STARTER_CAPABILITIES, STARTER_ROSTER
+
+    assert set(STARTER_CAPABILITIES) == {key for key, *_ in STARTER_ROSTER}
+    for key, name, role, title, _parent in STARTER_ROSTER:
+        capabilities = STARTER_CAPABILITIES[key]
+        soul = build_soul_md({"id": key, "name": name, "role": role, "title": title, "capabilities": capabilities})
+        assert is_generated_soul(soul)
+        assert f"\n# {name}\n" in soul
+        assert f"You are {name}, the {role} agent on Lightbulb." in soul
+        assert soul.endswith(f"\n## What you do\n\n{capabilities}\n")
+        headline, blank, paragraph = capabilities.split("\n")
+        assert headline and not blank and len(paragraph) > 200

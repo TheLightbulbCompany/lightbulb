@@ -26,6 +26,8 @@ from moto import mock_aws
 
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services.paperclip_provisioning import (
+    STARTER_CAPABILITIES,
+    STARTER_ROSTER,
     OrgNotProvisionedError,
     PaperclipProvisioning,
 )
@@ -238,6 +240,11 @@ async def test_provision_org_happy_path(repo, monkeypatch):
         "Analytics",
         "Customer Operations",
     }
+
+    # Each starter ships its persona as Paperclip ``capabilities`` -- what SOUL.md renders
+    # under "## What you do".
+    for key, name, *_ in STARTER_ROSTER:
+        assert by_name[name]["capabilities"] == STARTER_CAPABILITIES[key]
 
     agent_kwargs = by_name["CEO"]
     assert agent_kwargs["company_id"] == "co_acme"

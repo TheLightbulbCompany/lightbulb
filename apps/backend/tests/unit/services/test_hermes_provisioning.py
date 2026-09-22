@@ -1742,3 +1742,34 @@ async def test_reconcile_uses_committed_paid_billing_instead_of_stale_trial(monk
     assert await hermes_provisioning.reconcile_hermes_aips("org_paid") == arns
     read.assert_awaited_once_with("org_paid", consistent_read=True)
     reconcile.assert_awaited_once_with("org_paid", arns)
+
+
+@pytest.mark.asyncio
+async def test_write_profiles_never_overwrites_an_owner_edited_soul_md(monkeypatch):
+    """M6-R48 on the re-render fan-out (PATCH /debug/provision, a provider switch): a SOUL.md
+    that lost the generated marker is the owner's and is carried through verbatim; one still
+    carrying the marker (or absent/empty) is regenerated from the roster row."""
+    from core.services import hermes_profiles
+
+    owner_text = "# Ada\n\nI wrote this myself.\n"
+    stale = hermes_profiles.build_soul_md({"id": "x", "name": "Old", "role": "general"})
+    stored = {"a-owner": owner_text, "a-gen": stale, "a-none": None, "a-empty": ""}
+    roster = [{"id": aid, "name": f"New {aid}", "role": "general", "capabilities": "does things"} for aid in stored]
+    _patch_write_profiles_collaborators(monkeypatch)
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
+    monkeypatch.setattr(hermes_provisioning.settings, "OWNER_STATE_BUCKET", "bucket")
+    monkeypatch.setattr(hermes_profiles, "read_soul_md", lambda owner_id, agent_id: stored[agent_id])
+    uploaded = {}
+
+    async def _capture(owner_id, agent_id, files):
+        uploaded[agent_id] = files.soul_md
+
+    monkeypatch.setattr(hermes_profiles, "upload_profile", _capture)
+
+    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+
+    assert uploaded["a-owner"] == owner_text
+    for aid in ("a-gen", "a-none", "a-empty"):
+        assert hermes_profiles.is_generated_soul(uploaded[aid])
+        assert f"# New {aid}" in uploaded[aid]
+        assert "## What you do\n\ndoes things" in uploaded[aid]

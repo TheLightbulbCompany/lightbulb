@@ -28,6 +28,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from bridge import HOME, S3_BUCKET, S3_PREFIX
@@ -101,7 +102,7 @@ CLI_CREDENTIAL_PREFIXES = (
 #: folded together: ``_pull_cli_credentials`` deletes local files under ITS prefixes that S3
 #: lacks, which must never be pointed at an agent-owned path.
 #: NB ``fnmatch``'s ``*`` spans ``/``, so one pattern per name covers the whole subtree.
-_HOME_UNSYNCED = (".cache", ".npm", ".ssh", ".gnupg", ".local/state")
+_HOME_UNSYNCED = (".cache", ".npm", ".ssh", ".gnupg", ".local/state", ".local/share/uv")
 # pnpm puts its reproducible package store under XDG_DATA_HOME, which points into this
 # profile. Old S3 copies must also be skipped on cold restore, not just future uploads.
 PNPM_STORE_PREFIX = f"{PROFILE_HOME}/.local/share/pnpm/store/"
@@ -116,7 +117,8 @@ HOME_EXCLUDE_GLOBS = (
 #: rglobs. PUSH-side only (see is_reproducible) -- ``.git/`` is deliberately absent, a fresh
 #: clone's objects being packfiles rather than thousands of loose ones.
 # ponytail: two ceilings left standing. (1) The per-file S3 fanout itself: a big SOURCE tree is
-# still one PUT/GET per file, in front of the first reply. (2) save_profile still rglobs INTO
+# still one PUT/GET per file in front of the first reply -- now on a 32-worker pool (_fan_out),
+# which divides the wait but not the object count. (2) save_profile still rglobs INTO
 # these dirs and stamps every file before discarding it -- the PUTs go, the local walk does not.
 # Upgrade path for both: archive the workspace subtree as ONE object and special-case it in
 # save_profile/restore_profile, the way the SQLite backup API already is below. Not implemented.
@@ -222,6 +224,24 @@ def is_reproducible(rel: str) -> bool:
     return any(fnmatch.fnmatch(rel, pattern) for pattern in _REPRODUCIBLE_GLOBS)
 
 
+#: Restore-side skip: reinstallable home caches an older image already pushed. Deliberately NOT
+#: ``is_excluded``/``is_reproducible`` -- those name backend-owned files and migrated skills a cold
+#: start MUST pull -- and not all of ``home/.local``: the backend projects CLI credentials under
+#: ``home/.local/share/gogcli/``.
+_RESTORE_SKIP_PREFIXES = (*(f"{PROFILE_HOME}/{name}/" for name in _HOME_UNSYNCED), PNPM_STORE_PREFIX)
+
+#: Per-file S3 GET/PUT ran at ~10-16 objects/s sequentially (Forge: 92,139 objects in 5,749 s).
+#: boto3 clients are thread-safe, so the one shared ``_s3()`` client serves every worker.
+_SYNC_WORKERS = 32
+
+
+def _fan_out(fn, items) -> None:
+    """Run ``fn`` over ``items`` on a bounded pool; the first worker exception re-raises here."""
+    with ThreadPoolExecutor(max_workers=_SYNC_WORKERS) as pool:
+        for _ in pool.map(fn, items):
+            pass
+
+
 def load_boot_secrets(secret_id: str, client=None) -> dict[str, str]:
     """The runtime's environmentVariables are plaintext to anyone with GetAgentRuntime
     (spec §4.9), so they carry identifiers only and the real secrets are fetched here with
@@ -302,27 +322,33 @@ def restore_profile(agent_id: str) -> float:
     ensure_profile_home(agent_id)
     prefix = f"{S3_PREFIX}/{agent_id}/"
     s3 = _s3()
-    n = 0
     synced = _SYNCED.setdefault(agent_id, {})
     # M6-R51: the baseline save_profile diffs against -- without it the first save of the process
     # would upload the entire tree it just downloaded. Recorded per object as the loop writes it,
     # not by a second rglob afterwards: cold-restore latency sits in front of the first reply.
     mtimes = _MTIMES.setdefault(agent_id, {})
+    wanted: list[tuple[str, dict]] = []
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
         for obj in page.get("Contents", []):
             rel = obj["Key"][len(prefix):]
             if not rel or rel.endswith("/"):
                 continue  # directory marker: downloading it onto the directory raises
-            if is_lock_sidecar(rel) or rel.startswith(PNPM_STORE_PREFIX):
-                continue  # process-local lock or reproducible package cache
-            target = dest / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            s3.download_file(S3_BUCKET, obj["Key"], str(target))
-            modified = _modified_at(obj)
-            if modified is not None:
-                synced[rel] = modified
-            mtimes[rel] = _change_stamp(target)
-            n += 1
+            if is_lock_sidecar(rel) or rel.startswith(_RESTORE_SKIP_PREFIXES):
+                continue  # process-local lock or reinstallable home cache
+            wanted.append((rel, obj))
+
+    def _download(item: tuple[str, dict]) -> None:
+        rel, obj = item
+        target = dest / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        s3.download_file(S3_BUCKET, obj["Key"], str(target))
+        modified = _modified_at(obj)
+        if modified is not None:
+            synced[rel] = modified
+        mtimes[rel] = _change_stamp(target)
+
+    _fan_out(_download, wanted)
+    n = len(wanted)
     _restored.add(agent_id)
     took = time.time() - t0
     log.info("restored profile %s: %d objects in %.1fs", agent_id, n, took)
@@ -359,9 +385,9 @@ def save_profile(agent_id: str) -> float:
         s3 = _s3()
         mtimes = _MTIMES.setdefault(agent_id, {})
         synced = _SYNCED.setdefault(agent_id, {})
-        n = 0
         # Materialized, not lazy: the .s3snap temp below is created inside src and a live
         # rglob can yield it back as a file of its own.
+        changed: list[tuple[Path, str, int]] = []
         for path in sorted(src.rglob("*")):
             rel = path.relative_to(src).as_posix()
             if not path.is_file() or is_excluded(rel) or is_reproducible(rel):
@@ -369,6 +395,10 @@ def save_profile(agent_id: str) -> float:
             stamp = _change_stamp(path)
             if mtimes.get(rel) == stamp:
                 continue  # untouched by this turn: S3's copy is the source of truth
+            changed.append((path, rel, stamp))
+
+        def _upload(item: tuple[Path, str, int]) -> None:
+            path, rel, stamp = item
             upload = path
             if path.suffix in (".db", ".sqlite"):
                 snap = path.with_name(path.name + ".s3snap")
@@ -386,7 +416,9 @@ def save_profile(agent_id: str) -> float:
                 upload.unlink(missing_ok=True)
             mtimes[rel] = stamp
             synced[rel] = now
-            n += 1
+
+        _fan_out(_upload, changed)
+        n = len(changed)
         took = time.time() - t0
         log.info("saved profile %s: %d changed objects in %.1fs", agent_id, n, took)
         return took

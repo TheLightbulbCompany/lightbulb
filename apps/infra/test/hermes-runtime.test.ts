@@ -79,6 +79,7 @@ function buildStacks(environment: "dev" | "prod"): {
       containerSecurityGroup: container.containerSecurityGroup,
       ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
       ownerBedrockBoundary: container.ownerBedrockBoundary,
+      workspaceMemory: { memoryId: container.workspaceMemory.attrMemoryId, memoryArn: container.workspaceMemory.attrMemoryArn },
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",
@@ -322,5 +323,66 @@ describe("hermes runtime wiring", () => {
     // agent-browser state save/load path instead.
     const doc = JSON.stringify(dev.serviceTemplate.findResources("AWS::IAM::Policy"));
     expect(doc).not.toContain("bedrock-agentcore:SaveBrowserSessionProfile");
+  });
+
+  // Workspace memory (Track G). One shared resource per env; tenants are isolated by the per-owner
+  // inline policy, so the boundary must never admit the record get/delete/Batch* actions -- they
+  // carry no condition keys and would let one owner reach another's records by id (dev spike 09-22).
+  it("creates one semantic workspace memory per env, namespaced by actor (= owner)", () => {
+    dev.containerTemplate.resourceCountIs("AWS::BedrockAgentCore::Memory", 1);
+    dev.containerTemplate.hasResourceProperties("AWS::BedrockAgentCore::Memory", {
+      Name: "lightbulb_dev_workspace_memory",
+      EventExpiryDuration: 30,
+      MemoryStrategies: [
+        { SemanticMemoryStrategy: Match.objectLike({ Namespaces: ["/owners/{actorId}/"] }) },
+      ],
+    });
+    prod.containerTemplate.hasResourceProperties("AWS::BedrockAgentCore::Memory", {
+      Name: "lightbulb_prod_workspace_memory",
+    });
+  });
+
+  it("the owner boundary permits only conditionable memory actions, and the base policy grants none", () => {
+    const boundary = managedPolicyStatements(dev.containerTemplate, "lightbulb-dev-owner-bedrock-boundary");
+    const stmt = boundary.find((s) => s.Sid === "BoundaryAgentCoreMemoryUse");
+    expect(flatten(stmt?.Action).sort()).toEqual([
+      "bedrock-agentcore:CreateEvent",
+      "bedrock-agentcore:GetEvent",
+      "bedrock-agentcore:ListEvents",
+      "bedrock-agentcore:ListMemoryRecords",
+      "bedrock-agentcore:ListSessions",
+      "bedrock-agentcore:RetrieveMemoryRecords",
+    ]);
+    const all = JSON.stringify(boundary);
+    for (const forbidden of ["GetMemoryRecord", "DeleteMemoryRecord", "BatchDeleteMemoryRecords",
+      "BatchCreateMemoryRecords", "BatchUpdateMemoryRecords", "ListActors"]) {
+      expect(all).not.toContain(`bedrock-agentcore:${forbidden}`);
+    }
+    const base = managedPolicyStatements(dev.containerTemplate, "lightbulb-dev-owner-bedrock-base");
+    expect(JSON.stringify(base)).not.toContain("MemoryRecords");
+  });
+
+  it("grants the backend task role only the memory wipe, and stamps the memory id into its env", () => {
+    dev.serviceTemplate.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "AgentCoreMemoryWipe",
+            Action: Match.arrayEquals([
+              "bedrock-agentcore:ListMemoryRecords",
+              "bedrock-agentcore:BatchDeleteMemoryRecords",
+              "bedrock-agentcore:ListSessions",
+              "bedrock-agentcore:ListEvents",
+              "bedrock-agentcore:DeleteEvent",
+            ]),
+          }),
+        ]),
+      }),
+    });
+    const env = backendContainerEnv(dev.serviceTemplate, "dev") as Record<string, unknown>;
+    expect(env.AGENTCORE_MEMORY_ID).toBeDefined();
+    expect(JSON.stringify(dev.serviceTemplate.findResources("AWS::IAM::Policy"))).not.toContain(
+      "bedrock-agentcore:RetrieveMemoryRecords",
+    );
   });
 });

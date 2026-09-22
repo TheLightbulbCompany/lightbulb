@@ -220,6 +220,10 @@ export class LightbulbStage extends cdk.Stage {
         containerSecurityGroup: container.containerSecurityGroup,
         ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
         ownerBedrockBoundary: container.ownerBedrockBoundary,
+        workspaceMemory: {
+          memoryId: container.workspaceMemory.attrMemoryId,
+          memoryArn: container.workspaceMemory.attrMemoryArn,
+        },
       },
       managementApiUrl: api.managementApiUrl,
       webSocketUrl: api.webSocketUrl,

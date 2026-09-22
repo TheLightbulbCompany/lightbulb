@@ -1,4 +1,5 @@
 import * as cdk from "aws-cdk-lib";
+import * as bedrockagentcore from "aws-cdk-lib/aws-bedrockagentcore";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -27,6 +28,8 @@ import { logGroupPath } from "../table-names";
  *  - the CI image-builder OIDC role,
  *  - the EventBridge trail that persists ECS task-state changes for that
  *    cluster (the backend's own stop reasons outlive ECS's 1h window there),
+ *  - the workspace-shared AgentCore Memory (one per env; tenants are isolated
+ *    by the per-owner `owner-memory` inline policy, not by resource),
  *  - `ContainerSecurityGroup`, which despite its name is LIVE: it is the VPC
  *    security group every workspace's AgentCore runtime ENI carries, threaded
  *    to the backend as ECS_SECURITY_GROUP_ID and put into
@@ -51,6 +54,7 @@ export class ContainerStack extends cdk.Stack {
   public readonly containerSecurityGroup: ec2.SecurityGroup;
   public readonly ownerBedrockBasePolicy: iam.ManagedPolicy;
   public readonly ownerBedrockBoundary: iam.ManagedPolicy;
+  public readonly workspaceMemory: bedrockagentcore.CfnMemory;
 
   constructor(scope: Construct, id: string, props: ContainerStackProps) {
     super(scope, id, props);
@@ -227,6 +231,27 @@ export class ContainerStack extends cdk.Stack {
       ],
     });
 
+    // Workspace memory: ONE resource per env, shared by every tenant. Isolation is IAM, proven in
+    // the 2026-09-22 dev spike: the per-owner `owner-memory` inline policy
+    // (bedrock_aip.ensure_owner_memory_policy) scopes events by `actorId` = owner and records by
+    // the exact `namespace` /owners/<owner>/ that this strategy extracts into. Semantic only.
+    // ponytail: AWS-owned encryption, not the stack CMK -- a CMK needs a key-policy grant to the
+    // service plus kms grants on every owner role; add it if compliance asks.
+    this.workspaceMemory = new bedrockagentcore.CfnMemory(this, "WorkspaceMemory", {
+      name: `lightbulb_${props.environment}_workspace_memory`,
+      description: "Long-term memory shared by the agents of each workspace (namespace per owner).",
+      eventExpiryDuration: 30,
+      memoryStrategies: [
+        {
+          semanticMemoryStrategy: {
+            name: "workspace_facts",
+            namespaces: ["/owners/{actorId}/"],
+          },
+        },
+      ],
+    });
+    this.workspaceMemory.applyRemovalPolicy(config.removalPolicy);
+
     // Permissions boundary capping every backend-minted per-owner role to the
     // UNION of what it may ever hold: scoped Bedrock invoke (on inference
     // profiles + the 9 FM ARNs) + EFS + logs + ssm. A backend that can
@@ -309,6 +334,22 @@ export class ContainerStack extends cdk.Stack {
             `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`,
             `arn:aws:bedrock-agentcore:${this.region}:${this.account}:browser-profile/*`,
           ],
+        }),
+        // Ceiling only; the grant is the per-owner inline `owner-memory` policy
+        // (bedrock_aip.ensure_owner_memory_policy), which adds the actorId/namespace conditions.
+        // Record get/delete and every Batch* write are absent on purpose: they carry no condition
+        // keys, so allowing them would let one owner read or delete another's records by id.
+        new iam.PolicyStatement({
+          sid: "BoundaryAgentCoreMemoryUse",
+          actions: [
+            "bedrock-agentcore:CreateEvent",
+            "bedrock-agentcore:ListEvents",
+            "bedrock-agentcore:GetEvent",
+            "bedrock-agentcore:ListSessions",
+            "bedrock-agentcore:RetrieveMemoryRecords",
+            "bedrock-agentcore:ListMemoryRecords",
+          ],
+          resources: [this.workspaceMemory.attrMemoryArn],
         }),
         new iam.PolicyStatement({
           sid: "BoundaryAgentCoreTelemetry",

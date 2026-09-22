@@ -88,6 +88,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       containerSecurityGroup: container.containerSecurityGroup,
       ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
       ownerBedrockBoundary: container.ownerBedrockBoundary,
+      workspaceMemory: { memoryId: container.workspaceMemory.attrMemoryId, memoryArn: container.workspaceMemory.attrMemoryArn },
     },
     managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
     webSocketUrl: "wss://example.execute-api.us-east-1.amazonaws.com",

@@ -324,6 +324,18 @@ async def test_nightly_ceo_flag_via_description_sentinel_and_via_title():
     assert kwargs["properties"]["is_nightly_ceo"] is False
 
 
+async def test_nightly_ceo_run_emits_its_own_cloudwatch_metric():
+    from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
+
+    admin = _admin_stub(
+        issue={"originKind": "routine_execution", "originId": "rt-1", "title": NIGHTLY_CEO_ROUTINE_TITLE},
+        routine={"recentRuns": [_dispatch_run("schedule")]},
+    )
+    with _paperclip(admin), patch.object(run_analytics, "put_metric") as metric:
+        await _emit(_ISSUE_PARSED, payload=_payload(run_id="r-nightly-metric"), phase="error")
+    metric.assert_any_call("nightly_ceo.run", dimensions={"outcome": "failure"})
+
+
 # ---------------------------------------------------------------------------
 # Dedup, deterministic uuid, disabled short-circuit
 # ---------------------------------------------------------------------------

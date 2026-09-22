@@ -658,6 +658,26 @@ def handler(event, context):
         "Turn ingress refused for 15+ min on a pending provider switch - a needs_provision flag is not converging",
     });
 
+    // P24: paperclip-run-hook-auth-failed
+    // A Paperclip agent's hermes_gateway apiKey is a SNAPSHOT of the owner's
+    // hook token. When the container row re-mints it, every Paperclip-woken
+    // run (nightly CEO loop, issue runs, Teams Run/Retry) 401s at
+    // _require_hook_token while room chat keeps working — silent without this.
+    this.createAlarm({
+      id: "P24",
+      name: "paperclip-run-hook-auth-failed",
+      metricName: "internal_hook.auth_failed",
+      dimensions: { route: "paperclip_run" },
+      threshold: 0,
+      evaluationPeriods: 1,
+      periodMinutes: 60,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      severity: "page",
+      description:
+        "Paperclip-woken runs rejected with a stale hook token - nightly CEO and issue runs are failing silently for an owner (see backend log 'internal hook auth failed')",
+    });
+
     // P5: debug-endpoint-prod-hit
     this.createAlarm({
       id: "P5",

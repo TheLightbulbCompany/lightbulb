@@ -90,7 +90,11 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     const policy = JSON.parse(env.MODEL_POLICY_JSON);
     if ((trial || base) && (policy.max_price?.prompt !== 0 || policy.max_price?.completion !== 0)) fail(403, 'Free model policy unavailable');
     const body = prepareBody(input, policy, ownerId, env);
-    if (Buffer.byteLength(raw) > policy.max_prompt_tokens) fail(413, 'Prompt context bound exceeded');
+    // A token spans >= 1 byte, so bytes <= max_prompt_tokens proves the hold (priced at
+    // max_prompt_tokens) covers the prompt. A zero-price hold is 0 either way; only
+    // MAX_BODY_BYTES bounds it (a Hermes first turn is >100 KB of JSON).
+    const priced = policy.max_price?.prompt !== 0 || policy.max_price?.completion !== 0;
+    if (priced && Buffer.byteLength(raw) > policy.max_prompt_tokens) fail(413, 'Prompt context bound exceeded');
     const keyRow = (await ddb.getItem({ TableName: env.OPENROUTER_KEYS_TABLE, Key: { owner_id: { S: ownerId } }, ConsistentRead: true }))?.Item;
     if (S(keyRow, 'state') !== 'active' || !S(keyRow, 'key_hash') || !S(keyRow, 'secret_name')) fail(503, 'Owner key unavailable');
     const secret = (await secrets.getSecretValue({ SecretId: S(keyRow, 'secret_name') })).SecretString;

@@ -127,7 +127,7 @@ class TestContainerReprovision:
     @contextlib.contextmanager
     def _wired():
         """The route schedules the idempotent reconcile -- no lease to take over."""
-        with patch("routers.admin.reconcile_runtime", new_callable=AsyncMock) as dispatch:
+        with patch("routers.admin.reconcile_in_background") as dispatch:
             yield dispatch
 
     @pytest.mark.asyncio

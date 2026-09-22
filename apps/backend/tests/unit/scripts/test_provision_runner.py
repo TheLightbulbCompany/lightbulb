@@ -28,6 +28,7 @@ def hermes(monkeypatch):
     provision = AsyncMock(return_value="arn:hermes-1")
     monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", prepare)
     monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", provision)
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
     reconcile = AsyncMock(return_value="current")
     monkeypatch.setattr(provision_runner.hermes_provisioning, "reconcile_runtime", reconcile)
     return SimpleNamespace(prepare=prepare, provision=provision, reconcile=reconcile)
@@ -74,6 +75,18 @@ async def test_happy_path_runs_every_leg_and_exits_0(monkeypatch, hermes, repo):
     hermes.provision.assert_awaited_once_with("org_a")
     hermes.reconcile.assert_awaited_once_with("org_a")
     repo.mark_provision_error.assert_not_awaited()
+
+
+async def test_a_live_row_skips_the_early_prepare_so_the_reconcile_sees_the_boot_change(monkeypatch, hermes, repo):
+    """C1: step -1 on a live row rewrote the boot secret first, so the end reconcile saw no
+    boot-time change and never restarted the warm session holding the old bearer."""
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"agentcore_runtime_arn": "arn:rt", "status": "running"}),
+    )
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
+    hermes.prepare.assert_not_awaited()
+    hermes.reconcile.assert_awaited_once_with("org_a")
 
 
 async def test_a_failed_end_reconcile_is_not_a_provision_failure(monkeypatch, hermes, repo):

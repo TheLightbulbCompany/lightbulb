@@ -267,32 +267,29 @@ class TestMint:
         assert _tracked(gate_tables) == [old_hash]
 
     @pytest.mark.asyncio
-    async def test_mint_backstop_drains_an_orphaned_hash_but_keeps_the_live_one(self, gate_tables, fake_runtime):
-        """Mint is the backstop for a confirmation that never came.
-
-        Two supersessions with no roll in between: the FIRST one's token is not
-        in any task definition (it was never delivered) and must go; the one the
-        service still references must survive.
-        """
-        orphan = "1" * 64
-        live_plaintext = "live-token"
-        live_hash = mod.hash_token(live_plaintext)
-        _put_container_row(
-            gate_tables,
-            "org_abc",
-            bedrock_gate_token_hash=live_hash,
-            superseded=[orphan],
-        )
-        _put_token_row(gate_tables, orphan)
-        _put_token_row(gate_tables, live_hash)
-        fake_runtime.bearer = live_plaintext
+    async def test_a_warm_sessions_old_bearer_survives_every_mint_until_a_confirmed_stop(
+        self, gate_tables, fake_runtime
+    ):
+        """C1 (Task 8a fix round 1): a pre-derivation owner's first reconcile mints the derived
+        bearer and rewrites the boot secret; a SECOND mint (the runner's two prepares) then saw
+        the old hash as unpresentable -- the secret no longer carries it -- and deleted the
+        token row a warm microVM was still presenting. The mint never deletes now; only the
+        expiry after a confirmed session stop does."""
+        old_plaintext = "random-pre-derivation-bearer"
+        old_hash = mod.hash_token(old_plaintext)
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=old_hash)
+        _put_token_row(gate_tables, old_hash)
+        fake_runtime.bearer = old_plaintext
 
         token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
+        fake_runtime.bearer = token  # prepare rewrote the boot secret; the warm session did not reload
+        assert await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1") == token
 
-        remaining = {r["token_hash"]["S"] for r in _token_rows(gate_tables)}
-        assert orphan not in remaining
-        assert remaining == {live_hash, mod.hash_token(token)}
-        assert _tracked(gate_tables) == [live_hash]
+        assert old_hash in {r["token_hash"]["S"] for r in _token_rows(gate_tables)}
+        assert _tracked(gate_tables) == [old_hash]
+
+        await mod.expire_superseded_gate_tokens("org_abc")  # after StopRuntimeSession
+        assert {r["token_hash"]["S"] for r in _token_rows(gate_tables)} == {mod.hash_token(token)}
 
     @pytest.mark.asyncio
     async def test_a_bumped_generation_rotates_the_token(self, gate_tables, fake_runtime):

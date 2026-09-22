@@ -29,6 +29,7 @@ def runner_env(monkeypatch):
     import core.repositories.container_repo as _repo_module
 
     monkeypatch.setattr(_repo_module, "mark_provision_error", AsyncMock())
+    monkeypatch.setattr(_repo_module, "get_by_owner_id", AsyncMock(return_value=None))
     return _repo_module
 
 

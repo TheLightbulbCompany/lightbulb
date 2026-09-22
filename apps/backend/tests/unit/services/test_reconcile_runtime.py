@@ -104,7 +104,12 @@ class World:
         mp.setattr(hp, "ensure_agentcore_trust", AsyncMock(return_value=True))
         self.ensure_or_key = AsyncMock(return_value="hash")
         mp.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", self.ensure_or_key)
-        mp.setattr(hp.browser_sessions, "ensure_browser_profile", AsyncMock(return_value=""))
+        self.browser_profile = ""
+
+        async def _ensure_browser(owner_id):
+            return self.browser_profile
+
+        mp.setattr(hp.browser_sessions, "ensure_browser_profile", _ensure_browser)
 
         async def _roster(owner_id):
             return [{"id": AGENT, "name": "Ada", "role": "ceo"}]
@@ -112,11 +117,14 @@ class World:
         async def _upload(owner_id, agent_id, files):
             await asyncio.sleep(0)
             self.profiles[agent_id] = files.config_yaml
+            self.souls[agent_id] = files.soul_md
 
         mp.setattr("core.services.messaging.load_agent_roster", _roster)
         mp.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pcp_key"))
         mp.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
         mp.setattr("core.services.hermes_profiles.upload_profile", _upload)
+        self.souls: dict[str, str] = {}
+        mp.setattr("core.services.hermes_profiles.read_soul_md", lambda owner_id, agent_id: self.souls.get(agent_id))
         mp.setattr(
             "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
         )
@@ -131,13 +139,17 @@ class World:
         )
 
         def _describe(arn):
-            desired = self.last_request or {}
-            env = self.runtime_env if self.runtime_env is not None else desired.get("environmentVariables")
+            if self.runtime_env is None:  # a runtime already on today's desired spec
+                self.runtime_env = dict((self.last_request or {}).get("environmentVariables") or {})
             return {
                 "status": "READY",
                 "agentRuntimeArtifact": {"containerConfiguration": {"containerUri": IMAGE}},
-                "environmentVariables": env,
+                "environmentVariables": dict(self.runtime_env),
             }
+
+        def _update(arn, req):
+            self.calls.append(("update", req))
+            self.runtime_env = dict(req["environmentVariables"])
 
         self.last_request = None
         real_build = hp.build_runtime_request_for_owner
@@ -148,7 +160,7 @@ class World:
 
         mp.setattr(hp, "build_runtime_request_for_owner", _build)
         mp.setattr(hp, "_runtime_description", _describe)
-        mp.setattr(hp, "_update_runtime_image", lambda arn, req: self.calls.append(("update", req)))
+        mp.setattr(hp, "_update_runtime_image", _update)
         mp.setattr(hp, "_runtime_status", lambda arn: "READY")
         mp.setattr(hp, "_stop_runtime_session", lambda arn, sid: self.calls.append(("stop", arn)))
 
@@ -158,6 +170,12 @@ class World:
         mp.setattr(container_rpc, "call", _health)
         self.metrics = []
         mp.setattr(hp, "put_metric", lambda name, *a, **kw: self.metrics.append(name))
+        self.expired = []
+
+        async def _expire(owner_id):
+            self.expired.append(owner_id)
+
+        mp.setattr("core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens", _expire)
 
     def provider_of_profiles(self) -> set[str]:
         return {yaml.safe_load(cfg)["model"]["provider"] for cfg in self.profiles.values()}
@@ -304,3 +322,145 @@ async def test_a_first_provision_on_chatgpt_billing_writes_codex_profiles_with_n
     assert _boot(boot_secrets)["providerChoice"] == "chatgpt_oauth"
     assert ("stop", ARN) not in world.calls
     assert writes[-1]["status"] == "running"
+
+
+# --- fix round 1 ----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_superseded_bearers_expire_only_after_a_confirmed_session_stop(monkeypatch, boot_secrets):
+    """C1: the stop is what makes a superseded bearer unpresentable; a busy session keeps it."""
+    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    await hp.reconcile_runtime("org_a")  # first secret write: boot change -> idle stop
+    assert world.calls == [("stop", ARN)] and world.expired == ["org_a"]
+
+    world.calls.clear(), world.expired.clear()
+    world.runtime_env["AGENTCORE_PROFILE_ID"] = "drifted"
+    monkeypatch.setattr(hp, "_wait_for_idle_session", AsyncMock(return_value=False))
+    assert await hp.reconcile_runtime("org_a") == "updated-session-busy"
+    assert world.expired == []
+
+    monkeypatch.setattr(hp, "_wait_for_idle_session", AsyncMock(return_value=True))
+    world.runtime_env["AGENTCORE_PROFILE_ID"] = "drifted"
+
+    def _stop_fails(arn, sid):
+        raise RuntimeError("throttled")
+
+    monkeypatch.setattr(hp, "_stop_runtime_session", _stop_fails)
+    await hp.reconcile_runtime("org_a")
+    assert world.expired == []  # an unconfirmed stop keeps every superseded bearer
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_owner_reconciles_to_current(monkeypatch, boot_secrets):
+    world = World(monkeypatch, billing=BILLING["byo_openai"])
+    await hp.reconcile_runtime("org_a")
+    world.calls.clear()
+    assert await hp.reconcile_runtime("org_a") == "current"
+    assert world.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_transient_browser_error_does_not_re_spec(monkeypatch, boot_secrets):
+    """I1: ensure_browser_profile answers "" on any error; the row's recorded id stands in."""
+    world = World(monkeypatch, billing=BILLING["bedrock_claude"], row={"browser_profile_id": "prof-1"})
+    world.browser_profile = "prof-1"
+    await hp.reconcile_runtime("org_a")
+    assert world.runtime_env["AGENTCORE_PROFILE_ID"] == "prof-1"
+    world.calls.clear()
+
+    world.browser_profile = ""  # the transient failure
+    assert await hp.reconcile_runtime("org_a") == "current"
+    assert world.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_key_aws_adds_to_the_env_is_not_drift(monkeypatch, boot_secrets):
+    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    await hp.reconcile_runtime("org_a")
+    world.calls.clear()
+    world.runtime_env["AWS_SOMETHING_INJECTED"] = "x"
+    assert await hp.reconcile_runtime("org_a") == "current"
+    assert world.calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_owner_edited_soul_survives_a_reconcile(monkeypatch, boot_secrets):
+    """I2: the Instructions tab strips the generated marker; a reconcile keeps that file."""
+    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world.souls[AGENT] = "You are Ada, the owner's own words."
+    await hp.reconcile_runtime("org_a")
+    assert world.souls[AGENT] == "You are Ada, the owner's own words."
+
+
+@pytest.mark.asyncio
+async def test_a_generated_soul_is_still_regenerated(monkeypatch, boot_secrets):
+    from core.services.hermes_profiles import SOUL_GENERATED_MARKER, is_generated_soul
+
+    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world.souls[AGENT] = f"{SOUL_GENERATED_MARKER}\nstale"
+    await hp.reconcile_runtime("org_a")
+    assert is_generated_soul(world.souls[AGENT]) and "stale" not in world.souls[AGENT]
+
+
+@pytest.mark.asyncio
+async def test_billing_that_moves_mid_reconcile_is_rendered_again(monkeypatch, boot_secrets):
+    """I3: an overlapping reconcile that finishes last must not leave the older provider."""
+    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    real_upload = hp.write_profiles
+    runs = []
+
+    async def _write_profiles(owner_id, aip_arns):
+        await real_upload(owner_id, aip_arns)
+        runs.append(world.provider_of_profiles())
+        if len(runs) == 1:
+            world.billing = BILLING["chatgpt_oauth"]  # a switch committed while we rendered
+
+    monkeypatch.setattr(hp, "write_profiles", _write_profiles)
+    await hp.reconcile_runtime("org_a")
+    assert runs == [{"bedrock"}, {"openai-codex"}]
+    assert world.provider_of_profiles() == {"openai-codex"}
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_update_is_not_a_reconcile_failure(monkeypatch, boot_secrets):
+    """I3: a runtime already UPDATING (another roll) answers ConflictException."""
+    from botocore.exceptions import ClientError
+
+    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    await hp.reconcile_runtime("org_a")
+    world.runtime_env["AGENTCORE_PROFILE_ID"] = "drifted"
+
+    def _conflict(arn, req):
+        raise ClientError({"Error": {"Code": "ConflictException", "Message": "updating"}}, "UpdateAgentRuntime")
+
+    monkeypatch.setattr(hp, "_update_runtime_image", _conflict)
+    assert await hp.reconcile_runtime("org_a") == "update-in-progress"
+    assert world.metrics == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_row_read_is_a_counted_reconcile_failure(monkeypatch, boot_secrets):
+    """M1: every exception, the row read included, is logged and counted."""
+    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(side_effect=RuntimeError("ddb")))
+    assert await hp.reconcile_runtime("org_a") == "failed"
+    assert world.metrics == ["provision.reconcile.failed"]
+
+
+@pytest.mark.asyncio
+async def test_a_background_reconcile_is_held_until_it_finishes(monkeypatch):
+    """M2: the only strong reference to a create_task'd task must not be the event loop's."""
+    gate = asyncio.Event()
+
+    async def _slow(owner_id):
+        await gate.wait()
+        return "current"
+
+    monkeypatch.setattr(hp, "reconcile_runtime", _slow)
+    task = hp.reconcile_in_background("org_a")
+    assert task in hp.inflight_reconciles()
+    gate.set()
+    assert await task == "current"
+    await asyncio.sleep(0)
+    assert task not in hp.inflight_reconciles()

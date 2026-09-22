@@ -314,9 +314,19 @@ def _log_still_armed(token_hash: str) -> None:
 
 
 async def _drain_superseded(
-    owner_id: str, tracked: list[str], *, current_hash: str | None, adopt_orphans: bool = False
+    owner_id: str,
+    tracked: list[str],
+    *,
+    current_hash: str | None,
+    adopt_orphans: bool = False,
+    expire: bool = True,
 ) -> list[str]:
     """Delete each tracked hash nothing can present; return the survivors.
+
+    ``expire=False`` (``mint_gate_token``) keeps every candidate: the predicate reads the boot
+    secret, and on the reconcile path a mint that has just rewritten that secret would judge a
+    warm session's old bearer unpresentable while the session still holds it. Deletion is left
+    to ``expire_superseded_gate_tokens`` after a confirmed ``StopRuntimeSession``.
 
     Deliberately does NOT write the survivors back to the containers row: that
     list is ``swap_gate_token_hash``'s alone (``container_repo`` refuses it from
@@ -375,6 +385,8 @@ async def _drain_superseded(
                 survivors.append(orphan)
     for token_hash in candidates:
         reason = presentable.get(token_hash)
+        if reason is None and not expire:
+            reason = "kept until a confirmed session stop"
         if reason is not None:
             logger.info(
                 "bedrock-gate token %s.. kept for owner %s: %s",
@@ -435,8 +447,9 @@ async def _retain(table, hashes: list[str]) -> list[str]:
 async def expire_superseded_gate_tokens(owner_id: str) -> None:
     """Delete the owner's superseded gate-token rows IFF nothing can present them.
 
-    Call this wherever a redeploy is CONFIRMED to have landed (the container now
-    holds the current token) and as a backstop at mint time. The predicate is the
+    Called ONLY where a session stop is CONFIRMED (``roll_runtime_image``'s stop
+    branch): the next session reads the current boot secret, so nothing can
+    present a superseded bearer any more. The mint never deletes. The predicate is the
     correctness; the call site is only scheduling — a skipped call leaves a stale
     row, which is safe, and an extra call is a no-op.
 
@@ -472,9 +485,11 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, row_id: st
       not-yet-created row (dispatch creates the row before the runner mints).
     - ROTATION SCHEDULES NOTHING. The superseded hash is recorded in
       ``_SUPERSEDED_FIELD`` and its row survives until the liveness predicate
-      proves the owner's runtime cannot present it. The mint first
-      runs that drain as a backstop for a confirmation that never came, then
-      writes the pruned survivors plus the outgoing hash in the SAME row update.
+      proves the owner's runtime cannot present it -- judged only after a confirmed
+      session stop (``expire_superseded_gate_tokens``), never here: the mint runs on
+      every reconcile, right before the boot secret is rewritten, and a warm session
+      still presents the bearer it read at cold start. It retains (and adopts) instead,
+      then writes the survivors plus the outgoing hash in the SAME row update.
 
     CONCURRENCY. The mint block in ``provision_user_container`` sits AHEAD of
     the first ``_provision_checkpoint``, so the provision lease does not
@@ -493,16 +508,11 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, row_id: st
     prior_hash = prior.get("bedrock_gate_token_hash") if prior else None
     tracked = list(prior.get(_SUPERSEDED_FIELD) or []) if prior else []
 
-    # Backstop pass: anything superseded by an EARLIER mint whose roll was never
-    # confirmed. At this point the service still references the pre-mint task
-    # definition, so the token the container is actually holding is presentable
-    # and survives — only genuinely orphaned rows go.
-    #
-    # ADOPTING here too (the once-per-provision path, which already makes the AWS
-    # calls this needs) is what heals an owner deployed into from the legacy
-    # state: the runtime presents A, the pointer is B, nothing tracks A, and A's
-    # row still carries the one-hour ttl the old code wrote.
-    superseded = await _drain_superseded(owner_id, tracked, current_hash=prior_hash, adopt_orphans=True)
+    # Retention pass: keep every tracked hash (expire=False -- see the docstring) and
+    # re-assert that none carries a legacy ttl. ADOPTING here too is what heals an owner
+    # deployed into from the legacy state: the runtime presents A, the pointer is B,
+    # nothing tracks A, and A's row still carries the one-hour ttl the old code wrote.
+    superseded = await _drain_superseded(owner_id, tracked, current_hash=prior_hash, adopt_orphans=True, expire=False)
 
     token = derive_gate_bearer(owner_id, row_id, generation)
     token_hash = hash_token(token)

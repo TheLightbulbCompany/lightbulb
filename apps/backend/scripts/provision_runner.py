@@ -135,8 +135,16 @@ async def run(owner_id: str) -> int:
 
     # M4-R33: mint/write hook_token + gateway_token (+ the boot secret) BEFORE step 0 seeds
     # the roster: step 0's starter-agent loop bakes hook_token into the adapter at seed time.
+    # A row that already has a runtime already has its tokens, and the reconcile below
+    # prepares it -- running prepare here too would rewrite the boot secret first and hide
+    # that boot-time change from the reconcile's restart decision (C1: a warm session kept
+    # a bearer nothing restarts it off).
+    from core.repositories import container_repo
+
     try:
-        await hermes_provisioning.prepare_hermes_workspace(owner_id)
+        row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+        if not row.get("agentcore_runtime_arn"):
+            await hermes_provisioning.prepare_hermes_workspace(owner_id)
     except Exception as exc:  # noqa: BLE001 — classified + recorded
         return await _record_failure(owner_id, exc, "prepare")
 

@@ -13,7 +13,6 @@ billing_service, clerk_admin, container_rpc) directly — admin_service
 intentionally doesn't compose those because each is a distinct side-effect.
 """
 
-import asyncio
 import logging
 import time
 
@@ -55,7 +54,7 @@ from core.services.admin_service import resolve_admin_owner_id
 from core.services.runtime_rpc import config_patch_roster
 from core.services.webhook_dedup import idempotency
 from core.services.messaging import ApiProblem
-from core.services.hermes_provisioning import reconcile_runtime
+from core.services.hermes_provisioning import reconcile_in_background
 from core.services.provision_dispatch import dispatch_provision
 from schemas.config import ConfigPatchRequest
 
@@ -314,7 +313,7 @@ async def admin_container_reprovision(
     # P1). Audit decorator still captures the URL path param (user_id).
     owner_id, _ = await resolve_admin_owner_id(user_id)
     # Background: an idle-session wait can outlast the request. reconcile_runtime never raises.
-    asyncio.create_task(reconcile_runtime(owner_id))
+    reconcile_in_background(owner_id)
     return {"status": "reconciling", "owner_id": owner_id}
 
 

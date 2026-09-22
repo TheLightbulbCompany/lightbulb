@@ -1104,9 +1104,9 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # A committed provider or plan change outside a conversion (which reconciles in
         # run_conversion_reprovision): the plan decides the CEO's premium tier and, for Base,
         # the provider itself. Background -- reconcile_runtime never raises.
-        from core.services.hermes_provisioning import reconcile_runtime
+        from core.services.hermes_provisioning import reconcile_in_background
 
-        asyncio.create_task(reconcile_runtime(account["owner_id"]))
+        reconcile_in_background(account["owner_id"])
 
     # Refresh the owner-facts file (plan/provider snapshot the bundled isol8
     # skill points agents at). Subscription-state flips land HERE — not via

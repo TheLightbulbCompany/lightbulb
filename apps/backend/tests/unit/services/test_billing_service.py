@@ -203,11 +203,7 @@ async def test_managed_switch_ensures_owner_key_before_provider_commit(monkeypat
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
     monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
 
-    async def dispatch(owner):
-        pass
-
-    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
-    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: coro.close())
+    monkeypatch.setattr("core.services.hermes_provisioning.reconcile_in_background", MagicMock())
 
     await billing_service.change_provider(
         owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="openrouter_managed"
@@ -293,10 +289,8 @@ async def test_reselecting_the_committed_provider_reruns_the_reconcile(monkeypat
     )
     monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda row: True)
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
-    reconcile = AsyncMock(return_value="current")
-    monkeypatch.setattr("core.services.hermes_provisioning.reconcile_runtime", reconcile)
-    scheduled = []
-    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: scheduled.append(coro) or coro.close())
+    reconcile = MagicMock()
+    monkeypatch.setattr("core.services.hermes_provisioning.reconcile_in_background", reconcile)
 
     result = await billing_service.change_provider(
         owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="bedrock_claude"
@@ -304,7 +298,6 @@ async def test_reselecting_the_committed_provider_reruns_the_reconcile(monkeypat
     assert result["status"] == "noop"
     billing_service.billing_repo.set_provider_choice.assert_not_awaited()
     reconcile.assert_called_once_with("org_a")
-    assert len(scheduled) == 1
 
 
 @pytest.mark.asyncio
@@ -321,11 +314,10 @@ async def test_a_switch_commits_billing_then_schedules_the_reconcile(monkeypatch
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", commit)
     monkeypatch.setattr("core.services.key_service.get_secret_arn", AsyncMock(return_value="arn:key"))
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
-    reconcile = AsyncMock(return_value="current")
-    monkeypatch.setattr("core.services.hermes_provisioning.reconcile_runtime", reconcile)
+    reconcile = MagicMock()
+    monkeypatch.setattr("core.services.hermes_provisioning.reconcile_in_background", reconcile)
     dispatch = AsyncMock(side_effect=AssertionError("a switch no longer dispatches a provision"))
     monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
-    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: coro.close())
 
     result = await billing_service.change_provider(
         owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="byo_key", byo_provider="openai"

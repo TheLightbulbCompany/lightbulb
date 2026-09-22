@@ -775,6 +775,35 @@ async def _wait_for_idle_session(owner_id: str) -> bool:
         await asyncio.sleep(ROLL_IDLE_POLL_S)
 
 
+#: Env keys ``build_hermes_runtime_env`` sets only sometimes. With the desired keys they are
+#: the whole set this backend OWNS on a runtime: ``roll_runtime_image`` compares only these, so
+#: a key AWS adds to the returned spec can never read as drift.
+_OPTIONAL_ENV_KEYS = frozenset(
+    {
+        "LIGHTBULB_MANAGED_GATE_URL",
+        "LIGHTBULB_MANAGED_MODEL_ID",
+        "AGENT_BROWSER_PROVIDER",
+        "AGENTCORE_REGION",
+        "AGENTCORE_BROWSER_ID",
+        "AGENTCORE_PROFILE_ID",
+        "AGENTCORE_SESSION_TIMEOUT",
+        "AGENT_BROWSER_EXECUTABLE_PATH",
+    }
+)
+
+
+def _env_drifted(actual: dict | None, desired: dict | None) -> bool:
+    actual, desired = actual or {}, desired or {}
+    return any(actual.get(k) != desired.get(k) for k in set(desired) | _OPTIONAL_ENV_KEYS)
+
+
+async def _browser_profile_id(owner_id: str, row: dict) -> str:
+    """``ensure_browser_profile`` answers "" on ANY error. Falling back to the id the row
+    already records keeps a transient browser failure from reading as "remove the browser
+    block" -- a re-spec plus a session restart that the next reconcile would flip back."""
+    return await browser_sessions.ensure_browser_profile(owner_id) or row.get("browser_profile_id") or ""
+
+
 async def roll_runtime_image(owner_id: str, *, dry_run: bool = False, restart_session: bool = False, respec: bool = False) -> str:
     """Bring an AgentCore owner's runtime onto its DESIRED spec -- the currently configured
     image AND the env block ``build_runtime_request_for_owner`` derives from billing -- then
@@ -788,15 +817,23 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False, restart_se
     pushed to S3 when the turn ends. ``restart_session`` asks for that same idle stop with no
     spec change -- a boot-secret input (tokens, gate bearer) changed under a warm session.
 
-    Returns ``"current"`` (nothing to do), ``"would-update"`` (dry run), ``"updated"``, or
+    A CONFIRMED stop (or AgentCore reporting no session) is the one point at which superseded
+    gate bearers are expired: the next session reads the current boot secret, so nothing can
+    present them any more. A busy session keeps them alive.
+
+    Returns ``"current"`` (nothing to do), ``"would-update"`` (dry run), ``"updated"``,
     ``"updated-session-busy"`` -- the runtime IS on the desired spec but a turn was still running
-    at the deadline, so the warm session was left alone and picks it up when it next starts.
+    at the deadline, so the warm session was left alone and picks it up when it next starts --
+    or ``"update-in-progress"``: a concurrent roll's ``UpdateAgentRuntime`` holds the runtime
+    (ConflictException), and that roll owns the stop.
     Raises ``ValueError`` for a row with no provisioned runtime.
 
     ``respec=True`` (the script's ``--respec``, a managed-model flip) also rewrites the profiles
     once the session is idle and stopped: the model lives in the env AND each profile (bridge
     ``sync.py`` refuses a mismatch). A busy owner comes back ``updated-session-busy`` with its
     env moved and its profile NOT -- it breaks on its next cold start unless re-run."""
+    from botocore.exceptions import ClientError
+
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     arn = row.get("agentcore_runtime_arn")
     if not arn:
@@ -808,8 +845,8 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False, restart_se
 
     provider_choice, _ = await resolve_provider_choice(owner_id)
     # The roll is how an ALREADY-provisioned workspace gets its first Browser profile: a
-    # create-or-adopt, then the env block. Never raises -- "" just means no browser.
-    browser_profile_id = await browser_sessions.ensure_browser_profile(owner_id)
+    # create-or-adopt, then the env block.
+    browser_profile_id = await _browser_profile_id(owner_id, row)
     # Grant before the env names the memory: a runtime told AGENTCORE_MEMORY_ID must be able to use it.
     from core.billing.bedrock_aip import ensure_owner_memory_policy
 
@@ -819,15 +856,21 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False, restart_se
     )
     actual = await run_in_thread(_runtime_description, arn)
     current = _image_of(actual)
-    drifted = current != settings.AGENTCORE_HERMES_IMAGE or (actual.get("environmentVariables") or {}) != (
-        request.get("environmentVariables") or {}
+    drifted = current != settings.AGENTCORE_HERMES_IMAGE or _env_drifted(
+        actual.get("environmentVariables"), request.get("environmentVariables")
     )
     if not (drifted or restart_session or respec):
         return "current"
     if dry_run:
         return "would-update"
     if drifted:
-        await run_in_thread(_update_runtime_image, arn, request)
+        try:
+            await run_in_thread(_update_runtime_image, arn, request)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ConflictException":
+                raise
+            logger.info("roll_runtime_image: owner=%s runtime already updating -- re-check later", owner_id)
+            return "update-in-progress"
         # Optimistic: no READY wait. A single status read still sweeps a dead
         # runtime (UPDATE_FAILED never becomes usable); anything else — CREATING,
         # UPDATING, READY — is left to retry-at-use at first invoke.
@@ -835,12 +878,21 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False, restart_se
             raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to update")
     idle = await _wait_for_idle_session(owner_id)
     if idle:
-        try:
-            from core.services.runtime_transport import session_id_for
+        from core.billing.bedrock_gate_tokens import expire_superseded_gate_tokens
+        from core.services.runtime_transport import session_id_for
 
+        try:
             await run_in_thread(_stop_runtime_session, arn, session_id_for(owner_id))
-        except Exception as exc:  # noqa: BLE001 -- no warm session is the common case
-            logger.info("roll_runtime_image: no live session to stop for owner=%s (%s)", owner_id, type(exc).__name__)
+            stopped = True
+        except ClientError as exc:
+            # No session to stop is as good as a stop: the next one cold-starts on the secret.
+            stopped = exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException"
+            logger.info("roll_runtime_image: session stop for owner=%s: %s", owner_id, type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 -- unconfirmed: keep every superseded bearer
+            stopped = False
+            logger.info("roll_runtime_image: session stop for owner=%s: %s", owner_id, type(exc).__name__)
+        if stopped:
+            await expire_superseded_gate_tokens(owner_id)  # never raises
         if respec:
             # config.yaml is backend-owned (never saved back by the bridge), so nothing reverts this.
             # Either order leaves a gap where one turn sees a new/old env-profile pair and is refused
@@ -864,6 +916,33 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False, restart_se
     return "updated" if idle else "updated-session-busy"
 
 
+async def _billing_inputs(owner_id: str) -> tuple:
+    """What a reconcile renders from: (provider_choice, byo_provider, plan)."""
+    from core.repositories import billing_repo
+    from core.services.container_provision import provider_choice_from_row
+
+    row = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+    return (*provider_choice_from_row(row), (row or {}).get("plan"))
+
+
+#: In-flight background reconciles (``reconcile_in_background``). Held so the event loop's
+#: weak reference is not the only one, and drained by ``main.py``'s graceful shutdown.
+_INFLIGHT_RECONCILES: set[asyncio.Task] = set()
+
+
+def inflight_reconciles() -> list[asyncio.Task]:
+    return list(_INFLIGHT_RECONCILES)
+
+
+def reconcile_in_background(owner_id: str) -> asyncio.Task:
+    """Schedule ``reconcile_runtime`` without awaiting it (it can wait ``ROLL_IDLE_WAIT_S`` for
+    an idle session). A lost task -- a backend roll -- is retried by the next caller."""
+    task = asyncio.create_task(reconcile_runtime(owner_id))
+    _INFLIGHT_RECONCILES.add(task)
+    task.add_done_callback(_INFLIGHT_RECONCILES.discard)
+    return task
+
+
 async def reconcile_runtime(owner_id: str) -> str:
     """Make the owner's runtime match billing. ONE idempotent function, safe to run
     concurrently (every step converges at its source), with no provider-specific logic of its
@@ -877,21 +956,33 @@ async def reconcile_runtime(owner_id: str) -> str:
     3. ``roll_runtime_image`` -- UpdateAgentRuntime only when the image or env block differs,
        and an idle-only session stop only for a boot-time change (spec, or step 1's secret).
 
+    Overlapping reconciles: each renders from the billing it read at its start, so the one that
+    FINISHES last would win with possibly stale inputs. Steps 1-2 therefore re-run once more if
+    billing moved underneath them.
+
     A workspace with no live runtime is not reconciled here: the provision funnel creates it,
     and that execution runs this at its end (``provision_runner``), reading the same billing.
 
     Returns ``"dispatched"``, ``"failed"``, or ``roll_runtime_image``'s answer. A failure NEVER
     flips the running row to error -- the old runtime keeps serving; it is logged and counted
     on ``provision.reconcile.failed`` (paged). A caller retries by calling this again."""
-    row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
-    if not (row.get("agentcore_runtime_arn") and row.get("status") == "running"):
-        from core.services.provision_dispatch import dispatch_provision
-
-        return "dispatched" if await dispatch_provision(owner_id) else "failed"
     try:
-        boot_changed = await prepare_hermes_workspace(owner_id)
-        _role_arn, aip_arns = await _load_role_and_aips(owner_id)
-        await write_profiles(owner_id, aip_arns)
+        row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+        if not (row.get("agentcore_runtime_arn") and row.get("status") == "running"):
+            from core.services.provision_dispatch import dispatch_provision
+
+            return "dispatched" if await dispatch_provision(owner_id) else "failed"
+        inputs = await _billing_inputs(owner_id)
+        boot_changed = False
+        for _ in range(2):
+            boot_changed = await prepare_hermes_workspace(owner_id) or boot_changed
+            _role_arn, aip_arns = await _load_role_and_aips(owner_id)
+            await write_profiles(owner_id, aip_arns)
+            fresh = await _billing_inputs(owner_id)
+            if fresh == inputs:
+                break
+            logger.info("reconcile_runtime: billing moved for owner=%s mid-reconcile -- rendering again", owner_id)
+            inputs = fresh
         return await roll_runtime_image(owner_id, restart_session=boot_changed)
     except Exception:  # noqa: BLE001 -- the old runtime keeps serving; the metric pages
         logger.exception("reconcile_runtime failed for owner=%s", owner_id)
@@ -1055,7 +1146,8 @@ async def write_profile_for_agent(
 
     ``soul_md_override``, when given, replaces the derived SOUL.md (``write_agent_profile``'s own
     ``build_soul_md(agent_row)``) verbatim -- for a caller staging identity text that isn't purely
-    roster-derived. ``None`` (the default) keeps today's behaviour for every existing caller.
+    roster-derived. ``None`` (the default) writes the derived one unless the stored SOUL.md is
+    not backend-generated (``is_generated_soul``), which is kept as is.
 
     ``inputs``, when given, is used AS-IS instead of calling ``resolve_profile_inputs`` again --
     Q9a fix round 1, I3: ``write_profiles``'s six-agent roster fan-out resolves the SAME
@@ -1106,6 +1198,15 @@ async def write_profile_for_agent(
         ) from exc
     if soul_md_override is not None:
         files.soul_md = soul_md_override
+    else:
+        # Every reconcile rewrites every profile: keep a SOUL.md the owner saved on the
+        # Instructions tab (or a migrated/marketplace one) -- the same generated-marker rule
+        # refresh_agent_soul applies to a rename.
+        from core.services import hermes_profiles
+
+        current = await run_in_thread(hermes_profiles.read_soul_md, owner_id, agent_id)
+        if current and not hermes_profiles.is_generated_soul(current):
+            files.soul_md = current
     await upload_profile(owner_id, agent_id, files)
     await _stage_owner_facts(owner_id, [agent_id], inputs)
 
@@ -1271,7 +1372,7 @@ async def provision_hermes_runtime(owner_id: str) -> str:
     # Create-or-adopt this workspace's AgentCore Browser profile and grant it, before the
     # request is built: its id is what turns the browser env block on. Never raises -- ""
     # means the runtime simply advertises no browser tools this round.
-    browser_profile_id = await browser_sessions.ensure_browser_profile(owner_id)
+    browser_profile_id = await _browser_profile_id(owner_id, row)
     # Grant before the env names the memory: a runtime told AGENTCORE_MEMORY_ID must be able to use it.
     from core.billing.bedrock_aip import ensure_owner_memory_policy
 

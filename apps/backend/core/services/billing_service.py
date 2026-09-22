@@ -693,13 +693,13 @@ async def change_provider(
                 status_code=403,
             )
 
-    from core.services.hermes_provisioning import reconcile_runtime
+    from core.services.hermes_provisioning import reconcile_in_background
 
     # Same choice: nothing to commit, but re-run the idempotent reconcile. Re-selecting the
     # current provider is how an owner retries a switch whose reconcile was lost (a backend
     # deploy mid-task) or failed.
     if current_choice == provider_choice and current_byo == next_byo:
-        asyncio.create_task(reconcile_runtime(owner_id))
+        reconcile_in_background(owner_id)
         return {"status": "noop", "provider_choice": provider_choice, "byo_provider": next_byo}
 
     if provider_choice == "openrouter_managed":
@@ -896,7 +896,7 @@ async def change_provider(
 
     # Background: a boot-time change (never the provider itself) can wait up to
     # ROLL_IDLE_WAIT_S for an idle session. A lost task is retried by re-selecting.
-    asyncio.create_task(reconcile_runtime(owner_id))
+    reconcile_in_background(owner_id)
 
     return {
         "status": "ok",

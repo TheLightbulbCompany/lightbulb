@@ -605,8 +605,12 @@ def build_soul_md(agent: dict, *, company_name: str | None = None) -> str:
     lines = [SOUL_GENERATED_MARKER, "", f"# {name}", ""]
     if agent.get("title"):
         lines += [f"**{agent['title']}**", ""]
-    where = f" at {company_name}" if company_name else ""
-    lines.append(f"You are {name}, the {role} agent{where} on Lightbulb.")
+    # Never print the Paperclip role code ("cfo", "researcher", "general") -- it reads as noise.
+    # A title equal to the name (every starter) would just repeat it.
+    title = agent.get("title")
+    who = f", {title}" if title and title != name else ""
+    where = f" at {company_name}" if company_name else " on the Lightbulb team"
+    lines.append(f"You are {name}{who}{where}.")
     if role == "ceo":
         lines.append(_CEO_LINE)
     if agent.get("capabilities"):

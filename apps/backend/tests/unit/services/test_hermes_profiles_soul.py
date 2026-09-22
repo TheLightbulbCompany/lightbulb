@@ -9,8 +9,8 @@ from core.services.hermes_profiles import (
 def test_soul_names_the_agent_and_its_role():
     soul = build_soul_md({"id": "a1", "name": "Ada", "role": "engineering", "title": "Head of Engineering"})
     assert "# Ada" in soul
-    assert "Head of Engineering" in soul
-    assert "engineering" in soul
+    assert "You are Ada, Head of Engineering on the Lightbulb team." in soul
+    assert "engineering agent" not in soul
 
 
 def test_the_ceo_soul_says_it_is_the_root_of_the_roster():
@@ -74,7 +74,14 @@ def test_every_starter_agent_renders_a_full_persona():
         soul = build_soul_md({"id": key, "name": name, "role": role, "title": title, "capabilities": capabilities})
         assert is_generated_soul(soul)
         assert f"\n# {name}\n" in soul
-        assert f"You are {name}, the {role} agent on Lightbulb." in soul
+        assert f"You are {name} on the Lightbulb team." in soul
+        assert f"the {role} agent" not in soul
         assert soul.endswith(f"\n## What you do\n\n{capabilities}\n")
         headline, blank, paragraph = capabilities.split("\n")
         assert headline and not blank and len(paragraph) > 200
+
+
+def test_identity_line_uses_title_and_company_never_the_role_code():
+    soul = build_soul_md({"id": "a", "name": "Ada", "role": "cfo", "title": "Head of Money"}, company_name="Acme")
+    assert "You are Ada, Head of Money at Acme." in soul
+    assert "cfo" not in soul

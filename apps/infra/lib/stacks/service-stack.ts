@@ -1886,21 +1886,6 @@ export class ServiceStack extends cdk.Stack {
         {
           containerDefinition: provisionerContainer,
           command: sfn.JsonPath.listAt("$.command"),
-          // PROVISION_ATTEMPT_TOKEN is THIS attempt's fencing token — fresh
-          // every retry via BumpAttempt's States.UUID() below, while
-          // $.command (owner/claim args) stays static across the whole
-          // execution. An env override (not a $.command element) because
-          // CDK/SFN can splice ONE dynamic field per override cleanly; see
-          // scripts/provision_runner.py module docstring for the full
-          // hazard this closes and why it is NOT in the StartExecution
-          // input (that must stay byte-identical for Branch-A idempotency —
-          // core/services/provision_dispatch.py).
-          environment: [
-            {
-              name: "PROVISION_ATTEMPT_TOKEN",
-              value: sfn.JsonPath.stringAt("$.attempt_token"),
-            },
-          ],
         },
       ],
       resultPath: sfn.JsonPath.DISCARD,
@@ -1914,15 +1899,17 @@ export class ServiceStack extends cdk.Stack {
       cause: "provisioner exhausted retries or failed deterministically",
     });
 
-    // Claim-conditioned row writes — the SIGKILL backstop. On a clean runner
+    // Status-conditioned row writes — the SIGKILL backstop. On a clean runner
     // exit the runner already wrote these values; these writes are idempotent
     // re-assertions that also cover the case where the runner died mid-write.
     // Condition accepts BOTH "provisioning" (runner died before its own
-    // release) AND "error" (runner released cleanly, this re-asserts) — a
+    // error write) AND "error" (runner wrote it, this re-asserts) — a
     // clean transient failure leaves the row at "error", and conditioning on
     // "provisioning" alone would fail every write after attempt 1 and kill
-    // the retry loop. Rows at "running"/"stopped", or under a different
-    // claim, are never touched (routes to Superseded via the catch below).
+    // the retry loop. Rows at "running"/"stopped" (a concurrent execution
+    // already finished, or someone stopped the box) or gone are never
+    // touched (routes to Superseded via the catch below). No claim: a RUNNING
+    // execution owns the provision, and every provision step is idempotent.
     const ddbWrite = (id: string, updateExpr: string, values: Record<string, tasks.DynamoAttributeValue>) => {
       const write = new tasks.DynamoUpdateItem(this, id, {
         table: containersTableRef,
@@ -1930,11 +1917,10 @@ export class ServiceStack extends cdk.Stack {
           owner_id: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.owner_id")),
         },
         updateExpression: updateExpr,
-        conditionExpression: "provision_claim_id = :cid AND (#s = :prov OR #s = :err)",
+        conditionExpression: "#s = :prov OR #s = :err",
         expressionAttributeNames: { "#s": "status" },
         expressionAttributeValues: {
           ...values,
-          ":cid": tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.claim_id")),
           ":prov": tasks.DynamoAttributeValue.fromString("provisioning"),
           ":ts": tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$$.State.EnteredTime")),
         },
@@ -1942,8 +1928,8 @@ export class ServiceStack extends cdk.Stack {
       });
       // These writes are the SIGKILL backstop — without a Retry policy a
       // single DDB throttle fails the whole execution and the row wedges at
-      // "provisioning". Retriers evaluate IN ORDER, so the fencing signal
-      // (ConditionalCheckFailed = the row was taken over) is excluded FIRST
+      // "provisioning". Retriers evaluate IN ORDER, so the condition miss
+      // (ConditionalCheckFailed = the row moved on) is excluded FIRST
       // with maxAttempts 0 — it must fall through to the Superseded catch,
       // never be retried; every other error is transient and retried.
       write.addRetry({
@@ -1986,8 +1972,8 @@ export class ServiceStack extends cdk.Stack {
         ":r": tasks.DynamoAttributeValue.fromBoolean(true),
       },
     );
-    // ConditionalCheckFailed on any write means a deliberate reprovision took
-    // the row over — stop quietly, exactly the runner's superseded rule.
+    // ConditionalCheckFailed on any write means the row moved on (running,
+    // stopped or gone) — stop quietly.
     // (Optimized-integration exception prefix is "DynamoDB", uppercase DB.)
     for (const write of [markFailedDeterministic, markFailedExhausted, markRetrying]) {
       write.addCatch(succeedSuperseded, {
@@ -2001,18 +1987,6 @@ export class ServiceStack extends cdk.Stack {
     const bumpAttempt = new sfn.Pass(this, "BumpAttempt", {
       parameters: {
         "attempt.$": "States.MathAdd($.attempt, 1)",
-        // Fresh per-retry fencing token (spec §7 hazard 1): the state
-        // machine's task timeout does not guarantee the previous attempt's
-        // ECS task is dead, so a straggler must be fenced out by something
-        // OTHER than the (stable, reused) claim_id/execution name. The
-        // runner re-stamps container_repo's provision_attempt_token to this
-        // value as its first action every attempt
-        // (container_repo.claim_attempt) — a still-running previous attempt
-        // then fails its NEXT checkpoint with a stale token. claim_id and
-        // the execution name stay untouched, preserving Branch-A idempotency
-        // (core/services/provision_dispatch.py).
-        "attempt_token.$": "States.UUID()",
-        "claim_id.$": "$.claim_id",
         "command.$": "$.command",
         "owner_id.$": "$.owner_id",
       },
@@ -2033,7 +2007,6 @@ export class ServiceStack extends cdk.Stack {
     const shapeForRetry = new sfn.Pass(this, "ShapeForRetry", {
       parameters: {
         "attempt.$": "$.attempt",
-        "claim_id.$": "$.claim_id",
         "command.$": "$.command",
         "owner_id.$": "$.owner_id",
       },
@@ -2047,7 +2020,6 @@ export class ServiceStack extends cdk.Stack {
       parameters: {
         "attempt.$": "$.attempt",
         "cause.$": "States.StringToJson($.error.Cause)",
-        "claim_id.$": "$.claim_id",
         "command.$": "$.command",
         "owner_id.$": "$.owner_id",
       },
@@ -2063,7 +2035,6 @@ export class ServiceStack extends cdk.Stack {
         sfn.Condition.not(sfn.Condition.isPresent("$.cause.Containers[0].ExitCode")),
         transientGate, // task never started (EFS mount / image pull) — no exit code, retry
       )
-      .when(sfn.Condition.numberEquals("$.cause.Containers[0].ExitCode", 20), succeedSuperseded)
       .when(sfn.Condition.numberEquals("$.cause.Containers[0].ExitCode", 10), markFailedDeterministic)
       .otherwise(transientGate); // 11, SIGKILL-after-start (137), Spot reclaim
     parseCause.next(classify);
@@ -2083,20 +2054,17 @@ export class ServiceStack extends cdk.Stack {
 
     runProvisioner.next(succeedProvisioned);
 
-    // The machine STARTS at RunProvisioner. #2875 deleted the backend's inline
-    // attempt 0, so the old watch loop (which waited up to 40 x 60s for that
-    // attempt before running the ECS leg) left every fresh provision idle for
-    // ~40 minutes. The runner re-checks its own claim first (claim_attempt), so
-    // a superseded execution still stands down via exit 20 -> Superseded.
-
     const provisionStateMachine = new sfn.StateMachine(this, "ProvisionStateMachine", {
       stateMachineName: `${resourcePrefix(env)}provision`,
       role: new iam.Role(this, "ProvisionStateMachineRole", {
         roleName: `${resourcePrefix(env)}provision-state-machine`,
         assumedBy: new iam.ServicePrincipal("states.amazonaws.com"),
       }),
+      // The provisioner runs at once: the backend no longer runs an inline
+      // attempt, so there is no row to watch first. (The watch loop that used
+      // to sit here keyed on the provision claim, which is gone.)
       definitionBody: sfn.DefinitionBody.fromChainable(runProvisioner),
-      // Up to 3 x 30-min ECS attempts + retry waits ~= 92 min; 3h leaves headroom.
+      // Up to 3 x 30-min ECS attempts + retry waits; collapses in Task 6.
       timeout: cdk.Duration.hours(3),
     });
 
@@ -2122,12 +2090,10 @@ export class ServiceStack extends cdk.Stack {
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "ProvisionStateMachineDispatch",
-        actions: ["states:StartExecution", "states:DescribeExecution", "states:StopExecution"],
-        resources: [
-          provisionStateMachine.stateMachineArn,
-          // DescribeExecution/StopExecution operate on execution ARNs.
-          `arn:aws:states:${this.region}:${this.account}:execution:${resourcePrefix(env)}provision:*`,
-        ],
+        // ListExecutions (RUNNING, by name prefix) is dispatch's whole
+        // single-flight check — provision_dispatch.py.
+        actions: ["states:StartExecution", "states:ListExecutions"],
+        resources: [provisionStateMachine.stateMachineArn],
       }),
     );
 

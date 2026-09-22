@@ -722,7 +722,7 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     expect(envNames).not.toContain("PROVISION_EXECUTOR");
   });
 
-  test("state machine definition pins the load-bearing ASL (claim condition, missing-exit-code guard, exit-code routing, per-attempt fencing token)", () => {
+  const flatDefinition = (): string => {
     const stateMachines = Object.values(
       template.findResources("AWS::StepFunctions::StateMachine"),
     );
@@ -730,89 +730,71 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     const def = (stateMachines[0] as any).Properties?.DefinitionString;
     // DefinitionString synthesizes as an Fn::Join of literal strings and Refs;
     // flatten the literal parts to assert on the ASL content.
-    const flat = (def?.["Fn::Join"]?.[1] ?? [def])
+    return (def?.["Fn::Join"]?.[1] ?? [def])
       .map((part: any) => (typeof part === "string" ? part : ""))
       .join("");
-    // (a) Claim-conditioned DDB writes — the superseded/SIGKILL backstop rule.
-    expect(flat).toContain(
-      "provision_claim_id = :cid AND (#s = :prov OR #s = :err)",
-    );
-    // (b) A task that never started (EFS mount / image-pull failure) stops
-    // with NO exit code in the Cause. A Choice rule referencing the missing
-    // path throws States.Runtime, Choice states cannot Catch, and the
-    // execution dies with the row stuck at "provisioning" — so ClassifyFailure
-    // MUST guard on IsPresent and route the no-exit-code case to the retry
-    // loop before any numeric comparison. ORDER is the load-bearing property
-    // (Choice rules evaluate in order), so assert ordinally: the IsPresent
-    // guard exists, precedes the numeric rules, and its Next targets the
-    // retry gate (AttemptsRemain) within the same Choices region.
+  };
+
+  test("state machine definition pins the load-bearing ASL (status condition, missing-exit-code guard, exit-code routing)", () => {
+    const flat = flatDefinition();
+    // (a) Status-conditioned DDB writes — the SIGKILL backstop. No claim:
+    // a RUNNING execution owns the provision.
+    expect(flat).toContain('"ConditionExpression":"#s = :prov OR #s = :err"');
+    expect(flat).not.toContain("provision_claim_id");
+    // (b) A task that never started (image-pull failure) stops with NO exit
+    // code in the Cause. A Choice rule referencing the missing path throws
+    // States.Runtime, Choice states cannot Catch, and the execution dies with
+    // the row stuck at "provisioning" — so ClassifyFailure MUST guard on
+    // IsPresent and route the no-exit-code case to the retry loop before any
+    // numeric comparison (Choice rules evaluate in order).
     expect(flat).toContain(
       '"Variable":"$.cause.Containers[0].ExitCode","IsPresent":true',
     );
     const isPresentIdx = flat.indexOf('"IsPresent":true');
-    const exit20Idx = flat.indexOf('"NumericEquals":20');
+    const exit10Idx = flat.indexOf('"NumericEquals":10');
     expect(isPresentIdx).toBeGreaterThanOrEqual(0);
-    expect(exit20Idx).toBeGreaterThanOrEqual(0);
-    expect(isPresentIdx).toBeLessThan(exit20Idx);
+    expect(exit10Idx).toBeGreaterThan(isPresentIdx);
     const guardNextIdx = flat.indexOf('"Next":"AttemptsRemain"', isPresentIdx);
     expect(guardNextIdx).toBeGreaterThan(isPresentIdx);
-    expect(guardNextIdx).toBeLessThan(exit20Idx);
-    // (c) Exit-code ABI routing: 20 superseded, 10 deterministic.
-    expect(flat).toContain(
-      '"Variable":"$.cause.Containers[0].ExitCode","NumericEquals":20',
-    );
+    expect(guardNextIdx).toBeLessThan(exit10Idx);
+    // (c) Exit-code ABI routing: 10 deterministic. The runner never exits 20
+    // any more (no lease to lose), so no route for it.
     expect(flat).toContain(
       '"Variable":"$.cause.Containers[0].ExitCode","NumericEquals":10',
     );
+    expect(flat).not.toContain('"NumericEquals":20');
     // (d) Terminal-write backstop resilience: the DDB writes retry transient
-    // failures, with the fencing signal (ConditionalCheckFailed) excluded
-    // FIRST so a taken-over row falls to the Superseded catch, never a retry.
+    // failures, with the condition miss (ConditionalCheckFailed) excluded
+    // FIRST so a moved-on row falls to the Superseded catch, never a retry.
     expect(flat).toContain(
       '"ErrorEquals":["DynamoDB.ConditionalCheckFailedException"],"MaxAttempts":0',
     );
-    // (e) Per-retry attempt-token fencing (spec §7 hazard 1): BumpAttempt
-    // mints a FRESH token via the States.UUID() intrinsic on every retry,
-    // while claim_id (and so the execution name) stays untouched.
-    expect(flat).toContain('"attempt_token.$":"States.UUID()"');
-    expect(flat).toContain('"claim_id.$":"$.claim_id"');
+    // (e) No lease inputs survive anywhere in the machine.
+    expect(flat).not.toContain("attempt_token");
+    expect(flat).not.toContain("claim_id");
+    expect(flat).not.toContain("PROVISION_ATTEMPT_TOKEN");
   });
 
-  test("machine runs the provisioner immediately — no watch loop", () => {
-    // #2875 deleted the backend's inline attempt 0. The old watch loop waited
-    // up to 40 x 60s for that attempt before running the ECS leg, so every
-    // fresh provision sat idle ~40 minutes. The execution must START at
-    // RunProvisioner and carry no watch/tick states.
-    const stateMachines = Object.values(
-      template.findResources("AWS::StepFunctions::StateMachine"),
-    );
-    const def = (stateMachines[0] as any).Properties?.DefinitionString;
-    const flat = (def?.["Fn::Join"]?.[1] ?? [def])
-      .map((part: any) => (typeof part === "string" ? part : ""))
-      .join("");
+  test("machine runs the provisioner at once — no watch loop", () => {
+    // The backend no longer runs an inline attempt 0, so there is nothing to
+    // watch first; the old watch loop keyed on the provision claim.
+    const flat = flatDefinition();
     expect(flat).toContain('"StartAt":"RunProvisioner"');
-    for (const gone of ["InitWatch", "GetContainerRow", "WatchRow", "WaitWatchTick", "TickWatch", "watch_ticks"]) {
-      expect(flat).not.toContain(gone);
-    }
+    expect(flat).not.toContain("WatchRow");
+    expect(flat).not.toContain("watch_ticks");
   });
 
   test("machine timeout covers every ECS attempt", () => {
-    // Up to 3 x 30-min attempts + retry waits ~= 92 min, under the 3h ceiling.
-    // The timeout lives INSIDE the ASL (TimeoutSeconds), not as a CFN prop.
-    const stateMachines = Object.values(
-      template.findResources("AWS::StepFunctions::StateMachine"),
-    );
-    const def = (stateMachines[0] as any).Properties?.DefinitionString;
-    const flat = (def?.["Fn::Join"]?.[1] ?? [def])
-      .map((part: any) => (typeof part === "string" ? part : ""))
-      .join("");
-    expect(flat).toContain('"TimeoutSeconds":10800');
+    // Up to 3 x 30-min attempts + retry waits. The timeout lives INSIDE the
+    // ASL (TimeoutSeconds), not as a CFN prop.
+    expect(flatDefinition()).toContain('"TimeoutSeconds":10800');
   });
 
-  test("state machine may write the KMS-encrypted containers row", () => {
-    // The MarkRetrying/MarkFailed* writes need the CMK grant: the containers
-    // table is CUSTOMER_MANAGED-encrypted and the key crosses stacks as a bare
-    // ARN, so nothing auto-grants it (the 2026-08-10 KMS class of bug). The KMS
-    // Sid uniquely identifies the state machine's role policy.
+  test("state machine may write the containers row it marks", () => {
+    // The MarkRetrying/MarkFailed* writes need dynamodb:UpdateItem AND the
+    // CMK grant on the SAME role: the containers table is CUSTOMER_MANAGED-
+    // encrypted and the key crosses stacks as a bare ARN, so nothing
+    // auto-grants it (the 2026-08-10 KMS class of bug).
     const policies = Object.values(
       template.findResources("AWS::IAM::Policy"),
     ) as any[];
@@ -830,18 +812,12 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     expect(kmsStatement.Action).toEqual(
       expect.arrayContaining(["kms:Decrypt", "kms:GenerateDataKey"]),
     );
-  });
-
-  test("RunProvisioner overrides PROVISION_ATTEMPT_TOKEN from $.attempt_token, not baked into the static command", () => {
-    const stateMachines = Object.values(
-      template.findResources("AWS::StepFunctions::StateMachine"),
+    const canWrite = statements.some((s) =>
+      Array.isArray(s.Action)
+        ? s.Action.includes("dynamodb:UpdateItem")
+        : s.Action === "dynamodb:UpdateItem",
     );
-    const def = (stateMachines[0] as any).Properties?.DefinitionString;
-    const flat = (def?.["Fn::Join"]?.[1] ?? [def])
-      .map((part: any) => (typeof part === "string" ? part : ""))
-      .join("");
-    expect(flat).toContain("PROVISION_ATTEMPT_TOKEN");
-    expect(flat).toContain("$.attempt_token");
+    expect(canWrite).toBe(true);
   });
 
   test("backend task role may start provision executions", () => {
@@ -853,25 +829,17 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     // accepts the statement in EITHER the inline AWS::IAM::Policy or an
     // AWS::IAM::ManagedPolicy — but if it's in a ManagedPolicy, that policy
     // must be attached to the task role.
-    const wantedActions = [
-      "states:StartExecution",
-      "states:DescribeExecution",
-      "states:StopExecution",
-    ];
+    // ListExecutions (RUNNING, by name prefix) is dispatch's single-flight check.
+    const wantedActions = ["states:StartExecution", "states:ListExecutions"];
     const hasDispatchStatement = (doc: any): boolean =>
       (doc?.Statement ?? []).some(
         (s: any) =>
           s.Sid === "ProvisionStateMachineDispatch" &&
           JSON.stringify(s.Action) === JSON.stringify(wantedActions) &&
           // Pin the Resource scope: exactly the state machine ARN (a Ref to
-          // the SM resource) plus the execution-ARN pattern — a future
-          // widening to "*" must fail this test.
-          Array.isArray(s.Resource) &&
-          s.Resource.length === 2 &&
-          typeof s.Resource[0]?.Ref === "string" &&
-          s.Resource[0].Ref.startsWith("ProvisionStateMachine") &&
-          s.Resource[1] ===
-            "arn:aws:states:us-east-1:877352799272:execution:lightbulb-dev-provision:*",
+          // the SM resource) — a future widening to "*" must fail this test.
+          typeof s.Resource?.Ref === "string" &&
+          s.Resource.Ref.startsWith("ProvisionStateMachine"),
       );
 
     const inline = Object.values(

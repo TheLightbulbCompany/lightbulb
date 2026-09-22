@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 import traceback
@@ -29,9 +30,11 @@ _last_turn: dict[str, float] = {}
 _brokered_mcp_overlay: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
     "brokered_mcp_overlay", default=None
 )
-# The room each session last ran in, for the delegation drain (bridge/followups.py): a finished
-# background delegation names only its session, and its follow-up must land in that room's thread.
-# In-memory only -- the delegations themselves die with the process anyway.
+# The room turn each async delegation was started by, for the delegation drain (bridge/followups.py):
+# its follow-up must land in THAT turn's thread. LAST_TURN (the session's latest turn that ran Hermes)
+# is only the fallback for a delegation this process never saw live. In-memory only -- the
+# delegations themselves die with the process anyway.
+DELEGATION_TURN: dict[str, dict] = {}
 LAST_TURN: dict[str, dict] = {}
 # Every profile this process restored, for the SIGTERM save (server._save_on_sigterm).
 RESTORED: set[str] = set()
@@ -536,7 +539,10 @@ def parse_ingress(body: dict) -> dict:
     for i, entry in enumerate(body.get("recentHistory") or []):
         seq = entry.get("messageSeq")
         _check(isinstance(seq, int) and seq > previous, f"recentHistory[{i}].messageSeq must strictly increase")
-        _check(seq < msg.get("messageSeq"), f"recentHistory[{i}].messageSeq must be below message.messageSeq")
+        # A follow-up's history runs through the room's latest message: its trigger and the agent's
+        # own later reply (the promise it is now keeping) are at/after message.messageSeq.
+        _check(follow_up is not None or seq < msg.get("messageSeq"),
+               f"recentHistory[{i}].messageSeq must be below message.messageSeq")
         _check_message(entry, room.get("id"), f"recentHistory[{i}]")
         previous = seq
     return body
@@ -1599,14 +1605,26 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
             try:
                 agent = _construct_agent(agent_id, body, frames, session_key)
                 attach_agent(run_id, agent)
-                result = agent.run_conversation(
-                    user_message=_message_content(
-                        _turn_user_message(body),
-                        images.get((body.get("message") or {}).get("messageId"), []),
-                    ),
-                    system_message=system_prompt(body, agent_id, media=current_media),
-                    conversation_history=_history(body, agent_id, images) or None,
-                ) or {}
+                # delegate_tool_dispatch._resolve_async_session_key stamps an async delegation with
+                # get_current_session_key(), else agent.session_id -- which compression renames, so the
+                # drain could no longer route the completion. Bind the room's key, as the gateway does.
+                try:
+                    from tools.approval_context import reset_current_session_key, set_current_session_key
+                    key_token = set_current_session_key(session_key)
+                except ImportError:
+                    reset_current_session_key = key_token = None
+                try:
+                    result = agent.run_conversation(
+                        user_message=_message_content(
+                            _turn_user_message(body),
+                            images.get((body.get("message") or {}).get("messageId"), []),
+                        ),
+                        system_message=system_prompt(body, agent_id, media=current_media),
+                        conversation_history=_history(body, agent_id, images) or None,
+                    ) or {}
+                finally:
+                    if key_token is not None:
+                        reset_current_session_key(key_token)
                 _post_turn.agent = agent
             finally:
                 browser_control.release(browser_lease)
@@ -1803,6 +1821,20 @@ def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) ->
         _busy_add(-1)
 
 
+def _remember_turn(session_key: str, info: dict) -> None:
+    """Map every async delegation this session owns and no earlier turn claimed to this turn."""
+    LAST_TURN[session_key] = info
+    module = sys.modules.get("tools.async_delegation")  # only if the turn itself imported Hermes
+    try:
+        records = module.list_async_delegations() if module is not None else []
+    except Exception:  # noqa: BLE001 -- a renamed symbol degrades to the LAST_TURN fallback
+        log.warning("list_async_delegations failed", exc_info=True)
+        records = []
+    for record in records:
+        if record.get("session_key") == session_key and record.get("delegation_id"):
+            DELEGATION_TURN.setdefault(record["delegation_id"], info)
+
+
 def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, reserved: bool = False) -> None:
     run = body.get("run") or {}
     run_id = run.get("runId")
@@ -1815,8 +1847,6 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                             room.get("id"), agent_id, run_id, thread_root)
     if has_run:
         register_run(run_id)  # idempotent: a no-op if server.py already registered it pre-dispatch
-        LAST_TURN[session_key] = {"roomId": room.get("id"), "agentId": agent_id,
-                                  "triggerMessageId": msg.get("messageId"), "eventKind": body.get("eventKind")}
         from bridge import followups  # lazy: followups imports this module
 
         followups.ensure_started()
@@ -1876,7 +1906,13 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                     if verdict != "dispatch":
                         outcome, error_kind, reply, usage = ("ignored" if verdict == "ignore" else "gate_error"), None, "", ZERO_USAGE
                     else:
-                        outcome, error_kind, reply, usage = _run_hermes(agent_id, body, frames)
+                        try:
+                            outcome, error_kind, reply, usage = _run_hermes(agent_id, body, frames)
+                        finally:
+                            if has_run:
+                                _remember_turn(session_key, {
+                                    "roomId": room.get("id"), "agentId": agent_id,
+                                    "triggerMessageId": msg.get("messageId"), "eventKind": body.get("eventKind")})
                         if has_run and RUNS.get(run_id, {}).get("aborted"):
                             # Interrupted mid-flight (agent.interrupt() from a concurrent
                             # abort_run call): the tokens were spent, so `usage` stays what

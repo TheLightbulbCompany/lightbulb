@@ -171,3 +171,45 @@ async def test_a_room_event_follow_up_is_paid_only(monkeypatch):
     await worker._dispatch_message(META, MEMBER, MESSAGE, "room_event", follow_up=follow_up)
     container.assert_not_awaited()
     assert "body" not in posted
+
+
+@pytest.mark.asyncio
+async def test_follow_up_history_runs_through_the_rooms_latest_message(monkeypatch):
+    """The follow-up turn must see its trigger and its own promise, both at/after message.messageSeq."""
+    worker, _, _, _ = _dispatch_fixture(monkeypatch)
+    seen: dict = {}
+
+    async def capture_body(**kwargs):
+        seen.update(kwargs)
+        return {"version": 1, "eventId": kwargs["message"]["messageId"]}
+
+    monkeypatch.setattr(work, "build_ingress_body", capture_body)
+    follow_up = {"id": FOLLOW, "reason": "delegation_completed", "text": "x"}
+    await worker._dispatch_message({**META, "lastSeq": 9}, MEMBER, MESSAGE, "user_request", follow_up=follow_up)
+    assert seen["history_through_seq"] == 9
+    seen.clear()
+    await worker._dispatch_message({**META, "lastSeq": 9}, MEMBER, MESSAGE, "user_request")
+    assert seen.get("history_through_seq") is None
+
+
+@pytest.mark.asyncio
+async def test_build_ingress_body_history_through_seq_includes_the_trigger(monkeypatch):
+    before = AsyncMock(return_value=[])
+    monkeypatch.setattr(work.messaging_repo, "list_messages_before", before)
+    message = {
+        **MESSAGE,
+        "roomId": ROOM,
+        "roomRevision": 1,
+        "author": {"kind": "human", "id": "u1", "displayName": "U"},
+        "text": "hi",
+        "createdAt": "2026-09-22T00:00:00Z",
+    }
+    await work.build_ingress_body(
+        meta=META, target_agent_id=AGENT, event_kind="user_request", message=message, members=[], history_through_seq=9
+    )
+    before.assert_awaited_once_with(ROOM, 10, work._HISTORY_LIMIT)
+    before.reset_mock()
+    await work.build_ingress_body(
+        meta=META, target_agent_id=AGENT, event_kind="user_request", message=message, members=[]
+    )
+    before.assert_awaited_once_with(ROOM, 4, work._HISTORY_LIMIT)

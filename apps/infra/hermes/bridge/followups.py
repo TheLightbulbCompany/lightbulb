@@ -38,6 +38,12 @@ _warned_missing = False
 # Delegation events re-queued after a retryable POST failure on the last pass: /ping stays busy
 # until they are delivered or the ledger's own attempt budget drops them.
 _retrying = 0
+# Retryable failures per delivery key. Durable completions also spend the ledger's own budget; an
+# interim notice (and a legacy event) has none, so without this a sustained 5xx re-queues it every
+# POLL_S forever and /ping never idles.
+# ponytail: in-memory, per process -- a restart forgets the count, and the queue with it.
+MAX_ATTEMPTS = 8
+_attempts: dict[str, int] = {}
 
 
 def ensure_started() -> None:
@@ -99,21 +105,35 @@ def drain_once() -> None:
         except Exception:  # queue.Empty
             break
         (events if evt.get("type") == "async_delegation" else requeue).append(evt)
-    for evt in requeue:  # process completions/watch events: out of scope, left for their owners
+    # Process completions/watch events: out of scope. Nothing else in the bridge consumes them, so
+    # they accumulate (pre-existing behaviour, not introduced by the drain).
+    for evt in requeue:
         q.put(evt)
-    groups: dict[str, list[dict]] = {}
+    # One follow-up per (session, originating turn): the turn that started the delegation, else the
+    # session's latest turn that ran Hermes.
+    groups: dict[tuple, tuple[str, dict | None, list[dict]]] = {}
     for evt in events:
-        groups.setdefault(evt.get("session_key") or evt.get("parent_session_id") or "", []).append(evt)
+        session_key = evt.get("session_key") or evt.get("parent_session_id") or ""
+        last = turn.DELEGATION_TURN.get(str(evt.get("delegation_id") or "")) or turn.LAST_TURN.get(session_key)
+        group_key = (session_key, (last or {}).get("triggerMessageId"))
+        groups.setdefault(group_key, (session_key, last, []))[2].append(evt)
     retrying = 0
-    for session_key, group in groups.items():
+    for session_key, last, group in groups.values():
         try:
-            failed = _deliver(session_key, group, ledger, fmt)
+            failed = _deliver(session_key, last, group, ledger, fmt)
         except Exception:  # noqa: BLE001 -- they were dequeued: put them back rather than lose them
             log.warning("delegation drain: session %s failed", session_key, exc_info=True)
             failed = group
         for evt in failed:
+            key = _delivery_key(evt)
+            _attempts[key] = _attempts.get(key, 0) + 1
+            if _attempts[key] >= MAX_ATTEMPTS:
+                _attempts.pop(key, None)
+                _forget(evt)
+                log.warning("delegation drain: %s failed %d times; dropping", key, MAX_ATTEMPTS)
+                continue
             q.put(evt)
-        retrying += len(failed)
+            retrying += 1
     _retrying = retrying
 
 
@@ -124,19 +144,31 @@ def _agent_from_session_key(session_key: str) -> str | None:
 
 def _delivery_key(evt: dict) -> str:
     # An interim task-failure notice shares its batch's delegation_id; keep its followUpId apart
-    # from the final result's or the backend would replay the result away as a duplicate.
+    # from the final result's -- and from its siblings' (one notice per failed task) -- or the
+    # backend would replay it away as a duplicate.
     did = str(evt.get("delegation_id") or "")
-    return f"{did}:notice" if evt.get("task_failure_notice") else did
+    if not evt.get("task_failure_notice"):
+        return did
+    task = (evt.get("results") or [{}])[0].get("task_index")
+    return f"{did}:notice:{task if task is not None else evt.get('completed_at')}"
+
+
+def _forget(evt: dict) -> None:
+    """The final result is done with: drop its turn mapping (an interim notice leaves it for the result)."""
+    if not evt.get("task_failure_notice"):
+        turn.DELEGATION_TURN.pop(str(evt.get("delegation_id") or ""), None)
 
 
 def _drop(ledger, evt: dict, claim: str) -> None:
+    _forget(evt)
+    _attempts.pop(_delivery_key(evt), None)
     if claim:
         ledger.drop_completion_delivery(str(evt.get("delegation_id") or ""), claim)
 
 
-def _deliver(session_key: str, group: list[dict], ledger, fmt) -> list[dict]:
-    """Claim, format and POST one session's completions. Returns the events to retry."""
-    last = turn.LAST_TURN.get(session_key)
+def _deliver(session_key: str, last: dict | None, group: list[dict], ledger, fmt) -> list[dict]:
+    """Claim, format and POST one session's completions for one originating turn. Returns the
+    events to retry."""
     agent_id = (last or {}).get("agentId") or _agent_from_session_key(session_key)
     # The durable ledger is <HERMES_HOME>/state.db, and the turn that dispatched the delegation ran
     # under its PROFILE's home -- outside that scope every claim hits the root state.db, finds no
@@ -169,6 +201,8 @@ def _deliver(session_key: str, group: list[dict], ledger, fmt) -> list[dict]:
         if 200 <= status < 300:
             for evt, claim in claimed:
                 ledger.complete_event_delivery(evt, claim)
+                _forget(evt)
+                _attempts.pop(_delivery_key(evt), None)
             log.info("delegation follow-up %s -> %s (%d events)", body["followUpId"], status, len(claimed))
             return []
         if 400 <= status < 500:  # final: unknown room/agent/trigger, malformed, capped, or old backend

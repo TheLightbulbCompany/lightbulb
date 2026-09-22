@@ -150,8 +150,12 @@ async def build_ingress_body(
     message: dict[str, Any],
     members: list[dict[str, Any]],
     sessions: list[dict[str, Any]] | None = None,
+    history_through_seq: int | None = None,
 ) -> dict[str, Any]:
-    history = await messaging_repo.list_messages_before(meta["roomId"], int(message["messageSeq"]), _HISTORY_LIMIT)
+    # A follow-up re-runs an old trigger: its history runs through the room's latest message, so the
+    # turn sees the request itself and the agent's own "I'll report back" reply after it.
+    before = int(message["messageSeq"]) if history_through_seq is None else history_through_seq + 1
+    history = await messaging_repo.list_messages_before(meta["roomId"], before, _HISTORY_LIMIT)
     body = {
         "version": 1,
         "eventId": message["messageId"],
@@ -443,6 +447,7 @@ class OpenClawWorkWorker:
             members=members,
             # On the wire only when a session is live; the plugin reads a missing field as [].
             sessions=sessions,
+            history_through_seq=int(meta.get("lastSeq") or message["messageSeq"]) if follow_up is not None else None,
         )
         # The earlier read chose the work; this one is deliberately adjacent to
         # the side effect so queued work cannot outlive membership revocation.

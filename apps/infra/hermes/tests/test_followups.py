@@ -18,11 +18,15 @@ TRIGGER = "44444444-4444-4444-8444-444444444444"
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     turn.LAST_TURN.clear()
+    turn.DELEGATION_TURN.clear()
     turn.RESTORED.clear()
+    followups._attempts.clear()
     monkeypatch.setattr(followups, "_retrying", 0)
     yield
     turn.LAST_TURN.clear()
+    turn.DELEGATION_TURN.clear()
     turn.RESTORED.clear()
+    followups._attempts.clear()
 
 
 def _follow_up_body(text="subagent says: done", **over):
@@ -358,3 +362,125 @@ def test_restore_records_the_profile_for_sigterm(home, posted, monkeypatch):
     monkeypatch.setattr(turn, "publish_frame", lambda *a: 200)
     turn.run_turn("ceo", f.ingress())
     assert "ceo" in turn.RESTORED
+
+
+# ---- review fixes ------------------------------------------------------------------------------
+def test_a_follow_up_may_carry_history_at_and_after_its_trigger():
+    """The follow-up must see the request and its own promise, both at/after message.messageSeq."""
+    body = _follow_up_body()
+    promise = f.message(messageSeq=9, author={"kind": "agent", "id": "ceo", "displayName": "CEO"},
+                        text="review running, I'll report back")
+    body["recentHistory"] = [f.message(messageId=TRIGGER, messageSeq=7), promise]
+    turn.parse_ingress(body)
+    history = turn._history(body, "ceo")
+    assert history[-1] == {"role": "assistant", "content": "review running, I'll report back"}
+    bad = _follow_up_body()
+    bad["recentHistory"] = [f.message(messageSeq=9), f.message(messageSeq=8)]
+    with pytest.raises(turn.IngressError, match="strictly increase"):
+        turn.parse_ingress(bad)
+
+
+def test_without_a_follow_up_history_must_stay_below_the_message():
+    body = f.ingress()
+    body["recentHistory"] = [f.message(messageSeq=9)]
+    with pytest.raises(turn.IngressError, match="below message.messageSeq"):
+        turn.parse_ingress(body)
+
+
+def _fake_module(monkeypatch, name, **attrs):
+    module = types.ModuleType(name)
+    module.__dict__.update(attrs)
+    monkeypatch.setitem(sys.modules, name, module)
+    return module
+
+
+def test_the_turn_binds_the_room_session_key_for_async_delegations(home, posted, monkeypatch):
+    """delegate_tool_dispatch._resolve_async_session_key stamps get_current_session_key(); unbound, it
+    falls back to agent.session_id, which compression renames, orphaning the completion."""
+    import contextvars
+    var = contextvars.ContextVar("k", default="")
+    _fake_module(monkeypatch, "tools")
+    _fake_module(monkeypatch, "tools.approval_context", set_current_session_key=var.set,
+                 reset_current_session_key=var.reset, get_current_session_key=lambda default="": var.get() or default)
+    seen = {}
+
+    class _Probe(_Agent):
+        def run_conversation(self, **kw):
+            seen["key"] = var.get()
+            return super().run_conversation(**kw)
+
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a: _Probe({}))
+    monkeypatch.setattr(turn, "publish_frame", lambda *a: 200)
+    turn.run_turn("ceo", f.ingress())
+    assert seen["key"] == SESSION
+    assert var.get() == ""  # reset after the turn
+
+
+def test_the_delegation_maps_to_the_turn_that_started_it_not_the_latest(home, posted, monkeypatch):
+    records = []
+    _fake_module(monkeypatch, "tools.async_delegation", list_async_delegations=lambda: list(records),
+                 active_count=lambda: 0)
+
+    def run_hermes(*a, **k):
+        records.append({"delegation_id": "d1", "session_key": SESSION, "status": "running"})
+        return ("completed", None, "", turn.ZERO_USAGE)
+
+    monkeypatch.setattr(turn, "_run_hermes", run_hermes)
+    monkeypatch.setattr(turn, "publish_frame", lambda *a: 200)
+    turn.run_turn("ceo", f.ingress(message=f.message(messageId=TRIGGER)))
+    assert turn.DELEGATION_TURN["d1"]["triggerMessageId"] == TRIGGER
+    # A later turn in the same session keeps d1 on its own turn.
+    later = f.ingress(message=f.message(), run={"runId": str(uuid.uuid4()), "frameEndpoint": "", "frameChannel": ""})
+    turn.run_turn("ceo", later)
+    assert turn.DELEGATION_TURN["d1"]["triggerMessageId"] == TRIGGER
+    assert turn.LAST_TURN[SESSION]["triggerMessageId"] == later["message"]["messageId"]
+
+
+def test_an_ignored_ambient_turn_does_not_become_the_last_turn(home, posted, monkeypatch):
+    monkeypatch.setattr(turn, "_run_hermes", lambda *a, **k: pytest.fail("ignored"))
+    monkeypatch.setattr(turn, "gate_ambient", lambda *a, **k: "ignore")
+    monkeypatch.setattr(turn, "publish_frame", lambda *a: 200)
+    turn.run_turn("ceo", f.ingress(eventKind="room_event"))
+    assert SESSION not in turn.LAST_TURN
+
+
+def test_the_drain_resolves_by_delegation_before_last_turn(monkeypatch):
+    _remember_turn()
+    turn.DELEGATION_TURN["d1"] = {"roomId": f.ROOM, "agentId": "ceo", "triggerMessageId": ROOT,
+                                  "eventKind": "room_event"}
+    ledger = _Ledger()
+    _hermes(monkeypatch, [_evt("d1"), _evt("d2")], ledger)
+    calls = []
+    monkeypatch.setattr(turn, "_post_backend", lambda path, body: (calls.append(body), 202)[1])
+    followups.drain_once()
+    by_trigger = {b["triggerMessageId"]: b for b in calls}
+    assert by_trigger[ROOT]["eventKind"] == "room_event" and "[IMPORTANT: d1]" in by_trigger[ROOT]["text"]
+    assert "[IMPORTANT: d2]" in by_trigger[TRIGGER]["text"]
+    assert "d1" not in turn.DELEGATION_TURN  # delivered: forgotten
+
+
+def _notice(did, index):
+    return {**_evt(did), "task_failure_notice": True, "results": [{"task_index": index, "status": "failed"}]}
+
+
+def test_each_interim_notice_of_a_batch_gets_its_own_follow_up_id(monkeypatch):
+    _remember_turn()
+    calls = []
+    monkeypatch.setattr(turn, "_post_backend", lambda path, body: (calls.append(body["followUpId"]), 202)[1])
+    _hermes(monkeypatch, [_notice("d1", 0)], _Ledger())
+    followups.drain_once()
+    _hermes(monkeypatch, [_notice("d1", 1)], _Ledger())
+    followups.drain_once()
+    assert len(set(calls)) == 2
+
+
+def test_a_retry_budget_bounds_sustained_5xx(monkeypatch):
+    _remember_turn()
+    q = _hermes(monkeypatch, [_notice("d1", 0)], _Ledger())
+    monkeypatch.setattr(turn, "_post_backend", lambda path, body: 503)
+    for _ in range(7):
+        followups.drain_once()
+        assert followups.busy()
+    followups.drain_once()
+    assert _drained(q) == []
+    assert not followups.busy()

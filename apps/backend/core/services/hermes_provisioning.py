@@ -633,6 +633,18 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
         "reused" if gateway_token_reused else "minted",
         boot_changed,
     )
+    if not hook_token_reused:
+        # A re-created row minted a NEW hook_token, but a surviving Paperclip company's agents
+        # still carry the old one as their snapshotted apiKey -- every run would 401 silently.
+        # Best-effort: a no-op on a first provision (no company yet); on failure the metric fires
+        # and the repair is a one-shot sync_agent_adapter_tokens run (see the PR).
+        from core.services import paperclip_agent_lifecycle
+
+        try:
+            await paperclip_agent_lifecycle.sync_agent_adapter_tokens(owner_id)
+        except Exception:  # noqa: BLE001 -- never abort the provision over the adapter resync
+            logger.exception("hermes prepare owner=%s: paperclip adapter token resync FAILED", owner_id)
+            put_metric("paperclip.adapter_token_sync.error")
     return boot_changed
 
 
@@ -648,19 +660,6 @@ async def _ensure_codex_auth_staged(owner_id: str) -> None:
     )
     if connector:
         await push_oauth_credential_to_container(owner_id=owner_id, connector_id=connector, only_if_absent=True)
-
-    if not hook_token_reused:
-        # A re-created row minted a NEW hook_token, but a surviving Paperclip company's agents
-        # still carry the old one as their snapshotted apiKey -- every run would 401 silently.
-        # Best-effort: a no-op on a first provision (no company yet); on failure the metric fires
-        # and the repair is a one-shot sync_agent_adapter_tokens run (see the PR).
-        from core.services import paperclip_agent_lifecycle
-
-        try:
-            await paperclip_agent_lifecycle.sync_agent_adapter_tokens(owner_id)
-        except Exception:  # noqa: BLE001 -- never abort the provision over the adapter resync
-            logger.exception("hermes prepare owner=%s: paperclip adapter token resync FAILED", owner_id)
-            put_metric("paperclip.adapter_token_sync.error")
 
 
 def build_runtime_request_for_owner(
@@ -780,6 +779,7 @@ async def _wait_for_idle_session(owner_id: str) -> bool:
 #: a key AWS adds to the returned spec can never read as drift.
 _OPTIONAL_ENV_KEYS = frozenset(
     {
+        "AGENTCORE_MEMORY_ID",
         "LIGHTBULB_MANAGED_GATE_URL",
         "LIGHTBULB_MANAGED_MODEL_ID",
         "AGENT_BROWSER_PROVIDER",

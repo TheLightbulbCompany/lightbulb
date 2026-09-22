@@ -592,17 +592,12 @@ async def test_a_recreated_row_resyncs_the_surviving_companys_adapter_tokens(mon
 
     from unittest.mock import MagicMock
 
-    _patch_owner_aws(monkeypatch, existing_row=None)
+    row = _patch_owner_aws(monkeypatch, existing_row=None)
     monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _noop_async_returns("boot"))
-    row = {}
-
-    async def _update(owner_id, claim_id, fields, **kwargs):
-        row.update(fields)
 
     async def _get(owner_id, *, consistent=False):
         return dict(row) or None
 
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _update)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _get)
 
     class _Client:
@@ -625,7 +620,7 @@ async def test_a_recreated_row_resyncs_the_surviving_companys_adapter_tokens(mon
     monkeypatch.setattr(lifecycle, "PaperclipAdminClient", lambda http_client: admin)
     monkeypatch.setattr(lifecycle, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
 
-    await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1")
+    await hermes_provisioning.prepare_hermes_workspace("org_a")
 
     assert row["hook_token"]  # freshly minted
     keys = {
@@ -640,10 +635,9 @@ async def test_a_reused_hook_token_does_not_resync(monkeypatch):
 
     _patch_owner_aws(monkeypatch, existing_row={"hook_token": "h", "gateway_token": "g"})
     monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _noop_async_returns("boot"))
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", AsyncMock())
     monkeypatch.setattr(lifecycle, "sync_agent_adapter_tokens", _explode)
 
-    await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1")
+    await hermes_provisioning.prepare_hermes_workspace("org_a")
 
 
 @pytest.mark.asyncio
@@ -652,7 +646,6 @@ async def test_a_failed_resync_does_not_abort_the_provision_and_emits_a_metric(m
 
     _patch_owner_aws(monkeypatch, existing_row=None)
     monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _noop_async_returns("boot"))
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", AsyncMock())
 
     async def _boom(owner_id):
         raise RuntimeError("paperclip 503")
@@ -661,7 +654,7 @@ async def test_a_failed_resync_does_not_abort_the_provision_and_emits_a_metric(m
     metrics = []
     monkeypatch.setattr(hermes_provisioning, "put_metric", lambda name, **kw: metrics.append(name))
 
-    await hermes_provisioning.prepare_hermes_workspace("org_a", claim_id="claim-1")
+    await hermes_provisioning.prepare_hermes_workspace("org_a")
 
     assert metrics == ["paperclip.adapter_token_sync.error"]
 

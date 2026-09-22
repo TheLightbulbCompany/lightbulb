@@ -102,6 +102,7 @@ class World:
         mp.setattr(gate, "mint_gate_token", self.mint)
         mp.setattr(gate, "reconcile_gate_token_tiers", AsyncMock())
         mp.setattr(hp, "ensure_agentcore_trust", AsyncMock(return_value=True))
+        mp.setattr("core.services.paperclip_agent_lifecycle.sync_agent_adapter_tokens", AsyncMock(return_value=0))
         self.ensure_or_key = AsyncMock(return_value="hash")
         mp.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", self.ensure_or_key)
         self.browser_profile = ""

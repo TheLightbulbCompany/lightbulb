@@ -110,6 +110,8 @@ test('an upstream 402 for a capped owner stamps the capped day and returns the d
   const stamp = f.calls.updates.find(u => u.TableName === 'billing');
   assert.equal(stamp.Key.owner_id.S, 'owner-1');
   assert.equal(stamp.ExpressionAttributeValues[':day'].S, today());
+  const capHit = f.calls.logs.find(entry => entry['openrouter.gate.cap_hit'] === 1);
+  assert.equal(capHit.tier, 'base');
   assert.ok(f.calls.updates.some(u => u.TableName === 'requests' && u.ExpressionAttributeValues[':released']));
 });
 test('a capped owner already stamped today is refused before upstream', async () => {

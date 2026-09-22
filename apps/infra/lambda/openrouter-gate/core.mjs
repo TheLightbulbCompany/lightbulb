@@ -154,6 +154,8 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       try {
         await ddb.updateItem({ TableName: env.BILLING_TABLE, Key: { owner_id: { S: ownerId } }, UpdateExpression: 'SET openrouter_capped_day = :day', ConditionExpression: 'attribute_exists(owner_id)', ExpressionAttributeValues: { ':day': { S: today } } });
       } catch (error) { console.error('openrouter capped-day stamp failed', error?.name); }
+      // Owner question: how often does each plan hit its daily cap?
+      log(JSON.stringify({ _aws: { Timestamp: Date.now(), CloudWatchMetrics: [{ Namespace: 'LightbulbAI', Dimensions: [['env', 'tier']], Metrics: [{ Name: 'openrouter.gate.cap_hit', Unit: 'Count' }] }] }, env: String(env.GATE_ENV), tier, 'openrouter.gate.cap_hit': 1 }));
     }
   } catch (error) {
     if (!responder.headersSent()) responder.error(error instanceof GateError ? error : new GateError(502, 'Inference gateway unavailable'));

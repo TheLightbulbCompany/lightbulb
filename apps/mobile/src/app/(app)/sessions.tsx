@@ -2,7 +2,7 @@ import { useAuth } from "@clerk/clerk-expo";
 import { sessionLabel, sessionStatus, useWorkspaceSessions, workspaceSections, type LocalSession } from "@lightbulb/shared";
 import { router, Stack, useIsFocused } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, SectionList, StyleSheet, Text, View } from "react-native";
+import { AppState, Pressable, SectionList, StyleSheet, Text, View } from "react-native";
 
 import { SessionStatusDot } from "../../components/session/SessionStatusDot";
 import { colors, fonts, radii, spacing } from "../../config/theme";
@@ -23,6 +23,16 @@ export default function SharedSessionsScreen() {
   // visible: false — this list belongs to no single room, so it marks nothing read.
   const rooms = useMobileRooms({ subscribeToRoom: false, autoSelect: false, visible: false });
   const { sessions, error, loading, refresh } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused });
+  // Foregrounding with this screen on top changes neither focus nor (if the
+  // socket survived suspension) connectionRevision, so neither refresh path
+  // fires. Re-read explicitly: returning to the phone is exactly when the
+  // list must not show a pre-background snapshot.
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active" && focused) void refresh();
+    });
+    return () => subscription.remove();
+  }, [focused, refresh]);
   // The spinner is for a pull only: `loading` is also true for every 30 s poll and hint.
   const [pulling, setPulling] = useState(false);
   const members = useMemo(() => rooms.rooms.flatMap((room) => room.members ?? []), [rooms.rooms]);

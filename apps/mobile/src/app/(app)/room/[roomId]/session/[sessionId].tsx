@@ -141,12 +141,16 @@ export default function SessionScreen() {
         own={own}
         name={name}
         bottomInset={insets.bottom}
+        // Steady backstop poll while this screen is live (same 5s cadence as
+        // web): transcript hints are throttled server-side with no trailing
+        // edge. Stopped when the screen blurs or the app backgrounds.
+        pollMs={live ? 5000 : 0}
       />
     </View>
   );
 }
 
-function SessionBody({ roomId, session, client, revision, onAccessLost, ownerName, own, name, bottomInset }: {
+function SessionBody({ roomId, session, client, revision, onAccessLost, ownerName, own, name, bottomInset, pollMs }: {
   roomId: string;
   session: LocalSession;
   client: RoomResourceSource["client"];
@@ -156,9 +160,10 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, ownerNam
   own: boolean;
   name: (who: string | null) => string;
   bottomInset: number;
+  pollMs: number;
 }) {
   const busy = session.status === "busy";
-  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost);
+  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
   const command = useSessionCommand(client, roomId, session, { uuid: randomUUID, onAccessLost, onSent: () => setText("") });
   const rows = useMemo(() => buildRows(history.events), [history.events]);

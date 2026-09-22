@@ -1542,9 +1542,6 @@ export class ServiceStack extends cdk.Stack {
       OPENROUTER_WORKSPACE_ID: env === "dev"
         ? (process.env.OPENROUTER_WORKSPACE_ID_DEV ?? "")
         : (process.env.OPENROUTER_WORKSPACE_ID_PROD ?? ""),
-      OPENROUTER_KEY_DAILY_LIMIT_USD: env === "dev"
-        ? (process.env.OPENROUTER_KEY_DAILY_LIMIT_USD_DEV || "0")
-        : (process.env.OPENROUTER_KEY_DAILY_LIMIT_USD_PROD || "0"),
       OPENROUTER_MANAGED_MODEL_ID: env === "dev"
         ? (process.env.OPENROUTER_MANAGED_MODEL_ID_DEV ?? "")
         : (process.env.OPENROUTER_MANAGED_MODEL_ID_PROD ?? ""),

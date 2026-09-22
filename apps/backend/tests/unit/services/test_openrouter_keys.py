@@ -358,3 +358,93 @@ async def test_resubscribe_reuses_key_before_retirement_worker_claims_it(monkeyp
         row = table.get_item(Key={"owner_id": "owner-123"})["Item"]
         assert row["state"] == "active"
         assert "retirement_observed_at" not in row
+
+
+@pytest.mark.parametrize(
+    "account,expected",
+    [
+        ({"subscription_status": "trial_local"}, 0.25),
+        ({"subscription_status": "active", "plan": "base"}, 0.66),
+        ({"subscription_status": "active", "plan": "standard"}, 0.66),
+        (None, 0.66),
+    ],
+)
+def test_limit_for_account_is_per_plan(account, expected):
+    from core.services.openrouter_keys import limit_for_account
+
+    assert limit_for_account(account) == expected
+
+
+@pytest.mark.asyncio
+async def test_settings_wrapper_mints_with_the_owner_plan_limit(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("core.services.openrouter_keys.settings.OPENROUTER_WORKSPACE_ID", "workspace-uuid")
+    monkeypatch.setattr(
+        "core.services.openrouter_keys.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "trial_local"}),
+    )
+    ensure = AsyncMock(return_value="key-hash")
+    monkeypatch.setattr("core.services.openrouter_keys.ensure_owner_key", ensure)
+    assert await ensure_owner_key_for_settings("owner-123") == "key-hash"
+    assert ensure.await_args.kwargs["limit_usd"] == 0.25
+
+
+def _relimit_fixture(monkeypatch, *, account, current_limit):
+    from unittest.mock import AsyncMock
+
+    table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+        TableName="lightbulb-dev-openrouter-keys",
+        KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    monkeypatch.setattr(openrouter_key_repo, "get_table", lambda _: table)
+    table.put_item(Item={"owner_id": "owner-123", "state": "active", "key_hash": "key-hash", "secret_name": "s"})
+    sm = boto3.client("secretsmanager", region_name="us-east-1")
+    sm.create_secret(Name="lightbulb/dev/openrouter/management", SecretString="management-secret")
+    monkeypatch.setattr("core.services.openrouter_keys.settings.ENVIRONMENT", "dev")
+    monkeypatch.setattr("core.services.openrouter_keys.billing_repo.get_by_owner_id", AsyncMock(return_value=account))
+    clear = AsyncMock()
+    monkeypatch.setattr("core.services.openrouter_keys.billing_repo.clear_openrouter_capped_day", clear)
+    requests = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url == "https://openrouter.ai/api/v1/keys/key-hash"
+        assert request.headers["Authorization"] == "Bearer management-secret"
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": {"hash": "key-hash", "limit": current_limit}})
+        return httpx.Response(200, json={"data": {"hash": "key-hash", "limit": 0.66, "limit_reset": "daily"}})
+
+    return sm, requests, clear, respond
+
+
+@pytest.mark.asyncio
+async def test_relimit_patches_a_changed_limit_and_clears_the_capped_day(monkeypatch):
+    from core.services.openrouter_keys import relimit_owner_key
+
+    with mock_aws():
+        sm, requests, clear, respond = _relimit_fixture(
+            monkeypatch, account={"subscription_status": "active", "plan": "base"}, current_limit=0.25
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            assert await relimit_owner_key("owner-123", http=http, sm=sm) is True
+    patch = [r for r in requests if r.method == "PATCH"]
+    assert len(patch) == 1
+    assert patch[0].read().decode() == '{"limit":0.66,"limit_reset":"daily"}'
+    clear.assert_awaited_once_with("owner-123")
+
+
+@pytest.mark.asyncio
+async def test_relimit_is_a_no_op_when_the_limit_already_matches(monkeypatch):
+    from core.services.openrouter_keys import relimit_owner_key
+
+    with mock_aws():
+        sm, requests, clear, respond = _relimit_fixture(
+            monkeypatch, account={"subscription_status": "active", "plan": "base"}, current_limit=0.66
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            assert await relimit_owner_key("owner-123", http=http, sm=sm) is False
+    assert [r.method for r in requests] == ["GET"]
+    clear.assert_not_awaited()

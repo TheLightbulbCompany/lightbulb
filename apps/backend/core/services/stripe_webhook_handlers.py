@@ -1044,6 +1044,16 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         plan_persisted = True
     except Exception:
         logger.exception("Failed to persist plan for owner %s", account["owner_id"])
+    if settings.OPENROUTER_WORKSPACE_ID:
+        # A plan/status change can move the owner's OpenRouter key between the
+        # trial and Base daily limits (the capped model's valve). Best-effort:
+        # a key with no change is a no-op, and a failure never 500s Stripe.
+        try:
+            from core.services.openrouter_keys import relimit_owner_key
+
+            await relimit_owner_key(account["owner_id"])
+        except Exception:
+            logger.exception("Failed to relimit OpenRouter key for owner %s", account["owner_id"])
     if old_status == "trial_local" and new_status in ("trialing", "active"):
         # Trial→paid conversion: the workspace is still on the locked-down trial shape (its
         # single sonnet AIP, the trial provider block in every agent profile). A provision

@@ -192,7 +192,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
         Name: "backend",
         Environment: Match.arrayWith([
           Match.objectLike({ Name: "OPENROUTER_WORKSPACE_ID", Value: "" }),
-          Match.objectLike({ Name: "OPENROUTER_KEY_DAILY_LIMIT_USD", Value: "0" }),
           Match.objectLike({ Name: "OPENROUTER_MANAGED_MODEL_ID", Value: "" }),
           Match.objectLike({ Name: "OPENROUTER_MANAGED_ENABLED", Value: "false" }),
         ]),

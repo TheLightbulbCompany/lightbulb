@@ -281,6 +281,7 @@ def _health(_params: dict, **_kwargs) -> dict:
         "uptimeS": round(time.time() - STARTED, 1), "busy": turn._busy,
         "agents": len(_roster()),
         "browserProtocol": 2 if os.environ.get("AGENTCORE_PROFILE_ID") else 1,
+        "memoryProtocol": 1 if os.environ.get("AGENTCORE_MEMORY_ID") else 0,
     }}
 
 

@@ -963,6 +963,15 @@ def normalize_profile_backends(agent_id: str) -> dict:
     if not isinstance(browser, dict) or browser.get("backend") != "off":
         existing = {**existing, "browser": {**(browser if isinstance(browser, dict) else {}), "backend": "off"}}
         changed = True
+    # AgentCore workspace memory (plugins/memory/agentcore) follows the runtime env: on while
+    # AGENTCORE_MEMORY_ID is set and the profile is on the built-in provider, back to built-in
+    # when it is gone. Any other provider is someone's explicit choice and is never touched.
+    memory = existing.get("memory") if isinstance(existing.get("memory"), dict) else {}
+    provider = memory.get("provider") or ""
+    wanted = "agentcore" if os.environ.get("AGENTCORE_MEMORY_ID") else ""
+    if provider in ("", "agentcore") and provider != wanted:
+        existing = {**existing, "memory": {**memory, "provider": wanted}}
+        changed = True
     if changed:
         write_profile_config(agent_id, existing)
     return existing

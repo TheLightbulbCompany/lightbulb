@@ -6,12 +6,12 @@ const policy = { revision: 'test-1', models: ['anthropic/claude-sonnet-4.5', 'op
 const env = { TOKENS_TABLE: 'tokens', BILLING_TABLE: 'billing', FAST_GATE_TABLE: 'fast', OPENROUTER_KEYS_TABLE: 'keys', REQUESTS_TABLE: 'requests', RESERVE_ESTIMATE_MICROCENTS: '300000', RESERVE_TTL_SECONDS: '1200', MODEL_POLICY_JSON: JSON.stringify(policy), MAX_BODY_BYTES: '100000', MAX_OUTPUT_TOKENS: '8192', OPENROUTER_MANAGED_ENABLED: 'true' };
 const AV = (s) => ({ S: s });
 
-function fixture({ token = 'good', status = 'active', balance = 1000000, provider = 'openrouter_managed', plan, keyState = 'active', cappedDay, metronome = true } = {}) {
+function fixture({ token = 'good', status = 'active', balance = 1000000, provider = 'openrouter_managed', plan, keyState = 'active', cappedDay, metronome = true, trialEnd } = {}) {
   const calls = { forwards: [], puts: [], updates: [], errors: [], chunks: [], logs: [] };
   const ddb = {
     async getItem(p) {
       if (p.TableName === 'tokens') return { Item: token === 'good' ? { owner_id: AV('owner-1') } : undefined };
-      if (p.TableName === 'billing') return { Item: { ...(provider ? { provider_choice: AV(provider) } : {}), ...(plan ? { plan: AV(plan) } : {}), ...(cappedDay ? { openrouter_capped_day: AV(cappedDay) } : {}), subscription_status: AV(status), ...(metronome ? { metronome_customer_id: AV('mc'), metronome_contract_id: AV('ct') } : {}) } };
+      if (p.TableName === 'billing') return { Item: { ...(provider ? { provider_choice: AV(provider) } : {}), ...(plan ? { plan: AV(plan) } : {}), ...(cappedDay ? { openrouter_capped_day: AV(cappedDay) } : {}), ...(trialEnd !== undefined ? { trial_end: { N: String(trialEnd) } } : {}), subscription_status: AV(status), ...(metronome ? { metronome_customer_id: AV('mc'), metronome_contract_id: AV('ct') } : {}) } };
       if (p.TableName === 'fast') return { Item: balance == null ? undefined : { remaining_microcents: { N: String(balance) }, reserved_microcents: { N: '0' } } };
       if (p.TableName === 'keys') return { Item: { state: AV(keyState), key_hash: AV('hash-1'), secret_name: AV('secret-1') } };
     },
@@ -136,3 +136,7 @@ test('each admitted request emits one EMF request metric with tier and billing m
   const refused = await runDs({ plan: 'standard', provider: null, status: 'canceled' });
   assert.equal(refused.calls.logs.length, 0);
 });
+
+test('an expired trial is refused before any priced upstream call', async () => { const f = fixture({ balance: null, status: 'trial_local', provider: 'none', metronome: false, trialEnd: Math.floor(Date.now() / 1000) - 60 }); f.deps.env = { ...env, MODEL_POLICY_JSON: JSON.stringify(deepseek) }; await handleRequest(f.event({ model: 'deepseek/deepseek-v4-flash', messages: [{ role: 'user', content: 'Hi' }], stream: true }), f.responder, f.deps); assert.equal(f.calls.errors[0].status, 403); assert.equal(f.calls.forwards.length, 0); });
+test('an unexpired trial is still admitted on the capped path', async () => { const f = fixture({ balance: null, status: 'trial_local', provider: 'none', metronome: false, trialEnd: Math.floor(Date.now() / 1000) + 86400 }); f.deps.env = { ...env, MODEL_POLICY_JSON: JSON.stringify(deepseek) }; await handleRequest(f.event({ model: 'deepseek/deepseek-v4-flash', messages: [{ role: 'user', content: 'Hi' }], stream: true }), f.responder, f.deps); assert.equal(f.calls.errors.length, 0, f.calls.errors[0]?.message); assert.equal(f.calls.forwards.length, 1); });
+test('a lapsed Base subscription is not admitted on the capped path', async () => { for (const status of ['canceled', 'past_due']) { const f = fixture({ balance: null, status, provider: 'none', plan: 'base', metronome: false }); f.deps.env = { ...env, MODEL_POLICY_JSON: JSON.stringify(deepseek) }; await handleRequest(f.event({ model: 'deepseek/deepseek-v4-flash', messages: [{ role: 'user', content: 'Hi' }], stream: true }), f.responder, f.deps); assert.equal(f.calls.errors[0].status, 403, status); assert.equal(f.calls.forwards.length, 0); } });

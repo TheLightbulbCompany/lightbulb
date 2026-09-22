@@ -86,8 +86,11 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     if (!ownerId || token?.denied?.BOOL) fail(token?.denied?.BOOL ? 403 : 401, 'Invalid gateway token');
     const billing = (await ddb.getItem({ TableName: env.BILLING_TABLE, Key: { owner_id: { S: ownerId } }, ConsistentRead: true }))?.Item;
     const status = S(billing, 'subscription_status');
-    const trial = status === 'trial_local';
-    const base = S(billing, 'plan') === 'base';
+    // Capped traffic costs real money now: an EXPIRED trial and a lapsed Base are refused
+    // here, not only by the backend's pre-send gates (a warm runtime can still call us).
+    const trialEnd = Number(billing?.trial_end?.N);
+    const trial = status === 'trial_local' && !(Number.isFinite(trialEnd) && Date.now() / 1000 > trialEnd);
+    const base = S(billing, 'plan') === 'base' && ['active', 'trialing'].includes(status);
     // Interim default: a paid Workspace/Ultra row that never chose a provider is
     // treated exactly like Base. Lockstep with trial_cap.is_managed_capped.
     const paidDefault = ['standard', 'ultra_pro'].includes(S(billing, 'plan')) && !S(billing, 'provider_choice') && ['active', 'trialing'].includes(status);

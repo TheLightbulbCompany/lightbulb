@@ -115,13 +115,13 @@ def is_managed_capped(account: dict | None) -> bool:
     the openrouter-gate's ``capped`` predicate (apps/infra/lambda/openrouter-gate/core.mjs)."""
     if not account:
         return False
-    if account.get("subscription_status") == "trial_local" or account.get("plan") == "base":
+    status = account.get("subscription_status")
+    if status == "trial_local":
         return True
-    return (
-        account.get("plan") in {"standard", "ultra_pro"}
-        and not account.get("provider_choice")
-        and account.get("subscription_status") in {"active", "trialing"}
-    )
+    live = status in {"active", "trialing"}
+    if account.get("plan") == "base":
+        return live
+    return account.get("plan") in {"standard", "ultra_pro"} and not account.get("provider_choice") and live
 
 
 async def reason_for_account(owner_id: str, account: dict | None) -> str | None:

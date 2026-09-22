@@ -312,3 +312,22 @@ async def test_upgrading_is_a_noop_without_a_paperclip_company(monkeypatch):
 
     get_member.assert_not_awaited()
     upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_upgrading_never_overrides_a_mentions_an_admin_chose(monkeypatch):
+    _, _, upsert, publish = _promote_fixture(monkeypatch, {**_ceo_row("mentions"), "modeSetBy": "user"})
+
+    await messaging.promote_default_room_ceo(OWNER)
+
+    upsert.assert_not_awaited()
+    publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_admin_set_mode_is_marked_as_the_users_choice(monkeypatch):
+    upsert = _upsert_fixture(monkeypatch, room_kind="channel")
+
+    await messaging.upsert_member(AuthContext(user_id=USER, org_id=OWNER), ROOM, _member("mentions"))
+
+    assert upsert.call_args.kwargs["member"]["modeSetBy"] == "user"

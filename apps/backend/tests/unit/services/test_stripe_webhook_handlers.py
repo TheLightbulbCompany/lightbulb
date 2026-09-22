@@ -1807,7 +1807,7 @@ class TestUpgradeTurnsOnCeoListening:
     """A trial-seeded #general keeps its CEO on Mentions after upgrading (the
     seed runs once), so the entry into paid promotes it."""
 
-    @pytest.mark.parametrize("prior_status", ["trial_local", "incomplete", "canceled", None])
+    @pytest.mark.parametrize("prior_status", ["trial_local", "incomplete", None])
     async def test_entering_paid_promotes_the_ceo(self, mock_repo, promote_ceo, prior_status):
         await _run_state(mock_repo, prior_status, "active")
         promote_ceo.assert_awaited_once_with("org_x")
@@ -1815,6 +1815,12 @@ class TestUpgradeTurnsOnCeoListening:
     @pytest.mark.parametrize("prior_status", ["active", "trialing", "past_due"])
     async def test_an_established_subscription_event_does_not_promote(self, mock_repo, promote_ceo, prior_status):
         await _run_state(mock_repo, prior_status, "active")
+        promote_ceo.assert_not_awaited()
+
+    async def test_a_resubscribe_keeps_the_owners_choice(self, mock_repo, promote_ceo):
+        # A canceled owner was paid before: any Mentions on the CEO now may be
+        # their own choice, and reconciliation never resets a user's choice.
+        await _run_state(mock_repo, "canceled", "active")
         promote_ceo.assert_not_awaited()
 
     async def test_a_non_paid_status_does_not_promote(self, mock_repo, promote_ceo):

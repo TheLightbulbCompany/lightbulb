@@ -536,6 +536,8 @@ def _member_item(room_id: str, owner_id: str, m: dict, joined_seq: int, now: str
         "listenMode": m.get("listenMode"),
         "joinedAt": now,
         "joinedSeq": joined_seq,
+        # "user" once a room admin sets this member; system promotions never override it.
+        **({"modeSetBy": m["modeSetBy"]} if m.get("modeSetBy") else {}),
     }
 
 
@@ -999,7 +1001,8 @@ async def upsert_member(
                 "Update": {
                     "TableName": table_name,
                     "Key": {"pk": room_pk(room_id), "sk": member_sk(member["kind"], member["id"])},
-                    "UpdateExpression": "SET #role = :role, listenMode = :lm, displayName = :dn, mentionHandle = :mh",
+                    "UpdateExpression": "SET #role = :role, listenMode = :lm, displayName = :dn, mentionHandle = :mh"
+                    + (", modeSetBy = :msb" if member.get("modeSetBy") else ""),
                     "ConditionExpression": "attribute_exists(sk)",
                     "ExpressionAttributeNames": {"#role": "role"},
                     "ExpressionAttributeValues": {
@@ -1007,6 +1010,7 @@ async def upsert_member(
                         ":lm": member.get("listenMode"),
                         ":dn": member.get("displayName") or member["id"],
                         ":mh": member.get("mentionHandle"),
+                        **({":msb": member["modeSetBy"]} if member.get("modeSetBy") else {}),
                     },
                 }
             }

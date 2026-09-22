@@ -449,6 +449,18 @@ class OpenClawWorkWorker:
             sessions=sessions,
             history_through_seq=int(meta.get("lastSeq") or message["messageSeq"]) if follow_up is not None else None,
         )
+        if event_kind == "room_event":
+            # Slice-1 SHADOW: record what Jev would route; never raises, dispatch is unchanged.
+            from core.services import jev
+
+            await jev.shadow(
+                meta,
+                member["id"],
+                message,
+                latest=body.get("message") or message,
+                members=room_members,
+                history=body.get("recentHistory") or [],
+            )
         # The earlier read chose the work; this one is deliberately adjacent to
         # the side effect so queued work cannot outlive membership revocation.
         if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:

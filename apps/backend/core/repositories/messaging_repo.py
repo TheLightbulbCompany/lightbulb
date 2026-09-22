@@ -24,8 +24,10 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     OWNER#<owner>   USAGE#<runId>                       first-writer-wins usage-callback receipt (Task 7)
     ROOM#<room>     FOLLOWUP#<followUpId>               a finished async delegation owed back to its agent
     ROOM#<room>     WORK#FOLLOWUP#<agent>#<followUpId>  one-shot outbox for that follow-up turn
+    ROOM#<room>     DECISION#<messageId>                Jev routing decision, put-if-absent (NOT WORK#:
+                                                       the Pipe must never see it; the projector skips it)
 
-``WORK#``, ``LIVE#``, ``RUN#``, ``USAGE#`` and ``FOLLOWUP#`` rows carry ``expiresAt`` (7 days). Every read
+``WORK#``, ``LIVE#``, ``RUN#``, ``USAGE#``, ``FOLLOWUP#`` and ``DECISION#`` rows carry ``expiresAt`` (7 days). Every read
 here is ``ConsistentRead=True``; the GSIs are queried by ``list_rooms_for_member``
 (``by-member``) and ``list_overdue_runs`` (``by-run-deadline``) and nowhere else.
 """
@@ -1907,3 +1909,29 @@ async def delete_owner_partition(owner_id: str) -> int:
 
     count += await local_sessions_repo.delete_owner(owner_id)
     return count
+
+
+def decision_sk(message_id: str) -> str:
+    return f"DECISION#{message_id}"
+
+
+async def put_decision_if_absent(room_id: str, message_id: str, decision: dict) -> bool:
+    """First writer wins: every candidate's consumer may compute the same decision."""
+    item = {
+        "pk": room_pk(room_id),
+        "sk": decision_sk(message_id),
+        "decision": _ddb_safe(decision),
+        "expiresAt": _expires_at(),
+    }
+    try:
+        await run_in_thread(_table().put_item, Item=item, ConditionExpression="attribute_not_exists(sk)")
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+async def get_decision(room_id: str, message_id: str) -> dict | None:
+    row = await _get(room_pk(room_id), decision_sk(message_id))
+    return row.get("decision") if row else None

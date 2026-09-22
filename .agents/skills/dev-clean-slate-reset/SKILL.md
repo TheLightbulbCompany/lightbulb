@@ -47,8 +47,9 @@ the shells.
 
 `DELETE /api/v1/debug/user-data` (403 outside dev/local/test) is the whole of
 step 2 below plus the DDB rows, run by the code that owns the teardown seam.
-It is what the e2e harness calls at the end of each run, and it is the only
-caller besides `account_wipe` that passes `delete_profiles=True`. Per signed-in
+It is what the e2e harness calls at the end of each run, and it is one of only
+two terminal callers that pass `delete_profiles=True`: `account_wipe` (user-keyed)
+and `workspace_wipe` (org-keyed). Per signed-in
 user, from the browser console on a dev page:
 
 ```javascript

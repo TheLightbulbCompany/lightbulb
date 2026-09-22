@@ -106,3 +106,26 @@ async def test_delete_user_noop_when_no_secret_key():
         result = await clerk_admin.delete_user("user_abc")
 
     assert result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strict", [False, True])
+async def test_list_user_organizations_strict_raises_on_http_error(strict):
+    """The workspace wipe reads "no other orgs" as "delete the account", so its
+    strict read must fail closed; the default keeps the degrade-to-[] posture."""
+    with (
+        patch.object(clerk_admin, "settings") as mock_settings,
+        patch("core.services.clerk_admin.httpx.AsyncClient") as mock_client_cls,
+    ):
+        mock_settings.CLERK_SECRET_KEY = "sk_test_123"
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.return_value = _MockResp(503)
+        mock_client_cls.return_value = mock_client
+
+        if strict:
+            with pytest.raises(RuntimeError, match="http_503"):
+                await clerk_admin.list_user_organizations("user_x", strict=True)
+        else:
+            assert await clerk_admin.list_user_organizations("user_x") == []

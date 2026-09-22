@@ -21,8 +21,26 @@ import { adminPost, type ActionResult } from "./_shared";
  * a guard kept the resource (a workspace member's shared Paperclip company).
  * When `shared_company` is set, execute also needs `confirm_workspace` equal to
  * the workspace name (its org id when Clerk has no name). A 400 surfaces as
- * `result.error === "org_wipe_unsupported"` (org owners aren't supported in
- * v1), `"email_mismatch"`, or `"workspace_mismatch"` (execute only).
+ * `result.error === "org_wipe_unsupported"` (org owners aren't supported by the
+ * USER wipe — use the workspace wipe below), `"email_mismatch"`, or
+ * `"workspace_mismatch"` (execute only).
+ *
+ * Workspace wipe (org-keyed, `core/services/workspace_wipe.py`):
+ *   - `previewWorkspaceWipe` -> `POST /admin/workspaces/{orgId}/wipe/preview`
+ *     (read-only; billing shown preserved/skipped unless `includeBilling`).
+ *   - `executeWorkspaceWipe` -> `POST /admin/workspaces/{orgId}/wipe` with
+ *     `{ confirm_org, layers?, include_billing?, confirm_billing?, delete_shared_members?,
+ *     preview_fingerprint }`. `confirm_org` must equal the org id;
+ *     `preview_fingerprint` is required and must match the preview confirmed with
+ *     the SAME options (else 409 `stale_preview`); billing moves only with
+ *     `include_billing` + `confirm_billing: "DELETE-BILLING"`.
+ *   - The report's `members[]` says per person `delete_account` or
+ *     `remove_membership` (they belong to `other_orgs` too). Shared members keep
+ *     their account unless `deleteSharedMembers`.
+ *   - Errors are `"<code>: <message>"`; `result.code` carries the code:
+ *     `stale_preview`, `workspace_mismatch`, `workspace_wipe_refused` (vendor org,
+ *     missing fingerprint, acting admin is a member, …), `bootstrap_account_protected`.
+ *   - Audit action is `account_wipe_workspace` (not `account_wipe`).
  */
 
 export type WipeStepStatus = "ok" | "skipped" | "failed" | "would_delete" | "refused";
@@ -64,4 +82,52 @@ export async function executeAccountWipe(
     confirm_email: confirmEmail,
     confirm_workspace: confirmWorkspace,
   });
+}
+
+export interface WorkspaceWipeMember {
+  user_id: string;
+  email: string;
+  action: "delete_account" | "remove_membership";
+  other_orgs: string[];
+}
+
+export interface WorkspaceWipePreview {
+  layers?: string[];
+  includeBilling?: boolean;
+  deleteSharedMembers?: boolean;
+}
+
+export interface WorkspaceWipeConfirm extends WorkspaceWipePreview {
+  confirmOrg: string;
+  confirmBilling?: string;
+  previewFingerprint: string;
+}
+
+export type WorkspaceWipeResult = ActionResult & { code?: string };
+
+function withCode(res: ActionResult): WorkspaceWipeResult {
+  return res.ok ? res : { ...res, code: res.error?.split(": ")[0] };
+}
+
+export async function previewWorkspaceWipe(orgId: string, opts?: WorkspaceWipePreview): Promise<WorkspaceWipeResult> {
+  return withCode(
+    await adminPost(`/admin/workspaces/${encodeURIComponent(orgId)}/wipe/preview`, {
+      layers: opts?.layers,
+      include_billing: opts?.includeBilling ?? false,
+      delete_shared_members: opts?.deleteSharedMembers ?? false,
+    }),
+  );
+}
+
+export async function executeWorkspaceWipe(orgId: string, confirm: WorkspaceWipeConfirm): Promise<WorkspaceWipeResult> {
+  return withCode(
+    await adminPost(`/admin/workspaces/${encodeURIComponent(orgId)}/wipe`, {
+      confirm_org: confirm.confirmOrg,
+      layers: confirm.layers,
+      include_billing: confirm.includeBilling ?? false,
+      confirm_billing: confirm.confirmBilling,
+      delete_shared_members: confirm.deleteSharedMembers ?? false,
+      preview_fingerprint: confirm.previewFingerprint,
+    }),
+  );
 }

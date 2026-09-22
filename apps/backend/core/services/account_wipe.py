@@ -24,8 +24,11 @@ Two entry points:
 
 Refuses org owner ids (``OrgWipeUnsupportedError``) — the target is always a
 Clerk USER. Wiping a whole workspace (N Paperclip rows + N Better Auth users,
-one shared company) is out of scope; see the design spec's "Out of scope: Org
-accounts".
+one shared company) is ``core.services.workspace_wipe`` — the workspace-keyed
+orchestrator that snapshots by ORG id; see its module docstring and the design
+spec's "Out of scope: Org accounts" follow-up note. When a user-keyed wipe
+finds no containers row but the member belongs to a workspace,
+``_org_hint_for_missing_container`` names the org and points at it.
 
 A user is NOT necessarily the sole owner of the Paperclip company their row
 names: paperclip-companies rows are per user, and every member of a workspace
@@ -312,6 +315,27 @@ def _refuse_org_owners(owner_id: str) -> None:
         raise OrgWipeUnsupportedError(owner_id)
 
 
+def _org_hint_for_missing_container(paperclip: PaperclipCompany | None) -> str:
+    """Loud skip detail when a user-keyed wipe finds no containers row.
+
+    Incident 2026-09-21: a user-keyed wipe of a workspace member misses the
+    containers row (it lives under the ORG id) while every other user-keyed
+    row is still destroyed — a half-wipe that reads as a clean skip. When the
+    member's Paperclip row names a workspace, say so and point at the
+    workspace wipe (``core.services.workspace_wipe``) instead of reporting a
+    bare absence. Never deletes anything; detail text only.
+    """
+    org_id = (paperclip.org_id if paperclip else "") or ""
+    if org_id and is_org_owner_id(org_id):
+        return (
+            "no containers row under this USER id — but this account belongs to "
+            f"workspace {org_id}, whose runtime lives under the ORG id. A user-keyed "
+            "wipe cannot reach it; use the workspace wipe "
+            f"(POST /admin/workspaces/{org_id}/wipe) instead."
+        )
+    return "no containers row"
+
+
 async def _shared_company(owner_id: str, paperclip: PaperclipCompany | None) -> dict | None:
     """The workspace facts when ``paperclip``'s company is not ``owner_id``'s
     alone, else None. Preview and execute both call this, so they can never
@@ -564,7 +588,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
             "(+ boot secret, S3 profiles, containers row, channel-links, "
             "and the Bedrock footprint: gate-token rows, AIPs, IAM role)"
         ),
-        detail_if_absent="no containers row",
+        detail_if_absent=_org_hint_for_missing_container(ids.paperclip),
     )
 
     # No standalone bedrock_aips / bedrock_role preview steps: the executed wipe
@@ -882,9 +906,10 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     if ids.container is not None:
 
         async def _s3() -> str:
-            # M6-R42: this is one of exactly TWO terminal callers that pass
-            # ``delete_profiles=True`` -- this wipe and ``routers/debug.py``'s
-            # ``DELETE /debug/user-data`` (the e2e empty-slate reset; debug is 403 in prod).
+            # M6-R42: this is one of exactly THREE terminal callers that pass
+            # ``delete_profiles=True`` -- this wipe, ``workspace_wipe`` (org-keyed),
+            # and ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
+            # empty-slate reset; debug is 403 in prod).
             # Every other caller (entitlement_teardown on a lapsed card, debug's routine
             # reprovision) leaves it False and keeps the owner's memory/skills/SOUL.md/
             # auth.json. Do not re-broaden it.
@@ -906,7 +931,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
 
         await _step(steps, system="runtime", action="delete_workspace_runtime", fn=_s3)
     else:
-        _skip(steps, "runtime", "delete_workspace_runtime", "no containers row")
+        _skip(steps, "runtime", "delete_workspace_runtime", _org_hint_for_missing_container(ids.paperclip))
 
     # --- Steps 5-6 (spec #6-7-8): Bedrock AIPs + owner role ----------------
     # Deliberately NOT separate steps any more. Both are reaped inside step 3's

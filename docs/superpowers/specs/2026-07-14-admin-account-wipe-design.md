@@ -126,9 +126,22 @@ access point (5) after ECS drain (3)**; **Clerk (12) last**.
 
 ## Out of scope (v1)
 
-- **Org accounts** — per-member fan-out (N Paperclip rows + N Better Auth users,
-  shared company). v1 refuses org owners with a clear message; org wipe is a
-  follow-up that loops the per-member teardown.
+- **Org accounts (user-keyed v1 refuses them; workspace wipe now exists — see
+  below)** — the user-keyed orchestrator (`preview_wipe` / `wipe_account`)
+  still refuses org ids with `org_wipe_unsupported`, and now says why: when a
+  member's Paperclip row names a workspace, the runtime skip names the org and
+  points at the workspace wipe instead of a bare "no containers row"
+  (2026-09-21 incident: a user-keyed wipe of a workspace member missed the
+  ORG-keyed runtime while destroying every user-keyed row).
+- **Workspace wipe (org-keyed) — SHIPPED 2026-09-22**
+  (`core/services/workspace_wipe.py`, `POST /admin/workspaces/{org_id}/wipe/preview`
+  + `POST /admin/workspaces/{org_id}/wipe`, audit action
+  `account_wipe_workspace`): snapshots by ORG id (containers, billing,
+  Paperclip-company set, integrations, gate rows, messaging OWNER partition),
+  per-layer selection (runtime/paperclip/messaging/secrets/identity/billing —
+  billing preserved by default, armed only with `confirm_billing='DELETE-BILLING'`),
+  one shared step registry for preview + execute, stale-preview abort via
+  snapshot fingerprint, explicit `confirm_org` match, Clerk org delete last.
 - **Metronome hard-delete** — archive only (Metronome has no customer delete).
 - **PostHog erasure** — analytics event stream; not part of a functional wipe
   (a GDPR person-delete is a separate concern).

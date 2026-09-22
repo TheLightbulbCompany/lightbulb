@@ -132,6 +132,28 @@ async def delete_user(user_id: str) -> None:
         raise RuntimeError(f"clerk_admin.delete_user failed: http_{response.status_code} body={response.text}")
 
 
+async def delete_organization(org_id: str) -> None:
+    """Permanently delete a Clerk organization — workspace-wipe identity step.
+
+    Mirrors ``delete_user``'s contract: RAISES on unexpected failure (the wipe
+    orchestrator records per-step ok/failed itself), treats 404 (already
+    deleted) as success so a re-run after a partial wipe is safe, and no-ops
+    when ``CLERK_SECRET_KEY`` is unset (local-dev stub posture). Always runs
+    LAST in a workspace wipe, after every member Clerk user is deleted.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        return
+
+    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+        response = await client.delete(f"{_CLERK_API_BASE}/organizations/{org_id}", headers=headers)
+
+    if response.status_code == 404:
+        return
+    if response.status_code >= 400:
+        raise RuntimeError(f"clerk_admin.delete_organization failed: http_{response.status_code} body={response.text}")
+
+
 async def resend_verification(user_id: str) -> dict:
     """Resend the email-verification link to the user's primary email.
 
@@ -254,7 +276,7 @@ async def get_organization(org_id: str) -> dict | None:
     return response.json()
 
 
-async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict]:
+async def list_user_organizations(user_id: str, *, limit: int = 25, strict: bool = False) -> list[dict]:
     """Return the orgs a Clerk user belongs to.
 
     Each element: {"id": "org_...", "slug": "...", "name": "...", "role": "org:admin" | "org:member" | ...}
@@ -265,6 +287,10 @@ async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict
     Uses Clerk Backend API GET /v1/users/{user_id}/organization_memberships,
     which returns an envelope {data: [...memberships], total_count: N}. Each
     membership has shape {id, role, organization: {id, slug, name, ...}, ...}.
+
+    ``strict=True`` RAISES on a network / HTTP error instead of returning [] —
+    for callers (the workspace wipe) where "no other orgs" decides whether an
+    account is deleted, so a Clerk blip must fail closed.
     """
     if not settings.CLERK_SECRET_KEY:
         return []
@@ -279,12 +305,16 @@ async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict
                 params=params,
             )
     except Exception as e:  # noqa: BLE001
+        if strict:
+            raise
         logger.warning("clerk_admin.list_user_organizations network error: %s", e)
         return []
 
     if response.status_code == 404:
         return []
     if response.status_code >= 400:
+        if strict:
+            raise RuntimeError(f"clerk_admin.list_user_organizations failed: http_{response.status_code}")
         logger.warning("clerk_admin.list_user_organizations HTTP %s", response.status_code)
         return []
 
@@ -321,7 +351,7 @@ async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict
 _ORG_MEMBERS_PAGE = 100
 
 
-async def list_organization_members(org_id: str) -> list[dict]:
+async def list_organization_members(org_id: str, *, strict: bool = False) -> list[dict]:
     """Return every member of a Clerk organization.
 
     Each element: {"user_id", "first_name", "last_name", "email", "image_url", "role"}
@@ -332,6 +362,10 @@ async def list_organization_members(org_id: str) -> list[dict]:
 
     Uses Clerk Backend API GET /v1/organizations/{org_id}/memberships, paged
     by limit/offset; the envelope is {data: [...memberships], total_count: N}.
+
+    ``strict=True`` RAISES instead of returning [] on a network / HTTP error —
+    the workspace wipe finds members only through this list, so a Clerk blip
+    must fail closed rather than read as "no members".
     """
     if not settings.CLERK_SECRET_KEY:
         return []
@@ -348,6 +382,8 @@ async def list_organization_members(org_id: str) -> list[dict]:
                     params={"limit": _ORG_MEMBERS_PAGE, "offset": offset},
                 )
                 if response.status_code >= 400:
+                    if strict:
+                        raise RuntimeError(f"clerk_admin.list_organization_members failed: http_{response.status_code}")
                     logger.warning("clerk_admin.list_organization_members HTTP %s", response.status_code)
                     return []
                 payload = response.json()
@@ -373,6 +409,8 @@ async def list_organization_members(org_id: str) -> list[dict]:
                     return members
                 offset += _ORG_MEMBERS_PAGE
     except Exception as e:  # noqa: BLE001
+        if strict:
+            raise
         logger.warning("clerk_admin.list_organization_members network error: %s", e)
         return []
 

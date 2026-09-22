@@ -40,6 +40,15 @@ from core.services.account_wipe import (
     resolve_shared_company,
     wipe_account,
 )
+from core.services.workspace_wipe import (
+    AmbiguousWorkspaceError,
+    StaleWorkspacePreviewError,
+    WorkspaceConfirmMismatchError,
+    WorkspaceWipeError,
+    preview_workspace_wipe,
+    resolve_workspace_org,
+    wipe_workspace,
+)
 from core.services.admin_audit import audit_admin_action, extract_client_ip
 from core.services.admin_service import resolve_admin_owner_id
 from core.services.runtime_rpc import config_patch_roster
@@ -89,6 +98,54 @@ class WipeConfirmRequest(BaseModel):
         description=(
             "Required when the account's Paperclip company is shared with a workspace: must match "
             "the workspace name (its org id when Clerk has no name), checked server-side."
+        ),
+    )
+
+
+class WorkspaceWipePreviewRequest(BaseModel):
+    layers: list[str] | None = Field(
+        None,
+        description="Subset of wipe layers to enumerate (default: all but billing).",
+    )
+    include_billing: bool = Field(
+        False,
+        description="Also enumerate the billing layer (shown preserved/skipped unless set).",
+    )
+    delete_shared_members: bool = Field(
+        False,
+        description=(
+            "Also delete the accounts of members who belong to another org. Default: they keep "
+            "their account and only lose this workspace's membership."
+        ),
+    )
+
+
+class WorkspaceWipeConfirmRequest(BaseModel):
+    confirm_org: str = Field(
+        ...,
+        description="Type-to-confirm: must equal the workspace org id in the path, checked server-side.",
+    )
+    layers: list[str] | None = Field(
+        None,
+        description="Subset of wipe layers to execute (default: all but billing).",
+    )
+    include_billing: bool = Field(
+        False,
+        description="Arm the billing layer (requires confirm_billing). Default preserves billing/Stripe.",
+    )
+    confirm_billing: str | None = Field(
+        None,
+        description="Must equal 'DELETE-BILLING' when include_billing is set.",
+    )
+    preview_fingerprint: str = Field(
+        ...,
+        description="Fingerprint from the preview report being confirmed; execute aborts on drift.",
+    )
+    delete_shared_members: bool = Field(
+        False,
+        description=(
+            "Also delete the accounts of members who belong to another org. Default: they keep "
+            "their account and only lose this workspace's membership."
         ),
     )
 
@@ -639,3 +696,136 @@ async def admin_wipe_execute(
         )
 
     return report_dict
+
+
+# ---------------------------------------------------------------------------
+# Workspace wipe (org-keyed; core.services.workspace_wipe)
+# ---------------------------------------------------------------------------
+#
+# The user-keyed wipe above snapshots rows keyed by the USER id and misses an
+# org workspace's runtime (containers/billing/messaging all live under the ORG
+# id) — the 2026-09-21 half-wipe. These doors snapshot by ORG id instead.
+# Same audit posture as the user wipe: preview writes no audit row, execute
+# writes one with the full report (action="account_wipe_workspace").
+
+
+@router.post(
+    "/workspaces/{org_id}/wipe/preview",
+    description=(
+        "Read-only dry-run: enumerate every resource under the workspace org id "
+        "that a workspace wipe would tear down (AgentCore runtime + S3 profiles "
+        "under the ORG id, Paperclip company + per-member Aurora users, rooms, "
+        "secrets/tokens, member Clerk users, Clerk org). Calls no delete method. "
+        "Billing is shown preserved/skipped unless include_billing is set."
+    ),
+)
+async def admin_workspace_wipe_preview(
+    org_id: str,
+    body: WorkspaceWipePreviewRequest | None = None,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    body = body or WorkspaceWipePreviewRequest()
+    try:
+        report = await preview_workspace_wipe(
+            org_id,
+            layers=body.layers,
+            include_billing=body.include_billing,
+            delete_shared_members=body.delete_shared_members,
+        )
+    except WorkspaceWipeError as e:
+        raise HTTPException(status_code=400, detail=f"workspace_wipe_refused: {e}")
+    except BootstrapAccountProtectedError:
+        raise HTTPException(status_code=400, detail="bootstrap_account_protected")
+    return report.to_dict()
+
+
+@router.post(
+    "/workspaces/{org_id}/wipe",
+    description=(
+        "Execute the audited workspace teardown for the selected layers. Requires "
+        "`confirm_org` to equal the workspace org id, and `preview_fingerprint` "
+        "from the preview being confirmed (execute re-snapshots and aborts on "
+        "drift). Billing/Stripe is preserved by default; arming it needs "
+        "`include_billing` + `confirm_billing='DELETE-BILLING'`. Partial-failure-"
+        "tolerant like the user wipe; writes an admin-actions audit row with the "
+        "full report."
+    ),
+)
+async def admin_workspace_wipe_execute(
+    org_id: str,
+    body: WorkspaceWipeConfirmRequest,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    # Error details are "<code>: <message>" (bootstrap_account_protected has no
+    # message); the admin UI keys on the code before the separator.
+    if not body.preview_fingerprint.strip():
+        raise HTTPException(status_code=400, detail="workspace_wipe_refused: preview_fingerprint required")
+    started = time.monotonic()
+    try:
+        report = await wipe_workspace(
+            org_id,
+            actor_admin_id=auth.user_id,
+            confirm_org=body.confirm_org,
+            layers=body.layers,
+            include_billing=body.include_billing,
+            confirm_billing=body.confirm_billing,
+            expected_fingerprint=body.preview_fingerprint,
+            delete_shared_members=body.delete_shared_members,
+        )
+    except StaleWorkspacePreviewError as e:
+        raise HTTPException(status_code=409, detail=f"stale_preview: {e}")
+    except WorkspaceConfirmMismatchError as e:
+        raise HTTPException(status_code=400, detail=f"workspace_mismatch: {e}")
+    except WorkspaceWipeError as e:
+        raise HTTPException(status_code=400, detail=f"workspace_wipe_refused: {e}")
+    except BootstrapAccountProtectedError:
+        raise HTTPException(status_code=400, detail="bootstrap_account_protected")
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+
+    report_dict = report.to_dict()
+    has_failures = any(step["status"] == "failed" for step in report_dict["steps"])
+
+    try:
+        await admin_actions_repo.create(
+            admin_user_id=auth.user_id,
+            target_user_id=org_id,
+            action="account_wipe_workspace",
+            payload=report_dict,
+            result="partial_failure" if has_failures else "success",
+            audit_status="written",
+            http_status=200,
+            elapsed_ms=elapsed_ms,
+            error_message=None,
+            user_agent=request.headers.get("user-agent", "unknown"),
+            ip=extract_client_ip(request),
+        )
+    except Exception:  # noqa: BLE001 — same fail-open-response posture as the user wipe
+        logger.critical(
+            "ADMIN_AUDIT_PANIC action=account_wipe_workspace admin=%s target=%s",
+            auth.user_id,
+            org_id,
+            exc_info=True,
+        )
+
+    return report_dict
+
+
+@router.post(
+    "/users/{user_id}/wipe/workspace-resolve",
+    description=(
+        "Resolve which workspace a user-keyed wipe would mean: returns the org "
+        "id when the user belongs to exactly one workspace, else 400 "
+        "ambiguous_workspace (pass confirm_org to the workspace wipe). "
+        "Read-only; writes no audit row."
+    ),
+)
+async def admin_workspace_resolve(
+    user_id: str,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    try:
+        org_id = await resolve_workspace_org(user_id)
+    except (AmbiguousWorkspaceError, WorkspaceConfirmMismatchError) as e:
+        raise HTTPException(status_code=400, detail=f"ambiguous_workspace: {e}")
+    return {"user_id": user_id, "org_id": org_id}

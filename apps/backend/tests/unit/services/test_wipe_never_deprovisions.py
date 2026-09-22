@@ -17,7 +17,7 @@ import pytest
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.config import settings  # noqa: E402
-from core.services import account_wipe, entitlement_teardown, owner_secret_sweep  # noqa: E402
+from core.services import account_wipe, entitlement_teardown, owner_secret_sweep, workspace_wipe  # noqa: E402
 from core.services.account_wipe import wipe_account  # noqa: E402
 from core.repositories import integrations_repo  # noqa: E402
 from core.services.company_stripe import deauthorize as real_company_stripe_deauthorize  # noqa: E402
@@ -35,7 +35,7 @@ _PROJECTS_SECRET_NAME = integration_secret_store._secret_name(OWNER_ID, integrat
 # the literal joined string.
 _PROJECTS_REMOVE_TOKENS = re.compile(r"""["']projects["']\s*,\s*["']remove["']""")
 
-_TEARDOWN_MODULES = (account_wipe, entitlement_teardown, owner_secret_sweep, company_policy)
+_TEARDOWN_MODULES = (account_wipe, workspace_wipe, entitlement_teardown, owner_secret_sweep, company_policy)
 
 # The modules that CAN deprovision, and the three call names that do it.
 # `provisioning_workflow_repo` is deliberately absent: the wipe closes the

@@ -101,9 +101,5 @@ async def test_running_execution_returns_the_owners_summary(sfn):
     assert await provision_dispatch.running_execution("org_nobody") is None
 
 
-def test_execution_input_command_shape():
-    body = json.loads(provision_dispatch.execution_input(ORG))
-    assert body["command"] == ["uv", "run", "--no-sync", "python", "-m", "scripts.provision_runner", "--owner", ORG]
-    assert body["owner_id"] == ORG
-    assert body["attempt"] == 0
-    assert "claim_id" not in body and "attempt_token" not in body
+def test_execution_input_is_the_owner_only():
+    assert json.loads(provision_dispatch.execution_input(ORG)) == {"owner_id": ORG}

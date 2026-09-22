@@ -49,21 +49,7 @@ def _name_prefix(owner_id: str) -> str:
 
 
 def execution_input(owner_id: str) -> str:
-    return json.dumps(
-        {
-            "attempt": 0,
-            # The backend image has no ENTRYPOINT/PATH venv setup — its deps
-            # live in a uv-managed venv (the image's own CMD is `uv run …`),
-            # so a bare `python` cannot import the app. `uv run` is mandatory.
-            # --no-sync: the venv was baked with `uv sync --frozen --no-dev`
-            # at image build; a bare `uv run` re-syncs the environment WITH
-            # the dev-dependency group at every provisioner task start.
-            "command": ["uv", "run", "--no-sync", "python", "-m", "scripts.provision_runner", "--owner", owner_id],
-            "owner_id": owner_id,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    return json.dumps({"owner_id": owner_id})
 
 
 def _find_running(owner_id: str) -> dict | None:

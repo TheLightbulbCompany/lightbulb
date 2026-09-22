@@ -1,9 +1,10 @@
-"""One-shot workspace-provision runner, executed as an ECS task by the
-lightbulb-{env}-provision Step Functions state machine
-(``core.services.provision_dispatch`` starts it).
+"""One-shot workspace-provision runner. The lightbulb-{env}-provision Step
+Functions state machine (``core.services.provision_dispatch`` starts it) runs it
+as a Lambda (``scripts.provision_lambda``); ``main`` is the manual CLI.
 
-Exit codes are the machine's ABI: 0 provisioned, 10 deterministic failure (no
-retry), 11 transient failure (machine retries).
+Exit codes: 0 provisioned, 10 deterministic failure (no retry), 11 transient
+failure (retried). ``provision_lambda`` maps them to the typed errors the
+machine's Retry/Catch match on.
 
 Three legs, in order: ``prepare_hermes_workspace`` settles the owner's tokens
 and boot secret; step 0 seeds the owner's Paperclip company (see
@@ -190,8 +191,6 @@ async def _mark_error(owner_id: str, last_error: str, *, retryable: bool) -> Non
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--owner", required=True)
-    # Accepted and ignored: executions started by pre-deploy backend tasks still pass it. Task 6 deletes it.
-    parser.add_argument("--claim", help=argparse.SUPPRESS)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     sys.exit(asyncio.run(run(args.owner)))

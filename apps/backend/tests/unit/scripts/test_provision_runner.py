@@ -45,8 +45,7 @@ def repo(monkeypatch):
 
 
 def test_module_is_invocable_as_dash_m():
-    # Transport smoke: the state machine launches the runner as
-    # `uv run python -m scripts.provision_runner --owner …` from the backend root.
+    # The manual CLI: `uv run python -m scripts.provision_runner --owner …` from the backend root.
     result = subprocess.run(
         [sys.executable, "-m", "scripts.provision_runner", "--help"],
         cwd=BACKEND_ROOT,
@@ -55,18 +54,6 @@ def test_module_is_invocable_as_dash_m():
     )
     assert result.returncode == 0, result.stderr
     assert "--claim" not in result.stdout
-
-
-def test_a_legacy_claim_argument_is_accepted_and_ignored(monkeypatch):
-    """Executions started by pre-deploy backend tasks still pass --claim; the runner must
-    not exit 2 on it (3 wasted ECS attempts), and must not thread it anywhere."""
-    run = AsyncMock(return_value=provision_runner.EXIT_OK)
-    monkeypatch.setattr(provision_runner, "run", run)
-    monkeypatch.setattr(sys, "argv", ["provision_runner", "--owner", "org_a", "--claim", "claim-old"])
-    with pytest.raises(SystemExit) as exc:
-        provision_runner.main()
-    assert exc.value.code == provision_runner.EXIT_OK
-    run.assert_called_once_with("org_a")
 
 
 async def test_happy_path_runs_every_leg_and_exits_0(monkeypatch, hermes, repo):

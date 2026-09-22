@@ -24,13 +24,14 @@ import logging
 import os
 import re
 import shutil
+import signal
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
-from bridge import sync, turn, browser_control
+from bridge import sync, turn, browser_control, followups
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
 log = logging.getLogger("bridge")
@@ -665,7 +666,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/ping":
-            return self._send(200, {"status": "HealthyBusy" if turn._busy else "Healthy",
+            return self._send(200, {"status": _ping_status(),
                                     "time_of_last_update": int(time.time())})
         if self.path == "/json/version":
             if self.client_address[0] not in ("127.0.0.1", "::1"):
@@ -691,7 +692,42 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def _ping_status() -> str:
+    """Busy while a turn (including its post-turn wait and save) runs, a delegation is live, or a
+    delegation's completion is still owed to the backend -- AgentCore parks only an idle session."""
+    return "HealthyBusy" if turn._busy or followups.busy() else "Healthy"
+
+
+SIGTERM_SAVE_S = 20.0
+
+
+def _save_on_sigterm(signum, _frame) -> None:
+    """AgentCore stops a session with SIGTERM. Push every profile this process restored (and the
+    root auth.json) before dying, bounded, so a stop between turns -- or mid-turn -- keeps what
+    the agent wrote. Inert on a warm-pool microVM: nothing restored, nothing to save."""
+    def _save() -> None:
+        for agent_id in sorted(turn.RESTORED):
+            try:
+                sync.save_profile(agent_id)
+            except Exception:  # noqa: BLE001 -- one bad profile must not cost the others
+                log.warning("sigterm: save_profile %s failed", agent_id, exc_info=True)
+        try:
+            sync.save_root_auth()
+        except Exception:  # noqa: BLE001
+            log.warning("sigterm: save_root_auth failed", exc_info=True)
+
+    log.info("sigterm: saving %d profile(s)", len(turn.RESTORED))
+    worker = threading.Thread(target=_save, name="sigterm-save", daemon=True)
+    worker.start()
+    worker.join(SIGTERM_SAVE_S)
+    os._exit(128 + signum)
+
+
 def main() -> None:
+    # Installed here, not on the first turn: Python only lets the MAIN thread install a signal
+    # handler, and turns run on worker threads. The handler itself is session-inert until a
+    # profile is restored, so the warm-pool rule still holds.
+    signal.signal(signal.SIGTERM, _save_on_sigterm)
     sync.HOME.mkdir(parents=True, exist_ok=True)
     (sync.HOME / "profiles").mkdir(exist_ok=True)
     log.info("bridge on 0.0.0.0:%d home=%s owner=%s", PORT, sync.HOME, OWNER)

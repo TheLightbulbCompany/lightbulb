@@ -86,6 +86,15 @@ def deserialize_pointer(body: str) -> dict[str, Any]:
             raise ValueError("invalid throughSeq")
         value["throughSeq"] = int(through)
         return value
+    if kind == "room_follow_up":
+        if set(value) != {"kind", "roomId", "agentId", "followUpId"}:
+            raise ValueError("invalid room_follow_up pointer")
+        try:
+            for key in ("roomId", "agentId", "followUpId"):
+                value[key] = str(uuid.UUID(value[key]))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("invalid room_follow_up identity") from exc
+        return value
     if kind == "runtime_operation":
         if set(value) != {"kind", "ownerId", "operationId"}:
             raise ValueError("invalid runtime_operation pointer")
@@ -141,8 +150,12 @@ async def build_ingress_body(
     message: dict[str, Any],
     members: list[dict[str, Any]],
     sessions: list[dict[str, Any]] | None = None,
+    history_through_seq: int | None = None,
 ) -> dict[str, Any]:
-    history = await messaging_repo.list_messages_before(meta["roomId"], int(message["messageSeq"]), _HISTORY_LIMIT)
+    # A follow-up re-runs an old trigger: its history runs through the room's latest message, so the
+    # turn sees the request itself and the agent's own "I'll report back" reply after it.
+    before = int(message["messageSeq"]) if history_through_seq is None else history_through_seq + 1
+    history = await messaging_repo.list_messages_before(meta["roomId"], before, _HISTORY_LIMIT)
     body = {
         "version": 1,
         "eventId": message["messageId"],
@@ -264,6 +277,8 @@ class OpenClawWorkWorker:
                 _emit_queue_wait(message, kind)
             if pointer["kind"] == "room_dispatch":
                 await self._room_dispatch(pointer)
+            elif pointer["kind"] == "room_follow_up":
+                await self._room_follow_up(pointer)
             else:
                 await self._runtime_operation(pointer)
             await asyncio.to_thread(
@@ -362,12 +377,43 @@ class OpenClawWorkWorker:
                 raise WorkRetry("agent cursor compare-and-set failed")
             expected = seq
 
+    async def _room_follow_up(self, pointer: dict[str, Any]) -> None:
+        """Wake the agent whose async delegation finished, in the thread that started it.
+        Anything that has since gone away drops: the follow-up is advisory, not canonical."""
+        room_id, agent_id = pointer["roomId"], pointer["agentId"]
+
+        def drop(outcome: str) -> None:
+            put_metric("messaging.followup.dispatched", dimensions={"outcome": outcome})
+
+        row = await messaging_repo.get_follow_up(room_id, pointer["followUpId"])
+        if row is None:
+            return drop("expired")
+        meta = await messaging_repo.get_room(room_id)
+        if meta is None:
+            return drop("room_gone")
+        member = await messaging_repo.get_member(room_id, "agent", agent_id)
+        if member is None:
+            return drop("not_member")
+        message = await messaging_repo.get_message_by_id(room_id, row["triggerMessageId"])
+        if message is None:
+            return drop("message_gone")
+        await self._dispatch_message(
+            meta,
+            member,
+            message,
+            row["eventKind"],
+            follow_up={"id": pointer["followUpId"], "reason": row["reason"], "text": row["text"]},
+        )
+        put_metric("messaging.followup.dispatched", dimensions={"outcome": "dispatched"})
+
     async def _dispatch_message(
         self,
         meta: dict[str, Any],
         member: dict[str, Any],
         message: dict[str, Any],
         event_kind: str,
+        *,
+        follow_up: dict[str, str] | None = None,
     ) -> None:
         owner_id = meta["ownerId"]
         if event_kind == "room_event" and not await listening_available(owner_id):
@@ -401,12 +447,19 @@ class OpenClawWorkWorker:
             members=members,
             # On the wire only when a session is live; the plugin reads a missing field as [].
             sessions=sessions,
+            history_through_seq=int(meta.get("lastSeq") or message["messageSeq"]) if follow_up is not None else None,
         )
         # The earlier read chose the work; this one is deliberately adjacent to
         # the side effect so queued work cannot outlive membership revocation.
         if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
             return
-        run_id = messaging_repo.run_id_for(member["id"], message["messageId"])
+        run_key = message["messageId"]
+        if follow_up is not None:
+            # Its own run and effect-once key, answering in the trigger message's thread.
+            run_key = f"{message['messageId']}:followup:{follow_up['id']}"
+            body["eventId"] = follow_up["id"]
+            body["followUp"] = follow_up
+        run_id = messaging_repo.run_id_for(member["id"], run_key)
         workspace_id = await messaging_repo.workspace_id_for_meta(messaging_repo.room_pk(meta["roomId"]), "META", meta)
         body["run"] = {
             "runId": run_id,

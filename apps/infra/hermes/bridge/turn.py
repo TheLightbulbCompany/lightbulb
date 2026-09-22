@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 import traceback
@@ -29,6 +30,17 @@ _last_turn: dict[str, float] = {}
 _brokered_mcp_overlay: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
     "brokered_mcp_overlay", default=None
 )
+# The room turn each async delegation was started by, for the delegation drain (bridge/followups.py):
+# its follow-up must land in THAT turn's thread. LAST_TURN (the session's latest turn that ran Hermes)
+# is only the fallback for a delegation this process never saw live. In-memory only -- the
+# delegations themselves die with the process anyway.
+DELEGATION_TURN: dict[str, dict] = {}
+LAST_TURN: dict[str, dict] = {}
+# Every profile this process restored, for the SIGTERM save (server._save_on_sigterm).
+RESTORED: set[str] = set()
+# The Hermes AIAgent a turn ran, handed from _run_hermes/_run_native_paperclip to their caller's
+# tail on the same thread, so the tail can wait for the agent's post-turn background writes.
+_post_turn = threading.local()
 
 
 def _busy_add(n: int) -> None:
@@ -344,6 +356,7 @@ def steer_run(run_id: str, text: str) -> bool:
 
 # ---- ingress validation (spec §5 "Ingress"; report 03 §1) -----------------------------------
 MAX_TEXT_BYTES = 100_000
+MAX_FOLLOWUP_TEXT_BYTES = 32_768
 MAX_EVENT_ID_BYTES = 256
 MAX_PARTICIPANTS = 128
 MAX_SESSIONS = 24
@@ -502,7 +515,18 @@ def parse_ingress(body: dict) -> dict:
         return body
     room = body.get("room") or {}
     msg = body.get("message") or {}
-    _check(body.get("eventId") == msg.get("messageId"), "eventId must equal message.messageId")
+    follow_up = body.get("followUp")
+    if follow_up is None:
+        _check(body.get("eventId") == msg.get("messageId"), "eventId must equal message.messageId")
+    else:
+        # A follow-up re-runs the room turn that dispatched a delegation: the message is that
+        # turn's trigger, and the eventId is the follow-up's own id (contract §D).
+        _check(isinstance(follow_up, dict) and isinstance(follow_up.get("id"), str)
+               and follow_up.get("id") == body.get("eventId"), "followUp.id must equal eventId")
+        _check(follow_up.get("reason") == "delegation_completed", "followUp.reason must be delegation_completed")
+        text = follow_up.get("text")
+        _check(isinstance(text, str) and len(text.encode()) <= MAX_FOLLOWUP_TEXT_BYTES,
+               "followUp.text must be a string of at most 32768 bytes")
     _check(body.get("sender") == msg.get("author"), "sender must equal message.author")
     _check(body.get("mentions") == msg.get("mentions"), "mentions must equal message.mentions")
     participants = body.get("participants") or []
@@ -515,7 +539,10 @@ def parse_ingress(body: dict) -> dict:
     for i, entry in enumerate(body.get("recentHistory") or []):
         seq = entry.get("messageSeq")
         _check(isinstance(seq, int) and seq > previous, f"recentHistory[{i}].messageSeq must strictly increase")
-        _check(seq < msg.get("messageSeq"), f"recentHistory[{i}].messageSeq must be below message.messageSeq")
+        # A follow-up's history runs through the room's latest message: its trigger and the agent's
+        # own later reply (the promise it is now keeping) are at/after message.messageSeq.
+        _check(follow_up is not None or seq < msg.get("messageSeq"),
+               f"recentHistory[{i}].messageSeq must be below message.messageSeq")
         _check_message(entry, room.get("id"), f"recentHistory[{i}]")
         previous = seq
     return body
@@ -1183,6 +1210,8 @@ def _turn_user_message(body: dict) -> str:
     `message.fromAddress` instead. paperclip_run (Task 21, fix round C3) has no sender at
     all -- there is no "who said this" to prefix, so the trigger text is passed through as-is
     (the old fallback rendered a literal "?: <text>")."""
+    if body.get("followUp"):
+        return body["followUp"]["text"]  # the completion notice, already "[IMPORTANT: ...]"-framed
     msg = body.get("message") or {}
     text = msg.get("text", "")
     event_kind = body.get("eventKind")
@@ -1532,7 +1561,10 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
     """The one seam every other test replaces instead of constructing a real AIAgent."""
     media = sync.materialize_attachments(body)
     images = _message_image_paths(body, media)
-    current_media = _current_message_media(body, media)
+    # A follow-up's trigger message already had its turn: its attachments are not re-sent.
+    current_media = [] if body.get("followUp") else _current_message_media(body, media)
+    if body.get("followUp"):
+        images.pop((body.get("message") or {}).get("messageId"), None)
     session_key = _resolve_session_key(agent_id, body)
     try:
         # Priming import, deliberately OUTSIDE _hermes_home_scope below: run_agent.py:94
@@ -1573,14 +1605,27 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
             try:
                 agent = _construct_agent(agent_id, body, frames, session_key)
                 attach_agent(run_id, agent)
-                result = agent.run_conversation(
-                    user_message=_message_content(
-                        _turn_user_message(body),
-                        images.get((body.get("message") or {}).get("messageId"), []),
-                    ),
-                    system_message=system_prompt(body, agent_id, media=current_media),
-                    conversation_history=_history(body, agent_id, images) or None,
-                ) or {}
+                # delegate_tool_dispatch._resolve_async_session_key stamps an async delegation with
+                # get_current_session_key(), else agent.session_id -- which compression renames, so the
+                # drain could no longer route the completion. Bind the room's key, as the gateway does.
+                try:
+                    from tools.approval_context import reset_current_session_key, set_current_session_key
+                    key_token = set_current_session_key(session_key)
+                except ImportError:
+                    reset_current_session_key = key_token = None
+                try:
+                    result = agent.run_conversation(
+                        user_message=_message_content(
+                            _turn_user_message(body),
+                            images.get((body.get("message") or {}).get("messageId"), []),
+                        ),
+                        system_message=system_prompt(body, agent_id, media=current_media),
+                        conversation_history=_history(body, agent_id, images) or None,
+                    ) or {}
+                finally:
+                    if key_token is not None:
+                        reset_current_session_key(key_token)
+                _post_turn.agent = agent
             finally:
                 browser_control.release(browser_lease)
     usage = {**ZERO_USAGE,
@@ -1641,6 +1686,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
                     user_message=request["input"],
                     system_message=request["instructions"],
                 ) or {}
+                _post_turn.agent = agent
             except Exception:
                 if paperclip_run_aborted(run_id):
                     return "cancelled", None, "", _agent_usage(agent)
@@ -1671,6 +1717,56 @@ def _agent_usage(agent) -> dict:
     }
 
 
+POST_TURN_CEILING_S = 600.0
+
+
+def _pop_post_turn_agent():
+    agent = getattr(_post_turn, "agent", None)
+    _post_turn.agent = None
+    return agent
+
+
+def _review_thread_alive() -> bool:
+    return any(t.name == "bg-review" and t.is_alive() for t in threading.enumerate())
+
+
+def _await_post_turn_writes(agent, ceiling: float = POST_TURN_CEILING_S) -> None:
+    """Block until the Hermes writers that outlive run_conversation are done, so the save that
+    follows uploads what they wrote (a park after that save loses nothing).
+
+    Two writers, two completion signals, both upstream's own:
+      * the background memory/skill review (run_agent `_spawn_background_review_now`): its run
+        token `agent._background_review_run.request_done`, set by `finish_background_review_run`
+        once the review fork's own conversation (where it writes MEMORY.md / skills) is over;
+      * the memory providers' end-of-turn `sync_all`: `MemoryManager.flush_pending`, which
+        completes a sentinel behind every queued task on the single serialized worker.
+
+    `ceiling` only catches a hung writer: the save then goes ahead and loses just that work.
+    ponytail: a review deferred to Hermes's idle queue (`defer: auto` on a managed LOCAL model)
+    is not tracked -- our models are remote, so the review always runs on its own thread.
+    """
+    if agent is None:
+        return
+    deadline = time.monotonic() + ceiling
+    try:
+        run = getattr(agent, "_background_review_run", None)
+        done = getattr(run, "request_done", None)
+        while done is not None and not done.wait(0.5):
+            # `_run_review_in_thread`'s provider-skip path returns WITHOUT publishing request_done;
+            # once no review thread is alive there is nothing left to wait for.
+            if not _review_thread_alive():
+                break
+            if time.monotonic() >= deadline:
+                log.warning("post-turn review still running after %.0fs; saving without it", ceiling)
+                break
+        memory = getattr(agent, "_memory_manager", None)
+        if memory is not None and hasattr(memory, "flush_pending"):
+            if not memory.flush_pending(timeout=max(0.0, deadline - time.monotonic())):
+                log.warning("post-turn memory sync still running after %.0fs; saving without it", ceiling)
+    except Exception:  # noqa: BLE001 -- a Hermes shape change must never cost the save itself
+        log.warning("post-turn wait failed; saving now", exc_info=True)
+
+
 def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) -> None:
     """Run one native Paperclip turn and leave its terminal result in the bounded registry."""
     run_id = identity["runId"]
@@ -1684,6 +1780,7 @@ def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) ->
         try:
             sync.restore_root_auth()
             restore_profile(agent_id)
+            RESTORED.add(agent_id)
             if paperclip_run_aborted(run_id):
                 outcome = "cancelled"
             else:
@@ -1711,6 +1808,7 @@ def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) ->
             int((time.time() - started) * 1000),
             usage,
         )
+        _await_post_turn_writes(_pop_post_turn_agent())
         try:
             save_profile(agent_id)
         except Exception:  # noqa: BLE001 -- best effort, same as room turns
@@ -1721,6 +1819,20 @@ def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) ->
             log.warning("save_root_auth failed for native Paperclip turn", exc_info=True)
     finally:
         _busy_add(-1)
+
+
+def _remember_turn(session_key: str, info: dict) -> None:
+    """Map every async delegation this session owns and no earlier turn claimed to this turn."""
+    LAST_TURN[session_key] = info
+    module = sys.modules.get("tools.async_delegation")  # only if the turn itself imported Hermes
+    try:
+        records = module.list_async_delegations() if module is not None else []
+    except Exception:  # noqa: BLE001 -- a renamed symbol degrades to the LAST_TURN fallback
+        log.warning("list_async_delegations failed", exc_info=True)
+        records = []
+    for record in records:
+        if record.get("session_key") == session_key and record.get("delegation_id"):
+            DELEGATION_TURN.setdefault(record["delegation_id"], info)
 
 
 def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, reserved: bool = False) -> None:
@@ -1735,6 +1847,9 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                             room.get("id"), agent_id, run_id, thread_root)
     if has_run:
         register_run(run_id)  # idempotent: a no-op if server.py already registered it pre-dispatch
+        from bridge import followups  # lazy: followups imports this module
+
+        followups.ensure_started()
     if not reserved:
         _busy_add(1)
     outcome, error_kind, reply, usage = "completed", None, "", ZERO_USAGE
@@ -1763,6 +1878,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
             # restore-before-the-turn treatment as a profile dir, once per process.
             sync.restore_root_auth()
             restore_profile(agent_id)
+            RESTORED.add(agent_id)
             # Fix round (Critical 1): must equal the session_id _construct_agent hands the
             # AIAgent (both derived from the same `session_key` this function already
             # computed above) -- the plugin's tool handler reads this file back by the
@@ -1784,11 +1900,19 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                     outcome, error_kind, reply, usage = "aborted", None, "", ZERO_USAGE
                 else:
                     me = next((p for p in body.get("participants", []) if p.get("id") == agent_id), {})
-                    verdict = gate_ambient(body, me.get("displayName") or "agent", me.get("role") or "")
+                    # A follow-up is the agent's own delegation reporting back: never gated.
+                    verdict = "dispatch" if body.get("followUp") else gate_ambient(
+                        body, me.get("displayName") or "agent", me.get("role") or "")
                     if verdict != "dispatch":
                         outcome, error_kind, reply, usage = ("ignored" if verdict == "ignore" else "gate_error"), None, "", ZERO_USAGE
                     else:
-                        outcome, error_kind, reply, usage = _run_hermes(agent_id, body, frames)
+                        try:
+                            outcome, error_kind, reply, usage = _run_hermes(agent_id, body, frames)
+                        finally:
+                            if has_run:
+                                _remember_turn(session_key, {
+                                    "roomId": room.get("id"), "agentId": agent_id,
+                                    "triggerMessageId": msg.get("messageId"), "eventKind": body.get("eventKind")})
                         if has_run and RUNS.get(run_id, {}).get("aborted"):
                             # Interrupted mid-flight (agent.interrupt() from a concurrent
                             # abort_run call): the tokens were spent, so `usage` stays what
@@ -1837,6 +1961,9 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
         # at all, so its own eventId is the closest thing to a correlation id for the usage
         # report.
         report_usage(session_key, agent_id, run_id or body.get("eventId"), outcome == "completed", int(took * 1000), usage)
+        # After the reply and run.ended, so neither waits on it; before the save, so the save
+        # carries what Hermes writes after run_conversation returns. Still inside the busy count.
+        _await_post_turn_writes(_pop_post_turn_agent())
         try:
             save_profile(agent_id)
         except Exception as exc:  # noqa: BLE001

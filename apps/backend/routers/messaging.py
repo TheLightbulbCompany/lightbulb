@@ -35,6 +35,8 @@ from core.services.messaging import (
     AgentMessageRequest,
     ApiProblem,
     CanonicalMessage,
+    FollowUpRequest,
+    FollowUpResponse,
     SetReactionRequest,
     UpdateMessageRequest,
     CreateMessageRequest,
@@ -585,6 +587,15 @@ async def get_agent_message_receipt(owner_id: str, event_id: str, request: Reque
 async def post_run_event(owner_id: str, body: RunEventRequest, request: Request):
     await _require_hook_token(owner_id, request)
     return await service.handle_run_event(owner_id, body)
+
+
+@router.post("/internal/messaging/followups/{owner_id}", response_model=FollowUpResponse, status_code=202)
+async def post_follow_up(owner_id: str, body: FollowUpRequest, request: Request, response: Response):
+    await _require_hook_token(owner_id, request)
+    result = await service.create_follow_up(owner_id, body)
+    if result.status == "replayed":
+        response.status_code = 200
+    return result
 
 
 @router.post("/internal/messaging/usage/{owner_id}", response_model=UsageReportResponse)

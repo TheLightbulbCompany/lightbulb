@@ -14,7 +14,6 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
     // Playwright generated files
-    "playwright-report/**",
     "test-results/**",
     // Vendored NICE DCV web client, copied in by scripts/copy-dcv-assets.mjs.
     // Third-party minified bundles — gitignored build output, not our source.

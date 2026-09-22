@@ -15,9 +15,7 @@
     "test": "node scripts/copy-dcv-assets.mjs && node --test scripts/dcv-sdk.test.mjs && NODE_OPTIONS='--max-old-space-size=8192' vitest run",
     "test:watch": "NODE_OPTIONS='--max-old-space-size=8192' vitest",
     "test:ui": "NODE_OPTIONS='--max-old-space-size=8192' vitest --ui",
-    "test:coverage": "NODE_OPTIONS='--max-old-space-size=8192' vitest --coverage",
-    "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:coverage": "NODE_OPTIONS='--max-old-space-size=8192' vitest --coverage"
   },
   "dependencies": {
     "@babel/runtime": "^7.26.0",
@@ -52,9 +50,7 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@clerk/testing": "^1.13.28",
     "@next/bundle-analyzer": "16.2.12",
-    "@playwright/test": "^1.48.0",
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.4.0",
     "@testing-library/react": "^16.0.0",

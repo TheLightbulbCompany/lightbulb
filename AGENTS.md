@@ -247,7 +247,6 @@ turbo run lint                        # All linting
 
 Backend: `cd apps/backend && uv run pytest tests/ -v`
 Frontend unit: `cd apps/frontend && pnpm test`
-Frontend E2E: `cd apps/frontend && pnpm run test:e2e`
 
 ### Workspace Re-provisioning (Dev)
 
@@ -297,18 +296,18 @@ subscription, Clerk org, and marketplace rows — moved to the
 For a local frontend using real dev endpoints and Clerk ticket sign-in, see
 [`docs/runbooks/local-dev-browser-verification.md`](docs/runbooks/local-dev-browser-verification.md).
 
-The E2E journey test no longer uses a fixed account — it mints a random
-`isol8-e2e-<rand>@mailsac.com` per run and deletes it in `cleanupUser`
-(`apps/frontend/tests/e2e/fixtures/user.ts`), so there is no reserved address
-to avoid clobbering.
+There is no Playwright/E2E suite (deleted 2026-09-22, owner ruling): dev
+acceptance is an agent driving Chrome against dev, with receipts on the PR.
+Before a messaging/bridge prod train, run
+[`docs/runbooks/messaging-concurrency-check.md`](docs/runbooks/messaging-concurrency-check.md).
 
 For manual dev testing, create your own Clerk account (or use an existing
 personal email) at https://dev.flickmeon.ai/sign-up. The dev Clerk instance is
 the same one used for prod previews, so test accounts created in dev are
 real accounts -- don't use a production email.
 
-**Signing a browser E2E in as an EXISTING dev test account without its
-password** (Claude-in-Chrome / automation): mint a Clerk **sign-in token**
+**Signing a Chrome session in as an EXISTING dev test account without its
+password** (Claude-in-Chrome): mint a Clerk **sign-in token**
 with the admin API and redeem it via the ticket strategy in the page — no
 password/OTP typed, the same ticket mechanism `routers/desktop_auth.py`
 uses. Get the dev Clerk secret from Secrets Manager
@@ -544,7 +543,6 @@ skip.)
 - **Hermes agent image:** GitHub Actions (`build-hermes-image.yml`) → build on any `apps/infra/hermes/**` change (that one path covers the image AND its skills source) → push `h-<YYYY.M.D>-<sha7>` to ECR `lightbulb/hermes-agent-arm64`. Promotion is MANUAL in **two** steps, and skipping the second is the classic mistake: a human lands a PR flipping `hermes-version.json`'s `dev.tag`/`prod.tag`, and then a human runs `apps/backend/scripts/roll_hermes_runtimes.py` — a pin flip only changes what a NEW runtime is created with. See "Runtime rollout".
 - **Desktop app:** GitHub Actions (`desktop-build.yml`) → signed DMG via Tauri. Standalone workflow (NOT part of `deploy.yml`), path-filtered on `apps/desktop/**`, runs on a **self-hosted macOS runner** (`runs-on: [self-hosted, macos-desktop]`). Version is `0.4.${{ github.run_number }}`.
 - **Mobile app:** `mobile-ci.yml` (PR lint/typecheck/jest + `expo export` Metro gate, self-hosted mac), `mobile-release.yml` (`eas build --local` + `eas submit` to TestFlight, on `mobile-v*` tags), `mobile-ota.yml` (`eas update --channel production` on merge to main). See the "Mobile App" section.
-- **E2E journey test:** GitHub Actions (`e2e-dev.yml`) runs the Playwright journey test against dev **on-demand only** (not on every deploy); keep regularly-needed coverage hermetic/per-PR
 
 ---
 

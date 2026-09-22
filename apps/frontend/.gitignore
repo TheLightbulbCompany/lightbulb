@@ -12,8 +12,6 @@
 
 # testing
 /coverage
-/playwright/.clerk
-/playwright-report
 /test-results
 
 # next.js
@@ -36,7 +34,6 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example
-!tests/e2e/.env.example
 
 # vercel
 .vercel

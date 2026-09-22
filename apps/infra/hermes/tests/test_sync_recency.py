@@ -163,7 +163,8 @@ def test_save_uploads_only_what_the_turn_changed(home, s3):
     (profile / "logs" / "hermes.log").write_text("never leaves the microVM")
     sync.save_profile("a1")
 
-    assert s3.uploaded == [_prefix() + "memories/MEMORY.md", _prefix() + "notes.md"]
+    # save_profile uploads on a pool (_fan_out): completion order is not the walk order
+    assert sorted(s3.uploaded) == [_prefix() + "memories/MEMORY.md", _prefix() + "notes.md"]
 
     s3.uploaded.clear()
     sync.save_profile("a1")

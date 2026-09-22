@@ -639,6 +639,25 @@ def handler(event, context):
         "Marketplace agent export path traversal attempt blocked - security event",
     });
 
+    // P23: provider-switch-wedged
+    // runtime_transport answers every turn ingress 503 while a row carries
+    // needs_provision. A real switch clears it within ~11 min (10-min idle
+    // wait + profile writes); 15 min of refusals means nothing is converging
+    // the flag and chat is being dead-lettered (the 2026-09-22 outage).
+    this.createAlarm({
+      id: "P23",
+      name: "provider-switch-wedged",
+      metricName: "runtime.ingress.provider_switch_pending",
+      threshold: 0,
+      evaluationPeriods: 3,
+      periodMinutes: 5,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      severity: "page",
+      description:
+        "Turn ingress refused for 15+ min on a pending provider switch - a needs_provision flag is not converging",
+    });
+
     // P5: debug-endpoint-prod-hit
     this.createAlarm({
       id: "P5",

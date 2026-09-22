@@ -27,7 +27,13 @@ from typing import Any
 
 import httpx
 
+from core.observability.metrics import put_metric
+
 logger = logging.getLogger(__name__)
+
+#: The ingress body while the row carries ``needs_provision``. ``openclaw_work`` matches it to
+#: retry on the switch's timescale (minutes) rather than a cold start's (seconds).
+PROVIDER_SWITCH_PENDING = '{"error":"provider_switch_pending"}'
 
 #: F4 (predeploy review, M6-R37): the RPC budget for a call to a possibly-parked AgentCore
 #: workspace -- AgentCore holds an invoke through the microVM start (~35s) and the gateway boot
@@ -143,7 +149,9 @@ async def request(
         except Exception:
             row = None
         if not row or row.get("needs_provision"):
-            return RuntimeResponse(status_code=503, text='{"error":"provider_switch_pending"}')
+            # Paged on (observability-stack): a flag nothing converges wedges every turn.
+            put_metric("runtime.ingress.provider_switch_pending")
+            return RuntimeResponse(status_code=503, text=PROVIDER_SWITCH_PENDING)
         generation = row.get("provider_switch_generation")
         if generation:
             headers = {**(headers or {}), "X-Lightbulb-Provider-Generation": generation}

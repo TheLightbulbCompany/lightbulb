@@ -350,3 +350,20 @@ class TestNotReadyRetry:
         with pytest.raises(httpx.ConnectError):
             await rt.request({"agentcore_runtime_arn": "arn:x", "owner_id": "o"}, "/x", timeout_s=5.0)
         assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_pending_switch_refusal_is_metered(monkeypatch):
+    """P23 pages on this metric: a flag nothing converges must never wedge chat silently."""
+    from unittest.mock import AsyncMock
+
+    owner = {"owner_id": "org_a", "agentcore_runtime_arn": "arn:runtime/abc"}
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={**owner, "needs_provision": True}),
+    )
+    emitted = []
+    monkeypatch.setattr(rt, "put_metric", lambda name, **kw: emitted.append(name))
+    response = await rt.request(owner, "/plugins/lightbulb-channel/inbound/ceo", method="POST", json_body={})
+    assert response.text == rt.PROVIDER_SWITCH_PENDING
+    assert emitted == ["runtime.ingress.provider_switch_pending"]

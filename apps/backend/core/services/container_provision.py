@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 
-from core.services.hermes_profiles import _BEDROCK_TRIAL_CHOICE as BEDROCK_TRIAL_CHOICE  # noqa: F401
+from core.services.hermes_profiles import _BEDROCK_TRIAL_CHOICE as BEDROCK_TRIAL_CHOICE
+from core.config import settings
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
@@ -24,13 +25,15 @@ def provider_choice_from_row(row: dict | None) -> tuple[str, str | None]:
     persisted, matching the legacy default and keeping recovery working for
     owners onboarded before per-owner provider_choice storage.
     """
-    if (row or {}).get("subscription_status") == "trial_local":
-        # Cardless Free rows intentionally store no provider_choice. Resolve
-        # them through the managed gate so provisioning/key/profile code has
-        # one path; the gate admits this mode only for its zero-price policy.
-        return "openrouter_managed", None
-    if (row or {}).get("plan") == "base" and not (row or {}).get("provider_choice"):
-        return "openrouter_managed", None
+    free = (row or {}).get("subscription_status") == "trial_local" or (
+        (row or {}).get("plan") == "base" and not (row or {}).get("provider_choice")
+    )
+    if free:
+        # Cardless Free and Base rows store no provider_choice. Where managed
+        # OpenRouter is enabled they ride its zero-price gate policy; where it
+        # is not (prod until rollout) they keep the single-AIP Sonnet trial
+        # mode -- openrouter_managed there has no model and fails every write.
+        return ("openrouter_managed" if settings.OPENROUTER_MANAGED_ENABLED else BEDROCK_TRIAL_CHOICE), None
     provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
     byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None
     return provider_choice, byo_provider

@@ -313,3 +313,35 @@ async def test_agentcore_ingress_budget_outlasts_a_cold_microvm_start(monkeypatc
     assert kwargs["timeout_s"] >= 60.0
     assert kwargs["json_body"] == {"x": 1}
     assert kwargs["headers"]["Authorization"] == "Bearer tok"
+
+
+@pytest.mark.asyncio
+async def test_pending_switch_retries_on_the_switch_timescale(monkeypatch):
+    """30 receives at the 10s cold-start pace dead-letter a message before a switch that waits up
+    to 10 min for idle can land; a switch-pending refusal must come back slower."""
+    from core.services import openclaw_work as work
+    from core.services import runtime_transport
+
+    meta = {"ownerId": "owner_test", "roomId": _ROOM, "workspaceId": WS, "deliveryKey": KEY}
+    member = {"id": "friday"}
+    monkeypatch.setattr(
+        work.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"gateway_token": "dummy", "agentcore_runtime_arn": "arn:r1"}),
+    )
+    monkeypatch.setattr(work.messaging_repo, "list_members", AsyncMock(return_value=[]))
+    monkeypatch.setattr(work.messaging_repo, "get_member", AsyncMock(return_value=member))
+    monkeypatch.setattr(work, "build_ingress_body", AsyncMock(side_effect=lambda **kw: {}))
+    monkeypatch.setattr(work.messaging_repo, "create_run", AsyncMock(return_value=True))
+    worker = OpenClawWorkWorker(sqs_client=FakeSqs())
+    monkeypatch.setattr(
+        worker, "_post", AsyncMock(return_value=httpx.Response(503, text=runtime_transport.PROVIDER_SWITCH_PENDING))
+    )
+    with pytest.raises(WorkRetry) as caught:
+        await worker._dispatch_message(meta, member, {"messageId": "m1"}, "user_request")
+    assert caught.value.visibility == work._SWITCH_RETRY_VISIBILITY_SECONDS > _RETRY_VISIBILITY_SECONDS
+
+    monkeypatch.setattr(worker, "_post", AsyncMock(return_value=httpx.Response(503, text="busy")))
+    with pytest.raises(WorkRetry) as caught:
+        await worker._dispatch_message(meta, member, {"messageId": "m1"}, "user_request")
+    assert caught.value.visibility is None

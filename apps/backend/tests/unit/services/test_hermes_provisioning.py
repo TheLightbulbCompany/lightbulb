@@ -7,6 +7,14 @@ import pytest
 from core.repositories.container_repo import ProvisionSuperseded
 from core.services import hermes_provisioning
 
+
+@pytest.fixture(autouse=True)
+def _no_billing_row(monkeypatch):
+    """Provisioning resolves the provider from billing on every path; default to no row
+    (bedrock_claude). Tests that care patch billing_repo themselves, which wins."""
+    monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=None))
+
+
 HERMES_IMAGE = "acct.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:h-v1"
 
 
@@ -1395,6 +1403,7 @@ async def test_resolve_profile_inputs_returns_managed_choice_for_a_trial_local_o
     trial owner's marketplace deploy would get the full paid model ladder.
     resolve_profile_inputs is the one place both callers now go through, so
     this proves the real provider_choice_from_row logic fires for real."""
+    monkeypatch.setattr(hermes_provisioning.settings, "OPENROUTER_MANAGED_ENABLED", True)
     _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"subscription_status": "trial_local"})
 
     inputs = await hermes_provisioning.resolve_profile_inputs(

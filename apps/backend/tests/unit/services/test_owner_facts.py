@@ -7,7 +7,8 @@ import pytest
 from core.services import owner_facts
 
 
-def test_build_owner_facts_trial_local():
+def test_build_owner_facts_trial_local(monkeypatch):
+    monkeypatch.setattr("core.services.container_provision.settings.OPENROUTER_MANAGED_ENABLED", True)
     # A REAL trial_local row carries no provider_choice at all — the provider
     # resolves to the internal managed OpenRouter mode.
     facts = owner_facts.build_owner_facts("user_abc", {"subscription_status": "trial_local"})

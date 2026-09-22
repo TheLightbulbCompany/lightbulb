@@ -804,11 +804,9 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     if dry_run:
         return "would-update"
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
-    provider_choice = "bedrock_claude"
-    if settings.OPENROUTER_MANAGED_MODEL_ID:
-        from core.services.container_provision import resolve_provider_choice
+    from core.services.container_provision import resolve_provider_choice
 
-        provider_choice, _ = await resolve_provider_choice(owner_id)
+    provider_choice, _ = await resolve_provider_choice(owner_id)
     # The roll is how an ALREADY-provisioned workspace gets its first Browser profile: a
     # create-or-adopt, then the env block. Never raises -- "" just means no browser.
     browser_profile_id = await browser_sessions.ensure_browser_profile(owner_id)
@@ -1204,11 +1202,7 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
     role_arn, aip_arns = await _load_role_and_aips(owner_id)
     from core.services.container_provision import resolve_provider_choice
 
-    provider_choice = (
-        (await resolve_provider_choice(owner_id))[0]
-        if row.get("needs_provision") or settings.OPENROUTER_MANAGED_MODEL_ID
-        else "bedrock_claude"
-    )
+    provider_choice, _ = await resolve_provider_choice(owner_id)
     # Create-or-adopt this workspace's AgentCore Browser profile and grant it, before the
     # request is built: its id is what turns the browser env block on. Never raises -- ""
     # means the runtime simply advertises no browser tools this round.

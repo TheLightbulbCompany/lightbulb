@@ -47,6 +47,13 @@ export interface RoomSummary {
   workspaceId?: string | null;
   /** The platform-managed channel shared with the Lightbulb team. */
   shared?: boolean;
+  /**
+   * The seeded starter channel. Derived by the backend from the room's
+   * deterministic id, not its name — the room is renameable, so matching on
+   * "general" would follow the rename. The onboarding setup band renders here
+   * and nowhere else.
+   */
+  isDefault?: boolean;
 }
 
 export interface ActiveRoomRun {

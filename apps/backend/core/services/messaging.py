@@ -199,6 +199,8 @@ class RoomSummary(ContractModel):
     workspace_id: str | None = None
     # The platform-managed channel shared with the Lightbulb workspace.
     shared: bool = False
+    # The seeded starter channel, where the onboarding setup band renders.
+    is_default: bool = False
 
 
 class ActiveRun(ContractModel):
@@ -1201,6 +1203,7 @@ def _room_summary_fields(meta: dict, member: dict, last_read: int) -> dict[str, 
         "topic": meta.get("topic"),
         "workspace_id": meta.get("workspaceId"),
         "shared": is_vendor_room(meta),
+        "is_default": is_default_room(meta),
     }
 
 
@@ -1326,6 +1329,18 @@ def is_vendor_room(meta: dict) -> bool:
     return bool(settings.VENDOR_ORG_ID) and meta.get("roomId") == messaging_repo.vendor_room_id(
         meta.get("ownerId") or ""
     )
+
+
+def is_default_room(meta: dict) -> bool:
+    """The seeded starter channel — by id, never by name.
+
+    ``DEFAULT_ROOM_NAME`` is only the name it is CREATED with; an owner can
+    rename it, so matching on "general" would follow the rename onto a room
+    that is no longer the starter channel (and off the one that is). Clients
+    use this to place the onboarding setup band in exactly one room.
+    """
+    owner_id = meta.get("ownerId") or ""
+    return bool(owner_id) and str(meta.get("roomId")) == default_room_id(owner_id)
 
 
 def _deny_vendor_human_change(meta: dict, kind: str) -> None:

@@ -30,6 +30,7 @@ import { readRecentEmoji } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomIntro } from "./RoomIntro";
+import { OnboardingBand } from "./OnboardingBand";
 import { RoomMessageItem } from "./RoomMessageItem";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTimeline } from "./RoomTimeline";
@@ -644,7 +645,12 @@ function RoomContent({
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
           targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
           renderMessage={renderMainMessage}
-          leading={historyComplete ? <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} /> : null}
+          leading={historyComplete ? <>
+            <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} />
+            {/* Starter channel only, identified by the backend's `isDefault` —
+                the room is renameable, so "general" is not the test. */}
+            {visibleRoom?.isDefault && <OnboardingBand participants={participants} />}
+          </> : null}
           empty={!historyComplete ? <p className="room-empty">Load older messages to see the start of this conversation.</p> : null}>
           {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>

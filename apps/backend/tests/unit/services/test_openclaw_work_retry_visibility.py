@@ -341,6 +341,12 @@ async def test_pending_switch_retries_on_the_switch_timescale(monkeypatch):
         await worker._dispatch_message(meta, member, {"messageId": "m1"}, "user_request")
     assert caught.value.visibility == work._SWITCH_RETRY_VISIBILITY_SECONDS > _RETRY_VISIBILITY_SECONDS
 
+    frozen = httpx.Response(503, json={"error": "provider_switch_frozen"})
+    monkeypatch.setattr(worker, "_post", AsyncMock(return_value=frozen))
+    with pytest.raises(WorkRetry) as caught:
+        await worker._dispatch_message(meta, member, {"messageId": "m1"}, "user_request")
+    assert caught.value.visibility == work._SWITCH_RETRY_VISIBILITY_SECONDS
+
     monkeypatch.setattr(worker, "_post", AsyncMock(return_value=httpx.Response(503, text="busy")))
     with pytest.raises(WorkRetry) as caught:
         await worker._dispatch_message(meta, member, {"messageId": "m1"}, "user_request")

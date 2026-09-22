@@ -455,8 +455,9 @@ class OpenClawWorkWorker:
                 await messaging_repo.end_run(owner_id, run_id, outcome="not_admitted")
                 put_metric("messaging.ambient_gate", dimensions={"outcome": "not_admitted", "event_kind": event_kind})
                 return
-            if response.status_code == 503 and response.text == runtime_transport.PROVIDER_SWITCH_PENDING:
-                # A switch waits up to ROLL_IDLE_WAIT_S for the runtime to idle; 30 receives at the
+            if response.status_code == 503 and "provider_switch" in response.text:
+                # The backend's pending flag or the bridge's own freeze. A switch waits up to
+                # ROLL_IDLE_WAIT_S for the runtime to idle; 30 receives at the
                 # 10s cold-start pace would dead-letter the message before the switch lands.
                 raise WorkRetry("provider switch pending", visibility=_SWITCH_RETRY_VISIBILITY_SECONDS)
             if response.status_code not in (200, 202):

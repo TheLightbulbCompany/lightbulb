@@ -322,7 +322,7 @@ async def _provision_or_reconcile(auth: AuthContext, owner_id: str) -> None:
       makes the duplicate-company race (#1442 — a load-balanced poll fan-out
       double-running ``provision_org``) structurally impossible for a first
       provision. Seeding here as well would put that race straight back.
-    * **Row already ``running`` (and not ``needs_provision``) → NO dispatch, seed HERE.**
+    * **Row already ``running`` → NO dispatch, seed HERE.**
       ``try_claim_provision`` refuses a ``running`` row by design (see its
       docstring: "NOT claimable: running"), so a dispatch would only lose the
       claim and stand down — no execution, and therefore no step 0. The seed
@@ -345,12 +345,10 @@ async def _provision_or_reconcile(auth: AuthContext, owner_id: str) -> None:
     row = await container_repo.get_by_owner_id(owner_id)
     if await wake_policy.is_parked_trial(owner_id, row):
         wake_policy.note_wake_suppressed(owner_id, row, door="ensure_user_ready", reason="gated")
-    elif (row or {}).get("status") != "running" or (row or {}).get("needs_provision"):
+    elif (row or {}).get("status") != "running":
         # dispatch_provision is idempotent on the absent/0-desired cases, so
         # repeated owner polls on a not-yet-running container are safe: the
-        # atomic claim collapses them to one execution. A RUNNING row flagged
-        # needs_provision (a provider switch) is claimable too, and nothing
-        # else converges it -- while the flag stands every turn ingress 503s.
+        # atomic claim collapses them to one execution.
         asyncio.create_task(dispatch_provision(owner_id))
         return
 

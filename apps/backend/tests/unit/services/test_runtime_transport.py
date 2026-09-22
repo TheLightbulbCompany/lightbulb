@@ -1,5 +1,6 @@
 """The transport seam: one way to reach a gateway, whichever platform hosts it."""
 
+import asyncio
 import json
 
 import pytest
@@ -367,3 +368,30 @@ async def test_pending_switch_refusal_is_metered(monkeypatch):
     response = await rt.request(owner, "/plugins/lightbulb-channel/inbound/ceo", method="POST", json_body={})
     assert response.text == rt.PROVIDER_SWITCH_PENDING
     assert emitted == ["runtime.ingress.provider_switch_pending"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "age_s", "dispatched"),
+    [("running", 600, True), ("running", 10, False), ("provisioning", 600, False)],
+)
+async def test_turn_on_a_stuck_switch_flag_dispatches_the_provision(monkeypatch, status, age_s, dispatched):
+    """The converge door is the turn that hit the flag, not an admin's poll: a running row flagged
+    past the takeover window has no run coming (2026-09-22). A fresh flag belongs to its billing
+    switch, and a provisioning row already has a run."""
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import AsyncMock
+
+    owner = {"owner_id": "org_a", "agentcore_runtime_arn": "arn:runtime/abc"}
+    updated = (datetime.now(timezone.utc) - timedelta(seconds=age_s)).isoformat()
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={**owner, "needs_provision": True, "status": status, "updated_at": updated}),
+    )
+    monkeypatch.setattr(rt, "put_metric", lambda *a, **kw: None)
+    dispatch = AsyncMock(return_value=True)
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
+    response = await rt.request(owner, "/plugins/lightbulb-channel/inbound/ceo", method="POST", json_body={})
+    await asyncio.sleep(0)
+    assert response.status_code == 503
+    assert dispatch.await_count == (1 if dispatched else 0)

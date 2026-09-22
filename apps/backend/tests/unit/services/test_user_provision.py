@@ -2243,31 +2243,3 @@ async def test_any_org_members_poll_reconciles_the_vendor_room():
     ):
         await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
     vendor_room.assert_awaited_once_with("org_o")
-
-
-@pytest.mark.asyncio
-async def test_running_row_with_pending_switch_dispatches_the_executor(_container_running):
-    """A RUNNING row flagged needs_provision (a provider switch, including the legacy flag with no
-    provider_switch_generation) must converge: try_claim_provision admits it and nothing else
-    will, while runtime_transport 503s every turn until the flag clears (2026-09-22 outage)."""
-    _container_running.return_value = {"status": "running", "needs_provision": True}
-    fake_provisioning = MagicMock()
-    fake_provisioning.find_org_owner = AsyncMock(return_value=MagicMock(status="active"))
-    fake_provisioning.provision_member = AsyncMock()
-    captured: list[str] = []
-
-    def capture_task(coro):
-        captured.append(coro.__qualname__)
-        coro.close()
-
-    with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="o@example.com")),
-        patch(
-            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
-        ),
-        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
-    ):
-        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
-    assert captured == ["dispatch_provision"]

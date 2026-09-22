@@ -387,24 +387,27 @@ def _push_tokens(user_id: str) -> list[str]:
 
 
 def _push_title(message: dict[str, Any], meta: dict[str, Any], mentioned: bool) -> str:
-    """Who said it, and where — the one line iOS shows in bold above the text.
-
-    Slack's shape: a DM banner is the sender's name alone (the room adds
-    nothing you don't already know), everything else names the room, and a
-    mention says so, because on a channel the mention is the only reason the
-    push exists at all. An agent needs no marker: ``displayName`` already IS
-    the agent's name for agent-authored messages.
+    """Who said it — the bold line iOS shows first. Outside a DM a mention says
+    so, because on a channel the mention is the only reason the push exists at
+    all; in a DM every message is already addressed to you. An agent needs no
+    marker: ``displayName`` already IS the agent's name.
     """
     author = message["author"]["displayName"]
-    if meta.get("kind") == "dm":
-        return author
-    # Every room kind may be nameless (CreateRoomRequest.name is optional), and
-    # only channels wear the "#" — a group DM's name is not a channel name.
+    return f"{author} mentioned you" if mentioned and meta.get("kind") != "dm" else author
+
+
+def _push_subtitle(meta: dict[str, Any]) -> str:
+    """What kind of conversation — iOS's second line. Always present, so a DM,
+    a group chat and a channel never read alike (a bare name could be either
+    of the last two, and a nameless group chat used to look exactly like a DM).
+    """
     name = meta.get("name")
-    where = (f"#{name}" if meta.get("kind") == "channel" else name) if name else None
-    if not where:
-        return f"{author} mentioned you" if mentioned else author
-    return f"{author} mentioned you in {where}" if mentioned else f"{author} in {where}"
+    kind = meta.get("kind")
+    if kind == "dm":
+        return "Direct message"
+    if kind == "channel":
+        return f"#{name}" if name else "Channel"
+    return f"Group chat \u00b7 {name}" if name else "Group chat"
 
 
 def _send_push(
@@ -434,12 +437,14 @@ def _send_push(
             "messageSeq": message["messageSeq"],
             "threadRootMessageId": message["threadRootMessageId"],
         }
+        subtitle = _push_subtitle(meta)
         # A whitespace-only caption is an attachment, not a body.
         text = message["text"].strip()[:PUSH_BODY_CHARS] or "Sent an image"
         body = json.dumps([
             {
                 "to": token,
                 "title": _push_title(message, meta, mentioned),
+                "subtitle": subtitle,
                 "body": text,
                 "data": data,
                 "sound": "default",

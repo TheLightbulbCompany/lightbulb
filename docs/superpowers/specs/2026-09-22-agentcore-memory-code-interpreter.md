@@ -56,6 +56,25 @@ Ruled out:
 
 **Recommendation: AgentCore Memory.** It needs no servers, isolation comes from IAM, data stays in AWS, and extraction is bundled at about $0.001 per turn. Mem0 is the answer only if "every inference through the gate" outranks ops.
 
+### Existing AgentCore providers for Hermes (checked 2026-09-22)
+
+**Upstream:** neither `plugins/memory/` at `main` nor at `v2026.9.21` (v0.21.4) contains an AgentCore provider.
+
+**Community:** two exist. Neither is usable as-is.
+
+- **`sfalsin/hermes-agentcore-memory`** (MIT, v0.1.0, a single commit on 2026-08-23, 0 stars, no tests, about 150 lines). It targets the same `agent.memory_provider.MemoryProvider` / `RecallStatus` interface our pinned `v2026.9.14` has, so it is useful as a reference. It does not fit for four reasons:
+  - It writes raw `User:/Assistant:` transcripts with `BatchCreateMemoryRecords`. That **skips the extraction strategies entirely**, so it stores whole turns, not facts.
+  - It calls `retrieve_memory_records` synchronously with no timeout, which can block a turn.
+  - Its namespaces are per agent and taken from env, with no `actorId`/owner scoping.
+  - Its `sync_turn` blocks the turn.
+- **`guanquntang/hermes-agentcore-memory`** (**no license**, so we can't reuse it; April 2026, 0 stars). It is a different job: it mirrors the built-in `MEMORY.md` into AgentCore as a primary store with a local cache and offline queue. It is not shared semantic memory.
+
+**Decision:** write our own provider of about 150 lines, based on sfalsin's MIT shape (credit it in the file header). The differences:
+- `CreateEvent` with `actorId = ownerId`, so AgentCore extracts facts.
+- A timeout-bounded `prefetch`.
+- `sync_turn` off the turn thread.
+- The namespace comes from the owner, not from free-form env.
+
 ### First slice (AgentCore Memory)
 
 0. **Spike (1 day, dev).**

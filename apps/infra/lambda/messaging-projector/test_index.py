@@ -565,7 +565,9 @@ class PushTests(unittest.TestCase):
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 5)
         messages = json.loads(request.data)
         self.assertEqual(sorted(m["to"] for m in messages), ["tok-bob", "tok-carol"])
-        self.assertTrue(all(m["title"] == "Alice mentioned you in #general" for m in messages))
+        self.assertTrue(all(m["title"] == "Alice mentioned you" for m in messages))
+        # The subtitle line always says what kind of conversation this is.
+        self.assertTrue(all(m["subtitle"] == "#general" for m in messages))
         self.assertTrue(all(m["sound"] == "default" for m in messages))
         # APNs thread-id: one conversation groups into one stack on iOS.
         self.assertTrue(all(m["threadId"] == ROOM_ID for m in messages))
@@ -603,6 +605,7 @@ class PushTests(unittest.TestCase):
         messages = json.loads(urlopen.call_args.args[0].data)
         self.assertEqual([m["to"] for m in messages], ["tok-carol"])
         self.assertEqual(messages[0]["title"], "Alice")
+        self.assertEqual(messages[0]["subtitle"], "Direct message")
 
     def test_author_token_is_never_collected(self):
         # A DM notifies every non-author member, so the author clause is the
@@ -649,26 +652,27 @@ class PushTests(unittest.TestCase):
         self.assertEqual(result, {"batchItemFailures": [{"itemIdentifier": "501"}]})
         urlopen.assert_not_called()
 
-    def test_nameless_channel_drops_the_room_but_keeps_the_mention(self):
-        world = push_world()
-        world[(f"ROOM#{ROOM_ID}", "META")]["name"] = None
-        _, urlopen = self.project(world)
-        self.assertEqual(
-            json.loads(urlopen.call_args.args[0].data)[0]["title"], "Alice mentioned you"
-        )
+    def test_nameless_rooms_still_say_what_kind_they_are(self):
+        for kind, subtitle in (("channel", "Channel"), ("group-dm", "Group chat")):
+            world = push_world(kind=kind)
+            world[(f"ROOM#{ROOM_ID}", "META")]["name"] = None
+            _, urlopen = self.project(world)
+            message = json.loads(urlopen.call_args.args[0].data)[0]
+            self.assertEqual(message["subtitle"], subtitle)
 
-    def test_group_dm_names_the_room_and_titles_each_reader_separately(self):
+    def test_group_dm_says_group_chat_and_titles_each_reader_separately(self):
         # A group DM notifies every member, so one message carries both titles:
-        # Bob was @mentioned, Carol was not. The "#" is a channel's, not a
-        # group DM's.
+        # Bob was @mentioned, Carol was not. The subtitle marks it a group chat
+        # so it never reads like a DM or a channel.
         _, urlopen = self.project(
             push_world(kind="group-dm"), push_message(mentions=(BOB_ID,))
         )
-        titles = {m["to"]: m["title"] for m in json.loads(urlopen.call_args.args[0].data)}
+        messages = json.loads(urlopen.call_args.args[0].data)
         self.assertEqual(
-            titles,
-            {"tok-bob": "Alice mentioned you in general", "tok-carol": "Alice in general"},
+            {m["to"]: m["title"] for m in messages},
+            {"tok-bob": "Alice mentioned you", "tok-carol": "Alice"},
         )
+        self.assertTrue(all(m["subtitle"] == "Group chat \u00b7 general" for m in messages))
 
     def test_more_than_one_hundred_tokens_sends_one_hundred_and_warns(self):
         world = push_world(tokens={BOB_ID: [f"tok-{n}" for n in range(101)]})

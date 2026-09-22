@@ -555,6 +555,33 @@ class UsageReportResponse(ContractModel):
     status: Literal["applied", "replayed", "ignored"]
 
 
+FOLLOW_UP_TEXT_MAX_BYTES = 32_768
+FOLLOW_UP_CAP_PER_HOUR = 3
+
+
+class FollowUpRequest(ContractModel):
+    """A finished async delegation the bridge owes back to the agent that started it."""
+
+    follow_up_id: uuid.UUID
+    room_id: uuid.UUID
+    agent_id: uuid.UUID
+    trigger_message_id: uuid.UUID
+    event_kind: Literal["user_request", "room_event"]
+    reason: Literal["delegation_completed"]
+    text: str = Field(min_length=1)
+
+    @field_validator("text")
+    @classmethod
+    def _bounded_text(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > FOLLOW_UP_TEXT_MAX_BYTES:
+            raise ValueError("text exceeds 32768 bytes")
+        return value
+
+
+class FollowUpResponse(ContractModel):
+    status: Literal["accepted", "replayed"]
+
+
 class PaperclipRunRequest(ContractModel):
     """Body Paperclip's own ``http`` adapter POSTs: ``{...payloadTemplate, agentId, runId,
     context}`` (fork ``server/src/adapters/http/execute.ts``). Only the two ids are ours to
@@ -2368,6 +2395,40 @@ async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsa
             )
         except Exception:
             logger.exception("run failure push failed")
+
+
+async def create_follow_up(owner_id: str, request: FollowUpRequest) -> FollowUpResponse:
+    """Queue a follow-up turn for the agent whose delegation finished. The plan
+    gate is the consumer's (``openclaw_work._dispatch_message``), not this door's."""
+    room_id, agent_id = str(request.room_id), str(request.agent_id)
+    follow_up_id = str(request.follow_up_id)
+    meta = await messaging_repo.get_room(room_id)
+    if meta is None or meta.get("ownerId") != owner_id:
+        raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+    if await messaging_repo.get_member(room_id, "agent", agent_id) is None:
+        raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")
+    if await messaging_repo.get_message_by_id(room_id, str(request.trigger_message_id)) is None:
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Trigger message not found.")
+    # Replay BEFORE the cap: a retry after a lost 202 counts its own row.
+    if await messaging_repo.get_follow_up(room_id, follow_up_id) is not None:
+        put_metric("messaging.followup.created", dimensions={"status": "replayed"})
+        return FollowUpResponse(status="replayed")
+    if await messaging_repo.count_recent_follow_ups(room_id, agent_id, window_s=3600) >= FOLLOW_UP_CAP_PER_HOUR:
+        put_metric("messaging.followup.created", dimensions={"status": "rate_limited"})
+        raise ApiProblem("RATE_LIMITED", "Too many follow-ups for this agent in this room.")
+    created = await messaging_repo.create_follow_up(
+        owner_id=owner_id,
+        room_id=room_id,
+        agent_id=agent_id,
+        follow_up_id=follow_up_id,
+        trigger_message_id=str(request.trigger_message_id),
+        event_kind=request.event_kind,
+        reason=request.reason,
+        text=request.text,
+    )
+    status = "accepted" if created else "replayed"
+    put_metric("messaging.followup.created", dimensions={"status": status})
+    return FollowUpResponse(status=status)
 
 
 async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> AgentMessageReceiptResponse:

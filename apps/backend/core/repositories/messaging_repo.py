@@ -22,8 +22,10 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     OWNER#<owner>   WORKSPACE                          opaque AppSync channel-path segment
     OWNER#<owner>   RUN#<runId>                         async turn ledger (Task 9)
     OWNER#<owner>   USAGE#<runId>                       first-writer-wins usage-callback receipt (Task 7)
+    ROOM#<room>     FOLLOWUP#<followUpId>               a finished async delegation owed back to its agent
+    ROOM#<room>     WORK#FOLLOWUP#<agent>#<followUpId>  one-shot outbox for that follow-up turn
 
-``WORK#``, ``LIVE#``, ``RUN#`` and ``USAGE#`` rows carry ``expiresAt`` (7 days). Every read
+``WORK#``, ``LIVE#``, ``RUN#``, ``USAGE#`` and ``FOLLOWUP#`` rows carry ``expiresAt`` (7 days). Every read
 here is ``ConsistentRead=True``; the GSIs are queried by ``list_rooms_for_member``
 (``by-member``) and ``list_overdue_runs`` (``by-run-deadline``) and nowhere else.
 """
@@ -35,6 +37,7 @@ import json
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -163,6 +166,14 @@ def operation_sk(operation_id: str) -> str:
 
 def work_operation_sk(operation_id: str) -> str:
     return f"WORK#OPERATION#{operation_id}"
+
+
+def followup_sk(follow_up_id: str) -> str:
+    return f"FOLLOWUP#{follow_up_id}"
+
+
+def work_followup_sk(agent_id: str, follow_up_id: str) -> str:
+    return f"WORK#FOLLOWUP#{agent_id}#{follow_up_id}"
 
 
 def workspace_sk() -> str:
@@ -1629,6 +1640,93 @@ async def create_run(
 
 async def get_run(owner_id: str, run_id: str) -> dict | None:
     return await _get(owner_pk(owner_id), run_sk(run_id))
+
+
+# ---------------------------------------------------------------------------
+# delegation follow-ups
+# ---------------------------------------------------------------------------
+
+
+async def create_follow_up(
+    *,
+    owner_id: str,
+    room_id: str,
+    agent_id: str,
+    follow_up_id: str,
+    trigger_message_id: str,
+    event_kind: str,
+    reason: str,
+    text: str,
+) -> bool:
+    """Put the ``FOLLOWUP`` row and its ``WORK#`` pointer in one transaction.
+    False when the follow-up already exists (the bridge's retry)."""
+    table_name = _table().name
+    # The room+agent FIFO group, so a follow-up queues behind that agent's room turns.
+    group, dedup = room_fifo_ids(owner_id, room_id, agent_id, follow_up_id)
+    try:
+        await _transact(
+            [
+                {
+                    "Put": {
+                        "TableName": table_name,
+                        "Item": {
+                            "pk": room_pk(room_id),
+                            "sk": followup_sk(follow_up_id),
+                            "followUpId": follow_up_id,
+                            "agentId": agent_id,
+                            "triggerMessageId": trigger_message_id,
+                            "eventKind": event_kind,
+                            "reason": reason,
+                            "text": text,
+                            "createdAt": utc_now_iso(),
+                            "expiresAt": _expires_at(),
+                        },
+                        "ConditionExpression": "attribute_not_exists(sk)",
+                    }
+                },
+                {
+                    "Put": {
+                        "TableName": table_name,
+                        "Item": {
+                            "pk": room_pk(room_id),
+                            "sk": work_followup_sk(agent_id, follow_up_id),
+                            "payload": {
+                                "kind": "room_follow_up",
+                                "roomId": room_id,
+                                "agentId": agent_id,
+                                "followUpId": follow_up_id,
+                            },
+                            "messageGroupId": group,
+                            "messageDeduplicationId": dedup,
+                            "expiresAt": _expires_at(),
+                        },
+                    }
+                },
+            ]
+        )
+        return True
+    except ClientError as exc:
+        if not _is_cancelled(exc):
+            raise
+    if await get_follow_up(room_id, follow_up_id) is None:
+        raise MessagingRepoError("follow-up create cancelled without a durable row")
+    return False
+
+
+async def get_follow_up(room_id: str, follow_up_id: str) -> dict | None:
+    return await _get(room_pk(room_id), followup_sk(follow_up_id))
+
+
+async def count_recent_follow_ups(room_id: str, agent_id: str, *, window_s: int) -> int:
+    """Follow-ups this agent was owed in this room within the last ``window_s``.
+
+    ponytail: reads every FOLLOWUP row in the room partition (TTL-bounded to 7
+    days, capped at 3/agent/hour); add a per-agent key if a room ever holds enough
+    to matter.
+    """
+    cutoff = datetime.fromtimestamp(time.time() - window_s, timezone.utc).isoformat()
+    rows = await _query(room_pk(room_id), begins_with="FOLLOWUP#")
+    return sum(1 for row in rows if row.get("agentId") == agent_id and row.get("createdAt", "") >= cutoff)
 
 
 def usage_sk(run_id: str) -> str:

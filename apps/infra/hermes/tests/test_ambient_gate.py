@@ -43,15 +43,40 @@ def test_dispatch_when_model_says_dispatch():
     assert payload["conversation"][-1]["text"] == "anyone know if the deploy finished?"
 
 
-def test_ignore_and_gate_error_mapping():
+def test_ignore_mapping():
     assert turn.gate_ambient(_body(), "Engineering", "engineering", converse=_converse(" ignore \n")) == "ignore"
-    assert turn.gate_ambient(_body(), "Engineering", "engineering", converse=_converse("maybe")) == "gate_error"
-    assert turn.gate_ambient(_body(), "Engineering", "engineering", converse=_converse("DISPATCH", stop="max_tokens")) == "gate_error"
 
-    def boom(**kwargs):
-        raise RuntimeError("timeout")
 
-    assert turn.gate_ambient(_body(), "Engineering", "engineering", converse=boom) == "gate_error"
+class _Throttled(Exception):
+    response = {"Error": {"Code": "ThrottlingException", "Message": "billing is not set up"}}
+
+
+class _OddResponse(Exception):
+    response = "not-a-dict"
+
+
+def test_a_failed_gate_fails_open_and_logs_why(caplog):
+    """The gate always calls Bedrock whatever the owner's provider, so on an OpenRouter,
+    ChatGPT or BYO workspace (or one with no credits) it can never answer. Dropping the
+    turn there silenced Listening fleet-wide; the gate is a cost filter, not a fence."""
+
+    def raises(exc):
+        def boom(**kwargs):
+            raise exc
+
+        return boom
+
+    cases = [
+        (_converse("maybe"), "unparseable"),
+        (_converse("DISPATCH", stop="max_tokens"), "stop_reason"),
+        (raises(_Throttled()), "ThrottlingException"),
+        (raises(RuntimeError("timeout")), "RuntimeError"),
+        (raises(_OddResponse()), "_OddResponse"),
+    ]
+    for converse, reason in cases:
+        caplog.clear()
+        assert turn.gate_ambient(_body(), "Engineering", "engineering", converse=converse) == "dispatch"
+        assert f"ambient_gate.failed reason={reason}" in caplog.text
 
 
 def test_user_requests_skip_the_gate():

@@ -263,9 +263,19 @@ def _bedrock_converse(**kwargs):
     return client.converse(**kwargs)
 
 
+def _gate_failed(reason: str) -> str:
+    # Fail OPEN. The gate always calls Bedrock, whatever the owner's provider, so on an
+    # OpenRouter / ChatGPT / BYO workspace (or one out of credits) it can never answer, and
+    # dropping the turn there silenced Listening fleet-wide. It is a cost filter, not a fence.
+    # ponytail: log line, not a metric -- the bridge has no metrics client; count with Logs
+    # Insights over /aws/bedrock-agentcore/runtimes/*. Goes away when the backend (Jev) decides.
+    log.warning("ambient_gate.failed reason=%s", reason)
+    return "dispatch"
+
+
 def gate_ambient(body: dict, agent_name: str, agent_role: str, *, converse=None) -> str:
-    """The plugin's gateAmbientTurn, verbatim: one 16-token call before any context is built.
-    Returns "dispatch" | "ignore" | "gate_error"."""
+    """The plugin's gateAmbientTurn: one 16-token call before any context is built.
+    Returns "dispatch" | "ignore"; a gate that cannot answer dispatches."""
     if body.get("eventKind") != "room_event":
         return "dispatch"
     names = {p["id"]: (p.get("displayName") or p["id"]) for p in body.get("participants", [])}
@@ -284,12 +294,17 @@ def gate_ambient(body: dict, agent_name: str, agent_role: str, *, converse=None)
             inferenceConfig={"maxTokens": 16, "temperature": 0},
         )
         if res.get("stopReason") not in ("end_turn", "stop"):
-            return "gate_error"
+            return _gate_failed("stop_reason")
         verdict = "".join(c.get("text", "") for c in res["output"]["message"]["content"]).strip().upper()
     except Exception as exc:  # noqa: BLE001
-        log.warning("ambient gate failed: %s", exc)
-        return "gate_error"
-    return {"DISPATCH": "dispatch", "IGNORE": "ignore"}.get(verdict, "gate_error")
+        response = getattr(exc, "response", None)
+        error = response.get("Error") if isinstance(response, dict) else None
+        code = error.get("Code") if isinstance(error, dict) else None
+        log.warning("ambient gate call raised: %s", exc)
+        return _gate_failed(code or type(exc).__name__)
+    if verdict == "IGNORE":
+        return "ignore"
+    return "dispatch" if verdict == "DISPATCH" else _gate_failed("unparseable")
 
 
 # ---- non-room usage report (spec §5 "Non-room usage") ---------------------------------------

@@ -74,7 +74,7 @@ export function prepareBody(input, policy, ownerId, env) {
 }
 
 export async function handleRequest(event, responder, { ddb, secrets, env, forwardImpl = forward, log = console.log }) {
-  let ownerId, estimate, requestId;
+  let ownerId, estimate, requestId, model;
   try {
     if (env.OPENROUTER_MANAGED_ENABLED !== 'true') fail(503, 'Managed inference unavailable');
     if ((event.requestContext?.http?.method ?? event.httpMethod) !== 'POST' || event.rawPath !== '/v1/chat/completions') fail(404, 'Unknown route');
@@ -105,6 +105,7 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     if (Buffer.byteLength(raw) > Number(env.MAX_BODY_BYTES)) fail(413, 'Request too large');
     let input;
     try { input = JSON.parse(raw); } catch { fail(400, 'Invalid JSON'); }
+    model = input?.model ?? null;
     const policy = JSON.parse(env.MODEL_POLICY_JSON);
     const body = prepareBody(input, policy, ownerId, env);
     const free = policy.max_price?.prompt === 0 && policy.max_price?.completion === 0;
@@ -158,7 +159,9 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       log(JSON.stringify({ _aws: { Timestamp: Date.now(), CloudWatchMetrics: [{ Namespace: 'LightbulbAI', Dimensions: [['env', 'tier']], Metrics: [{ Name: 'openrouter.gate.cap_hit', Unit: 'Count' }] }] }, env: String(env.GATE_ENV), tier, 'openrouter.gate.cap_hit': 1 }));
     }
   } catch (error) {
-    if (!responder.headersSent()) responder.error(error instanceof GateError ? error : new GateError(502, 'Inference gateway unavailable'));
+    const gateError = error instanceof GateError ? error : new GateError(502, 'Inference gateway unavailable');
+    log(JSON.stringify({ status: gateError.status, code: gateError.code ?? null, message: gateError.message, owner_id: ownerId ?? null, model: model ?? null, request_id: requestId ?? null }));
+    if (!responder.headersSent()) responder.error(gateError);
     else responder.end();
   }
 }

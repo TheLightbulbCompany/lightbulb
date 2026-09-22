@@ -2,6 +2,7 @@
 
 import logging
 import time
+from datetime import datetime
 import uuid
 
 from boto3.dynamodb.conditions import Attr, Key
@@ -902,6 +903,32 @@ async def arm_trial_if_unset(workspace_id: str, now_s: int | None = None) -> int
             return int(row["trial_end"])
         return None
     return trial_end
+
+
+async def extend_short_trial(workspace_id: str, row: dict) -> int:
+    """Rows armed under the old 3-day window get signup + 30 days (owner ruling 2026-09-22),
+    once: the write is conditioned on the old value, so racing polls apply it at most once."""
+    current = int(row["trial_end"])
+    try:
+        target = int(datetime.fromisoformat(row["created_at"]).timestamp()) + _TRIAL_LOCAL_DURATION_SECONDS
+    except (KeyError, TypeError, ValueError):
+        return current
+    if current >= target:
+        return current
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": workspace_id},
+            UpdateExpression="SET trial_end = :end, updated_at = :now",
+            ConditionExpression="subscription_status = :trial AND trial_end = :old",
+            ExpressionAttributeValues={":trial": "trial_local", ":end": target, ":old": current, ":now": utc_now_iso()},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        row = await get_by_owner_id(workspace_id, consistent_read=True) or {}
+        return int(row.get("trial_end") or current)
+    return target
 
 
 async def mark_trial_first_agent_response(owner_id: str) -> bool:

@@ -99,7 +99,12 @@ async def ensure_workspace_trial_default(
     """
     if not is_org_owner_id(workspace_id) or resolve_owner_id(auth) != workspace_id:
         raise HTTPException(status_code=403, detail="Workspace does not match the active organization")
-    if await billing_repo.get_by_owner_id(workspace_id):
+    row = await billing_repo.get_by_owner_id(workspace_id)
+    if row:
+        # Runs on every poll, parked or not: a trial expired under the old 3-day window reads as
+        # parked, so the ready-only arming door would never reach it.
+        if row.get("subscription_status") == "trial_local" and row.get("trial_end") is not None:
+            await billing_repo.extend_short_trial(workspace_id, row)
         return
 
     signup_flow_id = _clean_signup_flow_id(signup_flow_id)

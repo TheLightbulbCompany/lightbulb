@@ -1189,3 +1189,34 @@ async def test_mark_trial_first_agent_response_refuses_a_paid_row(dynamodb_table
 
     assert await billing_repo.mark_trial_first_agent_response("user_paid") is False
     assert "first_agent_response_at" not in (await billing_repo.get_by_owner_id("user_paid"))
+
+
+@pytest.mark.asyncio
+async def test_short_trial_extends_a_pre_30_day_window_to_signup_plus_thirty_days(dynamodb_table):
+    """Rows armed under the old 3-day window (2026-09-12..17 prod cohort) get signup + 30 days,
+    not a fresh 30 from now; a row already at 30 days is left alone."""
+    from datetime import datetime, timezone
+
+    from core.repositories import billing_repo
+
+    signup = "2026-09-12T01:26:00+00:00"
+    signup_s = int(datetime.fromisoformat(signup).timestamp())
+    dynamodb_table.put_item(
+        Item={
+            "owner_id": "org_old",
+            "subscription_status": "trial_local",
+            "created_at": signup,
+            "trial_end": signup_s + 3 * 86400,
+        }
+    )
+    row = await billing_repo.get_by_owner_id("org_old")
+    assert await billing_repo.extend_short_trial("org_old", row) == signup_s + 30 * 86400
+    assert (await billing_repo.get_by_owner_id("org_old"))["trial_end"] == signup_s + 30 * 86400
+    # Idempotent: a stale snapshot from a racing poll loses the condition and reads the winner.
+    assert await billing_repo.extend_short_trial("org_old", row) == signup_s + 30 * 86400
+
+    armed = int(datetime(2026, 9, 20, tzinfo=timezone.utc).timestamp()) + 30 * 86400
+    dynamodb_table.put_item(
+        Item={"owner_id": "org_new", "subscription_status": "trial_local", "created_at": signup, "trial_end": armed}
+    )
+    assert await billing_repo.extend_short_trial("org_new", await billing_repo.get_by_owner_id("org_new")) == armed

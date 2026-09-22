@@ -319,7 +319,10 @@ async def exchange(
     # id_token. It came straight from the token endpoint over TLS, which OIDC Core
     # §3.1.3.7 accepts in place of a signature check. Only the claims are kept.
     if tok.get("id_token"):
-        claims = jwt.decode(tok["id_token"], options={"verify_signature": False})
+        try:
+            claims = jwt.decode(tok["id_token"], options={"verify_signature": False})
+        except jwt.PyJWTError:
+            claims = {}  # identity is cosmetic; a malformed id_token must not fail the connect
         if claims.get("tid"):
             credential["tenant_id"] = claims["tid"]
         if account := claims.get("preferred_username") or claims.get("email"):
@@ -357,7 +360,10 @@ async def refresh(owner_id: str, provider_key: str, credential: dict) -> dict:
     own store every time — a platform app's is never inside the owner's credential.
     """
     p = registry.get_provider(provider_key)
-    client_id, client_secret = await _oauth_client(owner_id, provider_key)
+    store_id, client_secret = await _oauth_client(owner_id, provider_key)
+    # The grant belongs to the client it was issued to; a later DCR re-registration
+    # must not swap it out from under an existing refresh token.
+    client_id = credential.get("client_id") or store_id
     data = {
         "grant_type": "refresh_token",
         "refresh_token": credential["refresh_token"],

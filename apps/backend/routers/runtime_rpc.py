@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user
 from core.repositories import integrations_repo
+from core.services import owner_lifecycle
 from core.services import runtime_rpc as service
 from core.services import messaging
 from core.services.credentials import access_token, registry
@@ -59,7 +60,8 @@ async def runtime_credentials(
         key = provider.mcp_remote.key if provider.mcp_remote else provider.key
         try:
             tokens[key] = await access_token.get(owner_id, provider.key)
-        except (access_token.ReconnectRequired, httpx.HTTPError):
+        except (access_token.ReconnectRequired, httpx.HTTPError, KeyError, owner_lifecycle.OwnerLifecycleBusyError):
+            # One provider's failure must not drop every other provider's token for the turn.
             unavailable.append(provider.key)
     response.headers["Cache-Control"] = "no-store"
     return {"tokens": tokens, "unavailable": unavailable}

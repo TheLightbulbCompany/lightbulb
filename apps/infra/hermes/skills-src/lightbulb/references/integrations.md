@@ -32,6 +32,8 @@ signed-in user can already see. There are no tools — call Graph from the shell
 with the per-turn bearer `$MCP_MICROSOFT365_ACCESS_TOKEN`. It is empty when
 Microsoft 365 is not connected (or needs reconnecting in Connections). Never
 print it or write it to a file.
+The token lasts about an hour: if Graph answers 401 mid-turn, stop and say it
+will work on the next turn (a new turn gets a fresh token).
 
 ```bash
 G=https://graph.microsoft.com/v1.0; H="Authorization: Bearer $MCP_MICROSOFT365_ACCESS_TOKEN"

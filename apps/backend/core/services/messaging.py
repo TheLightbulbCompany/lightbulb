@@ -78,16 +78,26 @@ DEFAULT_ROOM_NAME = "general"
 # returns early on any room that already has messages), so this is the very
 # first thing a new user reads. It does NOT re-list the roster — the member
 # list already shows it — and instead spends its length on the blank-page
-# problem: state the role, ask one concrete question, and hand over a
+# problem: state the role, name the two first-run doors (connect tools, paste
+# existing context — first-run spec 2026-09-17 §4.1), and hand over a
 # copy-pasteable prompt for anyone who would rather watch before typing.
+# Owner-approved copy (D1, 2026-09-22); keep it easy to swap.
 # Refers to the CEO by ROLE, never a name: agent names are user-editable.
 DEFAULT_ROOM_WELCOME = (
-    "I’m the CEO here — tell me what you want to happen and I’ll put the right people on it "
-    "and report back.\n\n"
-    "Best first message: what you’re building, who it’s for, and what’s in the way. "
-    "A couple of sentences is plenty.\n\n"
-    "Or if you’d rather see it work first, try: “Research our top three competitors and tell me "
-    "where we’re weakest.”"
+    "I’m the CEO here — tell me what you want to happen and I’ll put the right people on it.\n\n"
+    "Start by connecting your tools in the setup cards, or paste what you’ve already told "
+    "another assistant about your business.\n\n"
+    "Or try: “Research our top three competitors and tell me where we’re weakest.”"
+)
+# Free tier: every agent is Mentions-only, so an unaddressed reply to the
+# welcome above meets silence. Same copy, but it hands over the CEO's typeable
+# handle — ``{handle}`` is computed at seed time because names are editable.
+DEFAULT_ROOM_WELCOME_FREE = (
+    "I’m the CEO here — @{handle} me with what you want to happen and I’ll put the right people "
+    "on it.\n\n"
+    "Start by connecting your tools in the setup cards, or paste what you’ve already told "
+    "another assistant about your business in a message to @{handle}.\n\n"
+    "Or try: “@{handle} research our top three competitors and tell me where we’re weakest.”"
 )
 
 API_ERROR_STATUS = {
@@ -1431,14 +1441,15 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
         # members[0] is the owner themselves — the creator is not "added".
         _emit_room_created(owner_id, owner_user_id, "channel", members[1:], by="system")
     ceo_id = starter_ids["ceo"]
+    welcome = DEFAULT_ROOM_WELCOME if ceo_mode == "active" else DEFAULT_ROOM_WELCOME_FREE.format(handle=handles[ceo_id])
     await messaging_repo.create_message(
         room_id=room_id,
         owner_id=owner_id,
         idemp_pk=messaging_repo.room_pk(room_id),
         idemp_sk=messaging_repo.human_idemp_sk("__system__", f"{client_room_id}:welcome"),
-        req_hash=messaging_repo.request_hash(DEFAULT_ROOM_WELCOME, ceo_id),
+        req_hash=messaging_repo.request_hash(welcome, ceo_id),
         author={"kind": "agent", "id": ceo_id, "displayName": agents[ceo_id]["name"]},
-        text=DEFAULT_ROOM_WELCOME,
+        text=welcome,
         mentions=[],
         reply_to_message_id=None,
         thread_root_message_id=None,
@@ -1448,6 +1459,29 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
         client_message_id=None,
     )
     return room_id
+
+
+async def promote_default_room_ceo(owner_id: str) -> None:
+    """Turn Listening on for the #general CEO when a trial workspace upgrades.
+
+    The seed runs once, so a room seeded on the free tier keeps its CEO on
+    ``mentions`` forever. Promote ONLY an exact ``mentions`` — never a user's
+    ``observe``, never another member. Idempotent; the caller gates on the
+    transition into paid."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
+    ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
+    if not ceo_id:
+        return
+    room_id = default_room_id(owner_id)
+    member = await messaging_repo.get_member(room_id, "agent", ceo_id)
+    if member is None or member.get("listenMode") != "mentions":
+        return
+    meta = await messaging_repo.upsert_member(
+        room_id=room_id, owner_id=owner_id, member={**member, "listenMode": "active"}
+    )
+    await _publish_room_metadata(meta)
 
 
 def _display_name_from_membership(row: dict) -> str:

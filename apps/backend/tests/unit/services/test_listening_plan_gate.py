@@ -205,3 +205,110 @@ async def test_ambient_work_still_reaches_the_runtime_for_a_paid_owner(monkeypat
         )
 
     row.assert_awaited_once()
+
+
+def _welcome_text(monkeypatch) -> str:
+    create_message = messaging.messaging_repo.create_message
+    kwargs = create_message.call_args.kwargs
+    assert kwargs["req_hash"] == messaging.messaging_repo.request_hash(kwargs["text"], kwargs["author"]["id"])
+    return kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_a_paid_workspace_keeps_the_plain_welcome(monkeypatch):
+    _seed_fixture(monkeypatch)
+    _billing(monkeypatch, PAID)
+
+    await messaging.ensure_default_room(OWNER, USER)
+
+    assert _welcome_text(monkeypatch) == messaging.DEFAULT_ROOM_WELCOME
+
+
+@pytest.mark.asyncio
+async def test_a_free_tier_welcome_tells_the_user_to_mention_the_ceo_by_its_real_handle(monkeypatch):
+    """Every free-tier agent is on Mentions, so a plain reply to the welcome
+    meets silence. The copy names the CEO's typeable handle — computed, since
+    agent names are user-editable."""
+    starter_ids, _ = _seed_fixture(monkeypatch)
+    roster = [{"id": agent_id, "name": "Ada Boss" if key == "ceo" else key} for key, agent_id in starter_ids.items()]
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=roster))
+    _billing(monkeypatch, TRIAL)
+
+    await messaging.ensure_default_room(OWNER, USER)
+
+    handle = messaging.mention_handles(roster)[starter_ids["ceo"]]
+    assert handle != "ceo"
+    text = _welcome_text(monkeypatch)
+    assert text == messaging.DEFAULT_ROOM_WELCOME_FREE.format(handle=handle)
+    assert f"@{handle} " in text
+
+
+def _promote_fixture(monkeypatch, member: dict | None, *, company=True):
+    starter_ids = {key: str(uuid.UUID(int=index + 20)) for index, key in enumerate(messaging._STARTER_KEYS)}
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(
+        return_value=MagicMock(status="active", starter_agent_ids=starter_ids) if company else None
+    )
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", MagicMock(return_value=repo))
+    get_member = AsyncMock(return_value=member)
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", get_member)
+    upsert = AsyncMock(return_value={"roomId": ROOM, "revision": 2})
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert)
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "_publish_room_metadata", publish)
+    return starter_ids, get_member, upsert, publish
+
+
+def _ceo_row(mode: str | None) -> dict:
+    return {
+        "kind": "agent",
+        "id": str(uuid.UUID(int=20)),
+        "role": "member",
+        "listenMode": mode,
+        "displayName": "CEO",
+        "mentionHandle": "ceo",
+    }
+
+
+@pytest.mark.asyncio
+async def test_upgrading_promotes_a_mentions_ceo_to_listening(monkeypatch):
+    starter_ids, get_member, upsert, publish = _promote_fixture(monkeypatch, _ceo_row("mentions"))
+
+    await messaging.promote_default_room_ceo(OWNER)
+
+    get_member.assert_awaited_once_with(messaging.default_room_id(OWNER), "agent", starter_ids["ceo"])
+    kwargs = upsert.call_args.kwargs
+    assert kwargs["room_id"] == messaging.default_room_id(OWNER)
+    assert kwargs["owner_id"] == OWNER
+    assert kwargs["member"] == {**_ceo_row("mentions"), "listenMode": "active"}
+    publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["observe", "active", None])
+async def test_upgrading_never_overrides_any_other_ceo_mode(monkeypatch, mode):
+    _, _, upsert, publish = _promote_fixture(monkeypatch, _ceo_row(mode))
+
+    await messaging.promote_default_room_ceo(OWNER)
+
+    upsert.assert_not_awaited()
+    publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_upgrading_is_a_noop_without_the_ceo_member(monkeypatch):
+    _, _, upsert, _ = _promote_fixture(monkeypatch, None)
+
+    await messaging.promote_default_room_ceo(OWNER)
+
+    upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_upgrading_is_a_noop_without_a_paperclip_company(monkeypatch):
+    _, get_member, upsert, _ = _promote_fixture(monkeypatch, _ceo_row("mentions"), company=False)
+
+    await messaging.promote_default_room_ceo(OWNER)
+
+    get_member.assert_not_awaited()
+    upsert.assert_not_awaited()

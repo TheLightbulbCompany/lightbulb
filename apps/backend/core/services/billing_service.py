@@ -701,7 +701,6 @@ async def change_provider(
     if current_choice == provider_choice and current_byo == next_byo:
         pending_row = await _container_repo.get_by_owner_id(owner_id) or {}
         if pending_row.get("needs_provision"):
-            await _container_repo.takeover_provision(owner_id)
             from core.services.provision_dispatch import dispatch_provision
 
             asyncio.create_task(dispatch_provision(owner_id))
@@ -794,7 +793,6 @@ async def change_provider(
             )
         # Retry the existing generation; do not stamp another one or repeat
         # credential cleanup while the first switch is still converging.
-        await _container_repo.takeover_provision(owner_id)
         from core.services.provision_dispatch import dispatch_provision
 
         asyncio.create_task(dispatch_provision(owner_id))
@@ -820,18 +818,16 @@ async def change_provider(
     # crash mid-cleanup leaves the owner in a coherent state (new provider
     # + a bit of stale OAuth/BYOK data, which the next sweep can reclaim).
     try:
-        saved = await billing_repo.set_provider_choice(
+        await billing_repo.set_provider_choice(
             owner_id,
             provider_choice=provider_choice,
             byo_provider=next_byo,
             connector_user_id=clerk_user_id if provider_choice == "chatgpt_oauth" else None,
-            return_switch_mark=True,
         )
     except _container_repo.ProvisionSuperseded as exc:
         raise ChangeProviderError(
             "provider_switch_pending", "A provider switch is already in progress.", status_code=409
         ) from exc
-    switch_mark = saved.get("_switch_mark") if isinstance(saved, dict) else None
 
     # Keep the agents' view of plan/provider current — the owner-facts file
     # is what the bundled lightbulb skill points them at. The hot-swap path never
@@ -923,61 +919,8 @@ async def change_provider(
         },
     )
 
-    # Takeover-then-dispatch. ``dispatch_provision``'s first act is the single-flight
-    # provision claim, whose ConditionExpression does not admit a "running" row — a bare
-    # dispatch would lose the claim and stand down silently while we told the caller
-    # ``restart: True``. ``takeover_provision`` supersedes any in-flight lease (a status-poll
-    # provision that resolved the OLD provider stops at its next leased checkpoint) and leaves
-    # the row's own status alone, so the UI does not flip into the provisioning stepper for a
-    # switch that is really a profile rewrite. It is guarded on the row EXISTING: with no row
-    # there is no lease to fence, and a takeover would CREATE one as "provisioning" with a
-    # fresh lease, which the dispatch's own claim then refuses — breaking the
-    # create-from-scratch path for a never-provisioned owner.
-    #
     # The AgentCore convergence waits for an idle turn, rewrites profiles, updates the
     # runtime spec, then stops the warm session so the next invoke boots the new choice.
-    try:
-        from core.repositories import container_repo as _container_repo
-
-        if await _container_repo.get_by_owner_id(owner_id) is not None:
-            await _container_repo.takeover_provision(owner_id)
-    except Exception as e:
-        from core.repositories import container_repo as _container_repo
-
-        # The new provider is committed but nothing will converge it: a retry of this call
-        # would hit the no-op fast path above (the row already matches the request) and
-        # dispatch nothing. REVERT the commit so the retry re-runs the full switch. The old
-        # provider's credentials may already be gone (the cleanup block above is
-        # fire-and-forget by design); that fork is user-recoverable — the provision gate
-        # drives re-auth — whereas a poisoned no-op is not.
-        #
-        # A LEGACY row carried no provider_choice (current_choice is None) and the repo
-        # rejects a None write, so restore the resolved legacy default "bedrock_claude" --
-        # the exact value resolve_provider_choice derives for a None row, i.e. the provider
-        # the workspace was actually running. This both preserves the effective state AND
-        # un-no-ops a switch-to-non-bedrock retry. current_byo stays None for a legacy row.
-        restore_choice = current_choice or "bedrock_claude"
-        await billing_repo.set_provider_choice(
-            owner_id,
-            provider_choice=restore_choice,
-            byo_provider=current_byo,
-            connector_user_id=recorded_connector if restore_choice == "chatgpt_oauth" else None,
-            # Restoring the provider the workspace is ACTUALLY running — marking would cost a
-            # pointless full provision on the next poll.
-            requires_reprovision=False,
-        )
-        if switch_mark is not None:
-            await _container_repo.restore_needs_provision(owner_id, switch_mark)
-        await write_owner_facts(
-            owner_id,
-            account_overrides={"provider_choice": restore_choice, "byo_provider": current_byo},
-        )
-        raise ChangeProviderError(
-            "reprovision_stop_failed",
-            "Could not reprovision the workspace to apply the new provider. No changes were made — try again.",
-            status_code=502,
-        ) from e
-
     from core.services.provision_dispatch import dispatch_provision
 
     asyncio.create_task(dispatch_provision(owner_id))

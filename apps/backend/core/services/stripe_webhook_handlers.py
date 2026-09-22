@@ -166,8 +166,8 @@ async def _stamp_conversion_dispatch(owner_id: str) -> None:
     already on the row when the next ~3s poll reads it.
 
     ``update_conversion_fields``, whose ALLOWLIST is the point: every
-    conversion-marker write can race a concurrent provision claim, and pinning
-    this to the marker fields means it can never reach ``status`` or the lease —
+    conversion-marker write can race a concurrent provision, and pinning
+    this to the marker fields means it can never reach ``status`` —
     see that helper's docstring for the live incident this closed."""
     await container_repo.update_conversion_fields(
         owner_id,
@@ -213,8 +213,8 @@ async def _claim_conversion_entry(owner_id: str, subscription_id: str) -> bool:
     event records the key and every other finds it and no-ops.
 
     Fail OPEN on infrastructure errors: if the dedup write itself blows up
-    (DDB blip, misconfig), running the conversion — protected one layer down
-    by the provision lease's own single-flight — beats silently stranding a
+    (DDB blip, misconfig), running the conversion — every provision step is
+    idempotent, so a duplicate converges — beats silently stranding a
     paying owner on the trial box with nothing left to re-fire it (Stripe's
     retry re-enters this branch only while old_status is still trial_local).
     """
@@ -516,16 +516,9 @@ async def run_conversion_reprovision(owner_id: str) -> None:
     )
 
     # ALLOWLISTED release (``update_conversion_fields``) — pinned to the marker
-    # fields, so it can never reach status or the lease. This write races the
-    # provision claim of the dispatch task ``reprovision_for_user`` just
-    # created: the old full-item put here,
-    # built from a read taken before that claim landed, resurrected
-    # status="stopped" over the fresh "provisioning" and erased the lease —
-    # superseding the conversion's OWN SFN execution at its first checkpoint
-    # and stranding the row with nothing running and nothing scheduled (the
-    # #1428 dev incident's terminal state: stopped, lease-less, last_error
-    # null). The scoped write touches only the marker fields, so the claim —
-    # and the execution behind it — survive.
+    # fields, so it can never reach status. The old full-item put here
+    # resurrected status="stopped" over the dispatch's fresh "provisioning"
+    # (the #1428 dev incident).
     # A real attempt was made either way: the deferral marker is spent.
     fields: dict[str, Any] = {"substatus": None, "conversion_deferred_reason": None}
     if succeeded:
@@ -573,30 +566,19 @@ async def maybe_resume_stuck_conversion(owner_id: str, container: dict | None) -
         # window between a successful hand-off (which drops the flag) and
         # dispatch_provision moving the row off "stopped".
         #
-        # EXCEPT for the stranded shape: stopped, NO provision claim, NO
-        # recorded error. A healthy hand-off leaves either a claim (the
-        # dispatch won it — an SFN execution owns the row) or, transiently,
-        # this exact shape for the milliseconds before the claim lands. But a
-        # conversion whose dispatched execution was superseded with no
-        # successor sits in it PERMANENTLY — nothing running, nothing
-        # scheduled — and honouring the guard here would stand the poll's
-        # wake path down for the full window on a row nobody owns. Release
-        # the guard instead: the caller's wake branch re-checks every gate
-        # (paid, trial, parked) and its dispatch is single-flight
-        # (try_claim_provision), so the worst case in the healthy-hand-off
-        # millisecond window is one redundant dispatch that loses the claim
-        # and stands down. The drain window itself is NOT exposed —
-        # conversion_pending is still True there, which keeps the branch
-        # above this one.
-        if (
-            guard
-            and container.get("status") == "stopped"
-            and not container.get("provision_claim_id")
-            and not container.get("last_error")
-        ):
+        # EXCEPT for the stranded shape: stopped with NO recorded error. A
+        # healthy hand-off moves the row to "provisioning" (dispatch writes it);
+        # a row still "stopped" has nothing running, and honouring the guard
+        # here would stand the poll's wake path down for the full window on a
+        # row nobody owns. Release the guard instead: the caller's wake branch
+        # re-checks every gate (paid, trial, parked) and its dispatch no-ops
+        # while an execution is RUNNING. The drain window itself is NOT
+        # exposed — conversion_pending is still True there, which keeps the
+        # branch above this one.
+        if guard and container.get("status") == "stopped" and not container.get("last_error"):
             put_metric("billing.trial_conversion.stranded_row")
             logger.warning(
-                "Conversion left owner %s stopped with no provision claim and no error — "
+                "Conversion left owner %s stopped with no error — "
                 "releasing the conversion guard so the status poll can wake the row",
                 owner_id,
             )
@@ -620,8 +602,8 @@ async def maybe_resume_stuck_conversion(owner_id: str, container: dict | None) -
         if status not in _PAID_SUBSCRIPTION_STATUSES:
             # Not (or no longer) paid — e.g. the subscription was canceled
             # before the conversion landed. Drop the flag and let the ordinary
-            # auto-retry + provision gate handle the row. Scoped write — the
-            # same lease-safety rule as every other marker write here.
+            # auto-retry + provision gate handle the row. Scoped write, like
+            # every other marker write here.
             await container_repo.update_conversion_fields(owner_id, {"conversion_pending": False})
             return False
 

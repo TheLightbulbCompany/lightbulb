@@ -756,17 +756,20 @@ you cannot guess from the filename:
   bedrock-gate still cap-gate it. Only an EXPIRED trial (and canceled/past_due/
   no-row) is left unarmed. On a FRESH provision the Paperclip seed runs
   **inside the provision executor** (step 0 of `scripts/provision_runner.py`,
-  single-flight under `try_claim_provision` — kills the duplicate-company
+  fenced by the seed's own durable claims against the duplicate-company
   race); `ensure_user_ready` seeds on the poll thread only as reconcile for
   already-running rows.
 - `provision_dispatch.py` — `dispatch_provision`, the single provisioning
-  funnel. A fresh claim starts the SFN execution, which STARTS at
-  `RunProvisioner`: `provision_runner.py` runs immediately as an ECS task on the
-  **platform** cluster, with the machine's own retry/classify states around it —
-  custody never depends on a client poll. There is no inline attempt and no
-  watch loop (the old 40-tick backstop idled every fresh provision ~40 min once
-  #2875 removed the inline attempt). (That ECS RunTask is the one place
-  provisioning still touches ECS; the thing it provisions is an AgentCore runtime.)
+  funnel, and stateless: a RUNNING SFN execution named `provision-{owner}-…`
+  owns the provision (no-op), otherwise it starts one. No claim, lease or
+  fence — every provision step is idempotent, so two racing executions
+  converge. The execution STARTS at `RunProvisioner`: `provision_runner.py`
+  runs immediately as an ECS task on the **platform** cluster, with the
+  machine's own retry/classify states around it. There is no inline attempt
+  and no watch loop (the old 40-tick backstop idled every fresh provision
+  ~40 min once #2875 removed the inline attempt). (That ECS RunTask is the one
+  place provisioning still touches ECS; the thing it provisions is an
+  AgentCore runtime.)
 - `paperclip_provisioning.py` — owns `provision_org`, which creates the generic six-agent starter roster for fresh workspaces and preserves legacy/founder rosters. Every agent it seeds carries Paperclip's native `hermes_gateway` adapter pointed at the hook-token-authenticated backend facade; the device-paired `openclaw_gateway` shape is gone (no ws relay to dial, no operator device to mint). An agent row still on `openclaw_gateway` fails its routines, issue runs and Teams Run/Retry **silently** while room chat keeps working — `repoint_agent_adapter` is kept with zero callers precisely because it is the only repair path for that.
 - `owner_lifecycle.py` — the single-writer fence on the path that writes an
   owner's credentials (the OAuth connect-vs-disconnect race). It is a DynamoDB
@@ -1074,13 +1077,13 @@ Clerk sign-up  ->  workspace (Clerk org) created or joined
                      + ensure_metronome_customer
                   2. evaluate_provision_gate — subscription/credits/OAuth pre-checks
                   3. asyncio.create_task(dispatch_provision(owner_id))
-                       └─ SFN watchdog started FIRST; attempt 0 = scripts/provision_runner.py
+                       └─ SFN execution (unless one is RUNNING) runs scripts/provision_runner.py
                             -1. hermes_provisioning.prepare_hermes_workspace — mint hook/gateway
                                 tokens + the Bedrock gate bearer into ONE Secrets Manager boot
                                 secret, and persist the tokens onto the row BEFORE step 0, so the
                                 native adapter's apiKey bakes in a real token (M4-R33). No-op once
                                 the row carries an agentcore_runtime_arn.
-                            0. _seed_owner_paperclip (single-flight under try_claim_provision;
+                            0. _seed_owner_paperclip (seed + org-create claims;
                                org-only — a non-org owner exits 10 before anything is seeded)
                                  └─ paperclip_provisioning.provision_org
                                       ├─ sign up Paperclip user (Better Auth)

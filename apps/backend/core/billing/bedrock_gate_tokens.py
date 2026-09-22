@@ -88,13 +88,6 @@ logger = logging.getLogger(__name__)
 # most the one bearer the owner's boot secret carries. (A swap that
 # loses the race adds the winner's hash on top of that, but the winner's own
 # list was pruned the same way, so the bound holds.)
-#
-# That holds only while the list SURVIVES every write to the containers row.
-# ``container_repo.upsert`` is a whole-item put, so the field is named in its
-# ``_UPSERT_PRESERVED_FIELDS`` — without that, a reprovision through
-# ``create_user_service`` would silently drop the list and strand its rows
-# forever (they are live bearer credentials: the plaintext is still in the
-# retained task-definition revision).
 _SUPERSEDED_FIELD = "bedrock_gate_superseded_hashes"
 
 # The env var whose value the predicate hashes. Provisioning injects the same
@@ -475,9 +468,8 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, row_id: st
     - Points the containers row's ``bedrock_gate_token_hash`` at the new hash,
       through ``container_repo.swap_gate_token_hash`` — a conditional write, so
       a concurrent mint cannot silently overwrite this one's hash; it is either
-      merged or reported (see ``_swap_hash_pointer``). Still a no-op on a
-      not-yet-created row; ``persist_gate_token_hash`` re-runs the same swap
-      once ``create_user_service``'s upsert has created it.
+      merged or reported (see ``_swap_hash_pointer``). A no-op on a
+      not-yet-created row (dispatch creates the row before the runner mints).
     - ROTATION SCHEDULES NOTHING. The superseded hash is recorded in
       ``_SUPERSEDED_FIELD`` and its row survives until the liveness predicate
       proves the owner's runtime cannot present it. The mint first
@@ -562,58 +554,12 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, row_id: st
     return token
 
 
-async def persist_gate_token_hash(
-    owner_id: str,
-    token_hash: str,
-    *,
-    claim_id: str | None = None,
-    attempt_token: str | None = None,
-) -> None:
-    """Re-assert the row's pointer at ``token_hash`` once the row exists.
-
-    ``mint_gate_token`` runs BEFORE ``create_user_service``, so on any path
-    where the containers row is not there yet its swap answers ``"absent"`` and
-    writes nothing — leaving a ``denied=False`` token row reachable from
-    nowhere. ``create_user_service`` calls this immediately after its
-    row-creating upsert, which is the first moment there is a row to condition
-    on. Through the SAME conditional swap, deliberately: a whole-item put here
-    is precisely the read-to-write race that made the row's pointer clobberable
-    in the first place.
-
-    A no-op in the ordinary case, where the row already existed at mint time
-    (``try_claim_provision``/``takeover_provision`` create it before the
-    provision runs) and the mint's own swap already landed this hash.
-
-    ``claim_id``/``attempt_token`` put the caller's provision lease INTO the
-    swap's condition, so a run superseded between its last checkpoint and this
-    write is refused atomically rather than pointing the row at a token no task
-    of its will ever present. Raises ``ProvisionSuperseded`` when that happens;
-    the caller must stop. Omitted for callers that hold no lease.
-    """
-    row = await container_repo.get_by_owner_id(owner_id) or {}
-    prior_hash = row.get("bedrock_gate_token_hash")
-    if prior_hash == token_hash:
-        return
-    tracked = [*(row.get(_SUPERSEDED_FIELD) or []), prior_hash]
-    superseded = [h for h in dict.fromkeys(tracked) if h and h != token_hash]
-    await _swap_hash_pointer(
-        owner_id,
-        token_hash,
-        superseded=superseded,
-        expected_prior_hash=prior_hash,
-        claim_id=claim_id,
-        attempt_token=attempt_token,
-    )
-
-
 async def _swap_hash_pointer(
     owner_id: str,
     token_hash: str,
     *,
     superseded: list[str],
     expected_prior_hash: str | None,
-    claim_id: str | None = None,
-    attempt_token: str | None = None,
 ) -> None:
     """Conditional swap of the row's gate-token pointer, with bounded retry.
 
@@ -629,16 +575,8 @@ async def _swap_hash_pointer(
 
     Why three: every interfering write to ``bedrock_gate_token_hash`` costs at
     most one attempt, and a rival provision makes exactly ONE — its own
-    ``mint_gate_token`` swap. Its later ``persist_gate_token_hash`` re-assert
-    does not write at all, since the pointer already equals the hash that swap
-    wrote. The shape this path actually has is a poll provision racing a
-    ``container_recover`` takeover, so 1 + 1 = 2 suffices and the third is
-    spare. N concurrent minters would want N + 1, but nothing produces them
-    today, and exhaustion is a LOGGED leak, not a lockout.
-
-    A lease that moves is NOT retried — ``swap_gate_token_hash`` raises
-    ``ProvisionSuperseded`` straight through this loop, because retrying would
-    be the loser re-arming against the winner's row and writing anyway.
+    ``mint_gate_token`` swap — so two concurrent provisions need 1 + 1 = 2 and
+    the third is spare. Exhaustion is a LOGGED leak, not a lockout.
     """
     expected = expected_prior_hash
     outcome, conflicting = "conflict", None
@@ -648,8 +586,6 @@ async def _swap_hash_pointer(
             new_hash=token_hash,
             superseded=superseded,
             expected_prior_hash=expected,
-            claim_id=claim_id,
-            attempt_token=attempt_token,
         )
         if outcome != "conflict":
             break

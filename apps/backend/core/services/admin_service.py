@@ -36,7 +36,7 @@ from core.services import (
     runtime_rpc,
 )
 from core.services.admin_redact import redact_openclaw_config
-from core.services.provision_dispatch import describe_dispatch_execution
+from core.services.provision_dispatch import running_execution
 from core.services.provision_gate import Gate, probe_provision_gate
 from core.services.readiness_state import compute_status
 
@@ -282,10 +282,6 @@ _CONTAINER_PROVISION_FIELDS = (
     "last_error_at",
     "retryable",
     "provision_generation",
-    "provision_claim_id",
-    "provision_claimed_at",
-    "provision_attempt_token",
-    "provision_execution_name",
     "onboarded_at",
     "bedrock_revoked",
     "stop_reason",
@@ -328,7 +324,7 @@ def _iso(value: Any) -> Any:
 
     Shared by ``_narrow_paperclip`` (the PaperclipCompany dataclass stores
     real ``datetime`` objects) and ``_narrow_execution`` (boto3's
-    DescribeExecution response does the same for start/stop dates) so both
+    ListExecutions item does the same for start/stop dates) so both
     narrowers hand back a JSON-safe dict rather than leaking a bare datetime
     onto the admin wire.
     """
@@ -358,9 +354,7 @@ def _narrow_container(row: dict | None) -> dict | None:
     """containers row -> allowlisted provisioning fields (drops gateway_token)."""
     if not row:
         return None
-    out = {k: row.get(k) for k in _CONTAINER_PROVISION_FIELDS}
-    out["claim_stale"] = container_repo.is_provision_claim_stale(row)
-    return out
+    return {k: row.get(k) for k in _CONTAINER_PROVISION_FIELDS}
 
 
 def _narrow_paperclip(company: Any) -> dict | None:
@@ -373,8 +367,8 @@ def _narrow_paperclip(company: Any) -> dict | None:
 
 
 def _narrow_execution(resp: dict | None) -> dict | None:
-    """SFN DescribeExecution response -> the four fields the admin tab needs
-    (drops ResponseMetadata, executionArn, input/output)."""
+    """The owner's RUNNING SFN execution (ListExecutions item) -> the four
+    fields the admin tab needs."""
     if not resp:
         return None
     return {
@@ -429,10 +423,7 @@ async def get_provisioning(user_id: str) -> dict:
     )
     paperclip_read_failed = _read_failed(paperclip_row, label="ddb_paperclip")
 
-    sfn = None
-    claim_id = (container or {}).get("provision_claim_id")
-    if claim_id and (container or {}).get("provision_execution_name"):
-        sfn = await _with_timeout(describe_dispatch_execution(owner_id, claim_id), "sfn_execution")
+    sfn = await _with_timeout(running_execution(owner_id), "sfn_execution")
     sfn_read_failed = _read_failed(sfn, label="sfn_execution")
 
     return {

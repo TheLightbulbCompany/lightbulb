@@ -1336,19 +1336,6 @@ async def test_stranded_stopped_row_releases_the_guard(mock_repo, mock_container
 
 
 @pytest.mark.asyncio
-async def test_stopped_row_with_successor_claim_keeps_the_guard(mock_repo):
-    """A claim on the row means an SFN execution owns it — the guard holds so
-    the poll cannot race a provision on top of the successor."""
-    container = {
-        "status": "stopped",
-        "conversion_pending": False,
-        "conversion_started_at": _fresh_ts(),
-        "provision_claim_id": "claim-successor",
-    }
-    assert await handlers.maybe_resume_stuck_conversion("org_x", container) is True
-
-
-@pytest.mark.asyncio
 async def test_stopped_row_with_last_error_keeps_the_guard(mock_repo):
     """A recorded error means some release already landed — the ordinary error
     auto-retry owns recovery once the guard lapses; no early release needed."""

@@ -1021,14 +1021,6 @@ class TestContainerStatusTrialConversion:
             coro.close()
             return MagicMock()
 
-        # The stale-lease recovery branch calls this PURE predicate on the
-        # container dict; a truthy MagicMock here would make every row look
-        # like a dead provision. Use the real function.
-        from core.repositories.container_repo import is_provision_claim_stale as _real_stale
-
-        if repo is not None:
-            repo.is_provision_claim_stale = _real_stale
-
         return (
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
             patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
@@ -1340,10 +1332,9 @@ class TestContainerStatusHonestError:
     """GET /container/status must tell the truth about a FAILED provision
     (Part B). An `error` row is no longer masked as `provisioning`/`auto_retry`:
     it reports status=`error` + last_error, and the row's `retryable` flag
-    (written by container_repo.release_provision_to_error) decides whether a
+    (written by container_repo.mark_provision_error) decides whether a
     re-provision is auto-dispatched (transient) or the terminal error card is
-    shown (deterministic). `stopped` keeps its silent auto-wake, and the
-    stale-lease liveness recovery is untouched.
+    shown (deterministic). `stopped` keeps its silent auto-wake.
     """
 
     @classmethod
@@ -1452,32 +1443,6 @@ class TestContainerStatusHonestError:
         assert result["container_status"] == "provisioning"
         assert result["container_substatus"] == "auto_retry"
         assert captured == ["dispatch_provision"]
-
-    @pytest.mark.asyncio
-    async def test_stale_provisioning_lease_still_reclaims(self):
-        """Liveness path intact: a `provisioning` row whose lease has gone stale
-        AND has no live ECS service still re-claims (dispatches a provision) and
-        reports provisioning/auto_retry — the SIGKILL'd-worker recovery the
-        error split must not disturb."""
-        import time as _time
-
-        from core.repositories.container_repo import PROVISION_CLAIM_STALE_S
-        from routers.container import container_status
-
-        row = {
-            "status": "provisioning",
-            "substatus": None,
-            "provision_claimed_at": int(_time.time()) - PROVISION_CLAIM_STALE_S - 100,
-        }
-        captured: list[str] = []
-        with contextlib.ExitStack() as stack:
-            for p in self._patches(row, captured=captured):
-                stack.enter_context(p)
-            result = await container_status(_workspace_auth())
-
-        assert captured == ["dispatch_provision"], f"stale lease must re-claim, got {captured}"
-        assert result["container_status"] == "provisioning"
-        assert result["container_substatus"] == "auto_retry"
 
 
 class TestContainerStatusTeamsStatus:

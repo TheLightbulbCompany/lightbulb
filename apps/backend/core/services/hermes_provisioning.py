@@ -5,20 +5,19 @@ hard-requires an existing EFS access point and a ``stopped`` ECS row (agentcore_
 which a fresh workspace has never had. Patching it in place would inherit "must come from ECS" into
 new-workspace provisioning (report 04, risk 5).
 
-Two steps, in order, both fenced on the SAME claim/attempt-token lease ``provision_runner.run``
-already holds (M4-R28/M4-R33):
+Two steps, in order. Neither holds a lease: every write is idempotent at its source, so two
+concurrent runs for one owner converge on the same end state:
 
 1. ``prepare_hermes_workspace`` — mints (or reuses) ``hook_token``/``gateway_token``, derives the
    gate bearer, writes the ONE JSON boot secret, and writes the two tokens onto the containers row.
    Runs BEFORE step 0 (the Paperclip seed): the starter-agent loop bakes ``hook_token`` into the
    native Hermes adapter's ``apiKey`` at seed time, so seeding before minting it would ship every
-   starter agent with an empty credential. A NON-terminal, lease-REFRESHING write
-   (``release_lease=False``): the provision is not done yet.
+   starter agent with an empty credential.
 2. ``provision_hermes_runtime`` — writes the Hermes profiles to S3, creates the AgentCore runtime,
    and writes the TERMINAL row fields. Fully idempotent-return only
    once ``status="running"``. The ARN is recorded on the row NON-terminally IMMEDIATELY after
    ``CreateAgentRuntime`` returns (M4-R35/C1) — runtime names are unique
-   per account, so a create that succeeds but is never recorded (a crash, a lost fence, a
+   per account, so a create that succeeds but is never recorded (a crash, a
    CREATE_FAILED seen on the single post-create status check) would otherwise hit a name conflict
    on every retry, forever. Readiness is NOT waited on: invoking a CREATING runtime fails fast
    and retries with backoff at first use. A retry
@@ -31,11 +30,9 @@ constants. What is dropped: ``filesystemConfigurations`` (no EFS — profiles ar
 builder, the SFN watchdog and the long ``wait_for_running`` ECS-boot poll (``CreateAgentRuntime`` is
 one synchronous call; readiness is discovered at first invoke, not waited on).
 
-Fencing (M4-R28): the terminal row write goes through ``container_repo.update_container_leased`` —
-the same fenced primitive every other terminal provision write uses — so a straggler from a superseded attempt can never clobber a takeover's row; a lost fence raises
-``ProvisionSuperseded`` and writes nothing (``provision_runner.run``'s existing handler for that
-exception, from Task 18, already covers both call sites). No ``generation`` fence: that concept is
-ECS-incarnation-specific (a container recreate mid-provision) and has no Hermes analogue.
+Row writes are plain scoped ``container_repo.update_fields`` calls. The one conditional write is
+the CREATE_FAILED ARN clear (``expected=``): it must not wipe a newer, healthy ARN a concurrent run
+recorded after deleting the same dead runtime.
 
 Boot secret (M4-R4/R5): the runtime's ``environmentVariables`` carry NO credential value. One JSON
 secret, ``agentcore_runtime.boot_secret_name(owner_id)`` = ``{"hookToken","gatewayToken","bedrockBearer"}``,
@@ -268,7 +265,7 @@ def _create_runtime(request: dict) -> str:
 
 def _find_existing_runtime_arn(name: str) -> str | None:
     """M4-R35: an owner's runtime name is unique per account, so a retry whose row lost the
-    ARN (a crash, or a lost fence, between ``CreateAgentRuntime`` and the row write) would
+    ARN (a crash between ``CreateAgentRuntime`` and the row write) would
     otherwise hit a name conflict on every future attempt, forever. Sync — call via
     ``run_in_thread``.
 
@@ -614,7 +611,7 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
     return deleted
 
 
-async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_token: str | None = None) -> None:
+async def prepare_hermes_workspace(owner_id: str) -> None:
     """M4-R33: settle the owner's hook/gateway tokens + gate bearer, write the ONE JSON boot
     secret, and persist ``hook_token``/``gateway_token`` onto the row — BEFORE step 0 seeds the
     roster, so the native Hermes adapter's ``apiKey`` bakes in a real token instead of the empty
@@ -641,9 +638,6 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
 
     ``hook_token``/``gateway_token`` are minted only when the row does not already carry one, so
     a retry never orphans a token some other seam already handed out (Paperclip snapshots them).
-
-    Fenced the same way as the terminal write (M4-R28), but NON-terminal: ``release_lease=False``,
-    since the provision is not done yet.
     """
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     if row.get("agentcore_runtime_arn"):
@@ -655,9 +649,6 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
                 from core.services.openrouter_keys import ensure_owner_key_for_settings
 
                 await ensure_owner_key_for_settings(owner_id)
-            await container_repo.update_container_leased(
-                owner_id, claim_id, {}, attempt_token=attempt_token, release_lease=False
-            )
             await run_in_thread(
                 _refresh_boot_secret_provider_choice,
                 owner_id,
@@ -708,13 +699,6 @@ async def prepare_hermes_workspace(owner_id: str, *, claim_id: str, attempt_toke
         "reused" if gateway_token_reused else "minted",
     )
 
-    await container_repo.update_container_leased(
-        owner_id,
-        claim_id,
-        {"hook_token": hook_token, "gateway_token": gateway_token},
-        attempt_token=attempt_token,
-        release_lease=False,
-    )
     if not hook_token_reused:
         # A re-created row minted a NEW hook_token, but a surviving Paperclip company's agents
         # still carry the old one as their snapshotted apiKey -- every run would 401 silently.
@@ -1250,7 +1234,7 @@ async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: Profil
         logger.exception("hermes profile facts staging failed for owner=%s", owner_id)
 
 
-async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_token: str | None = None) -> str:
+async def provision_hermes_runtime(owner_id: str) -> str:
     """Create this workspace's AgentCore runtime and point its container row at it.
 
     REQUIRES ``prepare_hermes_workspace`` to have already run for this owner — it writes the boot
@@ -1266,9 +1250,6 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
     The N1/M4-R39 ``service_name``/``migrate`` refusal that used to sit here went with the ECS
     runtime (see ``prepare_hermes_workspace``'s docstring): it protected a live ECS task from
     having a second runtime created beside it, and there are no ECS tasks.
-
-    ``claim_id``/``attempt_token`` fence every write here (see module docstring, M4-R28) — the
-    caller (``provision_runner.run``) always holds a claim; both are threaded straight from there.
     """
     if not settings.AGENTCORE_HERMES_IMAGE:
         raise RuntimeError("AGENTCORE_HERMES_IMAGE is not configured for this environment")
@@ -1311,13 +1292,13 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         # carries an ARN has its profiles in S3 already. Idempotence now keys on
         # status == "running" (M4-R35/C1), so an ARN row sitting in error/stopped -- which C2's
         # release-to-error path now produces routinely -- must skip straight to recovering the
-        # runtime (poll READY / update on image drift / fenced terminal write) instead of
+        # runtime (poll READY / update on image drift / terminal write) instead of
         # re-running the fan-out and overwriting owner-edited profiles + bumping .revision.
         await write_profiles(owner_id, aip_arns)
 
     if not arn:
         # M4-R35: the row has no ARN yet -- but AgentCore itself might, if a prior attempt got
-        # as far as CreateAgentRuntime and then died (or lost its fence) before recording it.
+        # as far as CreateAgentRuntime and then died before recording it.
         # Runtime names are unique per account, so skipping this check would hit a name
         # conflict on every future attempt, forever.
         arn = await run_in_thread(_find_existing_runtime_arn, runtime_name_for(owner_id))
@@ -1352,13 +1333,11 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
             if not row.get("agentcore_runtime_arn"):
                 # Found by name lookup only -- the row never got it. Record now, before polling,
                 # for the same reason the freshly-created branch below does.
-                await container_repo.update_container_leased(
-                    owner_id, claim_id, {"agentcore_runtime_arn": arn}, attempt_token=attempt_token, release_lease=False
-                )
+                await container_repo.update_fields(owner_id, {"agentcore_runtime_arn": arn})
     if not arn:
         arn = await run_in_thread(_create_runtime, _build_request())
-        # M4-R35 (C1): record the ARN IMMEDIATELY, non-terminal, fenced. Without this, a
-        # CREATE_FAILED, a crash, or a lost fence on the terminal write below all lose the ARN
+        # M4-R35 (C1): record the ARN IMMEDIATELY, non-terminal. Without this, a
+        # CREATE_FAILED or a crash before the terminal write below loses the ARN
         # with nothing to reconcile it: AgentCore runtime
         # names are unique per account, so every future retry then hits a name conflict on
         # CreateAgentRuntime, forever. A retry that sees this row field takes the `if arn:`
@@ -1368,13 +1347,11 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         # write is also reached by the M6-R43 recovery path above, where the row's
         # agentcore_runtime_arn still names a dead/DELETING runtime -- `_RuntimeGone` resets the
         # LOCAL `arn` variable to None but never clears the ROW field. An `expected={"...":
-        # None}` here would then fail against that still-dead value, raise
-        # ProvisionSuperseded, and leave the row stuck on the dead arn forever. Runtime names
-        # are unique per owner, so two concurrent creators for the same owner always converge on
-        # the SAME arn anyway -- the condition would guard nothing real.
-        await container_repo.update_container_leased(
-            owner_id, claim_id, {"agentcore_runtime_arn": arn}, attempt_token=attempt_token, release_lease=False
-        )
+        # None}` here would then fail against that still-dead value and leave the row stuck on
+        # the dead arn forever. Runtime names are unique per owner, so two concurrent creators
+        # for the same owner always converge on the SAME arn anyway -- the condition would
+        # guard nothing real.
+        await container_repo.update_fields(owner_id, {"agentcore_runtime_arn": arn})
 
     # Optimistic create: the ARN record above is the commit. Readiness is
     # discovered at first invoke (retry-at-use) — no READY poll. Only a
@@ -1386,8 +1363,7 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         # F1 (predeploy review, M6-R34): CREATE_FAILED/UPDATE_FAILED is a DEAD runtime -- AWS
         # will refuse an UpdateAgentRuntime against it, so every retry that found this ARN on
         # the row via the `if arn:` branch above would otherwise call Update on a terminal
-        # runtime forever. Delete it (best-effort) and clear the row's ARN with the SAME fenced
-        # write the ARN record used, THEN raise -- a retry after the underlying cause (e.g. an
+        # runtime forever. Delete it (best-effort) and clear the row's ARN, THEN raise -- a retry after the underlying cause (e.g. an
         # unpushed image tag) is fixed then takes the CREATE path instead.
         logger.warning(
             "hermes provision: runtime create/update failed for owner=%s arn=%s -- deleting and "
@@ -1401,19 +1377,11 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
             logger.warning(
                 "hermes provision: could not delete the failed runtime owner=%s arn=%s", owner_id, arn, exc_info=True
             )
-        # A lost fence here means a concurrent takeover now owns the row -- ProvisionSuperseded
-        # propagates in place of the runtime failure, which matches every other fenced write in
-        # this module (provision_runner.run's existing handler already covers both). Also
-        # conditioned on the row still naming THIS arn: another concurrent run may have already
+        # Conditioned on the row still naming THIS arn: another concurrent run may have already
         # observed the same dead arn, deleted it, and created a fresh one -- this clear must not
-        # then wipe out that newer, healthy arn.
-        await container_repo.update_container_leased(
-            owner_id,
-            claim_id,
-            {"agentcore_runtime_arn": None},
-            attempt_token=attempt_token,
-            release_lease=False,
-            expected={"agentcore_runtime_arn": arn},
+        # then wipe out that newer, healthy arn (a miss is a silent no-op).
+        await container_repo.update_fields(
+            owner_id, {"agentcore_runtime_arn": None}, expected={"agentcore_runtime_arn": arn}
         )
         raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to start: {status}")
 
@@ -1427,9 +1395,6 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
             # AgentCore returns 404 when the session was already parked or terminated.
             if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
                 raise
-        await container_repo.update_container_leased(
-            owner_id, claim_id, {}, attempt_token=attempt_token, release_lease=False
-        )
         await run_in_thread(
             _refresh_boot_secret_provider_choice,
             owner_id,
@@ -1439,18 +1404,11 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         )
 
     # `running` from here: AgentCore wakes on invoke, so every "stopped -> start" door must see a
-    # live workspace.
-    # Fenced write (M4-R28) — the same terminal transition every provision write takes. A lost
-    # fence raises ProvisionSuperseded here and writes NOTHING (DynamoDB's conditional write is
-    # atomic); provision_runner.run's existing handler for that exception covers this call.
-    # hook_token/gateway_token are NOT repeated here -- prepare_hermes_workspace already wrote
-    # them, and re-asserting them here would gain nothing.
-    await container_repo.update_container_leased(
+    # live workspace. hook_token/gateway_token are NOT repeated here -- prepare_hermes_workspace
+    # already wrote them.
+    await container_repo.update_fields(
         owner_id,
-        claim_id,
         {"runtime_host": "agentcore", "agentcore_runtime_arn": arn, "status": "running", "needs_provision": False},
-        attempt_token=attempt_token,
-        release_lease=True,
     )
     logger.info("hermes runtime created owner=%s arn=%s", owner_id, arn)
     return arn

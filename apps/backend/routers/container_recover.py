@@ -3,15 +3,10 @@
 `/recover` inspects current container + gateway state and dispatches the
 appropriate recovery action, reaching the gateway through ``container_rpc``.
 
-The in-process per-owner recovery lock this router used to hold is REMOVED
-(spec §7, PR-10): every reprovision sub-branch below now routes through
-``core.services.provision_dispatch.dispatch_provision``, whose crash-safety
-IS its idempotency — a StartExecution with the SAME (deterministic) name +
-input either starts the execution or is a no-op success against the already-
-running one (core.services.provision_dispatch module docstring). Two
-concurrent /recover calls now converge on the SAME dispatch outcome instead
-of one blocking behind an advisory lock; the only remaining cost of
-concurrency is a redundant (harmless, read-only) gateway health probe.
+Every reprovision sub-branch below routes through
+``core.services.provision_dispatch.dispatch_provision``, which no-ops while a
+provision execution is RUNNING for the owner, and every provision step is
+idempotent — so concurrent /recover calls need no lock.
 """
 
 import logging
@@ -94,21 +89,12 @@ async def container_recover(
             "reason": "A subscription upgrade is reprovisioning this container",
         }
 
-    # An ACTIVE provision lease owns this row — stand down on ROW STATE, not
-    # a clock. The conversion guard above cannot cover this window: its stamp
-    # is cleared the moment the conversion's dispatch is created (so a stale
-    # stamp can't block the manual Restart door), which disarms it precisely
-    # when the SFN runner's minutes-long provision begins. Observed on prod
-    # 2026-08-10: /recover fired four times during a conversion's provision,
-    # each probing the mid-boot gateway, failing, writing status="error" over
-    # the in-flight run and dispatching a competitor. The lease heartbeat
-    # (refreshed by every leased checkpoint write) is the authoritative
-    # in-flight signal; a lease gone stale — the runner died — falls through
-    # to the ordinary recovery branches below, so a wedged provision is still
-    # recoverable from this endpoint. The staleness fence is the lease's own
-    # pre-existing crash-recovery TTL, not a guard window of this endpoint's.
-    if status == "provisioning" and not container_repo.is_provision_claim_stale(container):
-        logger.info("Recover for owner %s stood down: provision lease active", owner_id)
+    # A provisioning row must never be probed: /recover used to fire during a
+    # conversion's provision, probe the mid-boot gateway, write status="error"
+    # over the in-flight run (prod 2026-08-10). Dispatch instead: a no-op while
+    # an execution runs, a re-drive when the row is wedged with nothing running.
+    if status == "provisioning":
+        await dispatch_provision(owner_id)
         return {
             "action": "already_recovering",
             "state": "RECOVERING",
@@ -187,9 +173,8 @@ async def container_recover(
         raise HTTPException(status_code=402, detail=trial_gate.to_payload())
 
     logger.warning("Owner %s: gateway unhealthy, reprovisioning", owner_id)
-    # Status flip first: `update_error` writes only the last_error fields, and the dispatch's
-    # claim (try_claim_provision) admits only missing/error/stopped/stale rows -- a "running"
-    # row would make it stand down while this endpoint answered "reprovision".
+    # Status flip first: provision_hermes_runtime returns early for a "running" row, so without
+    # it the dispatched run would do nothing while this endpoint answered "reprovision".
     await container_repo.update_status(owner_id, "error")
     await container_repo.update_error(owner_id, "Gateway unhealthy — reprovisioning")
     await dispatch_provision(owner_id)

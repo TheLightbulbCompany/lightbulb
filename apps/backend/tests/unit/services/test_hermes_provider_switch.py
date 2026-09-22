@@ -69,10 +69,10 @@ async def test_existing_runtime_switch_drains_rewrites_updates_and_stops(monkeyp
     )
     writes = []
     monkeypatch.setattr(
-        hp.container_repo, "update_container_leased", AsyncMock(side_effect=lambda *args, **kw: writes.append(args[2]))
+        hp.container_repo, "update_fields", AsyncMock(side_effect=lambda *args, **kw: writes.append(args[1]))
     )
 
-    assert await hp.provision_hermes_runtime("org_a", claim_id="claim") == "arn:runtime/abc"
+    assert await hp.provision_hermes_runtime("org_a") == "arn:runtime/abc"
     assert order == ["freeze", "idle", "profiles", ("update", "openrouter_managed"), "ready", "stop", "thaw"]
     assert writes[-1]["needs_provision"] is False
 
@@ -95,7 +95,7 @@ async def test_busy_runtime_switch_does_not_rewrite_profile(monkeypatch):
     monkeypatch.setattr(hp, "write_profiles", write)
 
     with pytest.raises(RuntimeError, match="busy"):
-        await hp.provision_hermes_runtime("org_a", claim_id="claim")
+        await hp.provision_hermes_runtime("org_a")
     write.assert_not_awaited()
 
 
@@ -104,9 +104,6 @@ async def test_existing_runtime_refreshes_boot_choice_without_rotating_bearer(mo
     row = {"agentcore_runtime_arn": "arn:runtime/abc", "needs_provision": True, "provider_switch_generation": "gen-new"}
     order = []
     monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
-    monkeypatch.setattr(
-        hp.container_repo, "update_container_leased", AsyncMock(side_effect=lambda *a, **kw: order.append("fence"))
-    )
     monkeypatch.setattr(
         "core.services.container_provision.resolve_provider_choice",
         AsyncMock(side_effect=lambda owner: order.append("resolve") or ("openrouter_managed", None)),
@@ -125,35 +122,11 @@ async def test_existing_runtime_refreshes_boot_choice_without_rotating_bearer(mo
         AsyncMock(side_effect=AssertionError("must not rotate bearer")),
     )
 
-    await hp.prepare_hermes_workspace("org_a", claim_id="claim")
+    await hp.prepare_hermes_workspace("org_a")
     ensure_key.assert_awaited_once_with("org_a")
 
     assert refresh == [("org_a", "openrouter_managed", {"generation": "gen-new"})]
-    assert order == ["resolve", "key", "fence", "refresh"]
-
-
-@pytest.mark.asyncio
-async def test_superseded_switch_does_not_rewrite_boot_secret(monkeypatch):
-    from core.repositories.container_repo import ProvisionSuperseded
-
-    monkeypatch.setattr(
-        hp.container_repo,
-        "get_by_owner_id",
-        AsyncMock(return_value={"agentcore_runtime_arn": "arn:runtime/abc", "needs_provision": True}),
-    )
-    monkeypatch.setattr(
-        hp.container_repo, "update_container_leased", AsyncMock(side_effect=ProvisionSuperseded("org_a"))
-    )
-    refresh = []
-    monkeypatch.setattr(hp, "_refresh_boot_secret_provider_choice", lambda *args: refresh.append(args))
-    monkeypatch.setattr(
-        "core.services.container_provision.resolve_provider_choice",
-        AsyncMock(return_value=("openrouter_managed", None)),
-    )
-    monkeypatch.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", AsyncMock())
-    with pytest.raises(ProvisionSuperseded):
-        await hp.prepare_hermes_workspace("org_a", claim_id="old-claim")
-    assert refresh == []
+    assert order == ["resolve", "key", "refresh"]
 
 
 def test_refresh_boot_choice_preserves_all_existing_tokens(monkeypatch):
@@ -396,10 +369,10 @@ async def test_stop_failure_keeps_pending_marker_for_retry(monkeypatch):
         AsyncMock(return_value=("openrouter_managed", None)),
     )
     terminal = AsyncMock()
-    monkeypatch.setattr(hp.container_repo, "update_container_leased", terminal)
+    monkeypatch.setattr(hp.container_repo, "update_fields", terminal)
 
     with pytest.raises(RuntimeError, match="stop failed"):
-        await hp.provision_hermes_runtime("org_a", claim_id="claim")
+        await hp.provision_hermes_runtime("org_a")
     terminal.assert_not_awaited()
     assert row["needs_provision"] is True
     thawed = []
@@ -407,9 +380,9 @@ async def test_stop_failure_keeps_pending_marker_for_retry(monkeypatch):
     monkeypatch.setattr(
         hp, "_refresh_boot_secret_provider_choice", lambda owner, choice, **kw: thawed.append(kw["frozen"])
     )
-    await hp.provision_hermes_runtime("org_a", claim_id="retry-claim")
+    await hp.provision_hermes_runtime("org_a")
     assert thawed == [False]
-    assert terminal.await_args.args[2]["needs_provision"] is False
+    assert terminal.await_args.args[1]["needs_provision"] is False
 
 
 @pytest.mark.asyncio
@@ -439,7 +412,7 @@ async def test_already_terminated_session_allows_switch_to_finish(monkeypatch):
         AsyncMock(return_value=("openrouter_managed", None)),
     )
     terminal = AsyncMock()
-    monkeypatch.setattr(hp.container_repo, "update_container_leased", terminal)
+    monkeypatch.setattr(hp.container_repo, "update_fields", terminal)
 
-    await hp.provision_hermes_runtime("org_a", claim_id="claim")
-    assert terminal.await_args.args[2]["needs_provision"] is False
+    await hp.provision_hermes_runtime("org_a")
+    assert terminal.await_args.args[1]["needs_provision"] is False

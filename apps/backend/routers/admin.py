@@ -309,11 +309,6 @@ async def admin_container_reprovision(
     # not the non-existent ``openclaw-{user_id}-{hash}`` (admin-org-owner-id
     # P1). Audit decorator still captures the URL path param (user_id).
     owner_id, _ = await resolve_admin_owner_id(user_id)
-    # Takeover first: `dispatch_provision`'s claim does not admit a "running" row, so a bare
-    # dispatch would stand down silently. The takeover supersedes any in-flight lease and
-    # leaves the row's own status alone.
-    if await container_repo.get_by_owner_id(owner_id) is not None:
-        await container_repo.takeover_provision(owner_id)
     await dispatch_provision(owner_id)
     return {"status": "provisioning", "owner_id": owner_id}
 
@@ -343,9 +338,9 @@ async def admin_user_provisioning(
     "/users/{user_id}/provisioning/retry",
     description=(
         "Re-dispatch provisioning through the PROVISION executor. Covers the "
-        "error-row retry AND the stale-claim wedge rescue (a 'provisioning' "
-        "row whose SFN execution closed without a terminal write) — "
-        "dispatch_provision's Branch A/B logic decides which. Unlike the "
+        "error-row retry AND the wedge rescue (a 'provisioning' row whose SFN "
+        "execution closed without a terminal write); a no-op while an execution "
+        "is RUNNING. Unlike the "
         "owner /container/retry, no billing gate: this is an operator "
         "break-glass, audited. Idempotency-Key supported."
     ),
@@ -364,18 +359,12 @@ async def admin_provision_retry(
     status = row.get("status")
     if status == "running":
         raise HTTPException(status_code=409, detail="Container is running — nothing to retry")
-    if status == "provisioning" and not container_repo.is_provision_claim_stale(row):
-        raise HTTPException(
-            status_code=409,
-            detail="A provision attempt is in flight (fresh claim); refusing a concurrent dispatch",
-        )
     await dispatch_provision(owner_id)
     fresh = await container_repo.get_by_owner_id(owner_id)
     return {
         "ok": True,
         "status": (fresh or {}).get("status"),
         "substatus": (fresh or {}).get("substatus"),
-        "provision_claim_id": (fresh or {}).get("provision_claim_id"),
     }
 
 

@@ -285,17 +285,10 @@ async def container_status(
     # background. The same gate as /provision (audit C1) — bare
     # subscription-id existence wasn't enough; we need active/trialing
     # status, and bedrock_claude users need a positive credit balance.
-    #
-    # Stale-lease recovery: a "provisioning" row whose lease has had no
-    # checkpoint refresh for PROVISION_CLAIM_STALE_S means the process running
-    # the provision died mid-flight (a raise releases the lease to "error"
-    # immediately — only hard process death leaves it to go stale). Fold it
-    # into the retryable branch so it inherits every gate below, then let
-    # try_claim_provision's stale clause decide ATOMICALLY who re-provisions —
-    # two polls can both enter here, exactly one wins the re-claim.
+    # (A wedged "provisioning" row needs nothing here: ensure_user_ready below
+    # dispatches every non-running row, and dispatch no-ops while an execution runs.)
     retryable_states = ("error", "stopped")
-    stale_provision = container_repo.is_provision_claim_stale(container)
-    if (container.get("status") in retryable_states or stale_provision) and not conversion_active:
+    if container.get("status") in retryable_states and not conversion_active:
         # The FULL trial predicate, not just the cap. An over-cap or expired
         # trial owner gets the limit card rather than a silent re-provision.
         from core.services import provision_gate, trial_cap
@@ -331,17 +324,11 @@ async def container_status(
                     container["substatus"] = "error_retrying"
                     _sync_contract_with_container(contract, container)
             else:
-                # stopped / stale-provisioning lease: the poll-driven self-heal.
-                # An idle AgentCore workspace is NOT this case — AWS parks its
-                # microVM invisibly and the row stays "running", which is why
-                # there is no wake to suppress here any more.
-                #
-                # No status pre-write: dispatch_provision's atomic lease claim IS
-                # the transition to "provisioning". A pre-write would (a) race
-                # concurrent polls into double-dispatch and (b) flip the row to
-                # "provisioning" with a stale lease, which the claim's stale
-                # clause could then mis-time. The local dict mutation below only
-                # shapes THIS response.
+                # stopped: the poll-driven self-heal. An idle AgentCore workspace
+                # is NOT this case — AWS parks its microVM invisibly and the row
+                # stays "running". dispatch_provision writes the "provisioning"
+                # status itself; the local dict mutation below only shapes THIS
+                # response.
                 asyncio.create_task(dispatch_provision(owner_id))
                 container["status"] = "provisioning"
                 container["substatus"] = "auto_retry"

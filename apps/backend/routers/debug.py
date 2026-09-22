@@ -86,8 +86,8 @@ async def provision_container(
     # runner owns the Bedrock AIP / role / gate-token mint, the roster profiles and the
     # AgentCore runtime, in that order. DELETE below destroys the AIPs along with the
     # row that named them, so re-minting here is the only honest recovery -- which is
-    # exactly what the runner does. ``dispatch_provision`` never raises; a dispatch
-    # failure releases the row to ``error`` for the status poll's own retry.
+    # exactly what the runner does. ``dispatch_provision`` never raises; a failed
+    # dispatch is retried by the status poll.
     await dispatch_provision(owner_id)
     return {"status": "provisioning", "owner_id": owner_id, "owner_type": owner_type}
 

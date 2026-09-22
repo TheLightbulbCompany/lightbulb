@@ -391,13 +391,17 @@ async def test_running_provider_change_reaches_dispatch_executor(dynamodb_table,
     """A provider switch on a running workspace re-dispatches through the
     SFN-only funnel: dispatch submits (StartExecution) and returns ownership,
     with no inline attempt. The machine runs the attempt."""
-    from unittest.mock import AsyncMock
+    from unittest.mock import AsyncMock, MagicMock
     from core.repositories import container_repo
     from core.services import provision_dispatch
 
     await billing_repo.create_if_not_exists("org_dispatch", "cus_dispatch", owner_type="org")
     container_repo._get_table().put_item(Item={"owner_id": "org_dispatch", "status": "running"})
     await billing_repo.set_provider_choice("org_dispatch", provider_choice="bedrock_claude", byo_provider=None)
-    await container_repo.takeover_provision("org_dispatch")
-    monkeypatch.setattr(provision_dispatch, "_start", AsyncMock(return_value="ok"))
+    monkeypatch.setattr(provision_dispatch, "running_execution", AsyncMock(return_value=None))
+    sfn = MagicMock()
+    monkeypatch.setattr(provision_dispatch, "_client", lambda: sfn)
     assert await provision_dispatch.dispatch_provision("org_dispatch") is True
+    sfn.start_execution.assert_called_once()
+    # The marked running row is shown as provisioning while the switch converges.
+    assert container_repo._get_table().get_item(Key={"owner_id": "org_dispatch"})["Item"]["status"] == "provisioning"

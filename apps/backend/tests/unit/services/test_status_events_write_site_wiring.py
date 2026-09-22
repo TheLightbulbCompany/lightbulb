@@ -22,7 +22,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 
 # ---------------------------------------------------------------------------
-# containers table -- container_repo.upsert / update_fields
+# containers table -- container_repo.mark_provisioning / update_fields
 # ---------------------------------------------------------------------------
 
 
@@ -44,11 +44,11 @@ def containers_table():
 
 
 @pytest.mark.asyncio
-async def test_upsert_publishes_status_changed(containers_table):
+async def test_mark_provisioning_publishes_status_changed(containers_table):
     from core.repositories import container_repo
 
     with patch("core.repositories.container_repo.publish_status_changed") as mocked:
-        await container_repo.upsert("owner_1", {"status": "provisioning"})
+        await container_repo.mark_provisioning("owner_1")
     mocked.assert_called_once_with("owner_1")
 
 
@@ -56,7 +56,7 @@ async def test_upsert_publishes_status_changed(containers_table):
 async def test_update_fields_publishes_status_changed(containers_table):
     from core.repositories import container_repo
 
-    await container_repo.upsert("owner_1", {"status": "provisioning"})
+    await container_repo.mark_provisioning("owner_1")
     with patch("core.repositories.container_repo.publish_status_changed") as mocked:
         await container_repo.update_fields("owner_1", {"status": "running"})
     mocked.assert_called_once_with("owner_1")

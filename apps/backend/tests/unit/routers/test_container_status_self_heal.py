@@ -38,7 +38,6 @@ def _patches(row: dict, *, trial_reason=None):
     """The full patch stack for driving the auto-retry branch in isolation."""
     return [
         patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
-        patch("routers.container.container_repo.is_provision_claim_stale", return_value=False),
         patch("routers.container.maybe_restore_trial_bedrock", new=AsyncMock()),
         patch("routers.container.maybe_resume_stuck_conversion", new=AsyncMock(return_value=False)),
         patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=trial_reason)),
@@ -55,7 +54,7 @@ async def _call(patches):
     with ExitStack() as stack:
         entered = [stack.enter_context(item) for item in patches]
         body = await container_status(auth=_auth())
-        return body, entered[6]
+        return body, entered[5]
 
 
 class TestAutoRetry:
@@ -96,4 +95,4 @@ class TestAutoRetry:
             with pytest.raises(HTTPException) as exc:
                 await container_status(auth=_auth())
         assert exc.value.status_code == 402
-        entered[6].assert_not_called()
+        entered[5].assert_not_called()

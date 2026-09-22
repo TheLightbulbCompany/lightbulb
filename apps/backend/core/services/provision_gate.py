@@ -519,8 +519,12 @@ async def _evaluate_provision_gate_inner(
     # ChatGPT-OAuth disconnect clears provider_choice — a re-read here used
     # to mask the null with the legacy "bedrock_claude" fallback).
     provider_choice = account.get("provider_choice")
-    if account.get("plan") == "base" and provider_choice is None:
-        provider_choice = "openrouter_managed"
+    if provider_choice is None and account.get("plan") in {"base", "standard", "ultra_pro"}:
+        # Base, and (interim) a paid Workspace/Ultra row that never chose a
+        # provider, run on the capped managed model (container_provision.
+        # provider_choice_from_row). OpenRouter's per-key daily limit is the
+        # valve, not Metronome credits, so Layer 3 has no jurisdiction here.
+        return gate_for_trial_reason(await trial_cap.reason_for_account(owner_id, account), owner_role)
     if provider_choice is None:
         return Gate(
             code="provider_required",

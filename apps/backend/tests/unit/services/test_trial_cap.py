@@ -241,3 +241,33 @@ def test_gate_for_trial_reason_maps_both_reasons_and_passes_none_through():
     capped = provision_gate.gate_for_trial_reason(trial_cap.DAILY_CAP, "member")
     assert capped.code == "trial_daily_cap"
     assert capped.owner_role == "member"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "account",
+    [
+        {"subscription_status": "trial_local", "trial_end": 2**33},
+        {"subscription_status": "active", "plan": "base"},
+        {"subscription_status": "active", "plan": "standard"},
+        {"subscription_status": "trialing", "plan": "ultra_pro"},
+    ],
+)
+async def test_openrouter_capped_day_blocks_every_managed_capped_owner(monkeypatch, account):
+    async def fake_spend(owner_id, date):
+        return 0
+
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_spend)
+    capped = {**account, "openrouter_capped_day": trial_cap.utc_today()}
+    assert await trial_cap.reason_for_account("org_x", capped) == trial_cap.DAILY_CAP
+    stale = {**account, "openrouter_capped_day": "2000-01-01"}
+    assert await trial_cap.reason_for_account("org_x", stale) is None
+
+
+@pytest.mark.asyncio
+async def test_openrouter_capped_day_ignored_for_explicit_provider_and_expiry_wins():
+    today = trial_cap.utc_today()
+    explicit = {"subscription_status": "active", "plan": "standard", "provider_choice": "openrouter_managed"}
+    assert await trial_cap.reason_for_account("org_x", {**explicit, "openrouter_capped_day": today}) is None
+    expired = {"subscription_status": "trial_local", "trial_end": 1, "openrouter_capped_day": today}
+    assert await trial_cap.reason_for_account("org_x", expired) == trial_cap.TRIAL_EXPIRED

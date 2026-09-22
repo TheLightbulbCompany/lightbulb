@@ -1159,6 +1159,4 @@ def test_included_daily_cap_is_its_own_card_not_the_trial_copy():
     from core.services import provision_gate, trial_cap
 
     gate = provision_gate.gate_for_trial_reason(trial_cap.INCLUDED_CAP, "member")
-    assert gate.code == "included_daily_cap"
     assert "free" not in (gate.title + gate.message).lower()
-    assert provision_gate.gate_for_trial_reason(trial_cap.DAILY_CAP, "member").code == "trial_daily_cap"

@@ -2243,3 +2243,25 @@ async def test_any_org_members_poll_reconciles_the_vendor_room():
     ):
         await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
     vendor_room.assert_awaited_once_with("org_o")
+
+
+@pytest.mark.asyncio
+async def test_every_poll_offers_an_armed_trial_row_to_the_30_day_heal():
+    """The 2026-09 prod cohort expired under the 3-day window and now reads as parked, so the
+    ready-only arming door never runs for them; this per-poll door must."""
+    row = {"subscription_status": "trial_local", "trial_end": 123, "created_at": "2026-09-12T01:26:00+00:00"}
+    with (
+        patch.object(user_provision.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(user_provision.billing_repo, "extend_short_trial", AsyncMock()) as extend,
+    ):
+        await user_provision.ensure_workspace_trial_default(_org_admin_auth(), "org_456")
+    extend.assert_awaited_once_with("org_456", row)
+
+    with (
+        patch.object(
+            user_provision.billing_repo, "get_by_owner_id", AsyncMock(return_value={"subscription_status": "active"})
+        ),
+        patch.object(user_provision.billing_repo, "extend_short_trial", AsyncMock()) as extend,
+    ):
+        await user_provision.ensure_workspace_trial_default(_org_admin_auth(), "org_456")
+    extend.assert_not_awaited()

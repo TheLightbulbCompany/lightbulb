@@ -121,3 +121,21 @@ async def test_membership_created_survives_a_vendor_room_failure():
         from routers.webhooks import _handle_organization_membership_created
 
         await _handle_organization_membership_created(payload)  # must not raise: Clerk would retry the event
+
+
+@pytest.mark.asyncio
+async def test_membership_created_joins_the_default_room_and_survives_its_failure():
+    payload = {
+        "organization": {"id": "org_xyz", "created_by": "user_admin"},
+        "public_user_data": {"user_id": "user_member", "identifier": "member@example.com"},
+    }
+    with (
+        patch("routers.webhooks._renew_member_lifecycle", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.messaging.on_org_member_joined", new=AsyncMock()),
+        patch("core.services.messaging.join_default_room", new=AsyncMock(side_effect=RuntimeError("boom"))) as join,
+    ):
+        from routers.webhooks import _handle_organization_membership_created
+
+        await _handle_organization_membership_created(payload)
+    join.assert_awaited_once_with("org_xyz", "user_member")

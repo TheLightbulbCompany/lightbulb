@@ -1405,6 +1405,44 @@ def _emit_member_added(owner_id: str, actor_user_id: str, member_kind: str | Non
     )
 
 
+async def join_default_room(owner_id: str, user_id: str) -> bool:
+    """Seat a workspace teammate in the starter room, at most once per (room, user).
+
+    ``ensure_default_room`` seats only the creator. The ``AUTOJOIN#`` marker is claimed before
+    the add and never cleared on success, so a member a room admin later removes is never
+    restored (reconciliation never undoes a removal). Raises on real errors; callers wrap it.
+    """
+    room_id = default_room_id(owner_id)
+    if await messaging_repo.get_member(room_id, "human", user_id) is not None:
+        return False
+    if await messaging_repo.get_room(room_id) is None:
+        return False
+    await _validate_human_in_owner(owner_id, user_id)
+    if not await messaging_repo.claim_autojoin(room_id, user_id):
+        return False
+    member = {
+        "kind": "human",
+        "id": user_id,
+        "displayName": await human_display_name(user_id),
+        "mentionHandle": None,
+        "role": "member",
+        "listenMode": None,
+    }
+    try:
+        await messaging_repo.ensure_user_stream(owner_id, user_id)
+        meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
+    except messaging_repo.MemberLimitExceeded:
+        # Keep the marker: a full room must not turn every poll into a retry.
+        logger.warning("default room full; %s not added for owner %s", user_id, owner_id)
+        return False
+    except Exception:
+        await messaging_repo.release_autojoin(room_id, user_id)
+        raise
+    _emit_member_added(owner_id, user_id, "human", by="system")
+    await _publish_room_metadata(meta)
+    return True
+
+
 async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     """Create the starter general room once, never reconcile it afterward."""
     from core.repositories.paperclip_repo import PaperclipRepo

@@ -366,6 +366,14 @@ async def _provision_or_reconcile(auth: AuthContext, owner_id: str) -> None:
             owner_id,
         )
 
+    # Teammates who joined before the membership webhook seated them in #general.
+    from core.services.messaging import join_default_room
+
+    try:
+        await join_default_room(owner_id, auth.user_id)
+    except Exception:
+        logger.exception("default room join failed for owner %s user %s", owner_id, auth.user_id)
+
 
 async def _reconcile_owner_seed(auth: AuthContext, owner_id: str) -> None:
     """Run the OWNER company seed on the poll thread, for the one case the

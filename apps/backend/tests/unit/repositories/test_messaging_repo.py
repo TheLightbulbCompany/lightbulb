@@ -1032,3 +1032,12 @@ def test_member_item_carries_the_mode_marker_only_when_set():
     base = {"kind": "agent", "id": "a1", "role": "member", "listenMode": "mentions"}
     assert "modeSetBy" not in repo._member_item("r", "o", base, 1, "t")
     assert repo._member_item("r", "o", {**base, "modeSetBy": "user"}, 1, "t")["modeSetBy"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_claim_autojoin_is_one_time_until_released(table):
+    assert await repo.claim_autojoin("room-1", USER_A) is True
+    assert await repo.claim_autojoin("room-1", USER_A) is False
+    assert await repo.claim_autojoin("room-1", USER_B) is True
+    await repo.release_autojoin("room-1", USER_A)
+    assert await repo.claim_autojoin("room-1", USER_A) is True

@@ -1035,6 +1035,29 @@ async def upsert_member(
     return {**meta, "revision": revision, "updatedAt": now}
 
 
+def autojoin_sk(user_id: str) -> str:
+    return f"AUTOJOIN#{user_id}"
+
+
+async def claim_autojoin(room_id: str, user_id: str) -> bool:
+    """One-time marker: True only for the first claim, so a removed member is never auto-re-added."""
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={"pk": room_pk(room_id), "sk": autojoin_sk(user_id), "createdAt": utc_now_iso()},
+            ConditionExpression="attribute_not_exists(sk)",
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+
+
+async def release_autojoin(room_id: str, user_id: str) -> None:
+    await run_in_thread(_table().delete_item, Key={"pk": room_pk(room_id), "sk": autojoin_sk(user_id)})
+
+
 _MEMBER_PREF_FIELDS = ("starred", "muted", "sectionId")
 
 

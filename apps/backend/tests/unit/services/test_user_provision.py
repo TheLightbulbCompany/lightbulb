@@ -2265,3 +2265,15 @@ async def test_every_poll_offers_an_armed_trial_row_to_the_30_day_heal():
     ):
         await user_provision.ensure_workspace_trial_default(_org_admin_auth(), "org_456")
     extend.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_running_reconcile_joins_the_caller_to_the_default_room_best_effort():
+    with (
+        patch.object(user_provision.wake_policy, "is_parked_trial", AsyncMock(return_value=False)),
+        patch.object(user_provision.container_repo, "get_by_owner_id", AsyncMock(return_value={"status": "running"})),
+        patch("core.services.user_provision._reconcile_owner_seed", new=AsyncMock()),
+        patch("core.services.messaging.join_default_room", new=AsyncMock(side_effect=RuntimeError("boom"))) as join,
+    ):
+        await user_provision._provision_or_reconcile(_org_admin_auth("user_a", "org_o"), "org_o")
+    join.assert_awaited_once_with("org_o", "user_a")

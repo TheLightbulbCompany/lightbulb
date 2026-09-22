@@ -1377,7 +1377,7 @@ def _patch_resolve_profile_inputs_collaborators(
     trial_local/byo_provider logic actually runs -- that logic is exactly
     what this function's own tests need to exercise."""
 
-    async def _fake_get_billing_row(owner_id):
+    async def _fake_get_billing_row(owner_id, *, consistent_read=False):
         return billing_row
 
     async def _fake_build_connected_integration_servers(owner_id):

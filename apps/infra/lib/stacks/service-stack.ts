@@ -1550,6 +1550,15 @@ export class ServiceStack extends cdk.Stack {
           : env === "prod"
             ? "876e1694-9d76-4c37-9814-c957dbd9370f"
             : "",
+      // The Stripe integration Metronome delivers invoices through. Dev has two (the legacy
+      // live-account one can't be removed without Metronome support), and Metronome refuses a
+      // billing config that doesn't name one; prod has one and names it for symmetry.
+      METRONOME_STRIPE_DELIVERY_METHOD_ID:
+        env === "dev"
+          ? "155e12cb-3c9c-4a55-983b-958e65b3b489"
+          : env === "prod"
+            ? "5cb6c7ce-501b-4760-b35d-8d4bb6cfa8ce"
+            : "",
       // Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). The reverse
       // table is granted BY NAME above, so the env var is the literal name
       // (not a cross-stack tableName ref). The boundary + base-policy ARNs

@@ -212,6 +212,10 @@ class Settings(BaseSettings):
     Created once per env in the Metronome console (runbook step)."""
     METRONOME_CREDITS_PRODUCT_ID: str = ""
     """Metronome product id the prepaid credit commit draws against. Per-env."""
+    METRONOME_STRIPE_DELIVERY_METHOD_ID: str = ""
+    """The Stripe integration Metronome bills through. Required by Metronome once an env has more
+    than one Stripe integration (dev keeps a legacy one until Metronome support removes it);
+    empty sends the bare delivery_method, which only resolves with exactly one."""
     METRONOME_USD_CENTS_CREDIT_TYPE_ID: str = "2714e483-4ff1-48e4-9e25-ac732e8f24f2"
     """Metronome's global USD-(cents) credit-type id — identical in our
     sandbox and in Metronome's own docs example, hence a constant default

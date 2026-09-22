@@ -56,7 +56,7 @@ async def test_existing_runtime_switch_drains_rewrites_updates_and_stops(monkeyp
     monkeypatch.setattr(hp, "build_runtime_request_for_owner", lambda *args, **kw: {"provider": kw["provider_choice"]})
     monkeypatch.setattr(hp, "_runtime_image_uri", lambda arn: "image:v1")
     monkeypatch.setattr(hp, "_update_runtime_image", lambda arn, request: order.append(("update", request["provider"])))
-    monkeypatch.setattr(hp, "_wait_for_runtime_ready", lambda arn: order.append("ready"))
+    monkeypatch.setattr(hp, "_runtime_status", lambda arn: order.append("ready") or "READY")
     monkeypatch.setattr(hp, "_stop_runtime_session", lambda arn, session: order.append("stop"))
     monkeypatch.setattr(
         hp,
@@ -384,7 +384,7 @@ async def test_stop_failure_keeps_pending_marker_for_retry(monkeypatch):
     monkeypatch.setattr(hp, "_runtime_image_uri", lambda arn: "image:v1")
     monkeypatch.setattr(hp, "build_runtime_request_for_owner", lambda *a, **kw: {})
     monkeypatch.setattr(hp, "_update_runtime_image", lambda *a: None)
-    monkeypatch.setattr(hp, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(hp, "_runtime_status", lambda arn: "READY")
     monkeypatch.setattr(hp, "_stop_runtime_session", lambda *a: (_ for _ in ()).throw(RuntimeError("stop failed")))
     monkeypatch.setattr(
         hp,
@@ -428,7 +428,7 @@ async def test_already_terminated_session_allows_switch_to_finish(monkeypatch):
     monkeypatch.setattr(hp, "_runtime_image_uri", lambda arn: "image:v1")
     monkeypatch.setattr(hp, "build_runtime_request_for_owner", lambda *a, **kw: {})
     monkeypatch.setattr(hp, "_update_runtime_image", lambda *a: None)
-    monkeypatch.setattr(hp, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(hp, "_runtime_status", lambda arn: "READY")
     missing = ClientError(
         {"Error": {"Code": "ResourceNotFoundException", "Message": "Session not found"}}, "StopRuntimeSession"
     )

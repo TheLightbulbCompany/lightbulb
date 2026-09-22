@@ -1908,7 +1908,11 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
     )
     if meta["roomId"] == default_room_id(meta["ownerId"]):
         # A removal (or leave) must stick: join_default_room never re-seats a marked user.
-        await messaging_repo.claim_autojoin(meta["roomId"], member_id)
+        # Best-effort -- the removal already committed; a missed marker only risks one re-seat.
+        try:
+            await messaging_repo.claim_autojoin(meta["roomId"], member_id)
+        except Exception:
+            logger.exception("autojoin marker on removal failed room=%s member=%s", meta["roomId"], member_id)
     return new_meta
 
 

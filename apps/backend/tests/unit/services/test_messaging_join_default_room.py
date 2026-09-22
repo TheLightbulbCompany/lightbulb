@@ -115,3 +115,14 @@ async def test_removing_a_human_from_general_marks_them_so_polls_never_reseat(mo
         repo["claim_autojoin"].assert_awaited_once_with(ROOM, USER)
     else:
         repo["claim_autojoin"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_removal_marker_never_fails_the_committed_removal(monkeypatch, repo):
+    monkeypatch.setattr(
+        messaging.messaging_repo, "list_members", AsyncMock(return_value=[{"kind": "human", "id": USER}])
+    )
+    monkeypatch.setattr(messaging.messaging_repo, "remove_member", AsyncMock(return_value=META))
+    repo["claim_autojoin"].side_effect = RuntimeError("ddb down")
+
+    assert await messaging._remove_member_with_notices(META, "human", USER) == META

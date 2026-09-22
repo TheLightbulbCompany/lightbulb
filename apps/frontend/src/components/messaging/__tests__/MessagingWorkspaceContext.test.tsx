@@ -132,6 +132,13 @@ it("feeds the directory and conversation from one selected-room owner", () => {
   view.unmount();
 });
 
+it("opens the room a failed-run toast names", () => {
+  const view = compose();
+  act(() => { window.dispatchEvent(new CustomEvent("openRoom", { detail: { roomId: "room-9", threadId: null } })); });
+  expect(state.selectRoom).toHaveBeenCalledWith("room-9");
+  view.unmount();
+});
+
 it("hands a session intent to the current room and cancels it on message navigation", () => {
   compose();
   act(() => void workspaceValue.openSession("session-1", { from: "room", roomId: "room-1" }));

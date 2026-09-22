@@ -720,6 +720,23 @@ export function MessagingWorkspaceProvider({
   } : null;
 
   // Muted rooms never badge anywhere: not the sidebar, not the browser-tab title.
+  const openNotificationTarget = useCallback((roomId: string, targetThreadId: string | null) => {
+    // The room may be the one focus covers; opening it has to uncover it.
+    closeSession();
+    selectRoom(roomId);
+    setNotificationTarget({ roomId, threadId: targetThreadId });
+    activateMessagesPanel();
+  }, [closeSession, selectRoom]);
+  // A failed-run toast (RunNotifications) opens the room the run ran in.
+  useEffect(() => {
+    const onOpenRoom = (event: Event) => {
+      const detail = (event as CustomEvent<{ roomId?: string; threadId?: string | null }>).detail;
+      if (detail?.roomId) openNotificationTarget(detail.roomId, detail.threadId ?? null);
+    };
+    window.addEventListener("openRoom", onOpenRoom);
+    return () => window.removeEventListener("openRoom", onOpenRoom);
+  }, [openNotificationTarget]);
+
   const unreadTotal = useMemo(() => rooms.rooms.reduce((sum, room) => sum + (room.muted ? 0 : room.unreadCount), 0), [rooms.rooms]);
 
   return <MessagingWorkspaceContext.Provider value={{
@@ -734,13 +751,7 @@ export function MessagingWorkspaceProvider({
     sessionSource: rooms.resourceSource,
     scope,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible}
-    onOpen={(roomId, targetThreadId) => {
-      // The room may be the one focus covers; opening it has to uncover it.
-      closeSession();
-      rooms.selectRoom(roomId);
-      setNotificationTarget({ roomId, threadId: targetThreadId });
-      activateMessagesPanel();
-    }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal} />{children}
+    onOpen={openNotificationTarget} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal} />{children}
     {selectRoomError && <div role="alert" className="px-4 py-2 text-sm text-err">{selectRoomError}{" "}
       <button type="button" className="underline underline-offset-4" onClick={() => setSelectErrorDismissed(rooms.selectRoomError)}>Dismiss</button>
     </div>}</MessagingWorkspaceContext.Provider>;

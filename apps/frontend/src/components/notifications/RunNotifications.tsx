@@ -56,11 +56,17 @@ function buildDesktopWatchedKeys(visibleChatAgentIds: string[]): Set<string> {
   return new Set(visibleChatAgentIds);
 }
 
-function viewAgentAction(agentId: string): { label: string; onClick: () => void } {
+function viewAgentAction(agentId: string, roomId?: string): { label: string; onClick: () => void } {
   return {
     label: "View",
     onClick: () => {
       capture("run_notification_clicked", { source: "chat" });
+      // The run's own room (a channel run must not land on an empty DM);
+      // MessagingWorkspaceContext opens it exactly like a message notification.
+      if (roomId) {
+        window.dispatchEvent(new CustomEvent("openRoom", { detail: { roomId, threadId: null } }));
+        return;
+      }
       // ChatLayout owns selection (sidebar, session store, ?panel cleanup); it
       // listens for externally-sourced selectAgent events and routes them
       // through its own handleSelectAgent.
@@ -139,7 +145,7 @@ function executeAction(action: RunToastAction, agents: Agent[]): void {
   }
   const isChat = action.source === "chat";
   const name = isChat ? agentName(action.agentId, agents) : null;
-  const view = isChat ? viewAgentAction(action.agentId) : viewTeamsAction("recently");
+  const view = isChat ? viewAgentAction(action.agentId, action.roomId) : viewTeamsAction("recently");
   capture("run_notification_shown", { source: action.source, kind: action.kind });
   if (action.kind === "working") {
     // Background team runs use the persistent Activity-rail indicator instead
@@ -159,7 +165,7 @@ function executeAction(action: RunToastAction, agents: Agent[]): void {
     });
   } else {
     const message = isChat ? `${name} run failed` : "Team agent run failed";
-    void nativeNotify(message).then((shown) => {
+    void nativeNotify(message, undefined, { onClick: view.onClick, tag: action.key }).then((shown) => {
       if (shown) dismissNotification(action.key);
       else notifyFailure(message, { dedupeKey: action.key, action: view });
     });
@@ -215,7 +221,7 @@ export function RunNotifications(props: RunNotificationsProps) {
           stateRef.current,
           msg,
           ctxRef.current,
-          { runId: event.payload.runId, agentId: event.payload.agentId },
+          { runId: event.payload.runId, agentId: event.payload.agentId, roomId: event.payload.roomId },
         )) {
           executeAction(action, agentsRef.current);
         }

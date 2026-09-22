@@ -15,7 +15,22 @@ export interface SetupStep {
   id: SetupStepId;
   label: string;
   detail: string;
+  /**
+   * What the card says once it is done. Per-step, not a constant: "Connected"
+   * is true of Stripe and nonsense on "Invite your teammates", which is the
+   * bug this field exists to prevent.
+   */
+  doneDetail: string;
   done: boolean;
+  /**
+   * Whether the card stays clickable after it is done.
+   *
+   * Connecting Stripe twice is meaningless, so a done connector is inert. But
+   * naming ONE of six agents marks the step done, and inviting one teammate
+   * does not mean you never want the join link again — disabling those two
+   * would strand the owner mid-task.
+   */
+  repeatable: boolean;
   /**
    * The backend refuses this action for a plain member, so the card renders
    * disabled rather than handing them a 403 on click. Connections are gated by
@@ -39,6 +54,9 @@ export const CONNECTOR_STEPS: readonly { id: SetupStepId; label: string; detail:
   { id: "github", label: "GitHub", detail: "Code, issues and pull requests" },
   { id: "notion", label: "Notion", detail: "Docs and company knowledge" },
 ];
+
+/** Every connector shares one done-state word; the two action cards do not. */
+const CONNECTED = "Connected";
 
 /**
  * The names `paperclip_provisioning.STARTER_ROSTER` seeds a fresh workspace
@@ -83,6 +101,8 @@ export function buildSetupSteps({ participants, connections, agentNames }: Setup
   return [
     ...CONNECTOR_STEPS.map((connector) => ({
       ...connector,
+      doneDetail: CONNECTED,
+      repeatable: false,
       done: connected.has(connector.id),
       adminOnly: true,
     })),
@@ -90,6 +110,8 @@ export function buildSetupSteps({ participants, connections, agentNames }: Setup
       id: "invite" as const,
       label: "Invite your teammates",
       detail: "Share the workspace join link",
+      doneDetail: "Teammates joined",
+      repeatable: true,
       done: humans.length > 1,
       adminOnly: true,
     },
@@ -101,6 +123,8 @@ export function buildSetupSteps({ participants, connections, agentNames }: Setup
       // which arrives with a name of its own — cannot mark the step done on the
       // owner's behalf. Names still resolve through the live roster.
       detail: "Make the starter team yours",
+      doneDetail: "Named",
+      repeatable: true,
       done: agents.some(
         (agent) => !STARTER_AGENT_DEFAULT_NAMES.has(agentNames.get(agent.id) ?? agent.displayName),
       ),

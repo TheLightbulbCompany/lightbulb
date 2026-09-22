@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
 
@@ -16,21 +16,25 @@ const h = vi.hoisted(() => ({
   post: vi.fn(),
   agents: [] as { id: string; name: string }[],
   openPanel: vi.fn(),
+  connectionsLoading: false,
+  rosterLoading: false,
+  orgId: "org_a",
+  patch: vi.fn(),
 }));
 
 vi.mock("@/hooks/useConnections", () => ({
-  useConnections: () => ({ connections: h.connections, startOAuth: h.startOAuth, isLoading: false }),
+  useConnections: () => ({ connections: h.connections, startOAuth: h.startOAuth, isLoading: h.connectionsLoading }),
 }));
 
 vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({
-    organization: { id: "org_a" },
+    organization: { id: h.orgId },
     membership: { role: h.role },
   }),
 }));
 
 vi.mock("@/lib/api", () => ({
-  useApi: () => ({ get: h.get, post: h.post, patch: vi.fn() }),
+  useApi: () => ({ get: h.get, post: h.post, patch: h.patch }),
 }));
 
 vi.mock("@/components/workspace/workspaceController", () => ({
@@ -39,7 +43,7 @@ vi.mock("@/components/workspace/workspaceController", () => ({
 
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
-    read: () => ({ data: { agents: h.agents }, mutate: vi.fn() }),
+    read: () => ({ data: h.rosterLoading ? undefined : { agents: h.agents }, isLoading: h.rosterLoading, mutate: vi.fn() }),
   }),
 }));
 
@@ -64,6 +68,11 @@ beforeEach(() => {
   h.post.mockReset();
   h.agents = [];
   h.openPanel.mockReset();
+  h.patch.mockReset();
+  h.patch.mockResolvedValue({});
+  h.connectionsLoading = false;
+  h.rosterLoading = false;
+  h.orgId = "org_a";
   window.localStorage.clear();
 });
 
@@ -150,5 +159,128 @@ describe("a member who is not an org admin", () => {
   it("can still name the agents, which the backend does not gate", () => {
     render(<OnboardingBand participants={FRESH} />);
     expect(screen.getByRole("button", { name: /Name your agents/ })).toBeEnabled();
+  });
+});
+
+describe("done-state copy", () => {
+  it("does not call an invited teammate a connection", () => {
+    render(<OnboardingBand participants={[
+      participant("human", "user_a", "Aden"),
+      participant("human", "user_b", "Sam"),
+      ...STARTER_SIX,
+    ]} />);
+    const invite = screen.getByRole("button", { name: /Invite your teammates/ });
+    expect(invite).not.toHaveTextContent(/Connected/);
+    expect(invite).toHaveTextContent(/Teammates joined/);
+  });
+
+  it("does not call a renamed agent a connection", () => {
+    render(<OnboardingBand participants={[
+      participant("human", "user_a", "Aden"),
+      participant("agent", "agent_0", "Ada"),
+    ]} />);
+    const naming = screen.getByRole("button", { name: /Name your agents/ });
+    expect(naming).not.toHaveTextContent(/Connected/);
+    expect(naming).toHaveTextContent(/Named/);
+  });
+
+  it("still says Connected for an actual connector", () => {
+    h.connections = [connected("stripe")];
+    render(<OnboardingBand participants={FRESH} />);
+    expect(screen.getByRole("button", { name: /Stripe/ })).toHaveTextContent(/Connected/);
+  });
+});
+
+describe("a done card", () => {
+  it("goes inert for a connector, where reconnecting means nothing", () => {
+    h.connections = [connected("stripe")];
+    render(<OnboardingBand participants={FRESH} />);
+    expect(screen.getByRole("button", { name: /Stripe/ })).toBeDisabled();
+  });
+
+  it("stays clickable for naming — one renamed agent leaves five to go", () => {
+    render(<OnboardingBand participants={[
+      participant("human", "user_a", "Aden"),
+      participant("agent", "agent_0", "Ada"),
+    ]} />);
+    expect(screen.getByRole("button", { name: /Name your agents/ })).toBeEnabled();
+  });
+
+  it("stays clickable for invite, so the link can be copied again", () => {
+    render(<OnboardingBand participants={[
+      participant("human", "user_a", "Aden"),
+      participant("human", "user_b", "Sam"),
+      ...STARTER_SIX,
+    ]} />);
+    expect(screen.getByRole("button", { name: /Invite your teammates/ })).toBeEnabled();
+  });
+});
+
+describe("loading", () => {
+  it("renders nothing until the connections catalog has answered", () => {
+    // Otherwise a fully set-up workspace sees every card flash as outstanding
+    // while /connections is still in flight.
+    h.connectionsLoading = true;
+    const { container } = render(<OnboardingBand participants={FRESH} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("renders nothing until the agent roster has answered", () => {
+    h.rosterLoading = true;
+    const { container } = render(<OnboardingBand participants={FRESH} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("dismissal", () => {
+  it("is remembered per workspace, not across all of them", async () => {
+    const { unmount } = render(<OnboardingBand participants={FRESH} />);
+    await userEvent.click(screen.getByRole("button", { name: /Dismiss/ }));
+    unmount();
+
+    // A different Clerk org — brand new, nothing set up. It must still ask.
+    h.orgId = "org_b";
+    render(<OnboardingBand participants={FRESH} />);
+    expect(screen.getByRole("button", { name: /Stripe/ })).toBeInTheDocument();
+  });
+
+  it("stays dismissed for the workspace it was dismissed in", async () => {
+    const { unmount } = render(<OnboardingBand participants={FRESH} />);
+    await userEvent.click(screen.getByRole("button", { name: /Dismiss/ }));
+    unmount();
+    const { container } = render(<OnboardingBand participants={FRESH} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("renaming agents", () => {
+  const openNaming = async () => {
+    render(<OnboardingBand participants={FRESH} />);
+    await userEvent.click(screen.getByRole("button", { name: /Name your agents/ }));
+  };
+
+  it("tells the user when a rename did not save, and keeps the panel open", async () => {
+    h.patch.mockRejectedValue(new Error("boom"));
+    await openNaming();
+    const input = screen.getByLabelText("CEO");
+    await userEvent.clear(input);
+    await userEvent.type(input, "Ada");
+    await userEvent.click(screen.getByRole("button", { name: /Save names/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/save/i);
+    expect(screen.getByRole("button", { name: /Save names/ })).toBeInTheDocument();
+  });
+
+  it("sends nothing when no name was touched", async () => {
+    await openNaming();
+    await userEvent.click(screen.getByRole("button", { name: /Save names/ }));
+    expect(h.patch).not.toHaveBeenCalled();
+  });
+
+  it("shows the live roster name in the field, not the stale member row", () => {
+    // The member row still says "CEO"; the roster is the truth.
+    h.agents = [{ id: "agent_0", name: "Ada" }];
+    render(<OnboardingBand participants={FRESH} />);
+    fireEvent.click(screen.getByRole("button", { name: /Name your agents/ }));
+    expect(screen.getByDisplayValue("Ada")).toBeInTheDocument();
   });
 });

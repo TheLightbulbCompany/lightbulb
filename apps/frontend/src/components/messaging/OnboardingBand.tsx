@@ -10,12 +10,7 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  buildSetupSteps,
-  isBandComplete,
-  STARTER_AGENT_DEFAULT_NAMES,
-  type SetupStep,
-} from "./onboardingSteps";
+import { buildSetupSteps, isBandComplete, type SetupStep } from "./onboardingSteps";
 import { openPanel } from "@/components/workspace/workspaceController";
 import { ConnectorIcon } from "./ConnectorIcons";
 import type { RoomParticipant } from "./types";
@@ -38,23 +33,32 @@ type CreatedJoinLink = { join_url: string };
 // stored bit in the whole feature is the per-viewer dismissal below.
 // =============================================================================
 
-const DISMISS_KEY = "lightbulb.messaging.onboarding-band.dismissed";
+/**
+ * Per WORKSPACE, not per browser. A viewer can belong to several Clerk orgs,
+ * and dismissing the band in a workspace they finished setting up must not
+ * suppress it in a brand-new one that still needs every step. `sidebarPrefs.ts`
+ * scopes its own key the same way.
+ */
+const DISMISS_KEY_PREFIX = "lightbulb.messaging.onboarding-band.dismissed.";
+
+const dismissKey = (ownerId: string) => `${DISMISS_KEY_PREFIX}${ownerId}`;
 
 /** Why a card is inert, in the words of the person looking at it. */
 const NON_ADMIN_HINT = "Ask an admin";
 
-function readDismissed(): boolean {
-  if (typeof window === "undefined") return false;
+function readDismissed(ownerId: string): boolean {
+  if (typeof window === "undefined" || !ownerId) return false;
   try {
-    return window.localStorage.getItem(DISMISS_KEY) === "1";
+    return window.localStorage.getItem(dismissKey(ownerId)) === "1";
   } catch {
     return false;
   }
 }
 
-function writeDismissed(): void {
+function writeDismissed(ownerId: string): void {
+  if (!ownerId) return;
   try {
-    window.localStorage.setItem(DISMISS_KEY, "1");
+    window.localStorage.setItem(dismissKey(ownerId), "1");
   } catch {
     // A viewer with storage blocked simply sees the band again next session.
   }
@@ -65,12 +69,13 @@ interface OnboardingBandProps {
 }
 
 export function OnboardingBand({ participants }: OnboardingBandProps): ReactElement | null {
-  const { connections, startOAuth } = useConnections();
+  const { connections, startOAuth, isLoading: connectionsLoading } = useConnections();
   const { organization, membership } = useOrganization();
   const teams = useTeamsApi();
   // Same SWR key MessagingWorkspaceContext already reads, so this shares its
   // cache entry rather than issuing a second request.
-  const { data: roster, mutate: refreshRoster } = teams.read<{ agents?: CompanyAgent[] }>("/agents");
+  const { data: roster, isLoading: rosterLoading, mutate: refreshRoster } =
+    teams.read<{ agents?: CompanyAgent[] }>("/agents");
   const api = useApi();
 
   // localStorage read through useSyncExternalStore rather than an effect:
@@ -78,8 +83,10 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   // snapshot (`false`) keeps hydration honest instead of producing a mismatch.
   // Nothing outside this component writes the key, so `subscribe` is a no-op
   // and the in-session dismissal below drives the re-render.
+  const ownerId = organization?.id ?? "";
   const subscribe = useCallback(() => () => {}, []);
-  const storedDismissal = useSyncExternalStore(subscribe, readDismissed, () => false);
+  const readScoped = useCallback(() => readDismissed(ownerId), [ownerId]);
+  const storedDismissal = useSyncExternalStore(subscribe, readScoped, () => false);
   const [dismissedNow, setDismissedNow] = useState(false);
 
   const [naming, setNaming] = useState(false);
@@ -121,6 +128,11 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
     void startOAuth(step.id);
   }, [copyJoinLink, startOAuth]);
 
+  // Both reads must have ANSWERED before any judgement about what is left to
+  // do. While they are in flight `connections` is [] and `roster` undefined,
+  // which derives "nothing is done" — so a fully set-up workspace would flash
+  // the whole band on every cold load and then have it vanish.
+  if (connectionsLoading || rosterLoading || !ownerId) return null;
   if (storedDismissal || dismissedNow || isBandComplete(steps)) return null;
 
   const connectors = steps.filter((step) => step.id !== "invite" && step.id !== "name-agents");
@@ -140,7 +152,7 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
           className="onboarding-band-dismiss"
           aria-label="Dismiss setup"
           onClick={() => {
-            writeDismissed();
+            writeDismissed(ownerId);
             setDismissedNow(true);
           }}
         >
@@ -191,10 +203,8 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
         <AgentNames
           participants={participants}
           agentNames={agentNames}
-          onSaved={async () => {
-            setNaming(false);
-            await refreshRoster();
-          }}
+          onRefresh={refreshRoster}
+          onDone={() => setNaming(false)}
         />
       )}
     </section>
@@ -218,15 +228,16 @@ function StepCard({ step, isAdmin, onSelect, wide, icon, status }: {
 }): ReactElement {
   const blocked = step.adminOnly && !isAdmin;
   // A done card stays on screen until the whole band goes, so the row does not
-  // reflow under the cursor as each one lands.
-  const detail = step.done ? "Connected" : blocked ? NON_ADMIN_HINT : status ?? step.detail;
+  // reflow under the cursor as each one lands. It goes inert only if repeating
+  // it is meaningless — see SetupStep.repeatable.
+  const detail = step.done ? step.doneDetail : blocked ? NON_ADMIN_HINT : status ?? step.detail;
   return (
     <button
       type="button"
       className="onboarding-card"
       data-wide={wide ? "true" : undefined}
       data-done={step.done ? "true" : undefined}
-      disabled={step.done || blocked}
+      disabled={blocked || (step.done && !step.repeatable)}
       onClick={() => onSelect(step)}
     >
       <span className="onboarding-card-label">
@@ -242,10 +253,11 @@ function StepCard({ step, isAdmin, onSelect, wide, icon, status }: {
  * The starter six, editable in place. Only changed rows are sent, so saving
  * without touching anything is a no-op rather than six redundant PATCHes.
  */
-function AgentNames({ participants, agentNames, onSaved }: {
+function AgentNames({ participants, agentNames, onRefresh, onDone }: {
   participants: readonly RoomParticipant[];
   agentNames: ReadonlyMap<string, string>;
-  onSaved: () => void | Promise<void>;
+  onRefresh: () => Promise<unknown>;
+  onDone: () => void;
 }): ReactElement {
   const api = useApi();
   const agents = useMemo(
@@ -256,18 +268,34 @@ function AgentNames({ participants, agentNames, onSaved }: {
   );
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const save = async () => {
+    const changed = agents.filter((agent) => {
+      const next = draft[agent.id]?.trim();
+      return next && next !== agent.name;
+    });
+    if (changed.length === 0) return onDone();
+
     setSaving(true);
+    setError(null);
     try {
-      const changed = agents.filter((agent) => {
-        const next = draft[agent.id]?.trim();
-        return next && next !== agent.name;
-      });
-      await Promise.all(changed.map((agent) =>
+      // allSettled, not all: a rejection mid-flight would otherwise leave the
+      // successful renames invisible AND unreported. Every outcome is counted
+      // so the message can say how many of them landed.
+      const results = await Promise.allSettled(changed.map((agent) =>
         api.patch(`/teams/agents/${encodeURIComponent(agent.id)}`, { name: draft[agent.id].trim() }),
       ));
-      await onSaved();
+      const failed = results.filter((result) => result.status === "rejected").length;
+      // Refresh either way: on a partial failure the ones that DID save must
+      // still show their new names, in the panel and in the band's done-state.
+      await onRefresh();
+      if (failed === 0) return onDone();
+      setError(failed === changed.length
+        ? "Couldn’t save those names. Try again."
+        : `${failed} of ${changed.length} names didn’t save. Try again.`);
+    } catch {
+      setError("Couldn’t save those names. Try again.");
     } finally {
       setSaving(false);
     }
@@ -281,12 +309,14 @@ function AgentNames({ participants, agentNames, onSaved }: {
       <ul>
         {agents.map((agent) => (
           <li key={agent.id}>
-            <label htmlFor={`onboarding-name-${agent.id}`}>
-              {STARTER_AGENT_DEFAULT_NAMES.has(agent.name) ? agent.name : `${agent.name}`}
-            </label>
+            {/* The agent's current name identifies which field is which. */}
+            <label htmlFor={`onboarding-name-${agent.id}`}>{agent.name}</label>
             <Input
               id={`onboarding-name-${agent.id}`}
-              defaultValue={agent.name}
+              // Controlled, so a roster that resolves AFTER this panel opened
+              // replaces the room member row's stale snapshot in the field
+              // instead of leaving a name the agent no longer has on screen.
+              value={draft[agent.id] ?? agent.name}
               maxLength={80}
               autoComplete="off"
               onChange={(event) => setDraft((current) => ({ ...current, [agent.id]: event.target.value }))}
@@ -294,6 +324,7 @@ function AgentNames({ participants, agentNames, onSaved }: {
           </li>
         ))}
       </ul>
+      {error && <p className="onboarding-names-error" role="alert">{error}</p>}
       <Button type="button" onClick={() => void save()} disabled={saving}>
         {saving ? "Saving…" : "Save names"}
       </Button>

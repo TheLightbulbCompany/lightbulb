@@ -15,6 +15,7 @@ on:
       - 'apps/infra/lambda/ses-inbound/**'
       - 'apps/infra/lambda/ws-connect/**'
       - 'apps/infra/lambda/messaging-projector/**'
+      - 'apps/infra/lambda/openrouter-settlement/**'
       - '.github/workflows/backend.yml'
 
 # Supersede in-flight runs for the same PR. Every push to a branch used to
@@ -120,6 +121,19 @@ jobs:
           AWS_ACCESS_KEY_ID: testing
           AWS_SECRET_ACCESS_KEY: testing
         run: uv run pytest ../infra/lambda/messaging-projector -v
+        working-directory: apps/backend
+
+      # Fifth one in the same state. The OpenRouter settlement worker is the
+      # money path for managed inference -- generation-cost lookup, the
+      # nanodollar Metronome event, dedup, free zero-cost close. Its unittest
+      # suite ran nowhere in CI (it uses `python -m unittest discover`, not
+      # pytest, so the backend suite never collected it).
+      - name: Run OpenRouter settlement Lambda tests
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: uv run python -m unittest discover -s ../infra/lambda/openrouter-settlement -t ../infra/lambda/openrouter-settlement -v
         working-directory: apps/backend
 
       - name: Upload coverage

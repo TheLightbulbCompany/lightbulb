@@ -61,6 +61,24 @@ test("dev gate consumes an explicitly supplied model policy and rollout flag", (
   }
 });
 
+test("empty rollout flag stays disabled", () => {
+  const oldEnabled = process.env.OPENROUTER_MANAGED_ENABLED_DEV;
+  process.env.OPENROUTER_MANAGED_ENABLED_DEV = "";
+  try {
+    const app = new cdk.App();
+    const stack = new OpenRouterGateStack(app, "OpenRouterGateEmptyFlag", {
+      env: { account: "877352799272", region: "us-east-1" },
+      environment: "dev",
+    });
+    Template.fromStack(stack).hasResourceProperties("AWS::Lambda::Function", {
+      Environment: { Variables: Match.objectLike({ OPENROUTER_MANAGED_ENABLED: "false" }) },
+    });
+  } finally {
+    if (oldEnabled === undefined) delete process.env.OPENROUTER_MANAGED_ENABLED_DEV;
+    else process.env.OPENROUTER_MANAGED_ENABLED_DEV = oldEnabled;
+  }
+});
+
 test("dev settlement worker is scheduled but cannot ingest money before contract proof", () => {
   const app = new cdk.App();
   const stack = new OpenRouterGateStack(app, "OpenRouterGate", {

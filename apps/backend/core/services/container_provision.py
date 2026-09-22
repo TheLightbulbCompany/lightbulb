@@ -43,7 +43,7 @@ async def resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
     routers/container_recover.py, catalog_service and the reapply script all
     import THIS function. Row-level semantics live in provider_choice_from_row.
     """
-    row = await billing_repo.get_by_owner_id(owner_id)
+    row = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     return provider_choice_from_row(row)
 
 

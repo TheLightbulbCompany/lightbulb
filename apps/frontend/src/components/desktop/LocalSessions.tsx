@@ -50,7 +50,21 @@ export function useLocalSessions(waitForRemoteDisable = false) {
     const currentOperation = ++operation.current;
     setBusy(true); setError(null);
     try {
-      const token = next ? await getToken().catch(() => null) : null;
+      let token: string | null = null;
+      if (next) {
+        if (!userId) throw new Error("Sign in before enabling sharing.");
+        // Heal the native auth-report race: the desktop gates enable on its
+        // last reported signed-in user, which can lag this click (app launch
+        // or sign-in just completed). Re-report first; best-effort.
+        await invoke("local_sessions_auth", { humanUserId: userId }).catch(() => {});
+        if (operation.current !== currentOperation) return false;
+        try {
+          token = await getToken();
+        } catch {
+          token = null;
+        }
+        if (!token) throw new Error("Could not get a sign-in token. Check your sign-in and try again.");
+      }
       if (operation.current !== currentOperation) return false;
       const revision = await invoke<number>("local_sessions_set", { enabled: next, token, humanUserId: userId ?? null, workspaceId: orgId ?? null });
       const latest = await refresh(invoke, currentOperation);
@@ -92,7 +106,7 @@ export function LocalSessions() {
     {!desktop ? <p>Open the Lightbulb desktop app to set up local-session sharing.</p> : <>
       {!state && !error ? <p role="status">Checking desktop status…</p> : null}
       {state && !state.pairedWorkspaceId ? <p>Connect this Mac first using the existing desktop setup.</p> : null}
-      {state?.pairedWorkspaceId && !sameWorkspace ? <p>Select the workspace connected to this Mac before enabling sharing.</p> : null}
+      {state?.pairedWorkspaceId && !sameWorkspace ? <p>Select the workspace connected to this Mac before enabling sharing (this Mac is connected in {state.pairedWorkspaceId}).</p> : null}
       {state?.enrollment ? <p>Enrolled workspace: {state.enrollment.ownerId}. Local sharing {enabled ? (state.enrollment.paused ? "paused until the enrolled person signs in" : state.status || "connecting") : "stopped"}.</p> : null}
       {recoveryPending ? <p>Retained server history may still be shared. Remote-history revocation is unconfirmed. Sign in as the enrolled person in the enrolled workspace and retry disable before enabling again.</p> : null}
       {state?.enrollment?.remoteDisabled ? <p>Remote-history sharing is confirmed disabled.</p> : null}

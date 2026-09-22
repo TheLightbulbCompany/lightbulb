@@ -15,11 +15,13 @@ already holds (M4-R28/M4-R33):
    starter agent with an empty credential. A NON-terminal, lease-REFRESHING write
    (``release_lease=False``): the provision is not done yet.
 2. ``provision_hermes_runtime`` — writes the Hermes profiles to S3, creates the AgentCore runtime,
-   waits for it to reach READY, and writes the TERMINAL row fields. Fully idempotent-return only
+   and writes the TERMINAL row fields. Fully idempotent-return only
    once ``status="running"``. The ARN is recorded on the row NON-terminally IMMEDIATELY after
-   ``CreateAgentRuntime`` returns, before the READY poll (M4-R35/C1) — runtime names are unique
+   ``CreateAgentRuntime`` returns (M4-R35/C1) — runtime names are unique
    per account, so a create that succeeds but is never recorded (a crash, a lost fence, a
-   CREATE_FAILED on the poll) would otherwise hit a name conflict on every retry, forever. A retry
+   CREATE_FAILED seen on the single post-create status check) would otherwise hit a name conflict
+   on every retry, forever. Readiness is NOT waited on: invoking a CREATING runtime fails fast
+   and retries with backoff at first use. A retry
    that finds the ARN on the row (or, failing that, by listing AgentCore runtimes for the derived
    name — covers a row write that itself never landed) skips creation and reuses it.
 
@@ -27,7 +29,7 @@ What is reused verbatim: the IAM/naming scaffolding (``runtime_name_for``, ``ens
 the owner's AIPs and Bedrock role, ``mint_gate_token``, the boot-secret writer, and the lifecycle
 constants. What is dropped: ``filesystemConfigurations`` (no EFS — profiles are S3), the OpenClaw env
 builder, the SFN watchdog and the long ``wait_for_running`` ECS-boot poll (``CreateAgentRuntime`` is
-one synchronous call; the only wait here is the runtime's own short startup to ``READY``).
+one synchronous call; readiness is discovered at first invoke, not waited on).
 
 Fencing (M4-R28): the terminal row write goes through ``container_repo.update_container_leased`` —
 the same fenced primitive every other terminal provision write uses — so a straggler from a superseded attempt can never clobber a takeover's row; a lost fence raises
@@ -81,24 +83,30 @@ from core.services.agentcore_runtime import (
 
 logger = logging.getLogger(__name__)
 
-#: Bounded poll for AgentCore's OWN startup — CreateAgentRuntime returns immediately, but the
-#: runtime itself takes some seconds to reach READY. Unlike the SFN-watched, many-minutes ECS
-#: boot wait it replaced, this lives entirely inside the single-shot provision runner's own
-#: execution (mirrors the dev spike's own
-#: 40 x 10s ceiling — a real flip there resolved in well under that window).
-_READY_POLL_ATTEMPTS = 40
-_READY_POLL_INTERVAL_S = 10.0
+#: KEEP-LINE — forced-stateful core (AgentCore-era simplification design).
+#: Everything else in the provisioning path is negotiable; THESE must stay
+#: durable because AWS semantics demand it, and no future audit may cut them:
+#:   1. The AgentCore ARN record (+ find-by-name adopt): runtime names are
+#:      unique per account, so a created-but-unrecorded runtime conflicts
+#:      forever. Recorded non-terminally IMMEDIATELY after Create returns.
+#:   2. S3 `<owner>/hermes/<agent>/` prefixes: the bridge restores once per
+#:      process and saves end-of-turn only — not reconstructible.
+#:   3. Credential snapshots: boot secret, hook/gateway tokens, gate-bearer
+#:      hashes, Paperclip company + starter_agent_ids (rotation/orphan rules
+#:      need durable rows).
+#: Explicitly NOT kept: any wait on AWS. Readiness is discovered at first
+#: invoke (retry-at-use); only a TERMINAL status (CREATE_FAILED/UPDATE_FAILED)
+#: is acted on, via a single status read — never a poll.
 _TERMINAL_STATUSES = ("CREATE_FAILED", "UPDATE_FAILED")
 
 
 class AgentCoreRuntimeCreateFailed(RuntimeError):
     """F1 (predeploy review, M6-R34): the runtime reached a TERMINAL failure status
     (``CREATE_FAILED``/``UPDATE_FAILED``) -- dead, and AWS will never accept an
-    ``UpdateAgentRuntime`` against it. Distinguished from ``_wait_for_runtime_ready``'s other
-    ``RuntimeError`` (the poll window merely ran out while the runtime was still
-    creating/updating -- it may yet succeed) so ``provision_hermes_runtime`` knows to delete
-    the dead runtime and clear the row's ARN instead of leaving a retry stuck reusing it
-    forever."""
+    ``UpdateAgentRuntime`` against it. Surfaced by the single post-create status
+    check in ``provision_hermes_runtime`` (and the roll path), which deletes the
+    dead runtime and clears the row's ARN instead of leaving a retry stuck
+    reusing it forever."""
 
 
 def build_hermes_runtime_env(
@@ -263,7 +271,8 @@ def _runtime_image_uri(runtime_arn: str) -> str | None:
     (``teardown_hermes_runtime``) deletes the runtime, but a re-migration can still meet its
     ARN -- stamped on the row by an earlier attempt, or returned by the name lookup while the
     delete is in flight (``list_agent_runtimes`` lists DELETING runtimes). Neither is a runtime
-    to reuse: reusing it 404s on the READY poll the moment the delete completes.
+    to reuse: the caller takes the create path, and a still-in-flight delete surfaces as a
+    transient name conflict that retries cover.
     """
     client = _agentcore_control_client()
     runtime_id = runtime_arn.rsplit("/", 1)[-1]
@@ -276,20 +285,16 @@ def _runtime_image_uri(runtime_arn: str) -> str | None:
     return (desc.get("agentRuntimeArtifact") or {}).get("containerConfiguration", {}).get("containerUri")
 
 
-def _wait_for_runtime_gone(runtime_arn: str) -> None:
-    """Poll ``GetAgentRuntime`` until it 404s. Sync — call via ``run_in_thread``. Runtime names
-    are unique per account, so ``CreateAgentRuntime`` under the same name conflicts until a
-    DELETING predecessor is fully gone (M6-R43). Same bound as the READY poll."""
+def _runtime_status(runtime_arn: str) -> str:
+    """One ``GetAgentRuntime`` status read. Sync — call via ``run_in_thread``.
 
+    Optimistic-create contract: callers NEVER poll this. Readiness is
+    discovered at first invoke (retry-at-use); only ``_TERMINAL_STATUSES``
+    need action here.
+    """
     client = _agentcore_control_client()
     runtime_id = runtime_arn.rsplit("/", 1)[-1]
-    for _ in range(_READY_POLL_ATTEMPTS):
-        try:
-            client.get_agent_runtime(agentRuntimeId=runtime_id)
-        except client.exceptions.ResourceNotFoundException:
-            return
-        time.sleep(_READY_POLL_INTERVAL_S)
-    raise RuntimeError(f"AgentCore runtime {runtime_arn} was still deleting at the end of the poll window")
+    return client.get_agent_runtime(agentRuntimeId=runtime_id)["status"]
 
 
 def _update_runtime_image(runtime_arn: str, request: dict) -> None:
@@ -310,22 +315,6 @@ def _update_runtime_image(runtime_arn: str, request: dict) -> None:
     runtime_id = runtime_arn.rsplit("/", 1)[-1]
     update_kwargs = {k: v for k, v in request.items() if k not in ("agentRuntimeName", "tags")}
     client.update_agent_runtime(agentRuntimeId=runtime_id, **update_kwargs)
-
-
-def _wait_for_runtime_ready(runtime_arn: str) -> None:
-    """Poll ``GetAgentRuntime`` until READY (or a terminal failure). Sync — call via
-    ``run_in_thread``. Bounded per ``_READY_POLL_ATTEMPTS``/``_READY_POLL_INTERVAL_S`` above."""
-
-    client = _agentcore_control_client()
-    runtime_id = runtime_arn.rsplit("/", 1)[-1]
-    for _ in range(_READY_POLL_ATTEMPTS):
-        status = client.get_agent_runtime(agentRuntimeId=runtime_id)["status"]
-        if status == "READY":
-            return
-        if status in _TERMINAL_STATUSES:
-            raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {runtime_arn} failed to start: {status}")
-        time.sleep(_READY_POLL_INTERVAL_S)
-    raise RuntimeError(f"AgentCore runtime {runtime_arn} did not reach READY within the poll window")
 
 
 def _agentcore_control_client():
@@ -830,7 +819,11 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
             owner_id, role_arn, aip_arns, browser_profile_id=browser_profile_id, provider_choice=provider_choice
         ),
     )
-    await run_in_thread(_wait_for_runtime_ready, arn)
+    # Optimistic: no READY wait. A single status read still sweeps a dead
+    # runtime (UPDATE_FAILED never becomes usable); anything else — CREATING,
+    # UPDATING, READY — is left to retry-at-use at first invoke.
+    if (await run_in_thread(_runtime_status, arn)) in _TERMINAL_STATUSES:
+        raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to update")
     idle = await _wait_for_idle_session(owner_id)
     if idle:
         try:
@@ -1264,11 +1257,10 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         try:
             current_image = await run_in_thread(_runtime_image_uri, arn)
         except _RuntimeGone:
-            # M6-R43: a rolled-back (deleted / DELETING) runtime is not one to reuse. Wait out
-            # the delete -- the name is unique, so a create would conflict until it finishes --
-            # then take the create path, whose row write replaces the stale ARN.
+            # M6-R43: a rolled-back (deleted / DELETING) runtime is not one to reuse. Take the
+            # create path below: if the delete is still in flight the create raises a name
+            # conflict, which classifies transient and retries — no process sleeps on AWS here.
             logger.info("hermes provision: runtime %s for owner=%s is gone/deleting -- creating fresh", arn, owner_id)
-            await run_in_thread(_wait_for_runtime_gone, arn)
             arn = None
         else:
             if switching or (current_image and current_image != settings.AGENTCORE_HERMES_IMAGE):
@@ -1281,9 +1273,9 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
                 )
     if not arn:
         arn = await run_in_thread(_create_runtime, _build_request())
-        # M4-R35 (C1): record the ARN IMMEDIATELY, non-terminal, fenced -- BEFORE the READY
-        # poll. Without this, a CREATE_FAILED, a poll-window timeout, or a lost fence on the
-        # terminal write below all lose the ARN with nothing to reconcile it: AgentCore runtime
+        # M4-R35 (C1): record the ARN IMMEDIATELY, non-terminal, fenced. Without this, a
+        # CREATE_FAILED, a crash, or a lost fence on the terminal write below all lose the ARN
+        # with nothing to reconcile it: AgentCore runtime
         # names are unique per account, so every future retry then hits a name conflict on
         # CreateAgentRuntime, forever. A retry that sees this row field takes the `if arn:`
         # branch above instead of creating again.
@@ -1291,9 +1283,13 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
             owner_id, claim_id, {"agentcore_runtime_arn": arn}, attempt_token=attempt_token, release_lease=False
         )
 
-    try:
-        await run_in_thread(_wait_for_runtime_ready, arn)
-    except AgentCoreRuntimeCreateFailed:
+    # Optimistic create: the ARN record above is the commit. Readiness is
+    # discovered at first invoke (retry-at-use) — no READY poll. Only a
+    # TERMINAL status needs action here, via ONE status read: a dead runtime
+    # would fail every future reuse, so sweep it now exactly as the old poll
+    # did on terminal (F1 below).
+    status = await run_in_thread(_runtime_status, arn)
+    if status in _TERMINAL_STATUSES:
         # F1 (predeploy review, M6-R34): CREATE_FAILED/UPDATE_FAILED is a DEAD runtime -- AWS
         # will refuse an UpdateAgentRuntime against it, so every retry that found this ARN on
         # the row via the `if arn:` branch above would otherwise call Update on a terminal
@@ -1318,7 +1314,7 @@ async def provision_hermes_runtime(owner_id: str, *, claim_id: str, attempt_toke
         await container_repo.update_container_leased(
             owner_id, claim_id, {"agentcore_runtime_arn": None}, attempt_token=attempt_token, release_lease=False
         )
-        raise
+        raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to start: {status}")
 
     if switching:
         from botocore.exceptions import ClientError

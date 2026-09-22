@@ -227,14 +227,16 @@ async def test_stripe_error_does_not_fail_handler(mock_repo):
 
 
 @pytest.mark.asyncio
-async def test_webhook_backup_write_threads_connector(mock_repo):
-    """The provider_choice backup write threads the subscribing human's Clerk
-    id (from subscription metadata) as connector_user_id for chatgpt_oauth.
+async def test_webhook_backup_write_never_records_connector(mock_repo):
+    """The provider_choice backup write persists the CHOICE but never the human.
 
-    legacy subscription Checkout stamped clerk_user_id into subscription metadata;
-    for chatgpt_oauth that human is the workspace owner / initial connector.
-    Non-oauth providers pass None so the backup never strips a synchronously
-    written connector.
+    Subscription metadata's ``clerk_user_id`` is unauthenticated snapshot
+    data: recording it onto the row wedged workspaces permanently when the id
+    dangled (no such Clerk user — the provision gate waits on a ghost's
+    tokens while /start and the provider switch 403 every real human).
+    The connector is recorded only by authenticated writers (synchronous
+    trial-checkout, change-provider, poll-time claim), so the backup passes
+    None and an unset row stays claimable by the first real admin's flow.
     """
     # default_payment_method=None keeps the PM-promotion path inert so this
     # test isolates the provider_choice backup write.
@@ -252,7 +254,7 @@ async def test_webhook_backup_write_threads_connector(mock_repo):
         "org_x",
         provider_choice="chatgpt_oauth",
         byo_provider=None,
-        connector_user_id="user_a",
+        connector_user_id=None,
     )
 
 
@@ -767,7 +769,7 @@ async def test_non_conversion_event_does_not_stamp_the_container_row(mock_repo, 
 async def test_reprovision_success_clears_substatus_and_pending(mock_container_repo):
     """Success: the converting marker is cleared AND conversion_pending drops,
     so the self-heal below never re-fires a conversion that already landed."""
-    dispatch = AsyncMock(return_value={"status": "reprovisioning"})
+    dispatch = AsyncMock(return_value=True)
     with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
@@ -775,6 +777,18 @@ async def test_reprovision_success_clears_substatus_and_pending(mock_container_r
     fields = _stamped_fields(mock_container_repo.update_conversion_fields)
     assert fields["substatus"] is None
     assert fields["conversion_pending"] is False
+
+
+@pytest.mark.asyncio
+async def test_reprovision_claim_loss_keeps_recovery_markers(mock_container_repo):
+    dispatch = AsyncMock(return_value=False)
+    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+        await handlers.run_conversion_reprovision("org_x")
+
+    fields = _stamped_fields(mock_container_repo.update_conversion_fields)
+    assert fields["substatus"] is None
+    assert "conversion_pending" not in fields
+    assert "conversion_started_at" not in fields
 
 
 @pytest.mark.asyncio

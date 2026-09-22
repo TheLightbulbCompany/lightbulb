@@ -1527,8 +1527,8 @@ export class ServiceStack extends cdk.Stack {
         : (process.env.OPENROUTER_MANAGED_MODEL_ID_PROD ?? ""),
       OPENROUTER_MANAGED_ENABLED:
         env === "prod"
-          ? (process.env.OPENROUTER_MANAGED_ENABLED_PROD ?? "false")
-          : (process.env.OPENROUTER_MANAGED_ENABLED_DEV ?? "false"),
+          ? (process.env.OPENROUTER_MANAGED_ENABLED_PROD || "false")
+          : (process.env.OPENROUTER_MANAGED_ENABLED_DEV || "false"),
       // Per-env rate card the per-customer contract references at
       // provision. Dev = sandbox rate card (2026-06-10); prod =
       // isol8-bedrock-prod (2026-06-12). Both price AWS us. CRIS x 1.03

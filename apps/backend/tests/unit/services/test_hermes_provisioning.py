@@ -189,60 +189,42 @@ def test_runtime_env_omits_every_browser_var_without_a_profile():
     assert not [k for k in _env() if k.startswith(("AGENTCORE_", "AGENT_BROWSER_"))]
 
 
-# --- I5: _wait_for_runtime_ready ------------------------------------------------------------
+# --- _runtime_status: one status read, never a poll ------------------------------------------
+# Optimistic create: readiness is discovered at first invoke (retry-at-use). The ONLY read
+# here exists so a TERMINAL runtime is swept (deleted + ARN cleared) instead of reused
+# forever. A non-terminal status — CREATING, UPDATING, READY — is returned as-is.
 
 
 class _FakeAgentCoreClient:
     def __init__(self, statuses):
-        self._statuses = iter(statuses)
+        self._statuses = list(statuses)
+        self.calls = 0
 
     def get_agent_runtime(self, agentRuntimeId):  # noqa: N803 -- matches boto3's own param casing
-        return {"status": next(self._statuses)}
+        self.calls += 1
+        return {"status": self._statuses.pop(0)}
 
 
-def test_wait_for_runtime_ready_returns_once_status_is_ready(monkeypatch):
+def test_runtime_status_reads_once_and_returns_creating_verbatim(monkeypatch):
     import boto3
 
-    monkeypatch.setattr(hermes_provisioning, "_READY_POLL_INTERVAL_S", 0)
-    client = _FakeAgentCoreClient(["CREATING", "CREATING", "READY"])
+    client = _FakeAgentCoreClient(["CREATING"])
     monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: client)
 
-    hermes_provisioning._wait_for_runtime_ready("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1")
-    # Exhausted exactly the three statuses above -- a fourth call would raise StopIteration.
-    with pytest.raises(StopIteration):
-        client.get_agent_runtime(agentRuntimeId="r1")
+    assert hermes_provisioning._runtime_status("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1") == "CREATING"
+    assert client.calls == 1
 
 
-def test_wait_for_runtime_ready_raises_on_create_failed_with_the_status_in_the_message(monkeypatch):
+def test_runtime_status_passes_terminal_statuses_through_unraised(monkeypatch):
+    """The single read classifies nothing: CREATE_FAILED surfaces as a string for the
+    caller (provision/roll) to sweep. Nothing is consumed and nothing retries here."""
     import boto3
 
-    monkeypatch.setattr(hermes_provisioning, "_READY_POLL_INTERVAL_S", 0)
-    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: _FakeAgentCoreClient(["CREATE_FAILED"]))
+    client = _FakeAgentCoreClient(["CREATE_FAILED"])
+    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: client)
 
-    with pytest.raises(RuntimeError, match="CREATE_FAILED"):
-        hermes_provisioning._wait_for_runtime_ready("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1")
-
-
-def test_wait_for_runtime_ready_raises_on_update_failed_with_the_status_in_the_message(monkeypatch):
-    import boto3
-
-    monkeypatch.setattr(hermes_provisioning, "_READY_POLL_INTERVAL_S", 0)
-    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: _FakeAgentCoreClient(["UPDATE_FAILED"]))
-
-    with pytest.raises(RuntimeError, match="UPDATE_FAILED"):
-        hermes_provisioning._wait_for_runtime_ready("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1")
-
-
-def test_wait_for_runtime_ready_raises_on_window_timeout(monkeypatch):
-    import boto3
-
-    monkeypatch.setattr(hermes_provisioning, "_READY_POLL_INTERVAL_S", 0)
-    monkeypatch.setattr(hermes_provisioning, "_READY_POLL_ATTEMPTS", 3)  # bound the loop for test speed
-    # Never READY, never terminal -- the window itself must be what raises.
-    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: _FakeAgentCoreClient(["CREATING"] * 3))
-
-    with pytest.raises(RuntimeError, match="did not reach READY"):
-        hermes_provisioning._wait_for_runtime_ready("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1")
+    assert hermes_provisioning._runtime_status("arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1") == "CREATE_FAILED"
+    assert client.calls == 1
 
 
 # --- N2/M4-R40: _update_runtime_image sends the FULL spec, validated by real botocore --------
@@ -477,7 +459,7 @@ async def test_prepare_hermes_workspace_is_a_noop_once_already_fully_provisioned
 async def test_provision_writes_the_row_fields_every_existing_seam_reads(monkeypatch):
     updated = {}
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:aws:bedrock-agentcore:...:runtime/r1")
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
     monkeypatch.setattr(
         hermes_provisioning,
         "_load_role_and_aips",
@@ -515,7 +497,7 @@ async def test_provision_threads_the_browser_profile_into_the_runtime_request(mo
         _noop_async_returns("org_a-ab12cd34ef"),
     )
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: created.update(req) or "arn:rt")
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
     monkeypatch.setattr(
         hermes_provisioning,
         "_load_role_and_aips",
@@ -545,7 +527,7 @@ async def test_provision_still_builds_a_usable_request_when_the_profile_resolve_
     # The autouse _no_browser_profile fixture already answers "" here; this test is what
     # pins the consequence.
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: created.update(req) or "arn:rt")
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
     monkeypatch.setattr(
         hermes_provisioning,
         "_load_role_and_aips",
@@ -625,10 +607,11 @@ async def test_provision_polls_instead_of_creating_when_the_row_has_an_unready_a
 
     polled = {}
 
-    def _fake_wait(arn):
+    def _fake_status(arn):
         polled["arn"] = arn
+        return "READY"
 
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", _fake_wait)
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", _fake_status)
 
     terminal = {}
 
@@ -660,12 +643,7 @@ async def test_a_create_failed_runtime_is_deleted_arn_cleared_and_the_failure_ra
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:dead")
 
-    def _fake_wait(arn):
-        raise hermes_provisioning.AgentCoreRuntimeCreateFailed(
-            f"AgentCore runtime {arn} failed to start: CREATE_FAILED"
-        )
-
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", _fake_wait)
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "CREATE_FAILED")
     deleted = {}
     monkeypatch.setattr(hermes_provisioning, "_delete_runtime", lambda arn: deleted.setdefault("arn", arn))
 
@@ -700,11 +678,7 @@ async def test_a_create_failed_runtime_delete_is_best_effort(monkeypatch):
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:dead")
-    monkeypatch.setattr(
-        hermes_provisioning,
-        "_wait_for_runtime_ready",
-        lambda arn: (_ for _ in ()).throw(hermes_provisioning.AgentCoreRuntimeCreateFailed("CREATE_FAILED")),
-    )
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "CREATE_FAILED")
 
     def _explode_delete(arn):
         raise RuntimeError("already gone")
@@ -745,7 +719,7 @@ async def test_provision_skips_write_profiles_for_an_arn_row_in_error(monkeypatc
     monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", _explode)  # arn already on the row
     monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: HERMES_IMAGE)  # unchanged
     monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _explode)
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
 
     terminal = {}
 
@@ -776,7 +750,7 @@ async def test_provision_resolves_a_name_conflict_via_the_list_lookup(monkeypatc
     monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", lambda name: "arn:found-by-name")
     monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: HERMES_IMAGE)
     monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _explode)
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
 
     calls = []
 
@@ -817,7 +791,7 @@ async def test_provision_updates_the_reused_runtime_when_the_image_drifted(monke
         updated["request"] = request
 
     monkeypatch.setattr(hermes_provisioning, "_update_runtime_image", _fake_update_image)
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
     monkeypatch.setattr(hermes_provisioning.container_repo, "update_container_leased", _noop_async)
 
     await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
@@ -840,12 +814,12 @@ async def test_provision_updates_the_reused_runtime_when_the_image_drifted(monke
 
 
 @pytest.mark.asyncio
-async def test_create_record_poll_happen_in_that_order(monkeypatch):
-    """M4-R35/C1: the ARN must be recorded (non-terminal, fenced) BEFORE the READY poll runs --
-    a CREATE_FAILED or a poll-window timeout must not lose it."""
+async def test_create_record_statuscheck_happen_in_that_order(monkeypatch):
+    """M4-R35/C1: the ARN must be recorded (non-terminal, fenced) BEFORE the single terminal
+    status check — a CREATE_FAILED seen there must not lose it. No poll runs anywhere."""
     order = []
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: order.append("create") or "arn:r1")
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: order.append("poll"))
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: order.append("check") or "READY")
     monkeypatch.setattr(
         hermes_provisioning,
         "_load_role_and_aips",
@@ -865,7 +839,7 @@ async def test_create_record_poll_happen_in_that_order(monkeypatch):
     assert order == [
         "create",
         ("record", {"agentcore_runtime_arn": "arn:r1"}, False),
-        "poll",
+        "check",
         (
             "record",
             {
@@ -883,7 +857,7 @@ async def test_create_record_poll_happen_in_that_order(monkeypatch):
 async def test_provision_writes_through_the_fenced_lease_helper_not_a_bare_update(monkeypatch):
     calls = []
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:r1")
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
     monkeypatch.setattr(
         hermes_provisioning,
         "_load_role_and_aips",
@@ -922,7 +896,7 @@ async def test_a_lost_fence_propagates_and_leaves_the_row_untouched(monkeypatch)
     as ecs_manager.wait_for_running. DynamoDB's conditional write is atomic, so a raise here IS
     "the row untouched": nothing partial can have landed."""
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:r1")
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
     monkeypatch.setattr(
         hermes_provisioning,
         "_load_role_and_aips",
@@ -1377,7 +1351,7 @@ def _patch_resolve_profile_inputs_collaborators(
     trial_local/byo_provider logic actually runs -- that logic is exactly
     what this function's own tests need to exercise."""
 
-    async def _fake_get_billing_row(owner_id):
+    async def _fake_get_billing_row(owner_id, *, consistent_read=False):
         return billing_row
 
     async def _fake_build_connected_integration_servers(owner_id):
@@ -1495,7 +1469,9 @@ def test_classify_provision_error_treats_hermes_profile_error_like_runtime_error
 async def test_provision_creates_fresh_when_the_row_arn_names_a_deleted_runtime(monkeypatch):
     """M6-R43 (dev re-migration after --rollback): the row still carries the deleted runtime's
     ARN (stamped by the attempt that found it DELETING by name). Describe says it is gone, so
-    the provisioner waits out the delete and CREATES -- the row write replaces the stale ARN."""
+    the provisioner takes the create path WITHOUT waiting out the delete: a still-in-flight
+    delete surfaces as a transient name conflict that retries cover. The row write replaces
+    the stale ARN."""
     _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(
         hermes_provisioning.container_repo,
@@ -1515,10 +1491,9 @@ async def test_provision_creates_fresh_when_the_row_arn_names_a_deleted_runtime(
         raise hermes_provisioning._RuntimeGone(arn)
 
     monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", _gone)
-    waited = {}
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_gone", lambda arn: waited.setdefault("arn", arn))
+    assert not hasattr(hermes_provisioning, "_wait_for_runtime_gone")
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:fresh")
-    monkeypatch.setattr(hermes_provisioning, "_wait_for_runtime_ready", lambda arn: None)
+    monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
 
     writes = []
 
@@ -1529,8 +1504,7 @@ async def test_provision_creates_fresh_when_the_row_arn_names_a_deleted_runtime(
 
     arn = await hermes_provisioning.provision_hermes_runtime("org_a", claim_id="claim-1")
     assert arn == "arn:fresh"
-    assert waited["arn"] == "arn:rolled-back"
-    assert writes[0] == {"agentcore_runtime_arn": "arn:fresh"}  # stale ARN replaced before the READY poll
+    assert writes[0] == {"agentcore_runtime_arn": "arn:fresh"}  # stale ARN replaced before the status check
     assert writes[-1]["status"] == "running" and writes[-1]["agentcore_runtime_arn"] == "arn:fresh"
 
 

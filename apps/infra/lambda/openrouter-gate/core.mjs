@@ -8,8 +8,8 @@ class GateError extends Error {
 }
 const fail = (status, message) => { throw new GateError(status, message); };
 const S = (item, field) => item?.[field]?.S;
-const routeFields = ['models', 'plugins', 'provider', 'route', 'user', 'metadata', 'trace', 'debug', 'service_tier', 'modalities', 'audio', 'prediction', 'stream_options'];
-const allowedFields = new Set(['model', 'messages', 'stream', 'session_id', 'max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'stop', 'tools', 'tool_choice', 'parallel_tool_calls', 'response_format', 'reasoning', 'reasoning_effort', 'frequency_penalty', 'presence_penalty', 'seed']);
+const routeFields = ['models', 'plugins', 'provider', 'route', 'user', 'metadata', 'trace', 'debug', 'service_tier', 'modalities', 'audio', 'prediction'];
+const allowedFields = new Set(['model', 'messages', 'stream', 'stream_options', 'session_id', 'max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'stop', 'tools', 'tool_choice', 'parallel_tool_calls', 'response_format', 'reasoning', 'reasoning_effort', 'frequency_penalty', 'presence_penalty', 'seed']);
 
 function ceilPricedTokens(tokens, price) {
   const match = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(String(price));
@@ -42,14 +42,19 @@ export function prepareBody(input, policy, ownerId, env) {
     if (!Array.isArray(content) || !content.every(part => part?.type === 'text' && typeof part.text === 'string' && Object.keys(part).every(key => key === 'type' || key === 'text'))) fail(400, 'Multimodal input unavailable');
   }
   if (input.tools !== undefined && (!Array.isArray(input.tools) || !input.tools.every(tool => tool?.type === 'function' && typeof tool.function?.name === 'string' && Object.keys(tool).every(key => key === 'type' || key === 'function')))) fail(400, 'Server tools unavailable');
-  for (const field of Object.keys(input)) if (routeFields.includes(field) || !allowedFields.has(field)) fail(400, 'Request option not allowed');
+  const rejected = Object.keys(input).filter(field => routeFields.includes(field) || !allowedFields.has(field));
+  if (rejected.length) fail(400, `Request option not allowed: ${rejected.join(',')}`);
   for (const name of ['max_tokens', 'max_completion_tokens']) {
     const value = input[name];
     if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > Number(env.MAX_OUTPUT_TOKENS))) fail(400, 'Output limit exceeded');
   }
   if (!Number.isFinite(policy?.max_price?.prompt) || !Number.isFinite(policy?.max_price?.completion) || policy.max_price.prompt < 0 || policy.max_price.completion < 0) fail(503, 'Model policy unavailable');
   const { session_id: _ignoredSession, ...safeInput } = input;
-  const body = { ...safeInput, provider: { max_price: policy.max_price, data_collection: 'deny' }, stream_options: { include_usage: true } };
+  // Free models are training-subsidized: no endpoint serves them under a deny
+  // policy, so a zero-price policy allows training while any priced policy
+  // keeps deny. Paid inference stays deny-only.
+  const freePolicy = policy.max_price?.prompt === 0 && policy.max_price?.completion === 0;
+  const body = { ...safeInput, provider: { max_price: policy.max_price, data_collection: freePolicy ? 'allow' : 'deny' }, stream_options: { include_usage: true } };
   if (body.max_tokens === undefined && body.max_completion_tokens === undefined) body.max_tokens = Number(env.MAX_OUTPUT_TOKENS);
   if (input.model === 'openrouter/auto') {
     if (!Array.isArray(policy.auto?.allowed_models) || !policy.auto.allowed_models.length || !policy.auto.allowed_models.every(m => policy.models.includes(m) && m !== 'openrouter/auto')) fail(503, 'Auto policy unavailable');

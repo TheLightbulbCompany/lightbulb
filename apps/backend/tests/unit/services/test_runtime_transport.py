@@ -260,3 +260,93 @@ class TestAgentCoreTransport:
                 await rt.request({"runtime_host": "agentcore", "agentcore_runtime_arn": "arn:x", "owner_id": "o"}, "/x")
         finally:
             release.set()
+
+
+class TestNotReadyRetry:
+    """Optimistic-create contract: a CREATING runtime fails fast and the
+    transport retries with backoff instead of anyone polling for READY."""
+
+    def _not_ready_error(self):
+        from botocore.exceptions import ClientError
+
+        return ClientError(
+            {"Error": {"Code": "ValidationException", "Message": "Agent runtime is still creating"}},
+            "InvokeAgentRuntime",
+        )
+
+    def _ok_body(self):
+        import json as _json
+
+        class _Body:
+            def read(self):
+                return _json.dumps({"status": 200, "body": {"ok": True}}).encode()
+
+        return {"statusCode": 200, "response": _Body()}
+
+    @pytest.mark.asyncio
+    async def test_not_ready_then_success_returns_200(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(rt, "_NOT_READY_SLEEP_S", (0.0, 0.0, 0.0, 0.0, 0.0))
+        err = self._not_ready_error()
+        ok = self._ok_body()
+        # Simpler deterministic stub: fail twice with not-ready, then succeed.
+        outcomes = [err, err, ok]
+
+        def _next(self, **kw):
+            calls.append(kw)
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(
+            "boto3.client",
+            lambda *a, **k: type("C", (), {"invoke_agent_runtime": _next})(),
+        )
+        res = await rt.request({"agentcore_runtime_arn": "arn:x", "owner_id": "o"}, "/x", timeout_s=5.0)
+        assert res.status_code == 200
+        assert len(calls) == 3
+
+    @pytest.mark.asyncio
+    async def test_persistent_not_ready_raises_connect_error(self, monkeypatch):
+        import httpx
+
+        calls = []
+        err = self._not_ready_error()
+        monkeypatch.setattr(rt, "_NOT_READY_SLEEP_S", (0.0, 0.0))
+        monkeypatch.setattr(rt.time, "sleep", lambda s: calls.append(s))
+
+        def _next(self, **kw):
+            raise err
+
+        monkeypatch.setattr(
+            "boto3.client",
+            lambda *a, **k: type("C", (), {"invoke_agent_runtime": _next})(),
+        )
+        with pytest.raises(httpx.ConnectError):
+            await rt.request({"agentcore_runtime_arn": "arn:x", "owner_id": "o"}, "/x", timeout_s=5.0)
+        # Initial attempt + 2 budgeted retries, with the contracted delays.
+        assert calls == [0.0, 0.0]
+
+    @pytest.mark.asyncio
+    async def test_unrecognized_client_error_fails_immediately(self, monkeypatch):
+        import httpx
+        from botocore.exceptions import ClientError
+
+        calls = []
+        monkeypatch.setattr(rt, "_NOT_READY_SLEEP_S", (0.0, 0.0))
+
+        def _next(self, **kw):
+            calls.append(kw)
+            raise ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "nope"}},
+                "InvokeAgentRuntime",
+            )
+
+        monkeypatch.setattr(
+            "boto3.client",
+            lambda *a, **k: type("C", (), {"invoke_agent_runtime": _next})(),
+        )
+        with pytest.raises(httpx.ConnectError):
+            await rt.request({"agentcore_runtime_arn": "arn:x", "owner_id": "o"}, "/x", timeout_s=5.0)
+        assert len(calls) == 1

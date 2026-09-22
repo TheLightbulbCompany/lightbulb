@@ -223,12 +223,14 @@ async def test_apply_agentcore_materializer_with_no_projection_is_rejected(monke
     "provider",
     ("stripe", "notion", "linear", "attio", "intercom", "apollo", "cloudflare"),
 )
-async def test_actor_owned_mcp_without_retained_credential_is_rejected(monkeypatch, provider):
-    """A missing canonical token must not become a working-looking empty Hermes token file."""
+async def test_prod_brokered_remote_mcp_reconciles_without_retained_credential(monkeypatch, provider):
+    """The prod broker promotion (brokered_environments: [dev, prod]) moved these
+    actor-owned remote MCP providers onto the workspace bearer broker: in prod the
+    refresh grant is backend-owned, so apply_connection reconciles (no
+    RuntimeUnsupportedError) even with no retained Secrets-Manager credential."""
     from core.services.credentials import apply_connection as ac
     from core.services.credentials import mcp_server as mcp_server_mod
 
-    # Production remains native actor-owned until the dev broker is certified.
     monkeypatch.setattr(ac.registry.settings, "ENVIRONMENT", "prod")
     calls = []
 
@@ -237,9 +239,8 @@ async def test_actor_owned_mcp_without_retained_credential_is_rejected(monkeypat
 
     monkeypatch.setattr(mcp_server_mod, "reconcile_integrations", fake_reconcile)
 
-    with pytest.raises(ac.RuntimeUnsupportedError):
-        await ac.apply_connection("org_1", provider, {"access_token": "fresh", "refresh_token": "rotating"})
-    assert calls == []
+    assert await ac.apply_connection("org_1", provider, {"access_token": "fresh", "refresh_token": "rotating"}) is None
+    assert calls == [("org_1", provider)]
 
 
 def test_quickbooks_uses_the_hermes_profile_materializer():
@@ -259,10 +260,11 @@ def test_existing_hermes_rails_remain_supported(provider):
 
 
 @pytest.mark.parametrize("provider", ("stripe", "notion", "linear", "attio", "intercom", "apollo", "cloudflare"))
-def test_dev_brokered_remote_mcp_is_runtime_supported(monkeypatch, provider):
+@pytest.mark.parametrize("env", ("dev", "prod"))
+def test_brokered_remote_mcp_is_runtime_supported(monkeypatch, provider, env):
     from core.services.credentials import apply_connection as ac
 
-    monkeypatch.setattr(ac.registry.settings, "ENVIRONMENT", "dev")
+    monkeypatch.setattr(ac.registry.settings, "ENVIRONMENT", env)
     p = ac.registry.get_provider(provider)
     assert ac.registry.refresh_owner_for(p) == "backend"
     assert ac.runtime_supported(p)

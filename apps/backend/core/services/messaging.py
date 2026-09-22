@@ -78,27 +78,26 @@ DEFAULT_ROOM_NAME = "general"
 # returns early on any room that already has messages), so this is the very
 # first thing a new user reads. It does NOT re-list the roster — the member
 # list already shows it — and instead spends its length on the blank-page
-# problem: state the role, ask one concrete question, and hand over a
+# problem: state the role, name the two first-run doors (connect tools, paste
+# existing context — first-run spec 2026-09-17 §4.1), and hand over a
 # copy-pasteable prompt for anyone who would rather watch before typing.
+# Owner-approved copy (D1, 2026-09-22); keep it easy to swap.
 # Refers to the CEO by ROLE, never a name: agent names are user-editable.
 DEFAULT_ROOM_WELCOME = (
-    "I’m the CEO here — tell me what you want to happen and I’ll put the right people on it "
-    "and report back.\n\n"
-    "Best first message: what you’re building, who it’s for, and what’s in the way. "
-    "A couple of sentences is plenty.\n\n"
-    "Or if you’d rather see it work first, try: “Research our top three competitors and tell me "
-    "where we’re weakest.”"
+    "I’m the CEO here — tell me what you want to happen and I’ll put the right people on it.\n\n"
+    "Start by connecting your tools in the setup cards, or paste what you’ve already told "
+    "another assistant about your business.\n\n"
+    "Or try: “Research our top three competitors and tell me where we’re weakest.”"
 )
 # Free tier: every agent is Mentions-only, so an unaddressed reply to the
 # welcome above meets silence. Same copy, but it hands over the CEO's typeable
 # handle — ``{handle}`` is computed at seed time because names are editable.
 DEFAULT_ROOM_WELCOME_FREE = (
     "I’m the CEO here — @{handle} me with what you want to happen and I’ll put the right people "
-    "on it and report back.\n\n"
-    "Best first message: what you’re building, who it’s for, and what’s in the way. "
-    "A couple of sentences is plenty.\n\n"
-    "Or if you’d rather see it work first, try: “@{handle} research our top three competitors and "
-    "tell me where we’re weakest.”"
+    "on it.\n\n"
+    "Start by connecting your tools in the setup cards, or paste what you’ve already told "
+    "another assistant about your business in a message to @{handle}.\n\n"
+    "Or try: “@{handle} research our top three competitors and tell me where we’re weakest.”"
 )
 
 API_ERROR_STATUS = {

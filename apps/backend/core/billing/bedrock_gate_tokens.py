@@ -349,7 +349,7 @@ async def _drain_superseded(
 
     OFF by default, and that is a COST decision, not a correctness one: adopting
     requires the runtime view, so it cannot share the empty-list early return below.
-    ``expire_superseded_gate_tokens`` runs on every wake for every owner and
+    ``expire_superseded_gate_tokens`` runs after every confirmed session stop and
     must keep that early return; ``mint_gate_token`` runs once per provision, a
     path already making far more AWS calls than this, so it adopts.
     """
@@ -400,7 +400,7 @@ async def _drain_superseded(
             # ALL_OLD so the "expired" line fires exactly ONCE, on the
             # evaluation that actually removed the row. The survivor list is not
             # written back (see the docstring), so a hash stays tracked until
-            # the next mint and every wake in between re-evaluates it and
+            # the next mint and every expiry in between re-evaluates it and
             # re-issues this no-op delete — logging each of those as an expiry
             # would make N re-confirmations indistinguishable from N expiries,
             # which is the one question these logs exist to answer.

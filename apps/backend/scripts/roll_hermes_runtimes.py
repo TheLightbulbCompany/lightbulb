@@ -18,6 +18,10 @@ session was deliberately left alive and keeps serving the OLD image until it end
 4 h idle / 8 h lifetime. That is exit 0 by design (nothing failed), so a roll is only complete
 once every line reads ``current`` or ``updated``; re-run for the stragglers.
 
+``--dry-run`` is NOT read-only: it still runs the idempotent ensure calls a roll needs to
+compute the desired spec (the owner's Browser profile create-or-adopt, the memory IAM policy).
+It skips only ``UpdateAgentRuntime`` and the session stop, answering ``would-update``.
+
 This is a SEQUENTIAL loop, and the idle wait is per owner: budget ~55-90 s extra for each parked
 owner (the probe cold-boots its microVM) and up to ~10.5 min for each busy one.
 """

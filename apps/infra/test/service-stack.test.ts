@@ -766,13 +766,11 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     expect(flat).toContain('"claim_id.$":"$.claim_id"');
   });
 
-  test("machine watches the row from claim time before running the provisioner", () => {
-    // Custody invariant: the backend starts this execution AT CLAIM TIME and
-    // runs attempt 0 as its own child process, so the machine's job is to
-    // OBSERVE the row and take the ECS leg over on its own clock. Before
-    // this, the machine started at RunProvisioner and the backend had to
-    // hand the claim over per exit path — the leg it never had (nonzero
-    // exit) orphaned claims onto a frontend poll.
+  test("machine runs the provisioner immediately — no watch loop", () => {
+    // #2875 deleted the backend's inline attempt 0. The old watch loop waited
+    // up to 40 x 60s for that attempt before running the ECS leg, so every
+    // fresh provision sat idle ~40 minutes. The execution must START at
+    // RunProvisioner and carry no watch/tick states.
     const stateMachines = Object.values(
       template.findResources("AWS::StepFunctions::StateMachine"),
     );
@@ -780,81 +778,14 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     const flat = (def?.["Fn::Join"]?.[1] ?? [def])
       .map((part: any) => (typeof part === "string" ? part : ""))
       .join("");
-    // (a) The machine starts by watching, not by launching an ECS task.
-    expect(flat).toContain('"StartAt":"InitWatch"');
-    // (b) watch_ticks is seeded INSIDE the machine. It must never appear in
-    // the backend's StartExecution input, which has to stay byte-identical
-    // across Branch-A re-issues of the same claim.
-    expect(flat).toContain('"watch_ticks":0');
-    expect(flat).toContain('"watch_ticks.$":"States.MathAdd($.watch_ticks, 1)"');
-    // (c) Consistent read: the runner may have written the terminal row
-    // milliseconds ago, and an eventually-consistent read would spend a whole
-    // tick (or mis-route) on stale data.
-    expect(flat).toContain('"ConsistentRead":true');
-    // (d) Terminal-success rule must precede the claim-identity rule: the
-    // running transition REMOVEs the lease fields, so a claim check first
-    // would read a successful provision as "superseded".
-    const runningIdx = flat.indexOf('"Variable":"$.row.Item.status.S","StringEquals":"running"');
-    const claimIdx = flat.indexOf('"$.row.Item.provision_claim_id.S"');
-    expect(runningIdx).toBeGreaterThanOrEqual(0);
-    expect(claimIdx).toBeGreaterThan(runningIdx);
-    // (d2) No rule may compare a path that could be absent — a Choice on a
-    // missing path throws States.Runtime, which a Choice cannot Catch, and
-    // the execution would die holding the lease (the very orphan this loop
-    // prevents). Guaranteed here by rule ORDER: each presence check is its
-    // own earlier rule, so the comparison after it cannot be reached with the
-    // attribute missing.
-    const statusPresentIdx = flat.indexOf(
-      '"Variable":"$.row.Item.status.S","IsPresent":false,"Next":"Superseded"',
-    );
-    expect(statusPresentIdx).toBeGreaterThanOrEqual(0);
-    expect(statusPresentIdx).toBeLessThan(runningIdx);
-    const claimPresentIdx = flat.indexOf(
-      '"Variable":"$.row.Item.provision_claim_id.S","IsPresent":false,"Next":"Superseded"',
-    );
-    const claimComparisonIdx = flat.indexOf('"StringEqualsPath":"$.claim_id"');
-    expect(claimPresentIdx).toBeGreaterThanOrEqual(0);
-    expect(claimComparisonIdx).toBeGreaterThan(claimPresentIdx);
-    // (d3) The watch loop must not read `retryable` at all: it is absent on
-    // rows predating the field, and the deterministic case already
-    // terminates via the runner's exit-10 -> ClassifyFailure route.
-    const watchRowRegion = flat.slice(
-      flat.indexOf('"WatchRow"'),
-      flat.indexOf('"Superseded":{"Type":"Succeed"}'),
-    );
-    expect(watchRowRegion).not.toContain("retryable");
-    // (e) The dead-runner backstop: a leased row with no progress for 40
-    // ticks gets the ECS leg. 40 x 60s = 2400s MUST exceed the backend's
-    // inline queue bound + attempt timeout (300 + 1800 = 2100s,
-    // provision_dispatch.py) so a takeover never overlaps a live inline
-    // child.
-    expect(flat).toContain('"Variable":"$.watch_ticks","NumericGreaterThanEquals":40');
-    // (f) The watch loop cycles: WaitWatchTick -> TickWatch -> GetContainerRow.
-    expect(flat).toContain('"WaitWatchTick"');
-    expect(flat).toContain('"Next":"GetContainerRow"');
-    // (f2) The row read must never be able to KILL the watchdog. Its retries
-    // cover only ~14s; a longer DynamoDB/KMS impairment would exhaust them
-    // and, with no Catch, fail the execution while the row is still leased —
-    // the orphaned claim this loop exists to prevent, caused by the loop
-    // itself. It must fall back into the wait/tick cycle and keep trying.
-    expect(flat).toContain(
-      '"Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":null,"Next":"WaitWatchTick"}]',
-    );
-    // (g) A stopped row stands down and must be decided BEFORE the tick
-    // backstop, or the watchdog would resurrect a deliberately stopped
-    // container. update_status("stopped") is not claim-conditioned, so this
-    // state really can appear under our own claim.
-    const stoppedIdx = flat.indexOf(
-      '"Variable":"$.row.Item.status.S","StringEquals":"stopped","Next":"Superseded"',
-    );
-    const backstopIdx = flat.indexOf('"NumericGreaterThanEquals":40');
-    expect(stoppedIdx).toBeGreaterThanOrEqual(0);
-    expect(backstopIdx).toBeGreaterThan(stoppedIdx);
+    expect(flat).toContain('"StartAt":"RunProvisioner"');
+    for (const gone of ["InitWatch", "GetContainerRow", "WatchRow", "WaitWatchTick", "TickWatch", "watch_ticks"]) {
+      expect(flat).not.toContain(gone);
+    }
   });
 
-  test("machine timeout covers the watch loop plus every ECS attempt", () => {
-    // 40 ticks (~40 min) + up to 3 x 30-min attempts + retry waits ~= 132
-    // min. The old 2h ceiling would time the machine out mid-final-attempt.
+  test("machine timeout covers every ECS attempt", () => {
+    // Up to 3 x 30-min attempts + retry waits ~= 92 min, under the 3h ceiling.
     // The timeout lives INSIDE the ASL (TimeoutSeconds), not as a CFN prop.
     const stateMachines = Object.values(
       template.findResources("AWS::StepFunctions::StateMachine"),
@@ -866,15 +797,11 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     expect(flat).toContain('"TimeoutSeconds":10800');
   });
 
-  test("state machine may read the containers row it watches", () => {
-    // The watch loop's GetItem needs dynamodb:GetItem AND the CMK grant on
-    // the SAME role: the containers table is CUSTOMER_MANAGED-encrypted and
-    // the key crosses stacks as a bare ARN, so nothing auto-grants it.
-    // Without Decrypt every tick fails and the watchdog is dead on arrival —
-    // the 2026-08-10 KMS class of bug, one state over. The KMS Sid uniquely
-    // identifies the state machine's role policy (the backend task role also
-    // holds dynamodb:GetItem, so finding by action would match the wrong
-    // policy).
+  test("state machine may write the KMS-encrypted containers row", () => {
+    // The MarkRetrying/MarkFailed* writes need the CMK grant: the containers
+    // table is CUSTOMER_MANAGED-encrypted and the key crosses stacks as a bare
+    // ARN, so nothing auto-grants it (the 2026-08-10 KMS class of bug). The KMS
+    // Sid uniquely identifies the state machine's role policy.
     const policies = Object.values(
       template.findResources("AWS::IAM::Policy"),
     ) as any[];
@@ -892,12 +819,6 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     expect(kmsStatement.Action).toEqual(
       expect.arrayContaining(["kms:Decrypt", "kms:GenerateDataKey"]),
     );
-    const canRead = statements.some((s) =>
-      Array.isArray(s.Action)
-        ? s.Action.includes("dynamodb:GetItem")
-        : s.Action === "dynamodb:GetItem",
-    );
-    expect(canRead).toBe(true);
   });
 
   test("RunProvisioner overrides PROVISION_ATTEMPT_TOKEN from $.attempt_token, not baked into the static command", () => {

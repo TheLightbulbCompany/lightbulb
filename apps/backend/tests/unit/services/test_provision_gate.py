@@ -1137,7 +1137,7 @@ async def test_capped_plan_without_provider_skips_picker_and_credits(plan):
 
 
 @pytest.mark.asyncio
-async def test_capped_plan_over_its_daily_limit_returns_trial_daily_cap():
+async def test_capped_plan_over_its_daily_limit_returns_included_daily_cap():
     from core.services.trial_cap import utc_today
 
     with patch("core.services.provision_gate.billing_repo") as repo:
@@ -1150,4 +1150,15 @@ async def test_capped_plan_over_its_daily_limit_returns_trial_daily_cap():
             }
         )
         gate = await evaluate_provision_gate(owner_id="org_x")
-    assert gate is not None and gate.code == "trial_daily_cap"
+    assert gate is not None and gate.code == "included_daily_cap"
+
+
+def test_included_daily_cap_is_its_own_card_not_the_trial_copy():
+    """Owner ruling 2026-09-22: a paying Base/paid-default owner at the cap must not see the
+    trial "Daily free limit reached ... Upgrade" card."""
+    from core.services import provision_gate, trial_cap
+
+    gate = provision_gate.gate_for_trial_reason(trial_cap.INCLUDED_CAP, "member")
+    assert gate.code == "included_daily_cap"
+    assert "free" not in (gate.title + gate.message).lower()
+    assert provision_gate.gate_for_trial_reason(trial_cap.DAILY_CAP, "member").code == "trial_daily_cap"

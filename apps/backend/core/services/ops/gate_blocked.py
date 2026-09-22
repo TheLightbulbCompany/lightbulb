@@ -28,6 +28,7 @@ from core.dynamodb import run_in_thread
 GATE_CODES: tuple[str, ...] = (
     "byo_provider_required",
     "credits_required",
+    "included_daily_cap",
     "oauth_required",
     "payment_past_due",
     "provider_required",

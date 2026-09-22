@@ -166,6 +166,14 @@ ENV PATH="/opt/lightbulb/bin:${PATH}"
 
 COPY bridge /opt/bridge/bridge
 COPY plugins/ /opt/hermes/plugins/
+# COPY merges into the base's plugins/ tree (it does not replace it), so upstream's
+# plugins/memory/__init__.py discovers plugins/memory/agentcore/ as a BUNDLED provider
+# (module plugins.memory.agentcore). Prove it loads; HERMES_HOME points at scratch because
+# the loader creates a home, and the rm keeps that out of the layer.
+RUN HERMES_HOME=/tmp/mp-smoke python3 -c "import sys; sys.path.insert(0,'/opt/hermes'); \
+from plugins.memory import load_memory_provider; p = load_memory_provider('agentcore', register_skills=False); \
+assert p is not None and p.name == 'agentcore' and p.get_tool_schemas() == [], p" \
+ && rm -rf /tmp/mp-smoke && test ! -d /tmp/mp-smoke
 # Bundled agent-facing skills. NOT checked in: `skills/` is GENERATED into this build
 # context by ../build-skills.sh (run by build-hermes-image.yml before `docker build`) from
 # skills-src/ + skills-overlay/, with tool names swapped for Hermes/our plugin's. If this

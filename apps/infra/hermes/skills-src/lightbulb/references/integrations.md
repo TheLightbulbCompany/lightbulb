@@ -26,7 +26,7 @@ those integrations are CLI-rail and will never have one.
 ## Microsoft 365 (Microsoft Graph)
 
 The owner connects Microsoft 365 from Connections with their work/school
-account (one click, `requestable: false`, `byo_required: false`). Access is
+or personal (Outlook.com) account (one click, `requestable: false`, `byo_required: false`). Access is
 **read-only**: profile, Outlook mail, calendar and OneDrive/SharePoint files the
 signed-in user can already see. There are no tools — call Graph from the shell
 with the per-turn bearer `$MCP_MICROSOFT365_ACCESS_TOKEN`. It is empty when

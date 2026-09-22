@@ -1503,7 +1503,7 @@ async def promote_default_room_ceo(owner_id: str) -> None:
         return
     room_id = default_room_id(owner_id)
     member = await messaging_repo.get_member(room_id, "agent", ceo_id)
-    if member is None or member.get("listenMode") != "mentions":
+    if member is None or member.get("listenMode") != "mentions" or member.get("modeSetBy") == "user":
         return
     meta = await messaging_repo.upsert_member(
         room_id=room_id, owner_id=owner_id, member={**member, "listenMode": "active"}
@@ -1788,6 +1788,9 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     await _require_listening(owner_id, meta.get("kind"), [request])
     roster = await load_agent_roster(owner_id) if request.kind == "agent" else []
     member = await _resolved_member(owner_id, request, roster)
+    if request.kind == "agent":
+        # An admin's choice of mode; promote_default_room_ceo never overrides it.
+        member = {**member, "modeSetBy": "user"}
     if request.kind == "human":
         await messaging_repo.ensure_user_stream(owner_id, request.id)
     handles = mention_handles(roster) if roster else {}

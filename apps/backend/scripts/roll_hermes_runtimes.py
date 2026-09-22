@@ -4,6 +4,7 @@ Runs INSIDE the backend task (ECS exec), like ``migrate_workspace_to_hermes``:
 
     uv run python -m scripts.roll_hermes_runtimes --owner-id <org> [--dry-run]
     uv run python -m scripts.roll_hermes_runtimes --all [--dry-run]
+    uv run python -m scripts.roll_hermes_runtimes --all --respec   # model flip: env + profiles
 
 A ``hermes-version.json`` tag flip changes ``AGENTCORE_HERMES_IMAGE`` for the backend, but an
 existing runtime keeps the image it was created with until ``UpdateAgentRuntime`` moves it --
@@ -48,12 +49,13 @@ async def main(argv: list[str] | None = None) -> int:
     group.add_argument("--owner-id")
     group.add_argument("--all", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--respec", action="store_true", help="re-spec on a current image and rewrite profiles")
     args = parser.parse_args(argv)
 
     failed = 0
     for owner_id in await _targets(args):
         try:
-            result = await roll_runtime_image(owner_id, dry_run=args.dry_run)
+            result = await roll_runtime_image(owner_id, dry_run=args.dry_run, respec=args.respec)
         except Exception as exc:  # noqa: BLE001 -- one owner's failure must not stop the fleet roll
             failed += 1
             logger.error("roll: owner=%s FAILED: %s: %s", owner_id, type(exc).__name__, exc)

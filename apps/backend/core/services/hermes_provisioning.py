@@ -808,7 +808,7 @@ async def _wait_for_idle_session(owner_id: str) -> bool:
         await asyncio.sleep(ROLL_IDLE_POLL_S)
 
 
-async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
+async def roll_runtime_image(owner_id: str, *, dry_run: bool = False, respec: bool = False) -> str:
     """Bring an AgentCore owner's runtime onto ``settings.AGENTCORE_HERMES_IMAGE`` after a
     ``hermes-version.json`` tag flip (M6 Task 3 flip tooling): ``UpdateAgentRuntime`` on drift,
     wait for READY, then stop the warm session so the NEXT invoke boots the new image.
@@ -822,7 +822,13 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     Returns ``"current"`` (nothing to do), ``"would-update"`` (dry run), ``"updated"``, or
     ``"updated-session-busy"`` -- the runtime IS on the new image but a turn was still running
     at the deadline, so the warm session was left alone and picks the image up when it next
-    starts. Raises ``ValueError`` for a row with no provisioned runtime."""
+    starts. Raises ``ValueError`` for a row with no provisioned runtime.
+
+    ``respec=True`` re-specs even when the image is current, and rewrites the profiles once the
+    session is idle: the managed model lives in the runtime env AND each profile (bridge
+    ``sync.py`` refuses a mismatch), so a model flip needs both moved. Profiles are written only
+    after the idle wait -- a running turn saves its profile back at the end and would clobber
+    the rewrite -- so a busy owner comes back ``updated-session-busy``: re-run it."""
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     arn = row.get("agentcore_runtime_arn")
     if not arn:
@@ -830,7 +836,7 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     if not settings.AGENTCORE_HERMES_IMAGE:
         raise RuntimeError("AGENTCORE_HERMES_IMAGE is not configured for this environment")
     current = await run_in_thread(_runtime_image_uri, arn)
-    if current == settings.AGENTCORE_HERMES_IMAGE:
+    if current == settings.AGENTCORE_HERMES_IMAGE and not respec:
         return "current"
     if dry_run:
         return "would-update"
@@ -858,6 +864,8 @@ async def roll_runtime_image(owner_id: str, *, dry_run: bool = False) -> str:
     if (await run_in_thread(_runtime_status, arn)) in _TERMINAL_STATUSES:
         raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to update")
     idle = await _wait_for_idle_session(owner_id)
+    if idle and respec:
+        await write_profiles(owner_id, aip_arns)
     if idle:
         try:
             from core.services.runtime_transport import session_id_for

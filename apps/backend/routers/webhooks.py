@@ -435,6 +435,14 @@ async def _handle_organization_membership_created(
         logger.exception("membership.created: vendor room add failed org=%s user=%s", org_id, user_id)
         put_metric("messaging.vendor_room.error")
 
+    from core.services.messaging import join_default_room
+
+    try:
+        await join_default_room(org_id, user_id)
+    except Exception:
+        logger.exception("membership.created: default room join failed org=%s user=%s", org_id, user_id)
+        put_metric("messaging.default_room.error")
+
 
 async def _handle_organization_membership_deleted(
     data: dict,

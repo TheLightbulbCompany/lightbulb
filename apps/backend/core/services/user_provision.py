@@ -302,6 +302,16 @@ async def ensure_user_ready(auth: AuthContext) -> None:
         put_metric("messaging.vendor_room.error")
         logger.exception("vendor room reconcile failed for owner %s", owner_id)
 
+    # #general for any member, not only admins: teammates who joined before the
+    # membership webhook seated them. First read short-circuits once they're in.
+    from core.services.messaging import join_default_room
+
+    try:
+        await join_default_room(owner_id, auth.user_id)
+    except Exception:
+        put_metric("messaging.default_room.error")
+        logger.exception("default room join failed for owner %s user %s", owner_id, auth.user_id)
+
     # Nightly CEO loop: the DETERMINISTIC arm is the provision executor's
     # step 0 (scripts/provision_runner.py::_seed_owner_paperclip), right after
     # the owner's Paperclip seed. This call is the poll-path self-heal, and since

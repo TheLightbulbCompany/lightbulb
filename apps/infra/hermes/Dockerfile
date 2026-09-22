@@ -96,6 +96,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # `npm` are both in the Hermes base image already.
 RUN npm i -g --allow-scripts=@xdevplatform/xurl @xdevplatform/xurl@1.2.3 && xurl --help >/dev/null
 
+# Microsoft 365 CLI -- device-code/browser login persists its own MSAL and token files
+# in the profile home, so the agent can use the authenticated CLI without a backend-held
+# refresh grant. Pin the public release; the upstream docs recommend Node 20+.
+RUN npm i -g @pnp/cli-microsoft365@11.11.0 && m365 version
+
 # agent-browser drives AgentCore Browser through its OWN merged provider (PR #397); the runtime
 # env sets AGENT_BROWSER_PROVIDER=agentcore. Global install so the native arm64 binary is on PATH
 # with no npx/Node at runtime; the release asset arrives in the npm POSTINSTALL, so this must stay

@@ -241,3 +241,74 @@ async def test_a_free_tier_welcome_tells_the_user_to_mention_the_ceo_by_its_real
     text = _welcome_text(monkeypatch)
     assert text == messaging.DEFAULT_ROOM_WELCOME_FREE.format(handle=handle)
     assert f"@{handle} " in text
+
+
+def _promote_fixture(monkeypatch, member: dict | None, *, company=True):
+    starter_ids = {key: str(uuid.UUID(int=index + 20)) for index, key in enumerate(messaging._STARTER_KEYS)}
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(
+        return_value=MagicMock(status="active", starter_agent_ids=starter_ids) if company else None
+    )
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", MagicMock(return_value=repo))
+    get_member = AsyncMock(return_value=member)
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", get_member)
+    upsert = AsyncMock(return_value={"roomId": ROOM, "revision": 2})
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert)
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "_publish_room_metadata", publish)
+    return starter_ids, get_member, upsert, publish
+
+
+def _ceo_row(mode: str | None) -> dict:
+    return {
+        "kind": "agent",
+        "id": str(uuid.UUID(int=20)),
+        "role": "member",
+        "listenMode": mode,
+        "displayName": "CEO",
+        "mentionHandle": "ceo",
+    }
+
+
+@pytest.mark.asyncio
+async def test_upgrading_promotes_a_mentions_ceo_to_listening(monkeypatch):
+    starter_ids, get_member, upsert, publish = _promote_fixture(monkeypatch, _ceo_row("mentions"))
+
+    await messaging.promote_default_room_ceo(OWNER)
+
+    get_member.assert_awaited_once_with(messaging.default_room_id(OWNER), "agent", starter_ids["ceo"])
+    kwargs = upsert.call_args.kwargs
+    assert kwargs["room_id"] == messaging.default_room_id(OWNER)
+    assert kwargs["owner_id"] == OWNER
+    assert kwargs["member"] == {**_ceo_row("mentions"), "listenMode": "active"}
+    publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["observe", "active", None])
+async def test_upgrading_never_overrides_any_other_ceo_mode(monkeypatch, mode):
+    _, _, upsert, publish = _promote_fixture(monkeypatch, _ceo_row(mode))
+
+    await messaging.promote_default_room_ceo(OWNER)
+
+    upsert.assert_not_awaited()
+    publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_upgrading_is_a_noop_without_the_ceo_member(monkeypatch):
+    _, _, upsert, _ = _promote_fixture(monkeypatch, None)
+
+    await messaging.promote_default_room_ceo(OWNER)
+
+    upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_upgrading_is_a_noop_without_a_paperclip_company(monkeypatch):
+    _, get_member, upsert, _ = _promote_fixture(monkeypatch, _ceo_row("mentions"), company=False)
+
+    await messaging.promote_default_room_ceo(OWNER)
+
+    get_member.assert_not_awaited()
+    upsert.assert_not_awaited()

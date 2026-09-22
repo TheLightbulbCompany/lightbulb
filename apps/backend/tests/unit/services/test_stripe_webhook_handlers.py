@@ -119,6 +119,15 @@ def company_stripe_request(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def promote_ceo(monkeypatch):
+    """Entering paid turns on the #general CEO's Listening. Stub it for every
+    test here so no handler path reaches Paperclip or the messaging table."""
+    promote = AsyncMock()
+    monkeypatch.setattr("core.services.messaging.promote_default_room_ceo", promote)
+    return promote
+
+
+@pytest.fixture(autouse=True)
 def prerequisite_gate():
     """``run_conversion_reprovision`` asks the provision gate whether a
     prerequisite the PROVISIONER needs is still missing (ChatGPT tokens, BYO
@@ -1792,3 +1801,27 @@ class TestCompanyStripeRequestOnEnteringLive:
             await handlers._request_company_stripe("org_x")
 
         assert "company Stripe" in caplog.text
+
+
+class TestUpgradeTurnsOnCeoListening:
+    """A trial-seeded #general keeps its CEO on Mentions after upgrading (the
+    seed runs once), so the entry into paid promotes it."""
+
+    @pytest.mark.parametrize("prior_status", ["trial_local", "incomplete", "canceled", None])
+    async def test_entering_paid_promotes_the_ceo(self, mock_repo, promote_ceo, prior_status):
+        await _run_state(mock_repo, prior_status, "active")
+        promote_ceo.assert_awaited_once_with("org_x")
+
+    @pytest.mark.parametrize("prior_status", ["active", "trialing", "past_due"])
+    async def test_an_established_subscription_event_does_not_promote(self, mock_repo, promote_ceo, prior_status):
+        await _run_state(mock_repo, prior_status, "active")
+        promote_ceo.assert_not_awaited()
+
+    async def test_a_non_paid_status_does_not_promote(self, mock_repo, promote_ceo):
+        await _run_state(mock_repo, "trial_local", "past_due")
+        promote_ceo.assert_not_awaited()
+
+    async def test_a_promotion_failure_never_breaks_the_webhook(self, mock_repo, promote_ceo, caplog):
+        promote_ceo.side_effect = RuntimeError("appsync down")
+        await _run_state(mock_repo, "trial_local", "active")
+        assert "CEO listening promotion failed" in caplog.text

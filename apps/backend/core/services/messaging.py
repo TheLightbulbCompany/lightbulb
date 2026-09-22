@@ -1462,6 +1462,29 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     return room_id
 
 
+async def promote_default_room_ceo(owner_id: str) -> None:
+    """Turn Listening on for the #general CEO when a trial workspace upgrades.
+
+    The seed runs once, so a room seeded on the free tier keeps its CEO on
+    ``mentions`` forever. Promote ONLY an exact ``mentions`` — never a user's
+    ``observe``, never another member. Idempotent; the caller gates on the
+    transition into paid."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
+    ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
+    if not ceo_id:
+        return
+    room_id = default_room_id(owner_id)
+    member = await messaging_repo.get_member(room_id, "agent", ceo_id)
+    if member is None or member.get("listenMode") != "mentions":
+        return
+    meta = await messaging_repo.upsert_member(
+        room_id=room_id, owner_id=owner_id, member={**member, "listenMode": "active"}
+    )
+    await _publish_room_metadata(meta)
+
+
 def _display_name_from_membership(row: dict) -> str:
     """Same precedence as ``_resolve_human_display_name``, from the Clerk membership row
     we already hold — one roster read instead of one ``get_user`` per human."""

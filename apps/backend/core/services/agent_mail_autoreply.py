@@ -30,7 +30,7 @@ from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.services import agent_mail_reply, ses_email
 from core.services.agent_mail_owner_send import DAILY_SEND_CAP
-from core.services.trial_cap import DAILY_CAP, TRIAL_EXPIRED
+from core.services.trial_cap import DAILY_CAP, INCLUDED_CAP, TRIAL_EXPIRED
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,13 @@ _TRIAL_EXPIRED_BODY = (
     f"Upgrade and I'll pick this straight back up: {SETTINGS_URL}\n"
 )
 
-_BODIES = {DAILY_CAP: _DAILY_CAP_BODY, TRIAL_EXPIRED: _TRIAL_EXPIRED_BODY}
+# A paying capped owner: nothing to upgrade out of a free tier, just wait for the reset.
+_INCLUDED_CAP_BODY = (
+    "I've used today's included usage, so I can't pick this up right now.\n\n"
+    "It resets at 00:00 UTC — send this again after that.\n"
+)
+
+_BODIES = {DAILY_CAP: _DAILY_CAP_BODY, INCLUDED_CAP: _INCLUDED_CAP_BODY, TRIAL_EXPIRED: _TRIAL_EXPIRED_BODY}
 
 
 async def send_cap_autoreply(

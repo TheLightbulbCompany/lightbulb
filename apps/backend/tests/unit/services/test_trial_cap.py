@@ -259,7 +259,9 @@ async def test_openrouter_capped_day_blocks_every_managed_capped_owner(monkeypat
 
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_spend)
     capped = {**account, "openrouter_capped_day": trial_cap.utc_today()}
-    assert await trial_cap.reason_for_account("org_x", capped) == trial_cap.DAILY_CAP
+    # The trial sees the free-trial card; a paying Base/paid-default owner sees "included usage".
+    expected = trial_cap.DAILY_CAP if account["subscription_status"] == "trial_local" else trial_cap.INCLUDED_CAP
+    assert await trial_cap.reason_for_account("org_x", capped) == expected
     stale = {**account, "openrouter_capped_day": "2000-01-01"}
     assert await trial_cap.reason_for_account("org_x", stale) is None
 

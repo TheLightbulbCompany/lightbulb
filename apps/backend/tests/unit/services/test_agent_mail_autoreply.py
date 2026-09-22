@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.services import agent_mail_autoreply as mod
-from core.services.trial_cap import DAILY_CAP, TRIAL_EXPIRED
+from core.services.trial_cap import DAILY_CAP, INCLUDED_CAP, TRIAL_EXPIRED
 
 
 @pytest.fixture
@@ -107,3 +107,12 @@ async def test_ses_failure_returns_false_and_does_not_raise(monkeypatch, sent):
 
     monkeypatch.setattr(mod.ses_email, "send_ses_reply", _boom)
     assert await _call(DAILY_CAP) is False
+
+
+@pytest.mark.asyncio
+async def test_included_cap_reply_is_for_a_paying_owner(sent):
+    """A paying Base/paid-default owner at the cap: wait for the reset, never free-trial copy."""
+    assert await _call(INCLUDED_CAP) is True
+    body = sent[0]["body"].lower()
+    assert "resets" in body and "included usage" in body
+    assert "free" not in body and "trial" not in body

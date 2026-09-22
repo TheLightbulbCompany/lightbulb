@@ -345,7 +345,24 @@ def gate_for_trial_reason(reason: str | None, owner_role: str) -> Gate | None:
         return trial_expired_gate(owner_role)
     if reason == trial_cap.DAILY_CAP:
         return trial_daily_cap_gate(owner_role)
+    if reason == trial_cap.INCLUDED_CAP:
+        return included_daily_cap_gate(owner_role)
     return None
+
+
+def included_daily_cap_gate(owner_role: str) -> Gate:
+    """A PAYING capped owner (Base, or Workspace/Ultra on the interim managed default) at the
+    daily included limit. Never the trial card: they are paying. Final copy is keyed on this
+    code by the frontend; this text is the neutral fallback."""
+    return Gate(
+        code="included_daily_cap",
+        title="Today's included usage is used up",
+        message="You've used today's included usage. It resets at 00:00 UTC.",
+        action_label="Billing",
+        action_href="/settings?panel=billing",
+        action_admin_only=False,
+        owner_role=owner_role,
+    )
 
 
 def trial_expired_gate(owner_role: str) -> Gate:

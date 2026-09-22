@@ -60,6 +60,9 @@ RESERVE_ESTIMATE_MICROCENTS = 300_000
 # ``provision_gate`` — the codes the frontend already renders limit cards for.
 TRIAL_EXPIRED = "trial_expired"
 DAILY_CAP = "trial_daily_cap"
+# A PAYING capped owner (Base, or Workspace/Ultra with no provider) at OpenRouter's per-key daily
+# limit. Its own code so no surface shows them the free-trial card (owner ruling 2026-09-22).
+INCLUDED_CAP = "included_daily_cap"
 
 
 def utc_today() -> str:
@@ -143,7 +146,7 @@ async def reason_for_account(owner_id: str, account: dict | None) -> str | None:
     # The openrouter-gate stamps this when OpenRouter's per-key daily limit
     # 402s a capped owner; it clears itself at the UTC rollover.
     if account.get("openrouter_capped_day") == utc_today():
-        return DAILY_CAP
+        return DAILY_CAP if trial else INCLUDED_CAP
     if not trial:
         return None
     spent = await billing_repo.get_trial_daily_spend(owner_id, utc_today())

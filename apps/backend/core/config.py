@@ -208,7 +208,7 @@ class Settings(BaseSettings):
     OPENROUTER_WORKSPACE_ID: str = ""
     OPENROUTER_TRIAL_KEY_DAILY_LIMIT_USD: float = 0.25
     """OpenRouter per-key daily $ limit for a trial_local owner (the hard valve)."""
-    OPENROUTER_BASE_KEY_DAILY_LIMIT_USD: float = 0.66
+    OPENROUTER_BASE_KEY_DAILY_LIMIT_USD: float = 0.25
     """OpenRouter per-key daily $ limit for every other managed owner."""
     OPENROUTER_PAID_KEY_DAILY_LIMIT_USD: float = 50.0
     """Backstop key limit for explicit managed paid owners, whose real valve is Metronome."""

@@ -400,7 +400,6 @@ async def lifespan(app: FastAPI):
     # that item's visibility; gateway teardown remains last.
     logger.info("Shutting down application...")
     set_shutting_down(True)  # 503 new business requests; /health stays green for ALB drain
-    from core.services.provision_dispatch import handoff_inflight_provisions
     from core.services.update_service import request_worker_stop
 
     request_worker_stop()
@@ -410,8 +409,10 @@ async def lifespan(app: FastAPI):
     gauge_task.cancel()
     try:
         async with asyncio.timeout(20):
+            # No provision-dispatch handoff: dispatch holds no per-owner
+            # state (Phase 1 deleted the inline runner) — a roll mid-dispatch
+            # just drops that poll's submit, and the next poll retries.
             cleanup = [
-                handoff_inflight_provisions(),
                 scheduled_worker_task,
                 openclaw_work_task,
                 idle_sweeper_task,

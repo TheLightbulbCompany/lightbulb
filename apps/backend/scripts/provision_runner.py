@@ -165,13 +165,11 @@ async def run(owner_id: str, claim_id: str) -> int:
 
     bind_log_context(user_id=owner_id)
 
-    # Attempt-token fencing (hazard 1, spec §7): every attempt -- including
-    # attempt 0, where this is a same-value no-op re-assertion -- re-stamps
+    # Attempt-token fencing (hazard 1, spec §7): every attempt re-stamps
     # the row's provision_attempt_token BEFORE any other checkpoint. See
-    # container_repo.claim_attempt. The inline dispatcher sets the env var to
-    # its own distinct token (provision_dispatch.inline_attempt_token) so a
-    # later SFN takeover of the same claim fences an inline straggler out at
-    # its next checkpoint.
+    # container_repo.claim_attempt. The token arrives via PROVISION_ATTEMPT_TOKEN
+    # (the SFN attempt-0 token is the claim_id itself; BumpAttempt mints a
+    # fresh UUID per retry inside the running execution).
     attempt_token = os.environ.get("PROVISION_ATTEMPT_TOKEN") or claim_id
     try:
         await container_repo.claim_attempt(owner_id, claim_id, attempt_token)

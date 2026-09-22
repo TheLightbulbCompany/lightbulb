@@ -20,10 +20,14 @@ import asyncio
 import concurrent.futures
 import hashlib
 import json
+import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 #: F4 (predeploy review, M6-R37): the RPC budget for a call to a possibly-parked AgentCore
 #: workspace -- AgentCore holds an invoke through the microVM start (~35s) and the gateway boot
@@ -37,6 +41,22 @@ AGENTCORE_INGRESS_TIMEOUT_S = 90.0
 
 #: AgentCore requires a session id of at least 33 characters.
 _MIN_SESSION_ID_LEN = 33
+
+#: Optimistic-create contract (Phase 1 of the AgentCore-era simplification):
+#: nothing waits for a runtime to reach READY — not the provisioner, not this
+#: transport. Invoking a still-CREATING runtime fails fast, and this loop
+#: retries with backoff. Total sleep budget ~60s (2+4+8+16+30); then the last
+#: error raises exactly as it would have on the first attempt, and the
+#: consumer's own redrive (room ingress) or the caller's error path takes it
+#: from there. Only explicit not-ready signals retry — anything else fails
+#: immediately, so a real misconfiguration never burns a minute here.
+_NOT_READY_SLEEP_S = (2.0, 4.0, 8.0, 16.0, 30.0)
+
+#: Substrings (case-insensitive) of an AgentCore ``ValidationException``
+#: identifying "exists but is not usable yet". Unknown shapes fail fast AND
+#: log code+message at warning, so a new not-ready shape observed in prod can
+#: be added to this tuple deliberately rather than retried blindly today.
+_NOT_READY_SNIPPETS = ("not ready", "not in valid state", "is still creating", "is creating", "warming")
 
 #: Invokes run on their own pool: one blocks a thread for the caller's whole budget (90s on a
 #: cold-start ingress), and that thread must never sit in the default executor that DynamoDB
@@ -71,6 +91,24 @@ def session_id_for(owner_id: str) -> str:
     candidate = f"lb-{owner_id}-{digest[:16]}"
     # Pad rather than truncate: the id must stay unique per owner AND clear the 33-char floor.
     return candidate if len(candidate) >= _MIN_SESSION_ID_LEN else candidate.ljust(_MIN_SESSION_ID_LEN, "0")
+
+
+def _is_not_ready(exc: Exception) -> bool:
+    """Whether this AgentCore error means "exists but not usable yet".
+
+    Deliberately narrow: a ``ValidationException`` whose message names a
+    transitional state. Everything else — auth, missing runtime, throttling,
+    unknown shapes — fails immediately (unknown shapes also log at the call
+    site so prod can teach this tuple new members).
+    """
+    from botocore.exceptions import ClientError
+
+    if not isinstance(exc, ClientError):
+        return False
+    if exc.response.get("Error", {}).get("Code") != "ValidationException":
+        return False
+    message = str(exc).lower()
+    return any(snippet in message for snippet in _NOT_READY_SNIPPETS)
 
 
 async def request(
@@ -167,22 +205,43 @@ async def _request_agentcore(
                 retries={"total_max_attempts": 1},
             ),
         )
-        try:
-            result = client.invoke_agent_runtime(
-                agentRuntimeArn=arn,
-                runtimeSessionId=session_id_for(owner_id),
-                contentType="application/json",
-                accept="application/json",
-                # Same compact encoding as the ingress size cap measures, so a body that
-                # clears 1 MiB there is not inflated past it here.
-                payload=json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode(),
-            )
-            raw = result.get("response")
-            text = raw.read().decode() if hasattr(raw, "read") else (raw if isinstance(raw, str) else "")
-        except ReadTimeoutError as exc:
-            raise httpx.ReadTimeout(str(exc)) from exc
-        except (BotoCoreError, ClientError) as exc:
-            raise httpx.ConnectError(str(exc)) from exc
+        not_ready: ClientError | None = None
+        for attempt, delay in enumerate((0.0, *_NOT_READY_SLEEP_S)):
+            if attempt:
+                time.sleep(delay)
+            try:
+                result = client.invoke_agent_runtime(
+                    agentRuntimeArn=arn,
+                    runtimeSessionId=session_id_for(owner_id),
+                    contentType="application/json",
+                    accept="application/json",
+                    # Same compact encoding as the ingress size cap measures, so a body that
+                    # clears 1 MiB there is not inflated past it here.
+                    payload=json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode(),
+                )
+                raw = result.get("response")
+                text = raw.read().decode() if hasattr(raw, "read") else (raw if isinstance(raw, str) else "")
+                break
+            except ReadTimeoutError as exc:
+                raise httpx.ReadTimeout(str(exc)) from exc
+            except ClientError as exc:
+                if _is_not_ready(exc):
+                    not_ready = exc
+                    continue
+                logger.warning(
+                    "agentcore invoke for owner %s failed: %s %s",
+                    owner_id,
+                    exc.response.get("Error", {}).get("Code", "?"),
+                    str(exc)[:160],
+                )
+                raise httpx.ConnectError(str(exc)) from exc
+            except BotoCoreError as exc:
+                raise httpx.ConnectError(str(exc)) from exc
+        else:
+            # Every attempt hit not-ready; raise the last one exactly as a
+            # first-attempt failure would surface.
+            assert not_ready is not None
+            raise httpx.ConnectError(str(not_ready)) from not_ready
         # The contract server answers 200 with the gateway's own status inside; a 503 here is
         # the contract server saying the gateway has not finished booting.
         outer_status = int(result.get("statusCode") or 200)

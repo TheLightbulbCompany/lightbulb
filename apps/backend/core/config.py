@@ -122,8 +122,8 @@ class Settings(BaseSettings):
     # PROVISION Step Functions state machine ARN — THE provisioning executor
     # (spec §7, PR-10; no flag, active on merge). Dispatched by
     # core.services.provision_dispatch.dispatch_provision via StartExecution;
-    # the one-shot scripts/provision_runner.py runs as a task the machine
-    # supervises, never in-process in this backend.
+    # the one-shot scripts/provision_runner.py runs in the machine's provisioner
+    # Lambda, never in-process in this backend.
     PROVISION_STATE_MACHINE_ARN: str = ""
 
     # Public S3 URL of the hosted AWS read-only connector CloudFormation

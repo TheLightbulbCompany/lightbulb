@@ -6,9 +6,10 @@ The runner's exit ABI becomes the typed errors the machine's Retry/Catch match o
 transient -> ``ProvisionTransient`` (retried), deterministic -> ``ProvisionFailed``.
 No waiting here beyond what ``run`` does; waits belong in machine states.
 
-Lambda has no ECS ``secrets:`` injection, so each cold start first reads every secret
-the backend task definition injects (``LAMBDA_SECRET_ENV_MAP``, ``{ENV_NAME: secret
-arn}``, built by CDK from the same map) into the environment -- BEFORE anything
+Lambda has no ECS ``secrets:`` injection and a 4 KB env limit the backend's env
+exceeds, so each cold start first rebuilds the task definition's environment --
+the plain env from an SSM parameter and every injected secret from Secrets
+Manager, both written by CDK from the task def's own maps -- BEFORE anything
 imports ``core.config``, whose Settings read env once at import.
 """
 
@@ -21,20 +22,28 @@ import os
 import sys
 
 
-def load_secrets(secret_map: dict[str, str], environ=os.environ, *, client=None) -> None:
-    """Set each mapped env var from Secrets Manager. A var already set wins."""
-    missing = {name: arn for name, arn in secret_map.items() if name not in environ}
-    if not missing:
-        return
-    if client is None:
-        import boto3
+def load_environment(environ=os.environ, *, ssm=None, secretsmanager=None) -> None:
+    """Rebuild the backend task definition's environment. A var already set wins.
 
-        client = boto3.client("secretsmanager")
-    for name, arn in missing.items():
-        environ[name] = client.get_secret_value(SecretId=arn)["SecretString"]
+    The plain env (``LAMBDA_ENV_PARAMETER``, an SSM parameter holding the task def's env
+    as JSON -- it is larger than Lambda's 4 KB env limit) first, then each secret in
+    ``LAMBDA_SECRET_ENV_MAP`` (``{ENV_NAME: secret arn}``) from Secrets Manager."""
+    import boto3
+
+    parameter = environ.get("LAMBDA_ENV_PARAMETER")
+    if parameter:
+        ssm = ssm or boto3.client("ssm")
+        plain = json.loads(ssm.get_parameter(Name=parameter)["Parameter"]["Value"])
+        for name, value in plain.items():
+            environ.setdefault(name, value)
+    secret_map = json.loads(environ.get("LAMBDA_SECRET_ENV_MAP") or "{}")
+    for name, arn in secret_map.items():
+        if name not in environ:
+            secretsmanager = secretsmanager or boto3.client("secretsmanager")
+            environ[name] = secretsmanager.get_secret_value(SecretId=arn)["SecretString"]
 
 
-load_secrets(json.loads(os.environ.get("LAMBDA_SECRET_ENV_MAP") or "{}"))
+load_environment()
 
 from scripts import provision_runner  # noqa: E402 -- imports core.config; secrets must be loaded first
 

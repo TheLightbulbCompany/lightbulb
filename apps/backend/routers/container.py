@@ -582,7 +582,7 @@ async def container_provision(
     # Provision via the PROVISION Step Functions executor (spec §7 / PR-10) —
     # the SOLE provisioning executor, no flag. dispatch_provision is a fast
     # StartExecution call (the real work happens inside
-    # scripts.provision_runner, a one-shot task the state machine supervises)
+    # scripts.provision_runner, run by the state machine's provisioner Lambda)
     # and never raises: a StartExecution failure releases the row to
     # status="error" instead, picked up by this owner's next status poll.
     await dispatch_provision(owner_id)

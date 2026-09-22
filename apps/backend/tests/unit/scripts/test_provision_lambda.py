@@ -19,6 +19,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[3]
 @pytest.fixture
 def lam(monkeypatch):
     monkeypatch.delenv("LAMBDA_SECRET_ENV_MAP", raising=False)
+    monkeypatch.delenv("LAMBDA_ENV_PARAMETER", raising=False)
     from scripts import provision_lambda
 
     return provision_lambda
@@ -60,18 +61,37 @@ def test_warm_invocations_share_one_event_loop(lam, monkeypatch):
     assert loops[0] is loops[1]
 
 
-def test_load_secrets_sets_every_mapped_env_var(lam):
-    calls = []
+class _Ssm:
+    def __init__(self, env):
+        self.env = env
 
-    class _Sm:
-        def get_secret_value(self, SecretId):
-            calls.append(SecretId)
-            return {"SecretString": f"value-of-{SecretId}"}
+    def get_parameter(self, Name):
+        return {"Parameter": {"Value": json.dumps(self.env)}}
 
-    environ = {"ALREADY_SET": "keep"}
-    lam.load_secrets({"CLERK_SECRET_KEY": "arn:clerk", "ALREADY_SET": "arn:other"}, environ, client=_Sm())
-    assert environ == {"CLERK_SECRET_KEY": "value-of-arn:clerk", "ALREADY_SET": "keep"}
-    assert calls == ["arn:clerk"]
+
+class _Sm:
+    def __init__(self):
+        self.calls = []
+
+    def get_secret_value(self, SecretId):
+        self.calls.append(SecretId)
+        return {"SecretString": f"value-of-{SecretId}"}
+
+
+def test_load_environment_sets_the_plain_env_then_every_mapped_secret(lam):
+    environ = {
+        "LAMBDA_ENV_PARAMETER": "/lightbulb/dev/provisioner-env",
+        "LAMBDA_SECRET_ENV_MAP": json.dumps({"CLERK_SECRET_KEY": "arn:clerk", "ALREADY_SET": "arn:other"}),
+        "ALREADY_SET": "keep",
+        "HOME": "/tmp",
+    }
+    sm = _Sm()
+    lam.load_environment(environ, ssm=_Ssm({"OWNER_STATE_BUCKET": "b", "HOME": "/root"}), secretsmanager=sm)
+    assert environ["OWNER_STATE_BUCKET"] == "b"
+    assert environ["HOME"] == "/tmp"  # the function's own env wins
+    assert environ["CLERK_SECRET_KEY"] == "value-of-arn:clerk"
+    assert environ["ALREADY_SET"] == "keep"
+    assert sm.calls == ["arn:clerk"]
 
 
 def test_secrets_are_in_the_environment_before_settings_is_first_imported():
@@ -84,13 +104,23 @@ class _Sm:
     def get_secret_value(self, SecretId):
         return {"SecretString": "from-" + SecretId}
 
-boto3.client = lambda *a, **k: _Sm()
+class _Ssm:
+    def get_parameter(self, Name):
+        return {"Parameter": {"Value": '{"OWNER_STATE_BUCKET": "from-ssm"}'}}
+
+boto3.client = lambda service, *a, **k: _Ssm() if service == "ssm" else _Sm()
 assert "core.config" not in sys.modules
 import scripts.provision_lambda
 from core.config import settings
 assert settings.CLERK_SECRET_KEY == "from-arn:clerk", settings.CLERK_SECRET_KEY
+assert settings.OWNER_STATE_BUCKET == "from-ssm", settings.OWNER_STATE_BUCKET
 """
-    env = {**os.environ, "LAMBDA_SECRET_ENV_MAP": json.dumps({"CLERK_SECRET_KEY": "arn:clerk"})}
+    env = {
+        **os.environ,
+        "LAMBDA_ENV_PARAMETER": "/lightbulb/dev/provisioner-env",
+        "LAMBDA_SECRET_ENV_MAP": json.dumps({"CLERK_SECRET_KEY": "arn:clerk"}),
+    }
     env.pop("CLERK_SECRET_KEY", None)
+    env.pop("OWNER_STATE_BUCKET", None)
     result = subprocess.run([sys.executable, "-c", code], cwd=BACKEND_ROOT, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

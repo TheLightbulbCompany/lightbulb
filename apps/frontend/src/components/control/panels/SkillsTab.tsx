@@ -10,9 +10,6 @@ import {
   RefreshCw,
   Search,
   AlertTriangle,
-  Download,
-  ChevronDown,
-  Monitor,
 } from "lucide-react";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { Button } from "@/components/ui/button";
@@ -21,16 +18,8 @@ import { cn } from "@/lib/utils";
 import { SKILL_INTEGRATIONS } from "./skill-integrations";
 
 // --- Types matching the skills.status response ---
-// Both runtimes answer this shape. Hermes has no per-skill dependency manifest,
-// so on AgentCore `missing`/`install` are always empty and no skill is ever
-// "unsupported" — the dependency machinery below simply never renders.
-
-interface SkillInstallSpec {
-  id: string;
-  kind: string;
-  label: string;
-  bins: string[];
-}
+// Hermes has no per-skill dependency manifest: the bridge answers every row with
+// empty `missing`/`install`, so a skill is simply on or off.
 
 interface SkillStatusEntry {
   name: string;
@@ -44,9 +33,6 @@ interface SkillStatusEntry {
   disabled: boolean;
   blockedByAllowlist: boolean;
   eligible: boolean;
-  requirements: { bins: string[]; env: string[]; config: string[]; os: string[] };
-  missing: { bins: string[]; env: string[]; config: string[]; os: string[] };
-  install: SkillInstallSpec[];
   [key: string]: unknown;
 }
 
@@ -152,32 +138,10 @@ const CREATE_SKILL_PROMPT =
   "It should: <describe what the skill does and when it should trigger>. " +
   "Put it in my workspace skills folder so it loads automatically.";
 
-// --- Dependency viability check ---
-
-type SkillState = "installed" | "available" | "unsupported";
+type SkillState = "installed" | "available";
 
 function getSkillState(skill: SkillStatusEntry): SkillState {
-  const hasMissingBins = (skill.missing?.bins?.length ?? 0) > 0;
-
-  // No missing binaries: installed if enabled, available if disabled
-  if (!hasMissingBins) return skill.disabled ? "available" : "installed";
-
-  // Has missing bins — not functional regardless of enabled state
-  // Check if there's a viable (non-brew) install path
-  if (hasViableInstallSpec(skill)) return "available";
-  return "unsupported";
-}
-
-function hasViableInstallSpec(skill: SkillStatusEntry): boolean {
-  if ((skill.missing?.bins?.length ?? 0) === 0) return true;
-  if (!skill.install || skill.install.length === 0) return false;
-
-  const missingSet = new Set(skill.missing.bins);
-  for (const spec of skill.install) {
-    if (spec.kind === "brew") continue; // brew not available on Alpine containers
-    if (spec.bins.some((b) => missingSet.has(b))) return true;
-  }
-  return false;
+  return skill.disabled ? "available" : "installed";
 }
 
 // --- Skills Tab ---
@@ -195,7 +159,6 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
   const callRpc = useRuntimeRpcMutation();
   const [filter, setFilter] = useState("");
   const [activeCategory, setActiveCategory] = useState<Category>("All");
-  const [unsupportedCollapsed, setUnsupportedCollapsed] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -220,7 +183,6 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
 
   const installedSkills = filtered.filter((s) => getSkillState(s) === "installed");
   const availableSkills = filtered.filter((s) => getSkillState(s) === "available");
-  const unsupportedSkills = filtered.filter((s) => getSkillState(s) === "unsupported");
 
   // On Hermes a skill's enabled state is `skills.disabled` in the profile's
   // config.yaml, and the ONLY durable writer of a profile is the backend — the
@@ -381,7 +343,6 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                 <SkillCard
                   key={skill.skillKey || skill.name}
                   skill={skill}
-                  callRpc={callRpc}
                   onToggle={toggleSkill}
                   onRefresh={mutate}
                   variant="installed"
@@ -398,7 +359,6 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
               <SkillCard
                 key={skill.skillKey || skill.name}
                 skill={skill}
-                callRpc={callRpc}
                 onToggle={toggleSkill}
                 onRefresh={mutate}
                 variant="installed"
@@ -421,7 +381,6 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                 <SkillCard
                   key={skill.skillKey || skill.name}
                   skill={skill}
-                  callRpc={callRpc}
                   onToggle={toggleSkill}
                   onRefresh={mutate}
                   variant="available"
@@ -430,69 +389,6 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
             </div>
           </div>
         )}
-
-        {/* Not supported in cloud section */}
-        {unsupportedSkills.length > 0 && activeCategory !== "Installed" && (
-          <div className="space-y-3">
-            <button
-              onClick={() => setUnsupportedCollapsed(!unsupportedCollapsed)}
-              className="flex items-center gap-2 text-sm font-semibold text-[var(--midnight-muted)] hover:text-[var(--midnight)] transition-colors w-full text-left"
-              style={{ fontFamily: "'Lora', serif" }}
-            >
-              <ChevronDown size={16}
-                className={cn(
-                  "transition-transform",
-                  unsupportedCollapsed && "-rotate-90",
-                )}
-              />
-              Not supported in cloud ({unsupportedSkills.length})
-            </button>
-            {!unsupportedCollapsed && (
-              <>
-                <p
-                  className="text-xs text-[var(--midnight-muted)] pl-5"
-                >
-                  These skills require tools that aren&apos;t available in cloud
-                  containers. They work when running OpenClaw locally on your Mac
-                  or PC.
-                </p>
-                <div className="grid gap-2 pl-5">
-                  {unsupportedSkills.map((skill) => (
-                    <div
-                      key={skill.skillKey || skill.name}
-                      className="rounded-xl border border-[var(--edge)] bg-cream p-3 opacity-60"
-                    >
-                      <div className="flex items-center gap-3">
-                        <span className="text-title shrink-0 grayscale">
-                          {skill.emoji || "🧩"}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <h3
-                              className="text-xs font-semibold text-[var(--midnight-muted)] truncate"
-                            >
-                              {skill.name}
-                            </h3>
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-muted)] shrink-0">
-                              <Monitor size={12} strokeWidth={1.75} />
-                              Desktop Only
-                            </span>
-                          </div>
-                          {(skill.missing?.bins?.length ?? 0) > 0 && (
-                            <p className="text-caption text-[var(--midnight-muted)] mt-0.5">
-                              Requires: {skill.missing.bins.join(",")}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
       </div>
     </div>
   );
@@ -522,13 +418,11 @@ function IntegrationChip({ skillName }: { skillName: string }) {
 
 function SkillCard({
   skill,
-  callRpc,
   onRefresh,
   onToggle,
   variant,
 }: {
   skill: SkillStatusEntry;
-  callRpc: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>;
   onRefresh: () => void;
   // Enabling a skill is runtime-specific (see `toggleSkill`), so the card is
   // handed the operation rather than deciding which RPC to send.
@@ -536,16 +430,10 @@ function SkillCard({
   variant: "installed" | "available";
 }) {
   const [toggleLoading, setToggleLoading] = useState(false);
-  const [installLoading, setInstallLoading] = useState<string | null>(null);
-  // Surfaced to the user when a toggle/install fails. Previously these errors
-  // were only console.error'd, so a failed enable/install looked like a no-op
+  // Surfaced to the user when a toggle fails. Previously these errors
+  // were only console.error'd, so a failed enable looked like a no-op
   // and the user couldn't tell why the skill didn't change.
   const [actionError, setActionError] = useState<string | null>(null);
-
-  const hasMissing =
-    (skill.missing?.bins?.length ?? 0) > 0 ||
-    (skill.missing?.env?.length ?? 0) > 0 ||
-    (skill.missing?.config?.length ?? 0) > 0;
 
   const handleToggle = async () => {
     setToggleLoading(true);
@@ -561,25 +449,6 @@ function SkillCard({
       );
     } finally {
       setToggleLoading(false);
-    }
-  };
-
-  const handleInstall = async (spec: SkillInstallSpec) => {
-    setInstallLoading(spec.id);
-    setActionError(null);
-    try {
-      await callRpc("skills.install", {
-        name: skill.name,
-        installId: spec.id,
-        timeoutMs: 120000,
-      });
-      capture("skill_installed", { skill: skill.name });
-      onRefresh();
-    } catch (err) {
-      console.error("Failed to install:", err);
-      setActionError(`Couldn't install this skill: ${actionErrorText(err)}`);
-    } finally {
-      setInstallLoading(null);
     }
   };
 
@@ -641,55 +510,6 @@ function SkillCard({
             <span>{actionError}</span>
           </div>
         )}
-
-        {/* Missing dependencies */}
-        {hasMissing && (
-          <div className="space-y-1">
-            {(skill.missing?.bins?.length ?? 0) > 0 && (
-              <div className="flex items-center gap-1.5 text-xs text-warn">
-                <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
-                <span>Missing: {skill.missing.bins.join(", ")}</span>
-              </div>
-            )}
-            {(skill.missing?.env?.length ?? 0) > 0 && (
-              <div className="flex items-center gap-1.5 text-xs text-warn">
-                <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
-                <span>Missing env: {skill.missing.env.join(", ")}</span>
-              </div>
-            )}
-            {(skill.missing?.config?.length ?? 0) > 0 && (
-              <div className="flex items-center gap-1.5 text-xs text-warn">
-                <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
-                <span>Missing config: {skill.missing.config.join(", ")}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Install buttons for missing bins */}
-        {skill.install?.length > 0 && (skill.missing?.bins?.length ?? 0) > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {skill.install
-              .filter((spec) => spec.kind !== "brew")
-              .map((spec) => (
-                <Button
-                  key={spec.id}
-                  variant="outline"
-                  size="sm"
-                  className="text-xs gap-1.5 rounded-lg"
-                  onClick={() => handleInstall(spec)}
-                  disabled={installLoading !== null}
-                >
-                  {installLoading === spec.id ? (
-                    <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
-                  ) : (
-                    <Download size={12} strokeWidth={1.75} />
-                  )}
-                  {spec.label || `Install via ${spec.kind}`}
-                </Button>
-              ))}
-          </div>
-        )}
       </div>
     );
   }
@@ -715,49 +535,10 @@ function SkillCard({
               {friendlyDesc}
             </p>
 
-            {/* Missing dependencies inline */}
-            {hasMissing && (
-              <div className="mt-2 space-y-0.5">
-                {(skill.missing?.bins?.length ?? 0) > 0 && (
-                  <div className="flex items-center gap-1 text-caption text-warn">
-                    <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
-                    <span>Needs: {skill.missing.bins.join(", ")}</span>
-                  </div>
-                )}
-                {(skill.missing?.env?.length ?? 0) > 0 && (
-                  <div className="flex items-center gap-1 text-caption text-warn">
-                    <AlertTriangle size={12} strokeWidth={1.75} className="shrink-0" />
-                    <span>Needs env: {skill.missing.env.join(", ")}</span>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {/* Install dependency buttons */}
-          {skill.install?.filter((s) => s.kind !== "brew").length > 0 && (skill.missing?.bins?.length ?? 0) > 0 && (
-            <>
-              {skill.install
-                .filter((spec) => spec.kind !== "brew")
-                .map((spec) => (
-                  <button
-                    key={spec.id}
-                    onClick={() => handleInstall(spec)}
-                    disabled={installLoading !== null}
-                    className="px-3 py-1.5 rounded-full text-xs font-medium border border-warn text-warn bg-cream hover:bg-cream-deep transition-colors"
-                  >
-                    {installLoading === spec.id ? (
-                      <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
-                    ) : (
-                      <>{spec.label || `Install ${spec.kind}`}</>
-                    )}
-                  </button>
-                ))}
-            </>
-          )}
-
           {/* Install / Enable button */}
           <button
             onClick={handleToggle}

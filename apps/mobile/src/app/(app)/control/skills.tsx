@@ -19,18 +19,9 @@ import { LogoMark } from "../../../components/LogoMark";
 // Contract shapes (w3-control-contract §3 Skills)
 //
 // skills.status (no params = global). Payload is Skill[] OR
-// {workspaceDir?, managedSkillsDir?, skills:[…]} — normalize both. Read-only
-// for v1: install/update mutations exist server-side but are HIGH-risk
-// (skills.install runs a 120s binary fetch, skills.update toggles runtime
-// config) and are deferred to a later build.
+// {workspaceDir?, managedSkillsDir?, skills:[…]} — normalize both. Read-only.
+// Hermes has no per-skill dependency manifest, so a skill is simply on or off.
 // ---------------------------------------------------------------------------
-
-interface InstallSpec {
-  id?: string;
-  kind?: string;
-  label?: string;
-  bins?: string[];
-}
 
 interface RawSkill {
   name?: string;
@@ -39,11 +30,9 @@ interface RawSkill {
   skillKey?: string;
   disabled?: boolean;
   always?: boolean;
-  missing?: { bins?: string[]; env?: string[]; config?: string[]; os?: string[] };
-  install?: InstallSpec[];
 }
 
-type SkillState = "installed" | "available" | "unsupported";
+type SkillState = "installed" | "available";
 
 interface Skill {
   key: string;
@@ -51,38 +40,12 @@ interface Skill {
   description: string | null;
   emoji: string | null;
   state: SkillState;
-  missingBins: string[];
-  missingEnv: string[];
 }
 
 function normalizeSkills(payload: unknown): RawSkill[] {
   if (Array.isArray(payload)) return payload as RawSkill[];
   const wrapped = (payload as { skills?: RawSkill[] } | null)?.skills;
   return Array.isArray(wrapped) ? wrapped : [];
-}
-
-/** A `brew` install spec is dead weight in the cloud container (no Homebrew),
- * so it never counts toward viability — matches the web's brew filtering. */
-function isBrewSpec(spec: InstallSpec): boolean {
-  return (
-    spec.kind === "brew" ||
-    /brew/i.test(spec.id ?? "") ||
-    /brew/i.test(spec.label ?? "")
-  );
-}
-
-/** State machine (contract §3, SkillsTab:138-159): no missing bins →
- * disabled?available:installed; missing bins + a viable non-brew install spec
- * → available; else unsupported ("Desktop only"). */
-function deriveSkillState(skill: RawSkill): SkillState {
-  const missingBins = skill.missing?.bins ?? [];
-  if (missingBins.length === 0) {
-    return skill.disabled ? "available" : "installed";
-  }
-  const hasViableInstall = (skill.install ?? []).some(
-    (spec) => !isBrewSpec(spec),
-  );
-  return hasViableInstall ? "available" : "unsupported";
 }
 
 function projectSkills(payload: unknown): Skill[] {
@@ -96,9 +59,7 @@ function projectSkills(payload: unknown): Skill[] {
       name,
       description: row.description?.trim() || null,
       emoji: row.emoji?.trim() || null,
-      state: deriveSkillState(row),
-      missingBins: row.missing?.bins ?? [],
-      missingEnv: row.missing?.env ?? [],
+      state: row.disabled ? "available" : "installed",
     });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
@@ -119,24 +80,15 @@ const STATE_META: Record<
     text: colors.tool.running.text,
     border: colors.tool.running.border,
   },
-  // Available and unsupported are both neutral — mute is not a state — so they
-  // separate by surface step and ink, not by hue: available reads at full
-  // strength on the deeper step, unsupported recedes to `mute` on the lighter one.
   available: {
     label: "Available",
     bg: colors.creamDeepest,
     text: colors.ink,
     border: colors.edge,
   },
-  unsupported: {
-    label: "Desktop only",
-    bg: colors.creamDeeper,
-    text: colors.mute,
-    border: colors.edge,
-  },
 };
 
-const SECTION_ORDER: SkillState[] = ["installed", "available", "unsupported"];
+const SECTION_ORDER: SkillState[] = ["installed", "available"];
 
 type ListEntry =
   | { type: "header"; state: SkillState; count: number }
@@ -223,7 +175,6 @@ export default function SkillsPanel() {
       );
     }
     const { skill } = item;
-    const missing = [...skill.missingBins, ...skill.missingEnv];
     return (
       <View style={styles.row}>
         <View style={styles.emojiTile}>
@@ -239,11 +190,6 @@ export default function SkillsPanel() {
           {skill.description != null && (
             <Text style={styles.description} numberOfLines={2}>
               {skill.description}
-            </Text>
-          )}
-          {missing.length > 0 && (
-            <Text style={styles.missing} numberOfLines={1}>
-              Needs {missing.join(", ")}
             </Text>
           )}
         </View>
@@ -375,12 +321,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
     color: colors.mute,
-  },
-  missing: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    color: colors.warn,
   },
 
   // State badge (§3 tool-pill trio).

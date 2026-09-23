@@ -753,7 +753,10 @@ class FramePublisher:
         # monotonically increasing `seq` under the lock and the client orders/de-duplicates by
         # it. No send lock: AppSync does not keep order across publishes anyway, and a shared
         # send lock made the model's stream-callback thread wait behind a slow lifecycle POST.
-        self._seq = 0
+        # The base is the attempt's start in microseconds, not 0: a redelivered turn re-runs under
+        # the SAME runId in a new process, and a restart at 1 would read as duplicates of the dead
+        # attempt's frames on a client that watched it. Stays under 2**53 (JS safe integers).
+        self._seq = time.time_ns() // 1000
 
     def _numbered(self, frame: dict) -> dict:
         """Caller holds self._lock."""

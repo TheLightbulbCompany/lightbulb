@@ -107,7 +107,7 @@ def test_every_frame_gets_a_monotonic_per_run_seq():
     frames.delta(None)
     frames.finished("completed", "abcdefg", None)
     seqs = [f["seq"] for f in sent]
-    assert seqs == list(range(1, len(sent) + 1))
+    assert seqs == list(range(seqs[0], seqs[0] + len(sent)))
 
 
 def test_concurrent_flushes_send_every_frame_once_with_its_seq():
@@ -120,8 +120,9 @@ def test_concurrent_flushes_send_every_frame_once_with_its_seq():
     threads = [threading.Thread(target=frames.delta, args=(None,)) for _ in range(4)]
     [t.start() for t in threads]
     [t.join() for t in threads]
-    assert sorted(f["seq"] for f in sent) == list(range(1, 41))
-    assert all(f["content"] == str(f["seq"] - 1) for f in sent)
+    base = min(f["seq"] for f in sent)
+    assert sorted(f["seq"] for f in sent) == list(range(base, base + 40))
+    assert all(f["content"] == str(f["seq"] - base) for f in sent)
 
 
 def test_a_lifecycle_frame_is_numbered_after_the_deltas_it_follows():
@@ -132,3 +133,13 @@ def test_a_lifecycle_frame_is_numbered_after_the_deltas_it_follows():
     frames.finished("completed", "ab", None)
     assert max(f["seq"] for f in sent if f.get("append")) < min(f["seq"] for f in sent if not f.get("append"))
 
+
+
+def test_a_redelivered_attempt_numbers_above_the_dead_one():
+    """Same runId, new process: the second attempt's seqs must all exceed the first's, or a client
+    that watched the first drops them as duplicates. Also stays a JS-safe integer."""
+    sent_first, sent_second = [], []
+    _publisher(sent_first).started()
+    _publisher(sent_second).started()
+    assert min(f["seq"] for f in sent_second) > max(f["seq"] for f in sent_first)
+    assert max(f["seq"] for f in sent_second) < 2**53

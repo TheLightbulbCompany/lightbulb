@@ -239,9 +239,8 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
         "runtime_phase": runtime_phase,
         "chat_available": chat_available,
         "container_status": (container or {}).get("status"),
-        # NOT an ECS-lifecycle leftover, despite the deletion plan's A.4 row: the trial->paid
-        # conversion still writes `substatus="converting"` and the UI renders it, and the
-        # status router synthesizes its own values on top (auto_retry / error_retrying /
+        # NOT an ECS-lifecycle leftover, despite the deletion plan's A.4 row: the status
+        # router synthesizes its own values on top (auto_retry / error_retrying /
         # ensure_user_ready).
         "container_substatus": (container or {}).get("substatus"),
         # Which runtime hosts this owner. A constant now -- kept for one release so a client

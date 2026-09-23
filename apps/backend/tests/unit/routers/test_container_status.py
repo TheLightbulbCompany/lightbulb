@@ -153,6 +153,103 @@ def _stub_teams_status_repo():
         yield repo
 
 
+@pytest.fixture(autouse=True)
+def _stub_trial_armer(request):
+    if request.node.name == "test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll":
+        yield
+    else:
+        with patch("routers.container.arm_workspace_trial_if_unset", AsyncMock(return_value=None)):
+            yield
+
+
+@pytest.mark.asyncio
+async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll():
+    """The trial clock arms exactly once, at the poll where the composed `runtime_phase`
+    first reads "ready" -- never before, never twice. This used to cycle a RUNNING row
+    through a "starting" (not-yet-gateway-connected) intermediate before "ready", but
+    `resolve_runtime_phase` now reports "ready" for any running row unconditionally, with
+    no health probe at all (`host_for` is pinned to "agentcore" fleet-wide) -- a running row
+    is ready on its very first poll. "provisioning"/"error" are what still exercise the
+    not-yet-ready leg the arm-only-once assertion depends on."""
+    import boto3
+    from moto import mock_aws
+    from core.repositories import billing_repo
+    from routers.container import container_status
+
+    with mock_aws():
+        table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="workspace-trials",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.put_item(Item={"owner_id": "org_x", "owner_type": "org", "subscription_status": "trial_local"})
+        row = {"owner_id": "org_x", "status": "provisioning"}
+        _row = row
+
+        with (
+            patch.object(billing_repo, "_get_table", return_value=table),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
+            patch("core.services.container_rpc.call", AsyncMock(return_value={"ok": True})),
+            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
+            patch("routers.container.evaluate_provision_gate", AsyncMock(return_value=None)),
+        ):
+            for status, phase in [("provisioning", "provisioning"), ("error", "provisioning")]:
+                row["status"] = status
+                result = await container_status(_workspace_auth(), flow=None)
+                assert result["runtime_phase"] == phase
+                assert "trial_end" not in (await billing_repo.get_by_owner_id("org_x"))
+            row["status"] = "running"
+            with patch("core.repositories.billing_repo.time.time", return_value=1_000):
+                result = await container_status(_workspace_auth(), flow=None)
+            assert result["runtime_phase"] == "ready"
+            assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 2_593_000
+            with patch("core.repositories.billing_repo.time.time", return_value=9_999):
+                await container_status(_workspace_auth(), flow=None)
+                assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 2_593_000
+
+
+@pytest.mark.asyncio
+async def test_ready_paid_workspace_does_not_try_to_arm_a_trial():
+    import boto3
+    from moto import mock_aws
+    from core.repositories import billing_repo
+    from routers.container import container_status
+
+    with mock_aws():
+        table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="paid-workspace",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.put_item(
+            Item={
+                "owner_id": "org_x",
+                "owner_type": "org",
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_paid",
+                "provider_choice": "chatgpt_oauth",
+            }
+        )
+        row = {"owner_id": "org_x", "status": "running"}
+        _row = row
+        with (
+            patch.object(billing_repo, "_get_table", return_value=table),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
+            patch("core.services.container_rpc.call", AsyncMock(return_value={"ok": True})),
+            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
+            patch(
+                "routers.container.arm_workspace_trial_if_unset",
+                AsyncMock(side_effect=AssertionError("paid workspaces must not hit the trial armer")),
+            ),
+        ):
+            result = await container_status(_workspace_auth(), flow=None)
+
+        assert result["runtime_phase"] == "ready"
+        assert result["provider"]["subscription_status"] == "active"
+
+
 class TestContainerStatusPhaseField:
     """Verify the /status response actually carries the phase.
 

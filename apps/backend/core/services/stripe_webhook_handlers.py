@@ -506,18 +506,13 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
             await relimit_owner_key(account["owner_id"])
         except Exception:
             logger.exception("Failed to relimit OpenRouter key for owner %s", account["owner_id"])
-    if entering_live or provider_persisted or (plan_persisted and account.get("plan") != new_plan):
-        # Make the runtime match the billing just committed: a trial->paid conversion (the
-        # workspace still runs the trial provider in every profile), a re-subscribe, or a
-        # provider/plan change. ``reconcile_runtime`` re-derives the AIPs and gate-token tiers,
-        # moves the OpenRouter key onto the paid limit, rewrites every profile, ensures the
-        # Metronome customer and re-arms the nightly CEO. ORDER: every billing write above has
-        # already committed, and the reconcile reads billing strongly consistent, so it can never
-        # render the trial shape. Durable -- a Step Functions execution; never raises. Duplicate
-        # events start duplicate reconciles, which converge (every step is idempotent).
-        from core.services.provision_dispatch import dispatch_reconcile
-
-        await dispatch_reconcile(account["owner_id"])
+    # Decided here, dispatched LAST (below): a failed dispatch raises so Stripe redelivers, and
+    # everything before it must already have run once.
+    reconcile_needed = (
+        new_status in ("active", "trialing")
+        or provider_persisted
+        or (plan_persisted and account.get("plan") != new_plan)
+    )
     if old_status == "trial_local" and new_status in ("trialing", "active"):
         # Trial funnel telemetry: the free-tier trial converting to paid billing -- distinct
         # from the generic trialing->active "trial_converted" the bridge below may also emit for
@@ -566,6 +561,26 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     _bridge_subscription_state(
         account, event_data, old_status, new_status, metadata_provider if provider_persisted else None
     )
+
+    if reconcile_needed:
+        # Make the runtime match the billing just committed: a trial->paid conversion (the
+        # workspace still runs the trial provider in every profile), a re-subscribe, a
+        # provider/plan change -- and any live event at all, because a REDELIVERY of a
+        # conversion finds old_status already "active" (entering_live False, no plan diff) and
+        # must still reach the reconcile. That costs one idempotent reconcile per renewal event.
+        # ``reconcile_runtime`` re-derives the AIPs and gate-token tiers, moves the OpenRouter key
+        # onto the paid limit, rewrites every profile, ensures the Metronome customer and re-arms
+        # the nightly CEO. ORDER: every billing write above has committed, and the reconcile
+        # reads billing strongly consistent, so it never renders the trial shape.
+        #
+        # A dispatch that could not start RAISES: the router drops the dedup row and 500s, so
+        # Stripe redelivers. Every step above is idempotent under redelivery (see the slice 3
+        # report): the set_* writes rewrite the same values, entering_live side effects no longer
+        # fire (old_status is now live), trial_converted dedupes on its uuid.
+        from core.services.provision_dispatch import dispatch_reconcile
+
+        if not await dispatch_reconcile(account["owner_id"]):
+            raise RuntimeError(f"reconcile dispatch failed for owner {account['owner_id']}; Stripe will redeliver")
     return None
 
 

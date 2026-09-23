@@ -7,6 +7,15 @@ import pytest
 from moto import mock_aws
 
 
+@pytest.fixture(autouse=True)
+def _stub_reconcile_dispatch(monkeypatch):
+    """Live subscription events dispatch a durable reconcile (a Step Functions execution), and a
+    dispatch that cannot start raises so Stripe redelivers. Stub it so no test reaches AWS."""
+    dispatch = AsyncMock(return_value=True)
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_reconcile", dispatch)
+    return dispatch
+
+
 @pytest.fixture
 def mock_auth_context(mock_org_admin_context):
     """Billing routes default to an active organization workspace."""

@@ -14,7 +14,7 @@ export interface SetupBilling { is_subscribed?: boolean | null; plan?: string | 
 // reality. Disconnect Stripe and its card comes back on its own.
 // =============================================================================
 
-export type SetupStepId = "starter-model" | "stripe" | "github" | "notion" | "invite" | "name-agents";
+export type SetupStepId = "starter-model" | "stripe" | "github" | "notion" | "invite" | "name-agents" | "context";
 
 export interface SetupStep {
   id: SetupStepId;
@@ -102,6 +102,13 @@ export interface SetupStepInputs {
   workspaceMembers: number;
   /** `GET /billing/account`; null/undefined while unknown, which shows no billing card. */
   billing?: SetupBilling | null;
+  /**
+   * `GET /company/context`: whether the CEO's Hermes `memories/USER.md` holds
+   * pasted context. Omitted (or null after a failed read) drops the step, so a
+   * client with no paste door — mobile today — never renders a card it cannot
+   * act on.
+   */
+  contextImported?: boolean | null;
 }
 
 /**
@@ -118,7 +125,7 @@ function onStarterModel(billing: SetupStepInputs["billing"]): boolean {
   );
 }
 
-export function buildSetupSteps({ participants, connections, agentNames, workspaceMembers, billing }: SetupStepInputs): SetupStep[] {
+export function buildSetupSteps({ participants, connections, agentNames, workspaceMembers, billing, contextImported }: SetupStepInputs): SetupStep[] {
   const status = new Map(connections.map((entry) => [entry.provider, entry.status] as const));
   const agents = participants.filter((participant) => participant.kind === "agent");
 
@@ -174,6 +181,19 @@ export function buildSetupSteps({ participants, connections, agentNames, workspa
       ),
       adminOnly: false,
     },
+    // Admin-only because POST /company/context writes the CEO's memory
+    // (require_org_admin). Repeatable: a second paste augments the first.
+    ...(typeof contextImported === "boolean"
+      ? [{
+          id: "context" as const,
+          label: "Share your context",
+          detail: "Paste what you've told Claude or ChatGPT",
+          doneDetail: "Your CEO has it",
+          done: contextImported,
+          repeatable: true,
+          adminOnly: true,
+        }]
+      : []),
   ];
 }
 

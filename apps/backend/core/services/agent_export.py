@@ -389,8 +389,9 @@ def _slugify(name: str) -> str:
 # only applies to the S3 PROFILE layout, filtered by key prefix before a
 # single byte reaches local disk -- structurally, not via the content-pattern
 # safety scan. ``memories/`` is Hermes's learned memory -- ``USER.md`` is what
-# the agent knows about its OWNER, ``MEMORY.md`` its own notes about that
-# owner's work. Neither is part of a portable agent definition.
+# the agent knows about its OWNER (and where the pasted business-context dump
+# lands), ``MEMORY.md`` the agent's own notes about that owner's work. Neither
+# is part of a portable agent definition.
 _S3_PROFILE_SKIP_TOP_DIRS = frozenset({"sessions", "logs", "mcp-tokens", "memories"})
 
 

@@ -325,6 +325,11 @@ def auxiliary_tasks_block(model_id: str, provider: str, *, base_url: str = "", a
     return {task: dict(route) for task in AUXILIARY_TASKS}
 
 
+#: Hermes's budget for ``memories/USER.md`` (its user-profile store). ``context_import`` merges a
+#: pasted business context under this same number, so the two cannot drift.
+USER_CHAR_LIMIT = 1375
+
+
 def build_profile_config(
     *,
     agent_role: str,
@@ -369,7 +374,7 @@ def build_profile_config(
             "write_approval": False,
             "provider": "",  # built-in: never pays for embeddings on a platform-billed path
             "memory_char_limit": 2200,
-            "user_char_limit": 1375,
+            "user_char_limit": USER_CHAR_LIMIT,
         },
         # No "guard_agent_created" (fix round 1, minor): it is a real key (config_defaults.py:1373,
         # default False, gates skill_manager_tool's terminal() execution path), but the platform

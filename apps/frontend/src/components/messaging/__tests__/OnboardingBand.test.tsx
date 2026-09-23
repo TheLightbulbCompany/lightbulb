@@ -24,6 +24,15 @@ const h = vi.hoisted(() => ({
   connectionsError: undefined as unknown,
   billing: null as Record<string, unknown> | null,
   navigateShell: vi.fn(),
+  contextImported: true as boolean,
+  contextError: undefined as unknown,
+  setContext: vi.fn(),
+}));
+
+// The context card's done-state is the band's one SWR read; mocked like its
+// other reads so every render stays synchronous.
+vi.mock("swr", () => ({
+  default: () => ({ data: { imported: h.contextImported }, error: h.contextError, isLoading: false, mutate: h.setContext }),
 }));
 
 vi.mock("@/hooks/useBilling", () => ({
@@ -98,6 +107,9 @@ beforeEach(() => {
   h.orgId = "org_a";
   h.billing = null;
   h.navigateShell.mockReset();
+  h.contextImported = true;
+  h.contextError = undefined;
+  h.setContext.mockReset();
   window.localStorage.clear();
 });
 
@@ -396,5 +408,79 @@ describe("starter-model card", () => {
     h.billing = { ...PAID_NO_PROVIDER, provider_choice: "chatgpt_oauth" };
     render(<OnboardingBand participants={FRESH} />);
     expect(screen.queryByRole("button", { name: /starter model/ })).toBeNull();
+  });
+});
+
+describe("share your context", () => {
+  beforeEach(() => { h.contextImported = false; });
+
+  it("sits in the action row beside invite and naming", () => {
+    render(<OnboardingBand participants={FRESH} />);
+    expect(screen.getByRole("button", { name: /Share your context/ })).toHaveTextContent(/Paste what you've told Claude or ChatGPT/);
+  });
+
+  it("saves the paste to the CEO and says so", async () => {
+    h.post.mockResolvedValue({ merged: 20, overflowed: false });
+    render(<OnboardingBand participants={FRESH} />);
+    await userEvent.click(screen.getByRole("button", { name: /Share your context/ }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Your context" }), "We sell bread in Lyon");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(h.post).toHaveBeenCalledWith("/company/context", { text: "We sell bread in Lyon" });
+    expect(await screen.findByText("Your CEO has it — it’ll use this from now on.")).toBeInTheDocument();
+    // The card flips only once the dialog closes, so the band cannot retire under it.
+    expect(h.setContext).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(h.setContext).toHaveBeenCalledWith({ imported: true }, { revalidate: false });
+  });
+
+  it("fills the textarea from a markdown file without uploading it", async () => {
+    // jsdom has no Blob.text(); every browser the app ships to does.
+    if (!File.prototype.text) {
+      File.prototype.text = function (this: File) {
+        return new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsText(this);
+        });
+      };
+    }
+    render(<OnboardingBand participants={FRESH} />);
+    await userEvent.click(screen.getByRole("button", { name: /Share your context/ }));
+    const file = new File(["# Us\n- bakery"], "context.md", { type: "text/markdown" });
+    await userEvent.upload(screen.getByLabelText("Or load a file"), file);
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Your context" })).toHaveValue("# Us\n- bakery"));
+    expect(h.post).not.toHaveBeenCalled();
+  });
+
+  it("keeps the dialog open with an error when the save fails", async () => {
+    h.post.mockRejectedValue(new Error("boom"));
+    render(<OnboardingBand participants={FRESH} />);
+    await userEvent.click(screen.getByRole("button", { name: /Share your context/ }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Your context" }), "x");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t save that");
+  });
+
+  it("is done once the CEO holds imported context, and stays open for another paste", () => {
+    h.contextImported = true;
+    render(<OnboardingBand participants={FRESH} />);
+    const card = screen.getByRole("button", { name: /Share your context/ });
+    expect(card).toHaveTextContent(/Your CEO has it/);
+    expect(card).toBeEnabled();
+  });
+
+  it("is inert for a plain member, who is told to ask an admin", () => {
+    h.role = "org:member";
+    render(<OnboardingBand participants={FRESH} />);
+    const card = screen.getByRole("button", { name: /Share your context/ });
+    expect(card).toBeDisabled();
+    expect(card).toHaveTextContent(/Ask an admin/);
+  });
+
+  it("drops the card when the status read fails, rather than guessing", () => {
+    h.contextError = new Error("409");
+    render(<OnboardingBand participants={FRESH} />);
+    expect(screen.getByRole("button", { name: /Invite your teammates/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Share your context/ })).toBeNull();
   });
 });

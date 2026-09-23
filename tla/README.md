@@ -97,3 +97,43 @@ reservation) breaks `PoolNeverNegative` in 343 states — a scratch run, not
 committed, matching how this track documents a demonstrated-but-not-shipped
 counterexample. Nothing in the code catches a mispriced or underestimated
 ceiling; there's no code-level clamp, only an assumption.
+
+## JevDecisionConvergence
+
+One message, one shared `DECISION` row, and every candidate agent's own
+work-queue consumer racing to compute — or just adopt — the routing
+decision. `openclaw_work.py`'s dispatch site is a pure function of whatever
+value each consumer ends up holding (`decision.get("who") == member["id"]`),
+so two consumers holding two different decisions is two agents dispatched
+for one message. Exactly one consumer can `claim_decision()` and compute; a
+slow claim that outlives the 60 s staleness window lets ANOTHER consumer
+re-claim and also compute, without the first one knowing (the staleness
+check never verifies who holds the claim, only how old it is) — modelled as
+allowing more than one consumer to reach "computing" for the same message,
+the actual worst case the code permits. Every other consumer waits, either
+observing the row go final (the common path) or hitting its own deadline
+first and writing a `loser_timeout` fallback.
+
+| Constant | Committed value | Meaning |
+|---|---|---|
+| `FirstWriteWins` | `TRUE` | `finalize_decision`'s write is conditioned: once the row holds a final decision, no later write (winner's own real decision, a second loser's fallback) can replace it |
+
+| Invariant | Holds at `FirstWriteWins = TRUE` | What it says |
+|---|---|---|
+| `AtMostOneFinalValue` | yes | every consumer that has acted, acted on the same decision as every other one that has |
+
+`FirstWriteWins = FALSE` models the pre-`#2960` shape this spec exists to
+rule out: an unconditioned overwrite, where a slow winner finishing its own
+computation AFTER a loser already stored its `loser_timeout` fallback would
+silently replace it — and any consumer that read the row before that
+replacement already dispatched on the OLD value. Verified: `AtMostOneFinalValue`
+breaks in 76 distinct states under that config. `#2960` is already shipped;
+this spec exists to keep it that way — a future change to `finalize_decision`
+that drops the condition would be caught here before it reaches production.
+
+Out of scope: the retry/rate-limit backoff cycle (mechanically the same
+"reclaimable, not yet final" state as an empty row, so it wouldn't exercise a
+distinct risk), the no-gateway-key "disabled" fallback mode (a secondary path
+built on the same `finalize_decision` primitive), and staleness timing itself
+(a liveness concern — this spec checks that consumers never disagree, not
+that one is never left waiting forever).

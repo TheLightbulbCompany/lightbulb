@@ -1,6 +1,7 @@
 """Focused money-path checks; run with `python3 -m unittest discover -s .`."""
 import importlib.util
 import io
+import json
 import pathlib
 import unittest
 from decimal import Decimal
@@ -240,6 +241,30 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(calls[0]["TransactItems"][2]["Update"]["ExpressionAttributeValues"][":debit"]["N"], "-14815")
         self.assertEqual(calls[0]["TransactItems"][1]["Update"]["ExpressionAttributeValues"][":cost"]["S"], "0.012345678")
         self.assertEqual(calls[0]["TransactItems"][1]["Update"]["ExpressionAttributeValues"][":actual"]["N"], "12345678")
+
+    def test_overshoot_keeps_real_debit_and_emits_metric(self):
+        calls = []
+        class Ddb:
+            def transact_write_items(self, **kwargs): calls.append(kwargs)
+        store = worker.Store(Ddb(), requests_table="requests", fast_table="fast")
+        row = {**self.row, "reservation_microcents": 10_000}
+        out = io.StringIO()
+        with patch.dict(os.environ, {"GATE_ENV": "dev"}), patch("sys.stdout", out):
+            self.assertEqual(store.commit(row, worker.event_for(row, self.generation), 12345678, 1_700_000_001), "settled")
+        self.assertEqual(calls[0]["TransactItems"][2]["Update"]["ExpressionAttributeValues"][":debit"]["N"], "-14815")
+        line = json.loads(out.getvalue())
+        self.assertEqual(line["openrouter.settlement.overshoot_microcents"], 4815)
+        self.assertEqual((line["env"], line["service"]), ("dev", "openrouter-settlement"))
+        self.assertEqual(line["_aws"]["CloudWatchMetrics"][0]["Namespace"], "LightbulbAI")
+
+    def test_within_reservation_emits_nothing(self):
+        class Ddb:
+            def transact_write_items(self, **kwargs): pass
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            worker.Store(Ddb(), requests_table="requests", fast_table="fast").commit(
+                self.row, worker.event_for(self.row, self.generation), 12345678, 1_700_000_001)
+        self.assertEqual(out.getvalue(), "")
 
     def test_free_commit_never_touches_fast_gate(self):
         calls = []

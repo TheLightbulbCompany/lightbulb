@@ -347,6 +347,16 @@ class Store:
         ]
         try:
             self.ddb.transact_write_items(TransactItems=transaction)
+            overshoot = debit - int(row["reservation_microcents"])
+            if overshoot > 0:
+                # The real debit is kept (Metronome bills it anyway). A charge above the
+                # gate's ceiling can drive the pool negative, which admission reads as
+                # exhausted. EMF line -> LightbulbAI metric, alarmed by W81 (observability-stack).
+                print(json.dumps({"_aws": {"Timestamp": now * 1000, "CloudWatchMetrics": [{
+                    "Namespace": "LightbulbAI", "Dimensions": [["env", "service"]],
+                    "Metrics": [{"Name": "openrouter.settlement.overshoot_microcents", "Unit": "None"}]}]},
+                    "env": os.environ.get("GATE_ENV", ""), "service": "openrouter-settlement", "owner_id": row["owner_id"], "request_id": request_id,
+                    "openrouter.settlement.overshoot_microcents": overshoot}))
             return "settled"
         except Exception as exc:
             if exc.__class__.__name__ != "TransactionCanceledException":

@@ -11,6 +11,7 @@ async def test_balance_is_exhausted_at_or_below_reserve(monkeypatch):
 
     for balance, expected in [
         (RESERVE_ESTIMATE_MICROCENTS - 1, True),
+        (-5_000_000_000, True),  # settlement overshoot drove the pool negative
         (RESERVE_ESTIMATE_MICROCENTS, True),
         (RESERVE_ESTIMATE_MICROCENTS + 1, False),
     ]:

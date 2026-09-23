@@ -532,16 +532,14 @@ async def test_a_timed_out_loser_and_a_late_winner_agree_on_one_decision(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_a_routing_error_with_several_candidates_skips_instead_of_guessing(monkeypatch):
+async def test_a_routing_error_with_several_candidates_retries_instead_of_guessing(monkeypatch):
     """route() returns None only when routing itself errored (e.g. DynamoDB), so this consumer
-    cannot know what the others decided. Dispatching its own fallback pick could run beside
-    Jev's real pick (two responders); skipping is the safe side."""
+    cannot see the shared decision: guessing could run beside Jev's pick, skipping could
+    silence the chosen agent. It retries the delivery, which re-reads the decision."""
     monkeypatch.setattr(work, "_fallback_ceo_id", AsyncMock(return_value="a2"))
     for agent in ("a1", "a2", "a3"):
-        posted, created, dims = await _dispatch(
-            monkeypatch, "room_event", agent=agent, message=THREE, route=AsyncMock(return_value=None)
-        )
-        assert posted == [] and created == [] and dims == [{"outcome": "error_skip"}]
+        with pytest.raises(work.WorkRetry):
+            await _dispatch(monkeypatch, "room_event", agent=agent, message=THREE, route=AsyncMock(return_value=None))
 
 
 @pytest.mark.asyncio

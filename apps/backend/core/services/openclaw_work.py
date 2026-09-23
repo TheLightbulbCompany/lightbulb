@@ -492,9 +492,11 @@ class OpenClawWorkWorker:
             ]
             if decision is None and len(candidates) >= 2:
                 # route() returns None only when routing itself errored, so this consumer can't
-                # see what the others decided: guessing could run beside Jev's real pick.
-                put_metric("messaging.jev.route", dimensions={"outcome": "error_skip"})
-                return
+                # see what the others decided: guessing could run beside Jev's real pick, and
+                # skipping could silence the agent Jev chose. Retry: the next delivery re-reads
+                # the shared decision (the queue's own backoff is the wait).
+                put_metric("messaging.jev.route", dimensions={"outcome": "error_retry"})
+                raise WorkRetry("Jev routing errored; retrying to read the shared decision")
             if decision is None or decision.get("fallback"):
                 if len(candidates) >= 2:
                     # Jev down or undecided with more than one candidate: dispatch exactly one

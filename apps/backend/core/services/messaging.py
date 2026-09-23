@@ -1520,13 +1520,6 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     return room_id
 
 
-async def _starter_ceo_id(owner_id: str) -> str | None:
-    from core.repositories.paperclip_repo import PaperclipRepo
-
-    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
-    return (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
-
-
 async def promote_listening(owner_id: str) -> None:
     """Turn Listening on for every agent when a trial workspace upgrades to paid.
 
@@ -2236,9 +2229,13 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"))
     if not targets and room_id == default_room_id(owner_id):
         # Nobody would answer in the starter #general: the CEO does (one read, only on this path).
-        targets = select_dispatch_targets(
-            members, mentions, None, room_kind=meta.get("kind"), default_agent_id=await _starter_ceo_id(owner_id)
+        from core.repositories.paperclip_repo import PaperclipRepo
+
+        company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(
+            owner_id, consistent_read=True
         )
+        ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
+        targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"), default_agent_id=ceo_id)
     room_kind = _room_kind(meta)
     # EFS is NFS. These reads open and read whole attachment files, so running
     # them inline blocked the event loop -- every other request on the

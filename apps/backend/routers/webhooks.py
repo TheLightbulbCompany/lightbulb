@@ -435,6 +435,8 @@ async def _handle_organization_membership_created(
         logger.exception("membership.created: vendor room add failed org=%s user=%s", org_id, user_id)
         put_metric("messaging.vendor_room.error")
 
+    # The PRIMARY #general seat for a new teammate (idempotent: one-time AUTOJOIN
+    # marker). ensure_user_ready's poll call is a temporary backstop.
     from core.services.messaging import join_default_room
 
     try:

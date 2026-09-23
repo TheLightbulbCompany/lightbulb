@@ -160,9 +160,9 @@ _BEDROCK_CLAUDE_CONTEXT = 200_000  # Claude 4.x on Bedrock
 #: the full set in the first pass). Re-verify after any Hermes version bump with:
 #:   docker run --rm --entrypoint sed lightbulb/hermes-spike:m1-rc4 -n '679,750p' \
 #:     /opt/hermes/hermes_cli/config_defaults.py
-#: The bridge (``apps/infra/hermes/bridge/sync.py::auxiliary_pin``) reads the real package at
-#: runtime and so stays correct across a Hermes bump on its own; this backend-side constant does
-#: not, and needs a human to re-run the command above and update the tuple when Hermes moves.
+#: Nothing else fills a missing task: the bridge leaves an unpinned task on Hermes's ``auto``
+#: (main provider), and only validates the full list for managed-gate profiles. So a task Hermes
+#: adds is unpinned until a human re-runs the command above and updates this tuple.
 AUXILIARY_TASKS = (
     "approval",
     "background_review",

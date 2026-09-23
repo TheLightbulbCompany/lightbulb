@@ -875,21 +875,6 @@ def _aux_defaults() -> dict:
     return DEFAULT_CONFIG["auxiliary"]
 
 
-def auxiliary_pin(aux_defaults: dict, model: str) -> dict:
-    """Every auxiliary task on bedrock, with the auto-chain disarmed.
-
-    Hermes's auto-chain probes OpenRouter/Nous for any aux task, which means our prompt text
-    leaving for a third party from inside the owner's microVM. The task list is derived from
-    Hermes's OWN defaults, so a Hermes upgrade that adds a task cannot silently reopen that
-    lane. bedrock.discovery.enabled defaults true and AccessDenies on the owner role.
-    Until M4's config writer exists, the bridge writes this before every turn.
-    """
-    tasks = {name: {"provider": "bedrock", "model": model, "fallback_chain": []}
-             for name, block in aux_defaults.items() if isinstance(block, dict) and "provider" in block}
-    return {"auxiliary": {**tasks, "free_only": True},
-            "bedrock": {"discovery": {"enabled": False}}}
-
-
 #: The only names the backend's CLI-connector lane writes into a profile's ``cli-env.json``
 #: (``credentials/hermes_cli._shell_env``). It is an allowlist on a file that lives inside the
 #: profile dir, which ``terminal.backend: local`` also lets the AGENT write -- so an unfiltered
@@ -1034,27 +1019,14 @@ def is_managed_route(config: dict) -> bool:
         or block.get("api_key") == "${LIGHTBULB_GATE_BEARER}")
 
 
-def pin_profile_defaults(agent_id: str, model: str) -> dict:
-    """Fill-missing, not force-pin (fix round, M4-R2).
+def pin_profile_defaults(agent_id: str) -> dict:
+    """Validate a managed profile's gate routes, or leave a non-managed profile's aux to Hermes.
 
-    M4's config writer (``hermes_profiles.build_profile_config``) is now the source of truth for
-    a profile's aux/bedrock pins, written once at provision and kept current by Task 13's
-    ``ensure_profile()`` re-pull on a changed ``.revision`` -- this no longer needs to
-    force-overwrite them on every turn the way it did before that writer existed (see this
-    function's own history: "Until M4's config writer exists, the bridge writes this before
-    every turn"). ``deep_merge(defaults, existing)`` makes EXISTING win on any actual conflict
-    (an agent-edited or legacy value survives untouched), with the defaults only filling
-    whatever the profile's own config.yaml is missing -- e.g. a profile M4 never wrote, or one
-    written before Task 7 shipped.
-
-    This is a deliberate authority handoff, not a fence removal: ``bedrock.discovery.enabled``
-    stays enforced regardless, via the MANAGED overlay (Task 11's baked ``/etc/hermes/config.yaml``,
-    which wins AFTER env expansion and cannot be undone from inside a profile's own config.yaml).
-    The per-task auxiliary provider pin has no such backstop -- an already-pinned task's own
-    value, correct or not, is trusted once M4 has written it.
+    M4's config writer (``hermes_profiles.build_profile_config``) is the source of truth for a
+    profile's aux pins; the bridge no longer fills any in.
 
     ``plugins.enabled`` stays a UNION regardless of merge direction: ``plugins_pin`` already
-    computes it from whatever ``existing`` holds, and this second merge line is unchanged.
+    computes it from whatever ``existing`` holds.
 
     Legacy terminal and managed browser backends are normalized before ``existing``
     is read by anything else -- see ``normalize_profile_backends``'s own docstring for
@@ -1080,7 +1052,17 @@ def pin_profile_defaults(agent_id: str, model: str) -> dict:
                     raise RuntimeError(f"auxiliary route for {name} bypasses managed gate")
         config = existing
     else:
-        config = deep_merge(auxiliary_pin(_aux_defaults(), model), existing)
+        # Bedrock removal A1 (owner decision): a non-managed profile's aux follows the owner's own
+        # provider -- Hermes's default. An unpinned task is "auto" = main provider + main model,
+        # and once a main provider is set Hermes refuses to guess another one
+        # (agent/auxiliary_client.py _resolve_auto_route/_discovery_chain_allowed, v2026.9.14).
+        # A Bedrock pin an older bridge wrote into a non-Bedrock profile is dropped; a Bedrock-main
+        # profile (the current backend's, N-1) keeps its own pins.
+        config = existing
+        if (existing.get("model") or {}).get("provider") != "bedrock":
+            aux = existing.get("auxiliary") or {}
+            config = {**existing, "auxiliary": {name: block for name, block in aux.items()
+                                                if not (isinstance(block, dict) and block.get("provider") == "bedrock")}}
     config = deep_merge(config, plugins_pin(existing))
     write_profile_config(agent_id, config)
     return config

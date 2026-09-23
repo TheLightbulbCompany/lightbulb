@@ -39,16 +39,6 @@ def test_an_aborted_run_emits_the_cancelled_error_pair_and_no_done():
     assert sent[1]["outcome"] == "aborted"
 
 
-def test_a_gate_outcome_skips_the_error_frame_entirely():
-    """Fix round (Important 2, Ruling 18): ignored/gate_error get run_ended + run_active:false
-    and nothing else -- no `error` frame, unlike every other non-"completed" outcome."""
-    for outcome in ("ignored", "gate_error"):
-        p, sent = publisher()
-        p.finished(outcome, "", None)
-        assert [f["type"] for f in sent] == ["run_ended", "run_active"]
-        assert sent[0]["outcome"] == outcome
-
-
 def test_a_non_tool_progress_event_becomes_agent_activity_and_tool_events_are_never_doubled():
     p, sent = publisher()
     p.activity("compaction", "_context", "compressing", None)

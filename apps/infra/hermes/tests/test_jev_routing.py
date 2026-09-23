@@ -1,5 +1,8 @@
-"""Jev slice 2, bridge half: a backend-routed turn skips the ambient gate and replies where the
-backend placed it. Without ``routing`` (an older backend) everything is as before (N-1 safe)."""
+"""Jev slice 2, bridge half: a backend-routed turn replies where the
+backend placed it. Without ``routing`` (an older backend) the turn still runs (N-1 safe)."""
+
+import sys
+import types
 
 import pytest
 from bridge import turn
@@ -22,20 +25,20 @@ def _reply(posted):
     return next(b for path, b in posted if path.startswith("agent-messages/"))
 
 
-def test_routing_skips_the_ambient_gate(home, posted, monkeypatch):
-    monkeypatch.setattr(turn, "gate_ambient", lambda *a, **k: (_ for _ in ()).throw(AssertionError("gated")))
+def test_a_routed_turn_runs(home, posted, monkeypatch):
     _run(monkeypatch, None)
     turn.run_turn("ceo", f.ingress(eventKind="room_event", routing=ROUTING, replyThreadRootId=None))
     assert _reply(posted)["text"] == "ack"
 
 
-def test_without_routing_the_gate_still_decides(home, posted, monkeypatch):
-    calls = []
-    monkeypatch.setattr(turn, "gate_ambient", lambda *a, **k: calls.append(1) or "ignore")
+def test_an_unrouted_room_event_runs_without_a_bedrock_call(home, posted, monkeypatch):
+    """Bedrock removal A1: the ambient gate (a Bedrock Converse per room event) is gone, so an older
+    backend's unrouted room_event takes the turn -- what the gate did whenever it could not answer."""
+    no_aws = types.SimpleNamespace(client=lambda *a, **k: pytest.fail("no AWS client on a room turn"))
+    monkeypatch.setitem(sys.modules, "boto3", no_aws)
     _run(monkeypatch, None)
     turn.run_turn("ceo", f.ingress(eventKind="room_event"))
-    assert calls == [1]
-    assert not any(p.startswith("agent-messages/") for p, _b in posted)
+    assert _reply(posted)["text"] == "ack"
 
 
 def test_null_reply_thread_root_replies_top_level(home, posted, monkeypatch):

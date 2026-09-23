@@ -98,7 +98,7 @@ with tempfile.TemporaryDirectory() as temp:
         # Keep the REAL pin_profile_defaults on the path (it is what the turn runs) -- then
         # hand back a stub agent instead of a model call. The passthrough registration itself
         # happens in turn._secret_scope, which wraps this call, so it is on the path either way.
-        sync.pin_profile_defaults(agent_id, os.environ.get("AUXILIARY_MODEL") or turn.MODEL)
+        sync.pin_profile_defaults(agent_id)
         return Agent(label["value"])
 
     turn._construct_agent = construct

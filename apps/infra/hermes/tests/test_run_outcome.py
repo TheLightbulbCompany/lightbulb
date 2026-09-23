@@ -15,11 +15,6 @@ class _FakeAgent:
         return self._result
 
 
-def test_a_gate_outcome_omits_usage_entirely():
-    body = turn.run_ended_body("r1", "agent:ceo:lightbulb:channel:x", "ignored", None, turn.ZERO_USAGE)
-    assert "usage" not in body and body["outcome"] == "ignored" and body["type"] == "run.ended"
-
-
 def test_every_other_outcome_carries_usage():
     body = turn.run_ended_body("r1", "k", "error", "model_unavailable", turn.ZERO_USAGE)
     assert body["usage"]["inputTokens"] == 0 and body["errorKind"] == "model_unavailable"

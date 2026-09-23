@@ -123,7 +123,7 @@ def test_turn_ensures_the_profile_before_pinning_defaults(monkeypatch):
 
     calls = []
     monkeypatch.setattr(sync, "ensure_profile", lambda agent_id: calls.append(("ensure", agent_id)))
-    monkeypatch.setattr(turn, "pin_profile_defaults", lambda agent_id, model: calls.append(("pin", agent_id)))
+    monkeypatch.setattr(turn, "pin_profile_defaults", lambda agent_id: calls.append(("pin", agent_id)))
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = lambda **kw: types.SimpleNamespace(

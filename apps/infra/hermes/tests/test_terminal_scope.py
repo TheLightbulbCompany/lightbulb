@@ -220,5 +220,5 @@ def test_the_names_are_registered_through_hermes_own_per_session_api(home, monke
     (home / "profiles" / "ceo").mkdir(parents=True)
     turn.sync.write_profile_config("ceo", {})
     monkeypatch.setattr(turn.sync, "_aux_defaults", lambda: {})
-    config = turn.sync.pin_profile_defaults("ceo", "aip-aux")
+    config = turn.sync.pin_profile_defaults("ceo")
     assert "env_passthrough" not in (config.get("terminal") or {})

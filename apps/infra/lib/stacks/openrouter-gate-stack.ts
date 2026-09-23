@@ -29,9 +29,9 @@ export class OpenRouterGateStack extends cdk.Stack {
     super(scope, id, props);
     const env = props.environment;
     // The Metronome OpenRouter product carrying the 1.2x rate on this env's rate card. It is
-    // the money proof: settlement ingests metered rows only where it is set. Dev: applied by
-    // setup_metronome_openrouter_pricing.py (#2961). Prod: not applied yet.
-    const rateCardProof = env === "dev" ? "4c39b72e-a9bc-4272-a3b3-eddd2b5e5001" : "";
+    // the money proof: settlement ingests metered rows only where it is set. Both applied by
+    // setup_metronome_openrouter_pricing.py; prod on 2026-09-23 after the dev funded smoke.
+    const rateCardProof = env === "dev" ? "4c39b72e-a9bc-4272-a3b3-eddd2b5e5001" : "653a6187-6fd6-4490-b473-98e1ae85a745";
     const source = path.join(__dirname, "..", "..", "lambda", "openrouter-gate");
     const code = lambda.Code.fromAsset(source, {
       bundling: {

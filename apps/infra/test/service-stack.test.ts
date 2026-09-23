@@ -163,8 +163,8 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     }
   });
 
-  test("paid OpenRouter credits are on in dev only", () => {
-    for (const [env, value] of [["dev", "true"], ["prod", "false"]] as const) {
+  test("paid OpenRouter credits are on in both envs", () => {
+    for (const [env, value] of [["dev", "true"], ["prod", "true"]] as const) {
       (env === "dev" ? template : buildServiceStack("prod")).hasResourceProperties("AWS::ECS::TaskDefinition", {
         ContainerDefinitions: Match.arrayWith([Match.objectLike({
           Name: "backend",

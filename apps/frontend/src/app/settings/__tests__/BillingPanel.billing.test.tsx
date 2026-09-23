@@ -274,7 +274,8 @@ describe("BillingPanel — org trial_local conversion", () => {
     expect(screen.getByRole("button", { name: /subscribe workspace/i })).toBeInTheDocument();
     expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
     expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
-    expect(screen.getByText(/managed Claude inference uses prepaid workspace credits/i)).toBeInTheDocument();
+    // The Bedrock card is gone (#2932); managed inference shows only when available.
+    expect(screen.queryByText(/managed Claude inference/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Create or select a workspace/i)).not.toBeInTheDocument();
   });
 });

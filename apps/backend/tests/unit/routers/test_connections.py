@@ -728,6 +728,25 @@ class TestConnectPaste:
         assert mock_store.put.await_args.args[2] == {"token": joined}
 
     @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections._validate_token", new_callable=AsyncMock)
+    async def test_a_pasted_admin_url_normalises_to_the_store_host(
+        self, mock_validate, mock_repo, mock_store, mock_apply, async_client
+    ):
+        # Owners copy the store address from the browser bar; only the host field is normalised
+        # (a Client ID is case-sensitive and must reach the grant untouched).
+        mock_validate.return_value = True
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+        fields = {"shop": "https://MyStore.myshopify.com/admin/", "client_id": "CiD", "client_secret": "s"}
+        response = await async_client.post("/api/v1/connections/shopify", json={"fields": fields})
+        assert response.status_code == 200
+        assert mock_validate.await_args.args[1] == "mystore.myshopify.com|CiD:s"
+
+    @pytest.mark.asyncio
     @patch("routers.connections._validate_token", new_callable=AsyncMock)
     async def test_a_missing_field_is_named(self, mock_validate, async_client):
         response = await async_client.post(

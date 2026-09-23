@@ -272,6 +272,9 @@ class PasteField(BaseModel):
     label: str
     placeholder: str | None = None
     secret: bool = False
+    # A host the owner may paste as a URL (https://Store.myshopify.com/admin/): reduced to its
+    # lowercased host before the join. Never set on an id/secret field -- those are case-sensitive.
+    host: bool = False
 
 
 class AwsStsSpec(BaseModel):

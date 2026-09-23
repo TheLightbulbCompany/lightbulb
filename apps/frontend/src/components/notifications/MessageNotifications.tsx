@@ -6,6 +6,7 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
 import { isDesktopApp, nativeNotify, notificationPermission } from "@/lib/desktopNotify";
 import { notifySuccess } from "@/lib/notify";
+import { plainPreview } from "@/lib/plainPreview";
 
 export function MessageNotifications(props: {
   activeRoomId: string | null;
@@ -78,7 +79,7 @@ export function MessageNotifications(props: {
           const title = room.kind === "channel"
             ? `${message.author.displayName} in #${room.name ?? "channel"}`
             : message.author.displayName;
-          const body = message.text.slice(0, 180) || "Sent an image";
+          const body = plainPreview(message.text).slice(0, 180) || "Sent an image";
           capture("notification_shown", { channel: "web", room_kind: room.kind });
           const onClick = () => {
             capture("notification_clicked", { channel: "web", room_kind: room.kind });

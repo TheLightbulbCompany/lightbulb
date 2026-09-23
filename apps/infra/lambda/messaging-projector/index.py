@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -27,6 +28,26 @@ USERS_TABLE = os.environ.get("USERS_TABLE", "")
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 MAX_PUSH_TOKENS = 100
 PUSH_BODY_CHARS = 180
+
+# Markdown -> one plain line for a push body, which iOS renders raw. Mirrors the web
+# toast's ``plainPreview`` (apps/frontend/src/lib/plainPreview.ts); keep them together.
+_PLAIN_RULES = (
+    (re.compile(r"^\s*```.*$", re.M), ""),
+    (re.compile(r"!?\[([^\]]*)\]\([^)]*\)"), r"\1"),
+    (re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$", re.M), ""),
+    (re.compile(r"^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)", re.M), ""),
+    (re.compile(r"\*\*|__|~~|`"), ""),
+    (re.compile(r"\s+"), " "),
+)
+
+
+def _plain_preview(text: str) -> str:
+    text = text[:1000]  # bounded first: a push body never needs the whole message
+    for pattern, repl in _PLAIN_RULES:
+        text = pattern.sub(repl, text)
+    return text.strip()
+
+
 HTTP_ENDPOINT = os.environ.get("APPSYNC_EVENTS_HTTP_ENDPOINT", "")
 REGION = os.environ.get("APPSYNC_EVENTS_REGION", os.environ.get("AWS_REGION", ""))
 MAX_EVENT_BYTES = 230 * 1024
@@ -439,7 +460,7 @@ def _send_push(
         }
         subtitle = _push_subtitle(meta)
         # A whitespace-only caption is an attachment, not a body.
-        text = message["text"].strip()[:PUSH_BODY_CHARS] or "Sent an image"
+        text = _plain_preview(message["text"])[:PUSH_BODY_CHARS] or "Sent an image"
         body = json.dumps([
             {
                 "to": token,

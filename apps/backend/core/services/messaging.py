@@ -2347,13 +2347,30 @@ async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error
             f"I couldn't finish that ({label}). {reason} "
             "Try again, or check Settings → Model & Credits if this keeps happening."
         )
-        # A capped or expired owner's run fails at the gate; say that instead of a
-        # generic model error (the bridge reports every failed turn as model_unavailable).
+        # A capped/expired trial owner, or a paid owner out of credits, has their
+        # run fail at the gate; say that instead of a generic model error (the
+        # bridge reports every failed turn as model_unavailable). Trial/cap
+        # reasons take priority — an owner cannot be both, but if that ever
+        # changes the trial state is the more specific one.
+        from core.repositories import billing_repo
         from core.services.chat_gate import BUDGET_BLOCK_MESSAGES
+        from core.services.metronome_gate import is_owner_blocked
         from core.services.trial_cap import trial_block_reason
 
         if error_kind in (None, "model_unavailable"):  # the sweeper's own kinds are real infra failures
-            text = BUDGET_BLOCK_MESSAGES.get(await trial_block_reason(owner_id) or "", text)
+            reason = await trial_block_reason(owner_id)
+            if reason:
+                text = BUDGET_BLOCK_MESSAGES.get(reason, text)
+            else:
+                # Same predicate gate_chat's Layer 3 and the provision gate's
+                # Layer 3 use: only bedrock_claude/openrouter_managed owners
+                # draw against the Metronome credit balance.
+                account = await billing_repo.get_by_owner_id(owner_id) or {}
+                if account.get("provider_choice") in {
+                    "bedrock_claude",
+                    "openrouter_managed",
+                } and await is_owner_blocked(owner_id):
+                    text = BUDGET_BLOCK_MESSAGES["out_of_credits"]
         trigger = (
             await messaging_repo.get_message_by_id(room_id, row["triggerMessageId"])
             if row.get("triggerMessageId")

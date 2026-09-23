@@ -282,7 +282,7 @@ async def test_openrouter_managed_owner_uses_the_same_credit_gate():
         result = await gate_chat(user_id="u_1", owner_id="org_1", session_key="sk_test")
     assert result["blocked"] is True
     assert result["code"] == "out_of_credits"
-    assert "Lightbulb credits" in result["message"]
+    assert "workspace credits" in result["message"]
 
 
 @pytest.mark.asyncio

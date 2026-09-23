@@ -14,7 +14,6 @@ from core.services.user_provision import (
     _ensure_paperclip_for_member,
     _ensure_paperclip_for_org,
     _ensure_paperclip_for_owner,
-    _maybe_arm_nightly_ceo,
     arm_nightly_ceo,
     ensure_user_ready,
 )
@@ -48,21 +47,6 @@ def _mock_create_trial_local_if_absent():
     with patch(
         "core.services.user_provision.billing_repo.create_trial_local_if_absent",
         new=AsyncMock(return_value=None),
-    ) as mock:
-        yield mock
-
-
-@pytest.fixture(autouse=True)
-def _stub_arm_nightly():
-    """ensure_user_ready arms the paid nightly CEO routine for owners/admins
-    (issue #1273). Stub it by default so the broad orchestration tests never
-    touch billing/Paperclip through the arm path. Tests that assert the arm
-    invocation inspect this mock; the arm's own behavior is covered by the
-    _maybe_arm_nightly_ceo direct tests (which call the real function via the
-    imported reference, unaffected by this module-attr patch)."""
-    with patch(
-        "core.services.user_provision._maybe_arm_nightly_ceo",
-        new=AsyncMock(),
     ) as mock:
         yield mock
 
@@ -1478,8 +1462,7 @@ async def test_workspace_trial_drops_invalid_flow_and_preserves_event_dedup(
 # The arm step is gated on should_arm_nightly_ceo (paid OR an unexpired trial),
 # idempotent (cache + conditional claim + title-skip), and opt-out-durable.
 # These call the REAL
-# _maybe_arm_nightly_ceo (imported reference, unaffected by the autouse stub)
-# and patch its collaborators on the user_provision module.
+# arm_nightly_ceo and patch its collaborators on the user_provision module.
 
 
 def _arm_provisioning(row):
@@ -1525,7 +1508,7 @@ async def test_arm_paid_seeds_nightly_routine_for_friday():
         patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", AsyncMock(return_value=True)),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo("org_p")
+        await arm_nightly_ceo("org_p")
 
     seed.assert_awaited_once()
     kwargs = seed.await_args.kwargs
@@ -1548,7 +1531,7 @@ async def test_arm_paid_prefers_starter_ceo_for_nightly_routine():
         patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", AsyncMock(return_value=True)),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo("org_p")
+        await arm_nightly_ceo("org_p")
 
     assert seed.await_args.kwargs["agent_id"] == "starter-ceo"
 
@@ -1568,7 +1551,7 @@ async def test_arm_active_trial_now_seeds():
         patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", AsyncMock(return_value=True)),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo("org_p")
+        await arm_nightly_ceo("org_p")
     seed.assert_awaited_once()
     assert seed.await_args.kwargs["reconcile_paused"] is True
 
@@ -1583,7 +1566,7 @@ async def test_arm_expired_trial_not_armed():
         patch("core.services.user_provision.billing_repo.get_by_owner_id", AsyncMock(return_value=expired)),
         patch("core.services.user_provision.build_paperclip_provisioning", build),
     ):
-        await _maybe_arm_nightly_ceo("org_p")
+        await arm_nightly_ceo("org_p")
     build.assert_not_awaited()
     assert should_arm_nightly_ceo(expired) is False
 
@@ -1596,7 +1579,7 @@ async def test_arm_no_account_never_armed():
         patch("core.services.user_provision.billing_repo.get_by_owner_id", AsyncMock(return_value=None)),
         patch("core.services.user_provision.build_paperclip_provisioning", build),
     ):
-        await _maybe_arm_nightly_ceo("org_p")
+        await arm_nightly_ceo("org_p")
     build.assert_not_awaited()
 
 
@@ -1611,7 +1594,7 @@ async def test_arm_opt_out_honored():
         ),
         patch("core.services.user_provision.build_paperclip_provisioning", build),
     ):
-        await _maybe_arm_nightly_ceo("org_p")
+        await arm_nightly_ceo("org_p")
     build.assert_not_awaited()
 
 
@@ -1631,7 +1614,7 @@ async def test_arm_cache_hit_skips_claim_and_seed():
         patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", claim),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo("org_p")
+        await arm_nightly_ceo("org_p")
     claim.assert_not_awaited()
     seed.assert_not_awaited()
 
@@ -1650,7 +1633,7 @@ async def test_arm_friday_not_seeded_yet_skips():
         patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", claim),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo("org_p")
+        await arm_nightly_ceo("org_p")
     claim.assert_not_awaited()
     seed.assert_not_awaited()
 
@@ -1667,7 +1650,7 @@ async def test_arm_company_not_active_skips():
         patch("core.services.user_provision.close_paperclip_provisioning", AsyncMock()),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo("org_p")
+        await arm_nightly_ceo("org_p")
     seed.assert_not_awaited()
 
 
@@ -1694,16 +1677,16 @@ async def test_arm_concurrency_only_one_seeds():
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
         await _asyncio.gather(
-            _maybe_arm_nightly_ceo("org_p"),
-            _maybe_arm_nightly_ceo("org_p"),
+            arm_nightly_ceo("org_p"),
+            arm_nightly_ceo("org_p"),
         )
     assert seed.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_arm_seed_failure_releases_claim_and_never_raises():
-    """A seed that raises → release_nightly_arm called and _maybe_arm_nightly_ceo
-    returns normally (best-effort; ensure_user_ready must keep answering)."""
+async def test_arm_seed_failure_releases_claim_and_raises():
+    """A seed that raises → release_nightly_arm called and the error propagates (the
+    caller decides: the executor classifies it, reconcile_runtime logs it)."""
     provisioning = _arm_provisioning(_company_row())
     release = AsyncMock()
     with (
@@ -1718,8 +1701,8 @@ async def test_arm_seed_failure_releases_claim_and_never_raises():
             AsyncMock(side_effect=RuntimeError("paperclip down")),
         ),
     ):
-        # Must NOT raise.
-        await _maybe_arm_nightly_ceo("org_p")
+        with pytest.raises(RuntimeError):
+            await arm_nightly_ceo("org_p")
     release.assert_awaited_once_with("org_p", "co1")
 
 
@@ -1739,7 +1722,7 @@ async def test_arm_org_admin_uses_authoritative_owner_resolver():
         patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", AsyncMock(return_value=True)),
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
-        await _maybe_arm_nightly_ceo("org_xyz")
+        await arm_nightly_ceo("org_xyz")
     provisioning._repo.resolve_owner_row.assert_awaited_once_with("org_xyz")
     provisioning.find_org_owner.assert_not_awaited()
     seed.assert_awaited_once()
@@ -1910,62 +1893,6 @@ async def test_arm_nightly_ceo_seed_failure_releases_claim_and_raises():
                 p.stop()
     mocks["billing_repo.release_nightly_arm"].assert_awaited_once_with("org_p", "co1")
     metric.assert_called_once_with("nightly_ceo.arm", dimensions={"status": "error"})
-
-
-@pytest.mark.asyncio
-async def test_maybe_arm_wrapper_swallows():
-    """The poll-path wrapper never raises."""
-    with patch("core.services.user_provision.arm_nightly_ceo", AsyncMock(side_effect=RuntimeError("x"))):
-        assert await _maybe_arm_nightly_ceo("org_p") is None
-
-
-# --- Invocation gating (uses the autouse _stub_arm_nightly mock) -------------
-
-
-@pytest.mark.asyncio
-async def test_ensure_user_ready_invokes_arm_for_workspace_owner(_stub_trial_default, _stub_arm_nightly):
-    """Owner path → _maybe_arm_nightly_ceo awaited once with the owner_id."""
-    with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.user_provision._ensure_paperclip_for_owner", new=AsyncMock()),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
-    ):
-        await ensure_user_ready(_org_admin_auth("user_p", "org_p"))
-    _stub_arm_nightly.assert_awaited_once()
-    assert _stub_arm_nightly.await_args.args == ("org_p",)
-
-
-@pytest.mark.asyncio
-async def test_ensure_user_ready_invokes_arm_for_org_admin(_stub_arm_nightly):
-    """Org admin path → arm awaited with the ORG owner_id."""
-    with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
-    ):
-        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
-    _stub_arm_nightly.assert_awaited_once()
-    assert _stub_arm_nightly.await_args.args == ("org_xyz",)
-
-
-@pytest.mark.asyncio
-async def test_ensure_user_ready_does_not_invoke_arm_for_org_member(_stub_arm_nightly):
-    """Org members ride the org's container and never arm."""
-    fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")
-    fake_provisioning = MagicMock()
-    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
-    fake_provisioning.provision_member = AsyncMock()
-    with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="o@example.com")),
-        patch(
-            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
-        ),
-        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
-    ):
-        await ensure_user_ready(_org_member_auth())
-    _stub_arm_nightly.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

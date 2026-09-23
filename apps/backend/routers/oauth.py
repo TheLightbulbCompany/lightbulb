@@ -27,7 +27,6 @@ from core.services.container_auth import (
     push_oauth_credential_to_container,
     revoke_provider_auth_in_container,
 )
-from core.services.stripe_webhook_handlers import rearm_deferred_conversion
 from core.services.oauth_service import (
     PURPOSE_HARNESS,
     DevicePollPending,
@@ -193,15 +192,6 @@ async def poll(ctx: AuthContext = Depends(get_current_user)):
     # has no container yet (first connect during onboarding) — provisioning
     # stages it then.
     await push_oauth_credential_to_container(owner_id=result.bound_owner_id, connector_id=ctx.user_id)
-    # A trial->paid conversion that chose ChatGPT at checkout is DEFERRED until
-    # this moment (the webhook lands before the device-code flow can finish);
-    # re-arm it so the next status poll fires the reprovision now rather than
-    # on the self-heal's next guard tick. Best-effort: the self-heal is the
-    # backstop either way.
-    try:
-        await rearm_deferred_conversion(result.bound_owner_id)
-    except Exception:
-        logger.exception("Failed to re-arm a deferred trial conversion for owner %s", result.bound_owner_id)
     return {"status": "completed", "account_id": result.account_id}
 
 

@@ -14,7 +14,6 @@ from typing import Literal
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.services import browser_control, readiness_state
-from core.services.onboarding_brief import reconcile_pending_brief
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.services.provision_dispatch import dispatch_provision
@@ -22,7 +21,6 @@ from core.services.provision_gate import (
     evaluate_provision_gate,
     maybe_restore_trial_bedrock,
 )
-from core.services.stripe_webhook_handlers import maybe_resume_stuck_conversion
 from core.services.user_provision import arm_workspace_trial_if_unset, ensure_workspace_trial_default, ensure_user_ready
 
 logger = logging.getLogger(__name__)
@@ -96,24 +94,6 @@ async def _assert_provision_allowed(
         raise HTTPException(status_code=402, detail=gate.to_payload())
 
 
-def _maybe_drain_pending_brief(owner_id: str, onboarding: dict) -> None:
-    """Fire the onboarding-brief drain if this owner has an answer waiting.
-
-    The first canonical-room message is persisted before its workspace may be
-    ready to fulfil it. This poll retries the durable intake through
-    ``core.services.onboarding_brief.reconcile_pending_brief``.
-
-    ``pending_brief`` rides the SAME onboarding dict compute_status consumes --
-    one read for both -- and is False for every owner whose funnel has
-    completed, so the steady-state fleet never schedules this. The reconciler
-    re-reads consistently, claims atomically and dedupes concurrent drains for
-    the same owner; this pre-check exists purely to keep the common poll from
-    scheduling a no-op task.
-    """
-    if onboarding.get("pending_brief"):
-        asyncio.create_task(reconcile_pending_brief(owner_id))
-
-
 @router.get(
     "/status",
     summary="Get container metadata for current user",
@@ -148,17 +128,8 @@ async def container_status(
     ),
 ):
     owner_id = resolve_owner_id(auth)
-    # Drain a funnel answer submitted before the workspace could take it, BEFORE
-    # any of this endpoint's early returns. It used to sit at the bottom, which
-    # quietly excluded whole cohorts from ever fulfilling: a parked trial (returns
-    # at the wake gate), a bedrock_revoked or trial-cap 402, an org member on the
-    # no-container path (202). None of those block the drain itself -- it needs
-    # Paperclip, not a running container -- so they were dead ends for no reason.
-    #
-    # Costs one paperclip-companies read on every poll, which is why it is also
-    # threaded into compute_status below rather than read twice.
+    # One paperclip-companies read, threaded into both compute_status calls below.
     onboarding = await readiness_state.resolve_onboarding_state(owner_id)
-    _maybe_drain_pending_brief(owner_id, onboarding)
 
     container = await container_repo.get_by_owner_id(owner_id)
     if not container:
@@ -239,25 +210,6 @@ async def container_status(
         if revoked_gate is not None:
             raise HTTPException(status_code=402, detail=revoked_gate.to_payload())
 
-    # Trial→paid conversion owns the container row while it stops + drains the
-    # trial box (see core/services/stripe_webhook_handlers.py). Two things
-    # happen here:
-    #
-    #   - While a conversion is live, the auto-retry below MUST stand down. The
-    #     conversion's reprovision blocks in a ~90s drain wait to guarantee a
-    #     single EFS-WAL SQLite writer; the just-paid owner polls this endpoint
-    #     every ~3s and sees "stopped", and — being paid — passes the gate. An
-    #     auto-retry there dispatches a second provision with NO drain wait and
-    #     lands a new task on top of the draining one. That is the documented
-    #     corruption / crash-loop mode.
-    #
-    #   - If the conversion's fire-and-forget task died, nothing else will ever
-    #     re-fire it (Stripe's retry sees old_status != "trial_local"), so a
-    #     PAYING owner keeps the trial container forever. This poll is the only
-    #     thing that runs again, so it re-dispatches — idempotently and
-    #     rate-limited to at most once per guard window.
-    conversion_active = await maybe_resume_stuck_conversion(owner_id, container)
-
     # Single readiness+onboarding read (INV-1): compute_status is the SOLE
     # composer of the containers/billing/paperclip-companies inputs — see core/services/readiness_state.py. Passing the
     # already-fetched `container` skips a redundant containers-row read and
@@ -271,8 +223,8 @@ async def container_status(
     # phase so the client can render a "Teams needs attention / retry"
     # affordance instead of a hard block. Never gates.
     #
-    # `onboarding` was fetched once at the top of this handler for the pending
-    # brief drain and is threaded into compute_status. It is the same
+    # `onboarding` was fetched once at the top of this handler and is threaded
+    # into compute_status. It is the same
     # paperclip-companies read compute_status would otherwise do internally (a
     # by-org-id GSI query for an org owner), so without threading it every ~3s
     # ready poll fleet-wide would pay it twice.
@@ -289,7 +241,7 @@ async def container_status(
     # check and the deterministic-error skip); this branch only gates and
     # shapes the response.
     retryable_states = ("error", "stopped")
-    if container.get("status") in retryable_states and not conversion_active:
+    if container.get("status") in retryable_states:
         # The FULL trial predicate, not just the cap. An over-cap or expired
         # trial owner gets the limit card rather than a silent re-provision.
         from core.services import provision_gate, trial_cap

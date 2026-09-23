@@ -17,7 +17,6 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories import container_repo
 from core.services import container_rpc, provision_gate, trial_cap
 from core.services.provision_dispatch import dispatch_provision
-from core.services.stripe_webhook_handlers import conversion_guard_active
 from routers.container import _owner_role
 
 logger = logging.getLogger(__name__)
@@ -75,19 +74,6 @@ async def container_recover(
         raise HTTPException(status_code=404, detail="No container found")
 
     status = container.get("status", "unknown")
-
-    # A trial->paid conversion owns this row and its reprovision is already in flight; a
-    # second one from here would compete with it and can render the terminal "Setup failed"
-    # card to a customer who just paid. Observed on prod 2026-08-06. The guard is
-    # status-agnostic (a timestamp window), so it sits before the status split and covers
-    # every branch below at once.
-    if conversion_guard_active(container):
-        logger.info("Recover for owner %s stood down: conversion reprovision in flight", owner_id)
-        return {
-            "action": "already_recovering",
-            "state": "RECOVERING",
-            "reason": "A subscription upgrade is reprovisioning this container",
-        }
 
     # A provisioning row must never be probed: /recover used to fire during a
     # conversion's provision, probe the mid-boot gateway, write status="error"

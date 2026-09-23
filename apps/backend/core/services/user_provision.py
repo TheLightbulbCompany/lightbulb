@@ -159,7 +159,9 @@ async def provision_new_workspace(org_id: str) -> None:
 
 
 async def arm_workspace_trial_if_unset(workspace_id: str) -> None:
-    """Start a ready workspace's unarmed local trial exactly once."""
+    """Start a ready workspace's unarmed local trial exactly once. The provision executor arms it
+    too; this poll-path copy is the catch-up for a running row that was never armed, until the
+    poll retires (Phase 3 slice 4)."""
     await billing_repo.arm_trial_if_unset(workspace_id)
 
 
@@ -225,20 +227,19 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # the org's customer belongs to the org owner_id and an admin poll creates
     # it. Best-effort — a Metronome outage must never block provisioning.
     #
-    # The next poll retries: routers/container.py re-dispatches this function
-    # for a ledger-eligible owner with no metronome_customer_id yet (see
-    # readiness_state.compute_status's `metronome_ledger_missing` and the
-    # incident it was added to fix), so a failure HERE does not strand a
-    # healthy running container without a ledger. The short-circuit on the
-    # persisted id makes a retried steady state a single read.
+    # The durable owner is ``hermes_provisioning.reconcile_runtime`` (every live Stripe
+    # event dispatches one, and a Metronome failure makes that execution fail so the
+    # machine retries it). This poll-path call stays until the poll retires (Phase 3
+    # slice 4) as a catch-up for an owner whose retries ran out -- a bedrock_claude
+    # owner with no ledger is blocked by the credits gate. The short-circuit on the
+    # persisted ids makes the steady state a single read.
     if auth.is_org_admin:
         try:
             await ensure_metronome_customer(owner_id=owner_id)
         except Exception:
             put_metric("metronome.provision.error")
             logger.exception(
-                "Metronome customer provisioning failed for owner %s — retried by the next "
-                "status poll via routers/container.py's metronome_ledger_missing re-dispatch",
+                "Metronome customer provisioning failed for owner %s — retried by the next status poll",
                 owner_id,
             )
 
@@ -346,16 +347,6 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     if auth.is_org_admin:
         await _provision_or_reconcile(auth, owner_id)
 
-    # Nightly CEO loop: the DETERMINISTIC arm is the provision executor's
-    # step 0 (scripts/provision_runner.py::_seed_owner_paperclip), right after
-    # the owner's Paperclip seed. This call is the poll-path self-heal, and since
-    # every org admin's running-container poll reaches it, it IS a general
-    # catch-up — kept cheap by the nightly_ceo_armed_company cache. Never an org
-    # member; gated inside on should_arm_nightly_ceo (paid OR an unexpired
-    # trial_local); idempotent; best-effort (never raises).
-    if auth.is_org_admin:
-        await _maybe_arm_nightly_ceo(owner_id)
-
 
 async def _provision_or_reconcile(auth: AuthContext, owner_id: str) -> None:
     """Container-owner half of ``ensure_user_ready``: dispatch the provisioning
@@ -460,7 +451,7 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
     ``nightly_ceo.arm`` metric's ``status``. Does NOT
     swallow: a failure emits ``status=error`` and re-raises, and the caller
     decides — the executor classifies it into its retry ABI exactly like a
-    seed failure; ``_maybe_arm_nightly_ceo`` logs and moves on.
+    seed failure; ``reconcile_runtime`` logs and moves on.
 
     ``trust_cache=False`` (the executor) never short-circuits on the
     ``nightly_ceo_armed_company`` cache: the claim is written BEFORE the routine
@@ -470,7 +461,7 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
     without re-claiming.
 
     Idempotency, three race classes closed:
-      - Normal re-run (poll path): the ``nightly_ceo_armed_company`` cache on
+      - Normal re-run (every ``reconcile_runtime``): the ``nightly_ceo_armed_company`` cache on
         the billing row short-circuits before any Paperclip call once it equals
         the current company.
       - Concurrency: ``try_claim_nightly_arm`` is a conditional write that
@@ -483,10 +474,10 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
         re-enables on re-entitlement. Both re-subscribe paths reach the reconcile:
         a torn-down container re-provisions through the executor
         (``trust_cache=False``, which ignores the cache), and a container that
-        SURVIVED teardown (``delete_user_service`` is best-effort) is caught by
-        the poll-path self-heal — teardown's ``disarm_owner_nightly_automation``
-        releases the ``nightly_ceo_armed_company`` cache when it pauses, so the
-        ``trust_cache=True`` poll no longer short-circuits on it.
+        SURVIVED teardown is re-armed by the reconcile the re-subscribe's Stripe
+        ``entering_live`` edge dispatches — teardown's ``disarm_owner_nightly_automation``
+        releases the ``nightly_ceo_armed_company`` cache when it pauses, so that
+        ``trust_cache=True`` arm no longer short-circuits on it.
     """
     try:
         account = await billing_repo.get_by_owner_id(owner_id)
@@ -546,15 +537,6 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
     except Exception:
         put_metric("nightly_ceo.arm", dimensions={"status": "error"})
         raise
-
-
-async def _maybe_arm_nightly_ceo(owner_id: str) -> None:
-    """Poll-path wrapper: best-effort ``arm_nightly_ceo`` that never raises, so
-    ``ensure_user_ready`` keeps answering the poll."""
-    try:
-        await arm_nightly_ceo(owner_id)
-    except Exception:
-        logger.exception("nightly CEO arm failed (non-fatal) owner=%s", owner_id)
 
 
 async def _ensure_paperclip_for_org(

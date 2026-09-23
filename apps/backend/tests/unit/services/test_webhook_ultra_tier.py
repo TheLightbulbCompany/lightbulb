@@ -18,6 +18,15 @@ from core.services import stripe_webhook_handlers as handlers
 
 
 @pytest.fixture(autouse=True)
+def _stub_reconcile_dispatch(monkeypatch):
+    """Live subscription events dispatch a durable reconcile (a Step Functions execution), and a
+    dispatch that cannot start raises so Stripe redelivers. Stub it so no test reaches AWS."""
+    dispatch = AsyncMock(return_value=True)
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_reconcile", dispatch)
+    return dispatch
+
+
+@pytest.fixture(autouse=True)
 def configured_prices(monkeypatch):
     monkeypatch.setattr("core.config.settings.STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
     monkeypatch.setattr("core.config.settings.STRIPE_ULTRA_PRICE_ID", "price_ultra")

@@ -31,7 +31,11 @@ def hermes(monkeypatch):
     monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
     reconcile = AsyncMock(return_value="current")
     monkeypatch.setattr(provision_runner.hermes_provisioning, "reconcile_runtime", reconcile)
-    return SimpleNamespace(prepare=prepare, provision=provision, reconcile=reconcile)
+    drain = AsyncMock()
+    monkeypatch.setattr("core.services.onboarding_brief.reconcile_pending_brief", drain)
+    arm_trial = AsyncMock(return_value=None)
+    monkeypatch.setattr("core.repositories.billing_repo.arm_trial_if_unset", arm_trial)
+    return SimpleNamespace(prepare=prepare, provision=provision, reconcile=reconcile, drain=drain, arm_trial=arm_trial)
 
 
 @pytest.fixture
@@ -62,6 +66,49 @@ async def test_happy_path_runs_every_leg_and_exits_0(monkeypatch, hermes, repo):
     hermes.provision.assert_awaited_once_with("org_a")
     hermes.reconcile.assert_awaited_once_with("org_a")
     repo.mark_provision_error.assert_not_awaited()
+
+
+async def test_the_brief_drains_after_step_0_and_the_trial_arms_after_the_runtime(monkeypatch, hermes, repo):
+    """The two duties the status poll used to run: the pending onboarding brief once the
+    Paperclip company is active (step 0), the trial clock once the runtime is running."""
+    order: list[str] = []
+    monkeypatch.setattr(
+        provision_runner, "_seed_owner_paperclip", AsyncMock(side_effect=lambda _o: order.append("seed") or 0)
+    )
+    hermes.drain.side_effect = lambda _o: order.append("drain")
+    hermes.provision.side_effect = lambda _o: order.append("runtime")
+    hermes.arm_trial.side_effect = lambda _o: order.append("arm_trial")
+    hermes.reconcile.side_effect = lambda _o: order.append("reconcile")
+
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
+    assert order == ["seed", "drain", "runtime", "arm_trial", "reconcile"]
+
+
+async def test_drain_and_trial_arm_failures_never_fail_the_provision(monkeypatch, hermes, repo):
+    hermes.drain.side_effect = RuntimeError("paperclip down")
+    hermes.arm_trial.side_effect = RuntimeError("ddb down")
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
+    hermes.reconcile.assert_awaited_once_with("org_a")
+    repo.mark_provision_error.assert_not_awaited()
+
+
+async def test_a_slow_brief_drain_is_bounded(monkeypatch, hermes, repo):
+    """The drain sleeps between its own retries; it must not eat the runtime leg's Lambda budget."""
+    import asyncio
+
+    async def _hang(_owner_id):
+        await asyncio.sleep(3600)
+
+    hermes.drain.side_effect = _hang
+    monkeypatch.setattr(provision_runner, "BRIEF_DRAIN_TIMEOUT_S", 0.01)
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
+    hermes.provision.assert_awaited_once_with("org_a")
+
+
+async def test_a_failed_runtime_leg_does_not_arm_the_trial(monkeypatch, hermes, repo):
+    hermes.provision.side_effect = RuntimeError("create failed")
+    await provision_runner.run("org_a")
+    hermes.arm_trial.assert_not_awaited()
 
 
 async def test_a_live_row_skips_the_early_prepare_so_the_reconcile_sees_the_boot_change(monkeypatch, hermes, repo):

@@ -8,6 +8,7 @@ import { Card } from "@/components/admin/Card";
 import { EmptyState } from "@/components/admin/EmptyState";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { WipeAccountDialog } from "@/components/admin/WipeAccountDialog";
+import { WipeWorkspaceDialog } from "@/components/admin/WipeWorkspaceDialog";
 
 export const metadata = { title: "Actions \u00b7 Admin" };
 
@@ -74,6 +75,15 @@ export default async function ActionsPage({
           </p>
           <WipeAccountDialog userId={id} email={email} />
         </div>
+        {overview?.org ? (
+          <div className="mt-4 space-y-2">
+            <p className="text-xs text-muted-foreground">
+              Wipes this member&apos;s whole workspace ({overview.org.name || overview.org.id}) and
+              its members, layer by layer. Billing is kept unless explicitly included.
+            </p>
+            <WipeWorkspaceDialog orgId={overview.org.id} />
+          </div>
+        ) : null}
       </Card>
 
       {entries.length === 0 ? (

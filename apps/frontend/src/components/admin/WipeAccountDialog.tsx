@@ -171,47 +171,23 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
               </h3>
               <StepList steps={previewSteps} />
             </div>
-            <div className="space-y-1">
-              <label
-                htmlFor="wipe-confirm-email"
-                className="text-xs font-medium uppercase tracking-caps text-muted-foreground"
-              >
-                Type{" "}
-                <span className="font-mono font-semibold text-foreground">{email}</span>{" "}
-                to confirm
-              </label>
-              <Input
-                id="wipe-confirm-email"
-                value={typedEmail}
-                onChange={(e) => setTypedEmail(e.target.value)}
-                placeholder={email ?? ""}
-                autoComplete="off"
-                spellCheck={false}
-                disabled={executing}
-                aria-label={`Type ${email} to confirm`}
-              />
-            </div>
+            <ConfirmInput
+              id="wipe-confirm-email"
+              phrase={email ?? ""}
+              action="to confirm"
+              value={typedEmail}
+              onChange={setTypedEmail}
+              disabled={executing}
+            />
             {workspacePhrase ? (
-              <div className="space-y-1">
-                <label
-                  htmlFor="wipe-confirm-workspace"
-                  className="text-xs font-medium uppercase tracking-caps text-muted-foreground"
-                >
-                  Type{" "}
-                  <span className="font-mono font-semibold text-foreground">{workspacePhrase}</span>{" "}
-                  to confirm the workspace
-                </label>
-                <Input
-                  id="wipe-confirm-workspace"
-                  value={typedWorkspace}
-                  onChange={(e) => setTypedWorkspace(e.target.value)}
-                  placeholder={workspacePhrase}
-                  autoComplete="off"
-                  spellCheck={false}
-                  disabled={executing}
-                  aria-label={`Type ${workspacePhrase} to confirm the workspace`}
-                />
-              </div>
+              <ConfirmInput
+                id="wipe-confirm-workspace"
+                phrase={workspacePhrase}
+                action="to confirm the workspace"
+                value={typedWorkspace}
+                onChange={setTypedWorkspace}
+                disabled={executing}
+              />
             ) : null}
           </div>
         ) : null}
@@ -252,7 +228,42 @@ function sharedCompanyNotice(shared: SharedCompany): string {
   );
 }
 
-function StepList({ steps }: { steps: WipeStep[] }) {
+/** "Type <phrase> to …" confirmation field shared by the wipe dialogs. */
+export function ConfirmInput({
+  id,
+  phrase,
+  action,
+  value,
+  onChange,
+  disabled,
+}: {
+  id: string;
+  phrase: string;
+  action: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="space-y-1">
+      <label htmlFor={id} className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
+        Type <span className="font-mono font-semibold text-foreground">{phrase}</span> {action}
+      </label>
+      <Input
+        id={id}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={phrase}
+        autoComplete="off"
+        spellCheck={false}
+        disabled={disabled}
+        aria-label={`Type ${phrase} ${action}`}
+      />
+    </div>
+  );
+}
+
+export function StepList({ steps }: { steps: WipeStep[] }) {
   if (steps.length === 0) {
     return <p className="text-sm text-muted-foreground">No resources found for this owner.</p>;
   }

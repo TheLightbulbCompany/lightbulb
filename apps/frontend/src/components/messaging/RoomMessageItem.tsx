@@ -9,6 +9,7 @@ import { MarkdownView } from "@/components/teams/shared/components/MarkdownView"
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { cn } from "@/lib/utils";
 import { EmojiPicker } from "./EmojiPicker";
+import { MessageTaskCard } from "./MessageTaskCard";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomImageAttachments } from "./RoomImageAttachments";
@@ -81,6 +82,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage} startEditing={startEditing} onEditingClosed={onEditingClosed} actions={actions} menuExtras={menuExtras}>
         <MarkdownView skipHtml components={markdown} urlTransform={urlTransform}>{text}</MarkdownView>
       </RoomMessageContent>
+      {message.author.kind === "agent" && !message.deletedAt && <MessageTaskCard text={message.text} />}
       {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
         {appliedReactions.map(([emoji, users]) => {
           const selected = users.includes(currentUserId);

@@ -181,18 +181,45 @@ async def test_claim_loser_times_out_to_a_stored_fallback(monkeypatch, store, me
 
 
 @pytest.mark.asyncio
-async def test_missing_key_disables_before_any_io(monkeypatch, store, metrics):
+async def test_missing_key_does_no_jev_work_and_stores_one_shared_fallback(monkeypatch, store, metrics):
+    # Seen on dev 2026-09-23: ONE backend task had no key (a failed read) and fell back to
+    # dispatch-all while another task routed -> two responders. A key-less consumer now joins
+    # the shared decision row instead of acting alone.
     monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value=None))
     claim = AsyncMock()
     monkeypatch.setattr(jev.messaging_repo, "claim_decision", claim)
     decide = AsyncMock()
     monkeypatch.setattr(jev, "decide", decide)
-    assert await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[]) is None
+    result = await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    assert result == {"fallback": True, "reason": "disabled"} == store[(ROOM, "m1")]
     claim.assert_not_awaited()
     decide.assert_not_awaited()
     jev.agent_card.assert_not_awaited()
-    assert store == {}
     assert ("messaging.jev.decision", {"dimensions": {"outcome": "disabled"}}) in metrics
+
+
+@pytest.mark.asyncio
+async def test_missing_key_follows_a_decision_another_task_already_made(monkeypatch, store, metrics):
+    monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value=None))
+    routed = {"who": "a1", "whoP": {"a1": 0.97}, "placement": "thread"}
+    store[(ROOM, "m1")] = routed
+    assert await jev.route(META, "a2", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[]) == routed
+
+
+@pytest.mark.asyncio
+async def test_missing_key_waits_for_a_pending_decision_like_a_loser(monkeypatch, store, metrics):
+    monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value=None))
+    monkeypatch.setattr(jev, "_LOSER_POLL_S", 0.01)
+    store[(ROOM, "m1")] = {"pending": True, "claimedAt": 0}
+
+    async def winner_finishes():
+        await asyncio.sleep(0.03)
+        store[(ROOM, "m1")] = {"who": "a1", "whoP": {"a1": 0.9}, "placement": "main"}
+
+    task = asyncio.create_task(winner_finishes())
+    result = await jev.route(META, "a2", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    await task
+    assert result["who"] == "a1"
 
 
 @pytest.mark.asyncio

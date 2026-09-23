@@ -32,7 +32,8 @@ logger = logging.getLogger(__name__)
 MODEL = "typesafe-ai/jev"
 _URL = "https://ai-gateway.vercel.sh/v1/evaluate"
 _TIMEOUT_S = 3.0
-_KEY_RETRY_S = 300
+#: A failed key read retries quickly: one key-less task in a fleet splits routing decisions.
+_KEY_RETRY_S = 30
 _KEY_TTL_S = 3600
 _CARD_TTL_S = 600
 _QUIET_S = 600
@@ -107,7 +108,7 @@ async def _gateway_key() -> str | None:
     try:
         _key = await _off(_read_secret, name)
     except Exception as exc:  # noqa: BLE001 -- missing secret == feature off
-        logger.info("Jev disabled: %s unreadable (%s)", name, type(exc).__name__)
+        logger.warning("Jev key unreadable: %s (%s)", name, type(exc).__name__)
         _key = None
     return _key
 
@@ -399,12 +400,21 @@ async def route(
     """The final decision for this message, computed once across every candidate's consumer.
     ``None`` means fall back (Jev disabled, down, or the winner never finished). Never raises."""
     try:
-        # Disabled means NO work: no cards, no S3/Paperclip reads, no DECISION row.
-        if not await _gateway_key():
-            put_metric("messaging.jev.decision", dimensions={"outcome": "disabled"})
-            return None
         room_id, message_id = meta["roomId"], message["messageId"]
-        if await messaging_repo.claim_decision(room_id, message_id):
+        if not await _gateway_key():
+            # No key on THIS task: do no Jev/card work, but never act alone -- another backend
+            # task may hold a key and route this message (dev 2026-09-23: a key-less task fell
+            # back while another routed, so two agents answered). Follow a decision already
+            # made, wait on one in flight, else store one shared fallback everyone follows.
+            put_metric("messaging.jev.decision", dimensions={"outcome": "disabled"})
+            stored = await messaging_repo.get_decision(room_id, message_id)
+            if stored is None:
+                return await messaging_repo.finalize_decision(
+                    room_id, message_id, {"fallback": True, "reason": "disabled"}
+                )
+            if not stored.get("pending"):
+                return stored
+        elif await messaging_repo.claim_decision(room_id, message_id):
             try:
                 decision = await asyncio.wait_for(
                     _decide_for_message(meta, message, latest, members, history), _DECIDE_BUDGET_S

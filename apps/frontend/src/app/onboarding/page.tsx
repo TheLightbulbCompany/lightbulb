@@ -29,12 +29,10 @@ export default function OnboardingPage() {
 
   // /chat stamps its theme on <html> and a client redirect from /chat keeps it,
   // which repaints this page's ground as the chat pane (white, or dark). Lift
-  // it while onboarding is mounted and put it back for the way into /chat.
+  // it here; /chat's layout re-stamps it from storage on the way back in.
   useEffect(() => {
-    const root = document.documentElement;
-    const saved = [THEME_ATTR, ACCENT_ATTR].map((name) => [name, root.getAttribute(name)] as const);
-    saved.forEach(([name]) => root.removeAttribute(name));
-    return () => saved.forEach(([name, value]) => { if (value !== null) root.setAttribute(name, value); });
+    document.documentElement.removeAttribute(THEME_ATTR);
+    document.documentElement.removeAttribute(ACCENT_ATTR);
   }, []);
 
   useEffect(() => {

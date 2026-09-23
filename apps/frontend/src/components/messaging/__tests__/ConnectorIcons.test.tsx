@@ -4,7 +4,7 @@ import React from "react";
 
 import { ConnectorIcon } from "../ConnectorIcons";
 import { CONNECTOR_BRAND } from "../connectorBrand";
-import { CONNECTOR_STEPS } from "../onboardingSteps";
+import { CONNECTOR_STEPS } from "@lightbulb/shared";
 
 describe("ConnectorIcon", () => {
   it("draws a real mark for every connector card, so none renders bare", () => {

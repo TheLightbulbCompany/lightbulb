@@ -56,6 +56,20 @@ export { createMessagingClient } from "./messaging/client";
 export { wrapSelection } from "./messaging/composerText";
 export type { MarkdownStyle } from "./messaging/composerText";
 export { LISTEN_MODE_LABELS, listenModeOptions, respondHint } from "./messaging/respondHint";
+export {
+  buildSetupSteps,
+  isBandComplete,
+  CONNECTOR_STEPS,
+  STARTER_AGENT_DEFAULT_NAMES,
+} from "./messaging/onboardingSteps";
+export type {
+  SetupStep,
+  SetupStepId,
+  SetupStepInputs,
+  SetupParticipant,
+  SetupConnection,
+  SetupBilling,
+} from "./messaging/onboardingSteps";
 export type { RespondTarget } from "./messaging/respondHint";
 export {
   GROUP_WINDOW_MS,

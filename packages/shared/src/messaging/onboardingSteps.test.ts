@@ -1,29 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSetupSteps, isBandComplete, STARTER_AGENT_DEFAULT_NAMES } from "../onboardingSteps";
-import type { Connection } from "@/hooks/useConnections";
-import type { RoomParticipant } from "../types";
+import {
+  buildSetupSteps,
+  isBandComplete,
+  STARTER_AGENT_DEFAULT_NAMES,
+  type SetupConnection as Connection,
+  type SetupParticipant as RoomParticipant,
+} from "./onboardingSteps";
 
-const connection = (provider: string, status: Connection["status"]): Connection => ({
-  provider,
-  display_name: provider,
-  acquisition: "direct_oauth",
-  status,
-});
+const connection = (provider: string, status: string): Connection => ({ provider, status });
 
 const ALL_CONNECTED = ["stripe", "github", "notion"].map((p) => connection(p, "connected"));
 const CATALOG = ["stripe", "github", "notion"].map((p) => connection(p, "disconnected"));
 
-const participant = (kind: "human" | "agent", id: string, displayName: string): RoomParticipant => ({
-  kind,
-  id,
-  displayName,
-  mentionHandle: kind === "agent" ? displayName.toLowerCase() : null,
-  role: "member",
-  listenMode: null,
-  joinedAt: "2026-09-20T00:00:00Z",
-  joinedSeq: 0,
-});
+const participant = (kind: "human" | "agent", id: string, displayName: string): RoomParticipant => ({ kind, id, displayName });
 
 const STARTER_SIX = [...STARTER_AGENT_DEFAULT_NAMES].map((name, i) => participant("agent", `agent_${i}`, name));
 const SOLO = [participant("human", "user_a", "Aden"), ...STARTER_SIX];

@@ -40,12 +40,31 @@ vi.mock("@clerk/nextjs", () => {
   return { UserButton };
 });
 
+const openMarketplace = vi.fn();
+vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
+  useMarketplaceDrawer: () => ({ open: openMarketplace }),
+}));
+
 vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), useWorkspaceState: () => ({ activePanelId }) }));
 
 import { trackTeamRunActivity } from "@/components/notifications/teamRunActivity";
 import { WorkspaceHeader } from "../WorkspaceHeader";
 
 describe("WorkspaceHeader", () => {
+  it("offers Hire right after Tasks and opens the marketplace, not a panel", () => {
+    render(<WorkspaceHeader chatReady={false} />);
+    const labels = within(screen.getByRole("navigation", { name: "Workspace" }))
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label"));
+    expect(labels.indexOf("Hire an agent")).toBe(labels.indexOf("Tasks") + 1);
+    const hire = screen.getByRole("button", { name: "Hire an agent" });
+    expect(hire).not.toBeDisabled();
+    openPanel.mockClear();
+    fireEvent.click(hire);
+    expect(openMarketplace).toHaveBeenCalledWith({ view: "browse" });
+    expect(openPanel).not.toHaveBeenCalled();
+  });
+
   it.each([["Home", "teams-dashboard"], ["Activity", "teams-inbox"], ["Tasks", "teams-issues"]])("opens %s and marks the active destination", (label, panel) => {
     activePanelId = panel;
     render(<WorkspaceHeader />);

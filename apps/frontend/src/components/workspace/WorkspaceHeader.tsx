@@ -2,13 +2,15 @@
 
 import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
-import { Bell, Chrome, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Plug, Search, Settings } from "lucide-react";
+import { Fragment } from "react";
+import { Bell, Chrome, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Plug, Search, Settings, UserPlus } from "lucide-react";
 import Link from "next/link";
 import { useRuntimeHost } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
 import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
+import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { activateMessagesPanel, openPanel, useWorkspaceState } from "./workspaceController";
 import { describePanel, MESSAGES_PANEL_ID } from "./panelRegistry";
 import { ThemeToggles } from "@/components/chat/ThemeToggles";
@@ -27,6 +29,7 @@ const DESTINATIONS = [
 export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): React.ReactElement {
   const { openSupport } = useSupport();
   const { setOpen } = useCommandPalette();
+  const { open: openMarketplace } = useMarketplaceDrawer();
   const { activePanelId } = useWorkspaceState();
   const activeTeamRunCount = useActiveTeamRunCount();
   // The Browser panel watches an AgentCore Browser session, so the rail offers
@@ -50,7 +53,7 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
           ? `${label}, ${activeTeamRunCount} active team ${activeTeamRunCount === 1 ? "run" : "runs"}`
           : label;
         // Messaging never needs the container; the other destinations do.
-        return <button key={panel} type="button" aria-label={accessibleLabel} title={accessibleLabel}
+        return <Fragment key={panel}><button type="button" aria-label={accessibleLabel} title={accessibleLabel}
           disabled={!chatReady && panel !== MESSAGES_PANEL_ID}
           aria-current={activePanelId === panelId ? "page" : undefined}
           onClick={() => {
@@ -63,7 +66,16 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
             {showsActivity && <span className="workspace-rail__activity-badge" aria-hidden="true">{activeTeamRunCount > 9 ? "9+" : activeTeamRunCount}</span>}
           </span>
           {label !== "Browse workspace files" && <span>{label}</span>}
-        </button>;
+        </button>
+        {/* Hiring is a primary verb for AI employees: the marketplace drawer, not a
+            dock panel, and it needs no container, so it is never disabled. */}
+        {panel === "teams-issues" && (
+          <button type="button" aria-label="Hire an agent" title="Hire an agent"
+            onClick={() => openMarketplace({ view: "browse" })}>
+            <span className="workspace-rail__icon"><UserPlus size={20} aria-hidden="true" /></span>
+            <span>Hire</span>
+          </button>
+        )}</Fragment>;
       })}
       <div className="workspace-rail__spacer" />
       {/* Appearance sits above the help/settings/account group: it changes how

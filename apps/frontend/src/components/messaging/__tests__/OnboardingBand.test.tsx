@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import React from "react";
 
 import { OnboardingBand } from "../OnboardingBand";
-import { STARTER_AGENT_DEFAULT_NAMES } from "../onboardingSteps";
+import { STARTER_AGENT_DEFAULT_NAMES } from "@lightbulb/shared";
 import type { Connection } from "@/hooks/useConnections";
 import type { RoomParticipant } from "../types";
 

@@ -1,6 +1,8 @@
-import type { BillingAccount } from "@/hooks/useBilling";
-import type { Connection } from "@/hooks/useConnections";
-import type { RoomParticipant } from "./types";
+// Structural inputs, so web and mobile hand in whatever shape their own hooks
+// return (web `useConnections`/`useBilling`, mobile's REST reads).
+export interface SetupParticipant { kind: string; id: string; displayName: string }
+export interface SetupConnection { provider: string; status: string }
+export interface SetupBilling { is_subscribed?: boolean | null; plan?: string | null; provider_choice?: string | null }
 
 // =============================================================================
 // The onboarding setup band's state — derived, never stored.
@@ -78,8 +80,8 @@ export const STARTER_AGENT_DEFAULT_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 export interface SetupStepInputs {
-  participants: readonly RoomParticipant[];
-  connections: readonly Connection[];
+  participants: readonly SetupParticipant[];
+  connections: readonly SetupConnection[];
   /**
    * Live agent id -> name, from the agent roster.
    *
@@ -97,7 +99,7 @@ export interface SetupStepInputs {
    */
   workspaceMembers: number;
   /** `GET /billing/account`; null/undefined while unknown, which shows no billing card. */
-  billing?: Pick<BillingAccount, "is_subscribed" | "plan" | "provider_choice"> | null;
+  billing?: SetupBilling | null;
 }
 
 /**

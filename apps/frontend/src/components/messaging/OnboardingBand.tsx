@@ -14,7 +14,7 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { buildSetupSteps, isBandComplete, type SetupStep, type SetupStepId } from "./onboardingSteps";
+import { buildSetupSteps, isBandComplete, type SetupStep, type SetupStepId } from "@lightbulb/shared";
 import { openPanel } from "@/components/workspace/workspaceController";
 import { ConnectorIcon } from "./ConnectorIcons";
 import type { RoomParticipant } from "./types";

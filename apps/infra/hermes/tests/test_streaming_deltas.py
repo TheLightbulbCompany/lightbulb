@@ -28,7 +28,8 @@ def publisher(fail=False):
     calls = []
 
     def publish(endpoint, channel, *events):
-        calls.append([e["payload"]["frame"] for e in events])
+        # `seq` has its own ordering tests (test_frames.py); these compare batching only.
+        calls.append([{k: v for k, v in e["payload"]["frame"].items() if k != "seq"} for e in events])
         if fail and any(f.get("append") for f in calls[-1]):  # only the streaming batches blow up
             raise RuntimeError("appsync said no")
         return 200

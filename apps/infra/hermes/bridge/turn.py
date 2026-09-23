@@ -749,6 +749,17 @@ class FramePublisher:
         self._lock = threading.Lock()
         self._queue: list[dict] = []
         self._queued_at = 0.0
+        # Ordering (dev 2026-09-23: a stream rendered scrambled): every frame gets a per-run
+        # monotonically increasing `seq` under the lock, and one sender at a time POSTs, so
+        # batches leave in seq order. The client orders/de-duplicates by seq; AppSync does not
+        # guarantee order across publishes, so seq is the real fix and the send lock the cheap half.
+        self._seq = 0
+        self._send_lock = threading.RLock()
+
+    def _numbered(self, frame: dict) -> dict:
+        """Caller holds self._lock."""
+        self._seq += 1
+        return {**frame, "seq": self._seq}
 
     def _send(self, frames: list[dict]) -> None:
         """Build the events and POST them in ONE guarded step — a frame never fails a run, and
@@ -765,18 +776,26 @@ class FramePublisher:
         under the lock so the cap is an invariant, not a hope. A failed batch DROPS its
         streaming frames (runs.ts does the same: text catch-up rides the final full-text
         chunk, so deltas are the first thing to give up on)."""
-        while True:
-            with self._lock:
-                batch, self._queue = self._queue[:FRAME_BATCH], self._queue[FRAME_BATCH:]
-            if not batch:
-                return
-            self._send(batch)
+        with self._send_lock:
+            while True:
+                with self._lock:
+                    batch, self._queue = self._queue[:FRAME_BATCH], self._queue[FRAME_BATCH:]
+                if not batch:
+                    return
+                self._send(batch)
 
     def emit(self, frame: dict) -> None:
         if not self._endpoint or not self._channel:
             return
-        self._flush()  # ordering: queued deltas go out before the lifecycle frame they precede
-        self._send([frame])
+        with self._send_lock:
+            # Take the queued deltas AND number this frame in one step: a delta queued after
+            # it then gets a higher seq and stays queued behind it.
+            with self._lock:
+                pending, self._queue = self._queue, []
+                frame = self._numbered(frame)
+            for i in range(0, len(pending), FRAME_BATCH):
+                self._send(pending[i : i + FRAME_BATCH])
+            self._send([frame])
 
     def _stream(self, frame: dict) -> None:
         """Queue a streaming frame; ship the batch once it is full or has aged out. No timer
@@ -788,7 +807,7 @@ class FramePublisher:
         with self._lock:
             if not self._queue:
                 self._queued_at = now_s
-            self._queue.append(frame)
+            self._queue.append(self._numbered(frame))
             full = len(self._queue) >= FRAME_BATCH or (now_s - self._queued_at) * 1000 >= FRAME_FLUSH_MS
         if full:
             self._flush()

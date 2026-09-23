@@ -432,6 +432,42 @@ async def test_message_replay_returns_original_and_changed_body_conflicts(table)
 
 
 @pytest.mark.asyncio
+async def test_create_message_refuses_a_human_author_with_no_member_row(table):
+    """A sender who lost their MEMBER row before this transaction committed (e.g. removed
+    mid-request, after the caller's own require_room_member pre-check passed) must not have
+    their message land. USER_B is never added to the room."""
+    room_id, _ = await _room()
+    with pytest.raises(repo.MessageForbidden):
+        await _post(room_id, author={"kind": "human", "id": USER_B, "displayName": "Bea"}, targets=[])
+    assert (await repo.get_room(room_id))["lastSeq"] == 0  # nothing committed
+
+
+@pytest.mark.asyncio
+async def test_create_message_refuses_an_agent_author_with_no_member_row(table):
+    """Same guard for the agent path -- GAUGE is a valid agent id but never added to this
+    room, standing in for one removed between the caller's get_member pre-check and commit."""
+    room_id, _ = await _room()
+    with pytest.raises(repo.MessageForbidden):
+        await repo.create_message(
+            room_id=room_id,
+            owner_id=OWNER,
+            idemp_pk=repo.owner_pk(OWNER),
+            idemp_sk=repo.agent_idemp_sk("evt-1"),
+            req_hash=repo.request_hash("hi"),
+            author={"kind": "agent", "id": GAUGE, "displayName": "Gauge"},
+            text="hi",
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+            run_id=None,
+            dispatch_targets=[],
+            source_agent_id=GAUGE,
+            client_message_id=None,
+        )
+    assert (await repo.get_room(room_id))["lastSeq"] == 0  # nothing committed
+
+
+@pytest.mark.asyncio
 async def test_agent_receipt_is_owner_scoped_by_event_id(table):
     room_id, _ = await _room()
     author = {"kind": "agent", "id": FRIDAY, "displayName": "Friday"}

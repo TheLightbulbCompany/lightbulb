@@ -145,13 +145,14 @@ def profile_paths(materializer: str) -> tuple[str, ...]:
 # Upgrade path if that ever bites: the DynamoDB claim-lease the provisioning path already uses.
 # Not built, because the window is one owner connecting two accounts of one provider within the
 # same couple of seconds from two browser tabs.
-_owner_locks: dict[str, threading.Lock] = {}
+_owner_locks: dict[str, threading.RLock] = {}
 _owner_locks_guard = threading.Lock()
 
 
-def _owner_lock(owner_id: str) -> threading.Lock:
+def _owner_lock(owner_id: str) -> threading.RLock:
+    # Reentrant: _run_and_sync merges cli-env.json (which takes it too) inside its own hold.
     with _owner_locks_guard:
-        return _owner_locks.setdefault(owner_id, threading.Lock())
+        return _owner_locks.setdefault(owner_id, threading.RLock())
 
 
 def _snapshot(root: Path, materializer: str) -> dict[str, bytes]:
@@ -203,13 +204,13 @@ def _run_and_sync(
         gone = before - set(files)
         for agent_id in agent_ids:
             hermes_profiles.write_profile_subtree(owner_id, agent_id, files, gone)
-    # cli-env.json is SHARED by every CLI provider (gog's keyring vars, each skill's token), so
-    # it is merged key-by-key — writing it whole from one provider's keys wiped the others'
-    # (reconnecting Google deleted VERCEL_TOKEN). After the lock above: _merge_cli_env takes it.
-    shell_env = _shell_env(materializer, provider_key, credential) if write else {}
-    updates = shell_env or ({} if write else dict.fromkeys(_shell_env_keys(materializer, provider_key)))
-    if updates:
-        for agent_id in agent_ids:
+        # cli-env.json is SHARED by every CLI provider (gog's keyring vars, each skill's token), so
+        # it is merged key-by-key — writing it whole from one provider's keys wiped the others'
+        # (reconnecting Google deleted VERCEL_TOKEN). Inside the same hold, so a concurrent
+        # connect/disconnect cannot interleave between the owned files and their shell keys.
+        shell_env = _shell_env(materializer, provider_key, credential) if write else {}
+        updates = shell_env or ({} if write else dict.fromkeys(_shell_env_keys(materializer, provider_key)))
+        for agent_id in agent_ids if updates else ():
             _merge_cli_env(owner_id, agent_id, updates)
     return result
 

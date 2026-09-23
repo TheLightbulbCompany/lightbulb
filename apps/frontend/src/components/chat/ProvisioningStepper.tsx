@@ -1198,7 +1198,17 @@ export function ProvisioningStepper({
     return (
       <>
         <AgentsBanner
-          state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : "starting"}
+          state={
+            isTerminalError
+              ? "failed"
+              : stuck
+                ? "stuck"
+                : timedOut
+                  ? "slow"
+                  : container.container_status == null
+                    ? "not_started"
+                    : "starting"
+          }
           phase={phase}
           onCheck={handleAgentsBannerCheck}
           onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
@@ -1582,6 +1592,10 @@ export function ProvisioningStepper({
 
 const AGENTS_BANNER_COPY = {
   starting: "Your team is getting ready — it'll be ready in about a minute.",
+  // No container row: nothing is provisioning (the org.created webhook is the only automatic
+  // trigger since the status poll retired). Offer "Check again" at once rather than after the
+  // 5-minute slow threshold; it starts the workspace through /container/recover.
+  not_started: "Your team hasn't started setting up yet.",
   slow: "Still going — your agents are taking a little longer than usual. You can keep messaging in the meantime.",
   stuck: "Starting your agents is taking longer than it should — something is stuck on our side. Messaging still works; contact us and we'll get it moving.",
   failed: "Setup failed — your agents couldn't start. Messaging still works; retry, or contact support if it keeps failing.",

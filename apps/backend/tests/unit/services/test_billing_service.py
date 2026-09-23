@@ -181,8 +181,6 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
 
 @pytest.mark.asyncio
 async def test_managed_switch_ensures_owner_key_before_provider_commit(monkeypatch):
-    monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_ENABLED", True)
-    monkeypatch.setattr(billing_service.settings, "OPENROUTER_PAID_CREDITS_ENABLED", True)
     monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
     monkeypatch.setattr(billing_service.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1")
     monkeypatch.setattr(
@@ -213,51 +211,7 @@ async def test_managed_switch_ensures_owner_key_before_provider_commit(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_managed_switch_is_disabled_by_default(monkeypatch):
-    monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_ENABLED", False, raising=False)
-    monkeypatch.setattr(
-        billing_service.billing_repo,
-        "get_by_owner_id",
-        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
-    )
-    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda row: True)
-    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
-    commit = AsyncMock()
-    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", commit)
-    with pytest.raises(billing_service.ChangeProviderError, match="not enabled"):
-        await billing_service.change_provider(
-            owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="openrouter_managed"
-        )
-    commit.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_managed_switch_refused_until_paid_credits_exist(monkeypatch):
-    """Explicit openrouter_managed = prepaid credits, which nobody can buy yet: a capped
-    owner switched into it would fail every turn "out of credits"."""
-    monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_ENABLED", True)
-    monkeypatch.setattr(billing_service.settings, "OPENROUTER_PAID_CREDITS_ENABLED", False)
-    monkeypatch.setattr(
-        billing_service.billing_repo,
-        "get_by_owner_id",
-        AsyncMock(return_value={"subscription_status": "active", "plan": "base", "provider_choice": None}),
-    )
-    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda row: True)
-    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
-    commit = AsyncMock()
-    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", commit)
-    with pytest.raises(billing_service.ChangeProviderError) as exc:
-        await billing_service.change_provider(
-            owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="openrouter_managed"
-        )
-    assert (exc.value.code, exc.value.status_code) == ("paid_credits_unavailable", 409)
-    commit.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_managed_key_failure_keeps_provider_unchanged(monkeypatch):
-    monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_ENABLED", True)
-    monkeypatch.setattr(billing_service.settings, "OPENROUTER_PAID_CREDITS_ENABLED", True)
     monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
     monkeypatch.setattr(billing_service.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1")
     monkeypatch.setattr(
@@ -284,8 +238,6 @@ async def test_managed_key_failure_keeps_provider_unchanged(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_managed_switch_requires_a_selected_server_model_before_commit(monkeypatch):
-    monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_ENABLED", True)
-    monkeypatch.setattr(billing_service.settings, "OPENROUTER_PAID_CREDITS_ENABLED", True)
     monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_MODEL_ID", "")
     monkeypatch.setattr(
         billing_service.billing_repo,

@@ -296,12 +296,6 @@ class Settings(BaseSettings):
     override is set it wins over SSM; empty (the default) means "ask SSM"."""
     OPENROUTER_GATE_URL: str = ""
     OPENROUTER_MANAGED_MODEL_ID: str = ""
-    OPENROUTER_MANAGED_ENABLED: bool = False
-    # Explicitly choosing openrouter_managed moves an owner off the capped daily allowance
-    # onto PREPAID credits, which cannot be bought until the settlement Lambda's
-    # OPENROUTER_MONEY_CONTRACT_VERIFIED lands (openrouter-gate-stack.ts). Off, the switch
-    # is refused and /billing/account hides the option. Set per env in service-stack.ts.
-    OPENROUTER_PAID_CREDITS_ENABLED: bool = False
 
     # Billing / Stripe
     STRIPE_SECRET_KEY: str = ""
@@ -567,11 +561,6 @@ class Settings(BaseSettings):
         if v not in ("audit", "enforce"):
             raise ValueError(f"CLERK_AZP_MODE must be 'audit' or 'enforce'; got {v!r}")
         return v
-
-    @field_validator("OPENROUTER_MANAGED_ENABLED", mode="before")
-    @classmethod
-    def empty_openrouter_managed_enabled_means_disabled(cls, v: object) -> object:
-        return False if isinstance(v, str) and not v.strip() else v
 
     @model_validator(mode="after")
     def _validate_deployed_security(self) -> "Settings":

@@ -33,6 +33,8 @@ class SettlementTests(unittest.TestCase):
             "provider_name": "Anthropic", "cancelled": True, "tokens_prompt": 123,
             "tokens_completion": 45, "native_tokens_cached": 6, "router": "openrouter/auto",
         }
+        # A required settle_one callback a given test does not expect to be reached.
+        self._unused = lambda *_: self.fail("unexpected callback invocation")
 
     def test_exact_nanodollars_and_canceled_generation(self):
         event = worker.event_for(self.row, self.generation)
@@ -76,8 +78,9 @@ class SettlementTests(unittest.TestCase):
         calls = []
         result = worker.settle_one(row, get_generation=lambda *_: calls.append("lookup"),
                                    ingest=lambda *_: calls.append("ingest"),
-                                   commit=lambda *_: calls.append("commit"), verified=True,
-                                   now=1_700_000_001)
+                                   commit=lambda *_: calls.append("commit"), now=1_700_000_001,
+                                   commit_free=self._unused, release_unknown=self._unused,
+                                   release_stale_metadata=self._unused)
         self.assertEqual(result, "unknown_generation")
         self.assertEqual(calls, [])
 
@@ -87,7 +90,8 @@ class SettlementTests(unittest.TestCase):
         calls = []
         result = worker.settle_one(
             zero_row, get_generation=lambda *_: None, ingest=lambda *_: self.fail("ingested"),
-            commit=lambda *_: self.fail("committed"), verified=True, now=1_700_000_001,
+            commit=lambda *_: self.fail("committed"), now=1_700_000_001,
+            commit_free=self._unused, release_unknown=self._unused,
             release_stale_metadata=lambda row, now: calls.append((row, now)) or "released_no_generation",
         )
         self.assertEqual(result, "released_no_generation")
@@ -96,25 +100,21 @@ class SettlementTests(unittest.TestCase):
         held_row = {**self.row, "created_at": old_created}  # reservation_microcents=300_000 from fixture
         result = worker.settle_one(
             held_row, get_generation=lambda *_: None, ingest=lambda *_: self.fail("ingested"),
-            commit=lambda *_: self.fail("committed"), verified=True, now=1_700_000_001,
+            commit=lambda *_: self.fail("committed"), now=1_700_000_001,
+            commit_free=self._unused, release_unknown=self._unused,
             release_stale_metadata=lambda *_: self.fail("released a row holding a reservation"),
         )
         self.assertEqual(result, "metadata_pending")
-
-    def test_unverified_money_contract_never_ingests(self):
-        with self.assertRaises(worker.MoneyContractUnverified):
-            worker.settle_one(self.row, get_generation=lambda *_: self.generation,
-                              ingest=lambda *_: self.fail("ingested"), commit=lambda *_: None,
-                              verified=False, now=1_700_000_001)
 
     def test_bad_markup_fails_before_metronome_ingest(self):
         with patch.dict(os.environ, {"OPENROUTER_MARKUP": "0.9"}):
             with self.assertRaises(ValueError):
                 worker.settle_one(self.row, get_generation=lambda *_: self.generation,
                                   ingest=lambda *_: self.fail("ingested"), commit=lambda *_: self.fail("committed"),
-                                  verified=True, now=1_700_000_001)
+                                  now=1_700_000_001, commit_free=self._unused, release_unknown=self._unused,
+                                  release_stale_metadata=self._unused)
 
-    def test_free_zero_cost_skips_metronome_and_money_proof(self):
+    def test_free_zero_cost_skips_metronome(self):
         row = {**self.row, "billing_mode": "free", "reservation_microcents": 0}
         generation = {**self.generation, "total_cost": Decimal("0")}
         calls = []
@@ -123,7 +123,7 @@ class SettlementTests(unittest.TestCase):
             ingest=lambda *_: self.fail("free generation ingested into Metronome"),
             commit=lambda *_: self.fail("paid commit used"),
             commit_free=lambda *args: calls.append(args) or "settled",
-            verified=False, now=1_700_000_001,
+            release_unknown=self._unused, release_stale_metadata=self._unused, now=1_700_000_001,
         )
         self.assertEqual(result, "settled")
         self.assertEqual(len(calls), 1)
@@ -136,10 +136,10 @@ class SettlementTests(unittest.TestCase):
                 ingest=lambda *_: self.fail("unexpected cost ingested"),
                 commit=lambda *_: self.fail("paid commit used"),
                 commit_free=lambda *_: self.fail("free commit used"),
-                verified=True, now=1_700_000_001,
+                release_unknown=self._unused, release_stale_metadata=self._unused, now=1_700_000_001,
             )
 
-    def test_capped_positive_cost_settles_without_metronome_even_unverified(self):
+    def test_capped_positive_cost_settles_without_metronome(self):
         row = {**self.row, "billing_mode": "capped", "reservation_microcents": 0}
         calls = []
         result = worker.settle_one(
@@ -147,7 +147,7 @@ class SettlementTests(unittest.TestCase):
             ingest=lambda *_: self.fail("capped generation ingested into Metronome"),
             commit=lambda *_: self.fail("paid commit used"),
             commit_free=lambda *args: calls.append(args) or "settled",
-            verified=False, now=1_700_000_001,
+            release_unknown=self._unused, release_stale_metadata=self._unused, now=1_700_000_001,
         )
         self.assertEqual(result, "settled")
         self.assertEqual(calls[0][3], 12345678)
@@ -167,7 +167,9 @@ class SettlementTests(unittest.TestCase):
             return "settled"
         for _ in range(2):
             self.assertEqual(worker.settle_one(self.row, get_generation=lookup, ingest=ingest,
-                                                commit=commit, verified=True, now=1_700_000_001), "settled")
+                                                commit=commit, now=1_700_000_001, commit_free=self._unused,
+                                                release_unknown=self._unused,
+                                                release_stale_metadata=self._unused), "settled")
         self.assertEqual(seen[:2], [("gen-1", "old-secret"), "gen-1"])
         self.assertEqual(len(committed), 1)
 
@@ -178,7 +180,8 @@ class SettlementTests(unittest.TestCase):
             generation = {**self.generation, "id": generation_id}
             worker.settle_one(row, get_generation=lambda *_: generation,
                               ingest=events.append, commit=lambda *_: "settled",
-                              verified=True, now=1_700_000_001)
+                              now=1_700_000_001, commit_free=self._unused,
+                              release_unknown=self._unused, release_stale_metadata=self._unused)
         self.assertEqual([event["transaction_id"] for event in events], ["gen-1", "gen-2"])
 
     def test_activity_gap_and_30_day_completed_utc_boundary(self):
@@ -346,11 +349,6 @@ class SettlementTests(unittest.TestCase):
         store = worker.Store(Ddb(), requests_table="requests", fast_table="fast")
         self.assertEqual([row["request_id"] for row in store.pending()], ["stuck", "new"])
 
-    def test_lambda_handler_fails_closed_without_money_proof(self):
-        with patch.dict(os.environ, {"OPENROUTER_MONEY_CONTRACT_VERIFIED": "false", "OPENROUTER_RATE_CARD_PROOF_ID": ""}):
-            with self.assertRaises(worker.MoneyContractUnverified):
-                worker.handler({}, None)
-
     def test_key_audit_pages_the_configured_workspace_including_disabled_keys(self):
         urls = []
         def fetch(url, _key):
@@ -364,7 +362,7 @@ class SettlementTests(unittest.TestCase):
     def test_scheduled_previous_day_audit_uses_completed_utc_day(self):
         seen = []
         fake_boto = types.SimpleNamespace(client=lambda _: object())
-        with patch.object(worker, "_verified", return_value=True), patch.object(worker, "Store", return_value=object()), patch.object(worker, "_audit", side_effect=lambda _store, day, today: seen.append((day, today)) or {}), patch.dict(sys.modules, {"boto3": fake_boto}), patch.dict(os.environ, {"REQUESTS_TABLE": "requests", "FAST_GATE_TABLE": "fast"}):
+        with patch.object(worker, "Store", return_value=object()), patch.object(worker, "_audit", side_effect=lambda _store, day, today: seen.append((day, today)) or {}), patch.dict(sys.modules, {"boto3": fake_boto}), patch.dict(os.environ, {"REQUESTS_TABLE": "requests", "FAST_GATE_TABLE": "fast"}):
             result = worker.handler({"audit_previous_day": True}, None)
         self.assertEqual(date.fromisoformat(seen[0][0]), date.fromisoformat(seen[0][1]) - timedelta(days=1))
         self.assertEqual(result["audited_date"], seen[0][0])
@@ -434,7 +432,7 @@ class SettlementTests(unittest.TestCase):
 
     def test_retirement_event_runs_without_metronome_proof(self):
         fake_boto = types.SimpleNamespace(client=lambda _: object())
-        with patch.object(worker, "_verified", return_value=False), patch.object(worker, "Store", return_value=types.SimpleNamespace(keys_table="keys")), patch.object(worker, "_retire_scheduled", return_value={"disabled": 1}) as retire, patch.dict(sys.modules, {"boto3": fake_boto}), patch.dict(os.environ, {"REQUESTS_TABLE": "requests", "FAST_GATE_TABLE": "fast", "OPENROUTER_KEYS_TABLE": "keys"}):
+        with patch.object(worker, "Store", return_value=types.SimpleNamespace(keys_table="keys")), patch.object(worker, "_retire_scheduled", return_value={"disabled": 1}) as retire, patch.dict(sys.modules, {"boto3": fake_boto}), patch.dict(os.environ, {"REQUESTS_TABLE": "requests", "FAST_GATE_TABLE": "fast", "OPENROUTER_KEYS_TABLE": "keys"}):
             result = worker.handler({"retire_keys": True}, None)
         self.assertEqual(result["retirement"]["disabled"], 1)
         retire.assert_called_once()
@@ -579,8 +577,7 @@ class ScheduledRunTests(unittest.TestCase):
         generations = {row["generation_id"]: {"id": row["generation_id"], "total_cost": cost, "created_at": "2026-09-22T00:00:00Z"}
                        for row, cost in self.costs}
         env = {"REQUESTS_TABLE": "requests", "FAST_GATE_TABLE": "fast", "OPENROUTER_KEYS_TABLE": "keys", "GATE_ENV": "dev",
-               "OPENROUTER_WORKSPACE_ID": "ws-1", "OPENROUTER_MANAGEMENT_KEY_SECRET_ID": "management",
-               "OPENROUTER_MONEY_CONTRACT_VERIFIED": "false", "OPENROUTER_RATE_CARD_PROOF_ID": ""}
+               "OPENROUTER_WORKSPACE_ID": "ws-1", "OPENROUTER_MANAGEMENT_KEY_SECRET_ID": "management"}
         self.patched = []
         with patch.dict(os.environ, env), patch.dict(sys.modules, {"boto3": types.SimpleNamespace(client=lambda _: object())}), \
                 patch.object(worker, "Store", return_value=store), \
@@ -598,14 +595,6 @@ class ScheduledRunTests(unittest.TestCase):
         return {"request_id": request_id, "owner_id": owner, "key_hash": "hash-1", "secret_name": "s", "billing_mode": mode,
                 "generation_id": f"gen-{request_id}", "state": "pending", "created_at": int(time.time()) - 600,
                 "reservation_microcents": 0}
-
-    def test_metered_row_stays_pending_without_wedging_the_batch(self):
-        metered, capped, free = self.row("paid", "owner-2", "paid"), self.row("capped", "owner-1", "capped"), self.row("free", "owner-1", "free")
-        self.costs = [(metered, Decimal("0.5")), (capped, Decimal("0.012345678")), (free, Decimal("0"))]
-        store = self.Store([metered, capped, free])
-        with self.assertRaisesRegex(RuntimeError, "MoneyContractUnverified"):
-            self.run_tick(store)
-        self.assertEqual({key: row["state"] for key, row in store.rows.items()}, {"paid": "pending", "capped": "settled", "free": "settled"})
 
     def test_capped_and_free_settle_at_cost_without_metronome(self):
         capped, free = self.row("capped", "owner-1", "capped"), self.row("free", "owner-1", "free")

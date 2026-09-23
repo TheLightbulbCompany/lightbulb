@@ -13,10 +13,6 @@ class PendingSettlement(Exception):
     """Generation metadata or precision is not yet safe to bill."""
 
 
-class MoneyContractUnverified(Exception):
-    """The Metronome metric/rate and precision probe have not been approved."""
-
-
 def cost_nanodollars(value):
     try:
         cost = Decimal(str(value))
@@ -73,28 +69,26 @@ def event_for(row, generation):
 STALE_METADATA_RELEASE_S = 24 * 3600
 
 
-def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_free=None, release_unknown=None,
-                release_stale_metadata=None):
+def settle_one(row, *, get_generation, ingest, commit, now, commit_free, release_unknown,
+                release_stale_metadata):
     mode = row.get("billing_mode")
     # free and capped rows never touch Metronome: a capped owner's valve is the
     # OpenRouter per-key daily limit, so its cost is recorded, not debited.
     unmetered = mode in ("free", "capped")
-    if not verified and not unmetered:
-        raise MoneyContractUnverified("Metronome OpenRouter rate contract is unverified")
     if row.get("state") != "pending":
         return "already_processed"
     if not row.get("generation_id"):
         # The gate writes the row before calling upstream, so a gate crash before the
         # first chunk leaves a row that can never settle. Unmetered rows hold nothing;
         # release them after an hour. Metered rows keep their hold for a human.
-        if unmetered and release_unknown and now - int(row["created_at"]) >= 3600:
+        if unmetered and now - int(row["created_at"]) >= 3600:
             return release_unknown(row, now)
         return "unknown_generation"
     if now - int(row["created_at"]) >= 30 * 24 * 3600:
         return "expired_gap"  # outside OpenRouter's 30 completed-day activity window
     generation = get_generation(row["generation_id"], row["secret_name"])
     if not generation:
-        if (release_stale_metadata and int(row["reservation_microcents"]) == 0
+        if (int(row["reservation_microcents"]) == 0
                 and now - int(row["created_at"]) >= STALE_METADATA_RELEASE_S):
             return release_stale_metadata(row, now)
         return "metadata_pending"
@@ -103,8 +97,6 @@ def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_fre
     if unmetered:
         if mode == "free" and amount:
             raise PendingSettlement("Free OpenRouter generation reported positive cost")
-        if commit_free is None:
-            raise RuntimeError("Free OpenRouter settlement commit is unavailable")
         return commit_free(row, event, now, amount)
     debit_microcents(amount)  # a bad markup must fail before the Metronome ingest, not after
     ingest(event)  # Metronome deduplicates by generation ID for 34 days.
@@ -561,10 +553,6 @@ def _ingest(event):
         pass
 
 
-def _verified():
-    return os.environ.get("OPENROUTER_MONEY_CONTRACT_VERIFIED") == "true" and bool(os.environ.get("OPENROUTER_RATE_CARD_PROOF_ID"))
-
-
 def list_workspace_keys(management_key, workspace_id, *, fetch=_http_json, max_pages=100):
     if not workspace_id:
         raise ValueError("OpenRouter workspace ID is required for key audit")
@@ -654,8 +642,6 @@ RESOLVED = {"settled", "metadata_pending", "already_processed", "duplicate_gener
 def handler(event, context):
     """Scheduled settlement, or {audit_date: YYYY-MM-DD} for a daily key-usage audit."""
     event = event or {}
-    if not _verified() and (event.get("audit_previous_day") or event.get("audit_date") or not os.environ.get("OPENROUTER_KEYS_TABLE")):
-        raise MoneyContractUnverified("OpenRouter rate-card precision proof is missing")
     import boto3
     store = Store(
         boto3.client("dynamodb"), requests_table=os.environ["REQUESTS_TABLE"],
@@ -676,7 +662,6 @@ def handler(event, context):
         if gaps:
             raise RuntimeError(f"OpenRouter key activity gap on {audit_day}: {len(gaps)} key(s)")
         return {"audited_date": audit_day, "keys_with_gaps": 0}
-    verified = _verified()
     outcomes = {}
     # Settle before retiring, so a wiped owner's last rows settle and its key retires in
     # the same run. Each row is isolated: one that raises stays pending for the next tick.
@@ -691,7 +676,7 @@ def handler(event, context):
             outcome = settle_one(row, get_generation=_get_generation, ingest=_ingest,
                                  commit=store.commit, commit_free=store.commit_free,
                                  release_unknown=store.release_unknown,
-                                 release_stale_metadata=store.release_stale_metadata, verified=verified, now=now)
+                                 release_stale_metadata=store.release_stale_metadata, now=now)
             outcomes[outcome] = outcomes.get(outcome, 0) + 1
         except Exception as exc:
             # No prompts, keys, or customer IDs in logs. The row stays pending.

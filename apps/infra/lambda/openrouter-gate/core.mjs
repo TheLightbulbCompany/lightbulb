@@ -80,7 +80,6 @@ export function prepareBody(input, policy, ownerId, env) {
 export async function handleRequest(event, responder, { ddb, secrets, env, forwardImpl = forward, log = console.log }) {
   let ownerId, estimate, requestId, model;
   try {
-    if (env.OPENROUTER_MANAGED_ENABLED !== 'true') fail(503, 'Managed inference unavailable');
     if ((event.requestContext?.http?.method ?? event.httpMethod) !== 'POST' || event.rawPath !== '/v1/chat/completions') fail(404, 'Unknown route');
     const bearer = /^(?:Bearer)\s+(\S+)$/i.exec(event.headers?.authorization ?? event.headers?.Authorization ?? '')?.[1];
     if (!bearer) fail(401, 'Invalid gateway token');

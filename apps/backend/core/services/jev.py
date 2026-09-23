@@ -51,6 +51,14 @@ _LOSER_WAIT_S = _DECIDE_BUDGET_S + 3.0
 #: whole state fits ~24k chars -- generous headroom under Jev's 32k-token state limit.
 _RECENT_LIMIT = 30
 _STATE_MAX_CHARS = 24_000
+#: ``decide()``'s answer to a gateway 429. A burst of posts throttles Jev; falling straight back
+#: to one responder then runs an agent on every chit-chat line (dev 2026-09-23: 13 turns from a
+#: 44-message paste). So a throttled message retries through the queue's own redelivery, and only
+#: after this many retries (~1 min of backoff) takes the single-responder fallback.
+RATE_LIMITED = "rate_limited"
+RATE_LIMIT_RETRIES = 3
+#: Seconds before retry n may re-claim: 10, 20, 30 -- ~1 min before the fallback.
+_RATE_LIMIT_BACKOFF_S = 10
 
 #: Its own small pool and short, no-retry clients: ``wait_for`` cancels the await, not the thread,
 #: so a slow S3/Secrets Manager read must never pin the default executor DynamoDB shares.
@@ -117,8 +125,9 @@ async def _gateway_key() -> str | None:
         return _key
 
 
-async def decide(state: dict, questions: dict) -> dict | None:
-    """One Jev call. Returns the ``answers`` dict, or ``None`` on ANY failure (never raises)."""
+async def decide(state: dict, questions: dict) -> dict | str | None:
+    """One Jev call. Returns the ``answers`` dict, ``RATE_LIMITED`` on a 429, or ``None`` on any
+    other failure (never raises)."""
     key = await _gateway_key()
     if not key:
         put_metric("messaging.jev.decision", dimensions={"outcome": "disabled"})
@@ -139,7 +148,7 @@ async def decide(state: dict, questions: dict) -> dict | None:
             )
         if response.status_code == 429:
             outcome = "rate_limited"
-            return None
+            return RATE_LIMITED
         if response.status_code != 200:
             logger.warning("Jev returned %s", response.status_code)
             return None
@@ -357,6 +366,8 @@ async def _decide_for_message(
     }
     answers = await decide(state, questions)
     decided_at = datetime.now(timezone.utc).isoformat()
+    if answers == RATE_LIMITED:
+        return {"rateLimited": True, "quietChannel": quiet, "candidates": candidates, "decidedAt": decided_at}
     who, placement = (answers or {}).get("who") or {}, (answers or {}).get("placement") or {}
     if answers is None:
         return {"fallback": True, "quietChannel": quiet, "candidates": candidates, "decidedAt": decided_at}
@@ -402,24 +413,30 @@ async def route(
     meta: dict, agent_id: str, message: dict, *, latest: dict, members: list[dict], history: list[dict]
 ) -> dict | None:
     """The final decision for this message, computed once across every candidate's consumer.
-    ``None`` means fall back (Jev disabled, down, or the winner never finished). Never raises."""
+    ``None`` means routing itself errored. A ``{"retry": True, "attempts": n}`` row means Jev was
+    rate-limited: every consumer retries the message, and the first back re-claims it. Never raises."""
     try:
         room_id, message_id = meta["roomId"], message["messageId"]
+        prior = await messaging_repo.get_decision(room_id, message_id)
+        if prior and not prior.get("pending") and (not prior.get("retry") or prior.get("retryAt", 0) > time.time()):
+            # A final decision, or a rate-limit retry still backing off: nothing to compute yet.
+            return prior
+        attempts = int(prior.get("attempts") or 0) if prior and prior.get("retry") else 0
         if not await _gateway_key():
             # No key on THIS task: do no Jev/card work, but never act alone -- another backend
             # task may hold a key and route this message (dev 2026-09-23: a key-less task fell
             # back while another routed, so two agents answered). Follow a decision already
             # made, wait on one in flight, else store one shared fallback everyone follows.
             put_metric("messaging.jev.decision", dimensions={"outcome": "disabled"})
-            stored = await messaging_repo.get_decision(room_id, message_id)
-            if stored is None:
-                # Only into an ABSENT row: never overwrite a keyed task's live claim.
+            stored = prior
+            if stored is None or stored.get("retry"):
+                # Only into an ABSENT (or retry) row: never overwrite a keyed task's live claim.
                 stored = await messaging_repo.finalize_decision(
-                    room_id, message_id, {"fallback": True, "reason": "disabled"}, only_if_absent=True
+                    room_id, message_id, {"fallback": True, "reason": "disabled"}, only_if_absent=stored is None
                 )
             if not stored.get("pending"):
                 return stored
-        elif await messaging_repo.claim_decision(room_id, message_id):
+        elif await messaging_repo.claim_decision(room_id, message_id, attempts=attempts):
             try:
                 decision = await asyncio.wait_for(
                     _decide_for_message(meta, message, latest, members, history), _DECIDE_BUDGET_S
@@ -428,6 +445,16 @@ async def route(
                 # A stored fallback lets the losers stop waiting now, not at their ceiling.
                 logger.warning("Jev decision failed", exc_info=True)
                 decision = {"fallback": True, "reason": "error"}
+            if decision.get("rateLimited"):
+                decision = (
+                    {"fallback": True, "reason": "rate_limited", "candidates": decision["candidates"]}
+                    if attempts >= RATE_LIMIT_RETRIES
+                    else {
+                        "retry": True,
+                        "attempts": attempts + 1,
+                        "retryAt": int(time.time()) + _RATE_LIMIT_BACKOFF_S * (attempts + 1),
+                    }
+                )
             # First final write wins: if a loser already timed out and stored a fallback,
             # follow it, so both sides dispatch the same single agent.
             return await messaging_repo.finalize_decision(room_id, message_id, decision)

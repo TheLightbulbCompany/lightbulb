@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 
 import pytest
 from unittest.mock import AsyncMock
@@ -50,15 +51,16 @@ ANSWERS = {
 def store(monkeypatch):
     rows: dict = {}
 
-    async def claim(room_id, message_id):
-        if (room_id, message_id) in rows:
+    async def claim(room_id, message_id, *, attempts=0):
+        current = rows.get((room_id, message_id))
+        if current is not None and not (current.get("retry") and current["retryAt"] <= time.time()):
             return False
-        rows[(room_id, message_id)] = {"pending": True, "claimedAt": 0}
+        rows[(room_id, message_id)] = {"pending": True, "claimedAt": 0, "attempts": attempts}
         return True
 
     async def finalize(room_id, message_id, decision, *, only_if_absent=False):
         current = rows.get((room_id, message_id))
-        if current is None or (current.get("pending") and not only_if_absent):
+        if current is None or ((current.get("pending") or current.get("retry")) and not only_if_absent):
             rows[(room_id, message_id)] = decision
         return rows[(room_id, message_id)]
 
@@ -564,3 +566,46 @@ async def test_a_keyless_task_never_overwrites_a_live_claim(monkeypatch, store, 
     monkeypatch.setattr(jev.messaging_repo, "get_decision", get_then_claimed)
     result = await jev.route(META, "a2", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
     assert result["who"] == "a1"
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_decisions_retry_then_fall_back_after_the_cap(monkeypatch, store, metrics):
+    """Dev 2026-09-23: a 44-message paste drew 429s, and falling straight back ran one agent on
+    every chit-chat line. A 429 now stores a retry row every consumer backs off on; the first one
+    back re-claims and asks again, and only after RATE_LIMIT_RETRIES does it fall back."""
+    decide = AsyncMock(return_value=jev.RATE_LIMITED)
+    monkeypatch.setattr(jev, "decide", decide)
+    key = (META["roomId"], MESSAGE["messageId"])
+
+    async def route(agent):
+        return await jev.route(META, agent, MESSAGE, latest=MESSAGE, members=MEMBERS, history=HISTORY)
+
+    for attempt in range(1, jev.RATE_LIMIT_RETRIES + 1):
+        got = [await route(agent) for agent in ("a1", "a2")]
+        # The second consumer arrives inside the backoff: it backs off too, no second Jev call.
+        assert got[0] == got[1] and got[0]["retry"] is True and got[0]["attempts"] == attempt
+        assert decide.await_count == attempt
+        assert got[0]["retryAt"] - time.time() == pytest.approx(10 * attempt, abs=2)
+        store[key]["retryAt"] = 0  # the backoff elapses
+    final = await route("a1")
+    assert final["fallback"] is True and final["reason"] == "rate_limited"
+    assert decide.await_count == jev.RATE_LIMIT_RETRIES + 1
+    # A retry that then succeeds routes normally, and every consumer follows it.
+    store.clear()
+    decide.side_effect = [jev.RATE_LIMITED, ANSWERS]
+    assert (await route("a1"))["retry"]
+    store[key]["retryAt"] = 0
+    assert (await route("a2"))["who"] == "a1" and (await route("a1"))["who"] == "a1"
+
+
+@pytest.mark.asyncio
+async def test_a_retry_decision_backs_the_delivery_off_with_jitter(monkeypatch):
+    for agent in ("a1", "a2"):
+        with pytest.raises(work.WorkRetry) as caught:
+            await _dispatch(
+                monkeypatch,
+                "room_event",
+                agent=agent,
+                route=AsyncMock(return_value={"retry": True, "attempts": 2, "retryAt": time.time() + 20}),
+            )
+        assert 18 <= caught.value.visibility <= 25

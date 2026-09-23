@@ -1979,9 +1979,10 @@ def decision_sk(message_id: str) -> str:
 _DECISION_CLAIM_STALE_S = 60
 
 
-async def claim_decision(room_id: str, message_id: str) -> bool:
+async def claim_decision(room_id: str, message_id: str, *, attempts: int = 0) -> bool:
     """Claim-first, so Jev runs once per message: put a ``pending`` placeholder if the row is
-    absent, or take over a pending claim older than 60 s. Only the winner computes."""
+    absent, is a rate-limit ``retry`` row past its ``retryAt``, or is a pending claim older than 60 s. Only the winner
+    computes. ``attempts`` carries the retry count through the claim."""
     now = int(time.time())
     try:
         await run_in_thread(
@@ -1989,12 +1990,20 @@ async def claim_decision(room_id: str, message_id: str) -> bool:
             Item={
                 "pk": room_pk(room_id),
                 "sk": decision_sk(message_id),
-                "decision": {"pending": True, "claimedAt": now},
+                "decision": {"pending": True, "claimedAt": now, "attempts": attempts},
                 "expiresAt": _expires_at(),
             },
-            ConditionExpression="attribute_not_exists(sk) OR (#d.#p = :t AND #d.#c < :stale)",
-            ExpressionAttributeNames={"#d": "decision", "#p": "pending", "#c": "claimedAt"},
-            ExpressionAttributeValues={":t": True, ":stale": now - _DECISION_CLAIM_STALE_S},
+            ConditionExpression=(
+                "attribute_not_exists(sk) OR (#d.#r = :t AND #d.#ra <= :now) OR (#d.#p = :t AND #d.#c < :stale)"
+            ),
+            ExpressionAttributeNames={
+                "#d": "decision",
+                "#p": "pending",
+                "#c": "claimedAt",
+                "#r": "retry",
+                "#ra": "retryAt",
+            },
+            ExpressionAttributeValues={":t": True, ":now": now, ":stale": now - _DECISION_CLAIM_STALE_S},
         )
         return True
     except ClientError as exc:
@@ -2004,8 +2013,8 @@ async def claim_decision(room_id: str, message_id: str) -> bool:
 
 
 async def finalize_decision(room_id: str, message_id: str, decision: dict, *, only_if_absent: bool = False) -> dict:
-    """Write the final decision only while the row is still pending (or gone), and return
-    whatever final decision is stored. First final write wins, so a late claim winner and a
+    """Write the final decision only while the row is still pending, a rate-limit retry, or gone,
+    and return whatever final decision is stored. First final write wins, so a late claim winner and a
     loser that timed out and fell back always act on the SAME decision -- never two responders."""
     try:
         await run_in_thread(
@@ -2021,8 +2030,8 @@ async def finalize_decision(room_id: str, message_id: str, decision: dict, *, on
                 {"ConditionExpression": "attribute_not_exists(sk)"}
                 if only_if_absent
                 else {
-                    "ConditionExpression": "attribute_not_exists(sk) OR #d.#p = :t",
-                    "ExpressionAttributeNames": {"#d": "decision", "#p": "pending"},
+                    "ConditionExpression": "attribute_not_exists(sk) OR #d.#p = :t OR #d.#r = :t",
+                    "ExpressionAttributeNames": {"#d": "decision", "#p": "pending", "#r": "retry"},
                     "ExpressionAttributeValues": {":t": True},
                 }
             ),

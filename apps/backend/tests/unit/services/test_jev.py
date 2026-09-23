@@ -80,7 +80,6 @@ async def test_decide_ok_posts_zdr_request_and_meters_cost_tokens(monkeypatch):
 @pytest.mark.parametrize(
     ("handler", "outcome"),
     [
-        (lambda r: httpx.Response(429), "rate_limited"),
         (lambda r: httpx.Response(500, text="boom"), "error"),
         (lambda r: httpx.Response(200, json={"nope": 1}), "error"),
     ],
@@ -90,6 +89,14 @@ async def test_decide_failures_return_none(monkeypatch, handler, outcome):
     _gateway(monkeypatch, handler)
     assert await jev.decide({}, {}) is None
     assert ("messaging.jev.decision", {"dimensions": {"outcome": outcome}}) in metrics
+
+
+@pytest.mark.asyncio
+async def test_decide_rate_limited_returns_the_sentinel(monkeypatch):
+    metrics = _metrics(monkeypatch)
+    _gateway(monkeypatch, lambda r: httpx.Response(429))
+    assert await jev.decide({}, {}) == jev.RATE_LIMITED
+    assert ("messaging.jev.decision", {"dimensions": {"outcome": "rate_limited"}}) in metrics
 
 
 @pytest.mark.asyncio

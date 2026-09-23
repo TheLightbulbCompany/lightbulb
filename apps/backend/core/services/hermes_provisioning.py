@@ -947,9 +947,14 @@ async def reconcile_runtime(owner_id: str) -> str:
     A workspace with no live runtime is not reconciled here: the provision funnel creates it,
     and that execution runs this at its end (``provision_runner``), reading the same billing.
 
+    Before any of that, ``_reconcile_entitlements`` -- the billing-derived duties that live
+    outside the runtime (Metronome customer, nightly CEO) -- so a Stripe re-entitlement reaches
+    them however the runtime half goes.
+
     Returns ``"dispatched"``, ``"failed"``, or ``roll_runtime_image``'s answer. A failure NEVER
     flips the running row to error -- the old runtime keeps serving; it is logged and counted
     on ``provision.reconcile.failed`` (paged). A caller retries by calling this again."""
+    await _reconcile_entitlements(owner_id)
     try:
         row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
         if not (row.get("agentcore_runtime_arn") and row.get("status") == "running"):
@@ -972,6 +977,31 @@ async def reconcile_runtime(owner_id: str) -> str:
         logger.exception("reconcile_runtime failed for owner=%s", owner_id)
         put_metric("provision.reconcile.failed")
         return "failed"
+
+
+async def _reconcile_entitlements(owner_id: str) -> None:
+    """Idempotent, never raises -- each failure is logged + metered and never fails the reconcile.
+
+    * Metronome customer: ``ensure_metronome_customer`` owns eligibility (a ``trial_local`` or
+      canceled owner gets nothing). Skipped only on a POSITIVE ChatGPT/BYO choice -- inference
+      we never bill -- never on absence: under-provisioning reopens uncredited Bedrock spend.
+    * Nightly CEO: ``arm_nightly_ceo`` (paid or unexpired trial; cache-cheap once armed), so a
+      re-subscribe whose runtime survived teardown is re-armed by this reconcile."""
+    from core.billing.metronome_provisioning import ensure_metronome_customer
+    from core.repositories import billing_repo
+    from core.services.user_provision import arm_nightly_ceo
+
+    try:
+        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+        if account.get("provider_choice") not in ("chatgpt_oauth", "byo_key"):
+            await ensure_metronome_customer(owner_id=owner_id)
+    except Exception:  # noqa: BLE001 -- the credits gate fails closed; the status poll retries
+        put_metric("metronome.provision.error")
+        logger.exception("reconcile: Metronome customer ensure failed for owner=%s", owner_id)
+    try:
+        await arm_nightly_ceo(owner_id)
+    except Exception:  # noqa: BLE001 -- arm_nightly_ceo already emitted nightly_ceo.arm{status=error}
+        logger.exception("reconcile: nightly CEO arm failed for owner=%s", owner_id)
 
 
 async def reconcile_hermes_aips(owner_id: str) -> dict[str, str]:

@@ -1,6 +1,5 @@
 """Tests for POST /container/recover endpoint."""
 
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -293,97 +292,6 @@ class TestContainerRecover:
         assert response.status_code == 402
         assert response.json()["detail"]["blocked"]["code"] == "trial_daily_cap"
         mock_dispatch_provision.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_recover_stands_down_while_a_conversion_is_draining(
-        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
-    ):
-        """A trial->paid conversion has scaled the container to zero and is
-        blocked in its drain wait. A reprovision dispatched from here would land a
-        second task on the EFS-WAL SQLite. Note substatus is None: the conversion's
-        own stop_user_service already clobbered the "converting" label, so only the
-        conversion_started_at timestamp holds this off."""
-        mock_container_repo.get_by_owner_id = AsyncMock(
-            return_value={
-                "owner_id": "user_test_123",
-                "status": "stopped",
-                "substatus": None,
-                "conversion_pending": True,
-                "conversion_started_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-
-        with patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)):
-            response = await async_client.post("/api/v1/container/recover")
-
-        assert response.status_code == 200
-        assert response.json()["action"] == "already_recovering"
-        mock_dispatch_provision.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_recover_stands_down_on_a_running_row_mid_conversion(
-        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
-    ):
-        """The conversion drain is not instantaneous: reprovision_for_user scales
-        the service to zero while the container ROW still reads "running", so a
-        poll landing in that window resolves a running container whose gateway is
-        already gone.
-
-        The guard used to sit inside the stopped/error branch, so this shape fell
-        through to the gateway-restart branch, failed its update.run RPC, and wrote
-        status="error" + "Gateway restart failed — reprovisioning" over a row the
-        conversion owned. That write rendered the terminal "Setup failed" card to a
-        customer who had JUST paid, and dispatched a provision competing with the
-        conversion's own. Reproduces the prod incident of 2026-08-06.
-        """
-        mock_container_repo.get_by_owner_id = AsyncMock(
-            return_value={
-                "owner_id": "user_test_123",
-                "status": "running",
-                "substatus": None,
-                "gateway_token": "tok",
-                "conversion_pending": True,
-                "conversion_started_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-        # Gateway is down (it was drained) and the restart RPC fails — exactly the
-        # path that used to write the error.
-        mock_call_gateway_rpc.side_effect = RuntimeError("connection refused")
-
-        response = await async_client.post("/api/v1/container/recover")
-
-        assert response.status_code == 200
-        assert response.json()["action"] == "already_recovering"
-        mock_dispatch_provision.assert_not_called()
-        # The load-bearing assertion: nothing may mark the row errored. That write
-        # is what surfaced "Setup failed" post-payment.
-        mock_container_repo.update_status.assert_not_called()
-        mock_container_repo.update_error.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_recover_stands_down_on_a_running_row_with_no_ip_mid_conversion(
-        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
-    ):
-        """Same window, one step earlier: the row still reads "running" and the runtime answers
-        nothing, so without the hoisted guard the escalation below wrote status="error" over the
-        conversion's row."""
-        mock_container_repo.get_by_owner_id = AsyncMock(
-            return_value={
-                "owner_id": "user_test_123",
-                "status": "running",
-                "substatus": None,
-                "conversion_pending": True,
-                "conversion_started_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-
-        response = await async_client.post("/api/v1/container/recover")
-
-        assert response.status_code == 200
-        assert response.json()["action"] == "already_recovering"
-        mock_dispatch_provision.assert_not_called()
-        mock_container_repo.update_status.assert_not_called()
-        mock_container_repo.update_error.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_recover_stands_down_on_a_provisioning_row(

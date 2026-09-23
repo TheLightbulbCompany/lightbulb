@@ -747,9 +747,10 @@ you cannot guess from the filename:
   Teams reconcile path (`routers/teams/deps.py`) and the Paperclip-proxy
   handshake (`routers/paperclip_proxy.py`). Pre-gate steps:
   `ensure_workspace_trial_default` (auto `trial_local` row, org-only),
-  `ensure_metronome_customer`, `evaluate_provision_gate`, and
-  `_maybe_arm_nightly_ceo` (the poll-path self-heal only — the nightly CEO loop is
-  armed DETERMINISTICALLY by the provision executor's step 0 via `arm_nightly_ceo`).
+  `ensure_metronome_customer` (a retry backstop until the poll retires) and
+  `evaluate_provision_gate`. The nightly CEO loop is armed by the provision
+  executor's step 0 and by every `reconcile_runtime` (so a Stripe re-entitlement,
+  which dispatches a durable reconcile, re-arms it) via `arm_nightly_ceo`.
   It is armed for EVERY live owner, not just paid ones: `should_arm_nightly_ceo`
   is deliberately broader than `has_always_on_entitlement` and returns True for
   paid (active/trialing) **or an unexpired `trial_local`** — the nightly run is a
@@ -1119,7 +1120,7 @@ Clerk sign-up  ->  workspace (Clerk org) created or joined
                                 should_arm_nightly_ceo — only an EXPIRED trial is left unarmed);
                                 every path to provisioned runs this executor, so this is the one door
                   (on later polls of an already-running ORG row, ensure_user_ready reconciles the
-                   Paperclip seed inline; _maybe_arm_nightly_ceo there is the self-heal wrapper)
+                   Paperclip seed inline)
 ```
 
 Key invariants:

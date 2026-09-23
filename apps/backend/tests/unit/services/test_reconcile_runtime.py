@@ -177,6 +177,11 @@ class World:
             self.expired.append(owner_id)
 
         mp.setattr("core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens", _expire)
+        # The billing-derived duties outside the runtime (``_reconcile_entitlements``).
+        self.metronome = AsyncMock(return_value="cust")
+        self.arm = AsyncMock(return_value="armed")
+        mp.setattr("core.billing.metronome_provisioning.ensure_metronome_customer", self.metronome)
+        mp.setattr("core.services.user_provision.arm_nightly_ceo", self.arm)
 
     def provider_of_profiles(self) -> set[str]:
         return {yaml.safe_load(cfg)["model"]["provider"] for cfg in self.profiles.values()}
@@ -447,3 +452,43 @@ async def test_a_failed_row_read_is_a_counted_reconcile_failure(monkeypatch, boo
     monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(side_effect=RuntimeError("ddb")))
     assert await hp.reconcile_runtime("org_a") == "failed"
     assert world.metrics == ["provision.reconcile.failed"]
+
+
+# --- entitlements: the duties the /container/status poll used to self-heal ----------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("row", [{}, {"status": "provisioning"}])
+async def test_reconcile_ensures_the_metronome_customer_and_arms_the_nightly_ceo(monkeypatch, boot_secrets, row):
+    """A Stripe re-entitlement (trial->paid, re-subscribe) reaches both through its reconcile --
+    whether the runtime is live or the reconcile hands off to the provision funnel."""
+    world = World(monkeypatch, billing=BILLING["bedrock_claude"], row=row)
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", AsyncMock(return_value=True))
+
+    await hp.reconcile_runtime("org_a")
+
+    world.metronome.assert_awaited_once_with(owner_id="org_a")
+    world.arm.assert_awaited_once_with("org_a")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("billing", ["chatgpt_oauth", "byo_anthropic"])
+async def test_a_chatgpt_or_byo_owner_gets_no_metronome_customer(monkeypatch, boot_secrets, billing):
+    """Inference we never bill: no customer, contract or low-balance alerts."""
+    world = World(monkeypatch, billing=BILLING[billing])
+
+    await hp.reconcile_runtime("org_a")
+
+    world.metronome.assert_not_awaited()
+    world.arm.assert_awaited_once_with("org_a")
+
+
+@pytest.mark.asyncio
+async def test_entitlement_failures_never_fail_the_reconcile(monkeypatch, boot_secrets):
+    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world.metronome.side_effect = RuntimeError("metronome down")
+    world.arm.side_effect = RuntimeError("paperclip down")
+
+    assert await hp.reconcile_runtime("org_a") != "failed"
+    assert world.metrics == ["metronome.provision.error"]
+    world.arm.assert_awaited_once_with("org_a")

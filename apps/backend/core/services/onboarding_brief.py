@@ -349,19 +349,16 @@ async def reconcile_pending_brief(owner_id: str) -> None:
     ``capture_first_workspace_message`` is intake; it persists the message
     and invokes this function after normal room dispatch. Everything that
     needs an active Paperclip workspace happens here under one idempotent,
-    claim-fenced path. ``routers/container.py`` retries pending intake on
-    status polls, including early-return states.
+    claim-fenced path. The provision executor (``scripts.provision_runner``)
+    re-drains pending intake the moment step 0 makes the company active.
 
-    **Why it retries itself rather than leaning on the poll.** The poll looks
-    like a free retry engine and isn't: dismissing the funnel opens the chat
-    surface, which makes ``runtime_phase`` "ready", which sets the client's
-    poll interval to 0. The one moment a stranded brief needs another attempt
-    is the moment the polling stops. So this owns its own bounded retry, and
-    the poll is a secondary trigger for the case where the process holding
-    that retry died.
+    It owns its own bounded retry because the capture's intake usually lands
+    before the workspace is ready, and nothing else calls it again after the
+    provision that follows.
 
-    Never raises -- every caller fires it as a background task, where an
-    escaping exception is an unretrieved-task error rather than a retry.
+    Never raises -- the capture fires it as a background task (where an
+    escaping exception is an unretrieved-task error rather than a retry), and
+    the executor bounds it with a timeout.
     """
     if owner_id in _draining:
         return
@@ -446,8 +443,8 @@ async def _drain_until_settled(owner_id: str) -> None:
 
     # Out of in-process retries without a terminal verdict -- the workspace
     # never came up. The item stays PENDING (not failed): this is a
-    # provisioning problem, not a bad brief, and the next /container/status
-    # poll re-enters here. Deliberately not marked failed, or a slow provision
+    # provisioning problem, not a bad brief, and the next provision execution
+    # re-enters here. Deliberately not marked failed, or a slow provision
     # would throw away a perfectly good answer.
     logger.info("reconcile_brief: %s not fulfilled within the in-process retry window; leaving pending", owner_id)
 

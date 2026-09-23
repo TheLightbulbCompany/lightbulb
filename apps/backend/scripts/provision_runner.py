@@ -159,13 +159,49 @@ async def run(owner_id: str) -> int:
             retryable=seed_exit == EXIT_TRANSIENT,
         )
         return seed_exit
+    await _drain_pending_brief(owner_id)
 
     try:
         await hermes_provisioning.provision_hermes_runtime(owner_id)
     except Exception as exc:  # noqa: BLE001 — classified + recorded
         return await _record_failure(owner_id, exc, "runtime provision")
+    await _arm_trial(owner_id)
     await hermes_provisioning.reconcile_runtime(owner_id)
     return EXIT_OK
+
+
+#: Bound on the brief drain inside the provisioner Lambda: the drain retries with sleeps of its
+#: own (onboarding_brief._RETRY_BACKOFF_S, ~3 min), which must not eat the runtime leg's budget.
+BRIEF_DRAIN_TIMEOUT_S = 30.0
+
+
+async def _drain_pending_brief(owner_id: str) -> None:
+    """Step 0 just made the Paperclip company active: fulfil a first-room message captured
+    before it was (``onboarding_brief.capture_first_workspace_message`` drains its own capture
+    too). Idempotent and claim-fenced; a no-op read when nothing is pending. Never fails the
+    provision -- an unfinished drain leaves the brief PENDING for the next drain."""
+    from core.observability.metrics import put_metric
+    from core.services.onboarding_brief import reconcile_pending_brief
+
+    try:
+        await asyncio.wait_for(reconcile_pending_brief(owner_id), timeout=BRIEF_DRAIN_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 — incl. TimeoutError; reconcile_pending_brief never raises itself
+        logger.exception("provision: pending onboarding-brief drain failed for owner %s", owner_id)
+        put_metric("onboarding_brief.provision_drain.error")
+
+
+async def _arm_trial(owner_id: str) -> None:
+    """The runtime is created and the row ``running``: start an unarmed ``trial_local`` clock,
+    once (a conditional write -- a no-op for a paid or already-armed row). Never fails the
+    provision: an unarmed trial simply has not started counting yet."""
+    from core.observability.metrics import put_metric
+    from core.repositories import billing_repo
+
+    try:
+        await billing_repo.arm_trial_if_unset(owner_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("provision: trial arm failed for owner %s", owner_id)
+        put_metric("provision.trial_arm.error")
 
 
 async def _record_failure(owner_id: str, exc: Exception, stage: str) -> int:

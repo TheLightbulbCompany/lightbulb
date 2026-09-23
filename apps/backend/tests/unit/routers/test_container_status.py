@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,7 +10,6 @@ from fastapi import HTTPException
 
 from core.auth import AuthContext
 from core.services.messaging import ApiProblem
-from core.services.stripe_webhook_handlers import CONVERSION_GUARD_SECONDS
 
 
 @pytest.fixture
@@ -32,15 +30,6 @@ def _close_request_background_tasks(request):
 
     with patch("routers.container.asyncio.create_task", side_effect=dispatch):
         yield
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _stale_iso() -> str:
-    """A conversion stamp older than the guard window — i.e. a dead dispatch."""
-    return (datetime.now(timezone.utc) - timedelta(seconds=CONVERSION_GUARD_SECONDS + 60)).isoformat()
 
 
 def _workspace_auth(user_id: str = "user_x", email: str = "u@example.com") -> AuthContext:
@@ -162,103 +151,6 @@ def _stub_teams_status_repo():
     repo = _paperclip_repo_stub(None)
     with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
         yield repo
-
-
-@pytest.fixture(autouse=True)
-def _stub_trial_armer(request):
-    if request.node.name == "test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll":
-        yield
-    else:
-        with patch("routers.container.arm_workspace_trial_if_unset", AsyncMock(return_value=None)):
-            yield
-
-
-@pytest.mark.asyncio
-async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll():
-    """The trial clock arms exactly once, at the poll where the composed `runtime_phase`
-    first reads "ready" -- never before, never twice. This used to cycle a RUNNING row
-    through a "starting" (not-yet-gateway-connected) intermediate before "ready", but
-    `resolve_runtime_phase` now reports "ready" for any running row unconditionally, with
-    no health probe at all (`host_for` is pinned to "agentcore" fleet-wide) -- a running row
-    is ready on its very first poll. "provisioning"/"error" are what still exercise the
-    not-yet-ready leg the arm-only-once assertion depends on."""
-    import boto3
-    from moto import mock_aws
-    from core.repositories import billing_repo
-    from routers.container import container_status
-
-    with mock_aws():
-        table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
-            TableName="workspace-trials",
-            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        table.put_item(Item={"owner_id": "org_x", "owner_type": "org", "subscription_status": "trial_local"})
-        row = {"owner_id": "org_x", "status": "provisioning"}
-        _row = row
-
-        with (
-            patch.object(billing_repo, "_get_table", return_value=table),
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch("core.services.container_rpc.call", AsyncMock(return_value={"ok": True})),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
-            patch("routers.container.evaluate_provision_gate", AsyncMock(return_value=None)),
-        ):
-            for status, phase in [("provisioning", "provisioning"), ("error", "provisioning")]:
-                row["status"] = status
-                result = await container_status(_workspace_auth(), flow=None)
-                assert result["runtime_phase"] == phase
-                assert "trial_end" not in (await billing_repo.get_by_owner_id("org_x"))
-            row["status"] = "running"
-            with patch("core.repositories.billing_repo.time.time", return_value=1_000):
-                result = await container_status(_workspace_auth(), flow=None)
-            assert result["runtime_phase"] == "ready"
-            assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 2_593_000
-            with patch("core.repositories.billing_repo.time.time", return_value=9_999):
-                await container_status(_workspace_auth(), flow=None)
-                assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 2_593_000
-
-
-@pytest.mark.asyncio
-async def test_ready_paid_workspace_does_not_try_to_arm_a_trial():
-    import boto3
-    from moto import mock_aws
-    from core.repositories import billing_repo
-    from routers.container import container_status
-
-    with mock_aws():
-        table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
-            TableName="paid-workspace",
-            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        table.put_item(
-            Item={
-                "owner_id": "org_x",
-                "owner_type": "org",
-                "subscription_status": "active",
-                "stripe_subscription_id": "sub_paid",
-                "provider_choice": "chatgpt_oauth",
-            }
-        )
-        row = {"owner_id": "org_x", "status": "running"}
-        _row = row
-        with (
-            patch.object(billing_repo, "_get_table", return_value=table),
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch("core.services.container_rpc.call", AsyncMock(return_value={"ok": True})),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
-            patch(
-                "routers.container.arm_workspace_trial_if_unset",
-                AsyncMock(side_effect=AssertionError("paid workspaces must not hit the trial armer")),
-            ),
-        ):
-            result = await container_status(_workspace_auth(), flow=None)
-
-        assert result["runtime_phase"] == "ready"
-        assert result["provider"]["subscription_status"] == "active"
 
 
 class TestContainerStatusPhaseField:
@@ -723,97 +615,6 @@ class TestContainerStatusEnsureUserReadyDispatch:
         assert captured == ["_noop_ensure_user_ready"], f"expected ensure_user_ready dispatched, got {captured}"
 
     @pytest.mark.asyncio
-    async def test_status_drains_a_pending_brief(self):
-        """THE poll that fulfils the first-run path: the funnel renders during
-        provisioning, so the answer almost always lands before there is an
-        owner row to claim against. `pending_brief` rides the SAME onboarding
-        dict compute_status already read — no extra call here."""
-        from routers.container import container_status
-
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-
-        onboarding = _onboarding_state_stub()
-        onboarding["pending_brief"] = True
-        repo = _paperclip_repo_stub()
-        repo.get_onboarding_state = AsyncMock(return_value=onboarding)
-
-        _row = None
-        with (
-            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        ):
-            await container_status(_workspace_auth("user_abc", "max@acme.com"))
-
-        assert "reconcile_pending_brief" in captured, f"expected the drain dispatched, got {captured}"
-
-    @pytest.mark.asyncio
-    async def test_status_drains_a_pending_brief_even_when_the_poll_returns_early(self):
-        """The drain hook sits ABOVE this endpoint's early returns on purpose.
-        It used to sit at the bottom, which quietly excluded whole cohorts from
-        ever fulfilling -- here, an org member, who 202s on the no-container
-        path long before the old hook. The drain needs Paperclip, not a
-        container, so those were dead ends for no reason."""
-        from fastapi import HTTPException
-
-        from routers.container import container_status
-
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-
-        onboarding = _onboarding_state_stub()
-        onboarding["pending_brief"] = True
-        repo = _paperclip_repo_stub()
-        repo.get_onboarding_state = AsyncMock(return_value=onboarding)
-
-        _row = None
-        with (
-            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        ):
-            with pytest.raises(HTTPException) as exc:
-                await container_status(_org_member_auth("user_member", "org_xyz", "m@example.com"))
-
-        assert exc.value.status_code == 202
-        assert "reconcile_pending_brief" in captured, f"expected the drain dispatched, got {captured}"
-
-    @pytest.mark.asyncio
-    async def test_status_without_a_pending_brief_does_not_dispatch_the_drain(self):
-        """The steady-state fleet polls this every ~3s — an onboarded owner
-        must not schedule a no-op task on every one."""
-        from routers.container import container_status
-
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-
-        _row = None
-        with (
-            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=_paperclip_repo_stub()),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        ):
-            await container_status(_workspace_auth("user_abc", "max@acme.com"))
-
-        assert "reconcile_pending_brief" not in captured
-
-    @pytest.mark.asyncio
     async def test_status_no_container_org_admin_dispatches_ensure_user_ready(self):
         """Org-admin owner role + no container + gate clear → fire ensure_user_ready,
         return 200 with phase=provisioning. Same path as personal-owner; this test
@@ -985,30 +786,11 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
         )
 
 
-class TestContainerStatusTrialConversion:
-    """GET /container/status vs. the trial→paid conversion (Task 12).
-
-    (a) The conversion's `reprovision_for_user` scales the trial container to
-        zero and then BLOCKS in a ~90s drain wait — a single EFS-WAL SQLite
-        writer is required, and two live tasks corrupt it. The just-paid owner
-        is polling /status every ~3s; without a guard, that poll sees
-        status="stopped", passes the gate (they're paid now), and dispatches
-        its OWN dispatch_provision with no drain wait. Two provisions race.
-
-    (b) The conversion is one fire-and-forget task. If it dies, Stripe never
-        re-fires it (its retry sees old_status != "trial_local"), and the
-        paying customer keeps the trial container forever. The status path is
-        the only thing that runs again — so it self-heals, rate-limited.
-    """
+class TestContainerStatusStoppedRow:
+    """GET /container/status on a plain stopped row."""
 
     @staticmethod
-    def _patches(row, *, subscription_status="active", captured=None, repo=None):
-        """Common wiring: gate clear, not over the cap, phase stubbed, and the
-        conversion helpers' repos stubbed. ``repo`` is the fake container_repo
-        whose update_fields mutates ``row`` in place, so a re-stamped
-        rate-limit anchor is visible to the NEXT poll."""
-        from core.services import stripe_webhook_handlers as handlers
-
+    def _patches(row, *, captured=None, repo=None):
         def capture_task(coro):
             name = coro.__qualname__
             if captured is not None and name != "ensure_user_ready":
@@ -1020,86 +802,12 @@ class TestContainerStatusTrialConversion:
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
             patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
             patch("routers.container.container_repo", new=repo),
-            patch.object(handlers, "container_repo", new=repo),
-            patch.object(
-                handlers,
-                "billing_repo",
-                new=MagicMock(
-                    get_by_owner_id=AsyncMock(return_value={"subscription_status": subscription_status}),
-                ),
-            ),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
         )
 
     @staticmethod
     def _repo(row):
-        """container_repo double whose writes land on ``row``. The conversion
-        marker rides the ALLOWLISTED update_conversion_fields, which cannot
-        reach status or the lease (the clobber that stranded #1428)."""
-
-        async def update_fields(owner_id, fields):
-            row.update(fields)
-            return row
-
-        async def update_status(owner_id, status, substatus=None):
-            row.update({"status": status, "substatus": substatus})
-            return row
-
-        return MagicMock(
-            get_by_owner_id=AsyncMock(side_effect=lambda _owner_id: row),
-            update_fields=AsyncMock(side_effect=update_fields),
-            update_conversion_fields=AsyncMock(side_effect=update_fields),
-            update_status=AsyncMock(side_effect=update_status),
-        )
-
-    @pytest.mark.asyncio
-    async def test_converting_row_is_not_auto_retried(self):
-        """A row the conversion owns (substatus=converting) must NOT be
-        auto-retried — that second dispatch_provision has no drain wait and
-        would run a task alongside the one still draining."""
-        from routers.container import container_status
-
-        row = {
-            "status": "stopped",
-            "substatus": "converting",
-            "conversion_pending": True,
-            "conversion_started_at": _now_iso(),
-        }
-        repo = self._repo(row)
-        captured: list[str] = []
-        with contextlib.ExitStack() as stack:
-            for p in self._patches(row, captured=captured, repo=repo):
-                stack.enter_context(p)
-            result = await container_status(_workspace_auth())
-
-        repo.update_status.assert_not_awaited()
-        assert captured == [], f"a converting row must not dispatch a provision, got {captured}"
-        assert result["container_substatus"] == "converting"
-
-    @pytest.mark.asyncio
-    async def test_draining_row_with_clobbered_substatus_is_not_auto_retried(self):
-        """The actual race. ecs_manager.stop_user_service writes
-        update_status(owner, "stopped") — substatus defaults to None — so the
-        converting substatus is GONE the moment the drain starts. Only the
-        conversion_started_at anchor survives, and it alone must hold the
-        auto-retry off for the whole drain."""
-        from routers.container import container_status
-
-        row = {
-            "status": "stopped",
-            "substatus": None,  # clobbered by stop_user_service
-            "conversion_pending": True,
-            "conversion_started_at": _now_iso(),
-        }
-        repo = self._repo(row)
-        captured: list[str] = []
-        with contextlib.ExitStack() as stack:
-            for p in self._patches(row, captured=captured, repo=repo):
-                stack.enter_context(p)
-            await container_status(_workspace_auth())
-
-        repo.update_status.assert_not_awaited()
-        assert captured == [], f"a draining conversion must not dispatch a provision, got {captured}"
+        return MagicMock(get_by_owner_id=AsyncMock(side_effect=lambda _owner_id: row), update_status=AsyncMock())
 
     @pytest.mark.asyncio
     async def test_plain_stopped_row_still_auto_retries(self):
@@ -1137,56 +845,6 @@ class TestContainerStatusTrialConversion:
         )
         assert result["container_status"] == "provisioning"
         assert result["container_substatus"] == "auto_retry"
-
-    @pytest.mark.asyncio
-    async def test_stuck_conversion_redispatches_at_most_once_per_guard_window(self):
-        """Paid billing + a container still carrying conversion_pending long
-        past the guard window == the conversion task died. The status path
-        re-dispatches it — ONCE. The poll runs every ~3s; three polls in a row
-        must produce exactly one reprovision, or the self-heal is a storm."""
-        from routers.container import container_status
-
-        row = {
-            "status": "running",  # still the trial box: never got stopped
-            "substatus": None,
-            "conversion_pending": True,
-            "conversion_started_at": _stale_iso(),
-        }
-        repo = self._repo(row)
-        captured: list[str] = []
-        with contextlib.ExitStack() as stack:
-            for p in self._patches(row, captured=captured, repo=repo):
-                stack.enter_context(p)
-            for _ in range(3):  # ~9s of polling
-                await container_status(_workspace_auth())
-
-        assert captured == ["run_conversion_reprovision"], (
-            f"a stuck conversion must re-dispatch exactly once per guard window, got {captured}"
-        )
-        assert row["substatus"] == "converting"
-
-    @pytest.mark.asyncio
-    async def test_no_self_heal_when_billing_is_not_paid(self):
-        """The self-heal fires only when billing SAYS PAID. A canceled owner's
-        stale marker is dropped and the row falls back to the ordinary
-        auto-retry + gate path."""
-        from routers.container import container_status
-
-        row = {
-            "status": "running",
-            "substatus": None,
-            "conversion_pending": True,
-            "conversion_started_at": _stale_iso(),
-        }
-        repo = self._repo(row)
-        captured: list[str] = []
-        with contextlib.ExitStack() as stack:
-            for p in self._patches(row, subscription_status="canceled", captured=captured, repo=repo):
-                stack.enter_context(p)
-            await container_status(_workspace_auth())
-
-        assert captured == []
-        assert row["conversion_pending"] is False
 
 
 class TestContainerStatusTrialBedrockRestore:
@@ -1338,7 +996,7 @@ class TestContainerStatusHonestError:
 
     @classmethod
     def _patches(cls, row, *, captured):
-        """Gate clear, not capped, phase stubbed, conversion inert. Records
+        """Gate clear, not capped, phase stubbed. Records
         each create_task dispatch's qualname into `captured`."""
 
         def capture_task(coro):

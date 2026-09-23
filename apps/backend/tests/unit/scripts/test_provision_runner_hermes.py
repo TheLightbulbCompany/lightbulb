@@ -30,6 +30,8 @@ def runner_env(monkeypatch):
 
     monkeypatch.setattr(_repo_module, "mark_provision_error", AsyncMock())
     monkeypatch.setattr(_repo_module, "get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr("core.services.onboarding_brief.reconcile_pending_brief", AsyncMock())
+    monkeypatch.setattr("core.repositories.billing_repo.arm_trial_if_unset", AsyncMock())
     return _repo_module
 
 

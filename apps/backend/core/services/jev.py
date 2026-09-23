@@ -378,8 +378,8 @@ def _state(meta: dict, latest: dict, history: list[dict]) -> dict:
     Over budget, the oldest general message goes first and the thread only once that is empty."""
     root = latest.get("threadRootMessageId")
     thread = [m for m in history if root and root in (m.get("messageId"), m.get("threadRootMessageId"))]
-    in_thread = {id(m) for m in thread}
-    recent = [_line(m) for m in history[-_RECENT_LIMIT:] if id(m) not in in_thread]
+    in_thread = {m.get("messageId") for m in thread}
+    recent = [_line(m) for m in history[-_RECENT_LIMIT:] if m.get("messageId") not in in_thread]
     thread_lines = [_line(m) for m in thread]
     state: dict = {"room": {"kind": meta.get("kind"), "name": meta.get("name")}}
     if thread_lines:

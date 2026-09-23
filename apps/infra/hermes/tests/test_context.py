@@ -55,4 +55,28 @@ def test__run_hermes_passes_the_display_name_prefixed_user_message(home, monkeyp
 
     monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: _FakeAgent())
     turn._run_hermes("ceo", f.ingress(), None)
-    assert seen["user_message"] == "Prez: ship it"
+    _, text = f.split_turn_input(seen["user_message"])
+    assert text == "Prez: ship it"
+
+
+# ---- prompt-cache stability: providers cache a byte-identical PREFIX, and the room context
+# is spliced into the top of the system prompt, so anything per-turn there made every turn a
+# cache miss (0 of ~16k tokens cached, measured on dev 2026-09-23).
+def test_the_system_prompt_is_byte_identical_across_turns_in_one_room():
+    a = f.ingress(message=f.message(text="first"), sessions=[{"sessionId": "s1"}])
+    b = f.ingress(message=f.message(text="second", threadRootMessageId=ROOT),
+                  participants=list(reversed(a["participants"])), eventKind="room_event")
+    b["mentions"] = [{"kind": "agent", "id": "ceo"}]
+    assert turn.system_prompt(a, "ceo", media=["/mnt/x.png"]) == turn.system_prompt(b, "ceo")
+
+
+def test_per_turn_fields_move_to_the_user_message():
+    body = f.ingress(message=f.message(threadRootMessageId=ROOT), sessions=[{"sessionId": "s1"}])
+    prompt = turn.system_prompt(body, "ceo")
+    header, _, rest = turn._turn_input(body, media=["/mnt/x.png"]).partition("\n")
+    ctx = json.loads(header.removeprefix(turn.TURN_CONTEXT_PREFIX))
+    assert body["message"]["messageId"] not in prompt and "s1" not in prompt
+    assert ctx["message"]["id"] == body["message"]["messageId"]
+    assert ctx["message"]["threadRootMessageId"] == ROOT
+    assert ctx["sessions"] == [{"sessionId": "s1"}] and ctx["media"] == ["/mnt/x.png"]
+    assert rest == "Prez: ship it"

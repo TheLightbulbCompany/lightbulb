@@ -617,6 +617,8 @@ export function ConnectButton({
                   submitFields();
                 }
               }}
+              aria-invalid={err ? true : undefined}
+              aria-describedby={err ? `connection-error-${provider}` : undefined}
               className="h-9 bg-cream"
             />
           </div>
@@ -644,7 +646,7 @@ export function ConnectButton({
           </Button>
         </div>
         {err && (
-          <p className="text-xs text-[var(--err)]" role="alert">
+          <p id={`connection-error-${provider}`} className="text-xs text-[var(--err)]" role="alert">
             {err}
           </p>
         )}

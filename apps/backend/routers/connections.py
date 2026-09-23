@@ -528,7 +528,7 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
         for f in p.paste_fields:
             if f.host and values[f.key]:
                 raw = values[f.key] if "://" in values[f.key] else f"//{values[f.key]}"
-                values[f.key] = (urlsplit(raw).hostname or "").lower()
+                values[f.key] = urlsplit(raw).hostname or ""  # .hostname is already lowercased
         if missing := [f.label for f in p.paste_fields if not values[f.key]]:
             raise HTTPException(status_code=422, detail=f"{p.display_name} needs: {', '.join(missing)}")
         token = p.paste_format.format(**values)

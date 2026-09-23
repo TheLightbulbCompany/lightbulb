@@ -57,7 +57,7 @@ def event_for(row, generation):
     }
 
 
-def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_free=None):
+def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_free=None, release_unknown=None):
     mode = row.get("billing_mode")
     # free and capped rows never touch Metronome: a capped owner's valve is the
     # OpenRouter per-key daily limit, so its cost is recorded, not debited.
@@ -67,6 +67,11 @@ def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_fre
     if row.get("state") != "pending":
         return "already_processed"
     if not row.get("generation_id"):
+        # The gate writes the row before calling upstream, so a gate crash before the
+        # first chunk leaves a row that can never settle. Unmetered rows hold nothing;
+        # release them after an hour. Metered rows keep their hold for a human.
+        if unmetered and release_unknown and now - int(row["created_at"]) >= 3600:
+            return release_unknown(row, now)
         return "unknown_generation"
     if now - int(row["created_at"]) >= 30 * 24 * 3600:
         return "expired_gap"  # outside OpenRouter's 30 completed-day activity window
@@ -349,6 +354,18 @@ class Store:
                 return "settled"
             raise
 
+    def release_unknown(self, row, now):
+        """Release an unmetered row that never got a generation ID. No money moves."""
+        self.ddb.update_item(
+            TableName=self.requests_table, Key={"request_id": {"S": row["request_id"]}},
+            UpdateExpression="SET #state = :released, released_at = :now",
+            ConditionExpression="#state = :pending AND attribute_not_exists(generation_id) AND billing_mode IN (:free, :capped)",
+            ExpressionAttributeNames={"#state": "state"},
+            ExpressionAttributeValues={":released": {"S": "released"}, ":pending": {"S": "pending"}, ":now": {"N": str(now)},
+                                       ":free": {"S": "free"}, ":capped": {"S": "capped"}},
+        )
+        return "released_no_generation"
+
     def _mark_duplicate(self, row, now):
         updates = [{"Update": {
             "TableName": self.requests_table,
@@ -370,63 +387,69 @@ class Store:
 
 def retire_keys(store, *, now, workspace_hashes, disable, environment=None, orphan_keys=None, grace_seconds=960, lease_seconds=300):
     """Drain a retiring owner before disabling its upstream key; retries are idempotent."""
-    outcomes = {"grace": 0, "pending": 0, "lease": 0, "raced": 0, "disabled": 0, "orphan_keys_disabled": 0}
+    outcomes = {"grace": 0, "pending": 0, "lease": 0, "raced": 0, "disabled": 0, "orphan_keys_disabled": 0, "failed": 0}
     known_hashes = None
     for row in store.retirement_candidates():
-        if not row.get("owner_id"):
-            raise RuntimeError("OpenRouter retiring key has no owner")
-        if row["state"] == "pending" or (row["state"] == "retirement_processing" and not row.get("key_hash")):
-            if not row.get("retire_requested_at") or not environment or not orphan_keys:
-                raise RuntimeError("Pending OpenRouter retirement is incomplete")
-            if row["state"] == "pending" and now - int(row["retire_requested_at"]) < grace_seconds:
-                outcomes["grace"] += 1
-                continue
-            if row["state"] == "retirement_processing" and now - int(row.get("retirement_processing_at") or 0) < lease_seconds:
-                outcomes["lease"] += 1
-                continue
-            if not store.claim_pending_retirement(row, now):
-                outcomes["raced"] += 1
-                continue
-            name = f"lightbulb-{environment}-{row['owner_id']}"
-            for key in orphan_keys(row["owner_id"]):
-                if key.get("name") != name or key.get("disabled") is True:
+        try:
+            if not row.get("owner_id"):
+                raise RuntimeError("OpenRouter retiring key has no owner")
+            if row["state"] == "pending" or (row["state"] == "retirement_processing" and not row.get("key_hash")):
+                if not row.get("retire_requested_at") or not environment or not orphan_keys:
+                    raise RuntimeError("Pending OpenRouter retirement is incomplete")
+                if row["state"] == "pending" and now - int(row["retire_requested_at"]) < grace_seconds:
+                    outcomes["grace"] += 1
                     continue
-                if not key.get("hash"):
-                    raise RuntimeError("OpenRouter orphan key has no hash")
-                disable(key["hash"])
-                outcomes["orphan_keys_disabled"] += 1
-            store.tombstone_pending(row, now)
+                if row["state"] == "retirement_processing" and now - int(row.get("retirement_processing_at") or 0) < lease_seconds:
+                    outcomes["lease"] += 1
+                    continue
+                if not store.claim_pending_retirement(row, now):
+                    outcomes["raced"] += 1
+                    continue
+                name = f"lightbulb-{environment}-{row['owner_id']}"
+                for key in orphan_keys(row["owner_id"]):
+                    if key.get("name") != name or key.get("disabled") is True:
+                        continue
+                    if not key.get("hash"):
+                        raise RuntimeError("OpenRouter orphan key has no hash")
+                    disable(key["hash"])
+                    outcomes["orphan_keys_disabled"] += 1
+                store.tombstone_pending(row, now)
+                outcomes["disabled"] += 1
+                continue
+            if not row.get("key_hash"):
+                raise RuntimeError("OpenRouter retiring key has no hash")
+            if row["state"] == "retiring":
+                observed = int(row.get("retirement_observed_at") or store.observe_retirement(row, now))
+                if now - observed < grace_seconds:
+                    outcomes["grace"] += 1
+                    continue
+            elif row["state"] == "retirement_processing":
+                if now - int(row.get("retirement_processing_at") or 0) < lease_seconds:
+                    outcomes["lease"] += 1
+                    continue
+            else:
+                continue
+            if any(pending["owner_id"] == row["owner_id"] for pending in store.pending()):
+                outcomes["pending"] += 1
+                continue
+            if not store.claim_retirement(row, now):
+                outcomes["raced"] += 1  # resubscribe or another worker won the claim
+                continue
+            if any(pending["owner_id"] == row["owner_id"] for pending in store.pending()):
+                outcomes["pending"] += 1
+                continue
+            if known_hashes is None:
+                known_hashes = workspace_hashes()
+            if row["key_hash"] not in known_hashes:
+                raise RuntimeError("Retiring OpenRouter key is absent from configured workspace")
+            disable(row["key_hash"])
+            store.mark_disabled(row, now)
             outcomes["disabled"] += 1
-            continue
-        if not row.get("key_hash"):
-            raise RuntimeError("OpenRouter retiring key has no hash")
-        if row["state"] == "retiring":
-            observed = int(row.get("retirement_observed_at") or store.observe_retirement(row, now))
-            if now - observed < grace_seconds:
-                outcomes["grace"] += 1
-                continue
-        elif row["state"] == "retirement_processing":
-            if now - int(row.get("retirement_processing_at") or 0) < lease_seconds:
-                outcomes["lease"] += 1
-                continue
-        else:
-            continue
-        if any(pending["owner_id"] == row["owner_id"] for pending in store.pending()):
-            outcomes["pending"] += 1
-            continue
-        if not store.claim_retirement(row, now):
-            outcomes["raced"] += 1  # resubscribe or another worker won the claim
-            continue
-        if any(pending["owner_id"] == row["owner_id"] for pending in store.pending()):
-            outcomes["pending"] += 1
-            continue
-        if known_hashes is None:
-            known_hashes = workspace_hashes()
-        if row["key_hash"] not in known_hashes:
-            raise RuntimeError("Retiring OpenRouter key is absent from configured workspace")
-        disable(row["key_hash"])
-        store.mark_disabled(row, now)
-        outcomes["disabled"] += 1
+        except Exception as exc:
+            # One bad key must not strand every other retirement (or the settlement
+            # run that follows); its row keeps its state and is retried next tick.
+            print(f"openrouter retirement failed: {exc.__class__.__name__}")
+            outcomes["failed"] += 1
     return outcomes
 
 
@@ -542,7 +565,11 @@ def _audit(store, day, today):
     return gaps
 
 
-def handler(event, _context):
+# Anything else (unknown_generation, expired_gap, an exception name, a new outcome) fails the run.
+RESOLVED = {"settled", "metadata_pending", "already_processed", "duplicate_generation", "deferred", "released_no_generation"}
+
+
+def handler(event, context):
     """Scheduled settlement, or {audit_date: YYYY-MM-DD} for a daily key-usage audit."""
     event = event or {}
     if not _verified() and (event.get("audit_previous_day") or event.get("audit_date") or not os.environ.get("OPENROUTER_KEYS_TABLE")):
@@ -566,22 +593,26 @@ def handler(event, _context):
         if gaps:
             raise RuntimeError(f"OpenRouter key activity gap on {audit_day}: {len(gaps)} key(s)")
         return {"audited_date": audit_day, "keys_with_gaps": 0}
-    retirement = _retire_scheduled(store, now) if store.keys_table else None
     verified = _verified()
     outcomes = {}
-    for row in store.pending():
+    # Settle before retiring, so a wiped owner's last rows settle and its key retires in
+    # the same run. Each row is isolated: one that raises stays pending for the next tick.
+    rows = store.pending()
+    for index, row in enumerate(rows):
+        if context and context.get_remaining_time_in_millis() < 60_000:
+            outcomes["deferred"] = len(rows) - index  # a backlog must not time out the run before retirement
+            break
         if now - int(row["created_at"]) < 300:
             continue  # a stream may still be running
         try:
             outcome = settle_one(row, get_generation=_get_generation, ingest=_ingest,
                                  commit=store.commit, commit_free=store.commit_free,
-                                 verified=verified, now=now)
+                                 release_unknown=store.release_unknown, verified=verified, now=now)
             outcomes[outcome] = outcomes.get(outcome, 0) + 1
         except Exception as exc:
             # No prompts, keys, or customer IDs in logs. The row stays pending.
             outcomes[exc.__class__.__name__] = outcomes.get(exc.__class__.__name__, 0) + 1
-    if outcomes.get("unknown_generation") or outcomes.get("expired_gap") or outcomes.get("PendingSettlement") or outcomes.get("MoneyContractUnverified") or any(
-        name.endswith("Error") or name.endswith("Exception") for name in outcomes
-    ):
-        raise RuntimeError("OpenRouter settlement has unresolved pending requests")
+    retirement = _retire_scheduled(store, now) if store.keys_table else None
+    if set(outcomes) - RESOLVED or (retirement or {}).get("failed"):
+        raise RuntimeError(f"OpenRouter settlement has unresolved rows: {outcomes} retirement: {retirement}")
     return {"settlement": outcomes, "retirement": retirement}

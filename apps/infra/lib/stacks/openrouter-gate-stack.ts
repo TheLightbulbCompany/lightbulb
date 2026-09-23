@@ -121,6 +121,9 @@ export class OpenRouterGateStack extends cdk.Stack {
       }),
       timeout: cdk.Duration.minutes(5),
       memorySize: 512,
+      // The 5-minute schedule is the retry. Lambda's async retries would only re-run a tick
+      // that raised on purpose (a row it may not settle yet) two more times.
+      retryAttempts: 0,
       environment: {
         GATE_ENV: env,
         REQUESTS_TABLE: `${tablePrefix(env)}openrouter-requests`,
@@ -162,11 +165,13 @@ export class OpenRouterGateStack extends cdk.Stack {
       retentionPeriod: cdk.Duration.days(14),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
     });
+    // Settles free/capped rows and retires keys. Metered rows stay pending: settle_one
+    // refuses them until OPENROUTER_MONEY_CONTRACT_VERIFIED + a rate-card proof land.
     const schedule = new events.Rule(this, "SettlementSchedule", {
       schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
-      enabled: false,
     });
     schedule.addTarget(new targets.LambdaFunction(settlement, { deadLetterQueue: dlq, retryAttempts: 2 }));
+    // Stays off: the handler refuses an audit without the money-contract proof.
     const audit = new events.Rule(this, "DailyActivityAudit", {
       schedule: events.Schedule.cron({ minute: "15", hour: "1" }),
       enabled: false,

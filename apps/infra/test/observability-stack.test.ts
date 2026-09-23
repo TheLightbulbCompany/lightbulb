@@ -1035,6 +1035,18 @@ describe("ObservabilityStack — prod-only paths", () => {
     });
   });
 
+  test.each(["dev", "prod"] as const)("%s warns when the OpenRouter settlement worker keeps failing", (env) => {
+    buildTemplate(env).hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: `lightbulb-${env}-W80-openrouter-settlement-errors`,
+      Namespace: "AWS/Lambda",
+      MetricName: "Errors",
+      Dimensions: [{ Name: "FunctionName", Value: `lightbulb-${env}-openrouter-settlement` }],
+      Threshold: 3,
+      ComparisonOperator: "GreaterThanOrEqualToThreshold",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
+    });
+  });
+
   test("dev does NOT get the OpenRouter balance alarms", () => {
     const rendered = JSON.stringify(
       buildTemplate("dev").findResources("AWS::CloudWatch::Alarm"),

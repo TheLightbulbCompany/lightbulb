@@ -7,6 +7,7 @@ from decimal import Decimal
 from unittest.mock import patch
 import os
 import sys
+import time
 import types
 from datetime import date, timedelta
 
@@ -369,10 +370,10 @@ class SettlementTests(unittest.TestCase):
             def retirement_candidates(self): return [{"owner_id": "owner-1", "state": "pending", "retire_requested_at": "100", "claim_id": "claim-1"}]
             def claim_pending_retirement(self, row, now): return True
             def tombstone_pending(self, row, now): self.fail("tombstoned before disable")
-        with self.assertRaisesRegex(RuntimeError, "OpenRouter outage"):
-            worker.retire_keys(Store(), now=2000, environment="dev", workspace_hashes=lambda: set(),
-                               orphan_keys=lambda *_: [{"name": "lightbulb-dev-owner-1", "hash": "active", "disabled": False}],
-                               disable=lambda *_: (_ for _ in ()).throw(RuntimeError("OpenRouter outage")))
+        result = worker.retire_keys(Store(), now=2000, environment="dev", workspace_hashes=lambda: set(),
+                                    orphan_keys=lambda *_: [{"name": "lightbulb-dev-owner-1", "hash": "active", "disabled": False}],
+                                    disable=lambda *_: (_ for _ in ()).throw(RuntimeError("OpenRouter outage")))
+        self.assertEqual(result["failed"], 1)
 
     def test_pending_orphan_retries_after_stale_processing_lease(self):
         actions = []
@@ -383,9 +384,8 @@ class SettlementTests(unittest.TestCase):
             def tombstone_pending(self, row, now): actions.append("tombstone"); self.row = {**row, "state": "disabled"}
         store = Store()
         orphans = lambda *_: [{"name": "lightbulb-dev-owner-1", "hash": "active", "disabled": False}]
-        with self.assertRaisesRegex(RuntimeError, "outage"):
-            worker.retire_keys(store, now=2000, environment="dev", workspace_hashes=lambda: set(), orphan_keys=orphans,
-                               disable=lambda *_: (_ for _ in ()).throw(RuntimeError("outage")))
+        self.assertEqual(worker.retire_keys(store, now=2000, environment="dev", workspace_hashes=lambda: set(), orphan_keys=orphans,
+                                            disable=lambda *_: (_ for _ in ()).throw(RuntimeError("outage")))["failed"], 1)
         self.assertEqual(store.row["state"], "retirement_processing")
         self.assertEqual(worker.retire_keys(store, now=2100, environment="dev", workspace_hashes=lambda: set(), orphan_keys=orphans,
                                             disable=lambda *_: self.fail("lease not stale"))["lease"], 1)
@@ -412,6 +412,138 @@ class SettlementTests(unittest.TestCase):
             def scan(self, **kwargs): calls.append(kwargs); return {"Items": []}
         worker.Store(Ddb(), requests_table="requests", fast_table="fast", keys_table="keys").retirement_candidates()
         self.assertIn("attribute_exists(retire_requested_at)", calls[0]["FilterExpression"])
+
+
+    def test_one_failing_retirement_does_not_strand_the_next(self):
+        class Store:
+            def retirement_candidates(self): return [
+                {"owner_id": "gone", "key_hash": "missing", "state": "retiring", "retirement_observed_at": "100"},
+                {"owner_id": "owner-1", "key_hash": "hash-1", "state": "retiring", "retirement_observed_at": "100"}]
+            def pending(self): return []
+            def claim_retirement(self, row, now): return True
+            def mark_disabled(self, row, now): disabled.append(row["owner_id"])
+        disabled = []
+        result = worker.retire_keys(Store(), now=2000, workspace_hashes=lambda: {"hash-1"}, disable=lambda *_: None)
+        self.assertEqual((result["failed"], result["disabled"], disabled), (1, 1, ["owner-1"]))
+
+
+class ScheduledRunTests(unittest.TestCase):
+    """One scheduled tick end to end: settle free/capped rows, never metered, then retire."""
+
+    class Store:
+        keys_table = "keys"
+
+        def __init__(self, rows, keys=()):
+            self.rows = {row["request_id"]: dict(row) for row in rows}
+            self.keys = {key["owner_id"]: dict(key) for key in keys}
+
+        def pending(self):
+            return [dict(row) for row in self.rows.values() if row["state"] == "pending"]
+
+        def commit_free(self, row, event, now, amount=0):
+            self.rows[row["request_id"]].update(state="settled", provider_cost_nanodollars=amount)
+            return "settled"
+
+        def commit(self, *_):
+            raise AssertionError("metered row reached the Metronome commit")
+
+        def release_unknown(self, row, now):
+            self.rows[row["request_id"]]["state"] = "released"
+            return "released_no_generation"
+
+        def retirement_candidates(self):
+            return [dict(key) for key in self.keys.values() if key["state"] in ("retiring", "retirement_processing")]
+
+        def claim_retirement(self, row, now):
+            self.keys[row["owner_id"]]["state"] = "retirement_processing"
+            return True
+
+        def mark_disabled(self, row, now):
+            self.keys[row["owner_id"]]["state"] = "disabled"
+
+    def run_tick(self, store, context=None):
+        now = int(time.time())
+        generations = {row["generation_id"]: {"id": row["generation_id"], "total_cost": cost, "created_at": "2026-09-22T00:00:00Z"}
+                       for row, cost in self.costs}
+        env = {"REQUESTS_TABLE": "requests", "FAST_GATE_TABLE": "fast", "OPENROUTER_KEYS_TABLE": "keys", "GATE_ENV": "dev",
+               "OPENROUTER_WORKSPACE_ID": "ws-1", "OPENROUTER_MANAGEMENT_KEY_SECRET_ID": "management",
+               "OPENROUTER_MONEY_CONTRACT_VERIFIED": "false", "OPENROUTER_RATE_CARD_PROOF_ID": ""}
+        self.patched = []
+        with patch.dict(os.environ, env), patch.dict(sys.modules, {"boto3": types.SimpleNamespace(client=lambda _: object())}), \
+                patch.object(worker, "Store", return_value=store), \
+                patch.object(worker, "_get_generation", side_effect=lambda gen, _secret: generations[gen]), \
+                patch.object(worker, "_ingest", side_effect=AssertionError("Metronome ingest")) as ingest, \
+                patch.object(worker, "_secret", return_value="management-key"), \
+                patch.object(worker, "list_workspace_keys", return_value=[{"hash": "hash-1"}]), \
+                patch.object(worker, "_patch_disable_key", side_effect=lambda key_hash, *_: self.patched.append(key_hash)):
+            try:
+                return worker.handler({"source": "aws.events"}, context)
+            finally:
+                ingest.assert_not_called()
+
+    def row(self, request_id, owner, mode):
+        return {"request_id": request_id, "owner_id": owner, "key_hash": "hash-1", "secret_name": "s", "billing_mode": mode,
+                "generation_id": f"gen-{request_id}", "state": "pending", "created_at": int(time.time()) - 600,
+                "reservation_microcents": 0}
+
+    def test_metered_row_stays_pending_without_wedging_the_batch(self):
+        metered, capped, free = self.row("paid", "owner-2", "paid"), self.row("capped", "owner-1", "capped"), self.row("free", "owner-1", "free")
+        self.costs = [(metered, Decimal("0.5")), (capped, Decimal("0.012345678")), (free, Decimal("0"))]
+        store = self.Store([metered, capped, free])
+        with self.assertRaisesRegex(RuntimeError, "MoneyContractUnverified"):
+            self.run_tick(store)
+        self.assertEqual({key: row["state"] for key, row in store.rows.items()}, {"paid": "pending", "capped": "settled", "free": "settled"})
+
+    def test_capped_and_free_settle_at_cost_without_metronome(self):
+        capped, free = self.row("capped", "owner-1", "capped"), self.row("free", "owner-1", "free")
+        self.costs = [(capped, Decimal("0.012345678")), (free, Decimal("0"))]
+        store = self.Store([capped, free])
+        result = self.run_tick(store)
+        self.assertEqual(result["settlement"], {"settled": 2})
+        self.assertEqual(store.rows["capped"]["provider_cost_nanodollars"], 12_345_678)
+        self.assertEqual(store.rows["free"]["provider_cost_nanodollars"], 0)
+
+    def test_wiped_owner_settles_then_retires_in_the_same_tick(self):
+        last = self.row("last", "owner-1", "capped")
+        self.costs = [(last, Decimal("0.001"))]
+        store = self.Store([last], keys=[{"owner_id": "owner-1", "key_hash": "hash-1", "state": "retiring",
+                                          "retirement_observed_at": str(int(time.time()) - 961)}])
+        result = self.run_tick(store)
+        self.assertEqual((store.rows["last"]["state"], store.keys["owner-1"]["state"], self.patched), ("settled", "disabled", ["hash-1"]))
+        self.assertEqual(result["retirement"]["disabled"], 1)
+
+    def test_unmetered_row_without_generation_is_released_after_an_hour_metered_is_not(self):
+        old = int(time.time()) - 3601
+        rows = [{**self.row(name, "owner-1", mode), "created_at": created} for name, mode, created in
+                [("stale", "capped", old), ("fresh", "free", int(time.time()) - 600), ("paid", "paid", old)]]
+        for row in rows:
+            del row["generation_id"]
+        self.costs = []
+        store = self.Store(rows)
+        with self.assertRaisesRegex(RuntimeError, "unknown_generation") as raised:
+            self.run_tick(store)
+        self.assertIn("released_no_generation", str(raised.exception))
+        self.assertEqual({key: row["state"] for key, row in store.rows.items()}, {"stale": "released", "fresh": "pending", "paid": "pending"})
+        store.rows["fresh"]["created_at"] = old
+        del store.rows["paid"]
+        self.assertEqual(self.run_tick(store)["settlement"], {"released_no_generation": 1})
+
+    def test_release_unknown_is_conditional_on_no_generation_and_unmetered(self):
+        seen = {}
+        class Ddb:
+            def update_item(self, **kwargs): seen.update(kwargs)
+        row = {"request_id": "req-1", "billing_mode": "capped"}
+        self.assertEqual(worker.Store(Ddb(), requests_table="requests", fast_table="fast").release_unknown(row, 5), "released_no_generation")
+        self.assertIn("attribute_not_exists(generation_id)", seen["ConditionExpression"])
+        self.assertIn("billing_mode IN (:free, :capped)", seen["ConditionExpression"])
+
+    def test_backlog_defers_near_the_timeout_and_still_retires(self):
+        row = self.row("late", "owner-2", "capped")
+        self.costs = [(row, Decimal("0.001"))]
+        store = self.Store([row], keys=[{"owner_id": "owner-1", "key_hash": "hash-1", "state": "retiring",
+                                         "retirement_observed_at": str(int(time.time()) - 961)}])
+        result = self.run_tick(store, types.SimpleNamespace(get_remaining_time_in_millis=lambda: 30_000))
+        self.assertEqual((result["settlement"], store.rows["late"]["state"], result["retirement"]["disabled"]), ({"deferred": 1}, "pending", 1))
 
 
 if __name__ == "__main__":

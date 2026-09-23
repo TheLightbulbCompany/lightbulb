@@ -2701,6 +2701,26 @@ def handler(event, context):
       });
     }
 
+    // W80: OpenRouter settlement worker failing. Per-env (each env runs its own
+    // worker). The function has no async retries and no failure destination, and a
+    // run raises on any row it may not settle, so this is the only signal that
+    // capped cost / key retirement has stopped. 3 errors in 30 min = ~half the ticks.
+    this.createAlarm({
+      id: "W80",
+      name: "openrouter-settlement-errors",
+      description: "OpenRouter settlement Lambda failing (>= 3 errors in 30 min)",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/Lambda",
+        metricName: "Errors",
+        statistic: "Sum",
+        period: cdk.Duration.minutes(30),
+        dimensionsMap: { FunctionName: `${resourcePrefix(this.envName)}openrouter-settlement` },
+      }),
+      threshold: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      severity: "warn",
+    });
+
     // NOTE: AWS Cost Anomaly Detection is intentionally NOT managed here.
     // A Cost Anomaly Detection monitor is an ACCOUNT-GLOBAL resource; a
     // per-environment stack (dev + prod both deploy this stack) cannot own

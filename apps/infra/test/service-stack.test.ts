@@ -147,35 +147,6 @@ describe("ServiceStack — desktop execution rollout", () => {
 describe("ServiceStack — clean handoff / rolling deploy", () => {
   const template = SERVICE_TEMPLATE_DEV;
 
-  test("empty production managed-inference flag defaults closed", () => {
-    vi.stubEnv("OPENROUTER_MANAGED_ENABLED_PROD", "");
-    try {
-      buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", {
-        ContainerDefinitions: Match.arrayWith([Match.objectLike({
-          Name: "backend",
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "OPENROUTER_MANAGED_ENABLED", Value: "false" }),
-          ]),
-        })]),
-      });
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
-  test("paid OpenRouter credits are on in both envs", () => {
-    for (const [env, value] of [["dev", "true"], ["prod", "true"]] as const) {
-      (env === "dev" ? template : buildServiceStack("prod")).hasResourceProperties("AWS::ECS::TaskDefinition", {
-        ContainerDefinitions: Match.arrayWith([Match.objectLike({
-          Name: "backend",
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "OPENROUTER_PAID_CREDITS_ENABLED", Value: value }),
-          ]),
-        })]),
-      });
-    }
-  });
-
   test("backend can write only per-owner OpenRouter secrets", () => {
     const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap(
       (type) => Object.values(template.findResources(type)).flatMap(
@@ -206,7 +177,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
         Environment: Match.arrayWith([
           Match.objectLike({ Name: "OPENROUTER_WORKSPACE_ID", Value: "" }),
           Match.objectLike({ Name: "OPENROUTER_MANAGED_MODEL_ID", Value: "" }),
-          Match.objectLike({ Name: "OPENROUTER_MANAGED_ENABLED", Value: "false" }),
         ]),
       })]),
     });

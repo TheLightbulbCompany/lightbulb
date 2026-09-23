@@ -341,8 +341,8 @@ export class LightbulbStage extends cdk.Stage {
     observability.addDependency(database);
     observability.addDependency(paperclip);
 
-    // Both envs: OPENROUTER_MANAGED_ENABLED_* gates the rollout, but a runtime resolved to
-    // openrouter_managed needs this stack's gate URL, so the stack itself can't be env-gated.
+    // Both envs: a runtime resolved to openrouter_managed needs this stack's gate URL,
+    // so the stack itself can't be env-gated.
     const openrouterGate = new OpenRouterGateStack(this, `lightbulb-${env}-openrouter-gate`, {
       stackName: `lightbulb-${env}-openrouter-gate`,
       environment: env,

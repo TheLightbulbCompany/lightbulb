@@ -21,7 +21,6 @@ test("dev OpenRouter gate is a token-gated streaming Lambda with owner-key acces
       BILLING_TABLE: "lightbulb-dev-billing-accounts",
       FAST_GATE_TABLE: "lightbulb-dev-metronome-fast-gate",
       MODEL_POLICY_JSON: "{}",
-      OPENROUTER_MANAGED_ENABLED: "false",
       OPENROUTER_MARKUP: "1.2",
     }) },
   });
@@ -38,11 +37,9 @@ test("dev OpenRouter gate is a token-gated streaming Lambda with owner-key acces
   expect(gatePolicies).not.toContain("lightbulb/dev/openrouter/management");
 });
 
-test("dev gate consumes an explicitly supplied model policy and rollout flag", () => {
+test("dev gate consumes an explicitly supplied model policy", () => {
   const oldPolicy = process.env.OPENROUTER_MODEL_POLICY_JSON_DEV;
-  const oldEnabled = process.env.OPENROUTER_MANAGED_ENABLED_DEV;
   process.env.OPENROUTER_MODEL_POLICY_JSON_DEV = '{"revision":"ultra-free-v1","models":["nvidia/nemotron-3-ultra-550b-a55b:free"],"max_prompt_tokens":1000,"max_price":{"prompt":0,"completion":0}}';
-  process.env.OPENROUTER_MANAGED_ENABLED_DEV = "true";
   try {
     const app = new cdk.App();
     const stack = new OpenRouterGateStack(app, "OpenRouterGatePolicy", {
@@ -53,36 +50,15 @@ test("dev gate consumes an explicitly supplied model policy and rollout flag", (
       FunctionName: "lightbulb-dev-openrouter-gate",
       Environment: { Variables: Match.objectLike({
         MODEL_POLICY_JSON: '{"revision":"ultra-free-v1","models":["nvidia/nemotron-3-ultra-550b-a55b:free"],"max_prompt_tokens":1000,"max_price":{"prompt":0,"completion":0}}',
-        OPENROUTER_MANAGED_ENABLED: "true",
       }) },
     });
   } finally {
     if (oldPolicy === undefined) delete process.env.OPENROUTER_MODEL_POLICY_JSON_DEV;
     else process.env.OPENROUTER_MODEL_POLICY_JSON_DEV = oldPolicy;
-    if (oldEnabled === undefined) delete process.env.OPENROUTER_MANAGED_ENABLED_DEV;
-    else process.env.OPENROUTER_MANAGED_ENABLED_DEV = oldEnabled;
   }
 });
 
-test("empty rollout flag stays disabled", () => {
-  const oldEnabled = process.env.OPENROUTER_MANAGED_ENABLED_DEV;
-  process.env.OPENROUTER_MANAGED_ENABLED_DEV = "";
-  try {
-    const app = new cdk.App();
-    const stack = new OpenRouterGateStack(app, "OpenRouterGateEmptyFlag", {
-      env: { account: "877352799272", region: "us-east-1" },
-      environment: "dev",
-    });
-    Template.fromStack(stack).hasResourceProperties("AWS::Lambda::Function", {
-      Environment: { Variables: Match.objectLike({ OPENROUTER_MANAGED_ENABLED: "false" }) },
-    });
-  } finally {
-    if (oldEnabled === undefined) delete process.env.OPENROUTER_MANAGED_ENABLED_DEV;
-    else process.env.OPENROUTER_MANAGED_ENABLED_DEV = oldEnabled;
-  }
-});
-
-test("dev settlement carries the rate-card proof and runs the daily audit", () => {
+test("dev settlement runs the daily audit", () => {
   const app = new cdk.App();
   const stack = new OpenRouterGateStack(app, "OpenRouterGate", {
     env: { account: "877352799272", region: "us-east-1" },
@@ -97,8 +73,6 @@ test("dev settlement carries the rate-card proof and runs the daily audit", () =
       FAST_GATE_TABLE: "lightbulb-dev-metronome-fast-gate",
       OPENROUTER_MARKUP: "1.2",
       USAGE_COUNTERS_TABLE: "lightbulb-dev-usage-counters",
-      OPENROUTER_MONEY_CONTRACT_VERIFIED: "true",
-      OPENROUTER_RATE_CARD_PROOF_ID: "4c39b72e-a9bc-4272-a3b3-eddd2b5e5001",
       OPENROUTER_WORKSPACE_ID: "",
     }) },
   });
@@ -119,19 +93,13 @@ test("dev settlement carries the rate-card proof and runs the daily audit", () =
   });
 });
 
-test("prod settlement ingests money with the prod rate-card proof and runs the audit", () => {
+test("prod settlement ingests money and runs the audit", () => {
   const app = new cdk.App();
   const template = Template.fromStack(new OpenRouterGateStack(app, "OpenRouterGateProd", {
     env: { account: "877352799272", region: "us-east-1" },
     environment: "prod",
   }));
-  template.hasResourceProperties("AWS::Lambda::Function", {
-    FunctionName: "lightbulb-prod-openrouter-settlement",
-    Environment: { Variables: Match.objectLike({
-      OPENROUTER_MONEY_CONTRACT_VERIFIED: "true",
-      OPENROUTER_RATE_CARD_PROOF_ID: "653a6187-6fd6-4490-b473-98e1ae85a745",
-    }) },
-  });
+  template.hasResourceProperties("AWS::Lambda::Function", { FunctionName: "lightbulb-prod-openrouter-settlement" });
   template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(5 minutes)", State: "ENABLED" });
   template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "cron(15 1 * * ? *)", State: "ENABLED" });
 });

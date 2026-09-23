@@ -28,10 +28,6 @@ export class OpenRouterGateStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: OpenRouterGateStackProps) {
     super(scope, id, props);
     const env = props.environment;
-    // The Metronome OpenRouter product carrying the 1.2x rate on this env's rate card. It is
-    // the money proof: settlement ingests metered rows only where it is set. Both applied by
-    // setup_metronome_openrouter_pricing.py; prod on 2026-09-23 after the dev funded smoke.
-    const rateCardProof = env === "dev" ? "4c39b72e-a9bc-4272-a3b3-eddd2b5e5001" : "653a6187-6fd6-4490-b473-98e1ae85a745";
     const source = path.join(__dirname, "..", "..", "lambda", "openrouter-gate");
     const code = lambda.Code.fromAsset(source, {
       bundling: {
@@ -78,14 +74,9 @@ export class OpenRouterGateStack extends cdk.Stack {
         MODEL_POLICY_JSON: env === "dev"
           ? (process.env.OPENROUTER_MODEL_POLICY_JSON_DEV ?? "{}")
           : (process.env.OPENROUTER_MODEL_POLICY_JSON_PROD ?? "{}"),
-        OPENROUTER_MANAGED_ENABLED: env === "dev"
-          ? (process.env.OPENROUTER_MANAGED_ENABLED_DEV || "false")
-          : (process.env.OPENROUTER_MANAGED_ENABLED_PROD || "false"),
         // The hard cap for zero-price requests (no byte-for-token bound applies to them).
         MAX_BODY_BYTES: "1048576",
         MAX_OUTPUT_TOKENS: "4096",
-        RESERVE_ESTIMATE_MICROCENTS: "300000",
-        RESERVE_TTL_SECONDS: "1200",
         OPENROUTER_MARKUP,
       },
       logGroup: new logs.LogGroup(this, "GateLogs", {
@@ -150,8 +141,6 @@ export class OpenRouterGateStack extends cdk.Stack {
           ? (process.env.OPENROUTER_WORKSPACE_ID_DEV ?? "")
           : (process.env.OPENROUTER_WORKSPACE_ID_PROD ?? ""),
         OPENROUTER_MARKUP,
-        OPENROUTER_MONEY_CONTRACT_VERIFIED: rateCardProof ? "true" : "false",
-        OPENROUTER_RATE_CARD_PROOF_ID: rateCardProof,
       },
       logGroup: new logs.LogGroup(this, "SettlementLogs", {
         logGroupName: logGroupPath(env, "openrouter-settlement"),
@@ -190,17 +179,15 @@ export class OpenRouterGateStack extends cdk.Stack {
       retentionPeriod: cdk.Duration.days(14),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
     });
-    // Settles free/capped rows and retires keys. Metered rows stay pending in an env
-    // without a rate-card proof: settle_one refuses them.
+    // Settles free/capped/metered rows and retires keys.
     const schedule = new events.Rule(this, "SettlementSchedule", {
       schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
     });
     schedule.addTarget(new targets.LambdaFunction(settlement, { deadLetterQueue: dlq, retryAttempts: 2 }));
     // Read-only reconciliation of OpenRouter's per-key activity against settled rows; a gap
-    // fails the run (openrouter-settlement-errors alarm). The handler refuses it without the proof.
+    // fails the run (openrouter-settlement-errors alarm).
     const audit = new events.Rule(this, "DailyActivityAudit", {
       schedule: events.Schedule.cron({ minute: "15", hour: "1" }),
-      enabled: Boolean(rateCardProof),
     });
     audit.addTarget(new targets.LambdaFunction(settlement, {
       event: events.RuleTargetInput.fromObject({ audit_previous_day: true }),

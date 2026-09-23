@@ -59,6 +59,9 @@ RATE_LIMITED = "rate_limited"
 RATE_LIMIT_RETRIES = 3
 #: Seconds before retry n may re-claim: 10, 20, 30 -- ~1 min before the fallback.
 _RATE_LIMIT_BACKOFF_S = 10
+#: A throttled message holds its room+agent FIFO group while it backs off, so only a fresh one
+#: retries: one queued behind it is already this old and falls back at once, bounding the stall.
+_RATE_LIMIT_WINDOW_S = 90
 
 #: Its own small pool and short, no-retry clients: ``wait_for`` cancels the await, not the thread,
 #: so a slow S3/Secrets Manager read must never pin the default executor DynamoDB shares.
@@ -421,7 +424,8 @@ async def route(
         if prior and not prior.get("pending") and (not prior.get("retry") or prior.get("retryAt", 0) > time.time()):
             # A final decision, or a rate-limit retry still backing off: nothing to compute yet.
             return prior
-        attempts = int(prior.get("attempts") or 0) if prior and prior.get("retry") else 0
+        # A pending row re-claimed from a retry carries the count too: a stale takeover keeps it.
+        attempts = int(prior.get("attempts") or 0) if prior else 0
         if not await _gateway_key():
             # No key on THIS task: do no Jev/card work, but never act alone -- another backend
             # task may hold a key and route this message (dev 2026-09-23: a key-less task fell
@@ -430,9 +434,13 @@ async def route(
             put_metric("messaging.jev.decision", dimensions={"outcome": "disabled"})
             stored = prior
             if stored is None or stored.get("retry"):
-                # Only into an ABSENT (or retry) row: never overwrite a keyed task's live claim.
+                # Only into an ABSENT (or still-retry) row: never overwrite a keyed task's live claim.
                 stored = await messaging_repo.finalize_decision(
-                    room_id, message_id, {"fallback": True, "reason": "disabled"}, only_if_absent=stored is None
+                    room_id,
+                    message_id,
+                    {"fallback": True, "reason": "disabled"},
+                    only_if_absent=stored is None,
+                    only_if_retry=stored is not None,
                 )
             if not stored.get("pending"):
                 return stored
@@ -446,9 +454,11 @@ async def route(
                 logger.warning("Jev decision failed", exc_info=True)
                 decision = {"fallback": True, "reason": "error"}
             if decision.get("rateLimited"):
+                sent = _parse_ts(message.get("createdAt"))
+                fresh = sent is not None and (datetime.now(timezone.utc) - sent).total_seconds() < _RATE_LIMIT_WINDOW_S
                 decision = (
                     {"fallback": True, "reason": "rate_limited", "candidates": decision["candidates"]}
-                    if attempts >= RATE_LIMIT_RETRIES
+                    if attempts >= RATE_LIMIT_RETRIES or not fresh
                     else {
                         "retry": True,
                         "attempts": attempts + 1,

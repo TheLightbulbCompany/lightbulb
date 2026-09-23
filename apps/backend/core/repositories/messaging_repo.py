@@ -2012,7 +2012,9 @@ async def claim_decision(room_id: str, message_id: str, *, attempts: int = 0) ->
         raise
 
 
-async def finalize_decision(room_id: str, message_id: str, decision: dict, *, only_if_absent: bool = False) -> dict:
+async def finalize_decision(
+    room_id: str, message_id: str, decision: dict, *, only_if_absent: bool = False, only_if_retry: bool = False
+) -> dict:
     """Write the final decision only while the row is still pending, a rate-limit retry, or gone,
     and return whatever final decision is stored. First final write wins, so a late claim winner and a
     loser that timed out and fell back always act on the SAME decision -- never two responders."""
@@ -2025,10 +2027,17 @@ async def finalize_decision(room_id: str, message_id: str, decision: dict, *, on
                 "decision": _ddb_safe(decision),
                 "expiresAt": _expires_at(),
             },
-            # only_if_absent: a caller that never claimed (no key) must not overwrite a live claim.
+            # only_if_absent / only_if_retry: a caller that never claimed (no key) must not
+            # overwrite a live claim.
             **(
                 {"ConditionExpression": "attribute_not_exists(sk)"}
                 if only_if_absent
+                else {
+                    "ConditionExpression": "#d.#r = :t",
+                    "ExpressionAttributeNames": {"#d": "decision", "#r": "retry"},
+                    "ExpressionAttributeValues": {":t": True},
+                }
+                if only_if_retry
                 else {
                     "ConditionExpression": "attribute_not_exists(sk) OR #d.#p = :t OR #d.#r = :t",
                     "ExpressionAttributeNames": {"#d": "decision", "#p": "pending", "#r": "retry"},

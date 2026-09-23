@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from unittest.mock import AsyncMock
@@ -58,9 +59,13 @@ def store(monkeypatch):
         rows[(room_id, message_id)] = {"pending": True, "claimedAt": 0, "attempts": attempts}
         return True
 
-    async def finalize(room_id, message_id, decision, *, only_if_absent=False):
+    async def finalize(room_id, message_id, decision, *, only_if_absent=False, only_if_retry=False):
         current = rows.get((room_id, message_id))
-        if current is None or ((current.get("pending") or current.get("retry")) and not only_if_absent):
+        if only_if_retry:
+            writable = current is not None and bool(current.get("retry"))
+        else:
+            writable = current is None or ((current.get("pending") or current.get("retry")) and not only_if_absent)
+        if writable:
             rows[(room_id, message_id)] = decision
         return rows[(room_id, message_id)]
 
@@ -576,9 +581,10 @@ async def test_rate_limited_decisions_retry_then_fall_back_after_the_cap(monkeyp
     decide = AsyncMock(return_value=jev.RATE_LIMITED)
     monkeypatch.setattr(jev, "decide", decide)
     key = (META["roomId"], MESSAGE["messageId"])
+    fresh = {**MESSAGE, "createdAt": datetime.now(timezone.utc).isoformat()}
 
     async def route(agent):
-        return await jev.route(META, agent, MESSAGE, latest=MESSAGE, members=MEMBERS, history=HISTORY)
+        return await jev.route(META, agent, fresh, latest=fresh, members=MEMBERS, history=HISTORY)
 
     for attempt in range(1, jev.RATE_LIMIT_RETRIES + 1):
         got = [await route(agent) for agent in ("a1", "a2")]
@@ -609,3 +615,34 @@ async def test_a_retry_decision_backs_the_delivery_off_with_jitter(monkeypatch):
                 route=AsyncMock(return_value={"retry": True, "attempts": 2, "retryAt": time.time() + 20}),
             )
         assert 18 <= caught.value.visibility <= 25
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limited_message_older_than_the_window_falls_back_at_once(monkeypatch, store, metrics):
+    """Review finding: a retrying message holds its room+agent FIFO group, so a paste would
+    stall ~1 min per message. One queued long enough to be stale falls back immediately."""
+    monkeypatch.setattr(jev, "decide", AsyncMock(return_value=jev.RATE_LIMITED))
+    stale = {**MESSAGE, "createdAt": (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()}
+    got = await jev.route(META, "a1", stale, latest=stale, members=MEMBERS, history=HISTORY)
+    assert got["fallback"] is True and got["reason"] == "rate_limited"
+
+
+@pytest.mark.asyncio
+async def test_a_keyless_task_finalizes_only_a_still_retry_row(monkeypatch, store, metrics):
+    """Review finding: a key-less task that read an elapsed retry row must not overwrite the claim
+    a keyed task took meanwhile."""
+    key = (META["roomId"], MESSAGE["messageId"])
+    store[key] = {"retry": True, "attempts": 1, "retryAt": 0}
+    monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value=None))
+    monkeypatch.setattr(jev, "_LOSER_POLL_S", 0.01)
+    real_finalize = jev.messaging_repo.finalize_decision
+
+    async def claimed_first(room_id, message_id, decision, **kw):
+        store[key] = {"pending": True, "claimedAt": 0, "attempts": 1}  # a keyed task re-claims now
+        got = await real_finalize(room_id, message_id, decision, **kw)
+        store[key] = {"who": "a1", "whoP": {"a1": 0.9}, "placement": "main"}  # ...and decides
+        return got
+
+    monkeypatch.setattr(jev.messaging_repo, "finalize_decision", claimed_first)
+    got = await jev.route(META, "a2", MESSAGE, latest=MESSAGE, members=MEMBERS, history=HISTORY)
+    assert got["who"] == "a1"

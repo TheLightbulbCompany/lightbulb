@@ -13,8 +13,20 @@ def active_personal_account():
         "stripe_customer_id": "cus_abc",
         "stripe_subscription_id": "sub_x",
         "subscription_status": "active",
-        "provider_choice": "bedrock_claude",
+        "provider_choice": "openrouter_managed",
     }
+
+
+@pytest.fixture(autouse=True)
+def _managed_route_available(monkeypatch):
+    """Switching INTO openrouter_managed checks its route first; make it available."""
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "OPENROUTER_MANAGED_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "OPENROUTER_PAID_CREDITS_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model", raising=False)
+    monkeypatch.setattr("core.billing.openrouter_gate_url.gate_url", lambda: "https://gate.example/v1")
+    monkeypatch.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", AsyncMock())
 
 
 @pytest.fixture
@@ -59,7 +71,7 @@ def reprovision():
 
 
 @pytest.mark.asyncio
-async def test_change_provider_bedrock_to_byo_key_happy_path(
+async def test_change_provider_managed_to_byo_key_happy_path(
     async_client,
     active_personal_account,
     reprovision,
@@ -181,7 +193,7 @@ async def test_org_owner_can_switch_to_chatgpt_oauth_and_is_recorded(
         "owner_type": "org",
         "stripe_subscription_id": "sub_x",
         "subscription_status": "active",
-        "provider_choice": "bedrock_claude",
+        "provider_choice": "openrouter_managed",
         # No oauth_connector_user_id — never been on chatgpt_oauth.
     }
 
@@ -240,7 +252,7 @@ async def test_non_owner_admin_cannot_switch_org_to_chatgpt(
         "owner_type": "org",
         "stripe_subscription_id": "sub_x",
         "subscription_status": "active",
-        "provider_choice": "bedrock_claude",
+        "provider_choice": "openrouter_managed",
         # user_a is the recorded owner; the caller (admin fixture) is
         # user_test_123 — a different human.
         "oauth_connector_user_id": "user_a",
@@ -350,7 +362,7 @@ async def test_org_byo_key_prereq_is_owner_scoped_not_clerk_user_scoped(
         "owner_type": "org",
         "stripe_subscription_id": "sub_x",
         "subscription_status": "active",
-        "provider_choice": "bedrock_claude",
+        "provider_choice": "openrouter_managed",
     }
     with (
         patch(
@@ -413,7 +425,7 @@ async def test_personal_switch_away_still_revokes(
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",
-            json={"provider_choice": "bedrock_claude"},
+            json={"provider_choice": "openrouter_managed"},
         )
 
     assert resp.status_code == 200, resp.text
@@ -462,7 +474,7 @@ async def test_switch_away_keeps_harness_row_when_unlink_fails(
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",
-            json={"provider_choice": "bedrock_claude"},
+            json={"provider_choice": "openrouter_managed"},
         )
 
     assert resp.status_code == 200, resp.text
@@ -492,7 +504,7 @@ async def test_change_provider_inactive_subscription_returns_409(
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",
-            json={"provider_choice": "bedrock_claude"},
+            json={"provider_choice": "openrouter_managed"},
         )
 
     assert resp.status_code == 409
@@ -510,7 +522,7 @@ async def test_change_provider_no_billing_account_returns_404(
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",
-            json={"provider_choice": "bedrock_claude"},
+            json={"provider_choice": "openrouter_managed"},
         )
 
     assert resp.status_code == 404
@@ -538,7 +550,7 @@ async def test_change_provider_same_choice_is_noop(
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",
-            json={"provider_choice": "bedrock_claude"},
+            json={"provider_choice": "openrouter_managed"},
         )
 
     assert resp.status_code == 200
@@ -583,7 +595,7 @@ async def test_change_provider_clears_oauth_when_leaving_chatgpt(
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",
-            json={"provider_choice": "bedrock_claude"},
+            json={"provider_choice": "openrouter_managed"},
         )
 
     assert resp.status_code == 200, resp.text
@@ -617,7 +629,7 @@ async def test_change_provider_keeps_chatgpt_choice_and_oauth_row_when_agentcore
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",
-            json={"provider_choice": "bedrock_claude"},
+            json={"provider_choice": "openrouter_managed"},
         )
 
     assert resp.status_code == 502
@@ -659,7 +671,7 @@ async def test_change_provider_clears_byo_key_when_leaving_byo(
         ):
             resp = await async_client.post(
                 "/api/v1/billing/provider",
-                json={"provider_choice": "bedrock_claude"},
+                json={"provider_choice": "openrouter_managed"},
             )
 
     assert resp.status_code == 200, resp.text
@@ -667,11 +679,12 @@ async def test_change_provider_clears_byo_key_when_leaving_byo(
 
 
 @pytest.mark.asyncio
-async def test_change_provider_invalid_provider_choice_returns_422(async_client):
-    """Pydantic Literal rejects unknown values before any DDB read."""
+@pytest.mark.parametrize("choice", ["cohere_command", "bedrock_claude", "bedrock_trial"])
+async def test_change_provider_invalid_provider_choice_returns_422(async_client, choice):
+    """Pydantic Literal rejects unknown and retired values before any DDB read."""
     resp = await async_client.post(
         "/api/v1/billing/provider",
-        json={"provider_choice": "cohere_command"},
+        json={"provider_choice": choice},
     )
     assert resp.status_code == 422
 
@@ -682,7 +695,7 @@ async def test_change_provider_org_member_blocked(async_client_org_member):
     admins can. Matches /trial-checkout's require_org_admin gate."""
     resp = await async_client_org_member.post(
         "/api/v1/billing/provider",
-        json={"provider_choice": "bedrock_claude"},
+        json={"provider_choice": "openrouter_managed"},
     )
     assert resp.status_code == 403
 
@@ -730,7 +743,7 @@ async def test_change_provider_leaving_chatgpt_revokes_and_reprovisions(async_cl
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",
-            json={"provider_choice": "bedrock_claude"},
+            json={"provider_choice": "openrouter_managed"},
         )
 
     assert resp.status_code == 200, resp.text
@@ -743,7 +756,7 @@ async def test_change_provider_leaving_chatgpt_revokes_and_reprovisions(async_cl
 
 
 @pytest.mark.asyncio
-async def test_change_provider_bedrock_to_byo_always_cold_path(async_client, reprovision):
+async def test_change_provider_managed_to_byo_always_cold_path(async_client, reprovision):
     """BYO transitions can't avoid the restart — ECS env vars are bake-time.
     Even if openclaw.json patch would work, we MUST re-register the task
     definition with the new Secrets Manager secret ARN. restart=True."""
@@ -752,7 +765,7 @@ async def test_change_provider_bedrock_to_byo_always_cold_path(async_client, rep
         "owner_type": "personal",
         "stripe_subscription_id": "sub_x",
         "subscription_status": "active",
-        "provider_choice": "bedrock_claude",
+        "provider_choice": "openrouter_managed",
     }
     with (
         patch(
@@ -792,7 +805,7 @@ async def test_phantom_connector_self_heals_on_switch_into_chatgpt(
         "owner_type": "org",
         "stripe_subscription_id": "sub_x",
         "subscription_status": "active",
-        "provider_choice": "bedrock_claude",
+        "provider_choice": "openrouter_managed",
         # Phantom: names no Clerk user. The caller (user_test_123) is a real
         # admin who would otherwise eat a permanent 403 here.
         "oauth_connector_user_id": "user_ghost",

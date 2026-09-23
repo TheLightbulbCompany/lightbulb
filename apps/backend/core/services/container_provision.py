@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 
-from core.services.hermes_profiles import _BEDROCK_TRIAL_CHOICE as BEDROCK_TRIAL_CHOICE  # noqa: F401
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
@@ -20,9 +19,8 @@ def provider_choice_from_row(row: dict | None) -> tuple[str, str | None]:
 
     The single row-level mapping (resolve_provider_choice and
     owner_facts.build_owner_facts both call it — there is no second copy to
-    keep in sync). Falls back to bedrock_claude when no row or no choice is
-    persisted, matching the legacy default and keeping recovery working for
-    owners onboarded before per-owner provider_choice storage.
+    keep in sync). Falls back to the managed gate when no row or no choice is
+    persisted — the retired ``bedrock_claude`` default is never produced.
     """
     if (row or {}).get("subscription_status") == "trial_local":
         # Cardless Free rows intentionally store no provider_choice. Resolve
@@ -34,7 +32,7 @@ def provider_choice_from_row(row: dict | None) -> tuple[str, str | None]:
         # provider, run on the cheap capped model through the managed gate.
         # A stored choice is never re-mapped.
         return "openrouter_managed", None
-    provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
+    provider_choice = (row or {}).get("provider_choice") or "openrouter_managed"
     byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None
     return provider_choice, byo_provider
 

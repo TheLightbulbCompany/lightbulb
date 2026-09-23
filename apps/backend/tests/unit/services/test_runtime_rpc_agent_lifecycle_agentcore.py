@@ -45,6 +45,8 @@ def _no_stored_soul_md_by_default(monkeypatch):
     "the profile has none yet", which is the regenerate branch they were all written against; the
     marker tests below override it."""
     monkeypatch.setattr(rpc.hermes_profiles, "read_soul_md", MagicMock(return_value=None))
+    monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
+    monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1")
 
 
 class _Http:
@@ -77,11 +79,11 @@ def _wire_profile_inputs(monkeypatch, inputs: ProfileInputs, *, paperclip_api_ke
     monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
 
 
-_BEDROCK_INPUTS = ProfileInputs(
-    provider_choice="bedrock_claude",
+_MANAGED_INPUTS = ProfileInputs(
+    provider_choice="openrouter_managed",
     byo_provider=None,
     byo_api_key=None,
-    aip_arns={"sonnet": "arn:aip:sonnet", "opus": "arn:aip:opus"},
+    aip_arns={},
     integrations={},
     env_vars={},
 )
@@ -102,7 +104,7 @@ async def test_agents_create_on_agentcore_row_writes_the_real_profile_with_no_pa
     paperclip_agent = {"id": "agent_new", "name": "Ada", "role": "engineer", "title": "Backend engineer"}
     monkeypatch.setattr(rpc.container_rpc, "running_container", AsyncMock(return_value=(container, "10.0.0.1")))
     monkeypatch.setattr(rpc, "create_paperclip_for_chat", AsyncMock(return_value=paperclip_agent))
-    _wire_profile_inputs(monkeypatch, _BEDROCK_INPUTS)
+    _wire_profile_inputs(monkeypatch, _MANAGED_INPUTS)
     upload_mock = AsyncMock()
     monkeypatch.setattr(rpc.hermes_profiles, "upload_profile", upload_mock)
     publish = AsyncMock()
@@ -138,7 +140,7 @@ async def test_agents_create_hermes_profile_error_is_a_clean_rpc_error_not_a_500
     paperclip_agent = {"id": "agent_new", "name": "Ada"}
     monkeypatch.setattr(rpc.container_rpc, "running_container", AsyncMock(return_value=(container, "10.0.0.1")))
     monkeypatch.setattr(rpc, "create_paperclip_for_chat", AsyncMock(return_value=paperclip_agent))
-    _wire_profile_inputs(monkeypatch, _BEDROCK_INPUTS, paperclip_api_key=None)
+    _wire_profile_inputs(monkeypatch, _MANAGED_INPUTS, paperclip_api_key=None)
     monkeypatch.setattr(rpc, "publish_owner_users", AsyncMock())
 
     with pytest.raises(ApiProblem) as exc_info:
@@ -169,7 +171,7 @@ async def test_a_role_change_never_rewrites_the_owners_model_pick(monkeypatch):
     _wire_paperclip_mirror(monkeypatch, admin)
     monkeypatch.setattr(rpc.container_repo, "get_by_owner_id", AsyncMock(return_value={}))
     monkeypatch.setattr(
-        "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_BEDROCK_INPUTS)
+        "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_MANAGED_INPUTS)
     )
     patch_config = MagicMock()
     monkeypatch.setattr(rpc.hermes_profiles, "patch_profile_config", patch_config)
@@ -224,7 +226,7 @@ async def test_a_model_change_alongside_a_role_change_still_writes_the_picked_mo
     _wire_paperclip_mirror(monkeypatch, admin)
     _wire_owner_models(monkeypatch)
     monkeypatch.setattr(
-        "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_BEDROCK_INPUTS)
+        "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_MANAGED_INPUTS)
     )
     patch_config = MagicMock()
     monkeypatch.setattr(rpc.hermes_profiles, "patch_profile_config", patch_config)
@@ -235,16 +237,16 @@ async def test_a_model_change_alongside_a_role_change_still_writes_the_picked_mo
 
     await rpc._mirror_agent_update(
         "org_1",
-        {"agentId": "a1", "model": "arn:aip:sonnet", "params": {"paperclip": {"role": "ceo"}}},
+        {"agentId": "a1", "model": "candidate/model", "params": {"paperclip": {"role": "ceo"}}},
         agentcore=True,
     )
 
     expected_model, _aux, _prov = model_block(
-        provider_choice="bedrock_claude",
+        provider_choice="openrouter_managed",
         byo_provider=None,
-        aip_arns=_BEDROCK_INPUTS.aip_arns,
+        aip_arns=_MANAGED_INPUTS.aip_arns,
         is_ceo=False,
-        default_id="arn:aip:sonnet",
+        default_id="candidate/model",
     )
     patch_config.assert_called_once_with("org_1", "a1", {"model": expected_model})
 
@@ -330,7 +332,7 @@ async def test_rename_still_writes_soul_md_when_there_is_nothing_to_preserve(mon
     upload_soul.assert_called_once()
 
 
-def _wire_owner_models(monkeypatch, *, provider_choice="bedrock_claude", aip_arns=None):
+def _wire_owner_models(monkeypatch, *, provider_choice="openrouter_managed", aip_arns=None):
     """The two reads ``_agentcore_models_list`` makes -- the owner's provider choice and the
     container row's AIP map. With them, ``agents.update {model}`` validates against exactly the
     ids ``models.list`` would have offered this owner (M6 task 10-C)."""
@@ -341,7 +343,7 @@ def _wire_owner_models(monkeypatch, *, provider_choice="bedrock_claude", aip_arn
     monkeypatch.setattr(
         rpc.container_repo,
         "get_by_owner_id",
-        AsyncMock(return_value={"bedrock_aip_arns": _BEDROCK_INPUTS.aip_arns if aip_arns is None else aip_arns}),
+        AsyncMock(return_value={"bedrock_aip_arns": _MANAGED_INPUTS.aip_arns if aip_arns is None else aip_arns}),
     )
 
 
@@ -375,25 +377,25 @@ async def test_mirror_agent_update_rejects_a_model_outside_the_owners_own_list(m
 
 @pytest.mark.asyncio
 async def test_mirror_agent_update_accepts_an_offered_id_and_writes_it_through_the_writer(monkeypatch):
-    """The picked id lands as ``model.default``; ``provider`` and the Bedrock ``context_length``
-    pin still come from ``model_block``, never from the client."""
+    """The picked id lands as ``model.default``; ``provider`` and the gate route still come from
+    ``model_block``, never from the client."""
     _wire_owner_models(monkeypatch)
     monkeypatch.setattr(
-        "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_BEDROCK_INPUTS)
+        "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_MANAGED_INPUTS)
     )
     patch_config = MagicMock()
     monkeypatch.setattr(rpc.hermes_profiles, "patch_profile_config", patch_config)
 
-    await rpc._mirror_agent_update("org_1", {"agentId": "a1", "model": "arn:aip:opus"}, agentcore=True)
+    await rpc._mirror_agent_update("org_1", {"agentId": "a1", "model": "candidate/model"}, agentcore=True)
 
     expected_model, _aux_model, _aux_provider = model_block(
-        provider_choice="bedrock_claude",
+        provider_choice="openrouter_managed",
         byo_provider=None,
-        aip_arns=_BEDROCK_INPUTS.aip_arns,
+        aip_arns=_MANAGED_INPUTS.aip_arns,
         is_ceo=False,
-        default_id="arn:aip:opus",
+        default_id="candidate/model",
     )
-    assert expected_model["default"] == "arn:aip:opus" and expected_model["provider"] == "bedrock"
+    assert expected_model["default"] == "candidate/model" and expected_model["provider"] == "custom"
     patch_config.assert_called_once_with("org_1", "a1", {"model": expected_model})
 
 
@@ -403,13 +405,13 @@ async def test_mirror_agent_update_model_only_never_touches_paperclip_even_on_ag
     model-only update never touches Paperclip, regardless of transport."""
     _wire_owner_models(monkeypatch)
     monkeypatch.setattr(
-        "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_BEDROCK_INPUTS)
+        "core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=_MANAGED_INPUTS)
     )
     monkeypatch.setattr(rpc.hermes_profiles, "patch_profile_config", MagicMock())
     client = MagicMock()
     monkeypatch.setattr(rpc.httpx, "AsyncClient", client)
 
-    await rpc._mirror_agent_update("org_1", {"agentId": "a1", "model": "arn:aip:sonnet"}, agentcore=True)
+    await rpc._mirror_agent_update("org_1", {"agentId": "a1", "model": "candidate/model"}, agentcore=True)
 
     client.assert_not_called()
 

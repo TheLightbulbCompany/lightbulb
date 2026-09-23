@@ -1,4 +1,4 @@
-"""Pre-chat hard-stop for card-3 (bedrock_claude) users and the free-tier
+"""Pre-chat hard-stop for credit-drawing (openrouter_managed) owners and the free-tier
 ``trial_local`` daily cost cap."""
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ BUDGET_BLOCK_MESSAGES = {
 
 
 async def gate_chat(*, user_id: str, owner_id: str, session_key: str) -> dict:
-    """Pre-chat hard-stop for card-3 (bedrock_claude) users and the
+    """Pre-chat hard-stop for credit-drawing (openrouter_managed) owners and the
     free-tier ``trial_local`` daily cost cap.
 
     Layers:
@@ -44,8 +44,8 @@ async def gate_chat(*, user_id: str, owner_id: str, session_key: str) -> dict:
        — the single trial predicate — so a paid owner mid-upgrade-window
        with a stale ``trial_end`` is never told their trial expired, and
        never capped.
-    3. **Card-3 balance.** When ``provider_choice`` is
-       ``bedrock_claude``, the owner must not be blocked by the
+    3. **Credit balance.** When ``provider_choice`` is
+       ``openrouter_managed``, the owner must not be blocked by the
        Metronome fast-gate read (webhook-fed flag + lazy getNetBalance
        refresh — see ``core/services/metronome_gate.py``). Cards 1
        + 2 don't draw from prepaid credits, so they're not gated
@@ -155,13 +155,10 @@ async def gate_chat(*, user_id: str, owner_id: str, session_key: str) -> dict:
     # from one balance funded by the
     # admin. Keying on user_id meant org members saw balance=0 and
     # got blocked at chat with code=out_of_credits.
-    if account is None or account.get("provider_choice") not in {"bedrock_claude", "openrouter_managed"}:
+    if account is None or account.get("provider_choice") != "openrouter_managed":
         return {"blocked": False}
 
     if await is_owner_blocked(owner_id):
-        # Same copy for both credit-gated providers (bedrock_claude,
-        # openrouter_managed) — the balance is a workspace-level pool either
-        # way, so there is no user-visible reason for the message to differ.
         return {
             "blocked": True,
             "code": "out_of_credits",

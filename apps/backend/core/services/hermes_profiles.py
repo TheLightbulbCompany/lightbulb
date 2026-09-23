@@ -52,9 +52,9 @@ import yaml
 from core.config import settings
 from core.dynamodb import run_in_thread
 
-_BEDROCK = "bedrock"
+#: Nothing produces this provider choice any more; ``hermes_provisioning.reconcile_hermes_aips``
+#: still compares against it until the AIP retirement removes that call.
 _BEDROCK_TRIAL_CHOICE = "bedrock_trial"
-_BEDROCK_PROVIDER_CHOICES = ("bedrock_claude", _BEDROCK_TRIAL_CHOICE)
 
 
 def premium_model_ref(
@@ -68,20 +68,8 @@ def premium_model_ref(
     plan — there's no cheaper tier to demote the default to, so the CEO inherits
     the same model as everyone else.
 
-    ``bedrock_trial`` — and any Bedrock owner whose AIP map carries no ``opus``
-    — also returns ``None``: their IAM role is pinned to the AIPs they actually
-    hold, so pinning Friday to an opus profile they don't own would
-    AccessDeniedException on every one of the CEO's turns. A missing map still
-    raises: that's a provisioning bug, not a one-tier owner.
-
     Returns ``<provider>/<id>``; ``_strip_provider_prefix`` takes the id half.
     """
-    if provider_choice in _BEDROCK_PROVIDER_CHOICES:
-        if not aip_arns:
-            raise ValueError(f"{provider_choice} premium_model_ref requires aip_arns")
-        if provider_choice == _BEDROCK_TRIAL_CHOICE or "opus" not in aip_arns:
-            return None
-        return f"amazon-bedrock/{aip_arns['opus']}"
     if provider_choice == "byo_key":
         if byo_provider == "anthropic":
             # Anthropic-DIRECT id — no Bedrock "-v1" suffix / date-stamp. The CEO
@@ -110,18 +98,8 @@ def cheap_model_ref(
     runs, and the turn dies on a context overflow. ``None`` lets aux work
     inherit the primary, which the OAuth token can actually invoke.
 
-    ``bedrock_trial`` — and any Bedrock owner whose AIP map carries no ``haiku``
-    — returns ``None`` for the reason ``premium_model_ref`` does: the owner's
-    IAM role can only invoke the AIPs they hold.
-
     Returns ``<provider>/<id>``; ``_strip_provider_prefix`` takes the id half.
     """
-    if provider_choice in _BEDROCK_PROVIDER_CHOICES:
-        if not aip_arns:
-            raise ValueError(f"{provider_choice} cheap_model_ref requires aip_arns")
-        if provider_choice == _BEDROCK_TRIAL_CHOICE or "haiku" not in aip_arns:
-            return None
-        return f"amazon-bedrock/{aip_arns['haiku']}"
     if provider_choice == "byo_key":
         if byo_provider == "anthropic":
             return "anthropic/claude-haiku-4-5"
@@ -131,8 +109,6 @@ def cheap_model_ref(
             return "openai/gpt-5.4-mini"
     return None
 
-
-_BEDROCK_CLAUDE_CONTEXT = 200_000  # Claude 4.x on Bedrock
 
 #: Every auxiliary task we pin. Hermes's auto-chain is main provider -> OpenRouter -> Nous Portal
 #: -> ... (auxiliary_client.py:3-6); an unpinned task on a platform-billed path is egress to a
@@ -238,13 +214,6 @@ def _strip_provider_prefix(ref: str | None) -> str | None:
     return ref.split("/", 1)[1] if ref else None
 
 
-def _bedrock_ids(provider_choice, byo_provider, aip_arns, is_ceo):
-    default = aip_arns["sonnet"]
-    premium = _strip_provider_prefix(premium_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
-    cheap = _strip_provider_prefix(cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
-    return (premium or default) if is_ceo else default, cheap or default
-
-
 def model_block(provider_choice, byo_provider, aip_arns, is_ceo, *, default_id=None) -> tuple[dict, str, str]:
     """(model block, aux model id, aux provider).
 
@@ -283,22 +252,16 @@ def _derive_model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tupl
             model_id,
             "custom",
         )
-    if provider_choice in ("bedrock_claude", "bedrock_trial"):
-        if not aip_arns:
-            raise ValueError(f"{provider_choice} requires aip_arns")
-        default, cheap = _bedrock_ids(provider_choice, byo_provider, aip_arns, is_ceo)
-        # context_length pinned (dev soak 2026-09-17): Bedrock exposes no context window, the
-        # owner role denies ListFoundationModels, and Hermes only caches a SUCCESSFUL probe --
-        # so every agent's first turn per process (= every cold start) spent ~16 s in two
-        # failing probes (agent/model_metadata.get_model_context_length). A configured
-        # model.context_length is step 0 of that resolution and skips them all.
-        return {"default": default, "provider": _BEDROCK, "context_length": _BEDROCK_CLAUDE_CONTEXT}, cheap, _BEDROCK
     if provider_choice == "byo_key":
         hermes_provider, standard = _BYO_HERMES_PROVIDER[byo_provider or "anthropic"]
         premium = _strip_provider_prefix(premium_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
         cheap = _strip_provider_prefix(cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
         default = premium if is_ceo else standard
         return {"default": default, "provider": hermes_provider}, cheap or standard, hermes_provider
+    if provider_choice != "chatgpt_oauth":
+        # No silent fallthrough: an unknown choice (e.g. a retired ``bedrock_claude``) must not
+        # land the ChatGPT block on an owner who has no ChatGPT credential.
+        raise ValueError(f"unsupported provider_choice {provider_choice!r}")
     # chatgpt_oauth — flat rate, one tier. Task 15's re-review ruling: aux tasks are pinned to
     # the "openai-codex" provider (never "auto") — a real, explicit Hermes aux provider (verified
     # in the image: hermes_cli/auth.py's ProviderConfig, auxiliary_client.py's dedicated
@@ -394,10 +357,6 @@ def build_profile_config(
         "mcp_servers": dict(mcp_servers or {}),
         "plugins": {"enabled": list(_LIGHTBULB_PLUGINS)},
     }
-    if model["provider"] == _BEDROCK:
-        # One source for the region (fix round 1, minor): settings.AWS_REGION, same as .env's
-        # AWS_REGION used to read before C3 moved that var to Task 17's runtime environment.
-        config["bedrock"] = {"region": settings.AWS_REGION, "discovery": {"enabled": False}}
     return config
 
 

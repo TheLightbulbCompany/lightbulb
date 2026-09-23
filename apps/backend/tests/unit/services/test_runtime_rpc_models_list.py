@@ -3,9 +3,9 @@ overhead-model write it validates against.
 
 The model picker used to have nothing to pick from (``config.models.providers`` does not exist
 in a Hermes config) and 400'd on anything it did send (the closed ``standard``/``premium``
-vocabulary). M6-R50: the list is the models the owner can ACTUALLY invoke -- their own Bedrock
-application inference profiles on a platform-billed workspace (served here, no microVM wake),
-Hermes's own provider catalog via the bridge otherwise.
+vocabulary). M6-R50: the list is the models the owner can ACTUALLY invoke -- the one server
+model on a managed workspace (served here, no microVM wake), Hermes's own provider catalog via
+the bridge otherwise.
 """
 
 import os
@@ -19,57 +19,25 @@ import pytest
 from core.services import runtime_rpc as rpc
 from core.services.messaging import ApiProblem
 
-_PAID_AIPS = {"opus": "arn:aip:opus", "sonnet": "arn:aip:sonnet", "haiku": "arn:aip:haiku"}
 
-
-def _wire_owner(monkeypatch, *, provider_choice="bedrock_claude", aip_arns=_PAID_AIPS):
+def _wire_owner(monkeypatch, *, provider_choice="openrouter_managed", aip_arns=None):
     monkeypatch.setattr(
         "core.services.container_provision.resolve_provider_choice",
         AsyncMock(return_value=(provider_choice, None)),
     )
     monkeypatch.setattr(
-        rpc.container_repo, "get_by_owner_id", AsyncMock(return_value={"bedrock_aip_arns": dict(aip_arns)})
+        rpc.container_repo, "get_by_owner_id", AsyncMock(return_value={"bedrock_aip_arns": dict(aip_arns or {})})
     )
 
 
 def _no_bridge(monkeypatch):
-    call = AsyncMock(side_effect=AssertionError("models.list must not wake a microVM for Bedrock"))
+    call = AsyncMock(side_effect=AssertionError("models.list must not wake a microVM for a managed owner"))
     monkeypatch.setattr(rpc.container_rpc, "call", call)
     return call
 
 
 async def _models_list(owner_id="org_a"):
     return await rpc.execute_sync(owner_id=owner_id, user_id="u1", request_id="r1", method="models.list", params={})
-
-
-@pytest.mark.asyncio
-async def test_bedrock_owner_gets_their_own_aips_by_name_with_no_microvm_wake(monkeypatch):
-    _wire_owner(monkeypatch)
-    _no_bridge(monkeypatch)
-
-    out = await _models_list()
-
-    assert out["models"] == [
-        {"id": "arn:aip:opus", "name": "Claude Opus", "provider": "bedrock", "tier": "premium"},
-        {"id": "arn:aip:sonnet", "name": "Claude Sonnet", "provider": "bedrock", "tier": "standard"},
-        {"id": "arn:aip:haiku", "name": "Claude Haiku", "provider": "bedrock", "tier": "cheap"},
-    ]
-    # The roster default is the standard tier -- the same one a fresh non-CEO profile is written
-    # with, so the picker's "default" row and provisioning can never disagree.
-    assert out["defaultId"] == "arn:aip:sonnet"
-
-
-@pytest.mark.asyncio
-async def test_a_trial_owner_is_offered_only_the_one_profile_they_hold(monkeypatch):
-    """A trial owner holds exactly one AIP. Offering opus/haiku would hand them a model the
-    bedrock-gate refuses on every turn."""
-    _wire_owner(monkeypatch, provider_choice="bedrock_trial", aip_arns={"sonnet": "arn:aip:sonnet"})
-    _no_bridge(monkeypatch)
-
-    out = await _models_list()
-
-    assert [row["id"] for row in out["models"]] == ["arn:aip:sonnet"]
-    assert out["defaultId"] == "arn:aip:sonnet"
 
 
 @pytest.mark.asyncio
@@ -82,14 +50,6 @@ async def test_managed_openrouter_catalog_is_server_owned_and_requires_an_select
         "defaultId": "candidate/model",
     }
     monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "")
-    assert await _models_list() == {"models": [], "defaultId": ""}
-
-
-@pytest.mark.asyncio
-async def test_no_aips_on_the_row_yet_is_an_empty_list_not_an_error(monkeypatch):
-    _wire_owner(monkeypatch, aip_arns={})
-    _no_bridge(monkeypatch)
-
     assert await _models_list() == {"models": [], "defaultId": ""}
 
 
@@ -109,22 +69,6 @@ async def test_byo_owner_falls_through_to_the_bridges_hermes_catalog(monkeypatch
 # ---------------------------------------------------------------------------
 # The overhead-model write (rows 4/23) -- one id in, the whole auxiliary block out
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_overhead_model_patch_expands_into_every_auxiliary_task(monkeypatch):
-    from core.services.hermes_profiles import AUXILIARY_TASKS
-
-    _wire_owner(monkeypatch)
-    out = await rpc._expand_agentcore_config_patch("org_a", {"auxiliary": {"model": "arn:aip:haiku"}})
-
-    aux = out["auxiliary"]
-    # The pseudo-key is never stored, and the provider + task list come from the backend writer.
-    assert "model" not in aux
-    assert set(aux) == set(AUXILIARY_TASKS)
-    assert all(
-        entry == {"provider": "bedrock", "model": "arn:aip:haiku", "fallback_chain": []} for entry in aux.values()
-    )
 
 
 @pytest.mark.asyncio
@@ -153,6 +97,7 @@ async def test_managed_overhead_patch_keeps_every_task_on_the_gate(monkeypatch):
 @pytest.mark.asyncio
 async def test_overhead_model_patch_refuses_a_model_the_workspace_cannot_use(monkeypatch):
     _wire_owner(monkeypatch)
+    monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
     with pytest.raises(ApiProblem) as exc_info:
         await rpc._expand_agentcore_config_patch("org_a", {"auxiliary": {"model": "arn:aip:someone-else"}})
     assert exc_info.value.error.details["upstreamCode"] == "MODEL_NOT_OFFERED"
@@ -178,13 +123,3 @@ async def test_config_patch_refuses_a_raw_model_block(monkeypatch):
         await rpc._expand_agentcore_config_patch("org_a", {"model": {"default": "arn:aws:bedrock:us-east-1::not-mine"}})
     assert exc_info.value.error.details["upstreamCode"] == "UNSUPPORTED_ON_AGENTCORE"
     assert exc_info.value.error.details["fields"] == ["model"]
-
-
-@pytest.mark.asyncio
-async def test_migrated_trial_inventory_does_not_expose_paid_tiers(monkeypatch):
-    _wire_owner(monkeypatch, provider_choice="bedrock_trial")
-    out = await _models_list()
-    assert [model["id"] for model in out["models"]] == ["arn:aip:sonnet"]
-    assert out["defaultId"] == "arn:aip:sonnet"
-    with pytest.raises(ApiProblem):
-        await rpc._validated_model_id("org_a", "arn:aip:opus", method="agents.update")

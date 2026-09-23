@@ -362,10 +362,8 @@ def test_dashboard_returns_upstream_shape_verbatim(client, monkeypatch):
     verbatim for agents / tasks / runActivity — those stay nested so the
     panel can render full metric tiles + charts without further fan-out.
     sidebar_badges is passed through unchanged. ``costs`` is the one
-    exception: Paperclip's cost_events undercount is replaced by the
-    Metronome-billed spend (see the dedicated
-    ``test_feed_dashboard_costs.py`` for that contract) — here Metronome
-    is off, so the block is omitted entirely."""
+    exception: Paperclip's cost_events undercount, so the block is
+    omitted entirely."""
     upstream_dashboard = {
         "companyId": "co_abc",
         "agents": {"active": 2, "running": 1, "paused": 4, "error": 1},
@@ -384,14 +382,8 @@ def test_dashboard_returns_upstream_shape_verbatim(client, monkeypatch):
     admin.get_dashboard = AsyncMock(return_value=dict(upstream_dashboard))
     admin.get_sidebar_badges = AsyncMock(return_value={"inbox": 3})
     from routers.teams import agents as agents_mod
-    from routers.teams import feed as feed_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr(
-        feed_mod.spend_service,
-        "get_billed_month_spend",
-        AsyncMock(return_value=None),
-    )
 
     r = client.get(
         "/api/v1/teams/dashboard",

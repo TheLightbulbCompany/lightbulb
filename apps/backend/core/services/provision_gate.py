@@ -421,7 +421,7 @@ async def probe_provision_gate(*, owner_id: str, is_admin: bool = True) -> Gate 
     spike alarm; an operator inspecting an owner must not inflate it.
     Same decision logic, no emission.
 
-    Metric-free is not the same as side-effect-free: for a ``bedrock_claude``
+    Metric-free is not the same as side-effect-free: for an ``openrouter_managed``
     owner this still calls ``metronome_gate.is_owner_blocked``, and a stale
     fast-gate row there triggers the same lazy ``getNetBalance`` refresh (cache
     rewrite + enforcement re-assert + pull-based Bedrock restore) that any
@@ -441,7 +441,7 @@ async def _evaluate_provision_gate_inner(
     Layers (matches existing _assert_provision_allowed logic):
     0. The owner must be a workspace (Clerk org).
     1. Subscription must be active or trialing (or legacy stripe_subscription_id present).
-    2. For bedrock_claude: credit balance must be > 0.
+    2. For openrouter_managed: credit balance must be above the reserve floor.
     3. For chatgpt_oauth: OAuth tokens must exist for the connector — the
        owner who completed the device-code flow (the polling user is
        irrelevant).
@@ -546,7 +546,7 @@ async def _evaluate_provision_gate_inner(
         return Gate(
             code="provider_required",
             title="Pick how to power your agents",
-            message=("Choose Bedrock-managed credits, ChatGPT OAuth, or your own API key to continue."),
+            message=("Choose Lightbulb credits, ChatGPT OAuth, or your own API key to continue."),
             action_label="Pick provider",
             action_href="/chat?panel=llm&action=change-provider",
             # Org members can't change the org's provider — only the admin can.
@@ -555,7 +555,7 @@ async def _evaluate_provision_gate_inner(
         )
 
     # Layer 3 — provider-specific prerequisites.
-    if provider_choice in {"bedrock_claude", "openrouter_managed"}:
+    if provider_choice == "openrouter_managed":
         # Credits pool at the owner level — org members all draw from one
         # balance funded by the admin. Blocked-ness comes from the shared
         # Metronome fast-gate read (webhook-fed flag + lazy getNetBalance
@@ -565,16 +565,8 @@ async def _evaluate_provision_gate_inner(
         if await is_owner_blocked(owner_id):
             return Gate(
                 code="credits_required",
-                title=(
-                    "Top up Lightbulb credits to start your workspace"
-                    if provider_choice == "openrouter_managed"
-                    else "Top up Claude credits to start your container"
-                ),
-                message=(
-                    "Top up Lightbulb credits to continue managed inference."
-                    if provider_choice == "openrouter_managed"
-                    else "Top up some Claude credits to start your Bedrock container."
-                ),
+                title="Top up Lightbulb credits to start your workspace",
+                message="Top up Lightbulb credits to continue managed inference.",
                 action_label="Top up now",
                 # The PROVIDERS panel, not billing. Credits are sold by
                 # CreditsSection, which LLMPanel embeds (see

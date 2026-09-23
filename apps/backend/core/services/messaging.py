@@ -2447,13 +2447,10 @@ async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error
                 budget_reason = reason
             else:
                 # Same predicate gate_chat's Layer 3 and the provision gate's
-                # Layer 3 use: only bedrock_claude/openrouter_managed owners
-                # draw against the Metronome credit balance.
+                # Layer 3 use: only openrouter_managed owners draw against the
+                # Metronome credit balance.
                 account = await billing_repo.get_by_owner_id(owner_id) or {}
-                if account.get("provider_choice") in {
-                    "bedrock_claude",
-                    "openrouter_managed",
-                } and await is_owner_blocked(owner_id):
+                if account.get("provider_choice") == "openrouter_managed" and await is_owner_blocked(owner_id):
                     text = BUDGET_BLOCK_MESSAGES["out_of_credits"]
                     budget_reason = "out_of_credits"
         link = BUDGET_BLOCK_LINKS.get(budget_reason) if budget_reason else None

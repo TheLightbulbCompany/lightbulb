@@ -13,7 +13,7 @@ from core.services.provision_gate import evaluate_provision_gate
 def _billing_account(**overrides) -> dict:
     base = {
         "subscription_status": "active",
-        "provider_choice": "bedrock_claude",
+        "provider_choice": "openrouter_managed",
     }
     base.update(overrides)
     return base
@@ -52,7 +52,7 @@ async def test_unblocked_owner_passes_balance_layer():
         patch("core.services.metronome_gate.is_owner_blocked", new=blocked),
     ):
         gate = await evaluate_provision_gate(owner_id="org_Y", is_admin=True)
-    # bedrock_claude with a non-blocked gate clears the balance layer; any
+    # openrouter_managed with a non-blocked gate clears the balance layer; any
     # gate returned here is NOT credits_required.
     assert gate is None or gate.code != "credits_required"
 

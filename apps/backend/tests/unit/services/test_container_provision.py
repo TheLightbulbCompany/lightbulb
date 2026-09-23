@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.services.container_provision import BEDROCK_TRIAL_CHOICE, provider_choice_from_row, resolve_provider_choice
+from core.services.container_provision import provider_choice_from_row, resolve_provider_choice
 
 
 # ---------------------------------------------------------------------------
@@ -71,32 +71,18 @@ def _literal_values(annotation) -> set[str]:
     return values
 
 
-def test_bedrock_trial_is_not_an_acceptable_stored_provider_choice():
-    """The provider write paths validate against a Literal that must NOT
-    admit `bedrock_trial` — a request body could otherwise persist the trial
-    config mode as a paid owner's provider, and the trial lockdown (one AIP, no
-    cron/ACP/heartbeat) would silently apply to a paying customer."""
+def test_change_provider_refuses_retired_bedrock_choices():
+    """The change-provider API is the live door: it must refuse both retired
+    Bedrock choices, and so must the repository write every other path uses."""
+    from core.repositories.billing_repo import _VALID_PROVIDER_CHOICES
     from routers.billing import ChangeProviderRequest
-    from schemas.user_schemas import SyncUserRequest
 
-    for model in (ChangeProviderRequest, SyncUserRequest):
-        allowed = _literal_values(model.model_fields["provider_choice"].annotation)
-        assert allowed, f"{model.__name__}.provider_choice is not a Literal any more"
-        assert BEDROCK_TRIAL_CHOICE not in allowed, f"{model.__name__} admits {BEDROCK_TRIAL_CHOICE}"
-
-
-@pytest.mark.asyncio
-async def test_resolve_provider_choice_bedrock_unchanged():
-    """Existing bedrock_claude path is untouched by the trial_local branch."""
-    with patch("core.services.container_provision.billing_repo") as repo:
-        repo.get_by_owner_id = AsyncMock(
-            return_value={
-                "subscription_status": "active",
-                "provider_choice": "bedrock_claude",
-            },
-        )
-        result = await resolve_provider_choice("user_x")
-    assert result == ("bedrock_claude", None)
+    allowed = _literal_values(ChangeProviderRequest.model_fields["provider_choice"].annotation)
+    assert allowed == {"chatgpt_oauth", "byo_key", "openrouter_managed"}
+    assert allowed == _VALID_PROVIDER_CHOICES
+    for retired in ("bedrock_claude", "bedrock_trial"):
+        with pytest.raises(ValueError):
+            ChangeProviderRequest(provider_choice=retired)
 
 
 @pytest.mark.asyncio
@@ -115,14 +101,13 @@ async def test_resolve_provider_choice_byo_key_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_resolve_provider_choice_no_row_defaults_to_bedrock():
-    """No billing row at all still falls back to bedrock_claude — the
-    legacy default for owners onboarded before per-owner provider_choice
-    storage. Must not be confused with trial_local."""
+async def test_resolve_provider_choice_no_row_defaults_to_managed():
+    """No billing row falls back to the managed gate; the retired
+    bedrock_claude default is never produced."""
     with patch("core.services.container_provision.billing_repo") as repo:
         repo.get_by_owner_id = AsyncMock(return_value=None)
         result = await resolve_provider_choice("user_x")
-    assert result == ("bedrock_claude", None)
+    assert result == ("openrouter_managed", None)
 
 
 # ---------------------------------------------------------------------------
@@ -154,5 +139,5 @@ def test_paid_plan_with_stored_choice_is_never_remapped():
     assert provider_choice_from_row(row) == ("chatgpt_oauth", None)
 
 
-def test_no_plan_and_no_choice_keeps_legacy_bedrock_default():
-    assert provider_choice_from_row({"subscription_status": "active"}) == ("bedrock_claude", None)
+def test_no_plan_and_no_choice_resolves_to_managed():
+    assert provider_choice_from_row({"subscription_status": "active"}) == ("openrouter_managed", None)

@@ -15,7 +15,7 @@ from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
 
-ProviderChoice = Literal["chatgpt_oauth", "byo_key", "bedrock_claude", "openrouter_managed"]
+ProviderChoice = Literal["chatgpt_oauth", "byo_key", "openrouter_managed"]
 ByoProvider = Literal["openai", "anthropic"]
 
 
@@ -813,10 +813,10 @@ async def change_provider(
                 f"Save your {byo_provider.title()} API key before switching to BYO key.",
                 status_code=409,
             )
-    # bedrock_claude: no prerequisite. The credits gate fires later via
-    # provision_gate.evaluate_provision_gate — we don't pre-block here so
-    # owners with zero balance can still pick Bedrock + see the structured
-    # gate UI prompting them to top up.
+    # openrouter_managed: its route checks ran above; the balance is not a
+    # prerequisite. The credits gate fires later via
+    # provision_gate.evaluate_provision_gate, so owners with zero balance can
+    # still pick it + see the structured gate UI prompting them to top up.
 
     # AgentCore root auth is the live ChatGPT credential. Revoke it before the provider-choice
     # commit: if S3/classification fails, leaving the old choice + OAuth row intact is what makes

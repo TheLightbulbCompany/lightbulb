@@ -4,8 +4,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.services.spend_service import BilledSpend
-
 
 @pytest.mark.asyncio
 async def test_spend_endpoint_bedrock(async_client):
@@ -37,35 +35,26 @@ async def test_spend_endpoint_bedrock(async_client):
 
 
 @pytest.mark.asyncio
-async def test_spend_endpoint_legacy_owner_with_no_stored_choice_resolves_bedrock(async_client):
-    """A legacy owner onboarded before per-owner provider_choice storage has
-    a billing row with no ``provider_choice`` key. resolve_provider_choice
-    (the canonical resolver) defaults that to bedrock_claude — the endpoint
-    must dispatch on the resolved value, not silently degrade to
-    tokens_only just because the raw row is missing the field."""
+async def test_spend_endpoint_owner_with_no_stored_choice_is_tokens_only(async_client):
+    """A row with no ``provider_choice`` resolves to the managed gate (never the
+    retired bedrock_claude default), which shows no dollars here."""
+    billed = AsyncMock(side_effect=AssertionError("no Metronome read for a managed owner"))
     with (
         patch(
             "core.services.container_provision.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"subscription_status": "active"}),
         ),
-        patch(
-            "routers.billing.spend_service.get_billed_month_spend",
-            new=AsyncMock(
-                return_value=BilledSpend(total_cents=4321, by_model=[], period_start="2026-07-01T00:00:00+00:00")
-            ),
-        ),
+        patch("routers.billing.spend_service.get_billed_month_spend", new=billed),
     ):
         resp = await async_client.get("/api/v1/billing/spend")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["mode"] == "bedrock"
-    assert body["billed_month_to_date_cents"] == 4321
+    assert resp.json()["mode"] == "tokens_only"
 
 
 @pytest.mark.asyncio
 async def test_spend_endpoint_trial_local_owner_is_tokens_only(async_client):
-    """A no-card trial_local owner resolves to the bedrock_trial config mode,
-    which get_spend_summary has no branch for — it must fall through to
+    """A no-card trial_local owner resolves to the managed gate,
+    which get_spend_summary has no dollar branch for — it must fall through to
     tokens_only. The free tier deliberately shows no dollars."""
     with patch(
         "core.services.container_provision.billing_repo.get_by_owner_id",

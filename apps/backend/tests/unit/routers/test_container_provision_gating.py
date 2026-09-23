@@ -7,10 +7,10 @@ our cost. These tests pin down the gating contract:
   - New workspace with no billing row    -> unarmed trial, then provision
   - subscription_status not in {active, trialing}
                                          -> 402
-  - bedrock_claude with $0 balance       -> 402  (no point spinning a
+  - openrouter_managed with $0 balance       -> 402  (no point spinning a
                                                    container the user
                                                    can't chat through)
-  - bedrock_claude with > 0 balance      -> 200
+  - openrouter_managed with > 0 balance      -> 200
   - chatgpt_oauth / byo_key (any balance) -> 200
 """
 
@@ -137,7 +137,7 @@ async def test_provision_rejects_inactive_subscription_status(status):
 
 @pytest.mark.asyncio
 async def test_provision_rejects_bedrock_with_zero_balance():
-    """bedrock_claude provider + $0 balance -> 402.
+    """openrouter_managed provider + $0 balance -> 402.
 
     A container spun up before credits are topped up is pure cost — the
     user can't actually chat through it (gate_chat blocks on $0). Refuse
@@ -159,7 +159,7 @@ async def test_provision_rejects_bedrock_with_zero_balance():
                 "stripe_subscription_id": "sub_123",
                 "subscription_status": "trialing",
                 # provider_choice lives on billing_accounts.
-                "provider_choice": "bedrock_claude",
+                "provider_choice": "openrouter_managed",
             },
         ),
         patch(
@@ -174,7 +174,7 @@ async def test_provision_rejects_bedrock_with_zero_balance():
 
 @pytest.mark.asyncio
 async def test_provision_allows_bedrock_with_positive_balance():
-    """bedrock_claude with credits topped up -> provisions normally."""
+    """openrouter_managed with credits topped up -> provisions normally."""
     from routers.container import container_provision
 
     with (
@@ -191,7 +191,7 @@ async def test_provision_allows_bedrock_with_positive_balance():
                 "stripe_subscription_id": "sub_123",
                 "subscription_status": "trialing",
                 # provider_choice lives on billing_accounts.
-                "provider_choice": "bedrock_claude",
+                "provider_choice": "openrouter_managed",
             },
         ),
         patch(
@@ -257,7 +257,7 @@ async def test_provision_allows_legacy_row_with_subscription_id_but_no_status():
     those — the provision gate must too, or we 402 paying customers
     mid-migration.
 
-    bedrock_claude users still need credits regardless of legacy
+    openrouter_managed users still need credits regardless of legacy
     status, so this test uses chatgpt_oauth to isolate the legacy-row
     behavior.
     """

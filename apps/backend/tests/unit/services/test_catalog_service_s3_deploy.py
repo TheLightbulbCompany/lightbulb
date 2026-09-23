@@ -240,7 +240,7 @@ def _wire_agentcore_profile_writer(monkeypatch, roster):
     from core.services.hermes_provisioning import ProfileInputs
 
     inputs = ProfileInputs(
-        provider_choice="bedrock_claude",
+        provider_choice="chatgpt_oauth",
         byo_provider=None,
         byo_api_key=None,
         aip_arns={"sonnet": "arn:aip:sonnet"},

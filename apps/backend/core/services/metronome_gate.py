@@ -1,7 +1,7 @@
 """Synchronous credits gate over the Metronome fast-gate projection.
 
 The chat gate (``chat_gate.gate_chat``) and the provision gate both
-ask one question — "is this Bedrock-managed owner out of credits?" — and
+ask one question — "is this credit-drawing owner out of credits?" — and
 must answer it without a synchronous Metronome round-trip on every message
 (Metronome's balance read has no low-latency SLA). Both read THIS helper so
 they can never disagree about blocked-ness.
@@ -15,8 +15,8 @@ Read model:
   ledger at all" look identical here but mean opposite things.
 - An owner with no COMPLETE ledger (Metronome customer AND contract) ⇒ BLOCK.
   Nothing can be debited and no balance can exist, so admitting is unmetered
-  spend on our account, not leniency. Only reachable for bedrock_claude
-  owners, and never for the free tier (``gate_chat`` returns before Layer 3
+  spend on our account, not leniency. Only reachable for credit-drawing
+  (``openrouter_managed``) owners, and never for the free tier (``gate_chat`` returns before Layer 3
   for trial_local; ``provision_gate`` short-circuits them earlier still).
 - When the row is stale (older than ``METRONOME_GATE_STALENESS_S``) and the
   owner actually has a Metronome customer, the gate lazily refreshes from
@@ -44,9 +44,16 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.services.bedrock_enforcement import enforce_on_low_balance
-from core.services.trial_cap import RESERVE_ESTIMATE_MICROCENTS
 
 logger = logging.getLogger(__name__)
+
+# The paid-balance floor: a balance at or below one request's reservation is
+# already unspendable, so every door that predicts admission blocks there.
+# Also the free-tier cap's reserve (``trial_cap`` imports it from here).
+# Lockstep with RESERVE_ESTIMATE_MICROCENTS in
+# apps/infra/lib/stacks/bedrock-gate-stack.ts — moving one alone desynchronizes
+# admission from every door that predicts it.
+RESERVE_ESTIMATE_MICROCENTS = 300_000
 
 
 async def is_owner_blocked(owner_id: str) -> bool:
@@ -69,8 +76,8 @@ async def is_owner_blocked(owner_id: str) -> bool:
     #
     #   no COMPLETE ledger -> BLOCK. Nothing can be debited and no balance can
     #     exist, so admitting is unmetered spend on our account rather than
-    #     leniency. Every caller has already established provider_choice ==
-    #     "bedrock_claude", and `gate_chat` now returns before Layer 3 for
+    #     leniency. Every caller has already established a credit-drawing
+    #     provider_choice, and `gate_chat` now returns before Layer 3 for
     #     trial_local owners, so this cannot reach the free tier.
     #
     #   ledger exists, Metronome unreachable -> stale row. A vendor outage must
@@ -78,7 +85,7 @@ async def is_owner_blocked(owner_id: str) -> bool:
     if not await _has_complete_metronome_ledger(owner_id):
         put_metric("metronome.gate.blocked_unprovisioned")
         logger.warning(
-            "Owner %s is on bedrock_claude with no complete Metronome ledger — blocking. "
+            "Owner %s draws credits with no complete Metronome ledger — blocking. "
             "ensure_user_ready provisions this BEFORE the gate, and the top-up path "
             "re-ensures, so a persistent block here is a provisioning failure to chase.",
             owner_id,

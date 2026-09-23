@@ -59,15 +59,15 @@ def dynamodb_table():
 
 
 @pytest.mark.asyncio
-async def test_set_provider_choice_personal_bedrock(dynamodb_table):
+async def test_set_provider_choice_personal_managed(dynamodb_table):
     await billing_repo.create_if_not_exists("user_x", "cus_abc", owner_type="personal")
     await billing_repo.set_provider_choice(
         "user_x",
-        provider_choice="bedrock_claude",
+        provider_choice="openrouter_managed",
         byo_provider=None,
     )
     row = await billing_repo.get_by_owner_id("user_x")
-    assert row["provider_choice"] == "bedrock_claude"
+    assert row["provider_choice"] == "openrouter_managed"
     assert row.get("byo_provider") is None
 
 
@@ -149,7 +149,7 @@ async def test_set_provider_choice_non_chatgpt_removes_connector(dynamodb_table)
     )
     await billing_repo.set_provider_choice(
         "org_123",
-        provider_choice="bedrock_claude",
+        provider_choice="openrouter_managed",
         byo_provider=None,
     )
     row = await billing_repo.get_by_owner_id("org_123")
@@ -157,15 +157,15 @@ async def test_set_provider_choice_non_chatgpt_removes_connector(dynamodb_table)
 
 
 @pytest.mark.asyncio
-async def test_set_provider_choice_org_bedrock(dynamodb_table):
+async def test_set_provider_choice_org_managed(dynamodb_table):
     await billing_repo.create_if_not_exists("org_y", "cus_mno", owner_type="org")
     await billing_repo.set_provider_choice(
         "org_y",
-        provider_choice="bedrock_claude",
+        provider_choice="openrouter_managed",
         byo_provider=None,
     )
     row = await billing_repo.get_by_owner_id("org_y")
-    assert row["provider_choice"] == "bedrock_claude"
+    assert row["provider_choice"] == "openrouter_managed"
 
 
 @pytest.mark.asyncio
@@ -182,12 +182,13 @@ async def test_set_provider_choice_org_byo_key(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_set_provider_choice_unknown_provider_rejected(dynamodb_table):
+@pytest.mark.parametrize("choice", ["invalid_choice", "bedrock_claude", "bedrock_trial"])
+async def test_set_provider_choice_unknown_provider_rejected(dynamodb_table, choice):
     await billing_repo.create_if_not_exists("user_w", "cus_stu", owner_type="personal")
     with pytest.raises(ValueError, match="unknown provider_choice"):
         await billing_repo.set_provider_choice(
             "user_w",
-            provider_choice="invalid_choice",
+            provider_choice=choice,
             byo_provider=None,
         )
 
@@ -226,7 +227,7 @@ async def test_set_provider_choice_byo_key_without_provider_now_allowed(dynamodb
 
 @pytest.mark.asyncio
 async def test_set_provider_choice_overwrites_byo_provider_when_switching_away(dynamodb_table):
-    """Switching from byo_key to bedrock_claude should clear byo_provider on the row."""
+    """Switching from byo_key to openrouter_managed should clear byo_provider on the row."""
     await billing_repo.create_if_not_exists("user_t", "cus_yz1", owner_type="personal")
     await billing_repo.set_provider_choice(
         "user_t",
@@ -235,11 +236,11 @@ async def test_set_provider_choice_overwrites_byo_provider_when_switching_away(d
     )
     await billing_repo.set_provider_choice(
         "user_t",
-        provider_choice="bedrock_claude",
+        provider_choice="openrouter_managed",
         byo_provider=None,
     )
     row = await billing_repo.get_by_owner_id("user_t")
-    assert row["provider_choice"] == "bedrock_claude"
+    assert row["provider_choice"] == "openrouter_managed"
     assert "byo_provider" not in row or row["byo_provider"] is None
 
 

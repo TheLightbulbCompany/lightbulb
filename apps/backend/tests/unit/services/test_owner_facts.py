@@ -19,10 +19,10 @@ def test_build_owner_facts_trial_local():
     assert "generated_at" in facts
 
 
-def test_build_owner_facts_active_row_without_choice_defaults_to_bedrock():
+def test_build_owner_facts_active_row_without_choice_defaults_to_managed():
     facts = owner_facts.build_owner_facts("user_abc", {"subscription_status": "active"})
-    assert facts["provider_choice"] == "bedrock_claude"
-    assert "Bedrock" in facts["provider"]
+    assert facts["provider_choice"] == "openrouter_managed"
+    assert "managed" in facts["provider"]
 
 
 def test_build_owner_facts_lapsed_subscription_is_not_reported_as_paid():
@@ -34,7 +34,7 @@ def test_build_owner_facts_lapsed_subscription_is_not_reported_as_paid():
 def test_build_owner_facts_legacy_row_without_status_counts_as_subscribed():
     # Mirrors provision_gate.is_subscription_active's legacy fallback.
     facts = owner_facts.build_owner_facts(
-        "user_abc", {"stripe_subscription_id": "sub_1", "provider_choice": "bedrock_claude"}
+        "user_abc", {"stripe_subscription_id": "sub_1", "provider_choice": "openrouter_managed"}
     )
     assert facts["plan"] == "Workspace ($50/mo)"
 
@@ -70,7 +70,7 @@ async def test_write_owner_facts_overrides_beat_stale_row(monkeypatch):
     written = {}
 
     async def stale_get(owner_id, *, consistent_read=False):
-        return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
+        return {"subscription_status": "active", "provider_choice": "openrouter_managed"}
 
     async def fake_roster(owner_id):
         return [{"id": "agent-ceo"}]
@@ -103,9 +103,7 @@ async def test_write_owner_facts_never_raises(monkeypatch):
 @pytest.mark.parametrize(
     "provider_choice,byo_provider,expected_substring",
     [
-        ("bedrock_claude", None, "Bedrock"),
         ("openrouter_managed", None, "Lightbulb-managed credits"),
-        ("bedrock_trial", None, "free trial"),
         ("chatgpt_oauth", None, "ChatGPT"),
         ("byo_key", "anthropic", "BYO Anthropic"),
         ("byo_key", "openai", "BYO OpenAI"),
@@ -124,7 +122,7 @@ def test_build_owner_facts_uses_ultra_plan_label():
         {
             "subscription_status": "active",
             "plan": "ultra_pro",
-            "provider_choice": "bedrock_claude",
+            "provider_choice": "openrouter_managed",
         },
     )
     assert facts["plan"] == "Ultra ($150/mo)"
@@ -139,7 +137,7 @@ def _facts_env(monkeypatch, owner_facts, rows, written):
     from core.services import hermes_profiles
 
     async def fake_billing(owner_id, *, consistent_read=False):
-        return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
+        return {"subscription_status": "active", "provider_choice": "openrouter_managed"}
 
     async def fake_query_by_owner(owner_id):
         if callable(rows):
@@ -308,7 +306,7 @@ async def test_write_owner_facts_agentcore_owner_stages_every_profile(monkeypatc
     from core.services import hermes_profiles
 
     async def fake_get(owner_id, *, consistent_read=False):
-        return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
+        return {"subscription_status": "active", "provider_choice": "openrouter_managed"}
 
     async def fake_roster(owner_id):
         return [{"id": "agent-ceo"}, {"id": "agent-eng"}]
@@ -329,7 +327,7 @@ async def test_write_owner_facts_agentcore_owner_stages_every_profile(monkeypatc
     assert owner_id == "org_agentcore"
     assert agent_ids == ["agent-ceo", "agent-eng"]
     facts = json.loads(facts_json)
-    assert facts["provider_choice"] == "bedrock_claude"
+    assert facts["provider_choice"] == "openrouter_managed"
     # The EFS write this used to also prove was never reached is gone with the mount; the
     # module holds no workspace handle at all.
     assert not hasattr(owner_facts, "get_workspace")

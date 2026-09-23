@@ -265,14 +265,14 @@ async def test_deferred_activation_still_persists_provider_backup(mock_repo):
     event = _subscription_event(
         default_payment_method=None,
         status="active",
-        metadata={"owner_id": "org_x", "provider_choice": "bedrock_claude"},
+        metadata={"owner_id": "org_x", "provider_choice": "chatgpt_oauth"},
     )
     event["type"] = "customer.subscription.updated"
     await handlers.handle_subscription_state(event, MagicMock())
 
     mock_repo.set_provider_choice.assert_awaited_once_with(
         "org_x",
-        provider_choice="bedrock_claude",
+        provider_choice="chatgpt_oauth",
         byo_provider=None,
         connector_user_id=None,
     )
@@ -381,9 +381,8 @@ async def test_unpersisted_metadata_never_reaches_analytics(mock_repo):
 
 
 @pytest.mark.asyncio
-async def test_webhook_backup_write_bedrock_passes_no_connector(mock_repo):
-    """A bedrock subscription event passes connector_user_id=None — bedrock is
-    not connector-backed, and None leaves any existing connector untouched."""
+async def test_webhook_backup_write_refuses_the_retired_bedrock_choice(mock_repo):
+    """Subscription metadata naming the retired bedrock_claude provider is not persisted."""
     event = _subscription_event(
         default_payment_method=None,
         metadata={
@@ -394,12 +393,7 @@ async def test_webhook_backup_write_bedrock_passes_no_connector(mock_repo):
     )
     await handlers.handle_subscription_state(event, MagicMock())
 
-    mock_repo.set_provider_choice.assert_awaited_once_with(
-        "org_x",
-        provider_choice="bedrock_claude",
-        byo_provider=None,
-        connector_user_id=None,
-    )
+    mock_repo.set_provider_choice.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

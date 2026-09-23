@@ -423,7 +423,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     entering_live = new_status in ("active", "trialing") and (
         old_status in pre_live_statuses or (old_status is None and not account.get("stripe_subscription_id"))
     )
-    if entering_live and metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
+    if entering_live and metadata_provider in ("chatgpt_oauth", "byo_key"):
         # provider_choice lives on billing_accounts (per-owner), not on
         # the user row. /trial-checkout writes synchronously before
         # creating the Stripe Checkout session; this webhook write is

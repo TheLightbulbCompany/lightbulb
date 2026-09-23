@@ -12,6 +12,12 @@ import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 import { logGroupPath, tablePrefix } from "../table-names";
 
+// The one managed-credit markup (repo-root openrouter-pricing.json); the Metronome rate is
+// set from the same file by apps/backend/scripts/setup_metronome_openrouter_pricing.py.
+const OPENROUTER_MARKUP: string = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "..", "..", "..", "openrouter-pricing.json"), "utf8"),
+).markup;
+
 export interface OpenRouterGateStackProps extends cdk.StackProps {
   environment: string;
 }
@@ -75,6 +81,7 @@ export class OpenRouterGateStack extends cdk.Stack {
         MAX_OUTPUT_TOKENS: "4096",
         RESERVE_ESTIMATE_MICROCENTS: "300000",
         RESERVE_TTL_SECONDS: "1200",
+        OPENROUTER_MARKUP,
       },
       logGroup: new logs.LogGroup(this, "GateLogs", {
         logGroupName: logGroupPath(env, "openrouter-gate"),
@@ -135,6 +142,7 @@ export class OpenRouterGateStack extends cdk.Stack {
         OPENROUTER_WORKSPACE_ID: env === "dev"
           ? (process.env.OPENROUTER_WORKSPACE_ID_DEV ?? "")
           : (process.env.OPENROUTER_WORKSPACE_ID_PROD ?? ""),
+        OPENROUTER_MARKUP,
         OPENROUTER_MONEY_CONTRACT_VERIFIED: "false",
         OPENROUTER_RATE_CARD_PROOF_ID: "",
       },

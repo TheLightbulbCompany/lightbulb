@@ -203,6 +203,15 @@ is authorized and after a fresh inventory:
    disposable contract on this card before customer traffic. A 13-row card
    readback alone does not prove an existing contract inherits the new rate.
 
+**Applied in dev 2026-09-23** by `apps/backend/scripts/setup_metronome_openrouter_pricing.py`
+(markup from repo-root `openrouter-pricing.json`, owner ruling 2026-09-23: 1.2, so the rate is
+`1.2e-7` cents per nanodollar): metric `c4293481-4375-4b15-b270-b0deb4ee814b`, Product
+`4c39b72e-a9bc-4272-a3b3-eddd2b5e5001`, rate from `2026-09-23T00:00:00Z`. Readback: 13 rows on the
+card (the 12 Bedrock rows unchanged), and the one existing dev contract's
+`getContractRateSchedule` shows the new rate with no override. A non-persisting
+`previewEvents` on that contract priced 1,000,000 units at 0.12 cents, 12,345,678 at 1.48148136
+cents and 1 at 1.2e-7 cents. Prod is dry-run only until the owner approves `--env prod --apply`.
+
 A uniquely versioned **replacement** rate card is possible for new contracts:
 copy these same 12 Product/tier/price rows unchanged, add the OpenRouter
 Product at `0.0000001` cents per nanodollar, then read back all 13 rows before

@@ -22,6 +22,7 @@ test("dev OpenRouter gate is a token-gated streaming Lambda with owner-key acces
       FAST_GATE_TABLE: "lightbulb-dev-metronome-fast-gate",
       MODEL_POLICY_JSON: "{}",
       OPENROUTER_MANAGED_ENABLED: "false",
+      OPENROUTER_MARKUP: "1.2",
     }) },
   });
   template.hasResourceProperties("AWS::Lambda::Url", {
@@ -94,6 +95,7 @@ test("settlement runs every 5 minutes but cannot ingest money before contract pr
       REQUESTS_TABLE: "lightbulb-dev-openrouter-requests",
       OPENROUTER_KEYS_TABLE: "lightbulb-dev-openrouter-keys",
       FAST_GATE_TABLE: "lightbulb-dev-metronome-fast-gate",
+      OPENROUTER_MARKUP: "1.2",
       OPENROUTER_MONEY_CONTRACT_VERIFIED: "false",
       OPENROUTER_RATE_CARD_PROOF_ID: "",
       OPENROUTER_WORKSPACE_ID: "",

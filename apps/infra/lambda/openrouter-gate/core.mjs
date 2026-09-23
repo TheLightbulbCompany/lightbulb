@@ -24,9 +24,13 @@ function ceilPricedTokens(tokens, price) {
   return (scaled + divisor - 1n) / divisor;
 }
 
-function reservationFor(body, policy) {
+// Provider-cost ceiling x OPENROUTER_MARKUP (openrouter-pricing.json), the same multiplier the
+// Metronome rate and the settlement debit apply. A missing or malformed markup fails closed (503).
+function reservationFor(body, policy, markup) {
   const output = Math.max(body.max_tokens ?? 0, body.max_completion_tokens ?? 0);
-  const amount = ceilPricedTokens(policy.max_prompt_tokens, policy.max_price.prompt) + ceilPricedTokens(output, policy.max_price.completion);
+  const cost = ceilPricedTokens(policy.max_prompt_tokens, policy.max_price.prompt) + ceilPricedTokens(output, policy.max_price.completion);
+  if (!(Number(markup) >= 1)) fail(503, 'Model reservation unavailable');
+  const amount = ceilPricedTokens(cost, markup);
   if (amount < 0n || amount > BigInt(Number.MAX_SAFE_INTEGER)) fail(503, 'Model reservation unavailable');
   return Number(amount);
 }
@@ -120,7 +124,7 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     const secret = (await secrets.getSecretValue({ SecretId: S(keyRow, 'secret_name') })).SecretString;
     if (!secret || !secret.startsWith('sk-or-')) fail(503, 'Owner key unavailable');
     requestId = randomUUID();
-    estimate = billingMode === 'paid' ? reservationFor(body, policy) : 0;
+    estimate = billingMode === 'paid' ? reservationFor(body, policy, env.OPENROUTER_MARKUP) : 0;
     if (billingMode === 'paid' && (!S(billing, 'metronome_customer_id') || !S(billing, 'metronome_contract_id'))) fail(429, 'Credit ledger unavailable');
     const outbox = { request_id: { S: requestId }, owner_id: { S: ownerId }, key_hash: { S: S(keyRow, 'key_hash') }, secret_name: { S: S(keyRow, 'secret_name') }, model: { S: input.model }, policy_revision: { S: String(policy.revision) }, billing_mode: { S: billingMode }, reservation_microcents: { N: String(estimate) }, state: { S: 'pending' }, created_at: { N: String(Math.floor(Date.now() / 1000)) } };
     const admitted = billingMode === 'paid' ? await reserve(ddb, env, ownerId, estimate, outbox) : await recordFree(ddb, env, outbox);

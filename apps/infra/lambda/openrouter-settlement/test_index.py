@@ -18,6 +18,9 @@ spec.loader.exec_module(worker)
 
 class SettlementTests(unittest.TestCase):
     def setUp(self):
+        env = patch.dict(os.environ, {"OPENROUTER_MARKUP": "1.2"})
+        env.start()
+        self.addCleanup(env.stop)
         self.row = {
             "request_id": "req-1", "owner_id": "owner-1", "key_hash": "old-hash",
             "secret_name": "old-secret", "generation_id": "gen-1", "state": "pending",
@@ -55,6 +58,17 @@ class SettlementTests(unittest.TestCase):
         store.commit(self.row, event, 1, 1_700_000_001)
         self.assertEqual(calls[0]["TransactItems"][2]["Update"]["ExpressionAttributeValues"][":debit"]["N"], "-1")
         self.assertEqual(calls[0]["TransactItems"][1]["Update"]["ExpressionAttributeValues"][":cost"]["S"], "0.000000001")
+
+    def test_debit_applies_markup_and_fails_closed_without_it(self):
+        # $0.001 provider cost x 1.2 = $0.0012 = 1200 microcents (the Metronome rate's result).
+        self.assertEqual(worker.debit_microcents(1_000_000), 1200)
+        self.assertEqual(worker.debit_microcents(1), 1)  # rounds up, never to zero
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(KeyError):
+                worker.debit_microcents(1)
+        with patch.dict(os.environ, {"OPENROUTER_MARKUP": "0.9"}):
+            with self.assertRaises(ValueError):
+                worker.debit_microcents(1)
 
     def test_unknown_generation_stays_pending(self):
         row = {**self.row, "generation_id": ""}
@@ -168,7 +182,7 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(result, "settled")
         self.assertEqual(len(calls[0]["TransactItems"]), 3)
         self.assertEqual(calls[0]["TransactItems"][0]["Put"]["Item"]["request_id"]["S"], "generation#gen-1")
-        self.assertEqual(calls[0]["TransactItems"][2]["Update"]["ExpressionAttributeValues"][":debit"]["N"], "-12346")
+        self.assertEqual(calls[0]["TransactItems"][2]["Update"]["ExpressionAttributeValues"][":debit"]["N"], "-14815")
         self.assertEqual(calls[0]["TransactItems"][1]["Update"]["ExpressionAttributeValues"][":cost"]["S"], "0.012345678")
         self.assertEqual(calls[0]["TransactItems"][1]["Update"]["ExpressionAttributeValues"][":actual"]["N"], "12345678")
 

@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { AlertCircle, KeyRound, Loader2 } from "lucide-react";
+import { AlertCircle, KeyRound } from "lucide-react";
 import { useApi } from "@/lib/api";
 import { externalLinkClick } from "@/lib/externalAuth";
 import { notifyApiError } from "@/lib/notify";
@@ -19,11 +19,7 @@ import {
   ChangeProviderModal,
   type CredentialProviderChoice,
 } from "./ChangeProviderModal";
-import {
-  commitProviderChoice,
-  providerCommitErrorMessage,
-  type ByoProvider,
-} from "@/lib/providerCommit";
+import type { ByoProvider } from "@/lib/providerCommit";
 import {
   resolveProviderStatus,
   statusToDotColor,
@@ -31,10 +27,7 @@ import {
   type DotColor,
 } from "./llm-auth-status";
 
-import {
-  providerSwitchCards,
-  type ProviderChoiceId as ProviderChoice,
-} from "@/lib/providerCards";
+import { PROVIDER_SWITCH_CARDS } from "@/lib/providerCards";
 
 type UserData = {
   // Plain string, not `ProviderChoice`: this is the owner's STORED choice,
@@ -305,10 +298,13 @@ function ManagedBlock({
   onChangeProvider,
   dotColor,
   openrouter = false,
+  creditsUnavailable = false,
 }: {
   onChangeProvider: () => void;
   dotColor: DotColor;
   openrouter?: boolean;
+  /** An explicit openrouter_managed row while prepaid credits can't be bought: every turn fails. */
+  creditsUnavailable?: boolean;
 }) {
   return (
     <>
@@ -316,14 +312,19 @@ function ManagedBlock({
         icon={openrouter ? <span className="text-xl font-semibold">✦</span> : <AnthropicIcon size={32} />}
         title={openrouter ? "Lightbulb-managed models" : "Powered by Claude"}
         subtitle={openrouter ? "Inference uses your Lightbulb workspace credits" : "Anthropic Claude via AWS Bedrock"}
-        status="Active"
-        dotColor={dotColor}
+        status={creditsUnavailable ? "Unavailable" : "Active"}
+        dotColor={creditsUnavailable ? "red" : dotColor}
       />
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>Provider</span>
-        <p className="text-sm text-[var(--midnight)]">
-          Workspace credits are managed below.
-        </p>
+        {creditsUnavailable ? (
+          <p className="text-sm text-err">
+            Prepaid credits aren&apos;t available yet, so this workspace can&apos;t run. Switch to
+            ChatGPT or your own API key.
+          </p>
+        ) : (
+          <p className="text-sm text-[var(--midnight)]">Workspace credits are managed below.</p>
+        )}
         <button
           onClick={onChangeProvider}
           className="rounded-md border border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)] px-3 py-1.5 text-sm"
@@ -337,122 +338,97 @@ function ManagedBlock({
 
 // byo_key spans OpenAI *and* Anthropic, so a vendor mark would misrepresent
 // it — a key glyph is the honest icon there.
-const PROVIDER_ICONS: Record<ProviderChoice, React.ReactNode> = {
-  openrouter_managed: <span className="text-xl font-semibold">✦</span>,
+const PROVIDER_ICONS: Record<CredentialProviderChoice, React.ReactNode> = {
   chatgpt_oauth: <OpenAIIcon size={24} />,
   byo_key: <KeyRound size={20} className="text-[var(--midnight-muted)]" />,
 };
 
 /**
- * Inline provider picker for the empty state. The offered choices are
- * rendered directly on the panel rather than behind a "Pick a provider"
- * button — a user with no provider shouldn't have to click blind into a
- * modal to discover what the options even are.
- *
- * Managed inference commits in place (nothing to collect). The other two need a
- * credential stage, so they hand off to ChangeProviderModal opened straight on
- * that stage — the modal remains the single owner of the OAuth device-code and
- * BYO-key flows.
+ * Inline credential picker. The choices are rendered on the panel rather than
+ * behind a button so an owner can see what the options are; a pick hands off to
+ * ChangeProviderModal opened on that credential stage, which owns the OAuth
+ * device-code and BYO-key flows. `disabled` = free trial, where a switch 409s
+ * (use_trial_checkout) until the workspace is on a paid plan.
  */
 function ProviderChoiceCards({
   onPick,
-  committing,
-  error,
-  managedAvailable,
+  disabled = false,
 }: {
-  onPick: (choice: ProviderChoice) => void;
-  committing: ProviderChoice | null;
-  error: string | null;
-  managedAvailable: boolean;
+  onPick: (choice: CredentialProviderChoice) => void;
+  disabled?: boolean;
 }) {
-  const cards = providerSwitchCards(managedAvailable);
-  // Tailwind's `grid-cols-N` reserves N equal tracks regardless of item
-  // count — with bedrock_claude gone, the base (unmanaged) picker is down
-  // to two cards, so a hardcoded 3-column grid would leave a blank track.
   return (
-    <div className="space-y-3">
-      <div className={`grid grid-cols-1 gap-3 ${cards.length >= 3 ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
-        {cards.map((card) => {
-          const busy = committing === card.id;
-          return (
-            <button
-              key={card.id}
-              type="button"
-              onClick={() => onPick(card.id)}
-              disabled={committing !== null}
-              className="rounded-xl border border-[var(--edge)] bg-cream p-4 text-left transition-colors hover:border-[var(--midnight)] hover:bg-[var(--cream-deep)] disabled:opacity-50 disabled:hover:bg-cream"
-            >
-              {/* Icon sits beside the copy on narrow widths (stacked cards
-                  would otherwise be needlessly tall) and above it once the
-                  grid goes multi-column. */}
-              <div className="flex items-start gap-3 sm:block">
-                <div className={`${HERO_TILE} sm:mb-3`}>{PROVIDER_ICONS[card.id]}</div>
-                <div className="min-w-0">
-                  <h3 className="text-sm font-medium text-[var(--midnight)]">{card.title}</h3>
-                  <p className="mt-1 text-xs text-[var(--midnight-muted)]">{card.subtitle}</p>
-                  {busy && (
-                    <p className="mt-2 flex items-center gap-1.5 text-xs text-[var(--midnight)]">
-                      <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
-                      Setting up…
-                    </p>
-                  )}
-                </div>
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {PROVIDER_SWITCH_CARDS.map((card) => {
+        const id = card.id as CredentialProviderChoice;
+        return (
+          <button
+            key={id}
+            type="button"
+            onClick={() => onPick(id)}
+            disabled={disabled}
+            className="rounded-xl border border-[var(--edge)] bg-cream p-4 text-left transition-colors hover:border-[var(--midnight)] hover:bg-[var(--cream-deep)] disabled:opacity-50 disabled:hover:border-[var(--edge)] disabled:hover:bg-cream"
+          >
+            {/* Icon beside the copy on narrow widths, above it once the grid
+                goes multi-column. */}
+            <div className="flex items-start gap-3 sm:block">
+              <div className={`${HERO_TILE} sm:mb-3`}>{PROVIDER_ICONS[id]}</div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-medium text-[var(--midnight)]">{card.title}</h3>
+                <p className="mt-1 text-xs text-[var(--midnight-muted)]">{card.subtitle}</p>
               </div>
-            </button>
-          );
-        })}
-      </div>
-      {error && <p className="text-sm text-err">{error}</p>}
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }
 
-function EmptyStateCard({
-  message,
+/**
+ * No provider_choice: the workspace already runs on Lightbulb-managed DeepSeek
+ * within its daily allowance (backend `trial_cap.is_managed_capped` — trial,
+ * Base, or a paid plan with no choice). Nothing to pick; the credential paths
+ * are alternatives.
+ */
+function ManagedAllowanceBlock({
   onPick,
-  committing,
-  error,
-  managedAvailable = false,
+  trial,
+  prepaidSoon,
 }: {
-  message?: string;
-  /** Absent pre-subscription — nothing to commit against, so link to onboarding. */
-  onPick?: (choice: ProviderChoice) => void;
-  committing?: ProviderChoice | null;
-  error?: string | null;
-  managedAvailable?: boolean;
+  onPick: (choice: CredentialProviderChoice) => void;
+  trial: boolean;
+  prepaidSoon: boolean;
 }) {
-  const prompt = message ?? "You haven’t picked a provider yet.";
-
-  // When a billing row already exists (e.g. user disconnected ChatGPT OAuth —
-  // provider_choice was cleared but the subscription is still active) the
-  // choices are pickable in-place. The choice cards carry their own card
-  // chrome, so the prompt sits bare on the panel rather than nesting white
-  // cards inside a white card. The ``/onboarding`` link is the
-  // pre-subscription fallback and keeps the single-card treatment.
-  if (onPick) {
-    return (
-      <div className="space-y-3">
-        <p className="text-sm text-[var(--midnight)]">{prompt}</p>
-        <ProviderChoiceCards
-          onPick={onPick}
-          committing={committing ?? null}
-          error={error ?? null}
-          managedAvailable={managedAvailable}
-        />
-      </div>
-    );
-  }
-
   return (
-    <div className={ACTION_CARD}>
-      <p className="text-sm text-[var(--midnight)]">{prompt}</p>
-      <Link
-        href="/onboarding"
-        className="inline-flex rounded-full bg-[var(--midnight)] hover:opacity-90 text-cream px-4 py-2 text-sm"
-      >
-        Re-onboard →
-      </Link>
-    </div>
+    <>
+      <HeroCard
+        icon={<span className="text-xl font-semibold">✦</span>}
+        title="Lightbulb-managed models"
+        subtitle="DeepSeek within a daily allowance"
+        status="Active"
+        dotColor="green"
+      />
+      {prepaidSoon && (
+        <p className="text-xs text-[var(--midnight-muted)]">
+          More models with prepaid credits are coming soon.
+        </p>
+      )}
+      <div className="space-y-3">
+        <p className="text-sm text-[var(--midnight)]">
+          Or use your own provider
+          {trial && (
+            <>
+              {" "}on a paid plan.{" "}
+              <Link href="/settings?panel=billing" className="underline">
+                See plans
+              </Link>
+            </>
+          )}
+        </p>
+        <ProviderChoiceCards onPick={onPick} disabled={trial} />
+      </div>
+    </>
   );
 }
 
@@ -472,6 +448,10 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   const api = useApi();
   const { account, isLoading: billingLoading } = useBilling();
   const managedAvailable = account?.managed_inference_available === true;
+  const trial = account?.subscription_status === "trial_local";
+  // A trial row reads plan "standard" (the backend's default), so exclude it explicitly.
+  const prepaidSoon =
+    !managedAvailable && !trial && (account?.plan === "standard" || account?.plan === "ultra_pro");
   const { data: user, mutate } = useSWR<UserData | null>(
     "/users/me",
     (p: string) => api.get(p) as Promise<UserData | null>,
@@ -528,27 +508,10 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   );
   const dotColor: DotColor = statusToDotColor(providerStatus);
 
-  // Inline-picker commit state. Managed inference is committed from the
-  // panel itself; the other two hand off to the modal's credential stages.
-  const [committing, setCommitting] = useState<ProviderChoice | null>(null);
-  const [pickError, setPickError] = useState<string | null>(null);
-
-  const handlePick = useCallback(
-    (choice: ProviderChoice) => {
-      setPickError(null);
-      if (choice !== "openrouter_managed") {
-        setModalChoice(choice);
-        setModalOpen(true);
-        return;
-      }
-      setCommitting(choice);
-      void commitProviderChoice(api.post, choice)
-        .then(() => mutate())
-        .catch((e: unknown) => setPickError(providerCommitErrorMessage(e)))
-        .finally(() => setCommitting(null));
-    },
-    [api, mutate],
-  );
+  const handlePick = (choice: CredentialProviderChoice) => {
+    setModalChoice(choice);
+    setModalOpen(true);
+  };
 
   if (!user || (billingLoading && (!user.provider_choice || (user.provider_choice === "byo_key" && !user.byo_provider)))) {
     return <div className="p-6 text-sm">Loading…</div>;
@@ -624,32 +587,32 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
           backend never wrote byo_provider (see backend memory). Without this
           recovery state the panel renders blank for the affected user. */}
       {user.provider_choice === "byo_key" && !user.byo_provider && (
-        <EmptyStateCard
-          message="Your bring-your-own-key configuration is incomplete. Pick a provider to finish setting up."
-          onPick={handlePick}
-          committing={committing}
-          error={pickError}
-          managedAvailable={managedAvailable}
-        />
+        <div className="space-y-3">
+          <p className="text-sm text-[var(--midnight)]">
+            Your bring-your-own-key configuration is incomplete. Pick a provider to finish setting up.
+          </p>
+          <ProviderChoiceCards onPick={handlePick} />
+        </div>
       )}
 
       {(user.provider_choice === "bedrock_claude" || user.provider_choice === "openrouter_managed") && (
-        <ManagedBlock onChangeProvider={openModal} dotColor={dotColor} openrouter={user.provider_choice === "openrouter_managed"} />
+        <ManagedBlock
+          onChangeProvider={openModal}
+          dotColor={dotColor}
+          openrouter={user.provider_choice === "openrouter_managed"}
+          creditsUnavailable={user.provider_choice === "openrouter_managed" && !managedAvailable}
+        />
       )}
 
       {!user.provider_choice && (
-        <EmptyStateCard
-          onPick={handlePick}
-          committing={committing}
-          error={pickError}
-          managedAvailable={managedAvailable}
-        />
+        <ManagedAllowanceBlock onPick={handlePick} trial={trial} prepaidSoon={prepaidSoon} />
       )}
 
       {/* Credits live inline for managed owners — the former Credits panel.
           BYO providers bill through their own account, so nothing
           renders for them. */}
-      {(user.provider_choice === "bedrock_claude" || user.provider_choice === "openrouter_managed") && <CreditsSection />}
+      {(user.provider_choice === "bedrock_claude" ||
+        (user.provider_choice === "openrouter_managed" && managedAvailable)) && <CreditsSection />}
 
       <ChangeProviderModal
         open={modalOpen && !billingLoading}

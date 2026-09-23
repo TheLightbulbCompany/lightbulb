@@ -30,9 +30,11 @@ def _clear_sync_state():
     from bridge import sync
     sync._SYNCED.clear()
     sync._MTIMES.clear()
+    sync._CLI_PULLED.clear()
     yield
     sync._SYNCED.clear()
     sync._MTIMES.clear()
+    sync._CLI_PULLED.clear()
 
 
 @pytest.fixture

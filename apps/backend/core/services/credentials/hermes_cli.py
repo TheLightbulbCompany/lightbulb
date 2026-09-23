@@ -40,9 +40,12 @@ fans ONE ``files`` dict out to the whole roster. **Adding a materializer to ``OW
 agent reading another's credential.** Such a materializer needs a per-profile path variable on
 the passthrough rail first. Unlike mcp-tokens this is NOT write-once: a connect is
 an explicit owner action delivering a fresh credential and must win, exactly as the ECS rail's
-``write`` overwrites the EFS copy. The cost is that a token one agent's container has since
-rotated in place is replaced by the newly connected one on the next connect/disconnect — the
-same thing that happens on ECS, where all agents share one file.
+``write`` overwrites the EFS copy. A token the container rotates IN PLACE is NOT merely
+"replaced on the next connect": for a single-use rotating refresh token (X via ``.xurl``) the
+first in-VM refresh kills the copy in S3, so the bridge writes that rotation back to every
+roster profile (``sync.save_rotated_cli_credentials``, If-Match on the ETag it replaced — a
+connect/disconnect landing first still wins). Only ``.xurl`` is covered; ``qbo_dotenv``'s
+``quickbooks/`` rotates the same way and is not.
 """
 
 from __future__ import annotations

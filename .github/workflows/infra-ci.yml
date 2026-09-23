@@ -201,8 +201,8 @@ jobs:
       # Since the local synth rewrites in place, `git diff` IS the check. This
       # only touches the runner's working copy; nothing is committed or pushed.
       #
-      # Docker is required: the WS authorizer and bedrock-gate Lambdas bundle
-      # their Python deps in a container, and there is no supported way to skip
+      # Docker is required: the WS authorizer Lambda bundles
+      # its Python deps in a container, and there is no supported way to skip
       # bundling. Both `isol8-wsl` (the self-hosted box, which already runs this
       # exact synth for DEPLOY_RUNNER) and `ubuntu-latest` have a daemon.
       - name: Check deploy.yml matches the pipeline definition

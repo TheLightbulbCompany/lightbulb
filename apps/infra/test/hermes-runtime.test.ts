@@ -220,7 +220,7 @@ describe("hermes runtime wiring", () => {
   it("lets the BACKEND task role write the per-workspace boot secret and read/write the S3 profiles (the first dev migration run failed on both)", () => {
     // Searched across BOTH inline and managed policies: CDK packs the task role's grants into
     // the inline default policy and overflows into a managed policy as it fills, so the exact
-    // placement shifts as grants change (see service-stack.test.ts's BedrockGateUrlParamRead).
+    // placement shifts as grants change.
     const statements: Array<{ Sid?: string; Action: string | string[]; Resource: string | string[] }> = [
       "AWS::IAM::Policy",
       "AWS::IAM::ManagedPolicy",

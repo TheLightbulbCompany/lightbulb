@@ -9,9 +9,6 @@ on:
     branches: [main]
     paths:
       - 'apps/backend/**'
-      - 'apps/infra/lambda/bedrock-usage-meter/**'
-      - 'apps/infra/lambda/bedrock-gate/**'
-      - 'apps/infra/lib/stacks/bedrock-gate-stack.ts'
       - 'apps/infra/lambda/ses-inbound/**'
       - 'apps/infra/lambda/ws-connect/**'
       - 'apps/infra/lambda/messaging-projector/**'
@@ -74,19 +71,8 @@ jobs:
         run: uv run pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing
         working-directory: apps/backend
 
-      # The Bedrock meter Lambda's tests need the backend venv (moto), so they run
-      # here rather than in the infra job. They go with the meter stack.
-      - name: Run Bedrock meter Lambda tests
-        env:
-          AWS_DEFAULT_REGION: us-east-1
-          AWS_ACCESS_KEY_ID: testing
-          AWS_SECRET_ACCESS_KEY: testing
-        run: uv run pytest ../infra/lambda/bedrock-usage-meter -v
-        working-directory: apps/backend
-
-      # Same reasoning as the meter Lambda above: this one has its own tests and
-      # they ran in NO job at all. It is the ingest path for every inbound agent
-      # email -- recipient-suffix routing, the dev/prod backend split, and the
+      # This Lambda has its own tests and they used to run in NO job at all. It
+      # is the ingest path for every inbound agent email -- recipient-suffix routing, the dev/prod backend split, and the
       # shared-secret header -- and a change to it shipped unverified because the
       # infra job only synthesizes templates and never executes Lambda code.
       - name: Run SES inbound Lambda tests

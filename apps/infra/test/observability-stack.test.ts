@@ -854,18 +854,12 @@ describe("ObservabilityStack — CloudWatch alarms can publish", () => {
 });
 
 describe("alert topic grant covers alarms in EVERY stack", () => {
-  // The grant lives in observability-stack, but FOUR other stacks import these
-  // topics by ARN and attach alarm actions: bedrock-gate, bedrock-meter,
-  // service and agent-mail-outbound. A test that only inspected
+  // The grant lives in observability-stack, but other stacks import these
+  // topics by ARN and attach alarm actions (service, agent-mail-outbound). A test that only inspected
   // observability-stack's own alarms would not notice those drifting outside
   // the granted ARN pattern — #1947's failure relocated one stack over.
   //
-  // The invariant is NOT "every alarm matches its stage's prefix". The gate and
-  // meter stacks deliberately render BOTH a dev and a prod instance from one
-  // stage and wire each instance to ITS OWN env's topics, so a prod stage
-  // legitimately contains `lightbulb-dev-*` alarms pointing at dev topics.
-  //
-  // The real invariant is the PAIRING: an alarm publishing to some env's alert
+  // The invariant is the PAIRING: an alarm publishing to some env's alert
   // topic must fall inside the ARN prefix that env's topic policy grants.
   test.each(["dev", "prod"] as const)(
     "%s stage: every alarm is inside the granted prefix of the topic it pages",

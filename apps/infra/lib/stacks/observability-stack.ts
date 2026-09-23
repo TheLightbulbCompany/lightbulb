@@ -370,8 +370,7 @@ export class ObservabilityStack extends cdk.Stack {
    *
    * The ARN pattern is built from `resourcePrefix`, and so is every alarm name
    * that can publish here — this stack's (`createAlarm` and the one-off
-   * constructors) AND the alarms in bedrock-gate, bedrock-meter, service and
-   * agent-mail-outbound, which import these topics by ARN. That shared helper
+   * constructors) AND the alarms in service and agent-mail-outbound, which import these topics by ARN. That shared helper
    * is load-bearing, not cosmetic: a previous attempt at this fix hard-coded an
    * `isol8-${env}-*` pattern, the rebrand later renamed every alarm to
    * `lightbulb-*`, and the grant silently matched nothing while its test stayed
@@ -2760,8 +2759,7 @@ def handler(event, context):
     // per-environment stack (dev + prod both deploy this stack) cannot own
     // one without colliding with the other env's monitor and with any
     // pre-existing account monitor. The runaway signal is covered by the
-    // W52 token-volume alarm (above) plus the per-owner invocation-logging
-    // meter; if managed $-anomaly detection is wanted, configure it ONCE at
+    // W52 token-volume alarm (above); if managed $-anomaly detection is wanted, configure it ONCE at
     // account scope, not in this per-env stack.
   }
 

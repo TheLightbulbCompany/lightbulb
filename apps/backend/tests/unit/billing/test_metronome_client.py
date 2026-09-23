@@ -93,7 +93,7 @@ async def test_get_customer_id_by_ingest_alias_returns_none_when_no_match():
 @pytest.mark.asyncio
 async def test_create_contract_sends_rate_card_and_returns_id():
     client, fake = _client_with(_resp(200, {"data": {"id": "contract-uuid-1"}}))
-    contract_id = await client.create_contract(customer_id="cust-uuid-1", rate_card_id="rc-1")
+    contract_id = await client.create_contract(customer_id="cust-uuid-1", rate_card_id="rc-1", uniqueness_key="k-1")
 
     assert contract_id == "contract-uuid-1"
     args, kwargs = fake.post.call_args
@@ -101,21 +101,12 @@ async def test_create_contract_sends_rate_card_and_returns_id():
     body = kwargs["json"]
     assert body["customer_id"] == "cust-uuid-1"
     assert body["rate_card_id"] == "rc-1"
+    assert body["uniqueness_key"] == "k-1"
     # Contracts must start at UTC midnight — Metronome rejects mid-day starts.
     assert body["starting_at"].endswith("T00:00:00.000Z")
     # Not requested ⇒ no contract-level billing config in the body (sending
     # it without the customer's root-level config existing 404s the create).
     assert "billing_provider_configuration" not in body
-    assert "uniqueness_key" not in body
-
-
-@pytest.mark.asyncio
-async def test_create_contract_forwards_uniqueness_key():
-    client, fake = _client_with(_resp(200, {"data": {"id": "contract-uuid-1"}}))
-    await client.create_contract(customer_id="cust-uuid-1", rate_card_id="rc-1", uniqueness_key="k-1")
-
-    _, kwargs = fake.post.call_args
-    assert kwargs["json"]["uniqueness_key"] == "k-1"
 
 
 @pytest.mark.asyncio
@@ -124,7 +115,9 @@ async def test_create_contract_with_stripe_billing_attaches_billing_provider_con
     through the CONTRACT-level billing_provider_configuration — a contract
     created without it cannot fund gated top-ups."""
     client, fake = _client_with(_resp(200, {"data": {"id": "contract-uuid-1"}}))
-    await client.create_contract(customer_id="cust-uuid-1", rate_card_id="rc-1", with_stripe_billing=True)
+    await client.create_contract(
+        customer_id="cust-uuid-1", rate_card_id="rc-1", with_stripe_billing=True, uniqueness_key="k-1"
+    )
 
     _, kwargs = fake.post.call_args
     assert kwargs["json"]["billing_provider_configuration"] == {
@@ -138,7 +131,7 @@ async def test_create_contract_omits_rate_card_when_unset():
     # Sandbox-verified: the minimal body {customer_id, starting_at} is
     # accepted; an empty/absent rate card must not appear in the body.
     client, fake = _client_with(_resp(200, {"data": {"id": "contract-uuid-1"}}))
-    contract_id = await client.create_contract(customer_id="cust-uuid-1")
+    contract_id = await client.create_contract(customer_id="cust-uuid-1", uniqueness_key="k-1")
 
     assert contract_id == "contract-uuid-1"
     _, kwargs = fake.post.call_args
@@ -150,7 +143,7 @@ async def test_create_contract_omits_rate_card_when_unset():
 async def test_create_contract_raises_on_missing_id():
     client, _ = _client_with(_resp(200, {"data": {}}))
     with pytest.raises(MetronomeError, match="no data.id"):
-        await client.create_contract(customer_id="cust-uuid-1", rate_card_id="rc-1")
+        await client.create_contract(customer_id="cust-uuid-1", rate_card_id="rc-1", uniqueness_key="k-1")
 
 
 @pytest.mark.asyncio
@@ -163,6 +156,17 @@ async def test_list_contracts_shape():
     # v1 list is disabled by Metronome; the v2 surface lives beside it.
     assert args[0] == "https://api.metronome.com/v2/contracts/list"
     assert kwargs["json"] == {"customer_id": "cust-uuid-1"}
+
+
+@pytest.mark.asyncio
+async def test_list_contracts_follows_cursor():
+    client, fake = _client_with(_resp())
+    fake.post = AsyncMock(
+        side_effect=[_resp(200, {"data": [{"id": "c1"}], "cursor": "p2"}), _resp(200, {"data": [{"id": "c2"}]})]
+    )
+
+    assert await client.list_contracts(customer_id="cust-uuid-1") == [{"id": "c1"}, {"id": "c2"}]
+    assert fake.post.call_args_list[1].kwargs["json"] == {"customer_id": "cust-uuid-1", "cursor": "p2"}
 
 
 @pytest.mark.asyncio
@@ -180,6 +184,7 @@ async def test_create_alert_shape():
         alert_type="low_remaining_commit_balance_reached",
         threshold_cents=500,
         credit_type_id="ct-usd-cents",
+        uniqueness_key="k-alert",
     )
 
     args, kwargs = fake.post.call_args
@@ -192,6 +197,7 @@ async def test_create_alert_shape():
         "alert_type": "low_remaining_commit_balance_reached",
         "threshold": 500,
         "credit_type_id": "ct-usd-cents",
+        "uniqueness_key": "k-alert",
     }
 
 
@@ -399,7 +405,9 @@ async def test_a_configured_delivery_method_id_replaces_the_bare_method(monkeypa
 
     monkeypatch.setattr(metronome_client.settings, "METRONOME_STRIPE_DELIVERY_METHOD_ID", "dm-1")
     client, fake = _client_with(_resp(200, {"data": {"id": "contract-uuid-1"}}))
-    await client.create_contract(customer_id="cust-uuid-1", rate_card_id="rc-1", with_stripe_billing=True)
+    await client.create_contract(
+        customer_id="cust-uuid-1", rate_card_id="rc-1", with_stripe_billing=True, uniqueness_key="k-1"
+    )
     assert fake.post.call_args.kwargs["json"]["billing_provider_configuration"] == {
         "billing_provider": "stripe",
         "delivery_method_id": "dm-1",

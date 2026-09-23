@@ -67,7 +67,14 @@ def event_for(row, generation):
     }
 
 
-def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_free=None, release_unknown=None):
+# A generation_id whose OpenRouter metadata never shows up (observed on $0 free-model
+# generations) must not count as metadata_pending forever; only rows holding no reservation
+# are eligible for release -- a nonzero hold is real money and must stay visible.
+STALE_METADATA_RELEASE_S = 24 * 3600
+
+
+def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_free=None, release_unknown=None,
+                release_stale_metadata=None):
     mode = row.get("billing_mode")
     # free and capped rows never touch Metronome: a capped owner's valve is the
     # OpenRouter per-key daily limit, so its cost is recorded, not debited.
@@ -87,6 +94,9 @@ def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_fre
         return "expired_gap"  # outside OpenRouter's 30 completed-day activity window
     generation = get_generation(row["generation_id"], row["secret_name"])
     if not generation:
+        if (release_stale_metadata and int(row["reservation_microcents"]) == 0
+                and now - int(row["created_at"]) >= STALE_METADATA_RELEASE_S):
+            return release_stale_metadata(row, now)
         return "metadata_pending"
     event = event_for(row, generation)
     amount = cost_nanodollars(generation["total_cost"])
@@ -409,6 +419,19 @@ class Store:
         )
         return "released_no_generation"
 
+    def release_stale_metadata(self, row, now):
+        """Release a pending row whose OpenRouter generation metadata never arrived and holds
+        no reservation (reservation_microcents == 0). No money moves. Mirrors release_unknown."""
+        self.ddb.update_item(
+            TableName=self.requests_table, Key={"request_id": {"S": row["request_id"]}},
+            UpdateExpression="SET #state = :released, released_at = :now",
+            ConditionExpression="#state = :pending AND reservation_microcents = :zero",
+            ExpressionAttributeNames={"#state": "state"},
+            ExpressionAttributeValues={":released": {"S": "released"}, ":pending": {"S": "pending"}, ":now": {"N": str(now)},
+                                       ":zero": {"N": "0"}},
+        )
+        return "released_no_generation"
+
     def _mark_duplicate(self, row, now):
         updates = [{"Update": {
             "TableName": self.requests_table,
@@ -657,7 +680,8 @@ def handler(event, context):
         try:
             outcome = settle_one(row, get_generation=_get_generation, ingest=_ingest,
                                  commit=store.commit, commit_free=store.commit_free,
-                                 release_unknown=store.release_unknown, verified=verified, now=now)
+                                 release_unknown=store.release_unknown,
+                                 release_stale_metadata=store.release_stale_metadata, verified=verified, now=now)
             outcomes[outcome] = outcomes.get(outcome, 0) + 1
         except Exception as exc:
             # No prompts, keys, or customer IDs in logs. The row stays pending.

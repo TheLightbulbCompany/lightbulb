@@ -606,10 +606,15 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
     aip_arns = await reconcile_hermes_aips(owner_id)
     role_arn = await ensure_owner_bedrock_role(owner_id, aip_arns)
     await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), role_arn.split(":")[4])
-    bedrock_bearer = await mint_gate_token(
-        owner_id, aip_arns, row_id=row["id"], generation=int(row.get("gate_bearer_generation") or 0)
-    )
     provider_choice, _ = await resolve_provider_choice(owner_id)
+    # Only bedrock_claude owners may carry Bedrock tiers; the bearer itself still
+    # authenticates the OpenRouter gate, so it is minted for everyone.
+    bedrock_bearer = await mint_gate_token(
+        owner_id,
+        aip_arns if provider_choice == "bedrock_claude" else {},
+        row_id=row["id"],
+        generation=int(row.get("gate_bearer_generation") or 0),
+    )
     if provider_choice == "openrouter_managed":
         from core.services.openrouter_keys import ensure_owner_key_for_settings
 
@@ -991,7 +996,7 @@ async def reconcile_hermes_aips(owner_id: str) -> dict[str, str]:
     billing = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     provider, _ = provider_choice_from_row(billing)
     aip_arns = await ensure_owner_aips(owner_id, tiers=["sonnet"] if provider == BEDROCK_TRIAL_CHOICE else None)
-    await reconcile_gate_token_tiers(owner_id, aip_arns)
+    await reconcile_gate_token_tiers(owner_id, aip_arns if provider == "bedrock_claude" else {})
     return aip_arns
 
 

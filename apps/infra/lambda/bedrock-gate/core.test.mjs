@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { makeFakeDdb } from "./fake-ddb.mjs";
 import { hashToken } from "./auth.mjs";
 import { handleRequest } from "./core.mjs";
-import { readMapN } from "./ddb.mjs";
 
 const ENV = {
   AWS_REGION: "us-east-1", GATE_ENV: "test",
@@ -50,19 +49,15 @@ const fakeForward200 = (usage, requestId = "req-1") => async ({ writeHead, write
   return { status: 200, requestId, usage };
 };
 
-test("full trial success: streams verbatim, settles spent, releases hold", async () => {
-  const ddb = seed({ spent: 1_000_000 });
-  const r = makeResponder();
-  await handleRequest(evt(), r, { ddb, env: ENV, nowMs: NOW, forwardImpl: fakeForward200({ inputTokens: 1_000_000 }) });
-  assert.equal(r._status, 200);
-  assert.equal(r._headers["content-type"], "application/vnd.amazon.eventstream");
-  assert.equal(Buffer.concat(r._chunks).toString(), "STREAMBYTES");
-  assert.equal(readMapN(ddb._store.bill.u.trial_daily_spend_microcents)[TODAY], 1_000_000 + 3_300_000);
-  assert.equal(readMapN(ddb._store.bill.u.reserved_microcents)[TODAY], 0);
-});
+// Bedrock admits only bedrock_claude owners (paid), so the budget/hold paths run on the fast-gate row.
+const paid = (remaining = 1_000_000) => {
+  const ddb = seed({ status: "active" });
+  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: String(remaining) }, reserved_microcents: { N: "0" } } };
+  return ddb;
+};
 
-test("over cap: 429 limit card BEFORE forward (forward never called)", async () => {
-  const ddb = seed({ spent: 2_800_000 });
+test("no balance: 429 BEFORE forward (forward never called)", async () => {
+  const ddb = paid(0);
   const r = makeResponder();
   let forwardCalled = false;
   await handleRequest(evt(), r, { ddb, env: ENV, nowMs: NOW, forwardImpl: async () => { forwardCalled = true; } });
@@ -94,20 +89,20 @@ test("bad route → 404", async () => {
 });
 
 test("upstream non-200 passes through; hold released, no spend", async () => {
-  const ddb = seed({ spent: 0 });
+  const ddb = paid();
   const r = makeResponder();
   const forward403 = async ({ writeHead, write, end }) => { writeHead(403, { "content-type": "application/json" }); write(Buffer.from('{"__type":"AccessDeniedException"}')); end(); return { status: 403 }; };
   await handleRequest(evt(), r, { ddb, env: ENV, nowMs: NOW, forwardImpl: forward403 });
   assert.equal(r._status, 403);
-  assert.equal(readMapN(ddb._store.bill.u.trial_daily_spend_microcents)[TODAY] || 0, 0);
-  assert.equal(readMapN(ddb._store.bill.u.reserved_microcents)[TODAY], 0); // hold released
+  assert.equal(Number(ddb._store.fg.u.remaining_microcents.N), 1_000_000);
+  assert.equal(Number(ddb._store.fg.u.reserved_microcents.N), 0); // hold released
 });
 
 test("forward throws AFTER reserve → hold released in finally", async () => {
-  const ddb = seed({ spent: 0 });
+  const ddb = paid();
   const r = makeResponder();
   await handleRequest(evt(), r, { ddb, env: ENV, nowMs: NOW, forwardImpl: async () => { throw new Error("network"); } });
-  assert.equal(readMapN(ddb._store.bill.u.reserved_microcents)[TODAY], 0); // released
+  assert.equal(Number(ddb._store.fg.u.reserved_microcents.N), 0); // released
   assert.equal(r._status, 502); // headers not sent → internal error surfaced
 });
 
@@ -131,8 +126,26 @@ test("paid owner switched to OpenRouter cannot invoke Bedrock before reservation
   assert.equal(ddb._store.fg.u.reserved_microcents.N, "0");
 });
 
-test("trial_local keeps its Bedrock route during Phase 1", async () => {
-  const ddb = seed({ status: "trial_local", providerChoice: "openrouter_managed" });
+for (const [name, row] of [
+  ["trial_local", { status: "trial_local" }],
+  ["choiceless Base", { status: "active", plan: "base" }],
+]) {
+  test(`${name} owner is refused Bedrock with no ledger write`, async () => {
+    const ddb = seed(row);
+    if (row.plan) ddb._store.bill.u.plan = { S: row.plan };
+    const before = JSON.stringify(ddb._store.bill.u);
+    const r = makeResponder();
+    let forwarded = false;
+    await handleRequest(evt(), r, { ddb, env: ENV, nowMs: NOW, forwardImpl: async () => { forwarded = true; } });
+    assert.equal(r._status, 403);
+    assert.equal(forwarded, false);
+    assert.equal(JSON.stringify(ddb._store.bill.u), before);
+  });
+}
+
+test("explicit bedrock_claude owner is admitted", async () => {
+  const ddb = seed({ status: "active", providerChoice: "bedrock_claude" });
+  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "1000000" }, reserved_microcents: { N: "0" } } };
   const r = makeResponder();
   await handleRequest(evt(), r, { ddb, env: ENV, nowMs: NOW, forwardImpl: fakeForward200({ inputTokens: 0 }) });
   assert.equal(r._status, 200);

@@ -7,6 +7,16 @@ import { trialCap, trialExpired, creditExhausted, ledgerUnprovisioned } from "./
 export const resolvePlan = (billingRow) =>
   readS(billingRow?.subscription_status) === "trial_local" ? "trial" : "paid";
 
+// Mirrors backend container_provision.provider_choice_from_row. Only a
+// bedrock_claude owner may reach Bedrock; trial_local, Base and choiceless
+// paid rows run on OpenRouter, even though their token rows may carry tiers.
+export function providerChoice(billingRow) {
+  if (readS(billingRow?.subscription_status) === "trial_local") return "openrouter_managed";
+  const choice = readS(billingRow?.provider_choice);
+  if (!choice && ["base", "standard", "ultra_pro"].includes(readS(billingRow?.plan))) return "openrouter_managed";
+  return choice || "bedrock_claude";
+}
+
 export function isTrialExpired(billingRow, nowSec) {
   const end = readN(billingRow?.trial_end);
   return end !== undefined && nowSec > end;

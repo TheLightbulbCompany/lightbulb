@@ -2019,6 +2019,27 @@ async def test_hermes_aips_follow_authoritative_provider_and_reconcile_live_toke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "billing", [{"subscription_status": "trial_local"}, {"subscription_status": "active", "plan": "base"}]
+)
+async def test_non_bedrock_owner_token_rows_carry_no_bedrock_tiers(monkeypatch, billing):
+    """The bearer still authenticates the OpenRouter gate, but a non-bedrock_claude
+    owner's token row must never let it reach Bedrock (trial Opus leak)."""
+    from core.billing import bedrock_gate_tokens
+
+    _patch_owner_aws(monkeypatch, existing_row={})
+    monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=billing))
+    monkeypatch.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", AsyncMock())
+    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", AsyncMock())
+    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", AsyncMock())
+
+    await hermes_provisioning.prepare_hermes_workspace("org_a")
+
+    assert bedrock_gate_tokens.mint_gate_token.await_args.args == ("org_a", {})
+    bedrock_gate_tokens.reconcile_gate_token_tiers.assert_awaited_once_with("org_a", {})
+
+
+@pytest.mark.asyncio
 async def test_reconcile_uses_committed_paid_billing_instead_of_stale_trial(monkeypatch):
     from core.billing import bedrock_aip, bedrock_gate_tokens
     from core.repositories import billing_repo

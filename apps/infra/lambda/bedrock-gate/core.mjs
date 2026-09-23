@@ -3,7 +3,7 @@
 // finally-release that always runs. handler.mjs wraps this with
 // awslambda.streamifyResponse + the real DynamoDB client.
 import { authenticate, tierForModel } from "./auth.mjs";
-import { resolvePlan, clampMaxTokens, reserveOrThrow } from "./preflight.mjs";
+import { resolvePlan, providerChoice, clampMaxTokens, reserveOrThrow } from "./preflight.mjs";
 import { settle, release } from "./debit.mjs";
 import { forward } from "./proxy.mjs";
 import { MODEL_MAX_TOKENS } from "./rates.mjs";
@@ -57,7 +57,7 @@ export async function handleRequest(event, responder, deps) {
     // Resolve plan + budget rows (billing always; fast-gate only for paid).
     const billing = (await ddb.getItem({ TableName: env.BILLING_TABLE, Key: { owner_id: { S: ownerId } } }))?.Item;
     const plan = resolvePlan(billing);
-    if (plan === "paid" && billing?.provider_choice?.S === "openrouter_managed") throw forbiddenOp();
+    if (providerChoice(billing) !== "bedrock_claude") throw forbiddenOp(); // before any hold
     const fastGateRow = plan === "paid"
       ? (await ddb.getItem({ TableName: env.FAST_GATE_TABLE, Key: { owner_id: { S: ownerId } } }))?.Item
       : null;

@@ -57,19 +57,11 @@ interface SpendByModel {
   cents: number;
 }
 
-interface SpendQuotaWindow {
-  label: string;
-  used_percent: number;
-  resets_at_ms: number | null;
-}
-
 interface SpendResponse {
-  mode: "bedrock" | "oauth_quota" | "tokens_only";
+  mode: "bedrock" | "tokens_only";
   billed_month_to_date_cents: number | null;
   by_model: SpendByModel[] | null;
   period_start: string | null;
-  plan: string | null;
-  windows: SpendQuotaWindow[] | null;
 }
 
 type UsageState =
@@ -202,52 +194,6 @@ function BedrockSpendCard({ spend }: { spend: SpendResponse }) {
   );
 }
 
-// Matches apps/frontend/src/components/control/panels/UsagePanel.tsx's
-// oauth_quota block formatting: weekday + hour:minute, no seconds/date.
-function formatResetTime(resetsAtMs: number | null): string | null {
-  if (resetsAtMs == null) return null;
-  return new Date(resetsAtMs).toLocaleString([], {
-    weekday: "short",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
-function OauthQuotaCard({ spend }: { spend: SpendResponse }) {
-  return (
-    <Card>
-      {spend.plan && (
-        <View style={styles.spendHead}>
-          <Text style={styles.overline}>PLAN</Text>
-          <Text style={styles.planBadge}>{spend.plan}</Text>
-        </View>
-      )}
-      {(spend.windows ?? []).map((w, i) => {
-        const clamped = Math.max(0, Math.min(100, w.used_percent));
-        const pctText = clamped > 0 && clamped < 1 ? "<1" : Math.round(clamped);
-        const resetText = formatResetTime(w.resets_at_ms);
-        return (
-          <View key={w.label} style={i > 0 ? styles.memberRowBorder : undefined}>
-            <View style={styles.spendHead}>
-              <Text style={styles.overline}>{w.label} limit</Text>
-              <Text style={styles.captionText}>
-                {pctText}% used{resetText ? ` · resets ${resetText}` : ""}
-              </Text>
-            </View>
-            <View style={styles.quotaBarTrack}>
-              <View style={[styles.quotaBarFill, { width: `${clamped}%` }]} />
-            </View>
-          </View>
-        );
-      })}
-      <Text style={styles.captionText}>Included in your ChatGPT plan.</Text>
-      <Text style={styles.captionText}>
-        Rolling plan windows — separate from the monthly token totals below.
-      </Text>
-    </Card>
-  );
-}
-
 function SkeletonRow({ delayMs, width }: { delayMs: number; width: `${number}%` }) {
   const pulse = usePulse(true, 0.55, 700, delayMs);
   return <Animated.View style={[styles.skeletonLine, { width, opacity: pulse }]} />;
@@ -336,7 +282,6 @@ export default function UsagePanel() {
         )}
 
         {s.mode === "bedrock" && <BedrockSpendCard spend={s} />}
-        {s.mode === "oauth_quota" && <OauthQuotaCard spend={s} />}
 
         <View style={styles.grid}>
           <Tile label="INPUT" value={formatTokens(u.total_input_tokens)} />
@@ -412,13 +357,6 @@ const styles = StyleSheet.create({
     color: colors.forest,
   },
 
-  // Spend header card.
-  spendHead: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.sm,
-  },
   periodText: {
     fontFamily: fonts.mono,
     fontSize: 10,
@@ -432,14 +370,6 @@ const styles = StyleSheet.create({
     lineHeight: 32,
     color: colors.ink,
   },
-  planBadge: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 0.6,
-    color: colors.mute,
-  },
-
   // Token tile grid.
   grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
   tile: {
@@ -492,20 +422,6 @@ const styles = StyleSheet.create({
     lineHeight: 14,
     color: colors.mute,
   },
-  // Provider quota bar (oauth_quota mode).
-  quotaBarTrack: {
-    height: 6,
-    borderRadius: radii.xs,
-    backgroundColor: colors.edge,
-    marginTop: spacing.xs,
-    overflow: "hidden",
-  },
-  quotaBarFill: {
-    height: "100%",
-    borderRadius: radii.xs,
-    backgroundColor: colors.forest,
-  },
-
   // Loading skeleton (§7).
   skeletonLine: {
     height: 14,

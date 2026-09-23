@@ -80,29 +80,4 @@ describe("UsagePanel spend display", () => {
     expect(creditsLink.closest("a")).toHaveAttribute("href", "/chat?panel=llm");
   });
 
-  it("oauth mode renders normalized quota windows and plan name", async () => {
-    spendState.value = {
-      mode: "oauth_quota",
-      plan: "Pro Lite",
-      windows: [{ label: "Weekly", used_percent: 61, resets_at_ms: null }],
-    };
-    render(<UsagePanel />);
-    expect(await screen.findByText(/Weekly/)).toBeInTheDocument();
-    expect(screen.getByText(/61%/)).toBeInTheDocument();
-    expect(screen.getByText("Pro Lite")).toBeInTheDocument();
-    expect(screen.getByText(/included in your ChatGPT plan/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/Rolling plan windows.*separate from the monthly token totals/i),
-    ).toBeInTheDocument();
-  });
-
-  it("shows <1% used for a fractional used_percent instead of rounding to 0%", async () => {
-    spendState.value = {
-      mode: "oauth_quota",
-      plan: "Free",
-      windows: [{ label: "Daily", used_percent: 0.4, resets_at_ms: null }],
-    };
-    render(<UsagePanel />);
-    expect(await screen.findByText(/<1% used/)).toBeInTheDocument();
-  });
 });

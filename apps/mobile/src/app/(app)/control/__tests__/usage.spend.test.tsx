@@ -65,8 +65,6 @@ describe("UsagePanel provider-aware spend", () => {
       billed_month_to_date_cents: null,
       by_model: null,
       period_start: null,
-      plan: null,
-      windows: null,
     });
 
     await render(<UsagePanel />);
@@ -82,8 +80,6 @@ describe("UsagePanel provider-aware spend", () => {
       billed_month_to_date_cents: 1234,
       by_model: [{ model: "Claude Opus", tier: "opus", cents: 900 }],
       period_start: "2026-07-01",
-      plan: null,
-      windows: null,
     });
 
     await render(<UsagePanel />);
@@ -93,61 +89,12 @@ describe("UsagePanel provider-aware spend", () => {
     expect(screen.getByText("Claude Opus")).toBeTruthy();
   });
 
-  it("oauth_quota: renders per-window label + used percent", async () => {
-    mockEndpoints({
-      mode: "oauth_quota",
-      billed_month_to_date_cents: null,
-      by_model: null,
-      period_start: null,
-      plan: null,
-      windows: [{ label: "Weekly", used_percent: 61.4, resets_at_ms: null }],
-    });
-
-    await render(<UsagePanel />);
-
-    expect(await screen.findByText("Weekly limit")).toBeTruthy();
-    expect(screen.getByText("61% used")).toBeTruthy();
-  });
-
-  it("oauth_quota: renders plan badge as-is and reset time when present", async () => {
-    mockEndpoints({
-      mode: "oauth_quota",
-      billed_month_to_date_cents: null,
-      by_model: null,
-      period_start: null,
-      plan: "Pro Lite",
-      windows: [{ label: "Weekly", used_percent: 61.4, resets_at_ms: 1234567890000 }],
-    });
-
-    await render(<UsagePanel />);
-
-    expect(await screen.findByText("Pro Lite")).toBeTruthy();
-    expect(screen.getByText(/61% used · resets/)).toBeTruthy();
-  });
-
-  it("oauth_quota: shows <1% used for a fractional used_percent instead of rounding to 0%", async () => {
-    mockEndpoints({
-      mode: "oauth_quota",
-      billed_month_to_date_cents: null,
-      by_model: null,
-      period_start: null,
-      plan: "Free",
-      windows: [{ label: "Daily", used_percent: 0.4, resets_at_ms: null }],
-    });
-
-    await render(<UsagePanel />);
-
-    expect(await screen.findByText("<1% used")).toBeTruthy();
-  });
-
   it("member rows: show name + request count, never a member dollar value", async () => {
     mockEndpoints({
       mode: "tokens_only",
       billed_month_to_date_cents: null,
       by_model: null,
       period_start: null,
-      plan: null,
-      windows: null,
     });
 
     await render(<UsagePanel />);

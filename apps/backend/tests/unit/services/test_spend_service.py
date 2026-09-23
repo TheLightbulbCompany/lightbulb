@@ -1,14 +1,11 @@
 """spend_service — provider-aware spend summary building blocks."""
 
-import asyncio
-import contextlib
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from core.billing.metronome_client import MetronomeClient
 from core.services import spend_service
-from core.services.messaging import ApiProblem
 
 
 DRAFT_INVOICE = {
@@ -158,214 +155,16 @@ async def test_billed_spend_none_when_billing_repo_raises():
         assert await spend_service.get_billed_month_spend("owner-1") is None
 
 
-AUTH_STATUS_RESULT = {
-    "ts": 1,
-    "providers": [
-        {"provider": "anthropic"},
-        {
-            "provider": "openai",
-            "usage": {
-                "plan": "pro",
-                "windows": [
-                    {"label": "5h", "usedPercent": 43, "resetAt": 1789000000000},
-                    {"label": "Week", "usedPercent": 61},
-                ],
-            },
-        },
-    ],
-}
-
-
-def _patch_gateway(rpc_result=None, rpc_error=None, container=("c", "10.0.0.1")):
-    """Patch container_rpc.call for the OAuth branch. ``container=None``
-    simulates an unreachable container the same way container_rpc.call
-    itself reports one -- by raising. The second element is a no-op so every
-    ``with p1, p2:`` call site below stays unchanged."""
-    call = AsyncMock()
-    if rpc_error:
-        call.side_effect = rpc_error
-    elif container is None:
-        call.side_effect = ApiProblem("RUNTIME_UNAVAILABLE", "no container", retryable=True)
-    else:
-        call.return_value = rpc_result
-    return (
-        patch.object(spend_service.container_rpc, "call", call),
-        contextlib.nullcontext(),
-    )
-
-
 @pytest.mark.asyncio
-async def test_summary_oauth_maps_quota_windows():
-    p1, p2 = _patch_gateway(rpc_result=AUTH_STATUS_RESULT)
-    with p1, p2:
-        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
-    assert payload["mode"] == "oauth_quota"
-    assert payload["plan"] == "Pro"
-    assert payload["windows"] == [
-        {"label": "5-hour", "used_percent": 43, "resets_at_ms": 1789000000000},
-        {"label": "Weekly", "used_percent": 61, "resets_at_ms": None},
-    ]
-
-
-LEGACY_AUTH_STATUS_RESULT = {
-    "ts": 1,
-    "providers": [
-        {"provider": "anthropic"},
-        {
-            "provider": "openai-codex",
-            "usage": {
-                "plan": "plus",
-                "windows": [
-                    {"label": "5h", "usedPercent": 12, "resetAt": 1789000001000},
-                ],
-            },
-        },
-    ],
-}
-
-
-@pytest.mark.asyncio
-async def test_summary_oauth_accepts_legacy_openai_codex_provider_id():
-    """Finding round-3 P2: older container images (containers keep their
-    provision-time image until reprovision) and the frontend's own
-    llm-auth-status mapping still emit the retired "openai-codex" provider
-    id for the ChatGPT-OAuth entry — not just "openai" as the current 7.1
-    fork reports it."""
-    p1, p2 = _patch_gateway(rpc_result=LEGACY_AUTH_STATUS_RESULT)
-    with p1, p2:
-        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
-    assert payload["mode"] == "oauth_quota"
-    assert payload["plan"] == "Plus"
-    assert payload["windows"] == [
-        {"label": "5-hour", "used_percent": 12, "resets_at_ms": 1789000001000},
-    ]
-
-
-PARTIAL_USED_PERCENT_RESULT = {
-    "ts": 1,
-    "providers": [
-        {
-            "provider": "openai",
-            "usage": {
-                "plan": "prolite",
-                "windows": [
-                    {"label": "168h", "usedPercent": 30, "resetAt": 1789000000000},
-                    {"label": "24h"},
-                ],
-            },
-        },
-    ],
-}
-
-
-@pytest.mark.asyncio
-async def test_summary_oauth_drops_window_without_used_percent():
-    """A window whose payload omits usedPercent must never be fabricated as
-    0% -- it's dropped rather than rendered with a confident-but-fake bar."""
-    p1, p2 = _patch_gateway(rpc_result=PARTIAL_USED_PERCENT_RESULT)
-    with p1, p2:
-        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
-    assert payload["mode"] == "oauth_quota"
-    assert payload["plan"] == "Pro Lite"
-    assert payload["windows"] == [
-        {"label": "Weekly", "used_percent": 30, "resets_at_ms": 1789000000000},
-    ]
-
-
-ALL_MISSING_USED_PERCENT_RESULT = {
-    "ts": 1,
-    "providers": [
-        {
-            "provider": "openai",
-            "usage": {
-                "plan": "pro",
-                "windows": [
-                    {"label": "168h"},
-                    {"label": "24h"},
-                ],
-            },
-        },
-    ],
-}
-
-
-@pytest.mark.asyncio
-async def test_summary_oauth_all_windows_missing_used_percent_degrades_to_tokens_only():
-    p1, p2 = _patch_gateway(rpc_result=ALL_MISSING_USED_PERCENT_RESULT)
-    with p1, p2:
-        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
-    assert payload == {"mode": "tokens_only"}
-
-
-@pytest.mark.parametrize(
-    ("raw_label", "expected"),
-    [
-        ("168h", "Weekly"),
-        ("200h", "Weekly"),
-        ("24h", "Daily"),
-        ("48h", "Daily"),
-        ("5h", "5-hour"),
-        ("Week", "Weekly"),
-        ("Day", "Daily"),
-        ("something-else", "something-else"),
-    ],
-)
-def test_normalize_window_label(raw_label, expected):
-    assert spend_service._normalize_window_label(raw_label) == expected
-
-
-@pytest.mark.parametrize(
-    ("raw_plan", "expected"),
-    [
-        ("prolite", "Pro Lite"),
-        ("PROLITE", "Pro Lite"),
-        ("free", "Free"),
-        ("plus", "Plus"),
-        ("pro", "Pro"),
-        ("business", "Business"),
-        ("team", "Team"),
-        ("enterprise", "Enterprise"),
-        ("some_unknown_plan", "Some Unknown Plan"),
-        (None, None),
-    ],
-)
-def test_display_plan(raw_plan, expected):
-    assert spend_service._display_plan(raw_plan) == expected
-
-
-@pytest.mark.asyncio
-async def test_summary_oauth_degrades_to_tokens_only_on_rpc_failure():
-    p1, p2 = _patch_gateway(rpc_error=RuntimeError("container gone"))
-    with p1, p2:
-        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
-    assert payload == {"mode": "tokens_only"}
-
-
-@pytest.mark.asyncio
-async def test_summary_oauth_degrades_when_no_container():
-    p1, p2 = _patch_gateway(container=None)
-    with p1, p2:
-        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
-    assert payload == {"mode": "tokens_only"}
-
-
-@pytest.mark.asyncio
-async def test_summary_oauth_degrades_when_authstatus_rpc_hangs():
-    """Finding round-4 P2: the pool's send_rpc has no timeout of its own —
-    it awaits the connection's default 30s _RPC_TIMEOUT. This display-only
-    probe must bound its own wait (5s) so a container that accepts but
-    never answers models.authStatus can't hold /billing/spend (and
-    mobile's Promise.all'd usage screen) open for 30s."""
-    p1, p2 = _patch_gateway(rpc_error=asyncio.TimeoutError())
-    with p1, p2:
-        payload = await spend_service.get_spend_summary("owner-1", "chatgpt_oauth")
-    assert payload == {"mode": "tokens_only"}
-
-
-@pytest.mark.asyncio
-async def test_summary_byok_and_unknown_are_tokens_only():
+async def test_summary_byok_unknown_and_oauth_are_tokens_only():
+    """chatgpt_oauth used to probe the container's models.authStatus RPC for
+    quota windows; the Hermes bridge never returns a usage block, so that
+    read was always None while still waking a microVM per read (ponytail
+    audit #14, 2026-09-23) -- it now falls straight through like every other
+    non-bedrock provider, no RPC call at all."""
     assert await spend_service.get_spend_summary("owner-1", "byo_key") == {"mode": "tokens_only"}
     assert await spend_service.get_spend_summary("owner-1", None) == {"mode": "tokens_only"}
+    assert await spend_service.get_spend_summary("owner-1", "chatgpt_oauth") == {"mode": "tokens_only"}
 
 
 @pytest.mark.asyncio

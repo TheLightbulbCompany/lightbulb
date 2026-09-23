@@ -1,8 +1,8 @@
 // AgentSpendSection's contract is HONESTY: every figure it prints must be one
 // it can source, and anything missing or unverified must say so rather than
 // render a confident zero. These pin that, plus the section chrome (a region
-// labelled "Agent spend", the by-model / plan-window rows) and the
-// never-run-an-agent empty state.
+// labelled "Agent spend", the by-model rows) and the never-run-an-agent
+// empty state.
 //
 // Mocking convention copied from UsagePanel.spend.test.tsx:
 // mock useBilling/useSpend/clerk, and mock swr by key so this section reads
@@ -75,7 +75,7 @@ function setup(over: Partial<typeof state> = {}) {
 
 describe("AgentSpendSection chrome", () => {
   it("is a section labelled Agent spend that names the period and links to Model & Credits", () => {
-    setup({ spend: { mode: "bedrock", billed_month_to_date_cents: 1400, by_model: [{ model: "Claude Opus 5", tier: "opus", cents: 1000 }, { model: "Claude Sonnet 5", tier: "sonnet", cents: 400 }], period_start: null, plan: null, windows: null } });
+    setup({ spend: { mode: "bedrock", billed_month_to_date_cents: 1400, by_model: [{ model: "Claude Opus 5", tier: "opus", cents: 1000 }, { model: "Claude Sonnet 5", tier: "sonnet", cents: 400 }], period_start: null } });
     const section = screen.getByRole("region", { name: "Agent spend" });
     expect(within(section).getByText("$14")).toBeInTheDocument();
     expect(within(section).getByText("Claude Opus 5")).toBeInTheDocument();
@@ -83,13 +83,6 @@ describe("AgentSpendSection chrome", () => {
     expect(within(section).getByText("August")).toBeInTheDocument(); // the month, not the raw "2026-08"
     expect(within(section).getByRole("link", { name: "Manage credits" })).toHaveAttribute("href", "/chat?panel=llm");
     expect(within(section).queryByText(/Cache/)).toBeNull(); // the token grid does not come along
-  });
-
-  it("shows the ChatGPT plan windows for an OAuth owner", () => {
-    setup({ spend: { mode: "oauth_quota", billed_month_to_date_cents: null, by_model: null, period_start: null, plan: "Plus", windows: [{ label: "5h", used_percent: 42, resets_at_ms: null }] } });
-    expect(screen.getByText("Included")).toBeInTheDocument();
-    expect(screen.getByText(/5h limit/)).toBeInTheDocument();
-    expect(screen.getByText(/42% used/)).toBeInTheDocument();
   });
 });
 
@@ -116,9 +109,9 @@ describe("AgentSpendSection headline — live figures", () => {
   it("oauth: says the plan covers it instead of inventing a dollar amount", () => {
     setup({
       account: { subscription_status: "active", provider_choice: "chatgpt_oauth" },
-      spend: { mode: "oauth_quota", plan: "Pro", windows: [] },
+      spend: { mode: "tokens_only" },
     });
-    expect(screen.getByTestId("spend-headline")).toHaveTextContent("Included");
+    expect(screen.getByTestId("spend-headline")).toHaveTextContent("Not billed by us");
     expect(screen.getByText(/run on your ChatGPT plan/i)).toBeInTheDocument();
     expect(screen.queryByText("Partial")).toBeNull();
   });
@@ -252,14 +245,14 @@ describe("AgentSpendSection empty state — month boundary vs a genuinely idle f
     expect(screen.queryByText(/1\.4/)).toBeNull();
   });
 
-  it("oauth/quota owners get the same boundary copy and still no dollars", () => {
+  it("oauth owners get the same boundary copy and still no dollars", () => {
     // An owner who moved from Bedrock to ChatGPT OAuth carries a non-zero
     // lifetime counter. They pay OpenAI directly and we cannot see that
     // invoice, so the copy names the reset without implying any figure.
     setup({
       ...boundary,
       account: { subscription_status: "active", provider_choice: "chatgpt_oauth" },
-      spend: { mode: "oauth_quota", plan: "Pro", windows: [] },
+      spend: { mode: "tokens_only" },
     });
     expect(screen.getByText(/No agent runs yet in September\./)).toBeInTheDocument();
     expect(screen.queryByText(/\$/)).toBeNull();

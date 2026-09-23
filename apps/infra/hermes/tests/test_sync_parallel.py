@@ -3,6 +3,7 @@
 and restore stops pulling back reinstallable home caches an older image already pushed."""
 
 import threading
+import time
 
 import pytest
 from bridge import sync
@@ -116,7 +117,7 @@ def test_a_failed_restore_raises_without_downloading_the_rest(home, s3, monkeypa
     def throttled(bucket, key, dest):
         if first.acquire(blocking=False):
             raise RuntimeError("SlowDown")
-        threading.Event().wait(0.5)
+        time.sleep(0.5)
 
     monkeypatch.setattr(s3, "download_file", throttled)
     calls = []

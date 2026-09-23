@@ -621,6 +621,50 @@ def _brokered_mcp_scope(overlay: dict[str, str]):
     return _scope()
 
 
+# agent id -> fingerprint of the interpolated mcp_servers its live connections were made with.
+_MCP_FINGERPRINTS: dict[str, str] = {}
+
+
+def _discover_mcp(agent_id: str) -> None:
+    """Connect this profile's ``mcp_servers`` and register their tools before AIAgent is built.
+
+    Upstream moved discovery out of ``model_tools`` import (model_tools.py:152-160, v2026.9.14):
+    every entry point runs it, and the bridge is one. Call it INSIDE the profile's home + secret
+    scopes, as the multiplexed gateway does (gateway/run.py:1795-1820): under multiplex the
+    registry and connection ledger are keyed by ``hermes_home_key()``, the OAuth token dir is
+    ``get_hermes_home()/mcp-tokens``, and ``${VAR}`` headers/env interpolate from the secret scope
+    (brokered bearers included), so each agent sees only its own servers and credentials.
+
+    Blocking (up to 120 s) and on the turn thread, never the ack path. Runs every turn: already-
+    connected servers are skipped and a failed one retries after Hermes's own cooldown. When the
+    interpolated config changed (a ``.revision`` re-pull, a rotated brokered bearer) this scope's
+    connections are dropped first, like ``/reload-mcp``. Never fails the turn.
+    """
+    try:
+        from tools.mcp_oauth import suppress_interactive_oauth
+        from tools.mcp_tool_config import _load_mcp_config  # what discover_mcp_tools connects with
+        from tools.mcp_tool_discovery import discover_mcp_tools, get_mcp_status
+        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+        from tools.registry import registry
+    except ImportError:
+        return
+    try:
+        servers = _load_mcp_config()
+        fingerprint = hashlib.sha256(json.dumps(servers, sort_keys=True, default=str).encode()).hexdigest()
+        known = _MCP_FINGERPRINTS.get(agent_id)
+        if known is not None and known != fingerprint:
+            shutdown_mcp_servers(scope=registry.current_scope_key())
+        _MCP_FINGERPRINTS[agent_id] = fingerprint
+        if not servers:
+            return
+        with suppress_interactive_oauth():  # no one can finish a browser OAuth flow here
+            discover_mcp_tools()
+        log.info("mcp agent=%s %s", agent_id, " ".join(
+            f"{s['name']}:{s['status']}:{s['tools']}" for s in get_mcp_status(servers)))
+    except Exception as exc:  # noqa: BLE001 -- a broken MCP server must not fail the turn
+        log.warning("mcp discovery failed agent=%s: %s", agent_id, type(exc).__name__)
+
+
 # Exactly the three statuses a text-only re-post can actually recover from. 400: a backend
 # deployed before the `attachments` field (the contract models are ``extra="forbid"``, so it
 # rejects the WHOLE body). 409: an earlier attempt already stored the full text under this
@@ -1603,6 +1647,7 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
         )
         with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id), _desktop_active_turn(session_key, run_id):
             try:
+                _discover_mcp(agent_id)
                 agent = _construct_agent(agent_id, body, frames, session_key)
                 attach_agent(run_id, agent)
                 # delegate_tool_dispatch._resolve_async_session_key stamps an async delegation with
@@ -1677,6 +1722,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     # Same-session Paperclip retries must not replace another active desktop ledger.
     with _turn_lock(agent_id), _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id), _desktop_active_turn(session_id, run_id):
         try:
+            _discover_mcp(agent_id)
             agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
             attach_agent(run_id, agent)
             if paperclip_run_aborted(run_id):

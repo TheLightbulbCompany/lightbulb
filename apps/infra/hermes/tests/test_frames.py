@@ -79,3 +79,56 @@ def test_frame_credentials_reuses_one_cached_boto_session_across_calls(monkeypat
     turn._frame_credentials()
     turn._frame_credentials()
     assert len(created) == 1
+
+
+# ---- ordering (dev 2026-09-23: a CEO DM stream rendered scrambled) --------------------------
+# Every frame carries a per-run, monotonically increasing `seq` so the client can order and
+# de-duplicate, and batches leave in seq order even when two threads flush at once.
+import threading
+import time as _time
+
+
+def _publisher(sent, delay=0.0):
+    def publish(endpoint, channel, *events):
+        if delay:
+            _time.sleep(delay)
+        sent.extend(e["payload"]["frame"] for e in events)
+
+    return turn.FramePublisher("https://events.example.invalid/event", f"/ws/{ROOM}/rooms/{ROOM}/k",
+                               ROOM, "ceo", RUN, None, publish=publish)
+
+
+def test_every_frame_gets_a_monotonic_per_run_seq():
+    sent = []
+    frames = _publisher(sent)
+    frames.started()
+    for word in ("a", "b", "c", "d", "e", "f", "g"):
+        frames.delta(word)
+    frames.delta(None)
+    frames.finished("completed", "abcdefg", None)
+    seqs = [f["seq"] for f in sent]
+    assert seqs == list(range(1, len(sent) + 1))
+
+
+def test_concurrent_flushes_send_every_frame_once_with_its_seq():
+    # Arrival order across threads (and across AppSync publishes) is not guaranteed; the client
+    # orders by seq. What must hold: each frame goes out exactly once and its seq matches it.
+    sent = []
+    frames = _publisher(sent, delay=0.01)
+    for i in range(40):
+        frames.delta(str(i))
+    threads = [threading.Thread(target=frames.delta, args=(None,)) for _ in range(4)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert sorted(f["seq"] for f in sent) == list(range(1, 41))
+    assert all(f["content"] == str(f["seq"] - 1) for f in sent)
+
+
+def test_a_lifecycle_frame_is_numbered_after_the_deltas_it_follows():
+    sent = []
+    frames = _publisher(sent)
+    frames.delta("a")
+    frames.delta("b")
+    frames.finished("completed", "ab", None)
+    assert max(f["seq"] for f in sent if f.get("append")) < min(f["seq"] for f in sent if not f.get("append"))
+

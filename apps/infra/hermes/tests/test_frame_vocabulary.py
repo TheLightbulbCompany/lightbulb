@@ -8,7 +8,9 @@ def publisher():
     p = turn.FramePublisher(
         "https://e.invalid", "/ws/c", ROOM, "ceo", RUN, None,
         # varargs: a publish carries 1..FRAME_BATCH events since streaming deltas batch
-        publish=lambda endpoint, channel, *events: sent.extend(e["payload"]["frame"] for e in events) or 200)
+        # `seq` has its own ordering tests (test_frames.py); these compare the vocabulary only.
+        publish=lambda endpoint, channel, *events: sent.extend(
+            {k: v for k, v in e["payload"]["frame"].items() if k != "seq"} for e in events) or 200)
     return p, sent
 
 

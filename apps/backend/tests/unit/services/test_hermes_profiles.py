@@ -426,3 +426,18 @@ def test_dotenv_omits_an_unknown_company_rather_than_writing_it_empty(monkeypatc
     )
     assert "PAPERCLIP_AGENT_ID" in files.dotenv
     assert "PAPERCLIP_COMPANY_ID" not in files.dotenv
+
+
+def test_stdio_mcp_servers_get_the_agents_profile_home():
+    """One bridge process serves every agent with HOME=/, and Hermes spawns stdio MCP children
+    from the process env, so a server reading $HOME (QuickBooks) must have it pinned per agent."""
+    from core.services.hermes_profiles import with_profile_home
+
+    servers = {
+        "quickbooks": {"command": "/usr/local/bin/lightbulb-quickbooks-mcp", "env": {"X": "${MCP_Q_X}"}},
+        "notion": {"url": "https://mcp.notion.com/mcp", "auth": "oauth"},
+    }
+    out = with_profile_home(servers, "agent-1")
+    assert out["quickbooks"]["env"] == {"X": "${MCP_Q_X}", "HOME": "/opt/data/profiles/agent-1/home"}
+    assert out["notion"] == servers["notion"]
+    assert "HOME" not in servers["quickbooks"]["env"]  # input left untouched (shared across agents)

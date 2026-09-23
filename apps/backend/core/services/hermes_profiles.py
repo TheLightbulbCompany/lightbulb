@@ -517,6 +517,26 @@ def _mcp_env_key(server_name: str, var_name: str) -> str:
     return f"MCP_{server}_{var}"
 
 
+#: Where the bridge unpacks an agent's profile inside the runtime (bridge ``sync._profile_dir``:
+#: ``$HERMES_HOME/profiles/<agent>``, with ``HERMES_HOME=/opt/data`` baked in the image).
+_RUNTIME_PROFILES_DIR = "/opt/data/profiles"
+
+
+def with_profile_home(servers: dict, agent_id: str) -> dict:
+    """``servers`` with every stdio server's ``HOME`` pinned to this agent's profile home.
+
+    Hermes builds a stdio MCP child's env from the PROCESS environment, and one bridge process
+    serves every agent, with ``HOME=/`` under AgentCore. A server that reads ``$HOME`` (the
+    QuickBooks wrapper reads ``$HOME/quickbooks/.env``) therefore finds nothing and exits at
+    startup. The server's own ``env`` is applied last, so pinning ``HOME`` there wins.
+    """
+    home = f"{_RUNTIME_PROFILES_DIR}/{agent_id}/home"
+    return {
+        name: {**entry, "env": {**(entry.get("env") or {}), "HOME": home}} if entry.get("command") else entry
+        for name, entry in servers.items()
+    }
+
+
 def translate_mcp_servers(servers: dict | None) -> tuple[dict, dict[str, str]]:
     """Hermes ``mcp_servers`` config plus the secret values it references.
 
@@ -716,7 +736,7 @@ def write_agent_profile(
         provider_choice=provider_choice,
         byo_provider=byo_provider,
         aip_arns=aip_arns,
-        mcp_servers=mcp_config,
+        mcp_servers=with_profile_home(mcp_config, agent["id"]),
         is_ceo=(agent.get("role") == "ceo"),
     )
     # mcp_secrets first, env_vars second: an owner-provisioned value should win a name collision
@@ -1419,7 +1439,7 @@ def _refresh_one_profile(
         for name, block in (config.get("mcp_servers") or {}).items()
         if isinstance(block, dict) and block.get("auth") == "oauth"
     )
-    config["mcp_servers"] = servers
+    config["mcp_servers"] = with_profile_home(servers, agent_id)
     _write_mcp_token_files(owner_id, agent_id, connected, credentials, previously_oauth=previously_oauth)
     _s3_put(bucket, f"{prefix}config.yaml", yaml.safe_dump(config, sort_keys=False))
     _s3_put(bucket, f"{prefix}.env", _rewrite_mcp_env_lines(dotenv_text, secrets))

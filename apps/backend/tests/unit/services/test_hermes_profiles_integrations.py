@@ -103,7 +103,10 @@ async def test_refresh_moves_mcp_secrets_to_env_and_drops_a_disconnected_ones_ol
     assert "MCP_ACME_ACME_TOKEN=sk_new" in env_text
 
     (config_yaml,) = _config_writes(puts, "a1")
-    assert yaml.safe_load(config_yaml)["mcp_servers"]["acme"]["env"] == {"ACME_TOKEN": "${MCP_ACME_ACME_TOKEN}"}
+    assert yaml.safe_load(config_yaml)["mcp_servers"]["acme"]["env"] == {
+        "ACME_TOKEN": "${MCP_ACME_ACME_TOKEN}",
+        "HOME": "/opt/data/profiles/a1/home",
+    }
     assert "sk_new" not in config_yaml
 
 

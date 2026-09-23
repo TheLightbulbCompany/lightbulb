@@ -15,6 +15,7 @@ const mockPush = jest.fn();
 // another test's cached "room-1" success. Reset in beforeEach.
 let mockRoomId = "room-1";
 let mockMessageId = "m1";
+let mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
 jest.mock("expo-router", () => {
   // useFocusEffect is an EFFECT upstream; calling the callback during render
   // turns the screen's setFocused into a render-phase update React re-runs
@@ -40,7 +41,7 @@ jest.mock("@clerk/clerk-expo", () => ({
 }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "44444444-4444-4444-8444-444444444444" }));
 jest.mock("react-native-safe-area-context", () => ({
-  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+  useSafeAreaInsets: () => mockInsets,
 }));
 
 const mockRoom: RoomDetail = {
@@ -127,6 +128,7 @@ afterAll(() => {
 
 describe("thread screen", () => {
   beforeEach(() => {
+    mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
     mockPush.mockClear();
     mockMarkRead.mockClear();
     mockSendMessage.mockClear();
@@ -142,6 +144,15 @@ describe("thread screen", () => {
     mockLive.messaging.listMessages.mockReset().mockImplementation(async (roomId: string) => ({
       messages: mockMessages.map((message) => ({ ...message, roomId })), nextAfterSeq: null,
     }));
+  });
+
+  it("uses the stable pushed-screen offset instead of a mount-time window measurement", async () => {
+    mockInsets = { top: 59, bottom: 34, left: 0, right: 0 };
+    await render(<Thread />);
+
+    const keyboardAvoider = screen.getByTestId("thread-timeline").parent;
+    expect(keyboardAvoider?.props.automaticOffset).toBeUndefined();
+    expect(keyboardAvoider?.props.keyboardVerticalOffset).toBe(69);
   });
 
   it("pins the root at the top and shows only its replies below", async () => {

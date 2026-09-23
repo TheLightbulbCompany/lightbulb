@@ -31,6 +31,7 @@ let mockFocused = true;
 // keyed off this), so a getRoom override in one test can't be served from
 // another test's cached "room-1" success. Reset in beforeEach.
 let mockRoomId = "room-1";
+let mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
 // A long-press peek from the room list renders this same screen (Link.Preview).
 let mockIsPreview = false;
 jest.mock("expo-router", () => {
@@ -91,7 +92,7 @@ jest.mock("@clerk/clerk-expo", () => ({
 }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "33333333-3333-4333-8333-333333333333" }));
 jest.mock("react-native-safe-area-context", () => ({
-  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+  useSafeAreaInsets: () => mockInsets,
 }));
 
 const mockRoom: RoomDetail = {
@@ -206,6 +207,7 @@ afterAll(() => {
 
 describe("conversation screen", () => {
   beforeEach(() => {
+    mockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
     mockScope += 1;
     mockPush.mockClear();
     mockMarkRead.mockClear();
@@ -383,6 +385,15 @@ describe("conversation screen", () => {
     const list = screen.getByTestId("room-timeline");
     expect(list.props.keyboardDismissMode).toBe("interactive");
     expect(list.props.keyboardShouldPersistTaps).toBe("handled");
+  });
+
+  it("uses a deterministic header offset so the composer stays above the keyboard", async () => {
+    mockInsets = { top: 59, bottom: 34, left: 0, right: 0 };
+    await render(<Conversation />);
+
+    const keyboardAvoider = screen.getByTestId("room-timeline").parent;
+    expect(keyboardAvoider?.props.automaticOffset).toBeUndefined();
+    expect(keyboardAvoider?.props.keyboardVerticalOffset).toBe(69);
   });
 
   it("opens the actions sheet on a long press and acts on the message pressed", async () => {

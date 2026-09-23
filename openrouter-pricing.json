@@ -1,0 +1,4 @@
+{
+  "markup": "1.2",
+  "notes": "Owner ruling 2026-09-23: managed OpenRouter credits charge provider cost x markup. This is the ONE copy. Readers: CDK (openrouter-gate-stack.ts -> OPENROUTER_MARKUP on the gate's reservation and the settlement's fast-gate debit) and apps/backend/scripts/setup_metronome_openrouter_pricing.py (the Metronome rate, markup x 1e-7 cents per nanodollar). Changing it: edit here, run the setup script with a future --starting-at per env, then deploy; the rate and the Lambdas must move together."
+}

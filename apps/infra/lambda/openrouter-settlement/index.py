@@ -1,6 +1,6 @@
 """OpenRouter generation settlement. No money writes without a proven rate contract."""
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import ROUND_CEILING, Decimal, InvalidOperation, localcontext
 import json
 import os
 import re
@@ -28,6 +28,16 @@ def cost_nanodollars(value):
         return int(amount)
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise PendingSettlement("OpenRouter cost is unavailable") from exc
+
+
+def debit_microcents(nanodollars):
+    """Provisional fast-gate debit: provider cost x OPENROUTER_MARKUP, in microcents
+    (1 microcent = 1000 nanodollars), rounded up. Must match the Metronome rate
+    (openrouter-pricing.json); fails closed when the markup is not configured."""
+    markup = Decimal(os.environ["OPENROUTER_MARKUP"])
+    if not markup.is_finite() or markup < 1:
+        raise ValueError("OPENROUTER_MARKUP must be a decimal >= 1")
+    return int((Decimal(nanodollars) * markup / 1000).to_integral_value(rounding=ROUND_CEILING))
 
 
 def event_for(row, generation):
@@ -86,6 +96,7 @@ def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_fre
         if commit_free is None:
             raise RuntimeError("Free OpenRouter settlement commit is unavailable")
         return commit_free(row, event, now, amount)
+    debit_microcents(amount)  # a bad markup must fail before the Metronome ingest, not after
     ingest(event)  # Metronome deduplicates by generation ID for 34 days.
     return commit(row, event, amount, now)
 
@@ -260,13 +271,13 @@ class Store:
             raise ValueError("Actual OpenRouter cost must be nonnegative integer nanodollars")
         generation_id = event["transaction_id"]
         request_id = row["request_id"]
-        debit_microcents = (actual_nanodollars + 999) // 1000
+        debit = debit_microcents(actual_nanodollars)
         projection = {
             "TableName": self.fast_table,
             "Key": {"owner_id": {"S": row["owner_id"]}},
             "UpdateExpression": "SET openrouter_reserved_microcents = openrouter_reserved_microcents - :reservation ADD remaining_microcents :debit",
             "ConditionExpression": "attribute_exists(owner_id) AND openrouter_reserved_microcents >= :reservation",
-            "ExpressionAttributeValues": {":debit": {"N": str(-debit_microcents)}, ":reservation": {"N": str(row["reservation_microcents"])}},
+            "ExpressionAttributeValues": {":debit": {"N": str(-debit)}, ":reservation": {"N": str(row["reservation_microcents"])}},
         }
         claim_key = f"generation#{generation_id}"
         transaction = [

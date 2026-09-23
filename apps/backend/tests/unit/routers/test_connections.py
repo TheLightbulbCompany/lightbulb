@@ -320,6 +320,54 @@ class TestValidateToken:
         ok = await connections._validate_token(self._host_pattern_provider(), "mystore.myshopify.com|not-a-token")
         assert ok is False
 
+    @pytest.mark.asyncio
+    async def test_shopify_mints_a_client_credentials_token_then_queries_the_store(self, monkeypatch):
+        # Dev Dashboard apps hand out a Client ID + secret, never an Admin API token: validation
+        # has to run the client-credentials grant on the owner's store and then prove the minted
+        # token against GraphQL, exactly as the agent's skill will.
+        calls: list = []
+
+        async def fake_request(self, method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            if url.endswith("/admin/oauth/access_token"):
+                return httpx.Response(200, json={"access_token": "a" * 32, "scope": "read_orders", "expires_in": 86399})
+            return httpx.Response(200, json={"data": {"shop": {"name": "My Store"}}})
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+        ok = await connections._validate_token(registry.get_provider("shopify"), "mystore.myshopify.com|cid:shpss_sec")
+        assert ok is True
+        (m1, u1, k1), (m2, u2, k2) = calls
+        assert (m1, u1) == ("POST", "https://mystore.myshopify.com/admin/oauth/access_token")
+        assert k1["data"] == {"grant_type": "client_credentials", "client_id": "cid", "client_secret": "shpss_sec"}
+        assert (m2, u2) == ("POST", "https://mystore.myshopify.com/admin/api/2026-07/graphql.json")
+        assert k2["headers"]["X-Shopify-Access-Token"] == "a" * 32
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("grant", [httpx.Response(401, text="bad"), httpx.Response(200, text="<html>")])
+    async def test_shopify_failed_grant_is_invalid_and_skips_graphql(self, monkeypatch, grant):
+        calls: list = []
+
+        async def fake_request(self, method, url, **kwargs):
+            calls.append(url)
+            return grant
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+        ok = await connections._validate_token(registry.get_provider("shopify"), "mystore.myshopify.com|cid:sec")
+        assert ok is False
+        assert calls == ["https://mystore.myshopify.com/admin/oauth/access_token"]
+
+    @pytest.mark.asyncio
+    async def test_shopify_foreign_host_is_refused_before_the_grant(self, monkeypatch):
+        async def fake_request(self, method, url, **kwargs):
+            raise AssertionError(f"validation must not fetch {url}")
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+        p = registry.get_provider("shopify")
+        assert await connections._validate_token(p, "169.254.169.254|cid:sec") is False
+        assert await connections._validate_token(p, "evil.com|cid:sec") is False
+
 
 class TestListConnections:
     """GET /api/v1/connections — catalog + per-provider status."""
@@ -346,6 +394,10 @@ class TestListConnections:
         # a connected CLI integration must not read as a broken MCP one.
         assert by_key["stripe"]["actor"] == "mcp"
         assert by_key["google"]["actor"] == "cli"
+        # A multi-field paste provider ships its labelled inputs; the rest ship none.
+        assert [f["key"] for f in by_key["shopify"]["paste_fields"]] == ["shop", "client_id", "client_secret"]
+        assert by_key["shopify"]["paste_fields"][2]["secret"] is True
+        assert by_key["stripe"]["paste_fields"] is None
 
         # Status now comes from the secret-free integrations index.
         mock_repo.list_for_owner.assert_awaited_once_with("org_test_456")
@@ -658,6 +710,80 @@ class TestConnectPaste:
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections._validate_token", new_callable=AsyncMock)
+    async def test_labelled_fields_are_joined_server_side(
+        self, mock_validate, mock_repo, mock_store, mock_apply, async_client
+    ):
+        # The owner fills three labelled inputs; nobody types "<shop>|<id>:<secret>".
+        mock_validate.return_value = True
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+
+        fields = {"shop": " mystore.myshopify.com ", "client_id": "cid", "client_secret": "shpss_sec"}
+        response = await async_client.post("/api/v1/connections/shopify", json={"fields": fields})
+
+        assert response.status_code == 200
+        joined = "mystore.myshopify.com|cid:shpss_sec"
+        assert mock_validate.await_args.args[1] == joined
+        assert mock_store.put.await_args.args[2] == {"token": joined}
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections._validate_token", new_callable=AsyncMock)
+    async def test_a_pasted_admin_url_normalises_to_the_store_host(
+        self, mock_validate, mock_repo, mock_store, mock_apply, async_client
+    ):
+        # Owners copy the store address from the browser bar; only the host field is normalised
+        # (a Client ID is case-sensitive and must reach the grant untouched).
+        mock_validate.return_value = True
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+        fields = {"shop": "https://MyStore.myshopify.com/admin/", "client_id": "CiD", "client_secret": "s"}
+        response = await async_client.post("/api/v1/connections/shopify", json={"fields": fields})
+        assert response.status_code == 200
+        assert mock_validate.await_args.args[1] == "mystore.myshopify.com|CiD:s"
+
+    @pytest.mark.asyncio
+    @patch("routers.connections._validate_token", new_callable=AsyncMock)
+    async def test_a_missing_field_is_named(self, mock_validate, async_client):
+        response = await async_client.post(
+            "/api/v1/connections/shopify", json={"fields": {"shop": "mystore.myshopify.com", "client_id": "cid"}}
+        )
+        assert response.status_code == 422
+        assert "Client secret" in response.json()["detail"]
+        mock_validate.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integration_secret_store")
+    async def test_a_rejected_grant_is_the_generic_422_and_never_echoes_the_secret(
+        self, mock_store, async_client, monkeypatch
+    ):
+        real_request = httpx.AsyncClient.request
+
+        async def fake_request(self, method, url, **kwargs):
+            if "myshopify.com" not in str(url):  # the test client itself rides httpx
+                return await real_request(self, method, url, **kwargs)
+            return httpx.Response(401, json={"error": "invalid_client"})
+
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+        mock_store.put = AsyncMock()
+
+        fields = {"shop": "mystore.myshopify.com", "client_id": "cid", "client_secret": "shpss_TOPSECRET"}
+        response = await async_client.post("/api/v1/connections/shopify", json={"fields": fields})
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == "token failed validation against the provider"
+        assert "TOPSECRET" not in response.text
+        mock_store.put.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections._validate_token", new_callable=AsyncMock)
     async def test_connect_paste_happy_path(self, mock_validate, mock_repo, mock_store, mock_apply, async_client):
         mock_validate.return_value = True
         # Record relative call order — the rework's whole point is that the
@@ -903,25 +1029,29 @@ class TestDisconnect:
     @pytest.mark.asyncio
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
-    async def test_disconnect_a_retired_provider_still_drops_our_copies(self, mock_repo, mock_store, async_client):
-        """Shopify's registry row went with the container-login rail, but an owner who connected
-        before that still has a Secrets Manager blob and an integrations row. Revocation has to
-        outlive the provider definition -- a credential the UI cannot delete is the worse state."""
+    async def test_disconnect_a_retired_provider_still_drops_our_copies(
+        self, mock_repo, mock_store, async_client, monkeypatch
+    ):
+        """A provider whose registry row is gone may still have a Secrets Manager blob and an
+        integrations row. Revocation has to outlive the provider definition -- a credential the UI
+        cannot delete is the worse state."""
+        monkeypatch.setattr(connections, "RETIRED_PROVIDERS", frozenset({"gone_provider"}))
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
 
-        response = await async_client.delete("/api/v1/connections/shopify")
+        response = await async_client.delete("/api/v1/connections/gone_provider")
 
         assert response.status_code == 200
         assert response.json()["status"] == "disconnected"
-        mock_store.delete.assert_awaited_once_with("org_test_456", "shopify")
-        mock_repo.delete.assert_awaited_once_with("org_test_456", "shopify")
+        mock_store.delete.assert_awaited_once_with("org_test_456", "gone_provider")
+        mock_repo.delete.assert_awaited_once_with("org_test_456", "gone_provider")
 
     @pytest.mark.asyncio
-    async def test_the_retired_list_is_not_a_catch_all(self):
-        """The tolerant branch is keyed on an explicit list. If it ever grows to "any unknown
-        provider", a probed or typo'd key stops being a 404 and starts issuing deletes."""
-        assert connections.RETIRED_PROVIDERS == frozenset({"shopify"})
+    async def test_shopify_is_live_again_not_retired(self):
+        """Shopify is back as a client-credentials provider, so its disconnect runs the full
+        teardown (including the skill-dir removal), not the tolerant row-only branch."""
+        assert "shopify" not in connections.RETIRED_PROVIDERS
+        assert "shopify" in registry.all_providers()
 
     @pytest.mark.asyncio
     @patch("routers.connections.seed_agent_google_identity", new_callable=AsyncMock)

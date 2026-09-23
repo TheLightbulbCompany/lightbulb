@@ -258,6 +258,23 @@ class ValidateSpec(BaseModel):
     # is an SSRF primitive, so a host it doesn't full-match is refused outright
     # rather than fetched. Unset (the norm) = the whole paste is the credential.
     host_pattern: str | None = None
+    # Client-credentials exchange run BEFORE the check, for a provider whose pasted
+    # credential is an app's "<client_id>:<client_secret>" rather than a token
+    # (Shopify Dev Dashboard apps). POSTed as an OAuth client_credentials form to this
+    # URL ({host} as above); the returned access_token is what the check then sends.
+    token_grant_url: str | None = None
+
+
+class PasteField(BaseModel):
+    """One labelled input of a multi-field paste provider (see Provider.paste_fields)."""
+
+    key: str
+    label: str
+    placeholder: str | None = None
+    secret: bool = False
+    # A host the owner may paste as a URL (https://Store.myshopify.com/admin/): reduced to its
+    # lowercased host before the join. Never set on an id/secret field -- those are case-sensitive.
+    host: bool = False
 
 
 class AwsStsSpec(BaseModel):
@@ -445,6 +462,13 @@ class Provider(BaseModel):
     # token_setup_url points at the provider's own docs, which have never heard
     # of our packing convention.
     token_paste_hint: str | None = None
+    # Labelled inputs for a provider whose credential is several values (Shopify:
+    # store domain, client id, client secret). The Connections form renders one
+    # input per field and posts them as `fields`; the backend joins them with
+    # `paste_format` (str.format over the field keys) into the single string the
+    # paste rail stores and validates, so no owner ever types the packed form.
+    paste_fields: list[PasteField] | None = None
+    paste_format: str | None = None
     # Remote MCP endpoint published into mcp.servers.<key> by the mcp_oauth
     # materializer. Only set for OAuth-protected remote MCP servers (e.g. Attio);
     # see McpRemote for why it lives at the provider level rather than in Wiring.
@@ -509,6 +533,8 @@ class Provider(BaseModel):
         # time keeps _oauth_client's resolution order unambiguous.
         if self.oauth and self.oauth.platform_app and (self.byo_required or self.oauth.registration_url):
             raise ValueError(f"{self.key}: platform_app is mutually exclusive with byo_required/registration_url")
+        if bool(self.paste_fields) != bool(self.paste_format):
+            raise ValueError(f"{self.key}: paste_fields and paste_format go together")
         if self.brokered_environments and (not self.mcp_remote or self.refresh_owner != "actor"):
             raise ValueError(f"{self.key}: brokered_environments requires actor-owned remote OAuth MCP")
         return self

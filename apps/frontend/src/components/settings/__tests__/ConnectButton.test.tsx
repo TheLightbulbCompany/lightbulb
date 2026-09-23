@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 
 import { ConnectButton } from "../ConnectButton";
@@ -70,6 +70,49 @@ describe("ConnectButton", () => {
     expect(
       screen.getByLabelText(/Shopify credentials, combined as mystore\.myshopify\.com/i),
     ).toBeInTheDocument();
+  });
+
+  it("renders labelled inputs for a multi-field paste provider and posts them as fields", async () => {
+    // Shopify Dev Dashboard apps give a store domain + Client ID + Client secret.
+    // Nobody types the packed "<shop>|<id>:<secret>" form — the server joins it.
+    const connectPaste = vi.fn().mockResolvedValue(undefined);
+    renderButton({
+      connectPaste,
+      connection: {
+        provider: "shopify",
+        display_name: "Shopify",
+        acquisition: "paste_token",
+        status: "disconnected",
+        token_setup_url: "https://shopify.dev/docs/apps/build/dev-dashboard/get-api-access-tokens",
+        paste_fields: [
+          { key: "shop", label: "Store domain", placeholder: "mystore.myshopify.com" },
+          { key: "client_id", label: "Client ID" },
+          { key: "client_secret", label: "Client secret", secret: true },
+        ],
+      },
+    });
+
+    const connect = screen.getByRole("button", { name: /connect shopify/i });
+    expect(connect).toBeDisabled();
+    expect(screen.getByLabelText("Client secret")).toHaveAttribute("type", "password");
+    expect(screen.getByLabelText("Store domain")).toHaveAttribute("placeholder", "mystore.myshopify.com");
+    expect(screen.getByRole("link", { name: /where to find these/i })).toHaveAttribute(
+      "href",
+      "https://shopify.dev/docs/apps/build/dev-dashboard/get-api-access-tokens",
+    );
+
+    fireEvent.change(screen.getByLabelText("Store domain"), { target: { value: "mystore.myshopify.com" } });
+    fireEvent.change(screen.getByLabelText("Client ID"), { target: { value: "cid" } });
+    fireEvent.change(screen.getByLabelText("Client secret"), { target: { value: "shpss_x" } });
+    fireEvent.click(connect);
+
+    await waitFor(() =>
+      expect(connectPaste).toHaveBeenCalledWith("shopify", {
+        shop: "mystore.myshopify.com",
+        client_id: "cid",
+        client_secret: "shpss_x",
+      }),
+    );
   });
 
   it("shows the admin-denial copy for a 403", async () => {

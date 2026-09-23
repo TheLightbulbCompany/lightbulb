@@ -17,7 +17,7 @@ interface ConnectButtonProps {
   connection: Connection;
   /** Whether the current user may manage connections (org admin). */
   canManage: boolean;
-  connectPaste: (provider: string, token: string) => Promise<void>;
+  connectPaste: (provider: string, token: string | Record<string, string>) => Promise<void>;
   startOAuth: (provider: string) => Promise<void>;
   disconnect: (provider: string) => Promise<void>;
   /**
@@ -111,6 +111,8 @@ export function ConnectButton({
   const api = useApi();
   const { openSupport } = useSupport();
   const [token, setToken] = useState("");
+  // Values of a paste_fields provider's labelled inputs, keyed by field key.
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -127,6 +129,7 @@ export function ConnectButton({
     try {
       await fn();
       setToken("");
+      setFieldValues({});
     } catch (e) {
       // A non-admin 403 is a standing permission state a toast would
       // auto-dismiss, so keep it inline. Everything else is a transient
@@ -573,6 +576,77 @@ export function ConnectButton({
         </Button>
         {err && (
           <p className="text-xs text-[var(--err)]" role="alert">
+            {err}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  // Multi-value paste providers (Shopify): one labelled input per field. The
+  // server joins them, so nobody has to type a packed "<a>|<b>:<c>" string.
+  const pasteFields = connection.paste_fields;
+  if (pasteFields?.length) {
+    const complete = pasteFields.every((f) => fieldValues[f.key]?.trim());
+    const submitFields = () => {
+      if (!complete || busy || !canManage) return;
+      void run(() => connectPaste(provider, fieldValues));
+    };
+    return (
+      <div className="flex w-64 flex-col items-stretch gap-1">
+        {pasteFields.map((f) => (
+          <div key={f.key} className="flex flex-col gap-0.5">
+            <label
+              htmlFor={`connection-${provider}-${f.key}`}
+              className="text-xs text-[var(--midnight-muted)]"
+            >
+              {f.label}
+            </label>
+            <Input
+              id={`connection-${provider}-${f.key}`}
+              type={f.secret ? "password" : "text"}
+              autoComplete="off"
+              spellCheck={false}
+              value={fieldValues[f.key] ?? ""}
+              disabled={busy || !canManage}
+              placeholder={f.placeholder ?? undefined}
+              onChange={(e) => setFieldValues((v) => ({ ...v, [f.key]: e.target.value }))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitFields();
+                }
+              }}
+              aria-invalid={err ? true : undefined}
+              aria-describedby={err ? `connection-error-${provider}` : undefined}
+              className="h-9 bg-cream"
+            />
+          </div>
+        ))}
+        <div className="flex items-center justify-between gap-2">
+          {connection.token_setup_url ? (
+            <a
+              href={connection.token_setup_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-[var(--midnight-muted)] underline underline-offset-2 hover:text-midnight"
+            >
+              Where to find these
+            </a>
+          ) : (
+            <span />
+          )}
+          <Button
+            size="sm"
+            disabled={busy || !canManage || !complete}
+            onClick={submitFields}
+            aria-label={`Connect ${display_name}`}
+          >
+            {busy ? "Connecting…" : "Connect"}
+          </Button>
+        </div>
+        {err && (
+          <p id={`connection-error-${provider}`} className="text-xs text-[var(--err)]" role="alert">
             {err}
           </p>
         )}

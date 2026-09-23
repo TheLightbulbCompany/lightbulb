@@ -9,13 +9,18 @@ type CheckoutPlan = "base" | "workspace" | "ultra";
 // Ordered cheapest first; `stored` is the billing row's `plan` value. Features are
 // what the backend actually differentiates today: Base IS the capped managed model
 // (trial_cap.is_managed_capped); a paid plan is always-on (has_always_on_entitlement);
+// ChatGPT/own key are open to every paid plan (change_provider has no plan gate);
 // prepaid credits need Workspace/Ultra (metronome_funding). Ultra has no extra gate yet.
 const PLANS: { key: CheckoutPlan; stored: BillingAccount["plan"]; name: string; features: string[] }[] = [
   {
     key: "base",
     stored: "base",
     name: "Base",
-    features: ["Lightbulb-managed DeepSeek within a daily allowance", "Always-on agents: listening, routines, webhooks"],
+    features: [
+      "Lightbulb-managed DeepSeek within a daily allowance",
+      "Or sign in with ChatGPT / use your own API key (billed by that provider)",
+      "Always-on agents: listening, routines, webhooks",
+    ],
   },
   {
     key: "workspace",
@@ -23,7 +28,6 @@ const PLANS: { key: CheckoutPlan; stored: BillingAccount["plan"]; name: string; 
     name: "Workspace",
     features: [
       "Everything in Base",
-      "Sign in with ChatGPT or use your own API key",
       "More models with prepaid credits (coming soon)",
     ],
   },

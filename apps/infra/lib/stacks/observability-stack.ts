@@ -2612,6 +2612,45 @@ def handler(event, context):
       w52.addOkAction(new cloudwatch_actions.SnsAction(this.pageTopic));
     }
 
+    // W79 + P25: OpenRouter account balance — ENV-BLIND, so PROD-GATED (see
+    // W46/W47 above). Dev and prod share ONE OpenRouter account (one
+    // management key, one credits balance), so an ungated pair would double
+    // page on the same number every time the shared balance dips. The backend
+    // emits openrouter.account.balance_usd from the running-gauges loop
+    // (main.py) roughly every 15 min; treatMissingData is NOT_BREACHING
+    // because a deploy gap with no emission is normal and should not page.
+    if (this.envName === "prod") {
+      // W79: balance < $5 — warn.
+      this.createAlarm({
+        id: "W79",
+        name: "openrouter-balance-low",
+        metricName: "openrouter.account.balance_usd",
+        statistic: "Minimum",
+        threshold: 5,
+        evaluationPeriods: 1,
+        periodMinutes: 30,
+        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+        severity: "warn",
+        description: "OpenRouter account balance below $5 - top up soon",
+      });
+
+      // P25: balance < $1 — page.
+      this.createAlarm({
+        id: "P25",
+        name: "openrouter-balance-critical",
+        metricName: "openrouter.account.balance_usd",
+        statistic: "Minimum",
+        threshold: 1,
+        evaluationPeriods: 1,
+        periodMinutes: 30,
+        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+        severity: "page",
+        description: "OpenRouter account balance below $1 - inference will start failing",
+      });
+    }
+
     // NOTE: AWS Cost Anomaly Detection is intentionally NOT managed here.
     // A Cost Anomaly Detection monitor is an ACCOUNT-GLOBAL resource; a
     // per-environment stack (dev + prod both deploy this stack) cannot own

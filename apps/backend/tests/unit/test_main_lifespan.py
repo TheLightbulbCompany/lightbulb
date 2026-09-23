@@ -6,6 +6,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_balance_check(monkeypatch):
+    """The gauge loop's OpenRouter balance check would otherwise dial Secrets Manager."""
+    monkeypatch.setattr("core.services.openrouter_keys.check_account_balance", AsyncMock())
+
+
 # NOTE: the four ``_resume_wake_resize_transitions`` tests went with that function. It
 # resumed an ECS ``_await_running_transition`` poller for every unclaimed row left at
 # status=provisioning by a mid-wake/mid-resize deploy. There is no such poller: AgentCore

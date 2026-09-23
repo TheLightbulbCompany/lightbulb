@@ -5,6 +5,7 @@ import logging
 
 import httpx
 import boto3
+from botocore.config import Config
 import re
 import time
 import uuid
@@ -197,6 +198,36 @@ async def list_owner_keys(http, *, management_key, owner_id, environment, worksp
         if len(page) < 100:
             return hashes
         offset += len(page)
+
+
+_BALANCE_SM_CONFIG = Config(connect_timeout=2, read_timeout=3, retries={"max_attempts": 1})
+
+
+async def check_account_balance(*, http=None, sm=None) -> None:
+    """Emit the OpenRouter account balance (total_credits - total_usage) as a
+    gauge metric. Best-effort: dev and prod share one OpenRouter account, so
+    this is a read-only account-wide check, not a per-owner one. Any failure
+    (secret missing, network, bad response) is logged and swallowed -- never
+    raise out of a caller's background loop."""
+    from core.observability.metrics import gauge
+
+    try:
+        # Tight timeouts: this runs inside the gauge loop that also carries the P12 liveness canary.
+        sm = sm or boto3.client("secretsmanager", region_name=settings.AWS_REGION, config=_BALANCE_SM_CONFIG)
+        management_name = f"lightbulb/{settings.ENVIRONMENT or 'dev'}/openrouter/management"
+        management_key = (await run_in_thread(sm.get_secret_value, SecretId=management_name))["SecretString"]
+        async with httpx.AsyncClient(timeout=5) if http is None else contextlib.nullcontext(http) as client:
+            response = await client.get(
+                "https://openrouter.ai/api/v1/credits",
+                headers={"Authorization": f"Bearer {management_key}"},
+            )
+            response.raise_for_status()
+            data = response.json()["data"]
+            balance = float(data["total_credits"]) - float(data["total_usage"])
+    except Exception:
+        logger.warning("OpenRouter account balance check failed", exc_info=True)
+        return
+    gauge("openrouter.account.balance_usd", balance)
 
 
 async def ensure_owner_key_for_settings(owner_id: str) -> str:

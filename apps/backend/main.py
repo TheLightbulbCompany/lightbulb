@@ -6,6 +6,7 @@ load_dotenv()
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 from core.observability.logging import configure_logging
@@ -259,10 +260,17 @@ async def _running_count_gauge_loop():
     UNADMITTED (no pass-admission lease): it is the liveness canary, and a canary
     admitted once per window only proves that *some* instance is alive, not that
     this one is.
+
+    Also piggybacks the OpenRouter account-balance check here (throttled to
+    every ~15 min via a monotonic timestamp) rather than adding a second
+    scheduler -- see core.services.openrouter_keys.check_account_balance.
     """
     from core.observability.metrics import gauge
+    from core.services.openrouter_keys import check_account_balance
 
     instance = os.getenv("HOSTNAME") or "local"
+    balance_check_interval_s = 900
+    last_balance_check = 0.0
     while True:
         try:
             rows = await container_repo.get_by_status("running")
@@ -270,6 +278,9 @@ async def _running_count_gauge_loop():
             logger.info("running_count", extra={"instance": instance, "count": len(rows)})
         except Exception:
             logger.warning("running_gauges loop iteration failed", exc_info=True)
+        if time.monotonic() - last_balance_check >= balance_check_interval_s:
+            last_balance_check = time.monotonic()
+            await check_account_balance()
         await asyncio.sleep(60)
 
 

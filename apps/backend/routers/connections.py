@@ -80,7 +80,9 @@ async def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, cr
 
 
 class PasteBody(BaseModel):
-    token: str
+    token: str = ""
+    # A paste_fields provider's labelled inputs, keyed by field key; joined server-side.
+    fields: dict[str, str] | None = None
 
 
 class ByoAppRequest(BaseModel):
@@ -288,6 +290,9 @@ def _connection_row(
         # Placeholder for the paste box, when the provider packs two values into
         # the one input (Shopify's "<shop>|<token>"). None = the generic hint.
         "token_paste_hint": v.token_paste_hint,
+        # Labelled inputs for a multi-value credential (Shopify: store domain, client
+        # id, client secret). None = the single paste box.
+        "paste_fields": [f.model_dump() for f in v.paste_fields] if v.paste_fields else None,
         # can_trigger: this provider's inbound event labels (registry `inbound`,
         # T1) — the Integrations card's "Can trigger" line. Empty when the
         # provider isn't (yet) wired as an Automations trigger source.
@@ -347,6 +352,7 @@ async def _validate_token(p: registry.Provider, token: str) -> bool:
     if not p.validation:
         return True
     url = p.validation.url
+    grant_url = p.validation.token_grant_url
     if p.validation.host_pattern:
         # Two-value paste ("<host>|<token>", Shopify): the left half builds the
         # per-store validate URL, the right half is the credential every check
@@ -358,6 +364,7 @@ async def _validate_token(p: registry.Provider, token: str) -> bool:
         if not separator or not re.fullmatch(p.validation.host_pattern, host):
             return False
         url = url.format(host=host)
+        grant_url = grant_url and grant_url.format(host=host)
     # Reject a token shape the wired server cannot use, before spending an HTTP
     # call: some validate endpoints accept token types the env var doesn't (Slack
     # auth.test oks a bot `xoxb-` token, but the server gets the user-token slot).
@@ -370,6 +377,18 @@ async def _validate_token(p: registry.Provider, token: str) -> bool:
     headers = {**p.validation.headers, p.validation.auth_header: value}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
+            if grant_url:
+                # The paste is an app's "<client_id>:<client_secret>" (Shopify Dev Dashboard):
+                # mint a token with it, then run the normal check with THAT token.
+                client_id, _, client_secret = token.partition(":")
+                grant = await client.post(
+                    grant_url,
+                    data={"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret},
+                )
+                minted = grant.json().get("access_token") if grant.status_code < 400 else None
+                if not minted:
+                    return False
+                headers[p.validation.auth_header] = f"{scheme} {minted}".strip() if scheme else minted
             kwargs: dict = {"headers": headers}
             if p.validation.body is not None:
                 kwargs["json"] = p.validation.body
@@ -381,7 +400,8 @@ async def _validate_token(p: registry.Provider, token: str) -> bool:
         if p.validation.success_json_field:
             return _json_path_truthy(resp, p.validation.success_json_field)
         return True
-    except httpx.HTTPError:
+    except (httpx.HTTPError, ValueError, AttributeError):
+        # ValueError/AttributeError: a grant that answered non-JSON or a non-object body.
         return False
 
 
@@ -501,18 +521,24 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     p = _get_provider_or_404(provider, owner_id)
     if p.acquisition != "paste_token":
         raise HTTPException(status_code=400, detail=f"{provider} is not a paste-key integration")
+    token = body.token
+    if p.paste_fields:
+        values = {f.key: (body.fields or {}).get(f.key, "").strip() for f in p.paste_fields}
+        if missing := [f.label for f in p.paste_fields if not values[f.key]]:
+            raise HTTPException(status_code=422, detail=f"{p.display_name} needs: {', '.join(missing)}")
+        token = p.paste_format.format(**values)
     # A two-value provider gets its own 422. The likeliest mistake is pasting
     # only the token — which is exactly right for every other integration — and
     # the generic message below would answer that by blaming the token.
-    if p.validation and p.validation.host_pattern and _PASTE_SEPARATOR not in body.token:
+    if p.validation and p.validation.host_pattern and _PASTE_SEPARATOR not in token:
         hint = p.token_paste_hint or f"<host>{_PASTE_SEPARATOR}<token>"
         raise HTTPException(
             status_code=422,
             detail=f"{p.display_name} needs two values in one box — paste {hint}",
         )
-    if not await _validate_token(p, body.token):
+    if not await _validate_token(p, token):
         raise HTTPException(status_code=422, detail="token failed validation against the provider")
-    credential = {"token": body.token}
+    credential = {"token": token}
     # Paste tokens are backend-custodian: store the credential in Secrets
     # Manager (KMS-encrypted at rest) — never in DynamoDB — then deliver the
     # literal into the container. Mark the integration connected only after
@@ -782,9 +808,9 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
 
 
 #: Providers whose registry row is gone but whose stored credentials may not be. Only these keys
-#: get the tolerant teardown below. ``shopify`` rode `acquisition: container_login`, which logged
-#: the Shopify CLI in INSIDE the owner's container -- deleted with that runtime.
-RETIRED_PROVIDERS = frozenset({"shopify"})
+#: get the tolerant teardown below. Empty since ``shopify`` came back as a client-credentials
+#: provider (its old container_login rows now take the normal teardown).
+RETIRED_PROVIDERS: frozenset[str] = frozenset()
 
 
 @router.delete("/{provider}")

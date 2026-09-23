@@ -15,6 +15,8 @@ from core.services.credentials.materializers.mcp_oauth import remove as _mcp_oau
 from core.services.credentials.materializers.mcp_oauth import write as _mcp_oauth
 from core.services.credentials.materializers.qbo_dotenv import remove as _qbo_remove
 from core.services.credentials.materializers.qbo_dotenv import write as _qbo
+from core.services.credentials.materializers.shopify_cli import remove as _shopify_remove
+from core.services.credentials.materializers.shopify_cli import write as _shopify
 from core.services.credentials.materializers.skill_cli import remove as _skill_cli_remove
 from core.services.credentials.materializers.skill_cli import write as _skill_cli
 from core.services.credentials.materializers.toml_cli import remove as _toml_remove
@@ -29,6 +31,7 @@ MATERIALIZERS: dict[str, object] = {
     "instagram_cli": _instagram,
     "mcp_oauth": _mcp_oauth,
     "skill_cli": _skill_cli,
+    "shopify_cli": _shopify,
     "aws_cli": _aws,
     "qbo_dotenv": _qbo,
     "xurl_cli": _xurl,
@@ -40,6 +43,7 @@ MATERIALIZER_REMOVERS: dict[str, object] = {
     "instagram_cli": _instagram_remove,
     "mcp_oauth": _mcp_oauth_remove,
     "skill_cli": _skill_cli_remove,
+    "shopify_cli": _shopify_remove,
     "aws_cli": _aws_remove,
     "qbo_dotenv": _qbo_remove,
     "xurl_cli": _xurl_remove,

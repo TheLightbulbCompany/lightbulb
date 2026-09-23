@@ -629,3 +629,59 @@ def test_meta_providers_stay_waitlisted_off_prod():
     as trigger sources must not be the thing that un-gates them in prod."""
     for key in ("meta_ads", "instagram"):
         assert registry.get_provider(key).environments == ["local", "dev"]
+
+
+def test_shopify_is_a_three_field_client_credentials_provider():
+    # Shopify ended admin-created custom apps on 2026-01-01: a new store's app comes from the
+    # Dev Dashboard with only a Client ID + Client secret, and an Admin API token is a 24 h
+    # client-credentials grant. The owner fills three labelled inputs; the server joins them
+    # into the "<host>|<token>" shape the two-value paste rail already parses.
+    p = registry.get_provider("shopify")
+    assert p.acquisition == "paste_token"
+    assert p.actor == "skill"
+    assert p.wiring.materializer == "shopify_cli"
+    assert [f.key for f in p.paste_fields] == ["shop", "client_id", "client_secret"]
+    assert [f.secret for f in p.paste_fields] == [False, False, True]
+    assert p.paste_format == "{shop}|{client_id}:{client_secret}"
+    assert p.token_setup_url
+    v = p.validation
+    assert v.token_grant_url == "https://{host}/admin/oauth/access_token"
+    assert v.url == "https://{host}/admin/api/2026-07/graphql.json"
+    assert v.auth_header == "X-Shopify-Access-Token" and v.auth_scheme == ""
+    # The minted token is 32 hex chars, not shpat_ — a prefix gate would refuse every store.
+    assert v.token_prefix is None
+    assert v.success_json_field == "data.shop.name"
+    # Shopify signs webhooks base64 HMAC; Paperclip compares hex. No inbound block.
+    assert p.inbound is None
+
+
+def test_shopify_host_pattern_pins_the_validate_host():
+    # host_pattern is an SSRF fence: its match is interpolated into URLs the BACKEND fetches.
+    import re
+
+    pattern = registry.get_provider("shopify").validation.host_pattern
+    assert re.fullmatch(pattern, "mystore.myshopify.com")
+    assert re.fullmatch(pattern, "my-store-2.myshopify.com")
+    for bad in (
+        "169.254.169.254",
+        "localhost",
+        "evil.com",
+        "mystore.myshopify.com.evil.com",
+        "mystore.myshopify.com/admin",
+        "mystore.myshopify.com:8080",
+        "",
+    ):
+        assert not re.fullmatch(pattern, bad), bad
+
+
+def test_paste_fields_require_a_paste_format():
+    with pytest.raises(ValueError):
+        registry.Provider(
+            key="x2",
+            display_name="X2",
+            acquisition="paste_token",
+            actor="skill",
+            refresh_owner="none",
+            wiring={"materializer": "shopify_cli"},
+            paste_fields=[{"key": "a", "label": "A"}],
+        )

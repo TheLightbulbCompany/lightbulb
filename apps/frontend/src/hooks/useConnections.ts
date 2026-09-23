@@ -19,6 +19,14 @@ import { openAuthUrl, pollUntil } from "@/lib/externalAuth";
  * with this owner's status, so the UI renders whatever comes back — it
  * never hardcodes a provider list.
  */
+export interface PasteField {
+  key: string;
+  label: string;
+  placeholder?: string | null;
+  /** Render masked (a client secret). */
+  secret?: boolean;
+}
+
 export interface Connection {
   provider: string;
   display_name: string;
@@ -48,6 +56,12 @@ export interface Connection {
    * provider, where the generic placeholder already says everything.
    */
   token_paste_hint?: string | null;
+  /**
+   * Labelled inputs for a provider whose credential is several values (Shopify:
+   * store domain, client id, client secret). The form renders one input per
+   * field and posts them as `fields`; the backend joins them. Null = one box.
+   */
+  paste_fields?: PasteField[] | null;
   /**
    * This owner cannot connect the provider directly — it is gated off their
    * environment and they are not on its owner_allowlist. The row offers
@@ -146,11 +160,13 @@ export function useConnections() {
   useEffect(() => () => pollAbortRef.current?.abort(), []);
 
   const connectPaste = useCallback(
-    async (provider: string, token: string): Promise<void> => {
+    async (provider: string, token: string | Record<string, string>): Promise<void> => {
       // Paste-key providers only. 422 → token failed validation,
       // 400 → not a paste provider, 502 → apply failed, 403 → non-admin.
       // The ApiError (with .status + .message) bubbles to the caller.
-      await api.post(`/connections/${encodeURIComponent(provider)}`, { token });
+      // A paste_fields provider sends its labelled inputs; the server joins them.
+      const body = typeof token === "string" ? { token } : { fields: token };
+      await api.post(`/connections/${encodeURIComponent(provider)}`, body);
       await mutate();
     },
     [api, mutate],

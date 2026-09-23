@@ -78,6 +78,7 @@ OWNED_PATHS: dict[str, tuple[str, ...]] = {
     "instagram_cli": ("skills/instagram/",),
     "qbo_dotenv": ("quickbooks/",),
     "skill_cli": ("skills/vercel/",),
+    "shopify_cli": ("skills/shopify/",),
     "xurl_cli": (".xurl",),
 }
 

@@ -117,19 +117,15 @@ schema = (
     .exclude(
         path_regex="^/api/v1/teams/",
     )
-    # Hooks endpoints (proxy + credentials) both read from the DDB
-    # ``containers`` table on every request. Without a real DDB the
-    # boto3 GetItem raises ResourceNotFoundException which surfaces as
-    # 5xx. Coverage lives in tests/unit/routers/test_hooks_proxy.py +
-    # test_hooks_credentials.py + tests/integration/test_hooks_proxy_e2e.py
-    # which mock container_repo + ecs_manager end-to-end. Excluded for
-    # consistency with /billing/, /container/, and /teams/.
+    # Public ingress under /hooks/ (Paperclip triggers, Meta) reads DDB on every
+    # request, so it 5xxes without a real DDB. Coverage lives in
+    # test_paperclip_trigger_proxy.py + test_meta_webhook.py.
     .exclude(
         path_regex="^/api/v1/hooks/",
     )
     # Agent-builder bridge (Atlas register-built-agent) is hook-token authed
     # and reads the DDB ``containers`` table on every request, same as
-    # ``hooks_proxy`` — without a real DDB the boto3 GetItem raises 5xx.
+    # the /hooks/ ingress — without a real DDB the boto3 GetItem raises 5xx.
     # Coverage lives in tests/unit/routers/test_agent_builder.py which mocks
     # container_repo + ecs_manager + the Paperclip/catalog services end-to-end.
     .exclude(
@@ -138,7 +134,7 @@ schema = (
     # Agent-mail container routes (/u/{owner_id}/send, /address, /inbox) are
     # hook-token authed and read the DDB ``containers`` table to resolve the
     # owner's hook_token, on every request — same 5xx-without-a-real-DDB shape
-    # as ``hooks_proxy`` and ``agent-builder``. Coverage for these routes lives
+    # as the /hooks/ ingress and ``agent-builder``. Coverage for these routes lives
     # in tests/unit/routers/test_agent_mail.py, which mocks container_repo and
     # asserts the 401/400/429 paths end-to-end. The /addresses Clerk routes are
     # NOT excluded here — they go through the shared Clerk auth override.

@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 
     # Public-facing base URL for this API. Used to build absolute URLs in
-    # responses (e.g., the webhook URL surfaced via /hooks/credentials).
+    # responses (e.g., the Paperclip trigger fire URLs, /hooks/t/...).
     # Per env: https://api-dev.flickmeon.ai, https://api.flickmeon.ai,
     # https://api.isol8.co. Defaults to localhost for dev/test. Wired via
     # CDK service-stack environment block per environment.

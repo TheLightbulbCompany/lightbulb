@@ -1,17 +1,14 @@
 """Public ingress proxy for Paperclip routine webhook triggers.
 
-Tier 2 of the two-tier webhook ingress: container hooks (``hooks_proxy``)
-are the doorbell that wakes an OpenClaw container; routine triggers are
-run-tracked loops inside Paperclip with per-trigger signing, replay
-windows, idempotency keys, and a circuit breaker. The Paperclip BFF is
+Routine triggers are run-tracked loops inside Paperclip with per-trigger signing,
+replay windows, idempotency keys, and a circuit breaker. The Paperclip BFF is
 in-VPC only — this route gives its signed fire endpoint
 (``POST /api/routine-triggers/public/{publicId}/fire``) a public front
 door on api.isol8.co.
 
-**Auth model.** Like ``hooks_proxy``, this router deliberately does NOT
+**Auth model.** This router deliberately does NOT
 use ``Depends(get_current_user)`` — external webhook senders (GitHub,
-Stripe, Zapier) can't hold Clerk tokens. Unlike ``hooks_proxy`` there is
-no edge token either: the REAL authentication is Paperclip's per-trigger
+Stripe, Zapier) can't hold Clerk tokens. There is no edge token: the REAL authentication is Paperclip's per-trigger
 signing (bearer / hmac_sha256 via X-Paperclip-Signature+Timestamp /
 github_hmac via X-Hub-Signature-256), verified upstream against the
 trigger row.
@@ -42,8 +39,8 @@ string pass through. Inbound X-Forwarded-* are dropped (spoofable) and
 re-asserted with values we control. Upstream status + body return
 verbatim.
 
-**Rate limits.** Two sliding-window buckets (shared helper with
-``hooks_proxy``), designed so junk traffic can't starve a legitimate
+**Rate limits.** Two sliding-window buckets (shared helper in
+``routers._public_ingress``), designed so junk traffic can't starve a legitimate
 trigger:
 
 - ``trigger:{public_id}`` — 60/min per TRIGGER, charged only after the
@@ -129,7 +126,7 @@ from core.services.paperclip_admin_client import PaperclipAdminClient, Paperclip
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 from core.services.provision_gate import has_always_on_entitlement
 from core.services.trigger_fire_url import trigger_fire_url
-from routers.hooks_proxy import _check_rate_limit, _client_factory, _extract_caller_ip
+from routers._public_ingress import _check_rate_limit, _client_factory, _extract_caller_ip
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

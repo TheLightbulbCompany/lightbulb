@@ -1,6 +1,6 @@
 """Tests for the public Paperclip routine-trigger ingress proxy.
 
-Like hooks_proxy, this router deliberately does NOT use
+This router deliberately does NOT use
 ``Depends(get_current_user)`` — external webhook senders don't have Clerk
 tokens. The real auth is Paperclip's per-trigger signing, verified
 upstream. The owner_id segment drives edge gating only, and is BOUND to
@@ -27,16 +27,16 @@ SIBLING_ID = "fedcba987654fedcba987654"
 
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
-    """Rate buckets live in hooks_proxy module state (shared helper), and
+    """Rate buckets live in _public_ingress module state (shared helper), and
     the binding + gmail-token caches in the trigger router — all must start
     empty or tests pollute their neighbours."""
-    from routers import hooks_proxy, paperclip_trigger_proxy
+    from routers import _public_ingress, paperclip_trigger_proxy
 
-    hooks_proxy._RATE.clear()
+    _public_ingress._RATE.clear()
     paperclip_trigger_proxy._BINDING_CACHE.clear()
     paperclip_trigger_proxy._GMAIL_TOKEN_CACHE.clear()
     yield
-    hooks_proxy._RATE.clear()
+    _public_ingress._RATE.clear()
     paperclip_trigger_proxy._BINDING_CACHE.clear()
     paperclip_trigger_proxy._GMAIL_TOKEN_CACHE.clear()
 
@@ -154,7 +154,7 @@ async def test_invalid_public_id_rejected_with_400(client):
     The ``..`` case calls the handler directly — TestClient/httpx
     URL-normalize dot segments before the request leaves the client, but a
     raw HTTP client can send them verbatim (same rationale as the
-    hooks_proxy traversal test)."""
+    old hooks-proxy traversal test)."""
     from fastapi import HTTPException
 
     from routers.paperclip_trigger_proxy import proxy_trigger
@@ -523,7 +523,7 @@ def test_unresolved_flood_hits_resolve_bucket_but_not_bound_triggers(client):
 def test_trigger_buckets_are_independent_of_container_hook_bucket(client):
     """Trigger fires must not consume the owner's container-hook bucket
     (and vice versa) — keys are namespaced."""
-    from routers import hooks_proxy
+    from routers import _public_ingress
 
     captured: dict = {}
     _prime_binding(("u_1", PUBLIC_ID))
@@ -532,8 +532,8 @@ def test_trigger_buckets_are_independent_of_container_hook_bucket(client):
         _stub_client(captured),
     ):
         client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
-    assert len(hooks_proxy._RATE._buckets[f"trigger:{PUBLIC_ID}"]) == 1
-    assert "u_1" not in hooks_proxy._RATE._buckets
+    assert len(_public_ingress._RATE._buckets[f"trigger:{PUBLIC_ID}"]) == 1
+    assert "u_1" not in _public_ingress._RATE._buckets
 
 
 # ---------------------------------------------------------------------------

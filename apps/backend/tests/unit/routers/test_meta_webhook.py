@@ -26,15 +26,15 @@ OTHER_PAGE_ID = "9998887776"
 
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
-    """The rate buckets live in hooks_proxy module state (shared helper) and
+    """The rate buckets live in _public_ingress module state (shared helper) and
     the asset→binding map in this router — both must start empty or tests
     pollute their neighbours."""
-    from routers import hooks_proxy, meta_webhook
+    from routers import _public_ingress, meta_webhook
 
-    hooks_proxy._RATE.clear()
+    _public_ingress._RATE.clear()
     meta_webhook._reset_bindings_cache()
     yield
-    hooks_proxy._RATE.clear()
+    _public_ingress._RATE.clear()
     meta_webhook._reset_bindings_cache()
 
 

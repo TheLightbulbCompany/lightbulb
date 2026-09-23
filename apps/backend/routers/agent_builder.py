@@ -11,7 +11,7 @@ then shows up in the owner's roster and the seller publish wizard, where the **o
 publishes it — Atlas never publishes directly.
 
 Auth: per-container ``hook_token`` (Bearer, ``hmac.compare_digest``), the same model
-as ``hooks_proxy``. This router does NOT use ``Depends(get_current_user)`` — the
+as the agent-mail routes. This router does NOT use ``Depends(get_current_user)`` — the
 in-container caller has no Clerk token. The token scopes the call to the owner's own
 container, so an agent can only register into the workspace it already runs in.
 """
@@ -100,8 +100,7 @@ async def _require_hook_token(owner_id: str, request: Request) -> dict:
     """Authorize via the owner's per-container ``hook_token`` (timing-safe).
 
     Returns the ``containers`` row so the caller can reuse it (avoids a second
-    DDB read for ``gateway_token``). Same timing-safe token compare as
-    ``hooks_proxy.proxy_hook`` (which does it inline, not via a shared helper).
+    DDB read for ``gateway_token``). Timing-safe token compare.
     """
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):

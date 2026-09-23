@@ -13,7 +13,6 @@ vi.mock("../panels/UsagePanel", () => ({ UsagePanel: () => <div data-testid="usa
 vi.mock("../panels/AgentsPanel", () => ({ AgentsPanel: () => <div /> }));
 vi.mock("../panels/SkillsTab", () => ({ SkillsTab: () => <div data-testid="skills-store" /> }));
 vi.mock("../panels/IntegrationsPanel", () => ({ IntegrationsPanel: () => <div /> }));
-vi.mock("../panels/SkillProposalsPanel", () => ({ SkillProposalsPanel: () => <div>SkillProposalsPanel</div> }));
 vi.mock("../panels/AgentInspectorPanel", () => ({
   AgentInspectorPanel: () => <div data-testid="agent-inspector-panel" />,
 }));

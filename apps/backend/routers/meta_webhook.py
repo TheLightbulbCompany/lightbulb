@@ -52,7 +52,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from core.config import settings
 from core.repositories import billing_repo, integrations_repo
 from core.services.provision_gate import has_always_on_entitlement
-from routers.hooks_proxy import _check_rate_limit, _client_factory, _extract_caller_ip
+from routers._public_ingress import _check_rate_limit, _client_factory, _extract_caller_ip
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

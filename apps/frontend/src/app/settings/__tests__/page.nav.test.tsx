@@ -28,9 +28,6 @@ vi.mock("@/components/control/panels/IntegrationsPanel", () => ({
 vi.mock("@/components/control/panels/SkillsTab", () => ({
   SkillsTab: () => <div data-testid="skills-tab" />,
 }));
-vi.mock("@/components/control/panels/SkillProposalsPanel", () => ({
-  SkillProposalsPanel: () => <div data-testid="skill-proposals-panel" />,
-}));
 
 // Mutable membership holder so individual tests can flip admin ↔ non-admin.
 // `null` = personal owner = admin (the `useIsWorkspaceAdmin` personal branch);
@@ -95,7 +92,6 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
     expect(within(navEl).getByText("Profile")).toBeInTheDocument(); // ACCOUNT
     expect(within(navEl).getByText("Billing")).toBeInTheDocument(); // BILLING & USAGE
-    expect(within(navEl).getByText("Webhooks")).toBeInTheDocument(); // WIRING
     expect(within(navEl).getByText("Desktop")).toBeInTheDocument(); // WIRING
     expect(within(navEl).getByText("Marketplace")).toBeInTheDocument(); // SELLER
   });
@@ -170,17 +166,16 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     expect(within(navEl).getByText("MCP servers")).toBeInTheDocument();
   });
 
-  it("registers the ENGINE ROOM panels (Skills, Skill Proposals)", () => {
+  it("registers the ENGINE ROOM Skills panel", () => {
     render(<SettingsPage />);
     const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
     expect(within(navEl).getByText("Skills")).toBeInTheDocument();
-    expect(within(navEl).getByText("Skill Proposals")).toBeInTheDocument();
   });
 
   // Channel wiring, channel status and Dreams / Memory were OpenClaw-shaped
   // surfaces with no equivalent on this runtime — the rows are GONE, not gated,
   // and a stale deep link falls back to Profile like any other unknown key.
-  it.each(["Channels", "Channel Status", "Dreams / Memory"])(
+  it.each(["Channels", "Channel Status", "Dreams / Memory", "Webhooks", "Skill Proposals"])(
     "offers no %s row",
     (label) => {
       render(<SettingsPage />);

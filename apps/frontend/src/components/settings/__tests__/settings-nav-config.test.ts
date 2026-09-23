@@ -14,9 +14,7 @@ describe("SETTINGS_NAV_SECTIONS", () => {
 
   it("keeps the sibling WIRING and ENGINE ROOM rows", () => {
     expect(ids).toContain("mcp");
-    expect(ids).toContain("webhooks");
     expect(ids).toContain("skills");
-    expect(ids).toContain("skill-proposals");
   });
 
   it("never lists a row twice", () => {

@@ -337,6 +337,40 @@ def _change_stamp(path: Path) -> int:
     return max(stamps, default=0)
 
 
+def _emit_restore_metric(seconds: float, objects: int) -> None:
+    """One CloudWatch EMF line per cold restore. Raw JSON on stdout: CloudWatch extracts EMF only
+    from a log event that IS the JSON, so the logger's "[bridge] " prefix would hide it. Runtime log
+    groups are per runtime, so a CDK metric filter cannot target them; EMF works in any group.
+    The env comes from the bucket name (lightbulb-<env>-openclaw-replicas) -- the bridge has no
+    env variable of its own."""
+    parts = (S3_BUCKET or "").split("-")
+    env = parts[1] if len(parts) > 2 and parts[0] == "lightbulb" else "unknown"
+    print(
+        json.dumps(
+            {
+                "_aws": {
+                    "Timestamp": int(time.time() * 1000),
+                    "CloudWatchMetrics": [
+                        {
+                            "Namespace": "LightbulbAI",
+                            "Dimensions": [["env", "service"]],
+                            "Metrics": [
+                                {"Name": "bridge.restore.seconds", "Unit": "Seconds"},
+                                {"Name": "bridge.restore.objects", "Unit": "Count"},
+                            ],
+                        }
+                    ],
+                },
+                "env": env,
+                "service": "hermes-bridge",
+                "bridge.restore.seconds": round(seconds, 3),
+                "bridge.restore.objects": objects,
+            }
+        ),
+        flush=True,
+    )
+
+
 def restore_profile(agent_id: str) -> float:
     """Download the agent's profile dir from S3 once per process. Returns seconds taken."""
     if agent_id in _restored or not S3_BUCKET:
@@ -379,6 +413,7 @@ def restore_profile(agent_id: str) -> float:
     _restored.add(agent_id)
     took = time.time() - t0
     log.info("restored profile %s: %d objects in %.1fs", agent_id, n, took)
+    _emit_restore_metric(took, n)
     # Minor 12 (fix round 1 continuation): the tree walk above just downloaded .revision (if the
     # profile has one) along with everything else -- seed _REVISIONS from that local copy so
     # ensure_profile's very next call doesn't immediately think a hot patch landed and re-pull

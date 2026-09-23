@@ -69,7 +69,7 @@ export type AnalyticsEvent =
   | "agent_selected"
   // Billing
   | "billing_portal_opened"
-  | "billing_ultra_upgrade_clicked"
+  | "billing_plan_chosen"
   // Paired with `first_run_failed_notice_shown` {cause: "credits"}: without a
   // click event, the question the credits branch was built to answer — do
   // out-of-credits owners self-serve instead of emailing us — cannot be

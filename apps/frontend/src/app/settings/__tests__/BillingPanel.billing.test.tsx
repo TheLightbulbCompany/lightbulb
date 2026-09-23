@@ -158,13 +158,13 @@ describe("BillingPanel — workspace billing", () => {
     expect(screen.queryByText(/seats?/i)).not.toBeInTheDocument();
   });
 
-  it("unsubscribed org renders TeamBillingCard with the subscribe CTA", () => {
+  it("unsubscribed org renders the plan chooser", () => {
     billing.isSubscribed = false;
     billing.account = null;
 
     render(<SettingsPage />);
 
-    expect(screen.getByRole("button", { name: /subscribe workspace/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /choose workspace/i })).toBeInTheDocument();
     expect(screen.queryByText("Lightbulb plan")).not.toBeInTheDocument();
   });
 
@@ -254,7 +254,7 @@ describe("BillingPanel — org trial_local conversion", () => {
     billing.startCheckout = vi.fn().mockResolvedValue(undefined);
   });
 
-  it("shows the single workspace conversion card and separate inference costs", () => {
+  it("offers the whole plan ladder, with no second stray upgrade button", async () => {
     billing.isSubscribed = false;
     billing.account = {
       is_subscribed: false,
@@ -270,10 +270,15 @@ describe("BillingPanel — org trial_local conversion", () => {
 
     render(<SettingsPage />);
 
-    expect(screen.getByTestId("team-billing-card")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /subscribe workspace/i })).toBeInTheDocument();
-    expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
-    expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
+    // One chooser, no plan marked current on the trial; each card starts that plan.
+    expect(screen.getByTestId("plan-chooser")).toBeInTheDocument();
+    expect(screen.queryByText("Current plan")).toBeNull();
+    expect(screen.getAllByRole("button", { name: /^Choose / })).toHaveLength(3);
+    expect(screen.queryByRole("button", { name: /subscribe workspace|upgrade to base/i })).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Choose Workspace" }));
+    });
+    expect(billing.startCheckout).toHaveBeenCalledWith("workspace");
     // The Bedrock card is gone (#2932); managed inference shows only when available.
     expect(screen.queryByText(/managed Claude inference/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Create or select a workspace/i)).not.toBeInTheDocument();

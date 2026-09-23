@@ -31,4 +31,6 @@ objects (sequential restore). #2908 parallelised the restore; re-measure after e
 runtime roll and record the number on the PR that shipped it.
 
 ## Afterwards
-Archive the two channels; a room owner cannot leave them.
+Leave the two channels: there is no archive or delete route, and a room owner cannot leave
+(#3009). Give them a suffix naming your run so the next person knows they are spent, and
+remove the agent members if anything might still post in them.

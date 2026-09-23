@@ -27,6 +27,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- routers/teams/issues.py (add_issue_comment wake) + core/services/paperclip_adapter_config.py;
                                  routers/ses_inbound.py (email wake — allowlisted senders only);
                                  the image's gog binary (gmail settings watch = Pub/Sub)
+  - App host for links ...... SKILL.md ("Links: use this workspace's own app host")
+                              <- core/services/owner_facts.py (`app_url` = settings.FRONTEND_URL)
   - Workspace memory ........ references/platform-primitives.md ("Queryable company state" row)
                               <- apps/infra/hermes/plugins/memory/agentcore/__init__.py (one /owners/<owner>/
                                  namespace for every agent); bridge/sync.py normalize_profile_backends

@@ -85,6 +85,12 @@ These hold whether or not you open a reference.
   finishes a task carrying a permalink, or changes how it will be finished, ends
   with a reply in the thread under that message, never top-level. A wake that
   changed nothing, and anything "Needs you" already shows, stays off the thread.
+- **Links: use this workspace's own app host.** Every `flickmeon.ai` link in this
+  skill (`flickmeon.ai/chat`, `https://flickmeon.ai/...`, any path) is written for
+  production. When you give the owner a link, swap that host for `app_url` from
+  `~/.openclaw/lightbulb-facts.json` — e.g. `flickmeon.ai/settings` becomes
+  `https://dev.flickmeon.ai/settings` on a dev workspace. Only if `app_url` is
+  absent, keep `flickmeon.ai`.
 - **Teams is a panel, not a URL.** `flickmeon.ai/teams` is a 404 — never send
   the owner there. Its API (`/api/v1/teams/*`) is owner-only and never takes
   your agent hook token; `lightbulb-api.sh` refuses those routes before sending.

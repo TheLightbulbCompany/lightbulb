@@ -78,6 +78,12 @@ These hold whether or not you open a reference.
 - **Paperclip routines are the only scheduler.** Never the machine's own
   cron: a job added there runs where no one can see it, outside the company's
   governance.
+- **Links: use this workspace's own app host.** Every `flickmeon.ai` link in this
+  skill (`flickmeon.ai/chat`, `https://flickmeon.ai/...`, any path) is written for
+  production. When you give the owner a link, swap that host for `app_url` from
+  `$HERMES_HOME/lightbulb-facts.json` — e.g. `flickmeon.ai/settings` becomes
+  `https://dev.flickmeon.ai/settings` on a dev workspace. Only if `app_url` is
+  absent, keep `flickmeon.ai`.
 - **Teams is a panel, not a URL.** `flickmeon.ai/teams` is a 404 — never send
   the owner there. Its API (`/api/v1/teams/*`) is owner-only and never takes
   your agent hook token; `lightbulb-api.sh` refuses those routes before sending.

@@ -16,10 +16,7 @@ from core.services import browser_control, readiness_state
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.services.provision_dispatch import dispatch_provision
-from core.services.provision_gate import (
-    evaluate_provision_gate,
-    maybe_restore_trial_bedrock,
-)
+from core.services.provision_gate import evaluate_provision_gate
 from core.services.user_provision import ensure_workspace_trial_default
 
 logger = logging.getLogger(__name__)
@@ -100,8 +97,8 @@ async def _assert_provision_allowed(
         "A cold read of the workspace's status contract, fetched on mount and after a "
         "live event. It triggers no provisioning: a new workspace is provisioned by the "
         "Clerk organization.created webhook, and a failed or stopped one waits for the "
-        "user's Retry (POST /container/recover). The one write it keeps is the trial "
-        "owner's daily Bedrock restore."
+        "user's Retry (POST /container/recover). Its one write is creating an admin's "
+        "missing trial row (create-if-absent), so a read that beats the webhook sees the trial."
     ),
     operation_id="container_status",
     responses={
@@ -119,7 +116,12 @@ async def container_status(
     container = await container_repo.get_by_owner_id(owner_id)
     if not container:
         # No row: surface a gate as its structured 402 payload so the frontend renders the
-        # picker / "top up" CTA instead of a generic "no container" state.
+        # picker / "top up" CTA instead of a generic "no container" state. An admin's first
+        # read can beat the organization.created webhook, so the trial row is created here
+        # too (create-if-absent -- a write, not a trigger) or the gate would read "no
+        # billing" and flash the paywall.
+        if auth.is_org_admin:
+            await ensure_workspace_trial_default(auth, owner_id)
         gate = await evaluate_provision_gate(owner_id=owner_id, is_admin=auth.is_org_admin)
         if gate is not None:
             raise HTTPException(status_code=402, detail=gate.to_payload())
@@ -132,22 +134,9 @@ async def container_status(
         contract = await readiness_state.compute_status(owner_id, container=None, onboarding=onboarding)
         return _status_response(contract)
 
-    # Daily Bedrock restore: a capped-out trial owner's row carries bedrock_revoked (and
-    # status="stopped") from the meter Lambda's kill. No-op (zero extra reads) unless the flag
-    # is set. The one write this read keeps -- ponytail: until the trial cap leaves Bedrock
-    # (A2), when the revoke, this restore and the restart below go together.
-    was_revoked = bool(container.get("bedrock_revoked"))
-    await maybe_restore_trial_bedrock(owner_id=owner_id, container=container)
-    if was_revoked and not container.get("bedrock_revoked") and container.get("status") == "stopped":
-        # The day rolled over and the restore succeeded: restart the capped workspace, which
-        # nothing else would (the meter's kill stamped it "stopped"). dispatch_provision no-ops
-        # while an execution is RUNNING and writes the "provisioning" row itself.
-        await dispatch_provision(owner_id)
-        container = await container_repo.get_by_owner_id(owner_id) or container
-
-    # If the row STILL carries the revoke after the restore pass (it declined: capped or
-    # expired), gate NOW — whatever the row's status says: the kill's status write is
-    # best-effort, so a row left "running" would otherwise hide the limit card. Paid owners
+    # A row carrying the meter's revoke gates NOW — whatever the row's status says: the
+    # kill's status write is best-effort, so a row left "running" would otherwise hide the
+    # limit card. Paid owners
     # also carry bedrock_revoked (Metronome low-balance enforcement) — their trial reason is
     # None here, so they fall through unchanged.
     if container.get("bedrock_revoked"):

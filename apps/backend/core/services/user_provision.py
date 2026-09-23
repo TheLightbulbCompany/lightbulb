@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import uuid
 from collections import defaultdict
 
@@ -61,23 +60,8 @@ _org_provision_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 # every existing owner emit a second trial_started, so: don't.
 _TRIAL_STARTED_NAMESPACE = uuid.UUID("6f6c9f2e-2d5b-4a1c-9a3f-3d5c8e1b7a40")
 
-# What the client is allowed to hand us as a signup_flow_id. Anything else is
-# DROPPED, never rejected: the id is telemetry, and a polluted localStorage
-# value must not be able to turn the readiness poll into a 422 and strand the
-# user on a spinner. Sanitised here rather than at the route so every caller
-# — present and future — gets the same guarantee.
-_SIGNUP_FLOW_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-
-def _clean_signup_flow_id(value: str | None) -> str | None:
-    if value and _SIGNUP_FLOW_ID_RE.fullmatch(value):
-        return value
-    return None
-
-
-async def ensure_workspace_trial_default(
-    auth: AuthContext, workspace_id: str, *, signup_flow_id: str | None = None
-) -> None:
+async def ensure_workspace_trial_default(auth: AuthContext, workspace_id: str) -> None:
     """Create the active workspace's unarmed trial once, before either provision gate.
 
     The conditional put selects one creator across members and backend instances.
@@ -91,10 +75,10 @@ async def ensure_workspace_trial_default(
     """
     if not is_org_owner_id(workspace_id) or resolve_owner_id(auth) != workspace_id:
         raise HTTPException(status_code=403, detail="Workspace does not match the active organization")
-    await _ensure_trial_row(workspace_id, signup_flow_id=signup_flow_id)
+    await _ensure_trial_row(workspace_id)
 
 
-async def _ensure_trial_row(workspace_id: str, *, signup_flow_id: str | None = None) -> None:
+async def _ensure_trial_row(workspace_id: str) -> None:
     """The trial-row body of ``ensure_workspace_trial_default``, after its auth check."""
     row = await billing_repo.get_by_owner_id(workspace_id)
     if row:
@@ -104,9 +88,7 @@ async def _ensure_trial_row(workspace_id: str, *, signup_flow_id: str | None = N
             await billing_repo.extend_short_trial(workspace_id, row)
         return
 
-    signup_flow_id = _clean_signup_flow_id(signup_flow_id)
-    flow_props = {"signup_flow_id": signup_flow_id} if signup_flow_id else {}
-    capture_once_per_owner_per_day(owner_id=workspace_id, event="trial_start_requested", properties=flow_props)
+    capture_once_per_owner_per_day(owner_id=workspace_id, event="trial_start_requested", properties={})
     try:
         created = await billing_repo.create_trial_local_if_absent(
             owner_id=workspace_id, owner_type="org", trial_end=None
@@ -115,7 +97,7 @@ async def _ensure_trial_row(workspace_id: str, *, signup_flow_id: str | None = N
         capture_once_per_owner_per_day(
             owner_id=workspace_id,
             event="trial_start_failed",
-            properties={**flow_props, "error_code": type(exc).__name__},
+            properties={"error_code": type(exc).__name__},
         )
         raise
 
@@ -123,7 +105,7 @@ async def _ensure_trial_row(workspace_id: str, *, signup_flow_id: str | None = N
         capture_product_event(
             distinct_id=workspace_id,
             event="trial_started",
-            properties={**flow_props, "owner_type": "org"},
+            properties={"owner_type": "org"},
             event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, f"{workspace_id}:{utc_today()}")),
         )
 

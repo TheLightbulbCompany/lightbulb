@@ -684,9 +684,9 @@ describe("ProvisioningStepper blocked-state rendering", () => {
   });
 
   // Honest contract: a real provisioning failure arrives as status="error".
-  // Terminal is any status="error" that isn't error_retrying — provision_failed,
+  // Terminal is any status="error" — provision_failed,
   // the rollout circuit breaker's deployment_failed, or a bare error with no
-  // substatus (auto-retry gated / standing down) — keyed off substatus, never
+  // substatus — keyed off container_status, never
   // `phase`. It must say so with Retry + Contact support, never a plain
   // spinner; and since messaging doesn't need the container, it says so in a
   // banner over the working app rather than a card in front of it.
@@ -758,33 +758,6 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(refresh).not.toHaveBeenCalled();
     expect(screen.getByText(/Retry failed/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
-  });
-
-  it("says retrying (NOT Setup failed) for a RETRYING error", () => {
-    // status="error" + substatus="error_retrying" is transient — the backend is
-    // auto-retrying. A dead container fails loudly, a retrying one stays calm.
-    useProvMock.mockReturnValue({
-      phase: "normal",
-      container: {
-        container_status: "error",
-        container_substatus: "error_retrying",
-        runtime_phase: "provisioning",
-        last_error: "transient image pull error",
-      },
-      blocked: null,
-      refreshInterval: 3000,
-      refresh: vi.fn(),
-    });
-
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    expect(screen.getByText("children")).toBeInTheDocument();
-    expect(screen.queryByText(/Setup failed/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/retrying automatically/i)).toBeInTheDocument();
   });
 
   it("renders the ready app plus a non-blocking Teams-degraded notice when teams_state=failed", () => {
@@ -1220,17 +1193,6 @@ describe("agents banner progress", () => {
       expect(screen.queryByText(/Step \d of 6/)).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
       expect(screen.getByRole("link", { name: /Contact support/i })).toBeInTheDocument();
-    });
-
-    it("keeps the bar for a RETRYING error — the backend really is still working", () => {
-      renderWithContainer({
-        container_status: "error",
-        container_substatus: "error_retrying",
-        runtime_phase: "provisioning",
-      });
-
-      expect(screen.getByText(/retrying automatically/i)).toBeInTheDocument();
-      expect(screen.getByRole("progressbar")).toBeInTheDocument();
     });
   });
 });

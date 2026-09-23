@@ -74,7 +74,6 @@ import {
 } from "@lightbulb/shared";
 
 import { makeAdapter } from "./adapter";
-import { isPresent } from "./presence";
 
 export type ContainerStatus =
   | { kind: "loading" }
@@ -275,7 +274,6 @@ export function useContainerStatus() {
   const { classified, networkError, refresh } = useOnboardingStatus({
     api: config,
     enabled: true,
-    wake: () => isPresent(),
     visibility: mobileVisibilityAdapter,
   });
 

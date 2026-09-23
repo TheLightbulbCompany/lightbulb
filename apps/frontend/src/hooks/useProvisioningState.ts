@@ -5,8 +5,6 @@ import { useAuth, useOrganization } from "@clerk/nextjs";
 import { useOnboardingStatus, type StatusContract } from "@lightbulb/shared";
 
 import { recordRequestId } from "@/lib/requestIdLog";
-import { isPresent } from "@/lib/presence";
-import { signupFlowId } from "@/lib/signupFlow";
 import { webVisibilityAdapter } from "@/lib/visibility";
 
 // Deliberately NOT `import { BACKEND_URL } from "@/lib/api"`: this hook is
@@ -55,17 +53,6 @@ export type ProvisioningPhase =
 export interface ProvisioningStateOptions {
   /** When false, the hook does not fetch. Default true. */
   enabled?: boolean;
-  /**
-   * When false, this reader never asks the backend to START a parked container: the request
-   * carries `wake=0` unconditionally instead of `wake=1` whenever a human is present.
-   *
-   * For a caller that wants to KNOW the runtime state without being a reason to spend on it —
-   * the `/settings` route's host publisher, whose panels are mostly billing and profile and
-   * need no runtime at all. A wake is a Fargate task on ECS and a microVM cold start on
-   * AgentCore, and `wake_policy` suppresses only the `wake=0` case, so this is the only lever.
-   * Default true: every chat-surface caller IS a reason to wake.
-   */
-  wake?: boolean;
 }
 
 export interface ProvisioningStateResult {
@@ -129,7 +116,7 @@ function sharedFreshToken(orgId: string, mint: () => Promise<string | null>): Pr
 export function useProvisioningState(
   options: ProvisioningStateOptions = {},
 ): ProvisioningStateResult {
-  const { enabled = true, wake = true } = options;
+  const { enabled = true } = options;
   const { isSignedIn, orgId, userId, sessionId, getToken } = useAuth();
   const { organization, isLoaded: orgLoaded } = useOrganization();
 
@@ -204,14 +191,6 @@ export function useProvisioningState(
     api: { apiUrl: BACKEND_URL, getToken: getWorkspaceToken, onRequestId: recordRequestId },
     scope: `${userId}:${orgId}`,
     enabled: scope.eligible && verifiedScope === scope,
-    // Wake marker, computed at FETCH time (not baked into the SWR key —
-    // key stability keeps dedupe/mutate semantics intact). wake=1 only
-    // while a human is plausibly present (visible + input < 120s); wake=0
-    // otherwise, which tells the backend to report a parked trial
-    // container instead of starting it. `wake: false` pins it to 0 for a
-    // reader that is not itself a reason to start one — see the option.
-    wake: () => wake && isPresent(),
-    flow: signupFlowId,
     visibility: webVisibilityAdapter,
   });
 

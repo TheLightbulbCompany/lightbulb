@@ -121,7 +121,7 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
         owner_id: the container/company owner (org_id for org members,
             else the user_id).
         container: an already-fetched (and possibly locally mutated, e.g.
-            by ``maybe_restore_trial_bedrock``) containers row, OR an explicit
+            by the caller) containers row, OR an explicit
             ``None``. Pass this when the caller already read/mutated the
             row this request -- it avoids a redundant DDB read AND lets
             the contract reflect same-request local mutations a fresh read

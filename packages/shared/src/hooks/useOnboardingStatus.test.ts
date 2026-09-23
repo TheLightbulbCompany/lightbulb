@@ -154,12 +154,9 @@ describe("useOnboardingStatus", () => {
         await vi.advanceTimersByTimeAsync(100);
       });
 
-      // The failure is REPORTED, but the last good status must SURVIVE it.
-      // The rejection-safe fetcher resolves failures as data, so without
-      // stickiness SWR overwrites the good response and `classified` blanks
-      // until the next fetch — which unmounts every consumer rendering on
-      // top of it (the first-run funnel most visibly, destroying whatever
-      // the user had typed).
+      // The failure is REPORTED, but the last good status must SURVIVE it
+      // (SWR keeps `data` on error): a blanked status would unmount every
+      // consumer rendering on top of it, the first-run funnel most visibly.
       expect(result.current.networkError).toBeDefined();
       expect(result.current.classified?.kind).toBe("container");
       expect(result.current.derived?.phase).toBe("cold_start");
@@ -187,9 +184,8 @@ describe("useOnboardingStatus", () => {
       expect(result.current.classified?.kind).toBe("container");
 
       // A 5xx takes a DIFFERENT path than a rejected fetch: the client
-      // throws ApiError, the fetcher catches it, and it classifies as
-      // `unrecognized` — a "classified" outcome. It is still a failure, not
-      // a server state, so it must not become the new last-good either.
+      // throws ApiError and it classifies as `unrecognized` — still a
+      // failure, not a server state, so it must not replace the last good.
       fetchSpy.mockImplementation(() =>
         Promise.resolve(jsonResponse(503, { detail: "upstream unavailable" })),
       );
@@ -227,39 +223,27 @@ describe("useOnboardingStatus", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("appends the signup flow id as ?flow= WITHOUT letting it reach the SWR key", async () => {
+  it("a failed FIRST fetch retries on its own (SWR error backoff) and lands the status", async () => {
+    // The fetcher throws on a transport failure, so SWR retries it — without that, a first
+    // fetch that failed would wedge the UI until some unrelated event came along.
     vi.useFakeTimers();
     try {
-      const fetchSpy = vi.fn().mockImplementation(
-        jsonResponder(200, contractBody({ lifecycle: "ready", runtime_phase: "ready", chat_available: true })),
+      const fetchSpy = vi
+        .fn()
+        .mockImplementationOnce(() => Promise.reject(new TypeError("Failed to fetch")))
+        .mockImplementation(() => Promise.resolve(jsonResponse(200, contractBody())));
+      global.fetch = fetchSpy as unknown as typeof fetch;
+      const { result } = renderHook(
+        () => useOnboardingStatus({ api: makeApi(), enabled: true }),
+        { wrapper },
       );
-      global.fetch = fetchSpy;
-      // A provider map we can read back, so the cache-key assertion below is
-      // real rather than assumed.
-      const cache = new Map();
-      const keyedWrapper = ({ children }: { children: React.ReactNode }) =>
-        React.createElement(SWRConfig, { value: { provider: () => cache } }, children);
-      renderHook(
-        () =>
-          useOnboardingStatus({
-            api: makeApi(),
-            enabled: true,
-            wake: () => true,
-            flow: () => "flow-abc",
-          }),
-        { wrapper: keyedWrapper },
-      );
-      await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
-      const url = fetchSpy.mock.calls.at(-1)?.[0] as string;
-      // Both params ride the REQUEST, with exactly one "?" between them.
-      expect(url).toContain("wake=1");
-      expect(url).toContain("flow=flow-abc");
-      expect(url.match(/\?/g)?.length).toBe(1);
-      // Without an explicit scope (the mobile/default behavior), the SWR
-      // cache key stays the bare path; request params never become keys.
-      const keys = [...cache.keys()].map(String);
-      expect(keys).toContain("/container/status");
-      expect(keys.some((k) => k.includes("flow="))).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(result.current.networkError).toBeDefined();
+      expect(result.current.classified).toBeNull();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(result.current.classified?.kind).toBe("container");
+      expect(result.current.networkError).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }

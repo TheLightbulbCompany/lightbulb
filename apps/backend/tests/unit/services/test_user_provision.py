@@ -1123,12 +1123,12 @@ async def test_workspace_trial_is_unarmed_and_shared_by_all_members(
 ):
     _mock_create_trial_local_if_absent.return_value = True
     with patch.object(user_provision, "capture_product_event") as capture:
-        await user_provision.ensure_workspace_trial_default(auth, "org_456", signup_flow_id="flow-abc")
+        await user_provision.ensure_workspace_trial_default(auth, "org_456")
     _mock_create_trial_local_if_absent.assert_awaited_once_with(owner_id="org_456", owner_type="org", trial_end=None)
     event = capture.call_args.kwargs
     assert event["distinct_id"] == "org_456"
     assert event["event"] == "trial_started"
-    assert event["properties"] == {"signup_flow_id": "flow-abc", "owner_type": "org"}
+    assert event["properties"] == {"owner_type": "org"}
 
 
 @pytest.mark.asyncio
@@ -1205,12 +1205,12 @@ async def test_workspace_trial_write_failure_is_reported_once_per_day(
 
 
 @pytest.mark.asyncio
-async def test_workspace_trial_drops_invalid_flow_and_preserves_event_dedup(
+async def test_workspace_trial_started_event_dedups_across_members(
     _fresh_workspace_signup, _mock_create_trial_local_if_absent
 ):
     _mock_create_trial_local_if_absent.return_value = True
     with patch.object(user_provision, "capture_product_event") as capture:
-        await user_provision.ensure_workspace_trial_default(_org_admin_auth(), "org_456", signup_flow_id="bad flow!")
+        await user_provision.ensure_workspace_trial_default(_org_admin_auth(), "org_456")
         await user_provision.ensure_workspace_trial_default(_org_member_auth(), "org_456")
     first, second = [c.kwargs for c in capture.call_args_list]
     assert first["properties"] == {"owner_type": "org"}

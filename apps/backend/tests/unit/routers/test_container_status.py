@@ -9,7 +9,6 @@ import pytest
 from fastapi import HTTPException
 
 from core.auth import AuthContext
-from core.services.messaging import ApiProblem
 
 
 @pytest.fixture
@@ -317,8 +316,8 @@ class TestContainerStatusGate:
     @pytest.mark.asyncio
     async def test_no_container_no_gate_is_a_cold_read(self):
         """No row + gate clear: the composed contract (runtime_phase provisioning, no
-        container status) -- no dispatch, no trial row, no background task. The
-        organization.created webhook owns the first provision."""
+        container status) -- no dispatch, no background task. The organization.created
+        webhook owns the first provision."""
         from routers.container import container_status
 
         with (
@@ -334,6 +333,42 @@ class TestContainerStatusGate:
         assert result["container_substatus"] is None
         dispatch.assert_not_awaited()
         create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_first_admin_read_that_beats_the_webhook_sees_the_trial_not_the_paywall(self):
+        """The GET can arrive before organization.created has written the trial row. It creates
+        it (create-if-absent) BEFORE the gate reads billing, so the gate is clear and the admin
+        gets the no-row contract instead of team_billing_required."""
+        from core.repositories import billing_repo
+        from core.services import provision_gate
+        from routers.container import container_status
+
+        rows: dict = {}
+
+        async def create(*, owner_id, owner_type, trial_end):
+            rows[owner_id] = {"owner_id": owner_id, "owner_type": owner_type, "subscription_status": "trial_local"}
+            return True
+
+        async def gate(**kwargs):
+            return await provision_gate.evaluate_provision_gate(**kwargs)
+
+        from core.services.user_provision import ensure_workspace_trial_default as real_default
+
+        with (
+            patch("routers.container.ensure_workspace_trial_default", new=real_default),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+            patch.object(billing_repo, "get_by_owner_id", AsyncMock(side_effect=lambda o, **k: rows.get(o))),
+            patch.object(billing_repo, "create_trial_local_if_absent", AsyncMock(side_effect=create)),
+            patch.object(billing_repo, "get_trial_daily_spend", AsyncMock(return_value=0)),
+            patch("routers.container.evaluate_provision_gate", new=gate),
+            patch("routers.container.dispatch_provision", new=AsyncMock()) as dispatch,
+        ):
+            result = await container_status(auth=_org_admin_auth())
+
+        assert rows["org_xyz"]["subscription_status"] == "trial_local"
+        assert result["runtime_phase"] == "provisioning"
+        assert result["container_status"] is None
+        dispatch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_container_org_member_gets_202_and_dispatches_nothing(self):
@@ -469,8 +504,6 @@ class TestContainerStatusGate:
 
         with (
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            # Restore declines (still capped) and leaves the flag set.
-            patch("routers.container.maybe_restore_trial_bedrock", new=AsyncMock()),
             patch(
                 "core.services.trial_cap.trial_block_reason",
                 new=AsyncMock(return_value=trial_cap.DAILY_CAP),
@@ -499,7 +532,6 @@ class TestContainerStatusGate:
 
         with (
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch("routers.container.maybe_restore_trial_bedrock", new=AsyncMock()),
             patch(
                 "core.services.trial_cap.trial_block_reason",
                 new=AsyncMock(return_value=None),
@@ -600,103 +632,9 @@ class TestContainerStatusGate:
         assert exc.value.detail["blocked"]["action"]["href"] == "/settings/billing"
 
 
-class TestContainerStatusTrialBedrockRestore:
-    """GET /container/status vs. the daily Bedrock restore trigger (Task 7).
-
-    The meter Lambda's IAM revoke does not expire on its own. This is the
-    ONLY place a trial owner's stopped-by-cap container gets its Bedrock
-    grant back — the owner's status read IS the trigger (see
-    TestContainerStatusColdRead for the restart it then dispatches).
-    """
-
-    @staticmethod
-    def _repo(row):
-        async def update_status(owner_id, status, substatus=None):
-            row.update({"status": status, "substatus": substatus})
-            return row
-
-        return MagicMock(
-            get_by_owner_id=AsyncMock(side_effect=lambda _owner_id: row),
-            update_status=AsyncMock(side_effect=update_status),
-        )
-
-    @pytest.mark.asyncio
-    async def test_not_revoked_row_makes_no_billing_call_for_restore(self):
-        """The overwhelmingly common poll: no bedrock_revoked flag at all —
-        maybe_restore_trial_bedrock's OWN (second, gated) billing read must
-        not fire.
-
-        readiness_state.compute_status now reads the billing row on EVERY
-        poll (it's one of the composer's four inputs — see
-        core/services/readiness_state.py), so `billing_repo.get_by_owner_id`
-        as a whole is no longer a no-call assertion; what stays true, and
-        stays worth pinning, is that the restore trigger's OWN conditional
-        read (short-circuited by the `bedrock_revoked` flag check before it
-        touches billing at all) never fires."""
-        from routers.container import container_status
-
-        row = {"status": "running", "substatus": None}
-
-        with (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
-            patch(
-                "core.services.provision_gate.billing_repo.get_by_owner_id",
-                new=AsyncMock(return_value=None),
-            ),
-            patch("core.billing.bedrock_aip.restore_owner_bedrock", new=AsyncMock()) as restore,
-            patch("core.services.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
-        ):
-            result = await container_status(_workspace_auth())
-
-        restore.assert_not_awaited()
-        assert result["container_status"] == "running"
-
-    @pytest.mark.asyncio
-    async def test_restore_failure_does_not_break_the_status_poll(self):
-        """A restore that raises must be logged and swallowed — /status still
-        answers normally (not a 500); bedrock_revoked simply stays set for the next read."""
-        from routers.container import container_status
-
-        row = {"status": "stopped", "substatus": None, "bedrock_revoked": True}
-        repo = self._repo(row)
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-            return MagicMock()
-
-        with (
-            patch("routers.container.container_repo", new=repo),
-            patch(
-                "core.services.provision_gate.billing_repo.get_by_owner_id",
-                new=AsyncMock(return_value={"subscription_status": "trial_local", "trial_end": None}),
-            ),
-            patch("core.services.trial_cap.billing_repo.get_trial_daily_spend", new=AsyncMock(return_value=0)),
-            patch(
-                "core.billing.bedrock_aip.restore_owner_bedrock",
-                new=AsyncMock(side_effect=RuntimeError("boom")),
-            ),
-            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch(
-                "core.services.container_rpc.call",
-                new_callable=AsyncMock,
-                side_effect=ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True),
-            ),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        ):
-            result = await container_status(_workspace_auth())  # must not raise
-
-        assert row["bedrock_revoked"] is True  # restore never landed
-        assert result["container_status"] == "stopped"  # the read still answers normally
-        assert captured == [], "a failed restore restarts nothing"
-
-
 class TestContainerStatusColdRead:
     """GET /container/status is a cold read: it reports a failed or stopped row as it is and
-    re-drives nothing. The one write it keeps is the trial owner's daily Bedrock restore --
-    and the restart of the capped workspace that restore makes possible."""
+    re-drives nothing (no restore, no restart). Its one write is an admin's missing trial row."""
 
     @staticmethod
     def _patches(row):
@@ -767,47 +705,6 @@ class TestContainerStatusColdRead:
             result = await container_status(_workspace_auth())
         assert result["runtime_phase"] == "ready"
         arm.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_a_restored_capped_trial_is_restarted(self):
-        """A new UTC day: the restore clears the revoke, and the stopped row -- which nothing
-        else restarts -- is dispatched once."""
-        from routers.container import container_status
-
-        row = {"status": "stopped", "substatus": "trial_daily_cap", "bedrock_revoked": True}
-
-        async def restore(*, owner_id, container):
-            container["bedrock_revoked"] = False
-
-        restarted = {"status": "provisioning", "substatus": "queued"}
-        with (
-            patch(
-                "routers.container.container_repo.get_by_owner_id",
-                new=AsyncMock(side_effect=[row, restarted]),
-            ),
-            patch("routers.container.maybe_restore_trial_bedrock", new=restore),
-            patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
-            patch("routers.container.dispatch_provision", new=AsyncMock(return_value=True)) as dispatch,
-        ):
-            result = await container_status(_workspace_auth())
-        dispatch.assert_awaited_once_with("org_x")
-        assert result["container_status"] == "provisioning"
-
-    @pytest.mark.asyncio
-    async def test_a_declined_restore_does_not_restart(self):
-        from core.services import trial_cap
-        from routers.container import container_status
-
-        row = {"status": "stopped", "substatus": "trial_daily_cap", "bedrock_revoked": True}
-        with (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
-            patch("routers.container.maybe_restore_trial_bedrock", new=AsyncMock()),
-            patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=trial_cap.DAILY_CAP)),
-            patch("routers.container.dispatch_provision", new=AsyncMock()) as dispatch,
-            pytest.raises(HTTPException),
-        ):
-            await container_status(_workspace_auth())
-        dispatch.assert_not_awaited()
 
 
 class TestContainerStatusTeamsStatus:

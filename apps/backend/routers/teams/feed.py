@@ -173,6 +173,14 @@ async def get_dashboard(
     if not auth.is_org_context or auth.is_org_admin:
         reachable, _ip, _token = await _agents._container_is_reachable(resolve_owner_id(auth))
         if not reachable:
+            from core.repositories import container_repo
+
+            # A failed provision is terminal until the user's Retry (nothing re-drives it), so
+            # answer the overlay's error state instead of a 202 it would poll forever.
+            if ((await container_repo.get_by_owner_id(resolve_owner_id(auth))) or {}).get("status") == "error":
+                raise TeamsContextError(
+                    status_code=503, detail="Workspace setup failed. Use Retry in chat to start it again."
+                )
             blocked = await _agents._self_heal_reconcile(auth)
             if blocked is not None:
                 # Provision gate up (no subscription/credits/provider) — surface

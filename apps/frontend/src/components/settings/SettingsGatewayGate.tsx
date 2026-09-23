@@ -19,22 +19,14 @@ import { useProvisioningState } from "@/hooks/useProvisioningState";
  * the signal gets a real answer here, and the panels keep one rule ("hold until definite")
  * instead of one rule plus a per-route exception.
  *
- * **`wake: false` is load-bearing.** Before this publisher existed, `/settings` issued ZERO
- * `/container/status` requests — no caller of this hook is reachable from that route. The
- * default `wake: () => isPresent()` would therefore have made merely opening Settings (the
- * Billing tab included, which talks to no runtime at all) send `wake=1`, and `wake_policy`
- * suppresses only `wake=0`: a free-trial owner checking their plan would have started a
- * Fargate task or a microVM cold start, then polled at 5 s until it came up, because a parked
- * row is not `ready`. This reader wants to KNOW the runtime, not to be a reason to spend on
- * it. On a ready workspace `cadenceFor` returns 0, so it reads once and stops.
+ * The status read is cold (it starts nothing), so merely opening Settings costs one GET and
+ * never wakes a runtime.
  */
 function StatusPublisher() {
-  // `wake: false` rather than a bare `useOnboardingStatus` call (the reviewer's suggestion):
-  // that hook needs the workspace-token plumbing this one already owns — a forced-fresh mint
-  // whose `o.id` is verified against the active org before a single fetch. Re-deriving it here
-  // would duplicate ~60 lines whose failure mode is publishing another workspace's status, and
-  // the scope is the whole safety property of `useStatusLoaded`. One option, no duplication.
-  useProvisioningState({ wake: false });
+  // Not a bare `useOnboardingStatus` call: that hook needs the workspace-token plumbing this
+  // one already owns — a forced-fresh mint whose `o.id` is verified against the active org
+  // before a single fetch, which is the whole safety property of `useStatusLoaded`.
+  useProvisioningState();
   return null;
 }
 

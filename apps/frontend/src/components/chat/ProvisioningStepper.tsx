@@ -322,20 +322,12 @@ export function ProvisioningStepper({
   // "provisioning" for an error row, so it could never tell a dead
   // container from a live one).
   //
-  // Error is TERMINAL by DEFAULT — `error_retrying` is the ONLY non-terminal
-  // exception. Keying "terminal" off a specific substatus (e.g. only
-  // `provision_failed`) is too narrow: the backend also emits terminal rows
-  // with `deployment_failed` (rollout circuit breaker) and a bare
-  // `container_status:"error"` with NO substatus (auto-retry gated /
-  // standing down), and those would fall through to the plain spinner with
-  // no Retry/Support CTA — the exact endless-spinner bug this contract
-  // exists to kill. Treating any non-retrying error as terminal restores the
-  // old catch-all's coverage and absorbs any future terminal substatus.
-  // `last_error` carries the reason.
-  const isRetryingError =
-    container?.container_status === "error" && container?.container_substatus === "error_retrying";
-  const isTerminalError =
-    container?.container_status === "error" && !isRetryingError;
+  // Every error row is TERMINAL: the backend writes one only for a deterministic
+  // failure or once the state machine's retries are exhausted (a transient failure
+  // it is still retrying writes nothing). Keyed off `container_status`, never a
+  // specific substatus, so a bare error or any future substatus still gets the
+  // Retry/Support CTA. `last_error` carries the reason.
+  const isTerminalError = container?.container_status === "error";
 
   // A 200 with no container row: the workspace's first provision never started (its
   // organization.created webhook gave up). Nothing re-drives it on its own, so the
@@ -1206,7 +1198,7 @@ export function ProvisioningStepper({
     return (
       <>
         <AgentsBanner
-          state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : isRetryingError ? "retrying" : "starting"}
+          state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : "starting"}
           phase={phase}
           onCheck={handleAgentsBannerCheck}
           onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
@@ -1590,7 +1582,6 @@ export function ProvisioningStepper({
 
 const AGENTS_BANNER_COPY = {
   starting: "Your team is getting ready — it'll be ready in about a minute.",
-  retrying: "Your agents hit a snag and are retrying automatically. You can keep messaging in the meantime.",
   slow: "Still going — your agents are taking a little longer than usual. You can keep messaging in the meantime.",
   stuck: "Starting your agents is taking longer than it should — something is stuck on our side. Messaging still works; contact us and we'll get it moving.",
   failed: "Setup failed — your agents couldn't start. Messaging still works; retry, or contact support if it keeps failing.",
@@ -1618,9 +1609,8 @@ export function agentsBannerProgress(
 // The only states allowed to draw the bar, each with the sentence it uses once
 // the step label is carrying the "what's happening" half. `starting` drops its
 // now-redundant "Your agents are getting ready." — the label above it already
-// says which step is running — and keeps only the reassurance; `retrying` and
-// `slow` keep their full sentence, because each says something the step label
-// does not.
+// says which step is running — and keeps only the reassurance; `slow` keeps its
+// full sentence, because it says something the step label does not.
 //
 // `stuck` and `failed` are absent deliberately: a bar sitting at 4 of 6 next to
 // "something is stuck on our side" reads as progress, and the point of the
@@ -1629,7 +1619,6 @@ export function agentsBannerProgress(
 // actions, unchanged — and so does any phase we can't place on the ladder.
 const ADVANCING_BANNER_COPY: Partial<Record<keyof typeof AGENTS_BANNER_COPY, string>> = {
   starting: "Your team will be ready in about a minute.",
-  retrying: AGENTS_BANNER_COPY.retrying,
   slow: AGENTS_BANNER_COPY.slow,
 };
 
@@ -1681,7 +1670,7 @@ function AgentsBanner({
             <span className="text-err">Retry failed — try again or contact support.</span>
           )}
         </span>
-        {state !== "starting" && state !== "retrying" && (
+        {state !== "starting" && (
           <span className="flex gap-4">
             <button type="button" className="underline disabled:opacity-60" onClick={onCheck} disabled={isChecking}>
               {isChecking ? "Retrying…" : state === "failed" ? "Retry" : "Check again"}

@@ -707,6 +707,13 @@ async def change_provider(
             raise ChangeProviderError(
                 "managed_provider_disabled", "Managed inference is not enabled yet.", status_code=409
             )
+        if current_choice != "openrouter_managed" and not settings.OPENROUTER_PAID_CREDITS_ENABLED:
+            raise ChangeProviderError(
+                "paid_credits_unavailable",
+                "Prepaid credits aren't available yet. Your workspace already runs on "
+                "Lightbulb-managed models within its daily allowance.",
+                status_code=409,
+            )
         if not settings.OPENROUTER_MANAGED_MODEL_ID:
             raise ChangeProviderError(
                 "managed_route_unavailable", "Managed inference is not configured yet.", status_code=503

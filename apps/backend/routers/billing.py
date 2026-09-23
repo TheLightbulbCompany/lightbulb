@@ -125,7 +125,7 @@ async def get_billing_account(
         trial_end=int(trial_end) if trial_end is not None else None,
         provider_choice=account.get("provider_choice") if account else None,
         byo_provider=account.get("byo_provider") if account else None,
-        managed_inference_available=settings.OPENROUTER_MANAGED_ENABLED,
+        managed_inference_available=settings.OPENROUTER_MANAGED_ENABLED and settings.OPENROUTER_PAID_CREDITS_ENABLED,
         plan=(account.get("plan") or "standard") if account else "standard",
         workspace_price_usd=settings.WORKSPACE_PRICE_USD,
         base_price_usd=settings.BASE_PRICE_USD,

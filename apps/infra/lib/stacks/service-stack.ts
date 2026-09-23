@@ -987,24 +987,6 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // bedrock-gate URL discovery: the gate stack publishes each env's Function
-    // URL to /lightbulb/{env}/bedrock-gate-url and the backend reads it at runtime
-    // (no cross-stack prop threading). The parameter doubles as the fleet
-    // break-glass lever — value "direct" routes new provisions straight to
-    // bedrock-runtime. Single-parameter read-only grant; kept as its own tiny
-    // statement — an SSM action doesn't fit the DynamoDbOwnedTables wildcard
-    // grant's DynamoDB-only action set, so it couldn't be folded into that
-    // one either.
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "BedrockGateUrlParamRead",
-        actions: ["ssm:GetParameter"],
-        resources: [
-          `arn:aws:ssm:${this.region}:${this.account}:parameter/lightbulb/${env}/bedrock-gate-url`,
-        ],
-      }),
-    );
-
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "OpenRouterGateUrlParamRead",
@@ -1016,13 +998,13 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // Platform-unique company slugs (company-identity Task 1). Deliberately
-    // granted here — AFTER the bedrock-gate-url statement above, not beside
+    // granted here — AFTER the gate-url statement above, not beside
     // the other table grants earlier in this method — because CDK's inline-
     // policy overflow packs statements into TaskRoleDefaultPolicy in
     // add-order and spills whatever doesn't fit into a TaskRoleOverflowPolicy
     // once the ~10 KB ceiling is hit (confirmed via synth: this stack is
     // already at that ceiling). Adding this grant any earlier pushed
-    // BedrockGateUrlParamRead itself into the overflow policy, which broke
+    // the gate-url statement itself into the overflow policy, which broke
     // test/service-stack.test.ts's assertion that it lives in the inline
     // AWS::IAM::Policy. Placing new grants after that statement means any
     // overflow lands on the new grant instead, leaving already-tested

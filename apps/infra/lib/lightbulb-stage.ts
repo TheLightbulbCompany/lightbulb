@@ -4,8 +4,6 @@ import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN, DEV_ROOT_DOMAIN } from "./domains";
 import { AgentMailOutboundStack } from "./stacks/agent-mail-outbound-stack";
 import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
-import { BedrockGateStack } from "./stacks/bedrock-gate-stack";
-import { BedrockMeterStack } from "./stacks/bedrock-meter-stack";
 import { OpenRouterGateStack } from "./stacks/openrouter-gate-stack";
 import { ContainerStack } from "./stacks/container-stack";
 import { DatabaseStack } from "./stacks/database-stack";
@@ -88,8 +86,7 @@ export class LightbulbStage extends cdk.Stage {
     // SesInboundStack — SES inbound agent-mail receiving (domain identity,
     // wildcard MX/SPF, S3 buckets, receipt rule set + activation, ingest
     // Lambda). The STACK is PROD-ONLY — SetActiveReceiptRuleSet is an
-    // account+region-scoped "one active rule set" operation, exactly like the
-    // bedrock-meter/bedrock-gate account-scoped stacks below, so it must be a
+    // account+region-scoped "one active rule set" operation, so it must be a
     // singleton, never one-per-env.
     //
     // Agent email itself is live in BOTH envs. SES matches a recipient
@@ -348,35 +345,6 @@ export class LightbulbStage extends cdk.Stage {
       environment: env,
     });
     openrouterGate.addDependency(database);
-
-    // BedrockMeterStack — account-scoped usage meter, direct Metronome
-    // ingest. Bedrock model-invocation logging is account+region-global (one
-    // config per region, one invocation-log group per region per account), so
-    // this stack is instantiated ONCE — prod stage only — and contains BOTH
-    // env Lambda instances; the dev/prod split happens at the subscription
-    // filters inside the stack. No stack dependencies: the per-env Metronome
-    // secrets are referenced by NAME (fromSecretNameV2), which creates no
-    // CFN-level coupling to either env's auth stack, and the Lambdas have no
-    // VPC, so the network stack is not involved at all.
-    if (env === "prod") {
-      new BedrockMeterStack(this, `lightbulb-${env}-bedrock-meter`, {
-        stackName: `lightbulb-${env}-bedrock-meter`,
-        envName: env,
-      });
-
-      // BedrockGateStack — account-scoped synchronous Bedrock metering gateway.
-      // Instantiated ONCE (prod stage only) for the SAME reason as the meter:
-      // both env instances (dev + prod) live in one account-scoped stack and
-      // the split is pure env-var config, so a per-env duplicate would collide
-      // on the fixed function/table names. No stack dependencies — the billing,
-      // fast-gate and dedup tables are referenced by NAME (ARN-by-convention),
-      // and the Lambdas have no VPC (a Function URL cannot live in one).
-      new BedrockGateStack(this, `lightbulb-${env}-bedrock-gate`, {
-        stackName: `lightbulb-${env}-bedrock-gate`,
-        envName: env,
-      });
-    }
-
 
     // --- Tags ---
     cdk.Tags.of(this).add("Project", "lightbulb");

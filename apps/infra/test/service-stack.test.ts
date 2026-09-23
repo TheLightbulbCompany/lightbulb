@@ -635,32 +635,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend role can read the bedrock-gate URL SSM parameter (single-parameter GetParameter, not a wildcard)", () => {
-    // The gate stack publishes each env's Function URL to
-    // /lightbulb/{env}/bedrock-gate-url; the backend discovers it at runtime and
-    // the parameter doubles as the break-glass lever ("direct" = bypass gate).
-    //
-    // Searched across BOTH inline and managed policies: the task role's
-    // DefaultPolicy sits near CloudFormation's 10 KB limit, so CDK packs
-    // grants into overflow ManagedPolicies and the exact placement shifts as
-    // grants change (this statement lives in an overflow policy today). What
-    // this test pins is the single-parameter resource scope, wherever the
-    // statement lands — asserting the packing location made the test red the
-    // first time CDK repacked, which no CI job caught.
-    const found = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].some((type) =>
-      Object.values(SERVICE_TEMPLATE_DEV.findResources(type)).some((r) =>
-        ((r.Properties?.PolicyDocument?.Statement ?? []) as Array<Record<string, unknown>>).some(
-          (s) =>
-            s.Sid === "BedrockGateUrlParamRead" &&
-            s.Action === "ssm:GetParameter" &&
-            s.Resource ===
-              "arn:aws:ssm:us-east-1:877352799272:parameter/lightbulb/dev/bedrock-gate-url",
-        ),
-      ),
-    );
-    expect(found).toBe(true);
-  });
-
   test("stamps the vendor org id into the prod backend task and leaves it empty where unset", () => {
     buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([

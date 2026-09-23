@@ -209,8 +209,7 @@ an archive directory does not). Re-runnable ops tools stay in
 
 One plan that stays under this rule: `docs/superpowers/plans/2026-09-07-audit-report.md`
 — its §6 ("Deliberately NOT recommended") names load-bearing scar tissue that
-must not be "fixed", and is referenced from
-`apps/infra/lambda/bedrock-usage-meter/test_index.py`.
+must not be "fixed".
 
 ### Monorepo Setup
 
@@ -525,7 +524,7 @@ and **commit the regenerated `deploy.yml` in the same PR**. `infra-ci.yml` now e
 on the PR (isol8 #2004) after four separate incidents where drift blocked every dev+prod
 deploy job. `npx cdk synth` does **NOT** require Docker when a local toolchain is present
 (verified 2026-08-25: `CDK_DOCKER=/usr/bin/false npx cdk synth` exits 0). The two bundled
-Lambdas (`bedrock-gate`, ws-authorizer) run a host-side `local.tryBundle` (`npm ci` /
+Lambdas (`openrouter-gate`, ws-authorizer) run a host-side `local.tryBundle` (`npm ci` /
 `pip3 install`) and only fall back to a Docker bundling image when node/npm or python3/pip3
 is missing; the backend `DockerImageAsset` hashes its build context and defers `docker build`
 to the publish step, not synth. So any machine carrying node/npm and python3/pip3 synths with
@@ -1381,12 +1380,11 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 |-------|---------|
 | `network-stack.ts` | VPC (public/private subnets, NAT), ALB, security groups. (No NLB — the old WS chain is gone.) |
 | `auth-stack.ts` | Secrets Manager secrets (Clerk, Stripe, encryption keys) + KMS key |
-| `database-stack.ts` | The core DynamoDB tables (`lightbulb-{env}-{suffix}`) **and the Paperclip Aurora Serverless v2 cluster** (Postgres, 0–4 ACU, Data API). Four tables live elsewhere: `ws-connections` AND `messaging` (api-stack), `bedrock-gate-tokens` (gate stack), `bedrock-invocation-dedup` (meter stack). |
+| `database-stack.ts` | The core DynamoDB tables (`lightbulb-{env}-{suffix}`) **and the Paperclip Aurora Serverless v2 cluster** (Postgres, 0–4 ACU, Data API). Two tables live elsewhere: `ws-connections` AND `messaging` (api-stack). `bedrock-gate-tokens` is owned by NO stack (detached, Retain) yet is the openrouter-gate's bearer auth, read by name — do not delete it. |
 | `container-stack.ts` | Despite the name, no per-user container lives here any more. It holds the **platform** ECS cluster (the backend Fargate service; the SFN provisioner is a Lambda now), the Cloud Map namespace (kept — `paperclip-stack.ts` registers into it and derives `PAPERCLIP_INTERNAL_URL` from it; only the per-user *Service* was retired), the owner-state replicas bucket, the per-owner Bedrock base policy + permissions boundary (that per-owner role **is** each workspace's AgentCore execution role), the Hermes ECR grants, the ECS task-state event trail, and `ContainerSecurityGroup` — which is NOT a leftover: it is the SG every live AgentCore runtime ENI carries, threaded to the backend as `ECS_SECURITY_GROUP_ID`. No `exportValue` pins remain: the one-deploy pins that bridged the EFS / per-user Cloud Map / per-user ECS role removals are gone with those resources. |
 | `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, target-group wiring, DynamoDB/secrets IAM, the AgentCore runtime/workload-identity + Hermes boot-secret + Hermes-profiles grants, the SFN provision watchdog, and the marketplace artifacts S3 bucket. It mounts no filesystem. `LitestreamReplicaLifecycle` is KEPT under its old name and is load-bearing: `s3:ListBucket` is a BUCKET-scoped action, so the object-level `*/hermes/*` grant cannot cover it, and every profile read, write and delete paginates `list_objects_v2` on that bucket. **Autoscaled 2-4 on CPU** (`desiredCount: 2`, `scaleOnCpuUtilization` targeting 60%) — sub-project D moved the machine WebSocket relays' remaining per-connection state (node/operator sockets, RPC waiters) out of process and onto DynamoDB (TTL presence rows, claim leases), so a second+ instance shares load instead of fighting an in-process map. Rolling deploys run at `maxHealthyPercent: 200`, so N is transiently one generation higher on every deploy — which is why the provisioning/bootstrap claim-leases exist. |
 | `api-stack.ts` | Both front doors: the HTTP API (REST) with VPC Link **V2** → ALB + custom-domain host dispatch (`X-Isol8-Public-Host`) + Route53 records, AND the WebSocket API with **Lambda integrations** (`ws-connect`/`ws-disconnect`/`ws-message`), the machine-only Lambda authorizer, the `ws-connections` table, and the `bv-` CloudFront VpcOrigin distribution for raw WS. **Also the whole messaging plane** (it grew here, not in `database-stack.ts`): the `messaging` table + stream, the AppSync **Event API** with its `rooms`/`users` channel namespaces and OIDC-subscribe/IAM-publish split, the `messaging-projector` Lambda, and `openclaw-work.fifo` + the EventBridge Pipe that feeds it. |
-| `bedrock-gate-stack.ts` | The streaming Lambda fronting bedrock-runtime — the enforcement fence for all Bedrock inference (+ the gate-tokens table). See the Billing section. |
-| `bedrock-meter-stack.ts` | Invocation-log meter Lambda — the auditor + backstop kill, and the sole Metronome writer (+ the invocation-dedup table). |
+| `openrouter-gate-stack.ts` | The streaming Lambda fronting OpenRouter for managed inference, plus its SSM URL parameter. Authenticates bearers against the unmanaged `bedrock-gate-tokens` table. (The Bedrock gate and meter stacks were removed from the app 2026-09-23; see the PR for the orphan-stack delete commands.) |
 | `paperclip-stack.ts` | Per-tenant Paperclip BFF — Fargate service, Cloud Map service discovery, ALB host route (the Aurora cluster comes from database-stack as a prop). Cross-stack KMS-cycle posture documented inline. See `apps/infra/paperclip/RUNBOOK.md`. |
 | `ses-inbound-stack.ts` | Inbound agent email (SES → Lambda → backend). |
 | `dns-stack.ts` | HostedZone lookup + ONE wildcard ACM cert for the environment's root domain (`*.flickmeon.ai`; it is a cross-stack CFN Export, so a replacement cert is created alongside and consumers migrated, never edited in place). Route53 records live with their consumers (mostly api-stack). |

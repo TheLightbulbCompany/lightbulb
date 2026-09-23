@@ -61,8 +61,8 @@ function assertAscii(template: Template, resourceType: string, descKey: string) 
  * Synthesizes an Isol8 stage with the static cdk.context.json lookups
  * inlined so DnsStack's HostedZone.fromLookup resolves without an AWS API
  * call. BOTH dev and prod are synthesized: some stacks are prod-only
- * (e.g. BedrockMeterStack), and an em-dash in its SG GroupDescription was
- * the prod CREATE_FAILED root cause — a dev-only guard never covered it.
+ * (e.g. SesInboundStack), and an em-dash in a prod-only SG GroupDescription
+ * was once the prod CREATE_FAILED root cause — a dev-only guard never covered it.
  */
 function synthStageTemplates(environment: "dev" | "prod"): Template[] {
   const app = new App({ context: HOSTED_ZONE_CONTEXT });
@@ -83,7 +83,7 @@ describe("EC2 description fields are ASCII-only", () => {
   let templates: Template[];
 
   beforeAll(() => {
-    // Cover both stages so prod-only stacks (BedrockMeterStack) are guarded.
+    // Cover both stages so prod-only stacks (SesInboundStack) are guarded.
     templates = [
       ...synthStageTemplates("dev"),
       ...synthStageTemplates("prod"),

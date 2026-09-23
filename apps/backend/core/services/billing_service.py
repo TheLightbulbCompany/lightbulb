@@ -289,7 +289,7 @@ async def create_workspace_checkout(
     if not claim_token:
         raise BillingServiceError("checkout_in_progress")
     try:
-        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or account
+        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
         pending_id = account.get("pending_checkout_session_id")
         pending = None
         if pending_id:
@@ -339,11 +339,15 @@ async def create_workspace_checkout(
             cancel_url=f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel",
             idempotency_key=(
                 f"workspace_checkout:v{_CHECKOUT_BODY_VERSION}:{owner_id}:{plan}:{clerk_user_id}:{checkout_bucket}"
+                # A superseded session keys a new bucket: otherwise
+                # Workspace -> Ultra -> Workspace inside one bucket replays the
+                # first (now expired) session.
+                f":{pending_id or ''}"
             ),
             expires_at=checkout_expires_at,
         )
         try:
-            await billing_repo.set_pending_checkout(owner_id, session_id=session["id"], provider_choice=None)
+            await billing_repo.set_pending_checkout(owner_id, session_id=session["id"])
         except Exception:
             logger.exception("Failed to record pending workspace checkout for owner %s", owner_id)
             try:

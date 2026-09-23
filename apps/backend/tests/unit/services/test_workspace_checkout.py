@@ -356,10 +356,44 @@ async def test_cancelled_checkout_then_another_plan_expires_the_old_session_and_
     assert stripe_calls["create"].call_args.kwargs["metadata"]["plan"] == "workspace"
     # The marker is re-read strongly consistent under the claim.
     billing_service.billing_repo.get_by_owner_id.assert_any_await("org_1", consistent_read=True)
-    billing_service.billing_repo.set_pending_checkout.assert_awaited_once_with(
-        "org_1", session_id="cs_new", provider_choice=None
-    )
+    billing_service.billing_repo.set_pending_checkout.assert_awaited_once_with("org_1", session_id="cs_new")
     billing_service.billing_repo.release_checkout_slot.assert_awaited_once_with("org_1", token="claim")
+
+
+@pytest.mark.asyncio
+async def test_switching_back_to_a_plan_never_replays_its_expired_session(monkeypatch):
+    """Workspace -> cancel -> Ultra -> cancel -> Workspace inside one 5-minute
+    bucket. Without the superseded id in the key, the third create reuses the
+    first key and Stripe replays the first (expired) session."""
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+    monkeypatch.setattr(billing_service.time, "time", lambda: 1_800_000_001)
+    row = {"owner_id": "org_1", "stripe_customer_id": "cus_1"}
+    sessions = {}
+
+    async def record(_owner_id, *, session_id):
+        row["pending_checkout_session_id"] = session_id
+
+    def create(**kwargs):
+        sid = f"cs_{len(sessions) + 1}"
+        sessions[sid] = kwargs["metadata"]["plan"]
+        return {"id": sid, "url": f"https://checkout.test/{sid}"}
+
+    def retrieve(sid, **_kwargs):
+        return {**_OPEN_BASE, "id": sid, "metadata": {**_OPEN_BASE["metadata"], "plan": sessions[sid]}}
+
+    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(side_effect=lambda *_a, **_k: row))
+    monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", record)
+    create_mock = MagicMock(side_effect=create)
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create_mock)
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "retrieve", MagicMock(side_effect=retrieve))
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "expire", MagicMock())
+
+    for plan in ("workspace", "ultra", "workspace"):
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan=plan)
+
+    keys = [call.kwargs["idempotency_key"] for call in create_mock.call_args_list]
+    assert len(keys) == 3 and len(set(keys)) == 3
 
 
 @pytest.mark.asyncio
@@ -427,9 +461,7 @@ async def test_a_completed_marker_whose_subscription_is_gone_no_longer_strands_t
 
     assert result == {"checkout_url": "https://checkout.test/cs_new"}
     stripe_calls["expire"].assert_not_called()
-    billing_service.billing_repo.set_pending_checkout.assert_awaited_once_with(
-        "org_1", session_id="cs_new", provider_choice=None
-    )
+    billing_service.billing_repo.set_pending_checkout.assert_awaited_once_with("org_1", session_id="cs_new")
 
 
 @pytest.mark.asyncio

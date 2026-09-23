@@ -651,12 +651,7 @@ async def set_stripe_customer_id(
     )
 
 
-async def set_pending_checkout(
-    owner_id: str,
-    *,
-    session_id: str,
-    provider_choice: str | None,
-) -> None:
+async def set_pending_checkout(owner_id: str, *, session_id: str) -> None:
     """Record the owner's OPEN Stripe Checkout session (at most one).
 
     Written and read only by ``billing_service`` workspace Checkout, under the
@@ -666,24 +661,22 @@ async def set_pending_checkout(
     re-checks the session with Stripe and every outcome except "open, ours,
     same plan" (reuse) and "open, foreign" (fail closed) mints a fresh session
     whose write here retires the old id — an open session for another plan is
-    expired first. ``provider_choice`` is legacy and always ``None`` now.
-    Same existing-row condition as the other billing-row setters.
+    expired first. Same existing-row condition as the other billing-row setters.
     """
     table = _get_table()
     await run_in_thread(
         table.update_item,
         Key={"owner_id": owner_id},
-        UpdateExpression=("SET pending_checkout_session_id = :s, pending_checkout_provider = :p, updated_at = :t"),
+        UpdateExpression="SET pending_checkout_session_id = :s, updated_at = :t",
         ExpressionAttributeValues={
             ":s": session_id,
-            ":p": provider_choice,
             ":t": utc_now_iso(),
         },
         ConditionExpression="attribute_exists(owner_id)",
     )
 
 
-async def try_claim_checkout_slot(owner_id: str, *, ttl_seconds: int = 90) -> str | None:
+async def try_claim_checkout_slot(owner_id: str, *, ttl_seconds: int = 240) -> str | None:
     """Conditional-write claim serializing the pending-Checkout read/write per owner.
 
     Without it two concurrent requests for different plans (different Stripe
@@ -758,7 +751,7 @@ async def release_checkout_slot(owner_id: str, *, token: str) -> None:
     silent no-op.
 
     The REMOVE is ALWAYS fenced on the ``token`` returned by
-    :func:`try_claim_checkout_slot`, so a create that hung past the 90s TTL and
+    :func:`try_claim_checkout_slot`, so a request that hung past the TTL and
     then failed can only clear its OWN claim — never a concurrent create that
     re-claimed the expired slot in the meantime. An unconditional release
     deleted the new holder's claim, letting a third caller mint a second

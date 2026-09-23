@@ -50,11 +50,13 @@ export function MessagingConversation() {
 
 export function MessagingWorkspace(props: {
   initialAgentId?: string | null;
+  defaultAgentId?: string | null;
   subscribeToRoom?: boolean;
   roomId?: string | null;
   messageId?: string | null;
 }) {
-  return <MessagingWorkspaceProvider initialAgentId={props.roomId ? null : props.initialAgentId} subscribeToRoom={props.subscribeToRoom}>
+  return <MessagingWorkspaceProvider initialAgentId={props.roomId ? null : props.initialAgentId}
+    defaultAgentId={props.roomId ? null : props.defaultAgentId} subscribeToRoom={props.subscribeToRoom}>
     <RoomLink roomId={props.roomId} messageId={props.messageId} />
     <div className="messaging-workspace">
       <MessagingDirectory />

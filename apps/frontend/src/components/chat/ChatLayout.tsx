@@ -56,9 +56,9 @@ interface ChatLayoutProps {
   onCloseFileViewer?: () => void;
 }
 
-function dispatchSelectAgentEvent(agentId: string): void {
+function dispatchSelectAgentEvent(agentId: string, source?: "default"): void {
   window.dispatchEvent(
-    new CustomEvent("selectAgent", { detail: { agentId } }),
+    new CustomEvent("selectAgent", { detail: { agentId, source } }),
   );
 }
 
@@ -169,9 +169,11 @@ export function ChatLayout({
   useEffect(() => {
     if (currentAgentId && currentAgentId !== lastDispatchedRef.current) {
       lastDispatchedRef.current = currentAgentId;
-      dispatchSelectAgentEvent(currentAgentId);
+      // A derived fallback is not a pick: page.tsx leaves it to the provider,
+      // which lands a fresh workspace in #general instead.
+      dispatchSelectAgentEvent(currentAgentId, userSelectedId ? undefined : "default");
     }
-  }, [currentAgentId]);
+  }, [currentAgentId, userSelectedId]);
 
   // Marketplace drawer: when a hire completes, the provider sets
   // `freshlyInstalledAgentId` so the matching sidebar row plays the

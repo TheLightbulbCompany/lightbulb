@@ -13,11 +13,12 @@ let defaultId: string | undefined;
 let selectAgentDm = vi.fn<(id: string, explicit?: boolean) => Promise<void>>();
 const openSession = vi.fn();
 const openMessage = vi.fn();
+let freshLanding: boolean | null = false;
 vi.mock("@/hooks/useAgents", () => ({
   useAgents: () => ({ agents: [], defaultId }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
-  useMessagingWorkspace: () => ({ selectAgentDm, openSession, openMessage }),
+  useMessagingWorkspace: () => ({ selectAgentDm, openSession, openMessage, freshLanding }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspace", () => ({
   MessagingConversation: () => null,
@@ -45,6 +46,7 @@ function makeProps(agentId?: string) {
 beforeEach(() => {
   _resetFocusComposerRequestForTests();
   defaultId = undefined;
+  freshLanding = false;
   selectAgentDm = vi.fn().mockResolvedValue(undefined);
 });
 
@@ -69,6 +71,30 @@ describe("ChatPanel", () => {
     view.rerender(<ChatPanel {...props} />);
     expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-ceo", false); // the default-agent fallback is not a pick
     expect(props.api.setTitle).not.toHaveBeenCalled();
+  });
+
+  it("lands a fresh workspace in #general, never the default agent's DM", () => {
+    defaultId = "agent-ceo";
+    freshLanding = true;
+    render(<ChatPanel {...makeProps(DEFAULT_AGENT_SENTINEL)} />);
+    expect(selectAgentDm).not.toHaveBeenCalled();
+  });
+
+  it("waits for the room list before falling back to the default agent", () => {
+    defaultId = "agent-ceo";
+    freshLanding = null;
+    const props = makeProps(DEFAULT_AGENT_SENTINEL);
+    const view = render(<ChatPanel {...props} />);
+    expect(selectAgentDm).not.toHaveBeenCalled();
+    freshLanding = false; // a returning workspace
+    view.rerender(<ChatPanel {...props} />);
+    expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-ceo", false);
+  });
+
+  it("opens an explicit agent even in a fresh workspace", () => {
+    freshLanding = true;
+    render(<ChatPanel {...makeProps("agent-friday")} />);
+    expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-friday", true);
   });
 
   it("keeps an explicit agent deep link while the roster catches up", () => {

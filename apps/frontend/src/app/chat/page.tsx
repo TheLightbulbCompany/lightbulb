@@ -303,14 +303,10 @@ function MobileChatShell() {
   }, []);
 
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  // Resolve the default agent when nothing is explicitly selected, mirroring
-  // ChatLayout's own `currentAgentId = userSelectedId ?? defaultId ?? …`. On
-  // this mobile shell `selectedAgentId` stays null until the user taps a
-  // roster row, so without this the chat window would bind to a null agent —
-  // and the first-run auto-kickoff (which requires agentId === defaultId)
-  // would never fire.
+  // `selectedAgentId` stays null until the user taps a roster row. The default
+  // agent is only a fallback: the provider opens its DM for a returning
+  // workspace, while a fresh one lands in #general.
   const { defaultId } = useAgents();
-  const effectiveAgentId = selectedAgentId ?? defaultId ?? null;
   const [fileViewerOpen, setFileViewerOpen] = useState(false);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
 
@@ -326,8 +322,8 @@ function MobileChatShell() {
 
   useEffect(() => {
     function handleSelectAgent(e: Event) {
-      const customEvent = e as CustomEvent<{ agentId: string }>;
-      setSelectedAgentId(customEvent.detail.agentId);
+      const { agentId, source } = (e as CustomEvent<{ agentId: string; source?: string }>).detail;
+      setSelectedAgentId(source === "default" ? null : agentId);
     }
 
     window.addEventListener("selectAgent", handleSelectAgent);
@@ -343,7 +339,7 @@ function MobileChatShell() {
         statusIndicator={(
           <RunNotifications
             mode="mobile"
-            selectedAgentId={selectedAgentId}
+            selectedAgentId={selectedAgentId ?? defaultId ?? null}
             activeView={activeView}
             activePanel={activePanel}
           />
@@ -362,7 +358,7 @@ function MobileChatShell() {
         {/* Keep the room workspace mounted but hidden so its canonical state
             and draft survive in-shell panel switches. */}
         <div className={activeView === "chat" ? "flex flex-col h-full min-h-0" : "hidden"}>
-          <MessagingWorkspace initialAgentId={effectiveAgentId} roomId={roomId} messageId={messageId} />
+          <MessagingWorkspace initialAgentId={selectedAgentId} defaultAgentId={defaultId} roomId={roomId} messageId={messageId} />
         </div>
         {activeView === "control" && (
           <div className="flex flex-col h-full min-h-0">

@@ -123,8 +123,9 @@ function compose(onOpenRoom?: (room?: import("../types").DirectoryRoom) => void)
 
 it("feeds the directory and conversation from one selected-room owner", () => {
   const view = compose();
-  expect(mocks.rooms).toHaveBeenCalledTimes(1);
-  expect(mocks.rooms).toHaveBeenCalledWith("agent-friday", true, true);
+  // Every render (the first room-list load re-renders once to latch the
+  // landing) asks the one provider-owned hook the same thing.
+  expect(mocks.rooms.mock.calls).toEqual(mocks.rooms.mock.calls.map(() => ["agent-friday", true, true]));
   expect(state.selectAgentDm).not.toHaveBeenCalled();
   expect(directory.currentRoomId).toBe(panel.roomId);
   expect(screen.getByRole("navigation", { name: "Conversations" })).toBeInTheDocument();
@@ -1105,6 +1106,98 @@ describe("opening #general once it is seeded", () => {
     act(() => directory.onSelectRoom("vendor"));
     view.rerender(shell());
     expect(workspaceValue.activeRoomId).toBe("vendor");
+  });
+
+  describe("the default agent (mobile web's fallback)", () => {
+    const mobile = () => <MessagingWorkspaceProvider defaultAgentId="agent-ceo" subscribeToRoom><CaptureContext /><MessagingConversation /></MessagingWorkspaceProvider>;
+    const lastInitialAgent = () => mocks.rooms.mock.calls.at(-1)?.[0];
+
+    it("is not opened in a fresh workspace, which lands in #general", () => {
+      list = [vendor, general];
+      render(mobile());
+      expect(workspaceValue.freshLanding).toBe(true);
+      expect(lastInitialAgent()).toBeUndefined();
+      expect(workspaceValue.activeRoomId).toBe("general");
+    });
+
+    it("is opened for a returning workspace, as before", () => {
+      list = [dm, general, vendor];
+      render(mobile());
+      expect(workspaceValue.freshLanding).toBe(false);
+      expect(lastInitialAgent()).toBe("agent-ceo");
+    });
+
+    it("waits for the room list, and a later DM does not reopen it", () => {
+      mocks.rooms.mockImplementation(() => ({ ...useSimulatedRooms(), roomsLoading: list.length === 0 }));
+      list = [];
+      const view = render(mobile());
+      expect(workspaceValue.freshLanding).toBeNull();
+      expect(mocks.rooms.mock.calls.every(([agent]) => agent === undefined)).toBe(true);
+      list = [general];
+      view.rerender(mobile());
+      list = [general, dm];
+      view.rerender(mobile());
+      expect(workspaceValue.freshLanding).toBe(true);
+      expect(mocks.rooms.mock.calls.every(([agent]) => agent === undefined)).toBe(true);
+    });
+
+    describe("decides only when certain", () => {
+      beforeEach(() => { vi.useFakeTimers(); });
+      afterEach(() => { vi.useRealTimers(); });
+
+      it("[] then [general] is fresh", () => {
+        list = [];
+        const view = render(mobile());
+        expect(workspaceValue.freshLanding).toBeNull();
+        list = [general];
+        view.rerender(mobile());
+        expect(workspaceValue.freshLanding).toBe(true);
+      });
+
+      it("[vendor] then [vendor, general] is fresh", () => {
+        list = [vendor];
+        const view = render(mobile());
+        expect(workspaceValue.freshLanding).toBeNull();
+        list = [vendor, general];
+        view.rerender(mobile());
+        expect(workspaceValue.freshLanding).toBe(true);
+        expect(lastInitialAgent()).toBeUndefined();
+      });
+
+      it("[vendor] with no #general for a minute falls back to the default DM", () => {
+        list = [vendor];
+        render(mobile());
+        act(() => { vi.advanceTimersByTime(59_999); });
+        expect(workspaceValue.freshLanding).toBeNull();
+        expect(lastInitialAgent()).toBeUndefined();
+        act(() => { vi.advanceTimersByTime(1); });
+        expect(workspaceValue.freshLanding).toBe(false);
+        expect(lastInitialAgent()).toBe("agent-ceo");
+      });
+
+      it("[dm] is returning immediately", () => {
+        list = [dm];
+        render(mobile());
+        expect(workspaceValue.freshLanding).toBe(false);
+        expect(lastInitialAgent()).toBe("agent-ceo");
+      });
+
+      it("a transient [] then [dm, general] is returning", () => {
+        list = [];
+        const view = render(mobile());
+        list = [dm, general];
+        view.rerender(mobile());
+        expect(workspaceValue.freshLanding).toBe(false);
+        act(() => { vi.advanceTimersByTime(60_000); });
+        expect(workspaceValue.freshLanding).toBe(false);
+      });
+    });
+
+    it("never displaces an explicit agent", () => {
+      list = [vendor, general];
+      render(<MessagingWorkspaceProvider initialAgentId="agent-friday" defaultAgentId="agent-ceo" subscribeToRoom><CaptureContext /></MessagingWorkspaceProvider>);
+      expect(lastInitialAgent()).toBe("agent-friday");
+    });
   });
 
   it("re-arms for a second workspace, even after a choice in the first", () => {

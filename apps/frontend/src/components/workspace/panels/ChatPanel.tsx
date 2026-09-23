@@ -26,16 +26,20 @@ interface ChatPanelParams {
 export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.ReactElement {
   const params = useDockPanelParams(props);
   const { defaultId } = useAgents();
-  const { selectAgentDm, roomProps, openMessage, openSession } = useMessagingWorkspace();
+  const { selectAgentDm, roomProps, openMessage, openSession, freshLanding } = useMessagingWorkspace();
   const lastRequested = useRef<string | null>(null);
   const navigationRequest = useRef(0);
   const [focusDestination, setFocusDestination] = useState<{ agentId: string; roomId: string } | null>(null);
   const deliveredDestination = useRef<typeof focusDestination>(null);
   // A room permalink wins over any agent-selection request riding along with
   // it (durable params can transiently coexist during a param merge).
+  // The default-agent fallback is for returning workspaces only: a fresh one
+  // lands in #general (the provider opens it), and nothing is decided until
+  // the room list's first load says which kind this is.
+  const defaultRequest = params.agentId === DEFAULT_AGENT_SENTINEL;
   const requested = params.roomId || params.agentSelection === "resolved" ? null
-    : params.agentId === DEFAULT_AGENT_SENTINEL
-      ? defaultId ?? null
+    : defaultRequest
+      ? freshLanding === false ? defaultId ?? null : null
       : params.agentId ?? null;
 
   useEffect(() => {
@@ -46,7 +50,7 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
     if (lastRequested.current === requested) return;
     lastRequested.current = requested;
     const request = ++navigationRequest.current;
-    void selectAgentDm(requested, params.agentId !== DEFAULT_AGENT_SENTINEL).then((roomId) => {
+    void selectAgentDm(requested, !defaultRequest).then((roomId) => {
       if (navigationRequest.current !== request) return;
       if (roomId) setFocusDestination({ agentId: requested, roomId });
       else cancelFocusComposerRequest(requested);
@@ -56,7 +60,7 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
         lastRequested.current = null;
       }
     });
-  }, [requested, selectAgentDm, params.agentId]);
+  }, [requested, selectAgentDm, defaultRequest]);
 
   const lastOpenedRoom = useRef<string | null>(null);
   useEffect(() => {
@@ -74,8 +78,8 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
 
   const roomId = roomProps?.roomId;
   const roomAgentId = roomProps?.composer.focusAgentId;
-  const waitingForDefault = params.agentSelection !== "resolved"
-    && params.agentId === DEFAULT_AGENT_SENTINEL && !defaultId;
+  const waitingForDefault = params.agentSelection !== "resolved" && defaultRequest
+    && (freshLanding === null || (!freshLanding && !defaultId));
   useEffect(() => {
     // The initial fallback room must not consume a still-unresolved deep link.
     if (roomId && !waitingForDefault) syncMessagesPanelAgent(roomAgentId);

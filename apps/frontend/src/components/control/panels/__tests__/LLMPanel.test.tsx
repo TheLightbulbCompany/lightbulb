@@ -7,8 +7,12 @@ const mockSWRData = vi.fn();
 const mockMutate = vi.fn();
 let managedAvailable = false;
 let billingLoading = false;
+let accountFields: Record<string, unknown> = {};
 vi.mock("@/hooks/useBilling", () => ({
-  useBilling: () => ({ account: { managed_inference_available: managedAvailable }, isLoading: billingLoading }),
+  useBilling: () => ({
+    account: { managed_inference_available: managedAvailable, ...accountFields },
+    isLoading: billingLoading,
+  }),
 }));
 vi.mock("swr", () => ({
   default: () => ({ data: mockSWRData(), error: null, isLoading: false, mutate: mockMutate }),
@@ -131,6 +135,7 @@ describe("LLMPanel", () => {
   beforeEach(() => {
     managedAvailable = false;
     billingLoading = false;
+    accountFields = { subscription_status: "active", plan: "standard" };
     mockSWRData.mockReset();
     mockMutate.mockReset();
     mockApiPut.mockReset();
@@ -227,6 +232,7 @@ describe("LLMPanel", () => {
   });
 
   it("shows Lightbulb-managed inference and its credits for a migrated owner", () => {
+    managedAvailable = true;
     mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     render(<LLMPanel />);
     expect(screen.getByText("Lightbulb-managed models")).toBeInTheDocument();
@@ -241,59 +247,83 @@ describe("LLMPanel", () => {
     expect(screen.queryByTestId("credits-section")).toBeNull();
   });
 
-  it("renders both provider choices inline when provider_choice is null", () => {
+  it("warns an explicit managed owner when prepaid credits can't be bought, and hides credits", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
+    render(<LLMPanel />);
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/Prepaid credits aren.t available yet/)).toBeInTheDocument();
+    expect(screen.queryByTestId("credits-section")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /change provider/i }));
+    expect(screen.getByTestId("change-provider-modal-open")).toBeInTheDocument();
+  });
+
+  it("shows the daily-allowance managed path as active when provider_choice is null", () => {
+    managedAvailable = true;
+    accountFields = { subscription_status: "active", plan: "base" };
     mockSWRData.mockReturnValue({ provider_choice: null });
     render(<LLMPanel />);
-    // The empty-state copy uses a typographic apostrophe; match either.
-    expect(screen.getByText(/haven.{1,3}t picked a provider/i)).toBeInTheDocument();
-    expect(screen.queryByText("Lightbulb-managed models")).toBeNull();
-    // The choices are visible without a click — the old single "Pick a
-    // provider" button hid them behind a modal, so a user with no provider
-    // couldn't see what the options even were. Bedrock is retired, so only
-    // the two credential-based paths remain until managed inference ships.
-    expect(screen.queryByRole("button", { name: /Powered by Claude/ })).toBeNull();
-    expect(screen.getByRole("button", { name: /Sign in with ChatGPT/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Bring your own API key/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^pick a provider/i })).toBeNull();
-    // Nothing opens until a choice is made.
+    expect(screen.queryByText(/haven.{1,3}t picked a provider/i)).toBeNull();
+    expect(screen.getByText("Lightbulb-managed models")).toBeInTheDocument();
+    expect(screen.getByText("DeepSeek within a daily allowance")).toBeInTheDocument();
+    expect(screen.getByText("Active")).toBeInTheDocument();
+    // The managed path is not a pickable card: choosing it would move the owner onto
+    // prepaid credits (the backend refuses that until they can be bought).
+    expect(screen.queryByRole("button", { name: /Lightbulb-managed/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Sign in with ChatGPT/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Bring your own API key/ })).toBeEnabled();
+    expect(screen.queryByText(/coming soon/i)).toBeNull();
     expect(screen.queryByTestId("change-provider-modal-open")).not.toBeInTheDocument();
+    expect(mockApiPost).not.toHaveBeenCalled();
   });
 
-  it("offers and commits Lightbulb-managed inference when available", async () => {
-    managedAvailable = true;
+  it("tells a Workspace owner prepaid credits are coming soon", () => {
+    accountFields = { subscription_status: "active", plan: "standard" };
     mockSWRData.mockReturnValue({ provider_choice: null });
     render(<LLMPanel />);
-    expect(screen.queryByRole("button", { name: /Powered by Claude/ })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /Lightbulb-managed models/ }));
-    await waitFor(() => expect(mockApiPost).toHaveBeenCalledWith("/billing/provider", {
-      provider_choice: "openrouter_managed",
-    }));
-    expect(screen.queryByTestId("change-provider-modal-open")).toBeNull();
+    expect(screen.getByText(/prepaid credits are coming soon/i)).toBeInTheDocument();
   });
 
-  it("waits for billing capability before offering a first provider choice", () => {
-    managedAvailable = true;
+  it("points a trial owner at a paid plan instead of a switch that would 409", () => {
+    accountFields = { subscription_status: "trial_local", plan: "standard" };
+    mockSWRData.mockReturnValue({ provider_choice: null });
+    render(<LLMPanel />);
+    expect(screen.getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/settings?panel=billing");
+    expect(screen.getByRole("button", { name: /Sign in with ChatGPT/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Bring your own API key/ })).toBeDisabled();
+    expect(screen.queryByText(/coming soon/i)).toBeNull();
+  });
+
+  it.each([
+    [{ subscription_status: "trial_local", trial_end: Math.floor(Date.now() / 1000) - 60 }, /free trial has ended/i],
+    [{ subscription_status: "canceled", plan: "standard" }, /No active subscription/],
+    [{ subscription_status: "past_due", plan: "base" }, /No active subscription/],
+    [{}, /No active subscription/],
+  ])("shows managed as paused, not active, when the backend refuses it (%o)", (fields, reason) => {
+    accountFields = fields;
+    mockSWRData.mockReturnValue({ provider_choice: null });
+    render(<LLMPanel />);
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(screen.queryByText("Active")).toBeNull();
+    expect(screen.getByText(reason)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/settings?panel=billing");
+    expect(screen.getByRole("button", { name: /Sign in with ChatGPT/ })).toBeDisabled();
+  });
+
+  it("treats a trial with no trial_end yet as live", () => {
+    accountFields = { subscription_status: "trial_local", trial_end: null };
+    mockSWRData.mockReturnValue({ provider_choice: null });
+    render(<LLMPanel />);
+    expect(screen.getByText("Active")).toBeInTheDocument();
+  });
+
+  it("waits for billing before rendering a first provider choice", () => {
     billingLoading = true;
     mockSWRData.mockReturnValue({ provider_choice: null });
     const view = render(<LLMPanel />);
-    expect(screen.queryByRole("button", { name: /Powered by Claude/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Sign in with ChatGPT/ })).toBeNull();
     billingLoading = false;
     view.rerender(<LLMPanel />);
-    expect(screen.getByRole("button", { name: /Lightbulb-managed models/ })).toBeInTheDocument();
-  });
-
-  it("surfaces a commit error inline when the managed-inference pick fails", async () => {
-    managedAvailable = true;
-    mockSWRData.mockReturnValue({ provider_choice: null });
-    mockApiPost.mockRejectedValueOnce(new Error("No credits"));
-    render(<LLMPanel />);
-    fireEvent.click(screen.getByRole("button", { name: /Lightbulb-managed models/ }));
-    await waitFor(() => expect(screen.getByText("No credits")).toBeInTheDocument());
-    expect(mockMutate).not.toHaveBeenCalled();
-    // Cards must be re-enabled so the user can pick a different path.
-    expect(
-      screen.getByRole("button", { name: /Sign in with ChatGPT/ }),
-    ).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: /Sign in with ChatGPT/ })).toBeInTheDocument();
   });
 
   it.each([

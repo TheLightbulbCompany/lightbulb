@@ -127,7 +127,7 @@ class TestContainerReprovision:
     @contextlib.contextmanager
     def _wired():
         """The route schedules the idempotent reconcile -- no lease to take over."""
-        with patch("routers.admin.reconcile_in_background") as dispatch:
+        with patch("routers.admin.dispatch_reconcile", new_callable=AsyncMock) as dispatch:
             yield dispatch
 
     @pytest.mark.asyncio
@@ -136,7 +136,7 @@ class TestContainerReprovision:
             res = await async_client.post("/api/v1/admin/users/u_target/container/reprovision")
         assert res.status_code == 200
         assert res.json()["status"] == "reconciling"
-        dispatch.assert_called_once_with("u_target")
+        dispatch.assert_awaited_once_with("u_target")
 
     @pytest.mark.asyncio
     async def test_403_for_non_admin(self, async_client, non_admin_env):

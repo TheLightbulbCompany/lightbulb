@@ -50,6 +50,12 @@ def load_environment(environ=os.environ, *, ssm=None, secretsmanager=None) -> No
 
 #: ``scripts.provision_runner``, imported by the first invocation once the env is loaded.
 provision_runner = None
+#: ``hermes_provisioning``, imported alongside it (reconcile mode).
+hermes_provisioning = None
+
+# ponytail: fits the 5-min Lambda timeout; a busy session returns updated-session-busy and
+# takes the spec on its next start.
+RECONCILE_IDLE_WAIT_S = 180.0
 
 
 class ProvisionTransient(Exception):
@@ -71,16 +77,29 @@ _loop = asyncio.new_event_loop()
 
 
 def handler(event, context):
-    global provision_runner
+    global provision_runner, hermes_provisioning
     if provision_runner is None:
         try:
             load_environment()
         except Exception as exc:  # an SSM/Secrets blip: retried by the machine, not a failed provision
             raise ProvisionTransient(f"environment load failed: {type(exc).__name__}") from exc
-        from scripts import provision_runner as runner  # imports core.config: env first
+        from core.services import hermes_provisioning as hp  # imports core.config: env first
+        from scripts import provision_runner as runner
 
         provision_runner = runner
+        hermes_provisioning = hp
     owner_id = event["owner_id"]
+    mode = event.get("mode", "provision")
+    if mode == "reconcile":
+        hermes_provisioning.ROLL_IDLE_WAIT_S = RECONCILE_IDLE_WAIT_S
+        result = _loop.run_until_complete(hermes_provisioning.reconcile_runtime(owner_id))
+        if result == "failed":
+            # Retried by the machine; after the retries it ends at ReconcileGaveUp, never at the
+            # row writes (a reconcile must not stamp error onto a row a provision owns).
+            raise ProvisionTransient(f"reconcile for {owner_id} failed (see provision.reconcile.failed)")
+        return {"outcome": result}
+    if mode != "provision":
+        raise ProvisionFailed(f"unknown mode {mode!r}")
     code = _loop.run_until_complete(provision_runner.run(owner_id))
     if code == provision_runner.EXIT_TRANSIENT:
         raise ProvisionTransient(f"provision for {owner_id} failed transiently (see the row's last_error)")

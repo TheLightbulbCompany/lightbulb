@@ -2338,3 +2338,52 @@ async def test_a_gated_workspace_still_reconciles_the_vendor_room():
     ):
         await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
     vendor_room.assert_awaited_once_with("org_o")
+
+
+# ----------------------------------------------------------------------
+# provision_new_workspace (Clerk organization.created)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_provision_new_workspace_creates_the_trial_row_and_dispatches(monkeypatch):
+    trial = AsyncMock()
+    gate = AsyncMock(return_value=None)
+    dispatch = AsyncMock(return_value=True)
+    monkeypatch.setattr(user_provision, "_ensure_trial_row", trial)
+    monkeypatch.setattr(user_provision, "evaluate_provision_gate", gate)
+    monkeypatch.setattr(user_provision, "dispatch_provision", dispatch)
+    await user_provision.provision_new_workspace("org_new")
+    trial.assert_awaited_once_with("org_new")
+    gate.assert_awaited_once_with(owner_id="org_new", is_admin=True)
+    dispatch.assert_awaited_once_with("org_new")
+
+
+@pytest.mark.asyncio
+async def test_provision_new_workspace_stops_at_a_gate(monkeypatch):
+    dispatch = AsyncMock()
+    monkeypatch.setattr(user_provision, "_ensure_trial_row", AsyncMock())
+    monkeypatch.setattr(user_provision, "evaluate_provision_gate", AsyncMock(return_value=_up_gate()))
+    monkeypatch.setattr(user_provision, "dispatch_provision", dispatch)
+    await user_provision.provision_new_workspace("org_new")
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provision_new_workspace_ignores_a_non_org_id(monkeypatch):
+    trial = AsyncMock()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(user_provision, "_ensure_trial_row", trial)
+    monkeypatch.setattr(user_provision, "dispatch_provision", dispatch)
+    await user_provision.provision_new_workspace("user_alone")
+    trial.assert_not_awaited()
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provision_new_workspace_swallows_a_failure_and_meters_it(monkeypatch):
+    metrics = []
+    monkeypatch.setattr(user_provision, "_ensure_trial_row", AsyncMock(side_effect=RuntimeError("ddb")))
+    monkeypatch.setattr(user_provision, "put_metric", lambda name, **kw: metrics.append(name))
+    await user_provision.provision_new_workspace("org_new")
+    assert metrics == ["provision.org_created.error"]

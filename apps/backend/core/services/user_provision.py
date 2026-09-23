@@ -215,6 +215,20 @@ async def ensure_user_ready(auth: AuthContext) -> None:
                 owner_id,
             )
 
+    # The customer's channel shared with the Lightbulb workspace. Any member's poll
+    # reconciles it (not only the container owner's); its own first read is the
+    # short-circuit, so the steady-state cost is one consistent read per poll. BEFORE the
+    # gate for the same reason as #general below: a trial or unpaid workspace gates most
+    # polls, and those are the customers who most need the support channel. It guards
+    # itself (active Paperclip company, full Clerk rosters), so the gate adds nothing.
+    from core.services.messaging import ensure_vendor_room
+
+    try:
+        await ensure_vendor_room(owner_id)
+    except Exception:
+        put_metric("messaging.vendor_room.error")
+        logger.exception("vendor room reconcile failed for owner %s", owner_id)
+
     # #general for any member, BEFORE the gate: a gate speaks to container
     # economics and must never keep a teammate out of the workspace's rooms
     # (a trial or unpaid workspace gates most members' polls). Seats teammates
@@ -302,17 +316,6 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # role-blind above.)
     if auth.is_org_admin:
         await _provision_or_reconcile(auth, owner_id)
-
-    # The customer's channel shared with the Lightbulb workspace. Any member's poll
-    # reconciles it (not only the container owner's); its own first read is the
-    # short-circuit, so the steady-state cost is one consistent read per poll.
-    from core.services.messaging import ensure_vendor_room
-
-    try:
-        await ensure_vendor_room(owner_id)
-    except Exception:
-        put_metric("messaging.vendor_room.error")
-        logger.exception("vendor room reconcile failed for owner %s", owner_id)
 
     # Nightly CEO loop: the DETERMINISTIC arm is the provision executor's
     # step 0 (scripts/provision_runner.py::_seed_owner_paperclip), right after

@@ -2034,9 +2034,20 @@ export class ServiceStack extends cdk.Stack {
       write.next(failProvision);
     }
 
-    runProvisioner.addCatch(markFailedExhausted, { errors: transientErrors, resultPath: "$.error" });
-    runProvisioner.addCatch(markFailedDeterministic, { errors: ["ProvisionFailed"], resultPath: "$.error" });
-    runProvisioner.addCatch(markFailedUnhandled, { errors: ["States.ALL"], resultPath: "$.error" });
+    // A reconcile execution ({mode: "reconcile"}, dispatch_reconcile) keeps the retries above
+    // but never reaches the row writes: their condition admits a PROVISIONING row, and a
+    // reconcile can run while an unrelated provision execution owns it. It ends here instead;
+    // reconcile_runtime already paged (provision.reconcile.failed) and the running workspace is
+    // untouched. A Succeed, not a Fail: the executions-failed page below means "a signup got
+    // no container", which a failed reconcile is not.
+    const reconcileGaveUp = new sfn.Succeed(this, "ReconcileGaveUp");
+    const unlessReconcile = (id: string, target: sfn.IChainable) =>
+      new sfn.Choice(this, id)
+        .when(sfn.Condition.and(sfn.Condition.isPresent("$.mode"), sfn.Condition.stringEquals("$.mode", "reconcile")), reconcileGaveUp)
+        .otherwise(target);
+    runProvisioner.addCatch(unlessReconcile("RouteExhausted", markFailedExhausted), { errors: transientErrors, resultPath: "$.error" });
+    runProvisioner.addCatch(unlessReconcile("RouteDeterministic", markFailedDeterministic), { errors: ["ProvisionFailed"], resultPath: "$.error" });
+    runProvisioner.addCatch(unlessReconcile("RouteUnhandled", markFailedUnhandled), { errors: ["States.ALL"], resultPath: "$.error" });
 
     runProvisioner.next(succeedProvisioned);
 

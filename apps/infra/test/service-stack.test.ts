@@ -859,7 +859,7 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     // failure keeps the last_error it wrote; anything else (timeout, crash) is
     // deterministic and the machine writes last_error itself.
     expect(flat).toContain(
-      '"Catch":[{"ErrorEquals":["ProvisionTransient","Lambda.ServiceException","Lambda.AWSLambdaException","Lambda.SdkClientException","Lambda.TooManyRequestsException"],"ResultPath":"$.error","Next":"MarkFailedExhausted"},{"ErrorEquals":["ProvisionFailed"],"ResultPath":"$.error","Next":"MarkFailedDeterministic"},{"ErrorEquals":["States.ALL"],"ResultPath":"$.error","Next":"MarkFailedUnhandled"}]',
+      '"Catch":[{"ErrorEquals":["ProvisionTransient","Lambda.ServiceException","Lambda.AWSLambdaException","Lambda.SdkClientException","Lambda.TooManyRequestsException"],"ResultPath":"$.error","Next":"RouteExhausted"},{"ErrorEquals":["ProvisionFailed"],"ResultPath":"$.error","Next":"RouteDeterministic"},{"ErrorEquals":["States.ALL"],"ResultPath":"$.error","Next":"RouteUnhandled"}]',
     );
     expect(flat).toContain("last_error = :le");
     // The ECS exit-code plumbing is gone.
@@ -896,6 +896,22 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     expect(flat).toContain('"StartAt":"RunProvisioner"');
     expect(flat).not.toContain("WatchRow");
     expect(flat).not.toContain("watch_ticks");
+  });
+
+  test("a reconcile execution's failure never reaches the row writes", () => {
+    // dispatch_reconcile executions carry {mode: "reconcile"}. Every RunProvisioner catch goes
+    // through a Choice that sends them to ReconcileGaveUp: the MarkFailed* writes admit a
+    // PROVISIONING row, which a concurrent provision execution may own.
+    const def = JSON.parse(flatDefinition());
+    const catches = def.States.RunProvisioner.Catch.map((c: { Next: string }) => c.Next);
+    expect(catches).toEqual(["RouteExhausted", "RouteDeterministic", "RouteUnhandled"]);
+    for (const route of catches) {
+      const choice = def.States[route];
+      expect(choice.Type).toBe("Choice");
+      expect(JSON.stringify(choice.Choices)).toContain('"StringEquals":"reconcile"');
+      expect(choice.Choices[0].Next).toBe("ReconcileGaveUp");
+      expect(choice.Default).toMatch(/^MarkFailed/);
+    }
   });
 
   test("machine timeout is 30 minutes", () => {

@@ -92,10 +92,12 @@ def handler(event, context):
     mode = event.get("mode", "provision")
     if mode == "reconcile":
         hermes_provisioning.ROLL_IDLE_WAIT_S = RECONCILE_IDLE_WAIT_S
-        # Never raises on "failed": the machine's catch writes stamp error onto a PROVISIONING
-        # row, and a reconcile can run while an unrelated provision execution owns that row.
-        # reconcile_runtime already paged (provision.reconcile.failed); the next caller retries.
-        return {"outcome": _loop.run_until_complete(hermes_provisioning.reconcile_runtime(owner_id))}
+        result = _loop.run_until_complete(hermes_provisioning.reconcile_runtime(owner_id))
+        if result == "failed":
+            # Retried by the machine; after the retries it ends at ReconcileGaveUp, never at the
+            # row writes (a reconcile must not stamp error onto a row a provision owns).
+            raise ProvisionTransient(f"reconcile for {owner_id} failed (see provision.reconcile.failed)")
+        return {"outcome": result}
     if mode != "provision":
         raise ProvisionFailed(f"unknown mode {mode!r}")
     code = _loop.run_until_complete(provision_runner.run(owner_id))

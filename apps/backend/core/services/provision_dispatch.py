@@ -55,7 +55,8 @@ def _name_prefix(owner_id: str) -> str:
 
 
 def execution_input(owner_id: str) -> str:
-    return json.dumps({"owner_id": owner_id})
+    # mode is always present so the machine's failure Choice never reads a missing path.
+    return json.dumps({"owner_id": owner_id, "mode": "provision"})
 
 
 def _find_running(owner_id: str) -> dict | None:

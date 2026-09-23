@@ -77,4 +77,9 @@ describe("Clerk workspace configuration", () => {
       "Create workspace",
     );
   });
+
+  it("names the workspace field in workspace words, not Clerk's organization ones", () => {
+    expect(clerkLocalization.formFieldLabel__organizationName).toBe("Workspace name");
+    expect(clerkLocalization.formFieldInputPlaceholder__organizationName).toBe("Workspace name");
+  });
 });

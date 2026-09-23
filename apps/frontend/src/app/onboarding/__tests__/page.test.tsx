@@ -46,6 +46,25 @@ describe("workspace onboarding", () => {
     expect(clerk.createProps).toHaveBeenCalledWith(expect.objectContaining({ afterCreateOrganizationUrl: "/onboarding", skipInvitationScreen: true }));
     expect(clerk.replace).not.toHaveBeenCalled();
   });
+  it("creates the workspace under one heading, without Clerk's own header or logo step", () => {
+    render(<OnboardingPage />);
+    expect(screen.getAllByRole("heading")).toHaveLength(1);
+    expect(clerk.createProps).toHaveBeenCalledWith(expect.objectContaining({
+      appearance: { elements: expect.objectContaining({ header: "hidden", organizationAvatarUploaderContainer: "hidden" }) },
+    }));
+  });
+  it("sits on the brand ground even after a client navigation from the themed chat", () => {
+    const root = document.documentElement;
+    root.setAttribute("data-chat-theme", "dark");
+    root.setAttribute("data-chat-accent", "focus");
+    const { unmount } = render(<OnboardingPage />);
+    expect(root.hasAttribute("data-chat-theme")).toBe(false);
+    expect(root.hasAttribute("data-chat-accent")).toBe(false);
+    unmount();
+    expect(root.getAttribute("data-chat-theme")).toBe("dark");
+    expect(root.getAttribute("data-chat-accent")).toBe("focus");
+    root.removeAttribute("data-chat-theme"); root.removeAttribute("data-chat-accent");
+  });
   it("offers Clerk selection instead of activating an arbitrary membership", () => {
     clerk.memberships = [{ organization: { id: "org_a" } }, { organization: { id: "org_b" } }];
     render(<OnboardingPage />);

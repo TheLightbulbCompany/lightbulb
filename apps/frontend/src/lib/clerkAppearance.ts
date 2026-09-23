@@ -30,6 +30,8 @@ export const clerkTaskUrls: TaskUrls = {
 };
 
 export const clerkLocalization: Localization = {
+  formFieldLabel__organizationName: "Workspace name",
+  formFieldInputPlaceholder__organizationName: "Workspace name",
   createOrganization: {
     formButtonSubmit: "Create workspace",
     title: "Create workspace",

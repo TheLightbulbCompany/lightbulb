@@ -730,6 +730,24 @@ def handler(event, context):
       });
     }
 
+    // P29: free-tier-first-turn-failures
+    // A free-tier workspace's run failing before it has EVER had a reply is a new user's
+    // first impression dying (the 09-22 gate-413 bug failed every one, silently). Two in
+    // 2 h, not one, so a single flaky turn on a quiet night does not wake anybody.
+    this.createAlarm({
+      id: "P29",
+      name: "free-tier-first-turn-failures",
+      metricName: "messaging.run.first_turn_failed",
+      threshold: 2,
+      evaluationPeriods: 1,
+      periodMinutes: 120,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      severity: "page",
+      description:
+        "2+ free-tier workspaces had their first-ever agent turn fail in 2 h - new users see a broken product (log: 'free-tier first turn failed')",
+    });
+
     // P5: debug-endpoint-prod-hit
     this.createAlarm({
       id: "P5",

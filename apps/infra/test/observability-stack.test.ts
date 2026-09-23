@@ -199,6 +199,8 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "messaging.jev.decision": [["outcome"]],
   // core/services/run_analytics.py _enrich_and_capture; P27 (prod) binds outcome=success.
   "nightly_ceo.run": [["outcome"]],
+  // core/services/messaging.py count_first_turn_failure; P29 binds the bare rollup.
+  "messaging.run.first_turn_failed": [[]],
   // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---
   // core/services/messaging.py — create_human_message / create_agent_message.
   "messaging.message.created": [["author_kind", "has_targets", "room_kind"]],
@@ -1067,6 +1069,17 @@ describe("ObservabilityStack — prod-only paths", () => {
     });
     const dev = JSON.stringify(buildTemplate("dev").findResources("AWS::CloudWatch::Alarm"));
     expect(dev).not.toContain("nightly-ceo-fleet-zero");
+  });
+
+  test("P29 pages on 2+ free-tier first-turn failures in 2 h", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-prod-P29-free-tier-first-turn-failures",
+      MetricName: "messaging.run.first_turn_failed",
+      Period: 7200,
+      Threshold: 2,
+      ComparisonOperator: "GreaterThanOrEqualToThreshold",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
+    });
   });
 
   test("P26 pages on the Jev error/timeout/429 share with a 10-decision floor", () => {

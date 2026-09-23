@@ -2328,6 +2328,22 @@ RUN_ERROR_MESSAGES = {
 RUN_FAILURE_OUTCOMES = frozenset({"error"})
 
 
+async def count_first_turn_failure(owner_id: str, error_kind: str | None) -> None:
+    """A failed run for a free-tier workspace that has NEVER had an agent reply is a new user's
+    first impression dying (the 09-22 gate-413 bug failed every one, silently). Counted for the
+    P29 page; ``first_agent_response_at`` is stamped by the trial first-response capture. The
+    bridge-supplied error kind goes to the log, never a dimension (unbounded). Never raises."""
+    try:
+        from core.repositories import billing_repo
+
+        account = await billing_repo.get_by_owner_id(owner_id) or {}
+        if account.get("subscription_status") == "trial_local" and not account.get("first_agent_response_at"):
+            logger.warning("free-tier first turn failed owner=%s error_kind=%s", owner_id, error_kind)
+            put_metric("messaging.run.first_turn_failed")
+    except Exception:
+        logger.warning("first-turn failure count failed owner=%s", owner_id, exc_info=True)
+
+
 async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error_kind: str | None) -> None:
     """Leave one durable agent-authored note in the run's room (and the trigger's thread).
 
@@ -2335,6 +2351,7 @@ async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error
     Silent by construction (no mentions, no dispatch targets), and keyed on the runId so a
     retried run.ended or a sweeper/callback race replays the receipt instead of doubling.
     Never raises: the run is already closed by the time this runs."""
+    await count_first_turn_failure(owner_id, error_kind)
     try:
         run_id, room_id, agent_id = row["runId"], row["roomId"], row["agentId"]
         # error_kind is bridge-supplied; only an identifier (an exception class

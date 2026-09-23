@@ -1141,6 +1141,58 @@ describe("opening #general once it is seeded", () => {
       expect(mocks.rooms.mock.calls.every(([agent]) => agent === undefined)).toBe(true);
     });
 
+    describe("decides only when certain", () => {
+      beforeEach(() => { vi.useFakeTimers(); });
+      afterEach(() => { vi.useRealTimers(); });
+
+      it("[] then [general] is fresh", () => {
+        list = [];
+        const view = render(mobile());
+        expect(workspaceValue.freshLanding).toBeNull();
+        list = [general];
+        view.rerender(mobile());
+        expect(workspaceValue.freshLanding).toBe(true);
+      });
+
+      it("[vendor] then [vendor, general] is fresh", () => {
+        list = [vendor];
+        const view = render(mobile());
+        expect(workspaceValue.freshLanding).toBeNull();
+        list = [vendor, general];
+        view.rerender(mobile());
+        expect(workspaceValue.freshLanding).toBe(true);
+        expect(lastInitialAgent()).toBeUndefined();
+      });
+
+      it("[vendor] with no #general for a minute falls back to the default DM", () => {
+        list = [vendor];
+        render(mobile());
+        act(() => { vi.advanceTimersByTime(59_999); });
+        expect(workspaceValue.freshLanding).toBeNull();
+        expect(lastInitialAgent()).toBeUndefined();
+        act(() => { vi.advanceTimersByTime(1); });
+        expect(workspaceValue.freshLanding).toBe(false);
+        expect(lastInitialAgent()).toBe("agent-ceo");
+      });
+
+      it("[dm] is returning immediately", () => {
+        list = [dm];
+        render(mobile());
+        expect(workspaceValue.freshLanding).toBe(false);
+        expect(lastInitialAgent()).toBe("agent-ceo");
+      });
+
+      it("a transient [] then [dm, general] is returning", () => {
+        list = [];
+        const view = render(mobile());
+        list = [dm, general];
+        view.rerender(mobile());
+        expect(workspaceValue.freshLanding).toBe(false);
+        act(() => { vi.advanceTimersByTime(60_000); });
+        expect(workspaceValue.freshLanding).toBe(false);
+      });
+    });
+
     it("never displaces an explicit agent", () => {
       list = [vendor, general];
       render(<MessagingWorkspaceProvider initialAgentId="agent-friday" defaultAgentId="agent-ceo" subscribeToRoom><CaptureContext /></MessagingWorkspaceProvider>);

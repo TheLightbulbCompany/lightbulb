@@ -1875,6 +1875,11 @@ def test_download_s3_profile_excludes_runtime_and_secret_keys(s3_hermes_bucket, 
         "sessions/request_dump_20260101.json": b"{}",
         "logs/app.log": b"boot ok",
         "mcp-tokens/stripe.json": b'{"token": "x"}',
+        # Hermes's learned memory -- USER.md is about the seller themselves, so it
+        # never ships to a buyer.
+        "memories/USER.md": b"Owner runs a bakery",
+        "memories/MEMORY.md": b"agent notes",
+        "memories/user_profile_overflow.txt": b"more owner context",
     }
     for key, body in {**keep, **drop}.items():
         s3_hermes_bucket.put_object(Bucket="test-replicas", Key=f"{prefix}/{key}", Body=body)

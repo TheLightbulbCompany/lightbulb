@@ -388,8 +388,10 @@ def _slugify(name: str) -> str:
 # test_export_ships_workspace_subdirs_named_sessions_or_agent), so this list
 # only applies to the S3 PROFILE layout, filtered by key prefix before a
 # single byte reaches local disk -- structurally, not via the content-pattern
-# safety scan.
-_S3_PROFILE_SKIP_TOP_DIRS = frozenset({"sessions", "logs", "mcp-tokens"})
+# safety scan. ``memories/`` is Hermes's learned memory -- ``USER.md`` is what
+# the agent knows about its OWNER, ``MEMORY.md`` its own notes about that
+# owner's work. Neither is part of a portable agent definition.
+_S3_PROFILE_SKIP_TOP_DIRS = frozenset({"sessions", "logs", "mcp-tokens", "memories"})
 
 
 def _is_excluded_profile_key(rel: str) -> bool:

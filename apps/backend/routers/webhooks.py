@@ -16,7 +16,7 @@ fail-closed path is the only one that runs off a laptop.
 
 **Paperclip provisioning dispatch**:
 
-  * ``organization.created``           -> log only (company CREATE deferred to /container/status)
+  * ``organization.created``           -> ``provision_new_workspace`` (trial row + gate + provision dispatch)
   * ``organizationMembership.created`` -> log + idempotent Paperclip JOIN via
     ``_ensure_paperclip_for_member`` (join-only: never creates a company; a
     still-provisioning org self-heals on the member's next /container/status poll)
@@ -344,13 +344,12 @@ async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -
 
 
 async def _handle_organization_created(data: dict) -> None:
-    """Persist any org metadata we want to track from the create event.
+    """Start the new workspace's first provision without waiting for a browser poll.
 
-    Provisioning is intentionally NOT done here — at org creation
-    time the readiness gate is up (no subscription, no provider
-    chosen) and provisioning Paperclip without a container is the
-    half-state we're eliminating. Provisioning fires from the
-    canonical GET /container/status trigger once readiness is satisfied.
+    ``provision_new_workspace`` creates the trial row, checks the provision gate and
+    dispatches the provision funnel (Paperclip is seeded INSIDE the provision execution,
+    so no half-state). It never raises; if the gate is up or it fails, the
+    GET /container/status poll still provisions once readiness is satisfied.
     """
     org_id = data.get("id", "")
     owner_user_id = data.get("created_by", "")
@@ -362,6 +361,9 @@ async def _handle_organization_created(data: dict) -> None:
         org_id,
         owner_user_id,
     )
+    from core.services.user_provision import provision_new_workspace
+
+    await provision_new_workspace(org_id)
 
 
 async def _handle_organization_membership_created(

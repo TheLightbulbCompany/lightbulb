@@ -162,16 +162,15 @@ async def test_newer_admission_stops_old_delete_during_paperclip_cleanup(
 
 
 # ----------------------------------------------------------------------
-# organization.created -> provision_org
+# organization.created -> provision_new_workspace
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_organization_created_does_not_provision():
-    """The webhook is record-keeping only. Should NOT call
-    build_paperclip_provisioning, provision_org, or
-    _enqueue_paperclip_retry. Provisioning fires from /container/status
-    when readiness is satisfied.
+async def test_organization_created_dispatches_the_first_provision():
+    """The webhook hands the org to ``provision_new_workspace`` (trial row + gate +
+    provision dispatch) and never calls Paperclip itself -- the company is seeded
+    inside the provision execution.
     """
     from routers.webhooks import _handle_organization_created
 
@@ -181,6 +180,7 @@ async def test_organization_created_does_not_provision():
             "routers.webhooks._enqueue_paperclip_retry",
             new=AsyncMock(),
         ) as mock_retry,
+        patch("core.services.user_provision.provision_new_workspace", new=AsyncMock()) as mock_provision,
     ):
         await _handle_organization_created(
             {
@@ -191,6 +191,7 @@ async def test_organization_created_does_not_provision():
 
     mock_factory.assert_not_called()
     mock_retry.assert_not_awaited()
+    mock_provision.assert_awaited_once_with("org_acme")
 
 
 # ----------------------------------------------------------------------
@@ -637,8 +638,8 @@ async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
     without invoking the provisioning factory.
 
     Uses ``organizationMembership.deleted`` because
-    ``organization.created`` and ``organizationMembership.created`` no
-    longer drive provisioning after Tasks 6 + 7 (record-keeping only).
+    ``organizationMembership.created`` no longer drives provisioning and
+    ``organization.created`` dispatches through ``provision_new_workspace``.
     Membership.deleted still calls ``archive_member`` so the dedupe
     wrapper has something observable to gate.
     """

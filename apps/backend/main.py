@@ -411,7 +411,6 @@ async def lifespan(app: FastAPI):
     # that item's visibility; gateway teardown remains last.
     logger.info("Shutting down application...")
     set_shutting_down(True)  # 503 new business requests; /health stays green for ALB drain
-    from core.services import hermes_provisioning
     from core.services.update_service import request_worker_stop
 
     request_worker_stop()
@@ -433,9 +432,6 @@ async def lifespan(app: FastAPI):
             ]
             if broker is not None:
                 cleanup.append(broker.shutdown())
-            # In-flight background reconciles (provider switch, plan change, admin door) get the
-            # same budget; one cut off is retried by its next caller (all steps are idempotent).
-            cleanup.extend(hermes_provisioning.inflight_reconciles())
             await asyncio.gather(*cleanup, return_exceptions=True)
     except asyncio.TimeoutError:
         logger.error("Graceful shutdown exceeded 20s budget; cancelling process-local workers")
@@ -445,7 +441,6 @@ async def lifespan(app: FastAPI):
             idle_sweeper_task,
             run_sweeper_task,
             gauge_task,
-            *hermes_provisioning.inflight_reconciles(),
         ):
             task.cancel()
         await asyncio.gather(

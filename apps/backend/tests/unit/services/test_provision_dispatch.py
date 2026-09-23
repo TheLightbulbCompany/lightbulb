@@ -103,3 +103,30 @@ async def test_running_execution_returns_the_owners_summary(sfn):
 
 def test_execution_input_is_the_owner_only():
     assert json.loads(provision_dispatch.execution_input(ORG)) == {"owner_id": ORG}
+
+
+async def test_reconcile_starts_a_reconcile_execution_without_checks_or_row_writes(sfn, mark):
+    assert await provision_dispatch.dispatch_reconcile(ORG) is True
+    kwargs = sfn.start_execution.call_args.kwargs
+    assert kwargs["stateMachineArn"] == ARN
+    assert kwargs["name"].startswith(f"reconcile-{ORG}-")
+    assert len(kwargs["name"]) <= 80
+    assert json.loads(kwargs["input"]) == {"owner_id": ORG, "mode": "reconcile"}
+    sfn.get_paginator.assert_not_called()
+    mark.assert_not_awaited()
+
+
+async def test_reconcile_refuses_a_non_org_owner(sfn, mark, monkeypatch):
+    metrics = []
+    monkeypatch.setattr(provision_dispatch, "emit_provision_metric", metrics.append)
+    assert await provision_dispatch.dispatch_reconcile("user_notanorg") is False
+    sfn.start_execution.assert_not_called()
+    assert metrics == ["refused_non_org"]
+
+
+async def test_reconcile_start_failure_returns_false(sfn, mark, monkeypatch):
+    metrics = []
+    monkeypatch.setattr(provision_dispatch, "emit_provision_metric", metrics.append)
+    sfn.start_execution.side_effect = Exception("sfn down")
+    assert await provision_dispatch.dispatch_reconcile(ORG) is False
+    assert metrics == ["dispatch_start_failed"]

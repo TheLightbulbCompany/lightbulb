@@ -20,10 +20,14 @@ BACKEND_ROOT = Path(__file__).resolve().parents[3]
 def lam(monkeypatch):
     monkeypatch.delenv("LAMBDA_SECRET_ENV_MAP", raising=False)
     monkeypatch.delenv("LAMBDA_ENV_PARAMETER", raising=False)
+    from core.services import hermes_provisioning
     from scripts import provision_lambda, provision_runner
 
     # Warm: the first invocation's env load + import has already happened.
     monkeypatch.setattr(provision_lambda, "provision_runner", provision_runner)
+    monkeypatch.setattr(provision_lambda, "hermes_provisioning", hermes_provisioning)
+    # The reconcile mode overwrites the module global; restore it after the test.
+    monkeypatch.setattr(hermes_provisioning, "ROLL_IDLE_WAIT_S", hermes_provisioning.ROLL_IDLE_WAIT_S)
     return provision_lambda
 
 
@@ -45,6 +49,43 @@ def test_a_provisioned_run_returns_its_outcome(lam, monkeypatch):
     monkeypatch.setattr(lam.provision_runner, "run", run)
     # Extra keys (an execution started by a pre-deploy backend) are ignored.
     assert lam.handler({"owner_id": "org_a", "attempt": 0, "command": ["x"]}, None) == {"outcome": "provisioned"}
+    run.assert_awaited_once_with("org_a")
+
+
+def test_reconcile_mode_runs_reconcile_runtime_with_the_short_idle_wait(lam, monkeypatch):
+    hp = lam.hermes_provisioning
+    seen = []
+
+    async def _reconcile(owner_id):
+        seen.append((owner_id, hp.ROLL_IDLE_WAIT_S))
+        return "updated-session-busy"
+
+    run = AsyncMock(return_value=0)
+    monkeypatch.setattr(lam.provision_runner, "run", run)
+    monkeypatch.setattr(hp, "reconcile_runtime", _reconcile)
+    assert lam.handler({"owner_id": "org_a", "mode": "reconcile"}, None) == {"outcome": "updated-session-busy"}
+    assert seen == [("org_a", 180.0)]
+    run.assert_not_awaited()
+
+
+def test_a_failed_reconcile_is_transient(lam, monkeypatch):
+    monkeypatch.setattr(lam.hermes_provisioning, "reconcile_runtime", AsyncMock(return_value="failed"))
+    with pytest.raises(lam.ProvisionTransient, match="org_a"):
+        lam.handler({"owner_id": "org_a", "mode": "reconcile"}, None)
+
+
+def test_an_unknown_mode_fails_deterministically(lam, monkeypatch):
+    run = AsyncMock(return_value=0)
+    monkeypatch.setattr(lam.provision_runner, "run", run)
+    with pytest.raises(lam.ProvisionFailed):
+        lam.handler({"owner_id": "org_a", "mode": "teleport"}, None)
+    run.assert_not_awaited()
+
+
+def test_explicit_provision_mode_runs_the_runner(lam, monkeypatch):
+    run = AsyncMock(return_value=0)
+    monkeypatch.setattr(lam.provision_runner, "run", run)
+    assert lam.handler({"owner_id": "org_a", "mode": "provision"}, None) == {"outcome": "provisioned"}
     run.assert_awaited_once_with("org_a")
 
 
@@ -136,6 +177,7 @@ def test_the_first_invocation_loads_the_env_once_then_imports_the_runner(monkeyp
 
     loads = []
     monkeypatch.setattr(provision_lambda, "provision_runner", None)
+    monkeypatch.setattr(provision_lambda, "hermes_provisioning", None)
     monkeypatch.setattr(provision_lambda, "load_environment", lambda: loads.append(1))
     monkeypatch.setattr(provision_runner, "run", AsyncMock(return_value=0))
     provision_lambda.handler({"owner_id": "org_a"}, None)

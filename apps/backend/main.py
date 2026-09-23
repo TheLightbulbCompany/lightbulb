@@ -794,6 +794,7 @@ app.include_router(container.router, prefix="/api/v1/container", tags=["containe
 # mounts on its own prefix, since the panel's URL is /api/v1/browser/live-view.
 app.include_router(container.browser_router, prefix="/api/v1/browser", tags=["browser"])
 app.include_router(container.browser_internal_router, prefix="/api/v1/internal/browser", tags=["browser"])
+app.include_router(container.provision_events_router, prefix="/api/v1/internal/provisioning", tags=["container"])
 
 # Workspace file uploads (POST /files)
 app.include_router(container_files.router, prefix="/api/v1/container", tags=["container"])

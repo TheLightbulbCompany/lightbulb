@@ -42,7 +42,7 @@ export {
   PROVISION_STUCK_MS,
   formatProvisionElapsed,
 } from "./hooks/provisioningCopy";
-export { useOnboardingStatus } from "./hooks/useOnboardingStatus";
+export { refreshOnboardingStatus, useOnboardingStatus } from "./hooks/useOnboardingStatus";
 export type { VisibilityAdapter } from "./hooks/useOnboardingStatus";
 
 export { ApiError } from "./api/error";

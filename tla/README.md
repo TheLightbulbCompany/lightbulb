@@ -8,12 +8,22 @@ config and is what `tla.yml` runs on PRs that touch this directory.
 
 ```bash
 tla/check.sh                                  # everything (fetches the pinned TLC jar once)
-tla/check.sh MessagingDeliveryKey.cfg         # one config
+tla/check.sh MessagingDeliveryKey.cfg         # just this one
+tla/check.sh OpenRouterGateReservation.cfg    # just this one
+tla/check.sh JevDecisionConvergence.cfg       # just this one
+tla/check.sh ProvisioningClaimLease.cfg       # just this one
 ```
 
 A spec checks the DESIGN, not the code: when the code it names changes, the
 spec must change with it or it is checking something that no longer exists.
 Treat the header's file list like an import list.
+
+Every committed config also checks `TypeOK` — each variable stays within the
+type/domain declared for it (a set of states, a natural number, a function
+with the right domain and range). It never fails on its own; it exists so a
+future edit that leaves some reachable state holding a malformed value fails
+loudly here instead of surfacing as a confusing failure in a DIFFERENT
+invariant. Not repeated per-spec below since its meaning doesn't vary.
 
 ## MessagingDeliveryKey
 
@@ -155,8 +165,8 @@ that one is never left waiting forever).
 
 ## ProvisioningClaimLease
 
-The last of the original three-item backlog's siblings, and the fourth spec
-overall: the token-fenced stale-claim-steal pattern that guards Paperclip
+The fourth and last spec on the coordinator's original backlog: the
+token-fenced stale-claim-steal pattern that guards Paperclip
 company creation against a double-create when multiple backend instances
 race to provision the same org. One shared claim row: absent, or held by
 some (holder identity, per-attempt token). A holder can be stolen once its
@@ -203,6 +213,12 @@ not backstop this race for the reconcile path the way it structurally does
 for a fresh provision. Verified via a scratch run (not committed, matching
 this track's convention): the violation is reachable in 6 steps regardless
 of `TokenFenced`.
+
+**Routed, not yet landed:** this closes as a side effect of Phase 3 slice 5
+(Paperclip Idempotency-Key replacing these claims), not a standalone fix.
+Re-check this section against that change once it merges — the same
+re-sync discipline `MessagingDeliveryKey` and `OpenRouterGateReservation`
+already went through.
 
 ## A precedence bug found auditing this track's own specs
 

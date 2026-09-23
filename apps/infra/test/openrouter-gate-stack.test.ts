@@ -96,6 +96,7 @@ test("settlement runs every 5 minutes but cannot ingest money before contract pr
       OPENROUTER_KEYS_TABLE: "lightbulb-dev-openrouter-keys",
       FAST_GATE_TABLE: "lightbulb-dev-metronome-fast-gate",
       OPENROUTER_MARKUP: "1.2",
+      USAGE_COUNTERS_TABLE: "lightbulb-dev-usage-counters",
       OPENROUTER_MONEY_CONTRACT_VERIFIED: "false",
       OPENROUTER_RATE_CARD_PROOF_ID: "",
       OPENROUTER_WORKSPACE_ID: "",

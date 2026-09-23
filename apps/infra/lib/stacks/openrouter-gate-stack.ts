@@ -137,6 +137,8 @@ export class OpenRouterGateStack extends cdk.Stack {
         REQUESTS_TABLE: `${tablePrefix(env)}openrouter-requests`,
         OPENROUTER_KEYS_TABLE: `${tablePrefix(env)}openrouter-keys`,
         FAST_GATE_TABLE: `${tablePrefix(env)}metronome-fast-gate`,
+        // Settled OpenRouter cost is added here: the backend's own usage counters price only Bedrock.
+        USAGE_COUNTERS_TABLE: `${tablePrefix(env)}usage-counters`,
         RESERVE_TTL_SECONDS: "1200",
         METRONOME_API_KEY_SECRET_ID: `lightbulb/${env}/metronome_api_key`,
         OPENROUTER_MANAGEMENT_KEY_SECRET_ID: `lightbulb/${env}/openrouter/management`,
@@ -155,7 +157,7 @@ export class OpenRouterGateStack extends cdk.Stack {
     });
     settlementRole.addToPolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:TransactWriteItems"],
-      resources: [tableArn("openrouter-requests"), `${tableArn("openrouter-requests")}/index/state-created-index`, tableArn("openrouter-keys"), tableArn("metronome-fast-gate")],
+      resources: [tableArn("openrouter-requests"), `${tableArn("openrouter-requests")}/index/state-created-index`, tableArn("openrouter-keys"), tableArn("metronome-fast-gate"), tableArn("usage-counters")],
     }));
     settlementRole.addToPolicy(new iam.PolicyStatement({
       actions: ["secretsmanager:GetSecretValue"],

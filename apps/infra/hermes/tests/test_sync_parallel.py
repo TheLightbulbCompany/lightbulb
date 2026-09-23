@@ -3,6 +3,7 @@
 and restore stops pulling back reinstallable home caches an older image already pushed."""
 
 import threading
+import time
 
 import pytest
 from bridge import sync
@@ -108,8 +109,15 @@ def test_a_failed_restore_raises_without_downloading_the_rest(home, s3, monkeypa
     """The first error cancels every transfer not yet started instead of draining the queue."""
     s3.objects = {_p(f"f/{i:05d}.md"): ("x", 1.0) for i in range(2000)}
 
+    # First download fails; the rest block briefly, so the failure is seen and the queue cancelled
+    # while at most one pool's worth is in flight. (Instant failures let the workers drain all 2000
+    # before the main thread cancels anything -- that made this flaky.)
+    first = threading.Lock()
+
     def throttled(bucket, key, dest):
-        raise RuntimeError("SlowDown")
+        if first.acquire(blocking=False):
+            raise RuntimeError("SlowDown")
+        time.sleep(0.5)
 
     monkeypatch.setattr(s3, "download_file", throttled)
     calls = []
@@ -125,5 +133,5 @@ def test_a_failed_restore_raises_without_downloading_the_rest(home, s3, monkeypa
     monkeypatch.setattr(sync, "_fan_out", counting)
     with pytest.raises(RuntimeError, match="SlowDown"):
         sync.restore_profile("a1")
-    assert len(calls) < 2000
+    assert len(calls) <= 2 * sync._SYNC_WORKERS
     assert "a1" not in sync._restored

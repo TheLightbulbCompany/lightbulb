@@ -172,8 +172,19 @@ async def _record_failure(owner_id: str, exc: Exception, stage: str) -> int:
     """Classify a Hermes-leg failure, record it on the row, map it to the exit-code ABI —
     so the status poll (and the SFN retry loop) can act on it instead of an open spinner."""
     from core.repositories.container_repo import classify_provision_error
+    from core.services.openrouter_keys import KeyClaimConflict
 
     logger.exception("hermes %s failed for owner %s", stage, owner_id)
+    if isinstance(exc, KeyClaimConflict):
+        # The claim loser: a concurrent attempt for this SAME owner already won the
+        # OpenRouter key claim and is finishing it (normally a couple of seconds).
+        # Retry without writing status="error" -- that write is what the user saw
+        # flash as a provision error for a condition that self-heals on the SFN's
+        # own 10s retry. A genuinely stuck claim (crashed winner) still surfaces:
+        # the claim row's 300s TTL bounds it, and the SFN's own retry-exhausted
+        # backstop (service-stack.ts markFailedExhausted) writes the error row if
+        # retries run out first.
+        return EXIT_TRANSIENT
     _, retryable = classify_provision_error(exc)
     await _mark_error(owner_id, f"hermes {stage} failed: {exc}", retryable=retryable)
     return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC

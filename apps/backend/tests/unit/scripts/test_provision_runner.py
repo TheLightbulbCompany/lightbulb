@@ -107,6 +107,18 @@ async def test_error_record_failure_still_returns_the_exit_code(monkeypatch, her
     assert await provision_runner.run("org_a") == provision_runner.EXIT_TRANSIENT
 
 
+async def test_openrouter_claim_conflict_retries_without_flashing_an_error_row(monkeypatch, hermes, repo):
+    """The claim loser: a concurrent prepare already won this owner's OpenRouter
+    key claim. SFN retries in 10s (the winner normally finishes in a couple),
+    so the row must NOT be written to status=error -- that write is exactly
+    what showed the user a provision-error flash for a self-healing race."""
+    from core.services.openrouter_keys import KeyClaimConflict
+
+    hermes.prepare.side_effect = KeyClaimConflict("OpenRouter key provisioning is already in progress")
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_TRANSIENT
+    repo.mark_provision_error.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Step 0: owner Paperclip seed, before the runtime work
 # ---------------------------------------------------------------------------

@@ -73,7 +73,10 @@ _loop = asyncio.new_event_loop()
 def handler(event, context):
     global provision_runner
     if provision_runner is None:
-        load_environment()
+        try:
+            load_environment()
+        except Exception as exc:  # an SSM/Secrets blip: retried by the machine, not a failed provision
+            raise ProvisionTransient(f"environment load failed: {type(exc).__name__}") from exc
         from scripts import provision_runner as runner  # imports core.config: env first
 
         provision_runner = runner

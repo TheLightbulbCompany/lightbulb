@@ -355,6 +355,7 @@ async def test_failure_message_write_error_never_5xxes_the_callback(metrics):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reason", ["trial_daily_cap", "included_daily_cap", "trial_expired"])
 async def test_failed_run_of_a_blocked_owner_says_why(metrics, _not_capped, reason):
+    from core.config import settings
     from core.services.chat_gate import BUDGET_BLOCK_MESSAGES
 
     _not_capped.return_value = reason
@@ -365,7 +366,9 @@ async def test_failed_run_of_a_blocked_owner_says_why(metrics, _not_capped, reas
             await messaging.handle_run_event(
                 "o", _event(type="run.ended", outcome="error", error_kind="model_unavailable", usage=USAGE)
             )
-    assert create.await_args.kwargs["text"] == BUDGET_BLOCK_MESSAGES[reason]
+    path, label = messaging.BUDGET_BLOCK_LINKS[reason]
+    expected = f"{BUDGET_BLOCK_MESSAGES[reason]} [{label}]({settings.FRONTEND_URL.rstrip('/')}{path})"
+    assert create.await_args.kwargs["text"] == expected
 
 
 @pytest.mark.asyncio
@@ -386,6 +389,7 @@ async def test_failed_run_of_a_credit_blocked_owner_says_so(metrics, _not_credit
     """A paid owner out of Bedrock/OpenRouter credits gets the out_of_credits
     note instead of the generic model_unavailable text — same gate as
     gate_chat/provision_gate Layer 3 (metronome_gate.is_owner_blocked)."""
+    from core.config import settings
     from core.services.chat_gate import BUDGET_BLOCK_MESSAGES
 
     _not_credit_blocked.return_value = True
@@ -396,4 +400,6 @@ async def test_failed_run_of_a_credit_blocked_owner_says_so(metrics, _not_credit
             await messaging.handle_run_event(
                 "o", _event(type="run.ended", outcome="error", error_kind="model_unavailable", usage=USAGE)
             )
-    assert create.await_args.kwargs["text"] == BUDGET_BLOCK_MESSAGES["out_of_credits"]
+    path, label = messaging.BUDGET_BLOCK_LINKS["out_of_credits"]
+    expected = f"{BUDGET_BLOCK_MESSAGES['out_of_credits']} [{label}]({settings.FRONTEND_URL.rstrip('/')}{path})"
+    assert create.await_args.kwargs["text"] == expected

@@ -9,7 +9,7 @@ from __future__ import annotations
 # ChatErrorCard); these strings are what non-web surfaces — Paperclip run
 # rows, logs, the wake refusal frame — show.
 BUDGET_BLOCK_MESSAGES = {
-    "trial_expired": "Your 3-day free trial has ended. Pick a plan to keep your agent.",
+    "trial_expired": "Your free trial has ended. Pick a plan to keep your agents.",
     "trial_daily_cap": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
     "included_daily_cap": "You've used today's included usage. It resets at 00:00 UTC.",
     "out_of_credits": "You're out of workspace credits. Top up in Settings → Model & Credits to continue.",

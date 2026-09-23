@@ -374,7 +374,7 @@ def trial_expired_gate(owner_role: str) -> Gate:
     return Gate(
         code="trial_expired",
         title="Your free trial has ended",
-        message="Your 3-day free trial has ended. Pick a plan to keep your agent.",
+        message="Your free trial has ended. Pick a plan to keep your agents.",
         action_label="Upgrade",
         action_href="/settings?panel=billing",
         action_admin_only=False,

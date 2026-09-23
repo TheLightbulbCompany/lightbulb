@@ -134,6 +134,16 @@ describe("messaging HTTP client", () => {
     expect(JSON.stringify(methods)).not.toContain("ownerId");
   });
 
+  it("archives and unarchives through the room PATCH", async () => {
+    const { client, methods } = setup();
+    await client.updateRoom(roomId, { archived: true });
+    await client.updateRoom(roomId, { archived: false });
+    expect(methods.patch.mock.calls).toEqual([
+      [`/messaging/rooms/${roomId}`, { archived: true }],
+      [`/messaging/rooms/${roomId}`, { archived: false }],
+    ]);
+  });
+
   it("addresses the phase 3 room commands", async () => {
     const calls: Array<[string, string, unknown]> = [];
     const api = {

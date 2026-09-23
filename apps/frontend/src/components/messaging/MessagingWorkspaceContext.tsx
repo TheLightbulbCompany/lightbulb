@@ -786,6 +786,7 @@ export function MessagingWorkspaceProvider({
       onRenameRoom: async (name: string) => { await rooms.updateRoom({ name }); },
       onSetTopic: async (topic: string | null) => { await rooms.updateRoom({ topic }); },
       ...(rooms.activeRoom.kind === "channel" ? {
+        onSetArchived: async (archived: boolean) => { await rooms.updateRoom({ archived }); },
         addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some(
           (member) => member.kind === candidate.kind && member.id === candidate.id,
         )),

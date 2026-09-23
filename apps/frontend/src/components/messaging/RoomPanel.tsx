@@ -91,6 +91,7 @@ export interface RoomPanelProps {
   onSetPrefs?: (prefs: MemberPrefsRequest) => Promise<void>;
   onSetTopic?: (topic: string | null) => Promise<void>;
   onLeaveRoom?: () => Promise<void>;
+  onSetArchived?: (archived: boolean) => Promise<void>;
   onAbortRun?: (runId: string) => void;
   onSteerRun?: (runId: string, text: string) => void;
   onLinkToWork?: () => void;
@@ -257,6 +258,7 @@ function RoomContent({
   onSetPrefs,
   onSetTopic,
   onLeaveRoom,
+  onSetArchived,
   onAbortRun,
   onSteerRun,
   onLinkToWork,
@@ -630,7 +632,8 @@ function RoomContent({
             setSearchTarget({ messageId: message.messageId, threadRootMessageId: root, token: ++searchTargetToken.current });
           }} />}
         onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
-        onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom} />
+        onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom}
+        onSetArchived={onSetArchived} />
       <nav className="room-tabs" aria-label="Conversation views">
         <button type="button" className="room-tab" aria-current={contextCollapsed && !showDetail ? "page" : undefined}
           onClick={() => {
@@ -674,7 +677,13 @@ function RoomContent({
       <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-sm text-err">{messageActionError}</p>}
-      <RoomComposer {...composer}
+      {visibleRoom?.archivedAt ? <div className="room-composer room-archived" role="status">
+        <p className="text-sm text-muted-foreground">
+          {isRoomAdmin && onSetArchived ? "This channel is archived. Unarchive it to post." : "This channel is archived."}
+        </p>
+        {isRoomAdmin && onSetArchived && <Button type="button" size="sm" variant="outline" disabled={!actionable || messageActionPending}
+          onClick={() => void runMessageAction(() => onSetArchived(false), "The channel could not be unarchived.")}>Unarchive channel</Button>}
+      </div> : <RoomComposer {...composer}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
         onEditLast={onUpdateMessage ? () => {
@@ -682,7 +691,7 @@ function RoomContent({
           setEditTarget(own.length ? own[own.length - 1].messageId : null);
         } : undefined}
         disabled={!actionable || composer.disabled}
-        dropTargetRef={historyRef} />
+        dropTargetRef={historyRef} />}
     </div>
     {showContext && !showDetail && <aside className="room-context" aria-label="Room details"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setContextCollapsed(true); } }}>
@@ -752,7 +761,7 @@ function RoomContent({
           {runs.filter((run) => run.threadRootMessageId === parentMessage.messageId).map(renderRun)}
         </div>
       </> : null}</div>
-      {parentMessage && threadComposer?.parentMessageId === parentMessage.messageId && <RoomComposer {...threadComposer.composer} label="Reply to thread" disabled={!actionable || threadComposer.composer.disabled} />}
+      {parentMessage && threadComposer?.parentMessageId === parentMessage.messageId && <RoomComposer {...threadComposer.composer} label="Reply to thread" disabled={!actionable || !!visibleRoom?.archivedAt || threadComposer.composer.disabled} />}
     </aside>}
     <Dialog open={management !== null && canManageMembers} onOpenChange={(open) => { if (!open && !managementPending) setManagement(null); }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"

@@ -395,7 +395,8 @@ function DirectoryContent({
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={reorderSections} accessibility={{ announcements }}>
     <SortableContext items={sections.map((section) => section.id)} strategy={verticalListSortingStrategy}>
     {groups.map((group) => {
-      const collapsed = prefs.collapsed.includes(group.id);
+      // Archived starts collapsed, so for it alone a listed id means "expanded".
+      const collapsed = prefs.collapsed.includes(group.id) !== (group.id === "archived");
       // Collapsing hides rooms, never activity or your place: the header keeps
       // the group's unread count, and the room you are reading stays on screen
       // so `aria-current` survives a ⌘K / next-unread / permalink jump into a

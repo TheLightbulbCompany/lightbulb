@@ -90,6 +90,10 @@ class RoomNotFound(MessagingRepoError):
     pass
 
 
+class RoomArchived(MessagingRepoError):
+    pass
+
+
 class PinLimitExceeded(MessagingRepoError):
     pass
 
@@ -727,6 +731,8 @@ async def create_message(
         meta = await get_room(room_id)
         if meta is None:
             raise RoomNotFound(room_id)
+        if meta.get("archivedAt"):
+            raise RoomArchived(room_id)
         expected = int(meta["lastSeq"])
         seq = expected + 1
         now = utc_now_iso()
@@ -758,7 +764,8 @@ async def create_message(
                     "TableName": table_name,
                     "Key": {"pk": room_pk(room_id), "sk": "META"},
                     "UpdateExpression": "SET lastSeq = :seq, lastMessageAt = :now, updatedAt = :now",
-                    "ConditionExpression": "lastSeq = :expected",
+                    # An archive committing after the read above cancels this; the retry sees it.
+                    "ConditionExpression": "lastSeq = :expected AND attribute_not_exists(archivedAt)",
                     "ExpressionAttributeValues": {":seq": seq, ":expected": expected, ":now": now},
                 }
             },
@@ -1210,7 +1217,9 @@ async def remove_member(
     return {**meta, "revision": revision, "updatedAt": now, "deliveryKey": new_delivery_key or meta["deliveryKey"]}
 
 
-_ROOM_META_FIELDS = ("name", "topic")
+_ROOM_META_FIELDS = ("name", "topic", "archivedAt", "archivedBy")
+# Cleared by REMOVE, not SET null: create_message's fence is attribute_not_exists(archivedAt).
+_ROOM_META_REMOVABLE = ("archivedAt", "archivedBy")
 
 
 async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
@@ -1224,18 +1233,21 @@ async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
     if meta is None:
         raise RoomNotFound(room_id)
     named = {k: v for k, v in updates.items() if k in _ROOM_META_FIELDS}
+    removed = [k for k in _ROOM_META_REMOVABLE if k in named and named[k] is None]
+    named = {k: v for k, v in named.items() if k not in removed}
     now = utc_now_iso()
     table_name = _table().name
     revision = int(meta["revision"]) + 1
-    names = {f"#{k}": k for k in named}
+    names = {f"#{k}": k for k in [*named, *removed]}
     values = {f":{k}": _ddb_safe(v) for k, v in named.items()}
     sets = ", ".join(f"#{k} = :{k}" for k in named)
+    remove = f" REMOVE {', '.join(f'#{k}' for k in removed)}" if removed else ""
     items: list[dict] = [
         {
             "Update": {
                 "TableName": table_name,
                 "Key": {"pk": room_pk(room_id), "sk": "META"},
-                "UpdateExpression": f"SET {sets + ', ' if sets else ''}revision = :rev, updatedAt = :now",
+                "UpdateExpression": f"SET {sets + ', ' if sets else ''}revision = :rev, updatedAt = :now{remove}",
                 "ConditionExpression": "revision = :expected",
                 "ExpressionAttributeNames": names or None,
                 "ExpressionAttributeValues": {**values, ":rev": revision, ":expected": revision - 1, ":now": now},
@@ -1256,7 +1268,7 @@ async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
         )
     items[0]["Update"] = {k: v for k, v in items[0]["Update"].items() if v is not None}
     await _transact(items)
-    return {**meta, **named, "revision": revision, "updatedAt": now}
+    return {**{k: v for k, v in meta.items() if k not in removed}, **named, "revision": revision, "updatedAt": now}
 
 
 MAX_PINNED_MESSAGES = 50

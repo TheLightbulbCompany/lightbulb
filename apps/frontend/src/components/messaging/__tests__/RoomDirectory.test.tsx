@@ -711,3 +711,12 @@ it("collapses the Sessions section through the shared prefs and keeps a count", 
   expect(screen.getByLabelText("1 live session")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /^Open / })).not.toBeInTheDocument();
 });
+
+it("starts the Archived group collapsed and expands it on request", async () => {
+  window.localStorage.clear();
+  render(<RoomDirectory ownerScopeId="org-archived" state="ready" sections={[]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
+    rooms={[base, { ...base, roomId: "old", name: "Old launch", archivedAt: "2026-09-23T00:00:00Z" }]} />);
+  expect(screen.queryByRole("button", { name: /^Old launch/ })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Expand Archived" }));
+  expect(screen.getByRole("button", { name: /^Old launch/ })).toBeInTheDocument();
+});

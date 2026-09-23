@@ -402,6 +402,14 @@
 .workspace-shell[data-messages-active="true"] .dockview-theme-lightbulb {
   --dv-tabs-and-actions-container-height: 0px;
 }
+/* Tasks' Expand / Show beside chat control in its dock group header. */
+.workspace-shell .workspace-dock-actions { display: flex; align-items: center; height: 100%; padding: 0 8px; }
+.workspace-shell .workspace-dock-action {
+  display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--midnight-muted); cursor: pointer;
+}
+.workspace-shell .workspace-dock-action:hover { background: var(--cream); color: var(--midnight); }
+.workspace-shell .workspace-dock-action:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }
 @media (max-width: 1000px) {
   .workspace-shell { grid-template-columns: 56px 220px minmax(0, 1fr); }
 }

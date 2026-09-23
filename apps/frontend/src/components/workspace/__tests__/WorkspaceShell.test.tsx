@@ -7,6 +7,8 @@ import { WorkspaceShell } from "../WorkspaceShell";
 const state = vi.hoisted(() => ({
   phase: "selecting", selectProps: vi.fn(), organization: null as { id: string } | null,
   openPanelIds: [] as string[], activePanelId: "chat:__default__", chatReady: true,
+  // null = single group: Messages is visible exactly when it is active.
+  split: null as null | { messagesVisible: boolean; teamsPanelVisible: boolean },
 }));
 vi.mock("@/hooks/useOnboardingGate", () => ({ useOnboardingGate: () => state.phase }));
 vi.mock("@clerk/nextjs", () => ({
@@ -21,7 +23,12 @@ vi.mock("@/hooks/useAgents", () => ({ useAgents: () => {
 } }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => null }));
 vi.mock("../workspaceController", () => ({
-  useWorkspaceState: () => ({ activePanelId: state.activePanelId, openPanelIds: state.openPanelIds }),
+  useWorkspaceState: () => ({
+    activePanelId: state.activePanelId,
+    openPanelIds: state.openPanelIds,
+    messagesVisible: state.split?.messagesVisible ?? state.activePanelId === "chat:__default__",
+    teamsPanelVisible: state.split?.teamsPanelVisible ?? state.activePanelId.startsWith("teams-"),
+  }),
   refreshWorkspaceSnapshot: vi.fn(),
   getWorkspaceSnapshot: () => ({ ready: false }),
 }));
@@ -62,6 +69,7 @@ beforeEach(() => {
   state.organization = null;
   state.activePanelId = "chat:__default__";
   state.chatReady = true;
+  state.split = null;
   vi.clearAllMocks();
 });
 it("offers Clerk workspace selection instead of an endless loading shell", () => {
@@ -112,4 +120,21 @@ it("keeps observing room runs while Browser is open without marking the room vis
   const owner = screen.getByRole("region", { name: "Messaging owner" });
   expect(owner).toHaveAttribute("data-observe-runs", "true");
   expect(owner).toHaveAttribute("data-subscribed", "false");
+});
+
+it("keeps the room live and the dock headers shown while Tasks is split beside Messages", () => {
+  state.phase = "ready";
+  state.organization = { id: "org_1" };
+  state.split = { messagesVisible: true, teamsPanelVisible: true };
+  state.activePanelId = "teams-issues";
+  const view = render(<WorkspaceShell />);
+  const owner = screen.getByRole("region", { name: "Messaging owner" });
+  expect(owner).toHaveAttribute("data-subscribed", "true");
+  // Focus back in the conversation: tab bars stay, Tasks' header controls too.
+  state.activePanelId = "chat:__default__";
+  view.rerender(<WorkspaceShell />);
+  expect(view.container.querySelector(".workspace-shell")).toHaveAttribute("data-messages-active", "false");
+  state.split = null;
+  view.rerender(<WorkspaceShell />);
+  expect(view.container.querySelector(".workspace-shell")).toHaveAttribute("data-messages-active", "true");
 });

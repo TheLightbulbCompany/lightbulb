@@ -20,6 +20,7 @@ import {
   type PanelDescriptor,
 } from "./panelRegistry";
 import { buildPanelUrl } from "./urlChannel";
+import { readTasksPlacement, writeTasksPlacement, type TasksPlacement } from "./layoutStorage";
 
 export interface WorkspaceSnapshot {
   ready: boolean;
@@ -33,6 +34,9 @@ export interface WorkspaceSnapshot {
   lastFocusedChatAgentId: string | null;
   visibleChatAgentIds: string[]; // one entry per dockview group whose active panel is a chat panel
   teamsPanelVisible: boolean;
+  // Messages is the active tab of SOME group — true while Tasks is focused
+  // beside it, when activePanelId is Tasks but the conversation is on screen.
+  messagesVisible: boolean;
   openPanelIds: string[];
 }
 
@@ -50,6 +54,7 @@ function emptySnapshot(): WorkspaceSnapshot {
     lastFocusedChatAgentId: null,
     visibleChatAgentIds: [],
     teamsPanelVisible: false,
+    messagesVisible: false,
     openPanelIds: [],
   };
 }
@@ -69,6 +74,7 @@ function sameSnapshot(a: WorkspaceSnapshot, b: WorkspaceSnapshot): boolean {
     a.focusedChatAgentId === b.focusedChatAgentId &&
     a.lastFocusedChatAgentId === b.lastFocusedChatAgentId &&
     a.teamsPanelVisible === b.teamsPanelVisible &&
+    a.messagesVisible === b.messagesVisible &&
     sameIds(a.visibleChatAgentIds, b.visibleChatAgentIds) &&
     sameIds(a.openPanelIds, b.openPanelIds)
   );
@@ -123,6 +129,7 @@ function recomputeSnapshot(): void {
     teamsPanelVisible: groupActivePanels.some(
       (p) => p !== undefined && p.id.startsWith("teams-"),
     ),
+    messagesVisible: groupActivePanels.some((p) => p?.id === MESSAGES_PANEL_ID),
     openPanelIds,
   });
 }
@@ -194,13 +201,55 @@ function addOrFocus(descriptor: PanelDescriptor, extraParams?: Record<string, st
     recomputeSnapshot();
     return;
   }
+  const split = descriptor.panelId === TASKS_PANEL_ID && canSplitBesideMessages()
+    && readTasksPlacement() === "split";
   _api.addPanel({
     id: descriptor.panelId,
     component: descriptor.component,
     title: descriptor.title,
     params: { ...descriptor.params, ...extraParams },
     ...(descriptor.renderer ? { renderer: descriptor.renderer } : {}),
+    // Tasks opens beside the conversation rather than as a tab that hides it.
+    ...(split
+      ? {
+          position: { referencePanel: MESSAGES_PANEL_ID, direction: "right" as const },
+          initialWidth: Math.round(_api.width * TASKS_SPLIT_FRACTION),
+        }
+      : {}),
   });
+}
+
+// The Tasks list panel is the only one that splits. Its detail panels
+// (teams-issues:<id>) keep today's tab behaviour.
+export const TASKS_PANEL_ID = "teams-issues";
+const TASKS_SPLIT_FRACTION = 0.4;
+// ponytail: a fixed floor on the dock width, not a measured content minimum.
+// Below it the conversation and the list would both be too cramped to read,
+// so Tasks opens as a tab exactly as it did before the split existed.
+export const MIN_SPLIT_DOCK_WIDTH = 720;
+
+export function canSplitBesideMessages(): boolean {
+  return !!_api?.getPanel(MESSAGES_PANEL_ID) && _api.width >= MIN_SPLIT_DOCK_WIDTH;
+}
+
+// Expand (split → tab) / Show beside chat (tab → split). Remembers the choice
+// for the next rail open, then moves the live panel. moveTo detaches the panel
+// from its old group, so the clear-on-close URL listener is held off the same
+// way closeSubjectDeleted holds it — a move is not a close.
+export function setTasksPlacement(placement: TasksPlacement): void {
+  writeTasksPlacement(placement);
+  const tasks = _api?.getPanel(TASKS_PANEL_ID);
+  const messages = _api?.getPanel(MESSAGES_PANEL_ID);
+  if (!tasks || !messages) return;
+  if (placement === "split" && !canSplitBesideMessages()) return;
+  _shellOpDepth += 1;
+  try {
+    tasks.api.moveTo({ group: messages.group, position: placement === "tab" ? "center" : "right" });
+  } finally {
+    _shellOpDepth -= 1;
+  }
+  tasks.api.setActive();
+  recomputeSnapshot();
 }
 
 export function openPanel(

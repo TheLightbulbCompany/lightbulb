@@ -38,6 +38,7 @@ import { useChatReady } from "@/components/chat/shell/useChatReady";
 import { PANEL_COMPONENTS } from "./panelComponents";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
+import { TasksHeaderActions } from "./TasksHeaderActions";
 import { buildMissionControlLayout } from "./buildDefaultLayout";
 import { readLayout, writeLayout } from "./layoutStorage";
 import { clearClosedPanelFromUrl } from "./urlChannel";
@@ -99,9 +100,9 @@ function DockUnmountSentinel({ onUnmount }: { onUnmount: () => void }): null {
 }
 
 function DesktopMessagingProvider({ children }: { children: React.ReactNode }) {
-  const { activePanelId, openPanelIds } = useWorkspaceState();
+  const { messagesVisible, openPanelIds } = useWorkspaceState();
   return (
-    <MessagingWorkspaceProvider subscribeToRoom={activePanelId === MESSAGES_PANEL_ID} observeRuns={openPanelIds.includes("browser")}>
+    <MessagingWorkspaceProvider subscribeToRoom={messagesVisible} observeRuns={openPanelIds.includes("browser")}>
       {children}
     </MessagingWorkspaceProvider>
   );
@@ -132,7 +133,7 @@ export function WorkspaceShell(): React.ReactElement {
 }
 
 function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactElement {
-  const { activePanelId } = useWorkspaceState();
+  const { activePanelId, teamsPanelVisible } = useWorkspaceState();
   const { agents, defaultId, isSettled: agentsSettled } = useAgents();
   const defaultIdRef = useRef<string | undefined>(defaultId);
   const agentsSettledRef = useRef(agentsSettled);
@@ -425,6 +426,7 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
         theme={LIGHTBULB_THEME}
         onReady={onReady}
         disableFloatingGroups
+        rightHeaderActionsComponent={TasksHeaderActions}
         // Tabs only. This kills BOTH drag backends at the source
         // (resolveDndCapabilities returns html5:false + pointer:false), which
         // is why it is one option rather than four handler removals: tab
@@ -432,9 +434,9 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
         // handle all go together, and a dockview upgrade cannot quietly
         // reintroduce one of them.
         //
-        // Splitting is now unreachable: the default layout is a single group
-        // and dragging is the only other way to make one. Sashes disappear
-        // with it — one group has nothing to resize.
+        // Users cannot split by dragging. The one split is programmatic: Tasks
+        // opens beside Messages (workspaceController.addOrFocus), and its
+        // sash still resizes because sashes are not a drag-and-drop backend.
         disableDnd
       />
     </div>
@@ -446,7 +448,12 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
         <DesktopMessagingProvider>
           <CommandPaletteProvider>
             <DesktopPermissionsGate />
-            <div className="workspace-shell" data-messages-active={activePanelId === MESSAGES_PANEL_ID}>
+            <div className="workspace-shell" data-messages-active={
+              // Messages hides the dock tab bars only when it is alone on
+              // screen. With Tasks split beside it, both groups keep their
+              // headers so Tasks' close and Expand controls stay reachable.
+              activePanelId === MESSAGES_PANEL_ID && !teamsPanelVisible
+            }>
               <WorkspaceHeader chatReady={chatReady} />
               <WorkspaceSidebar
                 chatReady={chatReady}

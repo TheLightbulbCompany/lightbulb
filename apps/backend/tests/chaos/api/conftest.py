@@ -71,9 +71,6 @@ NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
     # Exchanges the OAuth code with the external provider after an oauth-state
     # lookup; both the state table and the provider call are absent hermetically.
     "GET /api/v1/oauth/{provider}/callback": "external OAuth code exchange + oauth-state table not provisioned hermetically",
-    # Webhook ingress that looks up a hook token then forwards to the container;
-    # the hook-token table + container are absent hermetically.
-    "POST /api/v1/hooks/u/{owner_id}/{hook_path}": "forwards to a live container; hook-token table not provisioned hermetically",
     # Atlas register-built-agent bridge: hook-token lookup on the DDB containers
     # table then snapshot + deploy into a live container; both absent hermetically.
     # Covered by tests/unit/routers/test_agent_builder.py.

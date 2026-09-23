@@ -223,22 +223,16 @@ async def test_a_paid_workspace_keeps_the_plain_welcome(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_free_tier_welcome_tells_the_user_to_mention_the_ceo_by_its_real_handle(monkeypatch):
-    """Every free-tier agent is on Mentions, so a plain reply to the welcome
-    meets silence. The copy names the CEO's typeable handle — computed, since
-    agent names are user-editable."""
-    starter_ids, _ = _seed_fixture(monkeypatch)
-    roster = [{"id": agent_id, "name": "Ada Boss" if key == "ceo" else key} for key, agent_id in starter_ids.items()]
-    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=roster))
+async def test_a_free_tier_workspace_gets_the_same_plain_welcome(monkeypatch):
+    """A plain first message in the starter #general reaches the CEO on every plan
+    (#2960: no silent human messages), so the free tier needs no @-instruction."""
+    _seed_fixture(monkeypatch)
     _billing(monkeypatch, TRIAL)
 
     await messaging.ensure_default_room(OWNER, USER)
 
-    handle = messaging.mention_handles(roster)[starter_ids["ceo"]]
-    assert handle != "ceo"
-    text = _welcome_text(monkeypatch)
-    assert text == messaging.DEFAULT_ROOM_WELCOME_FREE.format(handle=handle)
-    assert f"@{handle} " in text
+    assert _welcome_text(monkeypatch) == messaging.DEFAULT_ROOM_WELCOME
+    assert not hasattr(messaging, "DEFAULT_ROOM_WELCOME_FREE")
 
 
 ROOM_A = str(uuid.UUID(int=30))

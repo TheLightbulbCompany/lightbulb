@@ -119,6 +119,7 @@ def test_ensure_profile_home_is_idempotent(home):
         "home/.local/share/gogcli/keyring",
         "home/.xurl",
         "skills/instagram/credentials.json",
+        "skills/shopify/credentials.json",
         "cli-env.json",
     ],
 )

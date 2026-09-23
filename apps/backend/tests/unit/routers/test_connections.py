@@ -1634,7 +1634,10 @@ class TestByoApp:
         body = {"client_id": "cid", "client_secret": "csec", field: "••••••abcd"}
         resp = await async_client.put("/api/v1/connections/google/byo-app", json=body)
         assert resp.status_code == 400
-        assert resp.json()["detail"] == "paste the real secret, not the masked value"
+        assert (
+            resp.json()["detail"]
+            == "Paste the real client secret — this looks like the masked value shown after saving."
+        )
         mock_put.assert_not_awaited()
 
     @pytest.mark.asyncio

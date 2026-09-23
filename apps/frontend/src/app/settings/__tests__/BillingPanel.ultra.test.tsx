@@ -81,8 +81,10 @@ describe("BillingPanel — Ultra upgrade CTA", () => {
     render(<SettingsPage />);
 
     const btn = screen.getByRole("button", { name: /upgrade to ultra/i });
-    expect(btn).toBeInTheDocument();
-    expect(btn).toHaveTextContent("$150");
+    expect(screen.getByTestId("plan-ultra")).toHaveTextContent("$150/mo");
+    // Workspace is current; Base is still offered as a switch.
+    expect(screen.getByTestId("plan-workspace")).toHaveTextContent("Current plan");
+    expect(screen.getByRole("button", { name: "Switch to Base" })).toBeInTheDocument();
 
     // The existing $50 card + Manage Payment button stay intact.
     expect(screen.getByText("Lightbulb — $50 / month")).toBeInTheDocument();
@@ -111,7 +113,7 @@ describe("BillingPanel — Ultra upgrade CTA", () => {
 
     render(<SettingsPage />);
 
-    expect(screen.getByText("Ultra")).toBeInTheDocument();
+    expect(screen.getByTestId("plan-ultra")).toHaveTextContent("Current plan");
     expect(
       screen.queryByRole("button", { name: /upgrade to ultra/i }),
     ).not.toBeInTheDocument();
@@ -136,5 +138,21 @@ describe("BillingPanel — Ultra upgrade CTA", () => {
     render(<SettingsPage />);
 
     expect(screen.getByRole("button", { name: /upgrade to ultra/i })).toBeInTheDocument();
+  });
+
+  it("a Base owner sees Base current and both upgrades, Workspace included", () => {
+    clerk.membership = { role: "org:admin" };
+    billing.isSubscribed = true;
+    billing.account = {
+      subscription_status: "active",
+      plan: "base",
+      base_price_usd: 20,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
+    };
+    render(<SettingsPage />);
+    expect(screen.getByTestId("plan-base")).toHaveTextContent("Current plan");
+    expect(screen.getByRole("button", { name: "Upgrade to Workspace" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upgrade to Ultra" })).toBeInTheDocument();
   });
 });

@@ -21,7 +21,7 @@ import { LocalBrowserSetup } from "@/components/desktop/LocalBrowserSetup";
 import { HandlePicker } from "@/components/marketplace/HandlePicker";
 import { getMySellerProfile, type SellerProfile } from "@/lib/marketplace/api";
 import { Logo } from "@/components/Logo";
-import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
+import { PlanChooser } from "@/components/settings/PlanChooser";
 import { UsagePanel } from "@/components/control/panels/UsagePanel";
 import { LLMPanel } from "@/components/control/panels/LLMPanel";
 import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
@@ -253,103 +253,6 @@ function MembersPanel() {
 // Billing Panel
 // =============================================================================
 
-// Ultra control for a subscribed owner. When the owner is
-// already on ultra_pro it collapses to an "Ultra" active badge; otherwise
-// it renders the upgrade button that calls useBilling().startCheckout("ultra") (which
-// redirects to a fresh Checkout, or refreshes in place on the item-swap path).
-function UltraUpgradeRow({
-  plan,
-  ultraPriceUsd,
-  startCheckout,
-}: {
-  plan: "base" | "standard" | "ultra_pro" | null | undefined;
-  ultraPriceUsd?: number;
-  startCheckout: (plan: "base" | "workspace" | "ultra") => Promise<void>;
-}) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleUpgrade = useCallback(async () => {
-    capture("billing_ultra_upgrade_clicked");
-    setError(null);
-    setLoading(true);
-    try {
-      await startCheckout("ultra");
-      // The fresh-checkout path redirects away and never returns here; the
-      // in-place swap resolves and the refreshed account re-renders this row
-      // as the Ultra badge — clear the spinner either way.
-      setLoading(false);
-    } catch {
-      setError("Couldn't start the upgrade. Please try again.");
-      setLoading(false);
-    }
-  }, [startCheckout]);
-
-  if (plan === "ultra_pro") {
-    return (
-      <div style={{ marginTop: 14 }}>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "color-mix(in srgb, var(--midnight) 8%, transparent)", padding: "3px 10px", borderRadius: 999 }}>
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          Ultra
-        </span>
-        <div className="settings-card-desc" style={{ marginTop: 6 }}>
-          Larger marketplace companies unlocked.
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ marginTop: 14 }}>
-      {plan === "base" && (
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "color-mix(in srgb, var(--midnight) 8%, transparent)", padding: "3px 10px", borderRadius: 999 }}>
-          Base
-        </span>
-      )}
-      <button type="button" className="settings-btn-save" onClick={handleUpgrade} disabled={loading}>
-        {loading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
-        {ultraPriceUsd === undefined ? "Upgrade to Ultra" : `Upgrade to Ultra — $${ultraPriceUsd}/mo`}
-      </button>
-      {error && (
-        <div className="settings-alert settings-alert-error" style={{ marginTop: 8 }}>
-          {error}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function BaseUpgradeRow({
-  basePriceUsd,
-  startCheckout,
-}: {
-  basePriceUsd?: number;
-  startCheckout: (plan: "base" | "workspace" | "ultra") => Promise<void>;
-}) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const handleUpgrade = useCallback(async () => {
-    setError(null);
-    setLoading(true);
-    try {
-      await startCheckout("base");
-      setLoading(false);
-    } catch {
-      setError("Couldn't start the Base plan. Please try again.");
-      setLoading(false);
-    }
-  }, [startCheckout]);
-  return (
-    <div style={{ marginTop: 14 }}>
-      <button type="button" className="settings-btn-save" onClick={handleUpgrade} disabled={loading}>
-        {loading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
-        {basePriceUsd === undefined ? "Upgrade to Base" : `Upgrade to Base — $${basePriceUsd}/mo`}
-      </button>
-      {error && <div className="settings-alert settings-alert-error" style={{ marginTop: 8 }}>{error}</div>}
-    </div>
-  );
-}
-
 // The free-tier window at the top of an unsubscribed workspace's Billing page.
 // trial_end null (a row the backend has not stamped) reads plain "Free trial".
 // ponytail: no "today's allowance used" line; nothing exposes the managed key's
@@ -506,16 +409,10 @@ function BillingPanel() {
             endLabel={trialEndLabel}
           />
         )}
-        <TeamBillingCard
-            workspacePriceUsd={account?.workspace_price_usd}
-          ownerRole={orgRole}
-          isSubscribed={isSubscribed}
-          onSubscribe={() => startCheckout("workspace")}
-          onManage={handlePortal}
-        />
-        {isTrialLocal && !isTrialExpired && (
-          <BaseUpgradeRow basePriceUsd={account?.base_price_usd} startCheckout={startCheckout} />
-        )}
+        <p className="settings-card-desc" style={{ marginBottom: 12 }}>
+          One price per workspace, with unlimited members.
+        </p>
+        <PlanChooser account={account} subscribed={false} startCheckout={startCheckout} />
       </div>
     );
   }
@@ -555,11 +452,9 @@ function BillingPanel() {
               Manage Payment
             </button>
           </div>
-          <UltraUpgradeRow
-            plan={account?.plan}
-            ultraPriceUsd={account?.ultra_price_usd}
-            startCheckout={startCheckout}
-          />
+          <div style={{ marginTop: 14 }}>
+            <PlanChooser account={account} subscribed startCheckout={startCheckout} />
+          </div>
         </div>
       </div>
     );
@@ -612,18 +507,10 @@ function BillingPanel() {
             <Link href="/chat" className="settings-btn-save">Sign up</Link>
           )}
         </div>
-        {/* Ultra upgrade hangs off the paid card for a subscribed owner only —
-            an unsubscribed / Sign-up / free-tier owner must pick the base plan
-            first. */}
-        {isSubscribed && (
-          <UltraUpgradeRow
-            plan={account?.plan}
-            ultraPriceUsd={account?.ultra_price_usd}
-            startCheckout={startCheckout}
-          />
-        )}
-        {isTrialLocal && !isTrialExpired && (
-          <BaseUpgradeRow basePriceUsd={account?.base_price_usd} startCheckout={startCheckout} />
+        {(isSubscribed || isTrialLocal) && (
+          <div style={{ marginTop: 14 }}>
+            <PlanChooser account={account} subscribed={isSubscribed} startCheckout={startCheckout} />
+          </div>
         )}
       </div>
     </div>

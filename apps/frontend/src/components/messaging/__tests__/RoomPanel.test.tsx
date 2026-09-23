@@ -575,8 +575,12 @@ it.each(["thread", "resources"] as const)("replaces the narrow conversation only
     />);
   const history = screen.getByRole("region", { name: "Messages" });
   expect(history).toBeVisible();
-  await user.click(screen.getByRole("button", { name: "Link to work" }));
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  expect(history).not.toBeVisible();
+  await user.click(screen.getByRole("button", { name: /All tasks in Tasks/ }));
   expect(onLinkToWork).toHaveBeenCalledOnce();
+  await user.click(screen.getByRole("button", { name: "Back to conversation" }));
+  expect(history).toBeVisible();
   const trigger = screen.getByRole("button", { name: kind === "thread" ? "Reply in thread" : "Devices & sessions" });
   await user.click(trigger);
   expect(history).not.toBeVisible();

@@ -297,6 +297,12 @@ class Settings(BaseSettings):
     OPENROUTER_GATE_URL: str = ""
     OPENROUTER_MANAGED_MODEL_ID: str = ""
     OPENROUTER_MANAGED_ENABLED: bool = False
+    # Explicitly choosing openrouter_managed moves an owner off the capped daily allowance
+    # onto PREPAID credits, which cannot be bought until the settlement Lambda's
+    # OPENROUTER_MONEY_CONTRACT_VERIFIED lands (openrouter-gate-stack.ts). Off, the switch
+    # is refused and /billing/account hides the option. No CDK wiring yet: whoever ships
+    # paid credits sets it.
+    OPENROUTER_PAID_CREDITS_ENABLED: bool = False
 
     # Billing / Stripe
     STRIPE_SECRET_KEY: str = ""

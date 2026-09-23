@@ -7,7 +7,6 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 
 import { SkillsTab } from "../SkillsTab";
-import { SkillProposalsPanel } from "../SkillProposalsPanel";
 
 let statusLoaded = false;
 const rpcMethods: (string | null)[] = [];
@@ -114,11 +113,4 @@ describe("SkillsTab", () => {
   });
 });
 
-describe("SkillProposalsPanel", () => {
-  it("explains that nothing can be proposed instead of implying an empty inbox", () => {
-    rpcData.mockReturnValue({ proposals: [], reason: "write_approval_disabled" });
-    render(<SkillProposalsPanel />);
-    expect(screen.getByText(/your agents write skills directly/i)).toBeInTheDocument();
-  });
-});
 

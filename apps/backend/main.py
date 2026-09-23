@@ -46,8 +46,6 @@ from routers import (
     gateway_relay,
     desktop_execution,
     google_accounts,
-    hooks_credentials,
-    hooks_proxy,
     integrations,
     launch,
     messaging,
@@ -833,11 +831,6 @@ app.include_router(desktop_pair.router, prefix="/api/v1", tags=["desktop"])
 # ChatGPT OAuth (device-code flow for BYO ChatGPT-token billing)
 app.include_router(oauth.router, prefix="/api/v1")
 
-# Public webhook ingress proxy. Bearer-token auth (NOT Clerk) — external
-# senders (Zapier/Stripe/GitHub) hit /api/v1/hooks/u/{owner_id}/{hook_path}
-# and we forward to the per-user OpenClaw container. See routers/hooks_proxy.py
-# for the auth model and forwarded-header rewriting rationale.
-app.include_router(hooks_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
 # Tier-2 ingress: signed Paperclip routine-trigger fires at
 # /api/v1/hooks/t/{owner_id}/{public_id}. No edge auth — Paperclip verifies
 # the per-trigger signature upstream. See routers/paperclip_trigger_proxy.py.
@@ -860,11 +853,6 @@ app.include_router(agent_builder.router, prefix="/api/v1/agent-builder", tags=["
 # isol8 skill from inside per-owner containers. No auth — non-sensitive catalog
 # data. See routers/platform_info.py.
 app.include_router(platform_info.router, prefix="/api/v1/platform-info", tags=["platform-info"])
-
-# Clerk-authed read of the calling user's hook credentials. Backs the
-# Settings → Webhooks panel; the user's own browser fetches their own
-# webhook URL + token. See routers/hooks_credentials.py.
-app.include_router(hooks_credentials.router, prefix="/api/v1/hooks", tags=["hooks"])
 
 # Agent mail (container routes under /u/{owner_id}/… use hook-token auth;
 # /addresses routes use Clerk). Policy lives in core/services/agent_mail_send.

@@ -20,7 +20,7 @@ from core.repositories import billing_repo, launch_waitlist_repo
 from core.services import launch_phase, launch_revenue, launch_service
 from core.services.launch_phase import Schedule
 from core.services.rate_bucket import RateBucket
-from routers.hooks_proxy import _extract_caller_ip
+from routers._public_ingress import _extract_caller_ip
 from schemas.launch import (
     ConnectStripeRequest,
     DisplayNamePatchRequest,

@@ -5,8 +5,7 @@ import { Copy } from "lucide-react";
 // A copy-to-clipboard row for a one-time secret value (webhook URL / signing
 // secret). Shared by RoutineDetailPanel's rotate/add-trigger flows and
 // RoutinesPanel's create-dialog "Any other app" rung — both show a webhook
-// secret exactly once, so there is no reveal toggle, unlike the
-// fetched-then-masked token in settings/WebhooksPanel.tsx.
+// secret exactly once, so there is no reveal toggle.
 // `copyLabel` disambiguates the copy button when several fields share a visible
 // label — a routine carries one webhook trigger per provider event, so its
 // detail panel renders several "Fire URL" fields at once and the row title is

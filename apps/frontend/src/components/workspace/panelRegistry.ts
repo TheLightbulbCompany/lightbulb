@@ -168,7 +168,6 @@ const CONTROL_KEYS: Readonly<Record<string, string>> = {
   // longer carries it. The /settings/connections route survives as a redirector
   // because the backend's Stripe return URL points at it.
   connections: "Connections",
-  "skill-proposals": "Skill Proposals",
 };
 
 export const PANEL_COMPONENT_KEYS: ReadonlySet<string> = new Set([

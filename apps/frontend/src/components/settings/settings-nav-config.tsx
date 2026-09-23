@@ -77,7 +77,6 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
       // Connections, its dedup counterpart, is no longer a Settings row at all:
       // it lives on the workspace rail under Browser and Files.
       { id: "mcp", name: "MCP servers", icon: "mcp", panel: "mcp" },
-      { id: "webhooks", name: "Webhooks", icon: "webhooks", panel: "webhooks" },
       { id: "desktop", name: "Desktop", icon: "desktop", panel: "desktop" },
       // MCP servers on the user's own Mac — desktop-app-only, so it sits with
       // the other Desktop row rather than with the container-side `mcp` tab.
@@ -88,7 +87,6 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
     label: "ENGINE ROOM",
     items: [
       { id: "skills", name: "Skills", icon: "skills", panel: "skills" },
-      { id: "skill-proposals", name: "Skill Proposals", icon: "skill-proposals", panel: "skill-proposals" },
     ],
   },
   {
@@ -134,14 +132,6 @@ export function NavIcon({ icon }: { icon: string }) {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <rect x="1" y="4" width="22" height="16" rx="2" />
           <line x1="1" y1="10" x2="23" y2="10" />
-        </svg>
-      );
-    case "webhooks":
-      return (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2" />
-          <path d="m6 17 3.13-5.78c.53-.97.1-2.18-.5-3.1a4 4 0 1 1 6.89-4.06" />
-          <path d="m12 6 3.13 5.73C15.66 12.7 16.9 13 18 13a4 4 0 0 1 0 8" />
         </svg>
       );
     case "desktop":
@@ -196,14 +186,6 @@ export function NavIcon({ icon }: { icon: string }) {
       return (
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-        </svg>
-      );
-    case "skill-proposals":
-      return (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-          <polyline points="14 2 14 8 20 8" />
-          <path d="m9 15 2 2 4-4" />
         </svg>
       );
     default:

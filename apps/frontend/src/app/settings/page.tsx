@@ -13,7 +13,6 @@ import { useApi, ApiError } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { WorkspaceMembersSection } from "@/components/settings/WorkspaceMembersSection";
-import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
 import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
 import { LocalSessions } from "@/components/desktop/LocalSessions";
 import { LocalMcpServers } from "@/components/desktop/LocalMcpServers";
@@ -26,7 +25,6 @@ import { UsagePanel } from "@/components/control/panels/UsagePanel";
 import { LLMPanel } from "@/components/control/panels/LLMPanel";
 import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
 import { SkillsTab } from "@/components/control/panels/SkillsTab";
-import { SkillProposalsPanel } from "@/components/control/panels/SkillProposalsPanel";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import {
@@ -53,11 +51,9 @@ type Panel =
   | "usage"
   | "providers"
   | "mcp"
-  | "webhooks"
   | "desktop"
   | "local-mcp"
   | "skills"
-  | "skill-proposals"
   | "marketplace";
 
 // =============================================================================
@@ -593,7 +589,6 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   // servers reads as the same surface as the other Settings panels (the Control
   // tab keeps the default full-bleed variant via ControlPanelRouter).
   mcp: () => <IntegrationsPanel variant="settings" />,
-  webhooks: WebhooksPanel,
   desktop: () => <><LocalSessions /><LocalBrowserSetup /><DesktopFileAccess /></>,
   // Desktop-app-only: MCP servers running on the user's own Mac, driven by the
   // Tauri local_mcp_* commands. Renders a download prompt in a browser.
@@ -601,7 +596,6 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   // SkillsTab takes an optional `agentId`; mounting it prop-less yields the
   // owner-level (global) skills surface — the engine-room home.
   skills: () => <SkillsTab />,
-  "skill-proposals": SkillProposalsPanel,
   marketplace: MarketplacePanel,
 };
 

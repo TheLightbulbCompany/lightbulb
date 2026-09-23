@@ -979,6 +979,18 @@ async def delete_owner_bedrock_role(owner_id: str) -> None:
             raise
 
 
+async def _owner_role_exists(owner_id: str) -> bool:
+    from core.dynamodb import run_in_thread
+
+    try:
+        await run_in_thread(_iam_client().get_role, RoleName=_owner_role_name(owner_id))
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchEntity":
+            return False
+        raise
+    return True
+
+
 async def reap_owner_bedrock_resources(
     owner_id: str, row_image: dict | None, *, delete_browser_profile: bool = True
 ) -> str:
@@ -1026,7 +1038,13 @@ async def reap_owner_bedrock_resources(
     # No evidence on the row means nothing was ever minted: skip without
     # touching AWS at all.
     if not (aip_arns or gate_hashes or row.get("bedrock_role_arn")):
-        return "skipped (no Bedrock footprint on the row)"
+        # No row at all means an earlier teardown already deleted it, possibly after its
+        # role delete failed. The role is the one resource with a deterministic name, so
+        # one IAM read tells whether a re-run still owes it; without this a failed first
+        # reap orphans the role forever. A row that exists but names nothing still costs
+        # no AWS calls.
+        if row_image is not None or not await _owner_role_exists(owner_id):
+            return "skipped (no Bedrock footprint on the row)"
 
     # FENCE — do not reap resources that belong to a LIVE container.
     #

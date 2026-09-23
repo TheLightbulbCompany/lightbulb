@@ -621,7 +621,7 @@ class PushTests(unittest.TestCase):
         self.assertEqual(json.loads(urlopen.call_args.args[0].data)[0]["body"], "x" * 180)
 
     def test_push_body_is_plain_text_not_markdown(self):
-        reply = "Great question.\n\n---\n\n## This Week's Focus\n\nYou're selling **handmade mugs**, the *gift* market."
+        reply = "Great question.\n\n---\n\n## This Week's Focus\n\nYou're selling **handmade mugs**, the gift market."
         _, urlopen = self.project(push_world(), push_message(reply))
         self.assertEqual(
             json.loads(urlopen.call_args.args[0].data)[0]["body"],
@@ -630,6 +630,8 @@ class PushTests(unittest.TestCase):
         # Same rules as the web toast's plainPreview test.
         self.assertEqual(index._plain_preview("- see [the docs](https://x.y)\n1. run `pnpm test`\n```ts\nconst a = 1;\n```"), "see the docs run pnpm test const a = 1;")
         self.assertEqual(index._plain_preview("5 * 3 = 15, snake_case stays"), "5 * 3 = 15, snake_case stays")
+        self.assertEqual(index._plain_preview("这是*重点*内容"), "这是*重点*内容")
+        self.assertLessEqual(len(index._plain_preview("*" * 400_000)), 1000)
 
     def test_members_without_push_tokens_are_skipped(self):
         _, urlopen = self.project(push_world(tokens={BOB_ID: ["tok-bob"]}))

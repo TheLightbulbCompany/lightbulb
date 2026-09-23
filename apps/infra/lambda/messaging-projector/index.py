@@ -37,12 +37,12 @@ _PLAIN_RULES = (
     (re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$", re.M), ""),
     (re.compile(r"^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)", re.M), ""),
     (re.compile(r"\*\*|__|~~|`"), ""),
-    (re.compile(r"(^|[^\w*])\*(\S(?:.*?\S)?)\*(?!\w)"), r"\1\2"),
     (re.compile(r"\s+"), " "),
 )
 
 
 def _plain_preview(text: str) -> str:
+    text = text[:1000]  # bounded first: a push body never needs the whole message
     for pattern, repl in _PLAIN_RULES:
         text = pattern.sub(repl, text)
     return text.strip()

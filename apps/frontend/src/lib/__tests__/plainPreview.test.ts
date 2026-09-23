@@ -3,7 +3,7 @@ import { plainPreview } from "../plainPreview";
 
 describe("plainPreview", () => {
   it("drops the markdown a notification body would show raw", () => {
-    const reply = "Great question.\n\n---\n\n## Fresh TrackE — This Week's Focus\n\nYou're selling **handmade mugs**, which puts you in the *gift* market.";
+    const reply = "Great question.\n\n---\n\n## Fresh TrackE — This Week's Focus\n\nYou're selling **handmade mugs**, which puts you in the gift market.";
     expect(plainPreview(reply)).toBe(
       "Great question. Fresh TrackE — This Week's Focus You're selling handmade mugs, which puts you in the gift market.",
     );
@@ -15,7 +15,12 @@ describe("plainPreview", () => {
     );
   });
 
-  it("leaves plain text and a lone asterisk alone", () => {
+  it("works on a bounded prefix, so a huge message costs nothing", () => {
+    expect(plainPreview("*".repeat(400_000)).length).toBeLessThanOrEqual(1000);
+  });
+
+  it("leaves plain text, lone asterisks and non-Latin emphasis alone", () => {
+    expect(plainPreview("这是*重点*内容")).toBe("这是*重点*内容");
     expect(plainPreview("5 * 3 = 15, snake_case stays")).toBe("5 * 3 = 15, snake_case stays");
   });
 });

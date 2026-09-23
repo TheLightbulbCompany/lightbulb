@@ -83,7 +83,6 @@ def test_a_follow_up_turn_feeds_the_follow_up_text_and_replies_in_the_original_t
     seen = {}
     monkeypatch.setattr(turn, "_construct_agent", lambda *a: _Agent(seen))
     monkeypatch.setattr(turn, "publish_frame", lambda *a: 200)
-    monkeypatch.setattr(turn, "gate_ambient", lambda *a, **k: pytest.fail("a follow-up never gates"))
     body = _follow_up_body(eventKind="room_event")
     turn.run_turn("ceo", body)
     _, text = f.split_turn_input(seen["user_message"])
@@ -435,14 +434,6 @@ def test_the_delegation_maps_to_the_turn_that_started_it_not_the_latest(home, po
     turn.run_turn("ceo", later)
     assert turn.DELEGATION_TURN["d1"]["triggerMessageId"] == TRIGGER
     assert turn.LAST_TURN[SESSION]["triggerMessageId"] == later["message"]["messageId"]
-
-
-def test_an_ignored_ambient_turn_does_not_become_the_last_turn(home, posted, monkeypatch):
-    monkeypatch.setattr(turn, "_run_hermes", lambda *a, **k: pytest.fail("ignored"))
-    monkeypatch.setattr(turn, "gate_ambient", lambda *a, **k: "ignore")
-    monkeypatch.setattr(turn, "publish_frame", lambda *a: 200)
-    turn.run_turn("ceo", f.ingress(eventKind="room_event"))
-    assert SESSION not in turn.LAST_TURN
 
 
 def test_the_drain_resolves_by_delegation_before_last_turn(monkeypatch):

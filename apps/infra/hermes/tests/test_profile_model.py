@@ -23,7 +23,7 @@ def constructed(monkeypatch, config):
     fake.AIAgent = FakeAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake)
     monkeypatch.setattr(turn.sync, "ensure_profile", lambda agent_id: None)
-    monkeypatch.setattr(turn, "pin_profile_defaults", lambda agent_id, model: config)
+    monkeypatch.setattr(turn, "pin_profile_defaults", lambda agent_id: config)
     turn._construct_agent("ceo", {"room": {"id": ROOM, "kind": "channel"}}, None, "sess")
     return seen
 

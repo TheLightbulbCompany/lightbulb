@@ -1520,6 +1520,13 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     return room_id
 
 
+async def _starter_ceo_id(owner_id: str) -> str | None:
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
+    return (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
+
+
 async def promote_listening(owner_id: str) -> None:
     """Turn Listening on for every agent when a trial workspace upgrades to paid.
 
@@ -2179,7 +2186,11 @@ def select_dispatch_targets(
     source_agent_id: str | None,
     *,
     room_kind: str | None = None,
+    default_agent_id: str | None = None,
 ) -> list[dict]:
+    """``default_agent_id``: in the starter #general a HUMAN message that selects no agent at all
+    goes to that agent (the CEO) as a user_request, so nobody talks into silence (owner ruling
+    2026-09-23). Rooms with Listening agents already have candidates, and Jev decides there."""
     mentioned = {ref["id"] for ref in mentions if ref.get("kind") == "agent"}
     targets: dict[str, EventKind] = {}
     for member in sorted(members, key=lambda row: (row.get("kind", ""), row.get("id", ""))):
@@ -2197,6 +2208,10 @@ def select_dispatch_targets(
             targets[agent_id] = "user_request"
         elif member.get("listenMode") == "active":
             targets.setdefault(agent_id, "room_event")
+    if not targets and source_agent_id is None and default_agent_id:
+        default = next((m for m in members if m.get("kind") == "agent" and m.get("id") == default_agent_id), None)
+        if default is not None and default.get("listenMode") != "observe":
+            targets[default_agent_id] = "user_request"
     return [{"agentId": agent_id, "eventKind": event_kind} for agent_id, event_kind in sorted(targets.items())]
 
 
@@ -2219,6 +2234,11 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     )
     members = await messaging_repo.list_members(room_id)
     targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"))
+    if not targets and room_id == default_room_id(owner_id):
+        # Nobody would answer in the starter #general: the CEO does (one read, only on this path).
+        targets = select_dispatch_targets(
+            members, mentions, None, room_kind=meta.get("kind"), default_agent_id=await _starter_ceo_id(owner_id)
+        )
     room_kind = _room_kind(meta)
     # EFS is NFS. These reads open and read whole attachment files, so running
     # them inline blocked the event loop -- every other request on the

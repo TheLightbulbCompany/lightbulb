@@ -876,7 +876,9 @@ describe("ProvisioningStepper blocked-state rendering", () => {
           <div>children</div>
         </ProvisioningStepper>,
       );
-      act(() => void vi.advanceTimersByTime(PROVISION_TIMEOUT_MS + 1_000));
+      // Offered at once: nothing is provisioning, so waiting out the 5-minute slow threshold
+      // would leave "ready in about a minute" on screen with nothing running.
+      expect(screen.getByText(/hasn't started setting up yet/i)).toBeInTheDocument();
 
       await act(async () => {
         fireEvent.click(screen.getByRole("button", { name: /Check again/ }));

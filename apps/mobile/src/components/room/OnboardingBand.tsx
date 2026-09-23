@@ -74,29 +74,36 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
   const [connectFailed, setConnectFailed] = useState<SetupStepId | null>(null);
 
   const loadConnections = useCallback(
-    () =>
+    (live: () => boolean = () => true) =>
       api
         .get("/connections")
-        .then((body) => setConnections((body as { connections?: SetupConnection[] }).connections ?? []))
-        .catch(() => setConnections(null)),
+        .then((body) => live() && setConnections((body as { connections?: SetupConnection[] }).connections ?? []))
+        .catch(() => live() && setConnections(null)),
     [api],
   );
 
   // On focus, so coming back from the LLM or agents screen re-derives the band.
-  // A refetch never resets to "loading": the band must not flicker away.
+  // A refetch never resets to "loading": the band must not flicker away. A blur
+  // (or unmount) drops this round's answers, so a slow response from an earlier
+  // focus can never overwrite a newer one.
   useFocusEffect(
     useCallback(() => {
-      void loadConnections();
+      let cancelled = false;
+      const live = () => !cancelled;
+      void loadConnections(live);
       void api
         .get("/teams/agents")
         .then((body) => (body as { agents?: { id: string; name?: string | null }[] }).agents ?? [])
         .catch(() => [])
-        .then((agents) => setAgentNames(new Map(agents.filter((a) => a.name).map((a) => [a.id, a.name as string]))));
+        .then((agents) => live() && setAgentNames(new Map(agents.filter((a) => a.name).map((a) => [a.id, a.name as string]))));
       // Billing only has to settle: a 403/404/failure just omits its card.
       void api
         .get("/billing/account")
-        .then((body) => setBilling(body as SetupBilling))
-        .catch(() => setBilling(null));
+        .then((body) => live() && setBilling(body as SetupBilling))
+        .catch(() => live() && setBilling(null));
+      return () => {
+        cancelled = true;
+      };
     }, [api, loadConnections]),
   );
 

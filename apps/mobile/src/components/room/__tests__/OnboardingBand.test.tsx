@@ -40,7 +40,7 @@ import { dismissKey, OnboardingBand } from "../OnboardingBand";
 const participants = [
   { kind: "human", id: "user_1", displayName: "Alice" },
   { kind: "agent", id: "agent_ceo", displayName: "CEO" },
-];
+] as const;
 const catalog = {
   connections: [
     { provider: "notion", status: "disconnected" },

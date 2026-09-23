@@ -224,6 +224,35 @@ existing-owner rollout without a separately proven supported migration path;
 adding to the present card avoids that gap. No live card or contract was
 changed for this inventory.
 
+## Dev funded end-to-end smoke: PASS (2026-09-23)
+
+This is the proof `OPENROUTER_MONEY_CONTRACT_VERIFIED` / `OPENROUTER_RATE_CARD_PROOF_ID`
+rests on in dev (`openrouter-gate-stack.ts` `rateCardProof`). Test org
+`org_3Jic5qyVa4uifBPJzbuiTNSJIuT` ("OR Paid Smoke P4") was left in place.
+
+| Step | Result |
+|---|---|
+| Workspace plan | Stripe test subscription `sub_1UIkGXEcGJXHk5N7wQC2XhxA` (`pm_card_visa`); the webhook set the row to active / `standard`; Metronome customer `be448ed2-…` and contract `a9c9e017-…` exist |
+| Provider | `openrouter_managed`; `managed_inference_available: true` |
+| Top-up | $5 payment-gated PREPAID commit `9a47ba22-…`; Stripe invoice PAID; fast-gate 5,000,000 µ¢ |
+| Rate match | The contract's rate card carries product `4c39b72e-…` at FLAT 1.2e-7 ¢/nanodollar; metric `c4293481-…` sums `provider_cost_nanodollars` |
+| Paid turn | `billing_mode=paid` with a 48,984 µ¢ reservation (formula-exact) |
+| Settle | 28 paid rows settled (agents kept working while settlement was blocked); the smoke row cost 1,249,939 nanodollars |
+| Debit | Σ ceil(N×1.2/1000) = 50,591 µ¢, which equals the observed fast-gate drop of 5,000,000 → 4,949,409; reserved back to 0 |
+| Idempotent | A settlement re-run settled 0 and left the fast-gate unchanged |
+| Metronome | 28 events, 0 duplicates, all matched to customer `be448ed2` and to the "OpenRouter provider cost (nanodollars)" metric |
+| Audit | 2026-09-22 reported only `unattributed` $0.00008 (a deleted manual probe key) |
+
+Bugs this smoke found, all fixed: settlement could not decrypt the Metronome key (#3017),
+the audit's date filter (#3002), and the audit's unattributed spend and float tolerance (#3006).
+
+**Before the prod paid flip:**
+1. Add a prod rate-card proof. Prod card `fdac2edd` has had a dry run only; apply the Metronome pricing first.
+2. Deploy #3028 (settlement overshoot metric and alarm W81).
+3. Point Metronome webhooks (sandbox and production) at `/api/v1/webhooks/metronome`. None
+   reach either environment today, so top-up status stays `requested` and payment-gate
+   failures go unseen.
+
 ## Acceptance work still required
 
 1. Obtain a written OpenRouter answer covering Lightbulb-funded,

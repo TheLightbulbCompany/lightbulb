@@ -29,9 +29,9 @@ export interface BillingAccount {
   managed_inference_available?: boolean;
   // Pricing tier: "standard" (the single $50/mo tier) or "ultra_pro" (the
   // higher $150/mo tier that unlocks larger marketplace companies). Backend
-  // defaults a plan-less row to "standard"; optional here so pre-plan
-  // response shapes (and test fixtures) don't have to carry it.
-  plan?: "base" | "standard" | "ultra_pro";
+  // defaults a plan-less PAID row to "standard" and reports null for a trial
+  // or no row; optional here so test fixtures don't have to carry it.
+  plan?: "base" | "standard" | "ultra_pro" | null;
   // Workspace prices are server-owned so every client shows the deployed
   // catalog instead of a stale price baked into a release.
   workspace_price_usd: number;

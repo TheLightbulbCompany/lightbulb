@@ -126,7 +126,9 @@ async def get_billing_account(
         provider_choice=account.get("provider_choice") if account else None,
         byo_provider=account.get("byo_provider") if account else None,
         managed_inference_available=settings.OPENROUTER_MANAGED_ENABLED and settings.OPENROUTER_PAID_CREDITS_ENABLED,
-        plan=(account.get("plan") or "standard") if account else "standard",
+        # A trial (or no row) has no plan: the "standard" default is only for PAID rows written
+        # before the plan field existed. Reporting a trial as "standard" read as a paid Workspace.
+        plan=(account.get("plan") or "standard") if account and subscription_status != "trial_local" else None,
         workspace_price_usd=settings.WORKSPACE_PRICE_USD,
         base_price_usd=settings.BASE_PRICE_USD,
         ultra_price_usd=settings.ULTRA_PRICE_USD,

@@ -262,7 +262,7 @@ function UltraUpgradeRow({
   ultraPriceUsd,
   startCheckout,
 }: {
-  plan: "base" | "standard" | "ultra_pro" | undefined;
+  plan: "base" | "standard" | "ultra_pro" | null | undefined;
   ultraPriceUsd?: number;
   startCheckout: (plan: "base" | "workspace" | "ultra") => Promise<void>;
 }) {

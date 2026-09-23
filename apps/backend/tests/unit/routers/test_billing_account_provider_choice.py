@@ -94,3 +94,26 @@ async def test_account_returns_byo_provider_when_byo_key(mock_repo, mock_get_sum
     body = resp.json()
     assert body["provider_choice"] == "byo_key"
     assert body["byo_provider"] == "openai"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "row, plan",
+    [
+        ({"subscription_status": "trial_local", "trial_end": 1792729982}, None),
+        ({"subscription_status": "active"}, "standard"),  # paid row from before the plan field
+        ({"subscription_status": "active", "plan": "base"}, "base"),
+        (None, None),
+    ],
+)
+@patch("routers.billing.get_usage_summary")
+@patch("routers.billing.billing_repo")
+async def test_account_plan_is_null_for_a_trial(mock_repo, mock_get_summary, async_client, row, plan):
+    mock_repo.get_by_owner_id = AsyncMock(return_value=row and {"owner_id": "org_t", **row})
+    mock_get_summary.return_value = _summary_zero()
+
+    body = (await async_client.get("/api/v1/billing/account")).json()
+
+    assert body["plan"] == plan
+    if row and row.get("trial_end"):
+        assert body["trial_end"] == row["trial_end"]

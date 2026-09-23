@@ -151,3 +151,22 @@ async def test_respec_on_a_matching_spec_rewrites_profiles_after_the_stop_withou
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _write)
     assert await hermes_provisioning.roll_runtime_image("org_a", respec=True) == "updated"
     assert [c[0] for c in calls] == ["health", "stop", "profiles"]
+
+
+@pytest.mark.asyncio
+async def test_an_env_drift_rewrites_profiles_after_the_stop_without_respec(monkeypatch):
+    # A managed-model flip moves LIGHTBULB_MANAGED_MODEL_ID in the env; bridge sync.py refuses an
+    # env/profile pair that disagrees, so the plain roll must carry the profiles with it.
+    calls = _wire(monkeypatch, current_image=IMAGE)
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "build_runtime_request_for_owner",
+        lambda o, r, a, **kw: {"environmentVariables": {"LIGHTBULB_MANAGED_MODEL_ID": "new/model"}},
+    )
+
+    async def _write(owner_id, aip_arns):
+        calls.append(("profiles", owner_id))
+
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _write)
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
+    assert [c[0] for c in calls] == ["update", "ready", "health", "stop", "profiles"]

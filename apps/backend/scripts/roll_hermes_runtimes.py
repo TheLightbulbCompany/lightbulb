@@ -10,13 +10,12 @@ A ``hermes-version.json`` tag flip changes ``AGENTCORE_HERMES_IMAGE`` for the ba
 existing runtime keeps the image it was created with until ``UpdateAgentRuntime`` moves it --
 that is what ``hermes_provisioning.roll_runtime_image`` does per owner (update on drift, wait
 READY, wait for the bridge to report idle, stop the warm session). Exit 0 when every targeted
-owner is current or updated, 1 if any owner failed (each failure is logged; the rest still roll).
+owner is current or updated, 1 if any owner failed or came back busy (the rest still roll).
 
-Read the per-owner line this prints, not just the exit code. ``updated-session-busy`` means the
-runtime IS on the new image but a turn was still running at the ten-minute deadline, so the warm
-session was deliberately left alive and keeps serving the OLD image until it ends -- up to its
-4 h idle / 8 h lifetime. That is exit 0 by design (nothing failed), so a roll is only complete
-once every line reads ``current`` or ``updated``; re-run for the stragglers.
+``updated-session-busy`` means the runtime IS on the new spec but a turn was still running at the
+ten-minute deadline, so the warm session was deliberately left alive. When the env moved (a
+managed-model flip) its profiles were NOT rewritten, and the next cold start refuses the mismatch
+-- so a busy owner exits 1: re-run it with ``--respec`` (its env no longer reads as drift).
 
 ``--dry-run`` is NOT read-only: it still runs the idempotent ensure calls a roll needs to
 compute the desired spec (the owner's Browser profile create-or-adopt, the memory IAM policy).
@@ -65,8 +64,9 @@ async def main(argv: list[str] | None = None) -> int:
             logger.error("roll: owner=%s FAILED: %s: %s", owner_id, type(exc).__name__, exc)
             continue
         print(f"{owner_id} {result}")
-        # A busy --respec owner has the new env but the old profile: re-run it or it breaks.
-        failed += args.respec and result == "updated-session-busy"
+        # A busy owner may have a moved env but its old profile (an env drift, or --respec):
+        # re-run it with --respec (the env no longer reads as drift) or it breaks on cold start.
+        failed += result == "updated-session-busy"
     return 1 if failed else 0
 
 

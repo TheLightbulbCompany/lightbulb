@@ -858,9 +858,8 @@ async def roll_runtime_image(
     )
     actual = await run_in_thread(_runtime_description, arn)
     current = _image_of(actual)
-    drifted = current != settings.AGENTCORE_HERMES_IMAGE or _env_drifted(
-        actual.get("environmentVariables"), request.get("environmentVariables")
-    )
+    env_drifted = _env_drifted(actual.get("environmentVariables"), request.get("environmentVariables"))
+    drifted = current != settings.AGENTCORE_HERMES_IMAGE or env_drifted
     if not (drifted or restart_session or respec):
         return "current"
     if dry_run:
@@ -895,7 +894,8 @@ async def roll_runtime_image(
             logger.info("roll_runtime_image: session stop for owner=%s: %s", owner_id, type(exc).__name__)
         if stopped:
             await expire_superseded_gate_tokens(owner_id)  # never raises
-        if respec:
+        if respec or env_drifted:
+            # An env move (a managed-model flip) must reach the profiles too: sync.py refuses a pair.
             # config.yaml is backend-owned (never saved back by the bridge), so nothing reverts this.
             # Either order leaves a gap where one turn sees a new/old env-profile pair and is refused
             # (sync.py); after the stop, that gap is a cold start that has no old env to fall back on.

@@ -143,7 +143,8 @@ async def test_a_starved_microvm_arrives_as_an_apiproblem_and_is_not_idle(monkey
 
 
 @pytest.mark.asyncio
-async def test_busy_respec_owner_fails_the_script(monkeypatch):
+async def test_a_busy_owner_fails_the_script(monkeypatch):
+    # Busy may mean a moved env with the old profile (env drift or --respec): re-run it.
     from scripts import roll_hermes_runtimes
 
     async def _busy(owner_id, *, dry_run=False, respec=False):
@@ -151,4 +152,4 @@ async def test_busy_respec_owner_fails_the_script(monkeypatch):
 
     monkeypatch.setattr(roll_hermes_runtimes, "roll_runtime_image", _busy)
     assert await roll_hermes_runtimes.main(["--owner-id", "org_a", "--respec"]) == 1
-    assert await roll_hermes_runtimes.main(["--owner-id", "org_a"]) == 0
+    assert await roll_hermes_runtimes.main(["--owner-id", "org_a"]) == 1

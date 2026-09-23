@@ -472,7 +472,6 @@ export class ApiStack extends cdk.Stack {
     // tabs/devices. INCLUDE (not KEYS_ONLY): the gateway fan-out needs the
     // member userId for per-member demux and connectionType to filter to chat
     // connections (excluding node/operator transparent pipes).
-    // Spec: docs/superpowers/specs/2026-05-30-multi-instance-backend-architecture-design.md
     connectionsTable.addGlobalSecondaryIndex({
       indexName: "by-owner-id",
       partitionKey: { name: "ownerId", type: dynamodb.AttributeType.STRING },

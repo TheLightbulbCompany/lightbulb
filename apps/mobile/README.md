@@ -1,9 +1,8 @@
 # @lightbulb/mobile
 
-Native iOS app for Isol8, built with Expo + expo-router. Plan:
-`docs/superpowers/plans/2026-07-05-mobile-app-expo-ios.md` (scope: end-user
+Native iOS app for Isol8, built with Expo + expo-router. Scope: end-user
 surfaces only — chat, teams, control panel, marketplace **buyer** flow,
-settings; no admin/ops, no seller side, no in-app billing).
+settings; no admin/ops, no seller side, no in-app billing.
 
 ## Running locally — dev vs prod
 
@@ -105,9 +104,7 @@ company org account before public App Store launch.
 When a run **you started** finishes, your phone gets a notification — even with
 the app closed — showing the agent's name and a preview of the reply; tapping it
 opens that agent's chat. That is the whole of v1 (user-initiated runs only;
-proactive cron / channel / Teams pushes are v2). Design + implementation plan:
-`docs/superpowers/specs/2026-07-10-mobile-push-notifications-design.md` and
-`docs/superpowers/plans/2026-07-10-mobile-push-notifications.md`.
+proactive cron / channel / Teams pushes are v2).
 
 **Transport — Expo Push API, no APNs key in our infra.** The backend sends to
 the Expo Push API (`https://exp.host/--/api/v2/push/send`); Expo/EAS fronts APNs

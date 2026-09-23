@@ -15,10 +15,9 @@
  *
  * Both call sites now delegate the READINESS decision to this module and
  * keep only their own presentational concerns (elapsed-time sub-stepping,
- * platform-specific card copy) local. See
- * docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md §2/§3
- * (fixes L4 — "mobile never re-onboards" — by construction: one shared
- * implementation, no separate mobile latch to fall behind).
+ * platform-specific card copy) local (fixes L4 — "mobile never re-onboards"
+ * — by construction: one shared implementation, no separate mobile latch to
+ * fall behind).
  *
  * INV-6: `chatAvailable` is derived SOLELY from `runtimePhase`
  * ("provisioning" | "starting" | "ready") — never from `lifecycle`,

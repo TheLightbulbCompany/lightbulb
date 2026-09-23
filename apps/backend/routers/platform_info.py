@@ -9,8 +9,7 @@ services straight from the same registry that drives the Integrations tab.
 Auth: **none**. The connectable catalog is non-sensitive — it is the same set
 of services any logged-in owner sees on the Integrations/Channels tabs, and it
 carries no per-owner state. Per-owner *connected* state is deliberately NOT
-served here (see docs/superpowers/plans/2026-07-17-platform-info-live-read.md):
-the agent already sees its connected integrations as tools.
+served here: the agent already sees its connected integrations as tools.
 
 Projection is mandatory. ``registry.all_providers()`` returns full ``Provider``
 models carrying internal wiring (MCP commands/env, OAuth URLs, materializer

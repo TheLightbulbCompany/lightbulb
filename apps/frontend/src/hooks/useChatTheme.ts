@@ -3,8 +3,7 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * The two independent axes of the chat theme — see
- * docs/superpowers/specs/2026-09-13-chat-theme-system-design.md.
+ * The two independent axes of the chat theme.
  *
  * `theme` moves the plane ladder (rail / sidebar / pane) between light and
  * dark. `accent` decides how much brand hue the chrome carries. They are

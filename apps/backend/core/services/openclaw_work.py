@@ -6,6 +6,8 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
+import random
 import time
 import traceback
 import uuid
@@ -490,6 +492,12 @@ class OpenClawWorkWorker:
                 for item in (message.get("dispatchTargets") or [])
                 if item.get("eventKind") == "room_event"
             ]
+            if decision is not None and decision.get("retry"):
+                # Jev was rate-limited: every consumer backs off and re-reads; the first one back
+                # re-claims and asks again. Jitter spreads a burst's retries apart.
+                put_metric("messaging.jev.route", dimensions={"outcome": "retry_rate_limited"})
+                backoff = max(1, math.ceil(float(decision.get("retryAt") or 0) - time.time())) + random.randint(0, 5)
+                raise WorkRetry("Jev rate-limited; retrying the routing decision", visibility=backoff)
             if decision is None and len(candidates) >= 2:
                 # route() returns None only when routing itself errored, so this consumer can't
                 # see what the others decided: guessing could run beside Jev's real pick, and

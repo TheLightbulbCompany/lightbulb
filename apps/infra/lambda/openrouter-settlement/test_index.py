@@ -80,6 +80,26 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(result, "unknown_generation")
         self.assertEqual(calls, [])
 
+    def test_metadata_pending_zero_reservation_released_after_24h_nonzero_stays_pending(self):
+        old_created = 1_700_000_001 - worker.STALE_METADATA_RELEASE_S
+        zero_row = {**self.row, "created_at": old_created, "reservation_microcents": 0}
+        calls = []
+        result = worker.settle_one(
+            zero_row, get_generation=lambda *_: None, ingest=lambda *_: self.fail("ingested"),
+            commit=lambda *_: self.fail("committed"), verified=True, now=1_700_000_001,
+            release_stale_metadata=lambda row, now: calls.append((row, now)) or "released_no_generation",
+        )
+        self.assertEqual(result, "released_no_generation")
+        self.assertEqual(len(calls), 1)
+
+        held_row = {**self.row, "created_at": old_created}  # reservation_microcents=300_000 from fixture
+        result = worker.settle_one(
+            held_row, get_generation=lambda *_: None, ingest=lambda *_: self.fail("ingested"),
+            commit=lambda *_: self.fail("committed"), verified=True, now=1_700_000_001,
+            release_stale_metadata=lambda *_: self.fail("released a row holding a reservation"),
+        )
+        self.assertEqual(result, "metadata_pending")
+
     def test_unverified_money_contract_never_ingests(self):
         with self.assertRaises(worker.MoneyContractUnverified):
             worker.settle_one(self.row, get_generation=lambda *_: self.generation,
@@ -512,6 +532,10 @@ class ScheduledRunTests(unittest.TestCase):
             raise AssertionError("metered row reached the Metronome commit")
 
         def release_unknown(self, row, now):
+            self.rows[row["request_id"]]["state"] = "released"
+            return "released_no_generation"
+
+        def release_stale_metadata(self, row, now):
             self.rows[row["request_id"]]["state"] = "released"
             return "released_no_generation"
 

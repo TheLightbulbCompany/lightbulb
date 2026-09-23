@@ -78,6 +78,8 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     ],
     cta: "Get started",
     href: "/sign-up?provider=chatgpt_oauth",
+    // Owner 2026-09-23: what every paying workspace uses; revisit for managed once paid credits ship.
+    highlighted: true,
   },
   {
     id: "byo_key",
@@ -106,7 +108,6 @@ export function providerComparisonCards(managedAvailable: boolean): ProviderCard
           bullets: ["Models approved by Lightbulb", "All channels", "Always-on container"],
           cta: "Get started",
           href: "/chat?panel=llm",
-          highlighted: true,
         },
       ]
     : PROVIDER_CARDS;

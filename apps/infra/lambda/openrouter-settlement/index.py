@@ -96,6 +96,7 @@ def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_fre
         if commit_free is None:
             raise RuntimeError("Free OpenRouter settlement commit is unavailable")
         return commit_free(row, event, now, amount)
+    debit_microcents(amount)  # a bad markup must fail before the Metronome ingest, not after
     ingest(event)  # Metronome deduplicates by generation ID for 34 days.
     return commit(row, event, amount, now)
 

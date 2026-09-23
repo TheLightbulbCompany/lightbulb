@@ -17,6 +17,7 @@ import { logGroupPath, tablePrefix } from "../table-names";
 const OPENROUTER_MARKUP: string = JSON.parse(
   fs.readFileSync(path.join(__dirname, "..", "..", "..", "..", "openrouter-pricing.json"), "utf8"),
 ).markup;
+if (!(Number(OPENROUTER_MARKUP) >= 1)) throw new Error(`openrouter-pricing.json markup must be a number >= 1, got ${OPENROUTER_MARKUP}`);
 
 export interface OpenRouterGateStackProps extends cdk.StackProps {
   environment: string;

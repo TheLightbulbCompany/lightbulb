@@ -86,6 +86,13 @@ class SettlementTests(unittest.TestCase):
                               ingest=lambda *_: self.fail("ingested"), commit=lambda *_: None,
                               verified=False, now=1_700_000_001)
 
+    def test_bad_markup_fails_before_metronome_ingest(self):
+        with patch.dict(os.environ, {"OPENROUTER_MARKUP": "0.9"}):
+            with self.assertRaises(ValueError):
+                worker.settle_one(self.row, get_generation=lambda *_: self.generation,
+                                  ingest=lambda *_: self.fail("ingested"), commit=lambda *_: self.fail("committed"),
+                                  verified=True, now=1_700_000_001)
+
     def test_free_zero_cost_skips_metronome_and_money_proof(self):
         row = {**self.row, "billing_mode": "free", "reservation_microcents": 0}
         generation = {**self.generation, "total_cost": Decimal("0")}

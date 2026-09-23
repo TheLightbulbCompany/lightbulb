@@ -1845,7 +1845,14 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     existing = await messaging_repo.get_member(room_id, request.kind, request.id)
     # On a paid workspace any member may change an agent's listen mode (owner ruling
     # 2026-09-23); adding members, roles and everything on a free trial stay owner/admin.
-    mode_change = request.kind == "agent" and existing is not None and existing.get("role") == request.role
+    # Only the room-owning workspace's own members: in the shared vendor room a
+    # Lightbulb-side member would be spending the customer's inference.
+    mode_change = (
+        request.kind == "agent"
+        and existing is not None
+        and existing.get("role") == request.role
+        and messaging_repo.member_home(actor, owner_id) == owner_id
+    )
     if actor.get("role") not in {"owner", "admin"} and not (mode_change and await listening_available(owner_id)):
         raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
     if existing and existing.get("role") == "owner":

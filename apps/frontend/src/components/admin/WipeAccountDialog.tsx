@@ -143,9 +143,9 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
         <AlertDialogHeader>
           <AlertDialogTitle>Wipe account</AlertDialogTitle>
           <AlertDialogDescription>
-            Permanently tears down every resource for this owner — container,
-            EFS workspace, Paperclip company, Bedrock credits/role, billing,
-            and the Clerk user itself. This cannot be undone.
+            Permanently tears down every resource for this owner — runtime
+            and S3 profiles, Paperclip company, Bedrock credits/role,
+            billing, and the Clerk user itself. This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
 

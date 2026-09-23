@@ -65,6 +65,6 @@ describe("landing headlines survive .lb-brk being hidden", () => {
   it("PricingThreeCard keeps a space after the first sentence", async () => {
     const { PricingThreeCard } = await import("../PricingThreeCard");
     const { container } = render(<PricingThreeCard />);
-    expect(flatten(container)).toContain("One price. Three ways to power it.");
+    expect(flatten(container)).toContain("One price. Two ways to power it.");
   });
 });

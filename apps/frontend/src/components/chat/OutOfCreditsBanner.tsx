@@ -29,12 +29,7 @@ export function OutOfCreditsBanner() {
       <span>
         You&apos;re out of {me?.provider_choice === "openrouter_managed" ? "workspace" : "Claude"} credits. Top up to keep chatting.
       </span>
-      {/* Existing Bedrock setup keeps its credit step; migrated owners top up
-          in the Model & Credits panel. */}
-      <Link
-        href={me?.provider_choice === "openrouter_managed" ? "/chat?panel=llm" : "/chat?provider=bedrock_claude"}
-        className="underline"
-      >
+      <Link href="/chat?panel=llm" className="underline">
         Top up now
       </Link>
     </div>

@@ -62,10 +62,10 @@ describe("ChangeProviderModal initialChoice", () => {
 
   it("opens on the picker when no initialChoice is given", () => {
     renderModal();
-    expect(screen.getByText("Powered by Claude")).toBeInTheDocument();
     expect(screen.getByText("Sign in with ChatGPT")).toBeInTheDocument();
     expect(screen.getByText("Bring your own API key")).toBeInTheDocument();
-    expect(pickerCards()).toHaveLength(3);
+    expect(pickerCards()).toHaveLength(2);
+    expect(screen.queryByText("Powered by Claude")).toBeNull();
     expect(screen.queryByText("Lightbulb-managed models")).toBeNull();
   });
 

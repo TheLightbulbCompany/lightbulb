@@ -94,7 +94,7 @@ function describeIncludedCap(account: BillingAccount | null | undefined, message
   if ((account?.plan === "standard" || account?.plan === "ultra_pro") && !account.provider_choice) {
     return {
       title,
-      description: `${reset} Need more today? Pick a model provider — Claude with credits, ChatGPT, or your own key.`,
+      description: `${reset} Need more today? Pick a model provider — ChatGPT or your own key.`,
       action: { label: "Pick provider", href: PROVIDER_PICKER },
     };
   }
@@ -118,8 +118,8 @@ function describeError(
       // Generic "switch provider" framing is wrong here — switching to a BYO
       // key has the same provider-quota problem. The three real remedies are
       // (a) wait for the provider's quota to reset, (b) upgrade your plan
-      // with the provider, or (c) move this workspace to Isol8's
-      // Bedrock-managed credits, which sidesteps third-party quotas entirely.
+      // with the provider, or (c) move this workspace to Lightbulb's own
+      // managed credits, which sidesteps third-party quotas entirely.
       // Upstream `message` ("The usage limit has been reached.") isn't
       // actionable, so we always use our own copy here.
       //
@@ -131,7 +131,7 @@ function describeError(
       return {
         title: "Provider rate limit reached",
         description:
-          "Your model provider hit its usage cap. Three ways to keep going: wait for your quota to reset, upgrade your plan with the provider, or switch this workspace to Lightbulb's Bedrock-managed credits.",
+          "Your model provider hit its usage cap. Three ways to keep going: wait for your quota to reset, upgrade your plan with the provider, or switch this workspace to Lightbulb's managed credits.",
         action: { label: "Switch provider", href: PROVIDER_PICKER },
       };
     case "context_length":

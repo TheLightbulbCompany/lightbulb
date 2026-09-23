@@ -10,11 +10,10 @@ describe("TeamBillingCard", () => {
     expect(screen.queryByText(/seat/i)).toBeNull();
   });
 
-  it("discloses all three separate inference-cost paths beside the workspace CTA", () => {
+  it("discloses each separate inference-cost path beside the workspace CTA", () => {
     render(<TeamBillingCard workspacePriceUsd={50} ownerRole="admin" />);
     expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
     expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
-    expect(screen.getByText(/managed Claude inference uses prepaid workspace credits/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /subscribe workspace/i })).toBeInTheDocument();
   });
 

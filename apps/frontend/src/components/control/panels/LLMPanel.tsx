@@ -37,7 +37,13 @@ import {
 } from "@/lib/providerCards";
 
 type UserData = {
-  provider_choice?: ProviderChoice | null;
+  // Plain string, not `ProviderChoice`: this is the owner's STORED choice,
+  // which can carry a legacy value (e.g. a retired `bedrock_claude` row) no
+  // longer offered by the picker. Every render branch below matches it by
+  // string comparison, so a legacy value still renders its existing block
+  // (bedrock_claude keeps the ManagedBlock/Claude-branded card) instead of
+  // throwing on a type it no longer recognizes as pickable.
+  provider_choice?: string | null;
   byo_provider?: ByoProvider | null;
 };
 
@@ -332,17 +338,16 @@ function ManagedBlock({
 // byo_key spans OpenAI *and* Anthropic, so a vendor mark would misrepresent
 // it — a key glyph is the honest icon there.
 const PROVIDER_ICONS: Record<ProviderChoice, React.ReactNode> = {
-  bedrock_claude: <AnthropicIcon size={24} />,
   openrouter_managed: <span className="text-xl font-semibold">✦</span>,
   chatgpt_oauth: <OpenAIIcon size={24} />,
   byo_key: <KeyRound size={20} className="text-[var(--midnight-muted)]" />,
 };
 
 /**
- * Inline provider picker for the empty state. The three choices are rendered
- * directly on the panel rather than behind a "Pick a provider" button — a user
- * with no provider shouldn't have to click blind into a modal to discover what
- * the options even are.
+ * Inline provider picker for the empty state. The offered choices are
+ * rendered directly on the panel rather than behind a "Pick a provider"
+ * button — a user with no provider shouldn't have to click blind into a
+ * modal to discover what the options even are.
  *
  * Managed inference commits in place (nothing to collect). The other two need a
  * credential stage, so they hand off to ChangeProviderModal opened straight on
@@ -360,10 +365,14 @@ function ProviderChoiceCards({
   error: string | null;
   managedAvailable: boolean;
 }) {
+  const cards = providerSwitchCards(managedAvailable);
+  // Tailwind's `grid-cols-N` reserves N equal tracks regardless of item
+  // count — with bedrock_claude gone, the base (unmanaged) picker is down
+  // to two cards, so a hardcoded 3-column grid would leave a blank track.
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {providerSwitchCards(managedAvailable).map((card) => {
+      <div className={`grid grid-cols-1 gap-3 ${cards.length >= 3 ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
+        {cards.map((card) => {
           const busy = committing === card.id;
           return (
             <button
@@ -375,7 +384,7 @@ function ProviderChoiceCards({
             >
               {/* Icon sits beside the copy on narrow widths (stacked cards
                   would otherwise be needlessly tall) and above it once the
-                  grid goes three-across. */}
+                  grid goes multi-column. */}
               <div className="flex items-start gap-3 sm:block">
                 <div className={`${HERO_TILE} sm:mb-3`}>{PROVIDER_ICONS[card.id]}</div>
                 <div className="min-w-0">
@@ -527,7 +536,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   const handlePick = useCallback(
     (choice: ProviderChoice) => {
       setPickError(null);
-      if (choice !== "bedrock_claude" && choice !== "openrouter_managed") {
+      if (choice !== "openrouter_managed") {
         setModalChoice(choice);
         setModalOpen(true);
         return;

@@ -1,9 +1,11 @@
 // Pure mapping between Isol8's billing-side provider_choice and the
 // container's live models.authStatus snapshot. Extracted from LLMPanel so the
 // provider-id resolution + status→color rules are testable without React.
-
-import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
-export type { ProviderChoice };
+//
+// `choice` is the STORED provider_choice string, not the picker's
+// ProviderChoiceId — it can carry a legacy value (e.g. a retired
+// `bedrock_claude` row) that is no longer offered by the picker, so this
+// stays a plain string rather than importing the narrower picker union.
 export type ByoProvider = "openai" | "anthropic";
 
 // Upstream enum: src/agents/auth-health.ts — "ok"|"expiring"|"expired"|"missing"|"static".
@@ -41,7 +43,7 @@ function normalizeId(id: string): string {
 // specific variant (e.g. openai-codex, openai-responses) than our coarse
 // choice. ChatGPT OAuth is the openai-codex provider upstream.
 function candidateIds(
-  choice: ProviderChoice,
+  choice: string,
   byoProvider: ByoProvider | null,
 ): string[] {
   // The container writes ``models.providers.amazon-bedrock`` and reports that
@@ -74,7 +76,7 @@ function allReservedExactIds(): Set<string> {
 }
 
 export function resolveProviderStatus(
-  choice: ProviderChoice | null | undefined,
+  choice: string | null | undefined,
   byoProvider: ByoProvider | null | undefined,
   list: AuthStatusProvider[] | undefined,
 ): AuthProviderHealthStatus | undefined {

@@ -151,7 +151,7 @@ describe("starter-model step", () => {
     expect(steps[0]).toMatchObject({
       id: "starter-model",
       label: "You're on the starter model",
-      detail: "Pick Claude (Bedrock), ChatGPT, or your own key",
+      detail: "Pick ChatGPT or your own key",
       done: false,
       adminOnly: true,
     });

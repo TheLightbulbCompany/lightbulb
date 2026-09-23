@@ -241,7 +241,7 @@ describe("LLMPanel", () => {
     expect(screen.queryByTestId("credits-section")).toBeNull();
   });
 
-  it("renders all three provider choices inline when provider_choice is null", () => {
+  it("renders both provider choices inline when provider_choice is null", () => {
     mockSWRData.mockReturnValue({ provider_choice: null });
     render(<LLMPanel />);
     // The empty-state copy uses a typographic apostrophe; match either.
@@ -249,27 +249,14 @@ describe("LLMPanel", () => {
     expect(screen.queryByText("Lightbulb-managed models")).toBeNull();
     // The choices are visible without a click — the old single "Pick a
     // provider" button hid them behind a modal, so a user with no provider
-    // couldn't see what the options even were.
-    expect(screen.getByRole("button", { name: /Powered by Claude/ })).toBeInTheDocument();
+    // couldn't see what the options even were. Bedrock is retired, so only
+    // the two credential-based paths remain until managed inference ships.
+    expect(screen.queryByRole("button", { name: /Powered by Claude/ })).toBeNull();
     expect(screen.getByRole("button", { name: /Sign in with ChatGPT/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Bring your own API key/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^pick a provider/i })).toBeNull();
     // Nothing opens until a choice is made.
     expect(screen.queryByTestId("change-provider-modal-open")).not.toBeInTheDocument();
-  });
-
-  it("commits Bedrock in place without opening the modal", async () => {
-    mockSWRData.mockReturnValue({ provider_choice: null });
-    render(<LLMPanel />);
-    fireEvent.click(screen.getByRole("button", { name: /Powered by Claude/ }));
-    await waitFor(() =>
-      expect(mockApiPost).toHaveBeenCalledWith("/billing/provider", {
-        provider_choice: "bedrock_claude",
-      }),
-    );
-    // Bedrock needs no credential collection, so the modal must stay shut.
-    expect(screen.queryByTestId("change-provider-modal-open")).not.toBeInTheDocument();
-    await waitFor(() => expect(mockMutate).toHaveBeenCalled());
   });
 
   it("offers and commits Lightbulb-managed inference when available", async () => {
@@ -295,11 +282,12 @@ describe("LLMPanel", () => {
     expect(screen.getByRole("button", { name: /Lightbulb-managed models/ })).toBeInTheDocument();
   });
 
-  it("surfaces a commit error inline when the Bedrock pick fails", async () => {
+  it("surfaces a commit error inline when the managed-inference pick fails", async () => {
+    managedAvailable = true;
     mockSWRData.mockReturnValue({ provider_choice: null });
     mockApiPost.mockRejectedValueOnce(new Error("No credits"));
     render(<LLMPanel />);
-    fireEvent.click(screen.getByRole("button", { name: /Powered by Claude/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Lightbulb-managed models/ }));
     await waitFor(() => expect(screen.getByText("No credits")).toBeInTheDocument());
     expect(mockMutate).not.toHaveBeenCalled();
     // Cards must be re-enabled so the user can pick a different path.
@@ -328,7 +316,7 @@ describe("LLMPanel", () => {
     expect(
       screen.getByText(/bring-your-own-key configuration is incomplete/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Powered by Claude/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Sign in with ChatGPT/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Bring your own API key/ })).toBeInTheDocument();
     // Should NOT render the BYO hero/form for an incomplete config.
     expect(screen.queryByText(/Bring your own (OpenAI|Anthropic) key/)).not.toBeInTheDocument();

@@ -377,7 +377,6 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(screen.getByText(/unlimited members/i)).toBeInTheDocument();
     expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
     expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
-    expect(screen.getByText(/managed Claude inference uses prepaid workspace credits/i)).toBeInTheDocument();
     expect(screen.queryByText(/Subscribe to start your team's containers/)).not.toBeInTheDocument();
 
     await act(async () => {

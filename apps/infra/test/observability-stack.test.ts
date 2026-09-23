@@ -195,6 +195,10 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "marketplace.path_traversal_attempt": [[]],
   // routers/messaging.py _count_hook_auth_failure; P24 binds route=paperclip_run.
   "internal_hook.auth_failed": [["route"]],
+  // core/services/jev.py decide(); P26 binds the rollup and outcome=error|timeout|rate_limited.
+  "messaging.jev.decision": [["outcome"]],
+  // core/services/run_analytics.py _enrich_and_capture; P27 (prod) binds outcome=success.
+  "nightly_ceo.run": [["outcome"]],
   "runtime.ingress.provider_switch_pending": [[]],
   // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---
   // core/services/messaging.py — create_human_message / create_agent_message.
@@ -1036,5 +1040,32 @@ describe("ObservabilityStack — prod-only paths", () => {
       buildTemplate("dev").findResources("AWS::CloudWatch::Alarm"),
     );
     expect(rendered).not.toContain("openrouter.account.balance_usd");
+  });
+
+  test("prod pages when no nightly CEO run succeeds fleet-wide in 24 h; dev has no such alarm", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-prod-P27-nightly-ceo-fleet-zero",
+      MetricName: "nightly_ceo.run",
+      Period: 86400,
+      Threshold: 1,
+      ComparisonOperator: "LessThanThreshold",
+      TreatMissingData: "breaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
+    });
+    const dev = JSON.stringify(buildTemplate("dev").findResources("AWS::CloudWatch::Alarm"));
+    expect(dev).not.toContain("nightly-ceo-fleet-zero");
+  });
+
+  test("P26 pages on the Jev error/timeout/429 share with a 10-decision floor", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-prod-P26-jev-decision-error-rate",
+      Threshold: 20,
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
+      Metrics: Match.arrayWith([
+        Match.objectLike({
+          Expression: "IF(all >= 10, 100 * (FILL(e, 0) + FILL(t, 0) + FILL(r, 0)) / all, 0)",
+        }),
+      ]),
+    });
   });
 });

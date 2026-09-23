@@ -166,3 +166,23 @@ def test_group_key_does_not_return_literal_channel_as_member_id():
     result = parse_session_key("agent:main:telegram:group:-100123")
     assert result.get("source") == "group"
     assert "member_id" not in result
+
+
+def test_hermes_native_paperclip_session_parses_as_paperclip():
+    """The Hermes bridge reports Paperclip-woken runs (nightly CEO, issue runs) with the
+    hermes_gateway session id, not the retired openclaw-gateway ``agent:<id>:paperclip:…`` shape.
+    Unparsed, every such run lands as source=unknown: run.completed{source=paperclip} and
+    nightly_ceo.run were never emitted after the Hermes cutover."""
+    from core.services.session_keys import parse_session_key
+
+    assert parse_session_key("paperclip:company:c-1:agent:a-2:issue:i-3") == {
+        "agent_id": "a-2",
+        "source": "paperclip",
+        "issue_id": "i-3",
+    }
+    assert parse_session_key("paperclip:company:c-1:agent:a-2:run:r-4") == {
+        "agent_id": "a-2",
+        "source": "paperclip",
+        "run_id": "r-4",
+    }
+    assert parse_session_key("paperclip:company:c-1:agent:a-2:bogus:x") == {}

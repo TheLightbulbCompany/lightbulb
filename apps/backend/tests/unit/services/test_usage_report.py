@@ -133,3 +133,14 @@ async def test_usage_report_emits_run_completed_once_across_instances(monkeypatc
     second = await messaging.handle_usage_report("o1", body)
     assert (first.status, second.status) == ("applied", "replayed")
     assert calls == ["r1"]
+
+
+@pytest.mark.asyncio
+async def test_a_hermes_paperclip_run_reaches_analytics_as_a_paperclip_issue_run():
+    """A nightly CEO / issue run reports its hermes_gateway session id. It must arrive parsed as
+    source=paperclip WITH the issue id, or the enrichment that tags nightly runs never runs."""
+    body = BODY.model_copy(update={"session_key": "paperclip:company:c-1:agent:a-2:issue:i-3"})
+    claim, record, analytics = _patches()
+    with claim, record, analytics as analytics:
+        await messaging.handle_usage_report("org_1", body)
+    assert analytics.call_args.kwargs["parsed"] == {"agent_id": "a-2", "source": "paperclip", "issue_id": "i-3"}

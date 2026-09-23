@@ -42,6 +42,12 @@ def parse_session_key(session_key: str) -> dict:
       - {agent_id, source, channel, channel_id} for channel rooms (source="channel")
     """
     parts = session_key.split(":")
+    # Hermes native Paperclip runs: paperclip:company:<co>:agent:<id>:(issue|run):<id>, the same
+    # shape the bridge and routers/messaging.py validate. The only Paperclip shape still emitted.
+    if len(parts) == 7 and parts[0] == "paperclip" and parts[1] == "company" and parts[3] == "agent":
+        if parts[5] in ("issue", "run"):
+            return {"agent_id": parts[4], "source": "paperclip", f"{parts[5]}_id": parts[6]}
+        return {}
     if len(parts) < 3 or parts[0] != "agent":
         return {}
     agent_id = parts[1]

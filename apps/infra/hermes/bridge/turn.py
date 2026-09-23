@@ -18,7 +18,7 @@ import uuid as _uuid
 from collections import namedtuple
 from pathlib import Path
 
-from bridge import API, HOOK_TOKEN, MODEL, OWNER, now
+from bridge import API, HOOK_TOKEN, OWNER, now
 from bridge import sync, browser_control
 from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
@@ -206,7 +206,7 @@ def paperclip_run_status(run_id: str, identity: dict) -> dict | None:
     if snapshot["state"] == "ended":
         usage = snapshot.get("usage") or ZERO_USAGE
         result["usage"] = {
-            "model": usage.get("model") or MODEL,
+            "model": usage.get("model") or "",
             "input_tokens": int(usage.get("inputTokens") or 0),
             "output_tokens": int(usage.get("outputTokens") or 0),
             "cached_input_tokens": int(usage.get("cacheReadTokens") or 0),
@@ -1086,7 +1086,7 @@ def cancel_run_desktop(run_id):
 
 
 # ---- the turn --------------------------------------------------------------------------------
-ZERO_USAGE = {"model": MODEL, "inputTokens": 0, "outputTokens": 0,
+ZERO_USAGE = {"model": "", "inputTokens": 0, "outputTokens": 0,
               "cacheReadTokens": 0, "cacheWriteTokens": 0, "estimatedCostUsd": None}
 
 
@@ -1535,10 +1535,8 @@ def profile_model(config: dict) -> tuple[str, str]:
     `model.context_length` pin, which `_scope_context_length_to_default_runtime`
     (agent_init.py:1597-1640) discards whenever `agent.model` differs from the configured
     default. A dict-valued default pairs model+provider — the other shape
-    `hermes_cli.config.split_model_config_default` accepts.
-
-    Fallbacks keep today's behaviour for a profile that pins neither: the runtime-wide MODEL
-    and provider "bedrock"."""
+    `hermes_cli.config.split_model_config_default` accepts. Every provisioned profile pins
+    both; an unpinned one gets "" and Hermes's own resolution."""
     block = config.get("model") if isinstance(config, dict) else None
     block = block if isinstance(block, dict) else {}
     raw = block.get("default")
@@ -1547,7 +1545,7 @@ def profile_model(config: dict) -> tuple[str, str]:
         provider = str(raw.get("provider") or "").strip()
     else:
         model, provider = str(raw or "").strip(), str(block.get("provider") or "").strip()
-    return model or MODEL, provider or "bedrock"
+    return model, provider
 
 
 def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
@@ -1671,7 +1669,7 @@ def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str
              # the model this agent actually ran on (profile_model), not the runtime-wide
              # default -- usage_service prices per model ref, so the CEO's premium tier would
              # otherwise be billed to the fleet's sonnet id.
-             "model": getattr(agent, "model", "") or MODEL,
+             "model": getattr(agent, "model", ""),
              "inputTokens": int(getattr(agent, "session_input_tokens", 0) or 0),
              "outputTokens": int(getattr(agent, "session_output_tokens", 0) or 0),
              "cacheReadTokens": int(getattr(agent, "session_cache_read_tokens", 0) or 0),
@@ -1749,7 +1747,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
 def _agent_usage(agent) -> dict:
     return {
         **ZERO_USAGE,
-        "model": getattr(agent, "model", "") or MODEL,
+        "model": getattr(agent, "model", ""),
         "inputTokens": int(getattr(agent, "session_input_tokens", 0) or 0),
         "outputTokens": int(getattr(agent, "session_output_tokens", 0) or 0),
         "cacheReadTokens": int(getattr(agent, "session_cache_read_tokens", 0) or 0),

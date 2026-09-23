@@ -2,11 +2,8 @@
 # diagnostic hatch in the bridge, no skill binaries yet. See docs/superpowers/plans/2026-09-16-hermes-agentcore-spike.md.
 FROM nousresearch/hermes-agent:latest
 
-# The bundled Anthropic SDK (0.87) predates AnthropicBedrock's bearer mode (api_key /
-# AWS_BEARER_TOKEN_BEDROCK + ANTHROPIC_BEDROCK_BASE_URL), which is how our bedrock-gate is reached.
-RUN uv pip install --python "$(command -v python3)" --upgrade "anthropic>=1.0" \
- && python3 -c "import inspect, anthropic; from anthropic import AnthropicBedrock; assert 'api_key' in inspect.signature(AnthropicBedrock.__init__).parameters, 'no bearer mode'; print('anthropic', anthropic.__version__)" \
- && python3 -c "from run_agent import AIAgent; print('hermes imports ok')"
+# Import smoke: the base's own SDK set (anthropic included) must still load Hermes.
+RUN python3 -c "from run_agent import AIAgent; print('hermes imports ok')"
 
 COPY bridge /opt/bridge/bridge
 COPY plugins/lightbulb /opt/hermes/plugins/lightbulb

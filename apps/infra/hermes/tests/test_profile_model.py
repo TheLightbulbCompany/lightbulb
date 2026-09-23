@@ -28,13 +28,7 @@ def constructed(monkeypatch, config):
     return seen
 
 
-def test_the_profiles_model_default_wins_over_the_runtime_wide_model(monkeypatch):
-    seen = constructed(monkeypatch, {"model": {"default": "us.anthropic.claude-opus-4-6-v1:0",
-                                               "provider": "bedrock"}})
-    assert seen["model"] == "us.anthropic.claude-opus-4-6-v1:0" and seen["provider"] == "bedrock"
-
-
-def test_a_non_bedrock_profile_keeps_its_own_provider(monkeypatch):
+def test_the_profile_pins_its_own_model_and_provider(monkeypatch):
     seen = constructed(monkeypatch, {"model": {"default": "gpt-5.6-sol", "provider": "openai-codex"}})
     assert seen["model"] == "gpt-5.6-sol" and seen["provider"] == "openai-codex"
 
@@ -61,8 +55,7 @@ def test_the_usage_report_names_the_model_the_agent_actually_ran_on(monkeypatch,
     assert usage["model"] == FakeAgent.model and usage["inputTokens"] == 11
 
 
-def test_a_profile_with_no_model_default_falls_back_to_the_runtime_model(monkeypatch):
-    monkeypatch.setattr(turn, "MODEL", "us.anthropic.claude-sonnet-4-6-v1:0")
+def test_a_profile_with_no_model_default_leaves_resolution_to_hermes(monkeypatch):
     for config in ({}, {"model": {}}, {"model": {"default": ""}}, {"model": "nonsense"}):
         seen = constructed(monkeypatch, config)
-        assert seen["model"] == "us.anthropic.claude-sonnet-4-6-v1:0" and seen["provider"] == "bedrock"
+        assert seen["model"] == "" and seen["provider"] == ""

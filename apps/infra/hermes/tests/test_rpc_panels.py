@@ -256,14 +256,6 @@ def test_auth_status_reports_missing_when_the_byo_key_is_absent(home, monkeypatc
         {"provider": "openai-api", "status": "missing", "via": "byo-key"}]
 
 
-def test_auth_status_reports_bedrock_through_the_gate_bearer(home, monkeypatch):
-    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-token")
-    (home / "profiles" / "ceo").mkdir(parents=True)
-    sync.write_profile_config("ceo", {"model": {"provider": "bedrock"}})
-    assert call("models.authStatus")[1]["payload"]["providers"] == [
-        {"provider": "bedrock", "status": "ok", "via": "bedrock-gate"}]
-
-
 def test_auth_status_reports_managed_custom_through_the_gate_bearer(home, monkeypatch):
     # The PROFILE decides, not the boot-time provider choice (a warm process outlives a switch).
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-token")
@@ -303,18 +295,16 @@ def test_auth_status_reads_ONE_profile_because_the_provider_is_owner_level(home,
     inputs only, so a second profile cannot hold a second answer — and a per-agent
     `ensure_profile` is a full prefix LIST + recency pull on a cold microVM, inside the 90 s
     ingress cap."""
-    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-token")
     for name in ("ceo", "growth"):
         (home / "profiles" / name).mkdir(parents=True)
-        sync.write_profile_config(name, {"model": {"provider": "bedrock"}})
+        sync.write_profile_config(name, {"model": {"provider": "anthropic"}})
     pulled = []
     monkeypatch.setattr(sync, "ensure_profile", lambda agent_id: pulled.append(agent_id))
     providers = call("models.authStatus")[1]["payload"]["providers"]
-    assert providers == [{"provider": "bedrock", "status": "ok", "via": "bedrock-gate"}]
+    assert providers == [{"provider": "anthropic", "status": "missing", "via": "byo-key"}]
     assert pulled == ["ceo"]  # the first roster profile, and only it
 
 
-def test_auth_status_falls_back_to_the_runtime_bearer_with_no_profile(home, monkeypatch):
+def test_auth_status_reports_no_provider_with_no_profile(home, monkeypatch):
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-token")
-    assert call("models.authStatus")[1]["payload"]["providers"] == [
-        {"provider": "bedrock", "status": "ok", "via": "bedrock-gate"}]
+    assert call("models.authStatus")[1]["payload"]["providers"] == []

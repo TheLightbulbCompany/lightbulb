@@ -32,12 +32,8 @@ RUN go install github.com/openclaw/gogcli/cmd/gog@v0.39.1 \
 
 FROM nousresearch/hermes-agent@sha256:a5b2eac62d3f97686e027eedd837d38bc5cc7d941f3107bebefdcef38126d103
 
-# The bundled Anthropic SDK (0.87) predates AnthropicBedrock's bearer mode (api_key /
-# AWS_BEARER_TOKEN_BEDROCK + ANTHROPIC_BEDROCK_BASE_URL), which is how our bedrock-gate is
-# reached. The assertion is the gate: a silent downgrade breaks every turn.
-RUN uv pip install --python "$(command -v python3)" --upgrade "anthropic>=1.0" \
- && python3 -c "import inspect, anthropic; from anthropic import AnthropicBedrock; assert 'api_key' in inspect.signature(AnthropicBedrock.__init__).parameters, 'no bearer mode'; print('anthropic', anthropic.__version__)" \
- && python3 -c "from run_agent import AIAgent; print('hermes imports ok')"
+# Import smoke: the base's own SDK set (anthropic included) must still load Hermes.
+RUN python3 -c "from run_agent import AIAgent; print('hermes imports ok')"
 
 # Linux skill binaries the bundled skills shell out to.
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -38,9 +38,6 @@ def test_channels_status_is_honestly_empty_because_the_backend_owns_channel_ingr
     assert call("channels.status", {"probe": True})["payload"] == {"channels": [], "probe": True}
 
 
-def test_models_auth_status_reports_the_real_bedrock_gate_binding(monkeypatch):
+def test_models_auth_status_reports_no_provider_without_a_profile(monkeypatch):
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "tok")
-    assert call("models.authStatus")["payload"]["providers"] == [
-        {"provider": "bedrock", "status": "ok", "via": "bedrock-gate"}]
-    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK")
-    assert call("models.authStatus")["payload"]["providers"][0]["status"] == "missing"
+    assert call("models.authStatus")["payload"]["providers"] == []

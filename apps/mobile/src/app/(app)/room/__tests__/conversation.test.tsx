@@ -183,6 +183,13 @@ const mockLive = {
 // referentially stable `live`, and a new one per render re-fires the history
 // reconcile into "Maximum update depth exceeded".
 jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
+// The band has its own suite; here only WHERE it mounts is under test.
+jest.mock("../../../../components/room/OnboardingBand", () => ({
+  OnboardingBand: () => {
+    const { Text } = require("react-native");
+    return <Text>onboarding-band</Text>;
+  },
+}));
 
 import Conversation from "../[roomId]/index";
 import { getCurrentTarget } from "../../../../lib/activeAgent";
@@ -237,6 +244,19 @@ describe("conversation screen", () => {
     expect(
       screen.getByText(dateDividerLabel(new Date("2026-06-11T10:00:00Z"), new Date())),
     ).toBeTruthy();
+  });
+
+  it("mounts the onboarding band in the starter channel only", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    expect(screen.queryByText("onboarding-band")).toBeNull();
+  });
+
+  it("mounts the onboarding band when the room is the workspace default", async () => {
+    mockRoomId = "room-default";
+    mockLive.messaging.getRoom.mockImplementation(async (roomId: string) => ({ ...mockRoom, roomId, isDefault: true }));
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("onboarding-band")).toBeTruthy());
   });
 
   it("draws the New messages line at the read cursor the room opened with", async () => {

@@ -927,24 +927,6 @@ async def _billing_inputs(owner_id: str) -> tuple:
     return (*provider_choice_from_row(row), (row or {}).get("plan"))
 
 
-#: In-flight background reconciles (``reconcile_in_background``). Held so the event loop's
-#: weak reference is not the only one, and drained by ``main.py``'s graceful shutdown.
-_INFLIGHT_RECONCILES: set[asyncio.Task] = set()
-
-
-def inflight_reconciles() -> list[asyncio.Task]:
-    return list(_INFLIGHT_RECONCILES)
-
-
-def reconcile_in_background(owner_id: str) -> asyncio.Task:
-    """Schedule ``reconcile_runtime`` without awaiting it (it can wait ``ROLL_IDLE_WAIT_S`` for
-    an idle session). A lost task -- a backend roll -- is retried by the next caller."""
-    task = asyncio.create_task(reconcile_runtime(owner_id))
-    _INFLIGHT_RECONCILES.add(task)
-    task.add_done_callback(_INFLIGHT_RECONCILES.discard)
-    return task
-
-
 async def reconcile_runtime(owner_id: str) -> str:
     """Make the owner's runtime match billing. ONE idempotent function, safe to run
     concurrently (every step converges at its source), with no provider-specific logic of its

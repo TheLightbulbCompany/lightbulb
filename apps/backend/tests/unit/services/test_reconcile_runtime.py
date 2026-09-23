@@ -447,21 +447,3 @@ async def test_a_failed_row_read_is_a_counted_reconcile_failure(monkeypatch, boo
     monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(side_effect=RuntimeError("ddb")))
     assert await hp.reconcile_runtime("org_a") == "failed"
     assert world.metrics == ["provision.reconcile.failed"]
-
-
-@pytest.mark.asyncio
-async def test_a_background_reconcile_is_held_until_it_finishes(monkeypatch):
-    """M2: the only strong reference to a create_task'd task must not be the event loop's."""
-    gate = asyncio.Event()
-
-    async def _slow(owner_id):
-        await gate.wait()
-        return "current"
-
-    monkeypatch.setattr(hp, "reconcile_runtime", _slow)
-    task = hp.reconcile_in_background("org_a")
-    assert task in hp.inflight_reconciles()
-    gate.set()
-    assert await task == "current"
-    await asyncio.sleep(0)
-    assert task not in hp.inflight_reconciles()

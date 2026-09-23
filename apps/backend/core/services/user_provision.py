@@ -9,8 +9,9 @@ in pre-ready state (ProvisioningStepper.tsx:250-252), so within
 No webhook, REST endpoint, or service-layer call dispatches it
 from anywhere else — see plan §"One trigger only" for rationale.
 
-Clerk webhooks (org.created, membership.created) are pure
-record-keeping; they do NOT call this helper.
+Clerk webhooks do NOT call this helper; ``organization.created`` calls
+``provision_new_workspace`` (trial row + gate + dispatch) so a new workspace
+does not wait for its first poll.
 
 ensure_user_ready is idempotent — every call is safe to repeat.
 It never raises on "not ready yet" — that's a normal return.
@@ -99,6 +100,11 @@ async def ensure_workspace_trial_default(
     """
     if not is_org_owner_id(workspace_id) or resolve_owner_id(auth) != workspace_id:
         raise HTTPException(status_code=403, detail="Workspace does not match the active organization")
+    await _ensure_trial_row(workspace_id, signup_flow_id=signup_flow_id)
+
+
+async def _ensure_trial_row(workspace_id: str, *, signup_flow_id: str | None = None) -> None:
+    """The trial-row body of ``ensure_workspace_trial_default``, after its auth check."""
     row = await billing_repo.get_by_owner_id(workspace_id)
     if row:
         # Runs on every poll, parked or not: a trial expired under the old 3-day window reads as
@@ -129,6 +135,27 @@ async def ensure_workspace_trial_default(
             properties={**flow_props, "owner_type": "org"},
             event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, f"{workspace_id}:{utc_today()}")),
         )
+
+
+async def provision_new_workspace(org_id: str) -> None:
+    """Clerk ``organization.created``: start the first provision without waiting for a poll.
+
+    Creates the trial row, checks the provision gate as an org admin (the creator is one),
+    and dispatches. Never raises -- a webhook failure must not 500 Clerk into retries; the
+    first ``/container/status`` poll still provisions.
+    """
+    if not is_org_owner_id(org_id):
+        return
+    try:
+        await _ensure_trial_row(org_id)
+        gate = await evaluate_provision_gate(owner_id=org_id, is_admin=True)
+        if gate is not None:
+            logger.info("provision_new_workspace: gate up for %s (%s); the poll path takes over", org_id, gate)
+            return
+        await dispatch_provision(org_id)
+    except Exception:
+        logger.exception("provision_new_workspace failed for %s", org_id)
+        put_metric("provision.org_created.error")
 
 
 async def arm_workspace_trial_if_unset(workspace_id: str) -> None:

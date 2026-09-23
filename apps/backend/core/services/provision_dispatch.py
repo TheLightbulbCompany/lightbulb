@@ -12,6 +12,12 @@ Return contract: ``True`` when an execution owns the work (started now or
 already RUNNING), ``False`` when nothing does — start failed, or non-org
 refusal. Callers with a recovery marker (notably the trial-conversion
 reprovision) must retain it on ``False``. Never raises.
+
+``dispatch_reconcile`` starts a ``reconcile-{owner}-…`` execution on the SAME
+machine with ``"mode": "reconcile"`` in its input (absent mode = provision):
+the provisioner Lambda runs ``reconcile_runtime`` instead of the runner. No
+running-check and no row write -- a reconcile is idempotent and concurrency-safe,
+and a second one must start because it reads newer billing.
 """
 
 from __future__ import annotations
@@ -103,5 +109,26 @@ async def dispatch_provision(owner_id: str) -> bool:
         return True
     except Exception:  # noqa: BLE001 — dispatch must never take down the caller; the next poll retries
         logger.exception("dispatch_provision: dispatch failed for owner %s", owner_id)
+        emit_provision_metric("dispatch_start_failed")
+        return False
+
+
+async def dispatch_reconcile(owner_id: str) -> bool:
+    """Start a durable reconcile execution for the owner. Never raises."""
+    bind_log_context(user_id=owner_id)
+    if not is_org_owner_id(owner_id):
+        logger.error("dispatch_reconcile: %s is not a workspace (org) — refusing to reconcile", owner_id)
+        emit_provision_metric("refused_non_org")
+        return False
+    try:
+        await asyncio.to_thread(
+            _client().start_execution,
+            stateMachineArn=settings.PROVISION_STATE_MACHINE_ARN,
+            name=f"reconcile-{owner_id}-{uuid.uuid4().hex[:8]}",
+            input=json.dumps({"owner_id": owner_id, "mode": "reconcile"}),
+        )
+        return True
+    except Exception:  # noqa: BLE001 — dispatch must never take down the caller
+        logger.exception("dispatch_reconcile: dispatch failed for owner %s", owner_id)
         emit_provision_metric("dispatch_start_failed")
         return False

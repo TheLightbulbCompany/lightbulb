@@ -54,8 +54,7 @@ from core.services.admin_service import resolve_admin_owner_id
 from core.services.runtime_rpc import config_patch_roster
 from core.services.webhook_dedup import idempotency
 from core.services.messaging import ApiProblem
-from core.services.hermes_provisioning import reconcile_in_background
-from core.services.provision_dispatch import dispatch_provision
+from core.services.provision_dispatch import dispatch_provision, dispatch_reconcile
 from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
@@ -298,8 +297,8 @@ async def admin_user_cloudwatch_url(
     "/users/{user_id}/container/reprovision",
     description="Reconcile the workspace with billing: re-derives the owner's credentials and "
     "Bedrock AIPs, rewrites every agent profile and re-specs the AgentCore runtime on drift "
-    "(or dispatches the provision funnel when there is no live runtime). Runs in the "
-    "background. Idempotency-Key supported.",
+    "(or dispatches the provision funnel when there is no live runtime). Runs as a durable "
+    "Step Functions execution. Idempotency-Key supported.",
 )
 @idempotency()
 @audit_admin_action("container.reprovision")
@@ -312,8 +311,9 @@ async def admin_container_reprovision(
     # not the non-existent ``openclaw-{user_id}-{hash}`` (admin-org-owner-id
     # P1). Audit decorator still captures the URL path param (user_id).
     owner_id, _ = await resolve_admin_owner_id(user_id)
-    # Background: an idle-session wait can outlast the request. reconcile_runtime never raises.
-    reconcile_in_background(owner_id)
+    # Durable: an idle-session wait can outlast the request, so a Step Functions reconcile
+    # execution does the work. dispatch_reconcile never raises.
+    await dispatch_reconcile(owner_id)
     return {"status": "reconciling", "owner_id": owner_id}
 
 

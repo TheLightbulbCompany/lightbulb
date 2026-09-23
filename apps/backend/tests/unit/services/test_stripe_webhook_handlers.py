@@ -583,13 +583,13 @@ async def test_a_plan_change_on_a_live_subscription_reconciles_the_runtime(mock_
             "plan": "base",
         }
     )
-    reconcile = AsyncMock(return_value="current")
+    reconcile = AsyncMock(return_value=True)
     with (
-        patch("core.services.hermes_provisioning.reconcile_runtime", reconcile),
+        patch("core.services.provision_dispatch.dispatch_reconcile", reconcile),
         patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: coro.close() or MagicMock()),
     ):
         await handlers.handle_subscription_state(_subscription_event(status="active"), MagicMock())
-    reconcile.assert_called_once_with("org_x")
+    reconcile.assert_awaited_once_with("org_x")
 
 
 @pytest.mark.asyncio

@@ -176,6 +176,12 @@ describe("applyRunFrame", () => {
     expect(run.state).toBe("aborted");
   });
 
+  it("a late seq-less sweeper run_ended never flips a finished run", () => {
+    let run = applyRunFrame(fold([chunk(1, "a")]), { ...base, frame: { type: "run_ended", runId: "run1", outcome: "done", seq: 2 } as never });
+    run = applyRunFrame(run, { ...base, frame: { type: "run_ended", runId: "run1", outcome: "error" } });
+    expect(run.state).toBe("completed");
+  });
+
   it("an error on a live run fails it", () => {
     const run = applyRunFrame(fold([chunk(1, "a")]), { ...base, frame: { type: "error", message: "x", runId: "run1" } });
     expect(run.state).toBe("failed");

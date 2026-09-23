@@ -52,7 +52,7 @@ const foldText = (frames: readonly ChatIncomingMessage[], type: "chunk" | "think
  * `run_ended`, an older image -- apply on arrival, after everything already held.
  * The text is refolded only when a frame lands out of order; in order it just
  * appends. A run that has ended stays ended: a straggler never revives it, and a
- * late `error` never overwrites a `run_ended` outcome.
+ * late `error` or sweeper `run_ended` never overwrites the outcome.
  */
 export function applyRunFrame(previous: LiveRoomRun | undefined, payload: RoomRunFrame): LiveRoomRun {
   const frame = payload.frame;
@@ -64,8 +64,10 @@ export function applyRunFrame(previous: LiveRoomRun | undefined, payload: RoomRu
   const frames = [...held.slice(0, at), frame, ...held.slice(at)];
   const inOrder = at === held.length;
   const ended = previous !== undefined && previous.state !== "running";
+  // Once ended, only the bridge's own (seq'd) run_ended may restate the outcome: a late
+  // seq-less sweeper run_ended must not flip a run that already finished.
   const state: LiveRoomRun["state"] =
-    frame.type === "run_ended"
+    frame.type === "run_ended" && (!ended || seq !== undefined)
       ? frame.outcome === "done" ? "completed" : frame.outcome === "aborted" ? "aborted" : "failed"
       : ended ? previous.state : frame.type === "error" ? "failed" : "running";
   return {
@@ -135,7 +137,7 @@ export function runView(run: LiveRoomRun): RoomRunView {
         });
       }
     } else if (frame.type === "agent_activity" && frame.activity !== "run_status") {
-      const id = `${frame.runId}:activity:${index}`;
+      const id = `${frame.runId}:activity:${frameSeq(frame) ?? index}`;
       tools.set(id, {
         id,
         name: frame.title,

@@ -27,6 +27,7 @@ import { EmptyState } from "../../../../components/chat/EmptyState";
 import { TimelineSkeleton } from "../../../../components/chat/TimelineSkeleton";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
+import { OnboardingBand } from "../../../../components/room/OnboardingBand";
 import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
 import { RoomComposer } from "../../../../components/room/RoomComposer";
 import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions";
@@ -391,6 +392,8 @@ function Conversation() {
               <Text style={styles.olderText}>{rooms.historyLoading ? "Loading older messages…" : "Load older messages"}</Text>
             </Pressable>
           ) : null}
+          {/* The web band's `leading` slot: above the oldest loaded message. */}
+          {!preview && rooms.activeRoom?.isDefault ? <OnboardingBand participants={members ?? []} /> : null}
           </View>
         }
         renderItem={({ item }) => {

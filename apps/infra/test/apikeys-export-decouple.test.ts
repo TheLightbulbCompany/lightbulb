@@ -131,7 +131,7 @@ describe.each(["dev", "prod"] as const)(
     });
 
     test("service task role grants paperclip-agent-keys secrets (the api-keys replacement)", () => {
-      service.hasResourceProperties("AWS::IAM::Policy", {
+      service.hasResourceProperties("AWS::IAM::ManagedPolicy", {
         PolicyDocument: {
           Statement: Match.arrayWith([
             Match.objectLike({ Sid: "PaperclipAgentKeysRW" }),

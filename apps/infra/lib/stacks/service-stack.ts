@@ -391,7 +391,11 @@ export class ServiceStack extends cdk.Stack {
     // with invokedBy bedrock-agentcore.amazonaws.com under the caller's identity), and
     // DeleteAgentRuntime mirrors both. Missing either is an AccessDenied on the create.
     const agentcoreArn = (suffix: string) => `arn:aws:bedrock-agentcore:${this.region}:${this.account}:${suffix}`;
-    this.taskRole.addToPolicy(
+    // Every AgentCore grant lives in its OWN managed policy: the task role's inline default
+    // policy sits at IAM's 10,240-byte per-role aggregate (dev 10,137 B on 2026-09-23), and
+    // CDK's overflow split misjudges the resolved size -- #2929's dev deploy failed on it.
+    const agentCorePolicy = new iam.ManagedPolicy(this, "BackendAgentCore", { roles: [this.taskRole] });
+    agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreRuntimeManage",
         actions: [
@@ -414,7 +418,7 @@ export class ServiceStack extends cdk.Stack {
         resources: [agentcoreArn("runtime/*"), agentcoreArn("runtime/*/runtime-endpoint/*")],
       }),
     );
-    this.taskRole.addToPolicy(
+    agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreWorkloadIdentityManage",
         actions: [
@@ -435,7 +439,7 @@ export class ServiceStack extends cdk.Stack {
         ],
       }),
     );
-    this.taskRole.addToPolicy(
+    agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreRuntimeList",
         actions: ["bedrock-agentcore:ListAgentRuntimes", "bedrock-agentcore:ListWorkloadIdentities"],
@@ -446,7 +450,7 @@ export class ServiceStack extends cdk.Stack {
     // AgentCore Browser: the backend mints/reads the per-workspace profile, drives the
     // workspace-owned session handoff, and discovers live sessions itself. Browser-profile
     // state snapshots use the released agent-browser CLI; no SaveBrowserSessionProfile grant.
-    this.taskRole.addToPolicy(
+    agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreBrowserManage",
         actions: [
@@ -460,7 +464,7 @@ export class ServiceStack extends cdk.Stack {
         resources: [agentcoreArn("browser-profile/*")],
       }),
     );
-    this.taskRole.addToPolicy(
+    agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreBrowserSessionView",
         actions: [
@@ -471,7 +475,7 @@ export class ServiceStack extends cdk.Stack {
         resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
       }),
     );
-    this.taskRole.addToPolicy(
+    agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreBrowserSessionStart",
         actions: ["bedrock-agentcore:StartBrowserSession"],
@@ -482,7 +486,7 @@ export class ServiceStack extends cdk.Stack {
         ],
       }),
     );
-    this.taskRole.addToPolicy(
+    agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreBrowserSessionControl",
         actions: [
@@ -497,7 +501,7 @@ export class ServiceStack extends cdk.Stack {
     // Workspace memory wipe (account_wipe / DELETE /debug/user-data -> workspace_memory.
     // delete_owner_memory). The backend never reads or writes memory content itself; runtimes do,
     // under their per-owner `owner-memory` policy.
-    this.taskRole.addToPolicy(
+    agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreMemoryWipe",
         actions: [
@@ -688,8 +692,10 @@ export class ServiceStack extends cdk.Stack {
       ],
     });
 
-    // Secrets Manager
-    this.taskRole.addToPolicy(
+    // Secrets Manager -- its own managed policy for the same 10,240-byte inline ceiling as
+    // BackendAgentCore above.
+    const secretsPolicy = new iam.ManagedPolicy(this, "BackendSecrets", { roles: [this.taskRole] });
+    secretsPolicy.addStatements(
       new iam.PolicyStatement({
         sid: "SecretsAccess",
         actions: [
@@ -714,7 +720,7 @@ export class ServiceStack extends cdk.Stack {
     // re-running fails with "user already exists").
     // Read of this secret is already covered by the wildcard
     // SecretsAccess + KmsDecryptForSecrets policies.
-    this.taskRole.addToPolicy(
+    secretsPolicy.addStatements(
       new iam.PolicyStatement({
         sid: "PaperclipAdminCredentialsWrite",
         effect: iam.Effect.ALLOW,
@@ -748,7 +754,7 @@ export class ServiceStack extends cdk.Stack {
         ],
       }),
     );
-    this.taskRole.addToPolicy(
+    secretsPolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AccountWipePaperclipDbSecretRead",
         effect: iam.Effect.ALLOW,
@@ -758,7 +764,7 @@ export class ServiceStack extends cdk.Stack {
         ],
       }),
     );
-    this.taskRole.addToPolicy(
+    secretsPolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AccountWipeListSecrets",
         effect: iam.Effect.ALLOW,
@@ -771,7 +777,7 @@ export class ServiceStack extends cdk.Stack {
     // a Secrets Manager secret per user under isol8/{env}/user-keys/*. Scoped
     // tightly to that prefix so the broad SecretsAccess policy above is not
     // implicitly widened to write access on all isol8/{env}/* secrets.
-    this.taskRole.addToPolicy(
+    secretsPolicy.addStatements(
       new iam.PolicyStatement({
         sid: "UserKeysSecretsRW",
         effect: iam.Effect.ALLOW,
@@ -789,7 +795,7 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    this.taskRole.addToPolicy(
+    secretsPolicy.addStatements(
       new iam.PolicyStatement({
         sid: "OpenRouterOwnerSecretsRW",
         effect: iam.Effect.ALLOW,
@@ -810,7 +816,7 @@ export class ServiceStack extends cdk.Stack {
     // paste-key tokens and backend-custodian OAuth credentials live under
     // isol8/{env}/integrations/*. The secret-free integrations DDB index points
     // here. Same tight prefix scoping as the user-keys statement above.
-    this.taskRole.addToPolicy(
+    secretsPolicy.addStatements(
       new iam.PolicyStatement({
         sid: "IntegrationSecretsRW",
         effect: iam.Effect.ALLOW,
@@ -832,7 +838,7 @@ export class ServiceStack extends cdk.Stack {
     // backend and stored under isol8/{env}/paperclip-agent-keys/* so Friday's
     // openclaw.json MCP block can authenticate to Paperclip. Replaces the old
     // encrypted-in-DynamoDB api-keys storage. Same tight prefix scoping.
-    this.taskRole.addToPolicy(
+    secretsPolicy.addStatements(
       new iam.PolicyStatement({
         sid: "PaperclipAgentKeysRW",
         effect: iam.Effect.ALLOW,
@@ -857,7 +863,7 @@ export class ServiceStack extends cdk.Stack {
     // not create. Same tight prefix scoping as the statements above. (CDK packs the task
     // role's statements into the inline default policy and overflows into a managed policy
     // automatically — see the overflow note further down — so placement is not asserted.)
-    this.taskRole.addToPolicy(
+    secretsPolicy.addStatements(
       new iam.PolicyStatement({
         sid: "HermesBootSecretsRW",
         effect: iam.Effect.ALLOW,
@@ -2065,7 +2071,7 @@ export class ServiceStack extends cdk.Stack {
     // Its own policy, not the task role's default one: the provisioner Lambda
     // runs as the task role and depends on that default policy, while this
     // statement references the machine that invokes the Lambda -- a cycle.
-    new iam.Policy(this, "ProvisionDispatchPolicy", {
+    new iam.ManagedPolicy(this, "ProvisionDispatchPolicy", {
       roles: [this.taskRole],
       statements: [
         new iam.PolicyStatement({

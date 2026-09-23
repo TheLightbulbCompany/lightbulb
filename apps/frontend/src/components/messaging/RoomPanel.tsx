@@ -96,6 +96,8 @@ export interface RoomPanelProps {
   onLinkToWork?: () => void;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
   resourceSource?: RoomResourceSource;
+  /** False hides the Devices & sessions tab (a permalink can still open the pane). */
+  showResourcesTab?: boolean;
 }
 
 const NO_PINNED_MESSAGES: readonly string[] = [];
@@ -260,6 +262,7 @@ function RoomContent({
   onLinkToWork,
   onDownloadAttachment,
   resourceSource,
+  showResourcesTab = true,
 }: RoomPanelProps) {
   const id = useId();
   // token increments on every selection (even of the same result) so RoomTimeline
@@ -644,7 +647,7 @@ function RoomContent({
           onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Details{pinnedMessageIds.length > 0 && <span className="room-count">{pinnedMessageIds.length}</span>}</button>
         {onLinkToWork && <button type="button" className="room-tab" aria-current={showTasks ? "page" : undefined}
           onClick={event => openDetail("tasks", "tasks", event.currentTarget)}>Tasks{roomTasks.length > 0 && ` · ${roomTasks.length}`}</button>}
-        {resourceSource && <button type="button" className="room-tab" aria-current={showResources ? "page" : undefined}
+        {resourceSource && (showResourcesTab || showResources) && <button type="button" className="room-tab" aria-current={showResources ? "page" : undefined}
           onClick={event => openDetail("resources", "resources", event.currentTarget)}>Devices & sessions</button>}
       </nav>
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>

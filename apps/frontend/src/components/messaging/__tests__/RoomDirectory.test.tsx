@@ -653,7 +653,9 @@ it("separates shared channels into External connections, retains their indicator
   const shared = within(external).getByRole("button", { name: /^lightbulb-acme/ });
   expect(screen.getAllByRole("button", { name: /^lightbulb-acme/ })).toHaveLength(1);
   expect(shared).toHaveTextContent("Shared");
-  expect(within(shared).getByText("Shared")).toHaveAttribute("title", "Shared between this workspace and Lightbulb");
+  expect(within(shared).getByText("Shared")).toHaveAttribute("title", "Your direct line to the Lightbulb team");
+  expect(within(shared).getByText("Your direct line to the Lightbulb team")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^Launch/ })).not.toHaveTextContent("direct line");
   expect(screen.getByRole("button", { name: /^Launch/ })).not.toHaveTextContent("Shared");
   await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Launch" }));
   expect(await screen.findByRole("menuitem", { name: /Leave/ })).toBeInTheDocument();

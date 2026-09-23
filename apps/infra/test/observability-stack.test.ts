@@ -220,6 +220,10 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "messaging.projector.push": [["outcome"]],
   "metronome.gate.refresh_error": [[]],
   "metronome.webhook": [["result"], ["blocked", "result"]],
+  // core/services/openrouter_keys.py — check_account_balance, from the
+  // running-gauges loop in main.py. Prod-only alarms (W79/P25); dev and prod
+  // share one OpenRouter account.
+  "openrouter.account.balance_usd": [[]],
   "operator.upstream.closed": [[]],
   "paperclip.upstream.error": [["kind"]],
   // core/services/push_service.py — send_push_to_user.
@@ -1001,5 +1005,36 @@ describe("ObservabilityStack — prod-only paths", () => {
     const hosts = Object.values(template.findResources("AWS::Route53::HealthCheck"))
       .map((c: any) => c.Properties.HealthCheckConfig.FullyQualifiedDomainName);
     expect(hosts.sort()).toEqual([`api.${ROOT_DOMAIN}`, ROOT_DOMAIN]);
+  });
+
+  // W79 (warn, <$5) + P25 (page, <$1) — dev and prod share ONE OpenRouter
+  // account, so these are account-wide and PROD-GATED like the Bedrock/Budget
+  // alarms above (an ungated pair would double-page on the same balance).
+  test("prod pages on OpenRouter balance <$1 and warns <$5", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-prod-W79-openrouter-balance-low",
+      Namespace: "LightbulbAI",
+      MetricName: "openrouter.account.balance_usd",
+      Threshold: 5,
+      ComparisonOperator: "LessThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
+    });
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-prod-P25-openrouter-balance-critical",
+      Namespace: "LightbulbAI",
+      MetricName: "openrouter.account.balance_usd",
+      Threshold: 1,
+      ComparisonOperator: "LessThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
+    });
+  });
+
+  test("dev does NOT get the OpenRouter balance alarms", () => {
+    const rendered = JSON.stringify(
+      buildTemplate("dev").findResources("AWS::CloudWatch::Alarm"),
+    );
+    expect(rendered).not.toContain("openrouter.account.balance_usd");
   });
 });

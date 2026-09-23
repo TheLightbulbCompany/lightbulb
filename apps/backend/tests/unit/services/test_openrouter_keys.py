@@ -474,3 +474,44 @@ async def test_every_provision_moves_an_existing_key_onto_its_plan_limit(monkeyp
 
     relimit.side_effect = RuntimeError("openrouter down")
     assert await openrouter_keys.ensure_owner_key_for_settings("org_a") == "hash-1"
+
+
+@pytest.mark.asyncio
+async def test_check_account_balance_emits_credits_minus_usage():
+    from unittest.mock import MagicMock, patch
+
+    from core.services.openrouter_keys import check_account_balance
+
+    sm = MagicMock()
+    sm.get_secret_value.return_value = {"SecretString": "management-secret"}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url == "https://openrouter.ai/api/v1/credits"
+        assert request.headers["Authorization"] == "Bearer management-secret"
+        return httpx.Response(200, json={"data": {"total_credits": 100.5, "total_usage": 25.75}})
+
+    with patch("core.observability.metrics.gauge") as mock_gauge:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            await check_account_balance(http=http, sm=sm)
+
+    mock_gauge.assert_called_once_with("openrouter.account.balance_usd", 74.75)
+
+
+@pytest.mark.asyncio
+async def test_check_account_balance_emits_nothing_on_error():
+    from unittest.mock import MagicMock, patch
+
+    from core.services.openrouter_keys import check_account_balance
+
+    sm = MagicMock()
+    sm.get_secret_value.return_value = {"SecretString": "management-secret"}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "upstream down"})
+
+    with patch("core.observability.metrics.gauge") as mock_gauge:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            # Must not raise -- a flaky OpenRouter call can never crash the caller's loop.
+            await check_account_balance(http=http, sm=sm)
+
+    mock_gauge.assert_not_called()

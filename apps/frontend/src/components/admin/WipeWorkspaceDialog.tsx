@@ -13,7 +13,6 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   executeWorkspaceWipe,
   previewWorkspaceWipe,
@@ -21,7 +20,7 @@ import {
   type WorkspaceWipeMember,
 } from "@/app/admin/_actions/wipe";
 
-import { StepList } from "./WipeAccountDialog";
+import { ConfirmInput, StepList } from "./WipeAccountDialog";
 import { ErrorBanner } from "./ErrorBanner";
 
 /** Mirrors `workspace_wipe.DEFAULT_LAYERS`; billing is a separate typed opt-in. */
@@ -190,7 +189,7 @@ export function WipeWorkspaceDialog({ orgId }: { orgId: string }) {
                       checked={layers.includes(layer)}
                       onChange={(e) =>
                         change({
-                          layers: LAYERS.filter((l) => (l === layer ? e.target.checked : layers.includes(l))),
+                          layers: e.target.checked ? [...layers, layer] : layers.filter((l) => l !== layer),
                         })
                       }
                     />
@@ -251,38 +250,23 @@ export function WipeWorkspaceDialog({ orgId }: { orgId: string }) {
             ) : null}
 
             {includeBilling ? (
-              <div className="space-y-1">
-                <label htmlFor="wipe-confirm-billing" className={labelClass}>
-                  Type <span className="font-mono font-semibold text-foreground">{BILLING_PHRASE}</span> to
-                  delete billing
-                </label>
-                <Input
-                  id="wipe-confirm-billing"
-                  value={typedBilling}
-                  onChange={(e) => setTypedBilling(e.target.value)}
-                  placeholder={BILLING_PHRASE}
-                  autoComplete="off"
-                  spellCheck={false}
-                  disabled={executing}
-                  aria-label={`Type ${BILLING_PHRASE} to delete billing`}
-                />
-              </div>
-            ) : null}
-            <div className="space-y-1">
-              <label htmlFor="wipe-confirm-org" className={labelClass}>
-                Type <span className="font-mono font-semibold text-foreground">{orgId}</span> to confirm
-              </label>
-              <Input
-                id="wipe-confirm-org"
-                value={typedOrg}
-                onChange={(e) => setTypedOrg(e.target.value)}
-                placeholder={orgId}
-                autoComplete="off"
-                spellCheck={false}
+              <ConfirmInput
+                id="wipe-confirm-billing"
+                phrase={BILLING_PHRASE}
+                action="to delete billing"
+                value={typedBilling}
+                onChange={setTypedBilling}
                 disabled={executing}
-                aria-label={`Type ${orgId} to confirm`}
               />
-            </div>
+            ) : null}
+            <ConfirmInput
+              id="wipe-confirm-org"
+              phrase={orgId}
+              action="to confirm"
+              value={typedOrg}
+              onChange={setTypedOrg}
+              disabled={executing}
+            />
           </div>
         )}
 

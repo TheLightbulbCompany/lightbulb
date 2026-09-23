@@ -29,7 +29,8 @@ export interface MessagingWorkspaceValue {
   activeRoomId: string | null;
   directoryProps: RoomDirectoryProps;
   roomProps: RoomPanelProps | null;
-  selectAgentDm: (agentId: string) => Promise<string | null>;
+  /** `explicit` false only for the default-agent fallback, which isn't a user's pick. */
+  selectAgentDm: (agentId: string, explicit?: boolean) => Promise<string | null>;
   openMessage: (roomId: string, messageId: string | null) => void;
   openSession: (sessionId: string, options: { from: "sidebar" | "link" | "room"; roomId?: string }) => Promise<void>;
   sessionFocus: SessionFocusTarget | null;
@@ -683,8 +684,14 @@ export function MessagingWorkspaceProvider({
     onSelectSession: (sessionId: string) => void openSession(sessionId, { from: "sidebar" }),
   };
   const selectMessageParticipant = useCallback(async (participant: RoomParticipant) => {
+    markExplicitChoice();
     await selectDm(participant);
-  }, [selectDm]);
+  }, [markExplicitChoice, selectDm]);
+  const { selectAgentDm: hookSelectAgentDm } = rooms;
+  const selectAgentDm = useCallback((agentId: string, explicit = true) => {
+    if (explicit) markExplicitChoice();
+    return hookSelectAgentDm(agentId);
+  }, [markExplicitChoice, hookSelectAgentDm]);
   const { activeRoomId: unreadRoomId, markUnread: markRoomUnread } = rooms;
   const markUnreadFrom = useCallback(async (fromSeq: number) => {
     if (unreadRoomId) await markRoomUnread(unreadRoomId, fromSeq);
@@ -774,7 +781,7 @@ export function MessagingWorkspaceProvider({
     activeRoomId: rooms.activeRoomId,
     directoryProps,
     roomProps,
-    selectAgentDm: rooms.selectAgentDm,
+    selectAgentDm,
     openMessage,
     openSession,
     sessionFocus,

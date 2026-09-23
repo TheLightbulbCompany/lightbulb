@@ -10,7 +10,7 @@ import {
 } from "@/lib/focusComposerRequest";
 
 let defaultId: string | undefined;
-let selectAgentDm = vi.fn<(id: string) => Promise<void>>();
+let selectAgentDm = vi.fn<(id: string, explicit?: boolean) => Promise<void>>();
 const openSession = vi.fn();
 const openMessage = vi.fn();
 vi.mock("@/hooks/useAgents", () => ({
@@ -67,20 +67,20 @@ describe("ChatPanel", () => {
     expect(selectAgentDm).not.toHaveBeenCalled();
     defaultId = "agent-ceo";
     view.rerender(<ChatPanel {...props} />);
-    expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-ceo");
+    expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-ceo", false); // the default-agent fallback is not a pick
     expect(props.api.setTitle).not.toHaveBeenCalled();
   });
 
   it("keeps an explicit agent deep link while the roster catches up", () => {
     render(<ChatPanel {...makeProps("agent-late")} />);
-    expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-late");
+    expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-late", true);
   });
 
   it("retargets a mounted conversation on Dockview parameter changes", () => {
     const props = makeProps("agent-friday");
     render(<ChatPanel {...props} />);
     act(() => props.api.updateParameters({ agentId: "agent-atlas" }));
-    expect(selectAgentDm.mock.calls).toEqual([["agent-friday"], ["agent-atlas"]]);
+    expect(selectAgentDm.mock.calls).toEqual([["agent-friday", true], ["agent-atlas", true]]);
   });
 
   it("does not snap room selection back when the selector changes identity", () => {
@@ -92,7 +92,7 @@ describe("ChatPanel", () => {
     act(() => props.api.updateParameters({ agentId: undefined }));
     expect(selectAgentDm).not.toHaveBeenCalled();
     act(() => props.api.updateParameters({ agentId: "agent-friday" }));
-    expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-friday");
+    expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-friday", true);
   });
 
   it("leaves generic room selection to the shared owner", () => {

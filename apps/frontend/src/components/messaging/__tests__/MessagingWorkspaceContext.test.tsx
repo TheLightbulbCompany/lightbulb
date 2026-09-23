@@ -1037,7 +1037,7 @@ describe("opening #general once it is seeded", () => {
     }, [activeRoomId]);
     const selectRoom = useCallback((roomId: string) => { selectRoomSpy(roomId); setActiveRoomId(roomId); }, []);
     const activeRoom = list.find((candidate) => candidate.roomId === activeRoomId) ?? null;
-    return { ...state, rooms: list, activeRoomId, activeRoom, selectRoom, directoryRoomDetails: new Map(list.map((r) => [r.roomId, r])) };
+    return { ...state, rooms: list, activeRoomId, activeRoom, selectRoom, selectAgentDm: async () => null, directoryRoomDetails: new Map(list.map((r) => [r.roomId, r])) };
   }
   const shell = () => <MessagingWorkspaceProvider subscribeToRoom><CaptureContext /><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>;
   beforeEach(() => {
@@ -1069,6 +1069,23 @@ describe("opening #general once it is seeded", () => {
     render(shell());
     expect(workspaceValue.activeRoomId).toBe(dm.roomId);
     expect(selectRoomSpy).not.toHaveBeenCalledWith("general");
+  });
+
+  it("an agent DM a person asked for counts as their choice; the default-agent fallback does not", async () => {
+    list = [vendor];
+    const view = render(shell());
+    await act(async () => { await workspaceValue.selectAgentDm("agent-x"); });
+    list = [vendor, general];
+    view.rerender(shell());
+    expect(selectRoomSpy).not.toHaveBeenCalledWith("general");
+
+    mocks.orgId = "org-2";
+    list = [vendor];
+    view.rerender(shell());
+    await act(async () => { await workspaceValue.selectAgentDm("default-agent", false); });
+    list = [vendor, general];
+    view.rerender(shell());
+    expect(workspaceValue.activeRoomId).toBe("general");
   });
 
   it("never overrides a room the viewer chose", () => {

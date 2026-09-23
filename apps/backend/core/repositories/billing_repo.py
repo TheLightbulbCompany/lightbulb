@@ -659,15 +659,14 @@ async def set_pending_checkout(
 ) -> None:
     """Record the owner's OPEN Stripe Checkout session (at most one).
 
-    Written by workspace Checkout right after session creation and
-    read by the ``/trial-checkout`` router so a second upgrade click returns
-    the SAME hosted session instead of minting a parallel one — completing
-    two open sessions would create two charged subscriptions. Never cleared:
-    a stale marker self-heals because the router re-checks the session's live
-    status with Stripe (open → reuse, complete → 409 until the webhook flips
-    the row, expired → mint fresh; sessions are created with a ~31-minute
-    ``expires_at``). ``provider_choice`` is stored so a provider SWITCH can
-    expire the old session rather than reuse it with the wrong metadata.
+    Written and read only by ``billing_service`` workspace Checkout, under the
+    checkout claim, so a second click returns the SAME hosted session instead
+    of minting a parallel one — completing two open sessions would create two
+    charged subscriptions. Never cleared, only overwritten: the reader
+    re-checks the session with Stripe and every outcome except "open, ours,
+    same plan" (reuse) and "open, foreign" (fail closed) mints a fresh session
+    whose write here retires the old id — an open session for another plan is
+    expired first. ``provider_choice`` is legacy and always ``None`` now.
     Same existing-row condition as the other billing-row setters.
     """
     table = _get_table()
@@ -685,21 +684,20 @@ async def set_pending_checkout(
 
 
 async def try_claim_checkout_slot(owner_id: str, *, ttl_seconds: int = 90) -> str | None:
-    """Conditional-write claim serializing Checkout session creation per owner.
+    """Conditional-write claim serializing the pending-Checkout read/write per owner.
 
-    Two concurrent ``/trial-checkout`` requests with DIFFERENT provider
-    choices carry different Stripe idempotency keys, so without this claim
-    both would mint distinct completable sessions before either post-create
-    ``set_pending_checkout`` write lands — completing both double-charges.
-    Returns a claim TOKEN to exactly ONE caller inside the TTL window (``None``
-    if the slot is held). The claim is a timestamp, not a flag: a request that
-    dies between claim and session create self-heals after ``ttl_seconds``
-    (session creation takes ~1s, so 90s is generous). No phantom rows: guarded
-    on ``attribute_exists(owner_id)``.
+    Without it two concurrent requests for different plans (different Stripe
+    idempotency keys) could both read "no open session" and mint two
+    completable sessions — completing both double-charges. The caller takes
+    it BEFORE reading the pending marker (strongly consistent) and releases it
+    on every exit. Returns a claim TOKEN to exactly ONE caller inside the TTL
+    window (``None`` if the slot is held). The claim is a timestamp, not a
+    flag: a request that dies holding it self-heals after ``ttl_seconds``. No
+    phantom rows: guarded on ``attribute_exists(owner_id)``.
 
     Pass the returned token to :func:`release_checkout_slot` — a late
-    failure-path release is then fenced on it and can only clear ITS OWN claim,
-    never a concurrent create that re-claimed the expired slot in between.
+    release is then fenced on it and can only clear ITS OWN claim, never a
+    concurrent request that re-claimed the expired slot in between.
     """
     table = _get_table()
     now = int(time.time())
@@ -755,9 +753,9 @@ async def clear_phantom_oauth_connector(owner_id: str, *, expected_user_id: str)
 
 
 async def release_checkout_slot(owner_id: str, *, token: str) -> None:
-    """Release the checkout-slot claim after a FAILED session create, so the
-    user's retry doesn't wait out the TTL. No-row / stale-token is a silent
-    no-op.
+    """Release the checkout-slot claim when the request holding it finishes,
+    so the next click doesn't wait out the TTL. No-row / stale-token is a
+    silent no-op.
 
     The REMOVE is ALWAYS fenced on the ``token`` returned by
     :func:`try_claim_checkout_slot`, so a create that hung past the 90s TTL and

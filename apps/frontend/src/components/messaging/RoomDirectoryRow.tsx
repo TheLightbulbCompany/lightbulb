@@ -44,13 +44,14 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
           : <Icon size={16} aria-hidden="true" />}
       <span className="min-w-0 flex-1">
         <span className="block truncate" title={label}>{label}</span>
+        {room.shared && <span className="block truncate text-xs text-muted-foreground">Your direct line to the Lightbulb team</span>}
         <span className="sr-only">{roomKindLabel[room.kind]}</span>
       </span>
       {/* Same tag the roster rows carry, so an agent reads as an agent whether or not a DM exists yet. */}
       {room.kind === "dm" && room.participants.length === 1 && room.participants[0].kind === "agent" && <span className="room-directory-tag">Agent</span>}
       {room.starred && <Star size={12} role="img" aria-label="Starred" className="room-directory-star" />}
       {room.muted && <span className="room-directory-tag">Muted</span>}
-      {room.shared && <span className="room-directory-tag" title="Shared between this workspace and Lightbulb">Shared</span>}
+      {room.shared && <span className="room-directory-tag" title="Your direct line to the Lightbulb team">Shared</span>}
       {badge && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}
       {draft && <Pencil size={14} role="img" aria-label="Unsent draft" className="text-muted-foreground" />}
     </button>

@@ -16,6 +16,7 @@ import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboar
 import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
 import { adjacentRoomId, nextUnreadRoomId } from "./roomNavigation";
 import { usePresence } from "./usePresence";
+import { isDesktopApp } from "@/lib/desktopNotify";
 import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
@@ -675,6 +676,9 @@ export function MessagingWorkspaceProvider({
     httpReady: rooms.httpReady,
     liveConnected: rooms.liveConnected,
     resourceSource: subscribeToRoom ? rooms.resourceSource : undefined,
+    // A brand-new web user has no device and no session, so the tab would be
+    // empty plumbing. The desktop app is itself a paired device.
+    showResourcesTab: workspaceSessions.sessions.length > 0 || isDesktopApp(),
     participants,
     messages: rooms.messages,
     historyLoading: rooms.historyLoading,

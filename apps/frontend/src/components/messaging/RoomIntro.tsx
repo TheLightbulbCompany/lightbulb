@@ -15,7 +15,8 @@ export function RoomIntro({ room, roomName, participants }: { room?: RoomSummary
   const title = kind === "dm" ? `This is the beginning of your direct messages with ${roomName}.`
     : kind === "channel" ? `This is the beginning of #${roomName}.`
       : `This is the beginning of ${roomName}.`;
-  const detail = kind === "dm"
+  const detail = room?.shared ? "This channel is shared with the Lightbulb team — ask us anything here."
+    : kind === "dm"
     ? (agents.length > 0 ? `${roomName} replies to everything you send here.` : "Messages here are private to the two of you.")
     : agents.length === 0 ? "Mention an agent to bring one in."
       : `${names.format(agents.map((agent) => agent.displayName))} ${agents.length === 1 ? "is" : "are"} here. Mention one when you want help.`;

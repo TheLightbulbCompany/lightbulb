@@ -630,3 +630,11 @@ it("opens a session inline in the column with a way back to the list, and marks 
   expect(screen.getByRole("button", { name: "Open Claude · Load test" })).toBeInTheDocument();
   expect(aside).not.toHaveAttribute("data-session");
 });
+
+it("hides the Devices & sessions tab when nothing in the workspace would fill it", () => {
+  const { props } = setup();
+  const { rerender } = render(<RoomPanel {...props} showResourcesTab={false} />);
+  expect(screen.queryByRole("button", { name: "Devices & sessions" })).not.toBeInTheDocument();
+  rerender(<RoomPanel {...props} showResourcesTab />);
+  expect(screen.getByRole("button", { name: "Devices & sessions" })).toBeInTheDocument();
+});

@@ -160,6 +160,15 @@ it("disables the resource pane transport while its workspace is hidden", () => {
   expect(panel.resourceSource).toBeUndefined();
 });
 
+it("offers the Devices & sessions tab only once the workspace has a session", async () => {
+  compose();
+  expect(panel.showResourcesTab).toBe(false);
+  cleanup();
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never] });
+  compose();
+  await waitFor(() => expect(panel.showResourcesTab).toBe(true));
+});
+
 it("routes message authors through the existing participant DM action", async () => {
   compose();
   await act(async () => panel.onSelectParticipant?.(panel.participants[1]));

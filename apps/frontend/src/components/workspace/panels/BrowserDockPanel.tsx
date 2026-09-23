@@ -18,7 +18,7 @@
 
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { useRuntimeHost } from "@lightbulb/shared";
+import { useStatusLoaded } from "@lightbulb/shared";
 import { ApiError, useApi } from "@/lib/api";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { ensureDcvMediaShim } from "./dcvWebKitShim";
@@ -80,10 +80,9 @@ export function BrowserDockPanel(): React.ReactElement | null {
   const api = useApi();
   const { orgId, userId } = useAuth();
   const scope = orgId ?? userId ?? "signed-out";
-  // One call site, so no `useShownOnAgentCore` twin: `undefined` means no status
-  // body has landed for this workspace yet, and firing on a guess is exactly
-  // what that hold exists to prevent.
-  const host = useRuntimeHost();
+  // `false` means no status body has landed for this workspace yet, and firing
+  // on a guess is exactly what that hold exists to prevent.
+  const ready = useStatusLoaded();
   // `roomProps.runs` is `useRooms`' live run state — the `run_active` frames
   // from `useLiveEvents` merged with the `activeRuns` the room detail seeds.
   // Optional because the panel must not throw outside a messaging provider.
@@ -102,7 +101,6 @@ export function BrowserDockPanel(): React.ReactElement | null {
   const autoTakeGeneration = useRef<string | undefined>(undefined);
 
   const knownSession = useRef(false);
-  const ready = host === "agentcore";
 
   useEffect(() => {
     setView(null);

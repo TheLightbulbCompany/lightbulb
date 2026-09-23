@@ -9,12 +9,12 @@ import React from "react";
 import { SkillsTab } from "../SkillsTab";
 import { SkillProposalsPanel } from "../SkillProposalsPanel";
 
-let runtimeHost: "agentcore" | undefined;
+let statusLoaded = false;
 const rpcMethods: (string | null)[] = [];
 const mockCallRpc = vi.fn();
 const rpcData = vi.fn();
 
-vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => runtimeHost }));
+vi.mock("@lightbulb/shared", () => ({ useStatusLoaded: () => statusLoaded }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/hooks/useRuntimeRpc", () => ({
   useRuntimeRpc: (method: string | null) => {
@@ -50,12 +50,12 @@ beforeEach(() => {
   rpcMethods.length = 0;
   mockCallRpc.mockReset().mockResolvedValue({});
   rpcData.mockReset().mockReturnValue(undefined);
-  runtimeHost = "agentcore";
+  statusLoaded = true;
 });
 
 describe("SkillsTab", () => {
   it("holds skills.status until the runtime is known", () => {
-    runtimeHost = undefined;
+    statusLoaded = false;
     render(<SkillsTab />);
     expect(rpcMethods.every((method) => method === null)).toBe(true);
     expect(screen.queryByText("Skill Store")).toBeNull();

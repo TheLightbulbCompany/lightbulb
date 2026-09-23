@@ -21,14 +21,6 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * Which runtime hosts this workspace — `containers.runtime_host`, via
- * `core/services/runtime_transport.host_for`. One runtime remains; the field
- * survives as the "a status body has landed for this workspace" signal that
- * `useRuntimeHost` publishes (see the block comment further down).
- */
-export type RuntimeHost = "agentcore";
-
-/**
  * The 200 body — the composed `StatusContract` (see `statusContract.ts` and
  * `core/services/readiness_state.compute_status`/
  * `routers/container.py::_status_response`). Two shapes exist on the wire
@@ -53,8 +45,6 @@ export interface ContainerStatusBody {
   onboarded?: boolean;
   /** Set alongside `lifecycle: "parked"` on a deliberately-asleep, wake-gated trial box. */
   parked?: boolean;
-  /** Which runtime hosts this workspace — absent on a backend that predates the field. */
-  runtime_host?: RuntimeHost;
   /** Non-blocking Paperclip (Teams) seed health — `"failed"` is the only
    * value any binding acts on today. */
   teams_state?: string | null;
@@ -165,83 +155,77 @@ export function classifyContainerStatus(res: {
 }
 
 /* ---------------------------------------------------------------------------
- * The runtime signal
+ * The "status loaded" signal
  *
- * `runtime_host` arrives on the `/container/status` body, but the surfaces that
- * need it (control panels, deep leaf components) do not hold that body and must
- * not open a second poll to get it. So the ONE reader of that endpoint —
- * `useOnboardingStatus` — publishes the field here and `useRuntimeHost()` is a
- * parameterless subscriber. Module state + a listener set + `useSyncExternalStore`
- * is the pattern `workspaceController.ts` and `lampStore.ts` already use.
+ * Runtime RPC surfaces (control panels, deep leaf components) do not hold the
+ * `/container/status` body and must not open a second poll to get it. So the ONE
+ * reader of that endpoint — `useOnboardingStatus` — publishes "a 200 body has
+ * landed for this workspace" here and `useStatusLoaded()` is a parameterless
+ * subscriber. Module state + a listener set + `useSyncExternalStore` is the
+ * pattern `workspaceController.ts` and `lampStore.ts` already use.
  *
- * One runtime remains, so the VALUE no longer branches anything. What still
- * matters is the DEFINEDNESS: `undefined` means NOT KNOWN *FOR THIS WORKSPACE* —
- * no status has landed yet, a switch is in flight, the poll is disabled, or this
- * owner has no runtime at all (a fresh, blocked or parked workspace answers 402 /
- * 404, so nothing publishes). Every caller must treat it as "hold": firing a
- * runtime RPC on a guess wakes and bills a microVM (~55s cold start).
+ * `false` means NOT KNOWN *FOR THIS WORKSPACE* — no status has landed yet, a
+ * switch is in flight, the poll is disabled, or this owner has no runtime at all
+ * (a fresh, blocked or parked workspace answers 402 / 404, so nothing
+ * publishes). Every caller must treat it as "hold": firing a runtime RPC on a
+ * guess wakes and bills a microVM (~55s cold start).
  *
  * **The value is SCOPED**, so a client-side workspace switch (`setActive` +
  * `router.replace`, never a reload) does not leave the previous workspace's
  * answer standing: the reader declares which workspace it is polling
- * (`setRuntimeHostScope`, during render, in the same pass that clears its own
- * sticky body), the publish carries that same scope, and a host from any other
- * scope reads as unknown.
+ * (`setStatusScope`, during render, in the same pass that clears its own sticky
+ * body), the publish carries that same scope, and a publish from any other
+ * scope reads as not loaded.
  * ------------------------------------------------------------------------- */
 
-/** The status key the one reader is currently polling — see `setRuntimeHostScope`. */
+/** The status key the one reader is currently polling — see `setStatusScope`. */
 let activeStatusScope: string | null = null;
-let publishedHost: { scope: string; host: RuntimeHost } | null = null;
-const runtimeHostListeners = new Set<() => void>();
-
-function notifyRuntimeHost(): void {
-  for (const listener of runtimeHostListeners) listener();
-}
+let loadedScope: string | null = null;
+const statusLoadedListeners = new Set<() => void>();
 
 /**
  * Declare which workspace the status poll is currently for. Called by
  * `useOnboardingStatus` DURING RENDER, alongside the branch that drops its own sticky
- * last-good body on a key change, so the host goes unknown in the same pass the body does —
+ * last-good body on a key change, so the signal goes false in the same pass the body does —
  * an effect would leave one commit in which a panel still sees the old workspace's runtime.
  *
  * Deliberately does NOT notify: React forbids updating another component from a render phase,
  * and `useSyncExternalStore` re-reads the snapshot every render and re-checks it after commit,
  * so a plain mutation is picked up without one. `null` (the poll is disabled — signed out)
- * matches no published scope, so it reads as unknown.
+ * matches no published scope, so it reads as not loaded.
  */
-export function setRuntimeHostScope(scope: string | null): void {
+export function setStatusScope(scope: string | null): void {
   activeStatusScope = scope;
 }
 
-/** Called by `useOnboardingStatus` when a status body for `scope` names a host. Never
- * publishes `undefined`: within one workspace, a failing or disabled poll must not blank a
- * host we already know — going unknown is `setRuntimeHostScope`'s job, and only on a switch. */
-export function publishRuntimeHost(scope: string, host: RuntimeHost): void {
-  if (publishedHost?.scope === scope && publishedHost.host === host) return;
-  publishedHost = { scope, host };
-  notifyRuntimeHost();
+/** Called by `useOnboardingStatus` when a 200 status body lands for `scope`. There is no
+ * unpublish: within one workspace, a failing or disabled poll must not blank a status we
+ * already had — going false is `setStatusScope`'s job, and only on a switch. */
+export function publishStatusLoaded(scope: string): void {
+  if (loadedScope === scope) return;
+  loadedScope = scope;
+  for (const listener of statusLoadedListeners) listener();
 }
 
-function subscribeRuntimeHost(listener: () => void): () => void {
-  runtimeHostListeners.add(listener);
+function subscribeStatusLoaded(listener: () => void): () => void {
+  statusLoadedListeners.add(listener);
   return () => {
-    runtimeHostListeners.delete(listener);
+    statusLoadedListeners.delete(listener);
   };
 }
 
-function readRuntimeHost(): RuntimeHost | undefined {
-  return publishedHost && publishedHost.scope === activeStatusScope ? publishedHost.host : undefined;
+function readStatusLoaded(): boolean {
+  return loadedScope !== null && loadedScope === activeStatusScope;
 }
 
 /** Test-only reset — this module's state outlives any one test's renders. */
-export function __resetRuntimeHost(): void {
+export function __resetStatusLoaded(): void {
   activeStatusScope = null;
-  publishedHost = null;
-  runtimeHostListeners.clear();
+  loadedScope = null;
+  statusLoadedListeners.clear();
 }
 
-/** This workspace's runtime, or `undefined` while unknown (see the block comment above). */
-export function useRuntimeHost(): RuntimeHost | undefined {
-  return useSyncExternalStore(subscribeRuntimeHost, readRuntimeHost, readRuntimeHost);
+/** Whether a status body has landed for this workspace (see the block comment above). */
+export function useStatusLoaded(): boolean {
+  return useSyncExternalStore(subscribeStatusLoaded, readStatusLoaded, readStatusLoaded);
 }
-

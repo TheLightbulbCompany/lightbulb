@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { SkillProposalsPanel } from "../SkillProposalsPanel";
 
-vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => "agentcore" }));
+vi.mock("@lightbulb/shared", () => ({ useStatusLoaded: () => true }));
 vi.mock("@/hooks/useRuntimeRpc", () => ({
   useRuntimeRpc: (method: string | null) => {
     if (method === "skills.proposals.list") {

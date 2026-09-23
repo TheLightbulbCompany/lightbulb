@@ -8,7 +8,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { useRuntimeHost, useRuntimeRpc } from "@lightbulb/shared";
+import { useStatusLoaded, useRuntimeRpc } from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
@@ -192,10 +192,10 @@ export default function SkillsPanel() {
   // ECS" — firing on a guess costs a microVM start on AgentCore (M6 task 10-E).
   // The Hermes bridge answers the same shape this screen already projects, with
   // no dependency manifest, so every skill reads as installed or available.
-  const runtimeHost = useRuntimeHost();
+  const statusLoaded = useStatusLoaded();
   const { data, error, isLoading, mutate } = useRuntimeRpc<unknown>(
     live,
-    runtimeHost ? "skills.status" : null,
+    statusLoaded ? "skills.status" : null,
   );
 
   const skills = useMemo(() => projectSkills(data), [data]);
@@ -289,9 +289,9 @@ export default function SkillsPanel() {
           />
         }
         ListEmptyComponent={
-          // `!runtimeHost` counts as loading: the RPC is held until the runtime
+          // `!statusLoaded` counts as loading: the RPC is held until the runtime
           // is known, and without it the held state reads as "unreachable".
-          isLoading || !runtimeHost ? (
+          isLoading || !statusLoaded ? (
             <SkeletonRows />
           ) : !data ? (
             // Connected but the RPC resolved to undefined (the shared fetcher

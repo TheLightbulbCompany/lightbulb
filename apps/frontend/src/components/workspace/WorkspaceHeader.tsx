@@ -5,7 +5,7 @@ import { UserButton } from "@clerk/nextjs";
 import { Fragment } from "react";
 import { Bell, Chrome, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Plug, Search, Settings, UserPlus } from "lucide-react";
 import Link from "next/link";
-import { useRuntimeHost } from "@lightbulb/shared";
+import { useStatusLoaded } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
 import { useSupport } from "@/components/support/SupportProvider";
@@ -33,10 +33,9 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
   const { activePanelId } = useWorkspaceState();
   const activeTeamRunCount = useActiveTeamRunCount();
   // The Browser panel watches an AgentCore Browser session, so the rail offers
-  // it only once this workspace's runtime host is KNOWN — `undefined` (no
-  // status body has landed) hides it rather than offering a panel that can
-  // only render its empty state.
-  const browserShown = useRuntimeHost() === "agentcore";
+  // it only once a status body has landed for this workspace — `false` hides
+  // it rather than offering a panel that can only render its empty state.
+  const browserShown = useStatusLoaded();
   const destinations = browserShown ? DESTINATIONS : DESTINATIONS.filter((d) => d.panel !== "browser");
   return (
     <nav className="workspace-rail" aria-label="Workspace">

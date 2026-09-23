@@ -19,7 +19,7 @@ import {
   agentDisplayName,
   getAgentModelString,
   useAgents,
-  useRuntimeHost,
+  useStatusLoaded,
   useRuntimeRpc,
   useRuntimeRpcMutation,
   type Agent,
@@ -211,10 +211,10 @@ export default function AgentDetail() {
   // The model list comes from `models.list` — the owner's own Bedrock inference
   // profiles, or Hermes's catalog via the bridge. Held until a status body names
   // this workspace's runtime: firing on a guess costs a ~55s microVM cold start.
-  const runtimeHost = useRuntimeHost();
+  const statusLoaded = useStatusLoaded();
   const { data: configSnapshot, mutate: mutateConfig } = useRuntimeRpc<unknown>(
     live,
-    runtimeHost ? "models.list" : null,
+    statusLoaded ? "models.list" : null,
   );
 
   const agent: Agent | undefined = useMemo(

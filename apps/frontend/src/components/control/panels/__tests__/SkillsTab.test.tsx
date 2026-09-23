@@ -7,7 +7,7 @@ const mockData = vi.fn();
 const mockMutate = vi.fn();
 const mockMutation = vi.fn();
 // The panel holds its RPC until a status body has named this workspace's runtime.
-vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => "agentcore" }));
+vi.mock("@lightbulb/shared", () => ({ useStatusLoaded: () => true }));
 vi.mock("@/hooks/useRuntimeRpc", () => ({
   useRuntimeRpc: () => ({ data: mockData(), error: undefined, isLoading: false, mutate: mockMutate }),
   useRuntimeRpcMutation: () => mockMutation,

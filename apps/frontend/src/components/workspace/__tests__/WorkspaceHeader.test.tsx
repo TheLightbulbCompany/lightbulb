@@ -6,13 +6,13 @@ const setPaletteOpen = vi.fn();
 const openPanel = vi.fn();
 const activateMessagesPanel = vi.fn();
 let activePanelId = "teams-dashboard";
-const shared = vi.hoisted(() => ({ runtimeHost: undefined as "agentcore" | undefined }));
+const shared = vi.hoisted(() => ({ statusLoaded: false }));
 
-// Partial mock: WorkspaceHeader reads only `useRuntimeHost` from the barrel, but
+// Partial mock: WorkspaceHeader reads only `useStatusLoaded` from the barrel, but
 // the rest of this module graph pulls plenty else out of it.
 vi.mock("@lightbulb/shared", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  useRuntimeHost: () => shared.runtimeHost,
+  useStatusLoaded: () => shared.statusLoaded,
 }));
 
 vi.mock("@/components/teams/command-palette/CommandPaletteProvider", () => ({
@@ -94,19 +94,19 @@ describe("WorkspaceHeader", () => {
     ]);
   });
   // Inverted gate: the AgentCore Browser live view is offered only once the
-  // runtime host is KNOWN, so an unresolved status body hides it rather than
+  // status body has landed, so an unresolved status body hides it rather than
   // offering a panel that can only render its empty state.
   it("offers Browser only on an AgentCore workspace", () => {
-    shared.runtimeHost = undefined;
+    shared.statusLoaded = false;
     const bare = render(<WorkspaceHeader />);
     expect(screen.queryByRole("button", { name: "Browser" })).toBeNull();
     bare.unmount();
 
-    shared.runtimeHost = "agentcore";
+    shared.statusLoaded = true;
     render(<WorkspaceHeader />);
     fireEvent.click(screen.getByRole("button", { name: "Browser" }));
     expect(openPanel).toHaveBeenCalledWith("browser", {}, { pushUrl: true });
-    shared.runtimeHost = undefined;
+    shared.statusLoaded = false;
   });
 
   it("shows active team runs on Activity without covering workspace content", () => {

@@ -16,7 +16,7 @@ import {
   Wrench,
   FileText,
 } from "lucide-react";
-import { useRuntimeHost } from "@lightbulb/shared";
+import { useStatusLoaded } from "@lightbulb/shared";
 import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { useProvisioningState } from "@/hooks/useProvisioningState";
@@ -153,7 +153,7 @@ interface OverviewPanelProps {
 
 export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
   const api = useApi();
-  const runtimeHost = useRuntimeHost();
+  const statusLoaded = useStatusLoaded();
   const [configOpen, setConfigOpen] = useState(false);
 
   const {
@@ -161,7 +161,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
     error: healthError,
     isLoading: healthLoading,
     mutate: refreshHealth,
-  } = useRuntimeRpc<HealthResponse>(runtimeHost ? "health" : null, undefined, {
+  } = useRuntimeRpc<HealthResponse>(statusLoaded ? "health" : null, undefined, {
     refreshInterval: 10000,
   });
 
@@ -181,7 +181,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
   // {skills: [...]} (see SkillsTab.tsx). Held until the runtime is DEFINITE —
   // `undefined` is "not known", and guessing costs a microVM start on AgentCore.
   const { data: skillsRaw } = useRuntimeRpc<SkillStatus | SkillEntry[]>(
-    runtimeHost ? "skills.status" : null,
+    statusLoaded ? "skills.status" : null,
   );
 
   // MCP server count via the integrations REST endpoint. The endpoint
@@ -214,10 +214,10 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
 
   const { state: healthState, reason: healthReason, canRecover, actionLabel, recover, isRecovering } = useSystemHealth();
 
-  // `!runtimeHost` counts as still-loading: the health RPC is held until the
+  // `!statusLoaded` counts as still-loading: the health RPC is held until the
   // runtime is known, and without this the panel would fall through to
   // "No container available" in the gap before the first status body lands.
-  const isLoading = (healthLoading || !runtimeHost) && statusLoading;
+  const isLoading = (healthLoading || !statusLoaded) && statusLoading;
   const error = healthError || statusError;
 
   const handleRefresh = () => {

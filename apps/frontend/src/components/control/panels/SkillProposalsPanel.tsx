@@ -3,7 +3,7 @@
 
 import { useState } from "react";
 import { Loader2, RefreshCw, FileCheck, Check, X } from "lucide-react";
-import { useRuntimeHost } from "@lightbulb/shared";
+import { useStatusLoaded } from "@lightbulb/shared";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,13 +12,13 @@ import {
 } from "./skill-proposals-types";
 
 export function SkillProposalsPanel() {
-  const runtimeHost = useRuntimeHost();
+  const statusLoaded = useStatusLoaded();
   const { data, error, isLoading, mutate } = useRuntimeRpc<SkillProposalManifest>(
-    runtimeHost ? "skills.proposals.list" : null,
+    statusLoaded ? "skills.proposals.list" : null,
   );
   const [selected, setSelected] = useState<string | null>(null);
 
-  if ((isLoading || !runtimeHost) && !data) {
+  if ((isLoading || !statusLoaded) && !data) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />

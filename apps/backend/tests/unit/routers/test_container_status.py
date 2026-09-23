@@ -1828,20 +1828,8 @@ class TestProvisionTaskObservability:
 
 
 class TestStatusResponseRuntimeHost:
-    """M6 task 10, row 0. `_status_response` WHITELISTS fields, so a key added to the composer
-    is silently dropped on the wire unless it is listed there too -- which is the whole failure
-    this pins."""
-
-    def test_the_wire_body_carries_the_composed_runtime_host(self):
+    def test_the_wire_body_still_carries_runtime_host_for_shipped_mobile_bundles(self):
+        """Older mobile bundles hold every runtime RPC until `runtime_host` is truthy."""
         from routers.container import _status_response
 
-        for host in ("ecs", "agentcore"):
-            body = _status_response({"lifecycle": "ready", "runtime_phase": "ready", "runtime_host": host})
-            assert body["runtime_host"] == host
-
-    def test_a_contract_without_the_field_sends_null_rather_than_omitting_it(self):
-        """Clients read `runtime_host === "agentcore"`, so a missing key and an explicit null
-        are the same answer: not AgentCore."""
-        from routers.container import _status_response
-
-        assert _status_response({"lifecycle": "ready"})["runtime_host"] is None
+        assert _status_response({"lifecycle": "ready"})["runtime_host"] == "agentcore"

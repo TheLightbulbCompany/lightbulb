@@ -20,7 +20,7 @@ import {
   createApiClient,
   fetchJsonWithStatus,
   useAgents,
-  useRuntimeHost,
+  useStatusLoaded,
   useRuntimeRpc,
 } from "@lightbulb/shared";
 
@@ -308,10 +308,10 @@ export default function Overview() {
   const { agents, isSettled: agentsSettled } = useAgents(live);
   // Held until the runtime is DEFINITE — `undefined` is "not known for this
   // workspace", and guessing costs a microVM start on AgentCore.
-  const runtimeHost = useRuntimeHost();
+  const statusLoaded = useStatusLoaded();
   const { data: healthRaw } = useRuntimeRpc<unknown>(
     live,
-    runtimeHost ? "health" : null,
+    statusLoaded ? "health" : null,
     undefined,
     { refreshInterval: 10_000 },
   );

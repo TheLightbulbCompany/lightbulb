@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
-import { useRuntimeHost } from "@lightbulb/shared";
+import { useStatusLoaded } from "@lightbulb/shared";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 
 type ConfigGetSnapshot = {
@@ -36,17 +36,17 @@ export type ConfigPatchResult = {
  * into all six profiles and bump all six `.revision`s. Pass the agent's id
  * for a per-agent surface; omit it for an owner-level one.
  *
- * Both RPCs are held until a status body names this workspace's runtime
- * (`useRuntimeHost() === undefined` = "not known for THIS workspace"):
+ * Both RPCs are held until a status body has landed for this workspace
+ * (`useStatusLoaded() === false` = "not known for THIS workspace"):
  * guessing costs a ~55s microVM cold start.
  */
 export function useConfigPatch(agentId?: string) {
-  const runtimeHost = useRuntimeHost();
-  const perProfile = Boolean(runtimeHost) && Boolean(agentId);
+  const statusLoaded = useStatusLoaded();
+  const perProfile = statusLoaded && Boolean(agentId);
   // Per-profile reads ask for that profile by id, so `hash` is ITS hash — the map hash a
   // no-agentId read returns would never match the per-profile CAS the backend does.
   const { data: snapshot, mutate } = useRuntimeRpc<ConfigGetSnapshot>(
-    runtimeHost ? "config.get" : null,
+    statusLoaded ? "config.get" : null,
     perProfile ? { agentId } : undefined,
   );
   const callRpc = useRuntimeRpcMutation();
@@ -102,9 +102,9 @@ export function useConfigPatch(agentId?: string) {
  * (`source: undefined`) until the runtime is known for this workspace.
  */
 export function useModelCatalog(): { source: unknown; defaultId?: string; ready: boolean } {
-  const runtimeHost = useRuntimeHost();
+  const statusLoaded = useStatusLoaded();
   const { data } = useRuntimeRpc<{ config?: unknown; defaultId?: string }>(
-    runtimeHost ? "models.list" : null,
+    statusLoaded ? "models.list" : null,
   );
   if (!data) return { source: undefined, ready: false };
   return { source: data, defaultId: data.defaultId, ready: true };

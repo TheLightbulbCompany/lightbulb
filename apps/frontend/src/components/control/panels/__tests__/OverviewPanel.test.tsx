@@ -4,10 +4,10 @@ import React from "react";
 import { OverviewPanel, healthCount } from "../OverviewPanel";
 
 // Both RPCs are held until the runtime is known, so a test has to name one.
-let runtimeHost: "agentcore" | undefined = "agentcore";
+let statusLoaded: boolean = true;
 let healthPayload: Record<string, unknown> = {};
 
-vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => runtimeHost }));
+vi.mock("@lightbulb/shared", () => ({ useStatusLoaded: () => statusLoaded }));
 
 // useRuntimeRpc serves health and skills.status keyed by method.
 vi.mock("@/hooks/useRuntimeRpc", () => ({
@@ -58,7 +58,7 @@ describe("OverviewPanel", () => {
   const NOW = 1_700_000_000_000;
   beforeEach(() => {
     vi.spyOn(Date, "now").mockReturnValue(NOW);
-    runtimeHost = "agentcore";
+    statusLoaded = true;
     healthPayload = { ready: true, uptimeS: 60, agents: 0 };
   });
   afterEach(() => {

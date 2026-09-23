@@ -7,13 +7,13 @@ const get = vi.fn();
 const post = vi.fn();
 const state = vi.hoisted(() => ({
   scope: "org-one",
-  host: "agentcore" as "agentcore" | undefined,
+  host: true,
   participants: [] as { agentActivity: string }[],
   runs: [] as { state: string }[],
 }));
 
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ orgId: state.scope, userId: "human" }) }));
-vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => state.host }));
+vi.mock("@lightbulb/shared", () => ({ useStatusLoaded: () => state.host }));
 // Identity-stable, like the real `useApi()` (a `useMemo` over the Clerk token
 // getter) — a fresh object per render would re-fire the panel's mount fetch.
 const apiClient = { get, post };
@@ -60,7 +60,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   get.mockReset();
   post.mockReset();
-  state.host = "agentcore";
+  state.host = true;
   state.scope = "org-one";
   state.runs = [];
   state.participants = [];
@@ -301,8 +301,8 @@ describe("BrowserDockPanel", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("renders nothing and fires no request until the runtime host is known", async () => {
-    state.host = undefined;
+  it("renders nothing and fires no request until a status body has landed", async () => {
+    state.host = false;
     state.runs = RUNNING;
 
     const { container } = render(<BrowserDockPanel />);

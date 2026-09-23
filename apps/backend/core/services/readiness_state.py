@@ -239,10 +239,6 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
         # status router synthesizes its own values on top (auto_retry / error_retrying /
         # ensure_user_ready).
         "container_substatus": (container or {}).get("substatus"),
-        # Which runtime hosts this owner. A constant now -- kept for one release so a client
-        # released against the migrated contract still finds the field (see the deletion
-        # plan's open question 4); it goes in the follow-up that drops the column.
-        "runtime_host": "agentcore",
         "parked": parked,
         "onboarded": onboarded,
         "last_error": (container or {}).get("last_error"),

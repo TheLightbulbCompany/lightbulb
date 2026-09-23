@@ -465,7 +465,6 @@ async def _install_agentcore_deploy(
         "agent_id": new_agent_id,
         "name": manifest.get("name", slug),
         "origin": "Marketplace" if listing_id and seller_id else "Custom",
-        "runtimeHost": "agentcore",
     }
 
 

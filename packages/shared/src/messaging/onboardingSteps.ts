@@ -107,8 +107,8 @@ export interface SetupStepInputs {
 /**
  * A paid Workspace/Ultra row with no provider runs on the capped starter model
  * (trial_cap.is_managed_capped). Base is excluded — the managed model IS that
- * plan — and so is the trial, whose plan-less row the backend reports as
- * "standard", which is why `is_subscribed` is checked rather than `plan` alone.
+ * plan — and so is the trial (plan null) and a lapsed row, which still carries
+ * its old plan, which is why `is_subscribed` is checked rather than `plan` alone.
  */
 function onStarterModel(billing: SetupStepInputs["billing"]): boolean {
   return Boolean(

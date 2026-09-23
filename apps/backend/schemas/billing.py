@@ -21,10 +21,10 @@ class BillingAccountResponse(BaseModel):
     provider_choice: str | None = None
     byo_provider: str | None = None
     managed_inference_available: bool = False
-    # Pricing tier: "standard" (Workspace) or "ultra_pro" (Ultra). Defaults to
-    # "standard" so a billing row created before the plan field existed (no
-    # `plan` key) surfaces cleanly rather than as null.
-    plan: str = "standard"
+    # Pricing tier: "base", "standard" (Workspace) or "ultra_pro" (Ultra). A paid
+    # row created before the plan field existed reads "standard"; a trial_local
+    # row or no row at all has no plan and reads null.
+    plan: str | None = None
     # Server-owned workspace price display. Clients must not bake this into a
     # binary because a catalog update would otherwise leave stale checkout
     # copy in the field.

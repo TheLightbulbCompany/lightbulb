@@ -67,11 +67,20 @@ class FakeS3:
 
 class FakeProfile:
     """The one thing the apply half needs from hermes_profiles: fetch the agent's current
-    ``USER.md``/``skills/`` down, and take back what changed."""
+    ``skills/`` down, take back what changed -- plus the context paste door's merge, which
+    owns ``memories/USER.md`` (its own tests cover the merge itself)."""
 
     def __init__(self, existing: dict[str, bytes] | None = None):
         self.stored: dict[str, bytes] = dict(existing or {})
         self.writes: list[dict[str, bytes]] = []
+        self.merged: list[str] = []
+
+    def merge_context(self, owner_id, agent_id, text):
+        assert (owner_id, agent_id) == (OWNER, AGENT)
+        if not text.strip():
+            raise ValueError("nothing to import")
+        self.merged.append(text)
+        return {"merged": len(text), "overflowed": False}
 
     def fetch_profile_subtree(self, owner_id, agent_id, prefixes, dest):
         assert (owner_id, agent_id) == (OWNER, AGENT)
@@ -101,6 +110,7 @@ def client():
         patch("routers.marketplace_import.container_repo.get_by_owner_id", new_callable=AsyncMock) as get_row,
         patch("routers.marketplace_import.hermes_profiles.fetch_profile_subtree", profile.fetch_profile_subtree),
         patch("routers.marketplace_import.hermes_profiles.write_profile_subtree", profile.write_profile_subtree),
+        patch("routers.marketplace_import.context_import.merge_context", profile.merge_context),
     ):
         settings.MARKETPLACE_ARTIFACTS_BUCKET = "bkt"
         get_row.return_value = {"owner_id": OWNER, "agentcore_runtime_arn": "arn:x"}
@@ -263,25 +273,12 @@ def test_confirm_applies_into_the_agents_profile(client):
     # `openclaw migrate claude` AND this import gets ONE tree, not two.
     assert written[f"memory/imports/claude-code/{CID}/fact.md"] == b"a fact\n"
     assert "skills/graphify/SKILL.md" in written
-    assert b"claude-code-import:begin" in written["USER.md"]
-    assert b"# me" in written["USER.md"]
+    # CLAUDE.md goes through the paste door's merge into memories/USER.md -- never the
+    # profile-root USER.md, which Hermes does not read.
+    assert "USER.md" not in written
+    assert len(profile.merged) == 1 and "# me" in profile.merged[0]
     # Object consumed, so a second confirm cannot re-apply.
     assert s3.deleted == [KEY]
-
-
-def test_confirm_merges_into_an_existing_user_md_without_losing_it(client):
-    """USER.md is a platform-managed persona file — the import owns only its marker-fenced
-    block, and the rest of the owner's file has to survive."""
-    c, _, profile = client
-    profile.stored["USER.md"] = b"# Persona\n\nkeep me\n"
-    assert c.post("/api/v1/marketplace/import", json={"key": KEY}).status_code == 200
-
-    r = c.post(f"/api/v1/marketplace/import/{IMPORT_ID}/confirm", json={"target_agent_id": AGENT})
-
-    assert r.status_code == 200, r.text
-    user_md = profile.stored["USER.md"].decode()
-    assert "keep me" in user_md
-    assert marketplace_import.claude_code_import.USER_MEMORY_BEGIN in user_md
 
 
 def test_confirm_never_overwrites_an_existing_skill(client):
@@ -360,8 +357,8 @@ def test_confirm_honours_an_empty_selection(client):
     )
     assert r.status_code == 200, r.text
     assert [i["item"] for i in r.json()["claude_items"]] == ["user-memory"]
-    written = {k: v for w in profile.writes for k, v in w.items()}
-    assert set(written) == {"USER.md"}
+    assert profile.writes == []
+    assert len(profile.merged) == 1
 
 
 def test_a_second_confirm_404s(client):

@@ -297,34 +297,11 @@ def extract_claude_archive(open_stream: Callable[[], BinaryIO], dst: Path) -> Cl
 # ---------------------------------------------------------------------------
 # Apply half — confirm moves the staged content into one agent's workspace.
 
-USER_MEMORY_BEGIN = "<!-- claude-code-import:begin -->"
-USER_MEMORY_END = "<!-- claude-code-import:end -->"
-
-
 # NOTE: the 1000:1000 chown these writes used to carry went with the ECS runtime. The apply
 # target is a scratch tree the backend owns and then uploads into the agent's S3 profile; no
-# uid ever opens these paths directly.
-
-
-def _merge_user_memory(content: str, user_md: Path) -> None:
-    """Replace-or-append the marker-fenced block in ``USER.md``.
-
-    USER.md is a platform-managed persona file (write-if-missing), so a
-    marker-fenced block survives reprovision. Keep the markers exactly as-is.
-    """
-    if content and not content.endswith("\n"):
-        content += "\n"
-    block = f"{USER_MEMORY_BEGIN}\n{content}{USER_MEMORY_END}\n"
-    existing = user_md.read_text() if user_md.is_file() else ""
-    begin = existing.find(USER_MEMORY_BEGIN)
-    end = existing.find(USER_MEMORY_END)
-    if begin != -1 and end > begin:
-        new = existing[:begin] + block + existing[end + len(USER_MEMORY_END) :].removeprefix("\n")
-    elif existing:
-        new = f"{existing}\n\n{block}"
-    else:
-        new = block
-    user_md.write_text(new, encoding="utf-8")
+# uid ever opens these paths directly. The staged ``CLAUDE.md`` is NOT applied here: the caller
+# merges it into ``memories/USER.md`` through ``context_import.merge_context``, the same
+# entry-level merge the context paste door uses.
 
 
 def apply_to_workspace(
@@ -334,8 +311,7 @@ def apply_to_workspace(
     skills: list[str] | None,
 ) -> list[dict]:
     """Apply a staged claude import into one agent's profile tree. ``collections``/
-    ``skills`` filter by id/name; ``None`` means all; user memory always
-    applies when staged. Returns ``[{"item", "status"}]`` rows.
+    ``skills`` filter by id/name; ``None`` means all. Returns ``[{"item", "status"}]`` rows.
 
     Memory lands under ``memory/imports/claude-code/<cid>/`` — upstream's own
     ``openclaw migrate claude`` namespace, so a user who ran the local
@@ -359,10 +335,6 @@ def apply_to_workspace(
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(cid_dir, target)
         results.append({"item": f"memory:{cid_dir.name}", "status": "applied"})
-
-    if (src / "CLAUDE.md").is_file():
-        _merge_user_memory((src / "CLAUDE.md").read_text(), workspace_dir / "USER.md")
-        results.append({"item": "user-memory", "status": "applied"})
 
     wanted_skills = None if skills is None else set(skills)
     skills_src = src / "skills"

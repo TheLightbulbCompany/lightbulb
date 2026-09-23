@@ -48,7 +48,7 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
-from core.services import agent_export, claude_code_import, hermes_profiles
+from core.services import agent_export, claude_code_import, context_import, hermes_profiles
 from schemas import marketplace as schemas
 
 logger = logging.getLogger(__name__)
@@ -58,12 +58,11 @@ router = APIRouter(prefix="/api/v1/marketplace/import", tags=["marketplace"])
 PRESIGN_TTL_S = 900
 _KEY_RE = re.compile(r"^imports/([A-Za-z0-9_-]+)/(import-[0-9a-f]{12})\.tar\.gz$")
 
-#: What the apply half needs to see of the agent's CURRENT profile: ``USER.md`` for the
-#: marker-fenced memory merge, and ``skills/`` so an existing skill is reported
-#: ``skipped_exists`` instead of being overwritten. ``memory/imports/claude-code/`` is
+#: What the apply half needs to see of the agent's CURRENT profile: ``skills/``, so an existing
+#: skill is reported ``skipped_exists`` instead of being overwritten. ``memory/imports/claude-code/`` is
 #: deliberately absent — a re-import REPLACES a selected collection in place, so pulling the
 #: old copy down first would only make the rmtree slower.
-_APPLY_CONTEXT_PREFIXES = ("USER.md", "skills/")
+_APPLY_CONTEXT_PREFIXES = ("skills/",)
 
 
 def _s3():
@@ -245,8 +244,10 @@ def _apply_into_profile(
     the same bytes the preview described. Checked BEFORE the apply, so a typo'd id cannot half
     apply an import.
 
-    The agent's CURRENT ``USER.md`` + ``skills/`` are pulled down first so the memory merge and
-    the ``skipped_exists`` rule see real state rather than an empty tree. Only files the apply
+    The agent's CURRENT ``skills/`` are pulled down first so the ``skipped_exists`` rule sees
+    real state rather than an empty tree. The staged ``CLAUDE.md`` goes through the context paste
+    door's merge into ``memories/USER.md`` -- Hermes's own user-profile store, entry-deduped, so a
+    re-import adds only what is new rather than replacing what the agent learned since. Only files the apply
     actually wrote or changed are uploaded, and ``write_profile_subtree`` bumps ``.revision``
     last — which IS the delivery: the bridge re-pulls the changed objects on the agent's next
     turn, so there is no restart to trigger.
@@ -269,6 +270,13 @@ def _apply_into_profile(
         changed = {rel: body for rel, body in _snapshot(profile).items() if before.get(rel) != body}
         if changed:
             hermes_profiles.write_profile_subtree(owner_id, agent_id, changed, ())
+        claude_md = staging / "claude" / "CLAUDE.md"
+        if claude_md.is_file():
+            try:
+                context_import.merge_context(owner_id, agent_id, claude_md.read_text(errors="replace"))
+                items.append({"item": "user-memory", "status": "applied"})
+            except ValueError:  # a CLAUDE.md with no entries
+                items.append({"item": "user-memory", "status": "skipped_empty"})
         return items
 
 

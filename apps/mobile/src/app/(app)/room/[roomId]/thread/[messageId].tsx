@@ -9,7 +9,6 @@ import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleton";
 import { MessageActionsSheet } from "../../../../../components/room/MessageActionsSheet";
@@ -20,6 +19,7 @@ import { RunBlock } from "../../../../../components/room/RunBlock";
 import { colors, fonts, spacing, type } from "../../../../../config/theme";
 import { claimRoomTarget } from "../../../../../lib/activeAgent";
 import { useDraftKey } from "../../../../../lib/composerDraft";
+import { usePushedScreenKeyboardOffset } from "../../../../../lib/keyboardOffset";
 import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../../lib/rooms";
 import { typingLine } from "../../../../../lib/typingLine";
 
@@ -142,7 +142,7 @@ export default function ThreadScreen() {
   );
 
   // Hoisted above the blocked-state early return below — see the room screen.
-  const insets = useSafeAreaInsets();
+  const keyboardOffset = usePushedScreenKeyboardOffset();
 
   // The header — title "Thread", and the back button — belongs to the (app)
   // Stack, which owns this route. A push that deep-links straight into a
@@ -172,10 +172,7 @@ export default function ThreadScreen() {
     <KeyboardAvoidingView
       style={styles.container}
       behavior="padding"
-      // See the room screen for why `automaticOffset` plus the negative
-      // safe-area inset is the whole configuration.
-      automaticOffset
-      keyboardVerticalOffset={-insets.bottom}
+      keyboardVerticalOffset={keyboardOffset}
     >
       <View style={styles.subtitleRow}>
         <Text style={styles.subtitle} numberOfLines={1}>

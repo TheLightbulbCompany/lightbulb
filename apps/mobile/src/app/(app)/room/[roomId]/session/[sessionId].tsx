@@ -12,7 +12,6 @@ import {
   type NativeScrollEvent, type NativeSyntheticEvent,
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleton";
 import { RoomBlockedState } from "../../../../../components/room/RoomBlockedState";
@@ -21,6 +20,7 @@ import { SessionStatusDot } from "../../../../../components/session/SessionStatu
 import { TranscriptRowView, WorkingRow } from "../../../../../components/session/TranscriptRow";
 import { colors, fonts, spacing } from "../../../../../config/theme";
 import { memberName } from "../../../../../lib/localSessions";
+import { usePushedScreenKeyboardOffset } from "../../../../../lib/keyboardOffset";
 import { useMobileRooms } from "../../../../../lib/rooms";
 
 /** Distance from the bottom, in px, still counted as "at the bottom" (the room screen's value). */
@@ -61,7 +61,7 @@ export default function SessionScreen() {
     [members, ownerName],
   );
   // Hoisted above the early returns below — see the room screen.
-  const insets = useSafeAreaInsets();
+  const keyboardOffset = usePushedScreenKeyboardOffset();
 
   const headerOptions = {
     // The back button is the (app) Stack's own: this is a pushed screen.
@@ -140,7 +140,7 @@ export default function SessionScreen() {
         ownerName={ownerName}
         own={own}
         name={name}
-        bottomInset={insets.bottom}
+        keyboardOffset={keyboardOffset}
         // Backstop poll while this screen is live AND the session is producing
         // output (same 5s cadence as web): transcript hints are throttled
         // server-side with no trailing edge. Idle sessions stay on hints plus
@@ -152,7 +152,7 @@ export default function SessionScreen() {
   );
 }
 
-function SessionBody({ roomId, session, client, revision, onAccessLost, ownerName, own, name, bottomInset, pollMs }: {
+function SessionBody({ roomId, session, client, revision, onAccessLost, ownerName, own, name, keyboardOffset, pollMs }: {
   roomId: string;
   session: LocalSession;
   client: RoomResourceSource["client"];
@@ -161,7 +161,7 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, ownerNam
   ownerName: string;
   own: boolean;
   name: (who: string | null) => string;
-  bottomInset: number;
+  keyboardOffset: number;
   pollMs: number;
 }) {
   const busy = session.status === "busy";
@@ -188,10 +188,7 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, ownerNam
     <KeyboardAvoidingView
       style={styles.container}
       behavior="padding"
-      // See the room screen for why `automaticOffset` plus the negative
-      // safe-area inset is the whole configuration.
-      automaticOffset
-      keyboardVerticalOffset={-bottomInset}
+      keyboardVerticalOffset={keyboardOffset}
     >
       <View style={styles.summary}>
         <View style={styles.summaryLine}>

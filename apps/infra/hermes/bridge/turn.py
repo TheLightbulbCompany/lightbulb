@@ -756,6 +756,9 @@ class FramePublisher:
         # The base is the attempt's start in microseconds, not 0: a redelivered turn re-runs under
         # the SAME runId in a new process, and a restart at 1 would read as duplicates of the dead
         # attempt's frames on a client that watched it. Stays under 2**53 (JS safe integers).
+        # ponytail: wall clock across microVMs. A redelivery comes >= the 60 s SQS visibility
+        # later (6e7 us) while an attempt emits ~1e3 frames, so only a clock >~1 min behind the
+        # dead attempt's collides; a persisted per-run watermark if that is ever measured.
         self._seq = time.time_ns() // 1000
 
     def _numbered(self, frame: dict) -> dict:

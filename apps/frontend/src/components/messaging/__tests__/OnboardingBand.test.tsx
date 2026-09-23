@@ -375,7 +375,7 @@ describe("starter-model card", () => {
     render(<OnboardingBand participants={FRESH} />);
     const cards = screen.getAllByRole("button").filter((b) => b.classList.contains("onboarding-card"));
     expect(cards[0]).toHaveTextContent("You're on the starter model");
-    expect(cards[0]).toHaveTextContent("Pick ChatGPT or your own key");
+    expect(cards[0]).toHaveTextContent("Pick Lightbulb-managed, ChatGPT, or your own key");
   });
 
   it("opens the provider picker on click", async () => {

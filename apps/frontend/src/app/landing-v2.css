@@ -293,7 +293,7 @@
 .ld-page .lb-price-hero span { font-size: 1.02rem; font-weight: 500; color: var(--lb-ink-mute); }
 .ld-page .lb-price-free { text-align: center; font-size: 0.96rem; line-height: 1.5; color: var(--lb-ink-mute); margin: 0.85rem auto clamp(40px,4.4vw,62px); }
 .ld-page .lb-price-free strong { color: var(--lb-ink); font-weight: 600; }
-.ld-page .lb-plans { display: grid; grid-template-columns: repeat(2,1fr); gap: clamp(14px,1.4vw,22px); align-items: start; max-width: 640px; margin-inline: auto; }
+.ld-page .lb-plans { display: grid; grid-template-columns: repeat(3,1fr); gap: clamp(14px,1.4vw,22px); align-items: start; }
 @media (max-width: 980px) { .ld-page .lb-plans { grid-template-columns: 1fr; max-width: 440px; margin-inline: auto; } }
 .ld-page .lb-plan { background: var(--cream); border: 1px solid var(--rule); border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; }
 .ld-page .lb-plan.rec { border-color: var(--brass); box-shadow: 0 22px 50px -34px rgba(15,26,43,0.45); }

@@ -68,6 +68,6 @@ export const docsFaq = [
   {
     question: "Which AI models does Lightbulb run on?",
     answer:
-      "Two provider paths: your own ChatGPT account connected over OAuth, or a bring-your-own Anthropic or OpenAI API key. The free tier runs on Lightbulb-managed credits, no card required.",
+      "Three provider paths. Lightbulb-managed is included with every plan and needs no setup — the free trial and Base run on DeepSeek within a daily allowance, and more models via prepaid credits are coming soon. Or connect your own ChatGPT account over OAuth, or bring your own Anthropic or OpenAI API key.",
   },
 ];

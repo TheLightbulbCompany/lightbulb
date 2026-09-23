@@ -36,11 +36,21 @@ export function taskIdentifiers(text: string): string[] {
 }
 
 // The one thing a task waits on the viewer for, if any.
-function needsYouAction(issue: Issue): "Review" | "Unblock" | null {
+export function needsYouAction(issue: Issue): "Review" | "Unblock" | null {
   if (issue.status === "in_review" || issue.status === "review" || issue.status === "pending") return "Review";
   const attention = typeof issue.blockerAttention === "object" ? issue.blockerAttention?.state : null;
   if (issue.status === "blocked" || attention === "needs_attention" || attention === "stalled") return "Unblock";
   return null;
+}
+
+// The named ids that are real tasks, in the order named. No ids → no read.
+export function useReferencedTasks(ids: readonly string[]): Issue[] {
+  const { read } = useTeamsApi();
+  const { data } = read<{ issues: Issue[] }>(ids.length ? ISSUES_KEY : null);
+  return useMemo(() => {
+    const byIdentifier = new Map((data?.issues ?? []).map((i) => [i.identifier, i]));
+    return ids.map((id) => byIdentifier.get(id)).filter((i): i is Issue => !!i);
+  }, [data, ids]);
 }
 
 export function MessageTaskCard({ text }: { text: string }) {
@@ -49,44 +59,14 @@ export function MessageTaskCard({ text }: { text: string }) {
 }
 
 function TaskRows({ ids }: { ids: string[] }) {
-  const { read } = useTeamsApi();
-  const { data } = read<{ issues: Issue[] }>(ISSUES_KEY);
-  const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
-  const { runs } = useLiveRuns();
-  const nav = useInlineTeamsNav();
-  const live = useMemo(() => buildLiveIssueState(runs), [runs]);
-  const matched = useMemo(() => {
-    const byIdentifier = new Map((data?.issues ?? []).map((i) => [i.identifier, i]));
-    return ids.map((id) => byIdentifier.get(id)).filter((i): i is Issue => !!i);
-  }, [data, ids]);
+  const matched = useReferencedTasks(ids);
   if (!matched.length) return null;
-
-  const open = (issueId: string) =>
-    nav ? nav.openDetail("issue-detail", issueId) : navigateShell(teamsDetailUrl("issue", issueId));
-  const assignee = (issue: Issue) =>
-    agentsData?.agents.find((a) => a.id === issue.assigneeAgentId)?.name ?? undefined;
   const rest = matched.length - MAX_ROWS;
   const tasksUrl = teamsPanelUrl("issues");
 
   return (
     <section aria-label="Tasks in this message" className="editorial-card mt-1.5 max-w-xl px-1 py-0.5">
-      <ul>
-        {matched.slice(0, MAX_ROWS).map((issue) => {
-          const action = needsYouAction(issue);
-          return (
-            <li key={issue.id} className="flex items-center gap-2 border-b border-[var(--edge)] last:border-b-0">
-              <IssueRow issue={issue} live={live.get(issue.id)} className="min-w-0 flex-1 border-b-0"
-                trailingMeta={assignee(issue)} mobileMeta={assignee(issue)} />
-              {action && (
-                <EditorialButton variant="secondary" size="sm" className="mr-2 shrink-0"
-                  aria-label={`${action} ${issue.identifier}`} onClick={() => open(issue.id)}>
-                  {action}
-                </EditorialButton>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+      <TaskRowList issues={matched.slice(0, MAX_ROWS)} />
       {rest > 0 && (
         <Link href={tasksUrl} prefetch={false} className="block px-2 py-1.5 text-xs text-[var(--midnight-muted)] hover:underline"
           onClick={(e: MouseEvent<HTMLAnchorElement>) => handleShellLinkClick(e, tasksUrl)}>
@@ -94,5 +74,38 @@ function TaskRows({ ids }: { ids: string[] }) {
         </Link>
       )}
     </section>
+  );
+}
+
+// IssueRow + live dot + assignee + the one needs-you action, per task.
+export function TaskRowList({ issues, label }: { issues: readonly Issue[]; label?: string }) {
+  const { read } = useTeamsApi();
+  const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
+  const { runs } = useLiveRuns();
+  const nav = useInlineTeamsNav();
+  const live = useMemo(() => buildLiveIssueState(runs), [runs]);
+  const open = (issueId: string) =>
+    nav ? nav.openDetail("issue-detail", issueId) : navigateShell(teamsDetailUrl("issue", issueId));
+  const assignee = (issue: Issue) =>
+    agentsData?.agents.find((a) => a.id === issue.assigneeAgentId)?.name ?? undefined;
+
+  return (
+    <ul aria-label={label}>
+      {issues.map((issue) => {
+        const action = needsYouAction(issue);
+        return (
+          <li key={issue.id} className="flex items-center gap-2 border-b border-[var(--edge)] last:border-b-0">
+            <IssueRow issue={issue} live={live.get(issue.id)} className="min-w-0 flex-1 border-b-0"
+              trailingMeta={assignee(issue)} mobileMeta={assignee(issue)} />
+            {action && (
+              <EditorialButton variant="secondary" size="sm" className="mr-2 shrink-0"
+                aria-label={`${action} ${issue.identifier}`} onClick={() => open(issue.id)}>
+                {action}
+              </EditorialButton>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }

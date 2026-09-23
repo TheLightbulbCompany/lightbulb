@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import NextLink from "next/link";
-import { ArrowLeft, Check, Circle, CircleAlert, Link, Link2 } from "lucide-react";
+import { ArrowLeft, Check, Circle, CircleAlert, Link } from "lucide-react";
 import type { Components } from "react-markdown";
 import { LISTEN_MODE_LABELS, listenModeOptions, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type RoomResourceSource, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
@@ -33,6 +33,8 @@ import { RoomIntro } from "./RoomIntro";
 import { OnboardingBand } from "./OnboardingBand";
 import { RoomMessageItem } from "./RoomMessageItem";
 import { RoomMessageSearch } from "./RoomMessageSearch";
+import { RoomTasks } from "./RoomTasks";
+import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
 import { RoomTimeline } from "./RoomTimeline";
 import { buildTimeline, linkifyMentions, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
 import { useAsyncAction } from "./useAsyncAction";
@@ -97,6 +99,7 @@ export interface RoomPanelProps {
 }
 
 const NO_PINNED_MESSAGES: readonly string[] = [];
+const NO_TASK_IDS: readonly string[] = [];
 
 const DEFAULT_QUICK_REACTIONS = ["👍", "✅", "🎉", "👀"];
 
@@ -295,7 +298,7 @@ function RoomContent({
   const [contextCollapsed, setContextCollapsed] = useState(true);
   const [detailsTab, setDetailsTab] = useState<DetailsTab>("members");
   const [editTarget, setEditTarget] = useState<string | null>(null);
-  const [localSelection, setSelection] = useState<{ kind: "thread" | "resources"; id: string } | null>(null);
+  const [localSelection, setSelection] = useState<{ kind: "thread" | "resources" | "tasks"; id: string } | null>(null);
   const [consumedSession, setConsumedSession] = useState<number | null>(null);
   const panelRef = useRef<HTMLElement>(null);
   const column = useSessionColumnWidth(ownerScopeId, panelRef);
@@ -388,9 +391,15 @@ function RoomContent({
   const activeSearchTarget = searchTarget && !searchTarget.threadRootMessageId && !selection ? searchTarget : null;
   const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
   const showResources = selection?.kind === "resources" && !!resourceSource;
-  const showDetail = !!(parentMessage || showResources);
+  const showTasks = selection?.kind === "tasks" && !!onLinkToWork;
+  const showDetail = !!(parentMessage || showResources || showTasks);
   const showContext = showDetail || !contextCollapsed;
   const activeRuns = runs.filter((run) => run.state === "running");
+  // Any author: a human naming ISO-14 references it as much as an agent does.
+  // ponytail: loaded pages only; a task named only in unloaded history is missing until scrolled in.
+  const taskIds = useMemo(() => [...new Set(messages.flatMap((message) =>
+    message.deletedAt || message.author.kind === "system" ? [] : taskIdentifiers(message.text)))], [messages]);
+  const roomTasks = useReferencedTasks(onLinkToWork ? taskIds : NO_TASK_IDS);
   const viewer = participants.find((participant) => participant.kind === "human" && participant.id === currentUserId);
   const canAddMembers = visibleRoom?.kind === "channel" && !!onAddMember && !visibleRoom.shared;
   const isRoomAdmin = viewer?.role === "owner" || viewer?.role === "admin";
@@ -487,7 +496,7 @@ function RoomContent({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [closeOverlay, showDetail, showResources]);
 
-  const openDetail = useCallback((kind: "thread" | "resources", targetId: string, button: HTMLButtonElement, fromThread = false) => {
+  const openDetail = useCallback((kind: "thread" | "resources" | "tasks", targetId: string, button: HTMLButtonElement, fromThread = false) => {
     if (!fromThread) trigger.current = button;
     onSelectThread?.(kind === "thread" ? targetId : null);
     setSelection({ kind, id: targetId });
@@ -633,7 +642,8 @@ function RoomContent({
         <button ref={contextTrigger} type="button" className="room-tab"
           aria-expanded={!contextCollapsed} aria-current={!contextCollapsed && !showDetail ? "page" : undefined}
           onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Details{pinnedMessageIds.length > 0 && <span className="room-count">{pinnedMessageIds.length}</span>}</button>
-        {onLinkToWork && <button type="button" className="room-tab" aria-label="Link to work" onClick={onLinkToWork}><Link2 size={14} aria-hidden="true" />Tasks</button>}
+        {onLinkToWork && <button type="button" className="room-tab" aria-current={showTasks ? "page" : undefined}
+          onClick={event => openDetail("tasks", "tasks", event.currentTarget)}>Tasks{roomTasks.length > 0 && ` · ${roomTasks.length}`}</button>}
         {resourceSource && <button type="button" className="room-tab" aria-current={showResources ? "page" : undefined}
           onClick={event => openDetail("resources", "resources", event.currentTarget)}>Devices & sessions</button>}
       </nav>
@@ -726,7 +736,12 @@ function RoomContent({
       onTargetConsumed={() => setConsumedSession(targetSession?.nonce ?? null)}
       resizeHandle={<ColumnGrip {...column.grip} />}
       onShare={url => composer.onTextChange(composer.text ? `${composer.text}\n${url}` : url)} />}
-    {showDetail && !showResources && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
+    {showTasks && <aside className="room-context" aria-label="Tasks" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
+      <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
+        <h3 ref={detailHeading} tabIndex={-1} className="font-semibold">Tasks</h3></header>
+      <div className="room-context-body"><RoomTasks tasks={roomTasks} onOpenAll={onLinkToWork!} /></div>
+    </aside>}
+    {showDetail && !showResources && !showTasks && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">Thread</h3></header>
       <div className="room-context-body">{parentMessage ? <>{renderMessage(parentMessage, true)}

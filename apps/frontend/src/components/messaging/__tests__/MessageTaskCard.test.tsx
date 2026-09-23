@@ -4,6 +4,7 @@ import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
 import type { Issue } from "@/components/teams/shared/types";
 import { MessageTaskCard, taskIdentifiers } from "../MessageTaskCard";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
+import { RoomTasks } from "../RoomTasks";
 import type { RoomMessage, RoomParticipant } from "../types";
 
 const teams = vi.hoisted(() => ({
@@ -122,5 +123,63 @@ describe("RoomPanel", () => {
     expect(within(agentMsg).getByRole("link", { name: /Task 14/ })).toBeInTheDocument();
     const humanMsg = screen.getByRole("article", { name: "Message from Owner" });
     expect(within(humanMsg).queryByRole("link", { name: /Task 15/ })).not.toBeInTheDocument();
+  });
+
+  describe("Tasks tab", () => {
+    const withTasks = { ...props, onLinkToWork: vi.fn() };
+    const openTab = () => fireEvent.click(screen.getByRole("button", { name: /^Tasks/ }));
+
+    it("counts tasks named by agent and human messages, ignoring unknown ids", () => {
+      render(<RoomPanel {...withTasks} messages={[base, { ...human, text: "What about ISO-15 and ISO-99?" }]} />);
+      expect(screen.getByRole("button", { name: "Tasks · 2" })).toBeInTheDocument();
+      openTab();
+      const panel = screen.getByRole("complementary", { name: "Tasks" });
+      expect(within(panel).getByRole("link", { name: /Task 14/ })).toBeInTheDocument();
+      expect(within(panel).getByRole("link", { name: /Task 15/ })).toBeInTheDocument();
+      expect(within(panel).queryByText("ISO-99")).not.toBeInTheDocument();
+    });
+
+    it("groups by what each task needs, with the needs-you action", () => {
+      teams.issues = [issue(1, { status: "in_review" }), issue(2, { status: "in_progress" }), issue(3, { status: "backlog" }), issue(4, { status: "done" })];
+      render(<RoomPanel {...withTasks} messages={[{ ...base, text: "ISO-4 ISO-3 ISO-2 ISO-1" }]} />);
+      openTab();
+      const panel = screen.getByRole("complementary", { name: "Tasks" });
+      expect(within(panel).getAllByRole("heading", { level: 4 }).map((h) => h.textContent)).toEqual(["Needs you", "In progress", "Up next", "Done"]);
+      for (const [group, n] of [["Needs you", 1], ["In progress", 2], ["Up next", 3], ["Done", 4]] as const) {
+        expect(within(screen.getByRole("list", { name: group })).getByRole("link", { name: new RegExp(`Task ${n}`) })).toBeInTheDocument();
+      }
+      expect(within(panel).getAllByRole("button", { name: /^(Review|Unblock) / }).map((b) => b.textContent)).toEqual(["Review"]);
+    });
+
+    it("shows the empty state without a count when nothing matches or Teams is unavailable", () => {
+      teams.issues = undefined;
+      teams.error = new Error("no company");
+      render(<RoomPanel {...withTasks} />);
+      expect(screen.getByRole("button", { name: "Tasks" })).toBeInTheDocument();
+      openTab();
+      expect(screen.getByText("No tasks mentioned in this room yet.")).toBeInTheDocument();
+    });
+
+    it("opens the global Tasks list from the footer", () => {
+      const onLinkToWork = vi.fn();
+      render(<RoomPanel {...props} onLinkToWork={onLinkToWork} />);
+      openTab();
+      fireEvent.click(screen.getByRole("button", { name: /All tasks in Tasks/ }));
+      expect(onLinkToWork).toHaveBeenCalledOnce();
+    });
+  });
+});
+
+describe("RoomTasks grouping", () => {
+  it("files every finished status under Done and open under Up next", () => {
+    const tasks = [
+      issue(1, { status: "closed" }), issue(2, { status: "won_t_do" }), issue(3, { status: "duplicate" }),
+      issue(4, { status: "open" }),
+    ];
+    teams.issues = tasks;
+    render(<RoomTasks tasks={tasks} onOpenAll={vi.fn()} />);
+    expect(screen.getByRole("list", { name: "Done" })).toHaveTextContent(/Task 1.*Task 2.*Task 3/);
+    expect(screen.getByRole("list", { name: "Up next" })).toHaveTextContent("Task 4");
+    expect(screen.queryByRole("list", { name: "In progress" })).not.toBeInTheDocument();
   });
 });

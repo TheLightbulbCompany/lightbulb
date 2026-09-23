@@ -158,6 +158,13 @@ async def provision_new_workspace(org_id: str) -> None:
         put_metric("provision.org_created.error")
 
 
+async def arm_workspace_trial_if_unset(workspace_id: str) -> None:
+    """Start a ready workspace's unarmed local trial exactly once. The provision executor arms it
+    too; this poll-path copy is the catch-up for a running row that was never armed, until the
+    poll retires (Phase 3 slice 4)."""
+    await billing_repo.arm_trial_if_unset(workspace_id)
+
+
 async def ensure_user_ready(auth: AuthContext) -> None:
     """Single canonical readiness entry point. Idempotent.
 
@@ -220,10 +227,10 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # the org's customer belongs to the org owner_id and an admin poll creates
     # it. Best-effort — a Metronome outage must never block provisioning.
     #
-    # The durable owner is ``hermes_provisioning.reconcile_runtime`` (every Stripe
-    # entering_live edge dispatches one). This poll-path call stays until the poll
-    # retires (Phase 3 slice 4) as the ONLY retry for a reconcile whose Metronome
-    # step failed: reconcile executions are not re-driven, and a bedrock_claude
+    # The durable owner is ``hermes_provisioning.reconcile_runtime`` (every live Stripe
+    # event dispatches one, and a Metronome failure makes that execution fail so the
+    # machine retries it). This poll-path call stays until the poll retires (Phase 3
+    # slice 4) as a catch-up for an owner whose retries ran out -- a bedrock_claude
     # owner with no ledger is blocked by the credits gate. The short-circuit on the
     # persisted ids makes the steady state a single read.
     if auth.is_org_admin:

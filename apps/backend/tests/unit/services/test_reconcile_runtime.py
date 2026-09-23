@@ -484,11 +484,21 @@ async def test_a_chatgpt_or_byo_owner_gets_no_metronome_customer(monkeypatch, bo
 
 
 @pytest.mark.asyncio
-async def test_entitlement_failures_never_fail_the_reconcile(monkeypatch, boot_secrets):
+async def test_a_metronome_failure_fails_the_reconcile_after_the_runtime_work(monkeypatch, boot_secrets):
+    """So the reconcile execution is retried; the runtime half still ran (profiles written)."""
     world = World(monkeypatch, billing=BILLING["bedrock_claude"])
     world.metronome.side_effect = RuntimeError("metronome down")
+
+    assert await hp.reconcile_runtime("org_a") == "failed"
+    assert world.metrics == ["metronome.provision.error"]
+    assert world.profiles
+
+
+@pytest.mark.asyncio
+async def test_a_nightly_arm_failure_does_not_fail_the_reconcile(monkeypatch, boot_secrets):
+    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
     world.arm.side_effect = RuntimeError("paperclip down")
 
     assert await hp.reconcile_runtime("org_a") != "failed"
-    assert world.metrics == ["metronome.provision.error"]
+    assert world.metrics == []
     world.arm.assert_awaited_once_with("org_a")

@@ -323,10 +323,12 @@ async def _convert_trial_if_needed(owner_id: str, *, was_trial: bool, subscripti
             return
 
     # Durable and idempotent: a link call and a SUBSCRIBED notification for the same purchase
-    # may both land here, and the second reconcile converges on the first. Never raises.
+    # may both land here, and the second reconcile converges on the first. A dispatch that
+    # could not start raises, so the notification 500s and Apple redelivers it.
     from core.services.provision_dispatch import dispatch_reconcile
 
-    await dispatch_reconcile(owner_id)
+    if not await dispatch_reconcile(owner_id):
+        raise RuntimeError(f"reconcile dispatch failed for owner {owner_id}; Apple will redeliver")
 
 
 def _revoked_key(original_transaction_id: str) -> str:

@@ -21,7 +21,7 @@ from core.services.provision_gate import (
     evaluate_provision_gate,
     maybe_restore_trial_bedrock,
 )
-from core.services.user_provision import ensure_workspace_trial_default, ensure_user_ready
+from core.services.user_provision import arm_workspace_trial_if_unset, ensure_workspace_trial_default, ensure_user_ready
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +229,8 @@ async def container_status(
     # by-org-id GSI query for an org owner), so without threading it every ~3s
     # ready poll fleet-wide would pay it twice.
     contract = await readiness_state.compute_status(owner_id, container=container, onboarding=onboarding)
+    if contract["runtime_phase"] == "ready" and contract["provider"]["subscription_status"] == "trial_local":
+        await arm_workspace_trial_if_unset(owner_id)
 
     # Auto-retry: if the workspace is in a failed/stuck state AND the owner can
     # currently afford to provision, SAY it is re-provisioning. The same gate as

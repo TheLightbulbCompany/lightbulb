@@ -444,7 +444,7 @@ async def test_conversion_reconcile_is_dispatched_after_billing_commits(mock_rep
     mock_repo.set_subscription = AsyncMock(side_effect=lambda **_k: order.append("status"))
     mock_repo.set_provider_choice = AsyncMock(side_effect=lambda *_a, **_k: order.append("provider"))
     mock_repo.set_plan = AsyncMock(side_effect=lambda *_a, **_k: order.append("plan"))
-    reconcile_dispatch.side_effect = lambda *_a: order.append("reconcile")
+    reconcile_dispatch.side_effect = lambda *_a: order.append("reconcile") or True
 
     await _run_state(
         mock_repo, "trial_local", "active", metadata={"owner_id": "org_x", "provider_choice": "bedrock_claude"}
@@ -463,7 +463,7 @@ async def test_conversion_relimits_the_openrouter_key_before_the_reconcile(mock_
     order: list[str] = []
     relimit = AsyncMock(side_effect=lambda *_a, **_k: order.append("relimit"))
     monkeypatch.setattr("core.services.openrouter_keys.relimit_owner_key", relimit)
-    reconcile_dispatch.side_effect = lambda *_a: order.append("reconcile")
+    reconcile_dispatch.side_effect = lambda *_a: order.append("reconcile") or True
 
     await _run_state(mock_repo, "trial_local", "active")
 
@@ -484,12 +484,33 @@ async def test_every_entry_into_paid_dispatches_a_reconcile(mock_repo, reconcile
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("prior_status", "new_status"), [("active", "active"), ("trialing", "active")])
-async def test_a_live_to_live_event_does_not_reconcile(mock_repo, reconcile_dispatch, prior_status, new_status):
-    """An ordinary renewal (or a real Stripe trial converting) with no provider or plan change is
-    not a runtime change."""
+async def test_every_live_event_reconciles(mock_repo, reconcile_dispatch, prior_status, new_status):
+    """A redelivered conversion finds old_status already "active" (entering_live False, no plan
+    diff), so every live event reconciles -- one idempotent reconcile per renewal event."""
     await _run_state(mock_repo, prior_status, new_status)
 
+    reconcile_dispatch.assert_awaited_once_with("org_x")
+
+
+@pytest.mark.asyncio
+async def test_a_non_live_event_without_a_plan_change_does_not_reconcile(mock_repo, reconcile_dispatch):
+    await _run_state(mock_repo, "active", "past_due")
+
     reconcile_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_dispatch_that_cannot_start_raises_so_stripe_redelivers(mock_repo, reconcile_dispatch, facts_mock):
+    """The router rolls back the dedup row and 500s on a raise. Without it a paying owner would
+    stay on the trial shape: the redelivery is the only thing that can dispatch again. The raise
+    comes LAST, after the facts refresh, so nothing a redelivery would skip is left undone."""
+    reconcile_dispatch.return_value = False
+
+    with pytest.raises(RuntimeError, match="reconcile dispatch failed"):
+        await _run_state(mock_repo, "trial_local", "active")
+
+    mock_repo.set_subscription.assert_awaited_once()
+    facts_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio

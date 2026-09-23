@@ -1212,3 +1212,19 @@ async def test_a_trial_owner_with_a_pre_picked_provider_still_gets_reprovisioned
     provider.assert_not_awaited()
     # ...but the trial container is still rolled to the paid shape.
     assert started == ["user_1"]
+
+
+@pytest.mark.asyncio
+async def test_a_conversion_dispatch_that_cannot_start_raises_so_apple_redelivers(monkeypatch):
+    monkeypatch.setattr(
+        apple_iap.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={"owner_id": "org_1", "subscription_status": "active", "provider_choice": "bedrock_claude"}
+        ),
+    )
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_reconcile", AsyncMock(return_value=False))
+    subscription = SimpleNamespace(status="active", original_transaction_id="2000000000000001")
+
+    with pytest.raises(RuntimeError, match="reconcile dispatch failed"):
+        await apple_iap._convert_trial_if_needed("org_1", was_trial=True, subscription=subscription)

@@ -4,14 +4,15 @@
 // need. Same derivation and rows as the inline card (MessageTaskCard).
 
 import type { Issue } from "@/components/teams/shared/types";
+import { isTerminalStatus } from "@/components/teams/shared/lib/subIssues";
 import { needsYouAction, TaskRowList } from "./MessageTaskCard";
 
 const GROUPS = ["Needs you", "In progress", "Up next", "Done"] as const;
 
 function group(issue: Issue): (typeof GROUPS)[number] {
   if (needsYouAction(issue)) return "Needs you";
-  if (issue.status === "done" || issue.status === "cancelled") return "Done";
-  if (issue.status === "todo" || issue.status === "backlog") return "Up next";
+  if (isTerminalStatus(issue.status)) return "Done";
+  if (issue.status === "todo" || issue.status === "backlog" || issue.status === "open") return "Up next";
   return "In progress";
 }
 

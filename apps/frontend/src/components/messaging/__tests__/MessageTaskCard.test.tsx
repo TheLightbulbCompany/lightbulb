@@ -4,6 +4,7 @@ import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
 import type { Issue } from "@/components/teams/shared/types";
 import { MessageTaskCard, taskIdentifiers } from "../MessageTaskCard";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
+import { RoomTasks } from "../RoomTasks";
 import type { RoomMessage, RoomParticipant } from "../types";
 
 const teams = vi.hoisted(() => ({
@@ -166,5 +167,19 @@ describe("RoomPanel", () => {
       fireEvent.click(screen.getByRole("button", { name: /All tasks in Tasks/ }));
       expect(onLinkToWork).toHaveBeenCalledOnce();
     });
+  });
+});
+
+describe("RoomTasks grouping", () => {
+  it("files every finished status under Done and open under Up next", () => {
+    const tasks = [
+      issue(1, { status: "closed" }), issue(2, { status: "won_t_do" }), issue(3, { status: "duplicate" }),
+      issue(4, { status: "open" }),
+    ];
+    teams.issues = tasks;
+    render(<RoomTasks tasks={tasks} onOpenAll={vi.fn()} />);
+    expect(screen.getByRole("list", { name: "Done" })).toHaveTextContent(/Task 1.*Task 2.*Task 3/);
+    expect(screen.getByRole("list", { name: "Up next" })).toHaveTextContent("Task 4");
+    expect(screen.queryByRole("list", { name: "In progress" })).not.toBeInTheDocument();
   });
 });

@@ -38,7 +38,7 @@ const TERMINAL_STATUSES = new Set<IssueStatus>([
   "closed",
 ]);
 
-function isTerminalStatus(status: IssueStatus): boolean {
+export function isTerminalStatus(status: IssueStatus): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 function isActionableStatus(status: IssueStatus): boolean {

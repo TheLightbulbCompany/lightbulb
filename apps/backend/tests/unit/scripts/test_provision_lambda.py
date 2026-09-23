@@ -20,8 +20,10 @@ BACKEND_ROOT = Path(__file__).resolve().parents[3]
 def lam(monkeypatch):
     monkeypatch.delenv("LAMBDA_SECRET_ENV_MAP", raising=False)
     monkeypatch.delenv("LAMBDA_ENV_PARAMETER", raising=False)
-    from scripts import provision_lambda
+    from scripts import provision_lambda, provision_runner
 
+    # Warm: the first invocation's env load + import has already happened.
+    monkeypatch.setattr(provision_lambda, "provision_runner", provision_runner)
     return provision_lambda
 
 
@@ -95,8 +97,9 @@ def test_load_environment_sets_the_plain_env_then_every_mapped_secret(lam):
 
 
 def test_secrets_are_in_the_environment_before_settings_is_first_imported():
-    """Cold start in a clean interpreter: importing the handler module loads the mapped
-    secrets BEFORE core.config is imported, so Settings reads them like ECS-injected env."""
+    """Cold start in a clean interpreter: importing the handler module does NOTHING heavy
+    (Lambda's 10 s init cap), and the first invocation loads the mapped secrets BEFORE
+    core.config is imported, so Settings reads them like ECS-injected env."""
     code = """
 import sys, boto3
 
@@ -110,7 +113,9 @@ class _Ssm:
 
 boto3.client = lambda service, *a, **k: _Ssm() if service == "ssm" else _Sm()
 assert "core.config" not in sys.modules
-import scripts.provision_lambda
+import scripts.provision_lambda as lam
+assert "core.config" not in sys.modules  # init stays light
+lam.load_environment()  # what the first invoke runs before importing the runner
 from core.config import settings
 assert settings.CLERK_SECRET_KEY == "from-arn:clerk", settings.CLERK_SECRET_KEY
 assert settings.OWNER_STATE_BUCKET == "from-ssm", settings.OWNER_STATE_BUCKET
@@ -124,3 +129,29 @@ assert settings.OWNER_STATE_BUCKET == "from-ssm", settings.OWNER_STATE_BUCKET
     env.pop("OWNER_STATE_BUCKET", None)
     result = subprocess.run([sys.executable, "-c", code], cwd=BACKEND_ROOT, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_the_first_invocation_loads_the_env_once_then_imports_the_runner(monkeypatch):
+    from scripts import provision_lambda, provision_runner
+
+    loads = []
+    monkeypatch.setattr(provision_lambda, "provision_runner", None)
+    monkeypatch.setattr(provision_lambda, "load_environment", lambda: loads.append(1))
+    monkeypatch.setattr(provision_runner, "run", AsyncMock(return_value=0))
+    provision_lambda.handler({"owner_id": "org_a"}, None)
+    provision_lambda.handler({"owner_id": "org_b"}, None)
+    assert loads == [1]
+    assert provision_lambda.provision_runner is provision_runner
+
+
+def test_an_env_load_blip_is_transient_and_retried_on_the_next_invoke(monkeypatch):
+    from scripts import provision_lambda
+
+    def _blip():
+        raise RuntimeError("ssm throttled")
+
+    monkeypatch.setattr(provision_lambda, "provision_runner", None)
+    monkeypatch.setattr(provision_lambda, "load_environment", _blip)
+    with pytest.raises(provision_lambda.ProvisionTransient):
+        provision_lambda.handler({"owner_id": "org_a"}, None)
+    assert provision_lambda.provision_runner is None

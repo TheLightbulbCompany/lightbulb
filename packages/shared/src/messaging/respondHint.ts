@@ -2,9 +2,10 @@ import type { ListenMode, MemberRef, RoomKind } from "./types";
 
 /**
  * What people see for each stored listen mode. The stored values predate these
- * names: `active` shows as "Listening" (a cheap model decides whether an
- * unmentioned message gets a reply) and `observe` as "Off" (never runs).
- * No label reuses a stored value, so the two vocabularies cannot be confused.
+ * names: `active` shows as "Listening" (the paid default — every agent
+ * listens, and Jev, a routing model, picks at most one responder per message)
+ * and `observe` as "Off" (never runs). No label reuses a stored value, so the
+ * two vocabularies cannot be confused.
  */
 export const LISTEN_MODE_LABELS: Record<ListenMode, string> = { active: "Listening", mentions: "Mentions", observe: "Off" };
 

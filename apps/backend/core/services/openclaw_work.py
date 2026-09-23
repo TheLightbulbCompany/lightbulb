@@ -48,6 +48,35 @@ _OPERATION_LEASE_SECONDS = 300
 _MAX_CONCURRENT_GROUPS = 8
 _DESERIALIZER = TypeDeserializer()
 
+#: Jev fallback (down/undecided) with >=2 Listening candidates: owner_id -> (checked_at
+#: monotonic, the #general CEO's agent id or None). ponytail: process-local cache with a short
+#: TTL, not invalidated on a CEO reassignment -- a rare mid-TTL change just costs one stale
+#: fallback pick for a few minutes, not a correctness bug; upgrade only if that ever bites.
+_FALLBACK_CEO_TTL_S = 300
+_fallback_ceo_cache: dict[str, tuple[float, str | None]] = {}
+
+
+async def _fallback_ceo_id(owner_id: str) -> str | None:
+    """The #general CEO's stable id (same resolution as messaging.ensure_default_room /
+    promote_listening), for the deterministic single-responder Jev fallback below."""
+    cached = _fallback_ceo_cache.get(owner_id)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < _FALLBACK_CEO_TTL_S:
+        return cached[1]
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
+    ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
+    _fallback_ceo_cache[owner_id] = (now, ceo_id)
+    return ceo_id
+
+
+async def _fallback_single(owner_id: str, candidates: list[str]) -> str:
+    """Jev down/undecided with >=2 room_event candidates (spec #2942): pick one deterministically
+    instead of dispatching all of them -- the CEO if it is a candidate, else the lowest id."""
+    ceo_id = await _fallback_ceo_id(owner_id)
+    return ceo_id if ceo_id in candidates else min(candidates)
+
 
 class WorkRetry(RuntimeError):
     def __init__(self, message: str = "", *, visibility: int | None = None) -> None:
@@ -470,8 +499,22 @@ class OpenClawWorkWorker:
                 history=body.get("recentHistory") or [],
             )
             if decision is None or decision.get("fallback"):
-                # Jev down or undecided: every Listening candidate runs and the bridge gate decides.
-                put_metric("messaging.jev.route", dimensions={"outcome": "fallback"})
+                candidates = [
+                    item["agentId"]
+                    for item in (message.get("dispatchTargets") or [])
+                    if item.get("eventKind") == "room_event"
+                ]
+                if len(candidates) >= 2:
+                    # Jev down or undecided with more than one candidate: dispatch exactly one
+                    # deterministic responder instead of every candidate independently (#2942).
+                    chosen = await _fallback_single(owner_id, candidates)
+                    if member["id"] != chosen:
+                        put_metric("messaging.jev.route", dimensions={"outcome": "skipped"})
+                        return
+                    put_metric("messaging.jev.route", dimensions={"outcome": "fallback_single"})
+                else:
+                    # Jev down or undecided, and only one candidate: it runs, the bridge gate decides.
+                    put_metric("messaging.jev.route", dimensions={"outcome": "fallback"})
             elif (
                 decision.get("who") == member["id"]
                 and float((decision.get("whoP") or {}).get(member["id"], 0)) >= JEV_MIN_P

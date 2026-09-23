@@ -1479,7 +1479,7 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
             "displayName": agents[starter_ids[key]]["name"],
             "mentionHandle": handles[starter_ids[key]],
             "role": "member",
-            "listenMode": ceo_mode if key == "ceo" else "mentions",
+            "listenMode": ceo_mode,
         }
         for key in _STARTER_KEYS
     )
@@ -1520,27 +1520,42 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     return room_id
 
 
-async def promote_default_room_ceo(owner_id: str) -> None:
-    """Turn Listening on for the #general CEO when a trial workspace upgrades.
+async def promote_listening(owner_id: str) -> None:
+    """Turn Listening on for every agent when a trial workspace upgrades to paid.
 
-    The seed runs once, so a room seeded on the free tier keeps its CEO on
-    ``mentions`` forever. Promote ONLY an exact ``mentions`` — never a user's
-    ``observe``, never another member. Idempotent; the caller gates on the
-    transition into paid."""
-    from core.repositories.paperclip_repo import PaperclipRepo
-
-    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
-    ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
-    if not ceo_id:
-        return
-    room_id = default_room_id(owner_id)
-    member = await messaging_repo.get_member(room_id, "agent", ceo_id)
-    if member is None or member.get("listenMode") != "mentions" or member.get("modeSetBy") == "user":
-        return
-    meta = await messaging_repo.upsert_member(
-        room_id=room_id, owner_id=owner_id, member={**member, "listenMode": "active"}
-    )
-    await _publish_room_metadata(meta)
+    A room seeded on the free tier keeps its agents on ``mentions`` forever
+    (the seed runs once), so this sweeps every room the owner has. Promote
+    ONLY an exact ``mentions`` set by nobody but the system — never a user's
+    ``observe``, an admin's ``active``, or a ``mentions`` an admin chose
+    (``modeSetBy == "user"``). DMs are skipped (every DM message is already
+    addressed), and so is any room shared with another workspace — the vendor
+    room, or a room carrying a foreign member — since that room follows
+    someone else's policy, not this owner's upgrade. Idempotent; the caller
+    gates on the transition into paid. Best-effort per room: a room that
+    fails to promote is logged and the rest still run."""
+    for room_id in await messaging_repo.list_owner_room_ids(owner_id):
+        try:
+            meta = await messaging_repo.get_room(room_id)
+            if meta is None or meta.get("kind") == "dm" or meta.get("ownerId") != owner_id or is_vendor_room(meta):
+                continue
+            members = await messaging_repo.list_members(room_id)
+            if any(messaging_repo.member_home(m, owner_id) != owner_id for m in members):
+                continue
+            changed_meta = None
+            for member in members:
+                if (
+                    member.get("kind") != "agent"
+                    or member.get("listenMode") != "mentions"
+                    or member.get("modeSetBy") == "user"
+                ):
+                    continue
+                changed_meta = await messaging_repo.upsert_member(
+                    room_id=room_id, owner_id=owner_id, member={**member, "listenMode": "active"}
+                )
+            if changed_meta is not None:
+                await _publish_room_metadata(changed_meta)
+        except Exception:
+            logger.exception("listening promotion failed for owner %s room %s", owner_id, room_id)
 
 
 def _display_name_from_membership(row: dict) -> str:
@@ -1821,7 +1836,7 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     roster = await load_agent_roster(owner_id) if request.kind == "agent" else []
     member = await _resolved_member(owner_id, request, roster)
     if request.kind == "agent":
-        # An admin's choice of mode; promote_default_room_ceo never overrides it.
+        # An admin's choice of mode; promote_listening never overrides it.
         member = {**member, "modeSetBy": "user"}
     if request.kind == "human":
         await messaging_repo.ensure_user_stream(owner_id, request.id)

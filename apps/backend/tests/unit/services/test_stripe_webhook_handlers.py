@@ -119,11 +119,12 @@ def company_stripe_request(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def promote_ceo(monkeypatch):
-    """Entering paid turns on the #general CEO's Listening. Stub it for every
-    test here so no handler path reaches Paperclip or the messaging table."""
+def promote_listening(monkeypatch):
+    """Entering paid turns on Listening for every seeded agent. Stub it for
+    every test here so no handler path reaches Paperclip or the messaging
+    table."""
     promote = AsyncMock()
-    monkeypatch.setattr("core.services.messaging.promote_default_room_ceo", promote)
+    monkeypatch.setattr("core.services.messaging.promote_listening", promote)
     return promote
 
 
@@ -1815,31 +1816,31 @@ class TestCompanyStripeRequestOnEnteringLive:
         assert "company Stripe" in caplog.text
 
 
-class TestUpgradeTurnsOnCeoListening:
-    """A trial-seeded #general keeps its CEO on Mentions after upgrading (the
-    seed runs once), so the entry into paid promotes it."""
+class TestUpgradeTurnsOnListening:
+    """A trial-seeded room keeps its agents on Mentions after upgrading (the
+    seed runs once), so the entry into paid promotes them."""
 
     @pytest.mark.parametrize("prior_status", ["trial_local", "incomplete", None])
-    async def test_entering_paid_promotes_the_ceo(self, mock_repo, promote_ceo, prior_status):
+    async def test_entering_paid_promotes_listening(self, mock_repo, promote_listening, prior_status):
         await _run_state(mock_repo, prior_status, "active")
-        promote_ceo.assert_awaited_once_with("org_x")
+        promote_listening.assert_awaited_once_with("org_x")
 
     @pytest.mark.parametrize("prior_status", ["active", "trialing", "past_due"])
-    async def test_an_established_subscription_event_does_not_promote(self, mock_repo, promote_ceo, prior_status):
+    async def test_an_established_subscription_event_does_not_promote(self, mock_repo, promote_listening, prior_status):
         await _run_state(mock_repo, prior_status, "active")
-        promote_ceo.assert_not_awaited()
+        promote_listening.assert_not_awaited()
 
-    async def test_a_resubscribe_keeps_the_owners_choice(self, mock_repo, promote_ceo):
-        # A canceled owner was paid before: any Mentions on the CEO now may be
-        # their own choice, and reconciliation never resets a user's choice.
+    async def test_a_resubscribe_keeps_the_owners_choice(self, mock_repo, promote_listening):
+        # A canceled owner was paid before: any Mentions now may be their own
+        # choice, and reconciliation never resets a user's choice.
         await _run_state(mock_repo, "canceled", "active")
-        promote_ceo.assert_not_awaited()
+        promote_listening.assert_not_awaited()
 
-    async def test_a_non_paid_status_does_not_promote(self, mock_repo, promote_ceo):
+    async def test_a_non_paid_status_does_not_promote(self, mock_repo, promote_listening):
         await _run_state(mock_repo, "trial_local", "past_due")
-        promote_ceo.assert_not_awaited()
+        promote_listening.assert_not_awaited()
 
-    async def test_a_promotion_failure_never_breaks_the_webhook(self, mock_repo, promote_ceo, caplog):
-        promote_ceo.side_effect = RuntimeError("appsync down")
+    async def test_a_promotion_failure_never_breaks_the_webhook(self, mock_repo, promote_listening, caplog):
+        promote_listening.side_effect = RuntimeError("appsync down")
         await _run_state(mock_repo, "trial_local", "active")
-        assert "CEO listening promotion failed" in caplog.text
+        assert "listening promotion failed" in caplog.text

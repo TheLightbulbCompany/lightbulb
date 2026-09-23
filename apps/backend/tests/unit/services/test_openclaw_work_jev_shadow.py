@@ -330,15 +330,52 @@ async def test_below_threshold_invokes_nobody(monkeypatch):
     assert posted == [] and created == [] and dims == [{"outcome": "skipped"}]
 
 
+ONE = {**MESSAGE, "dispatchTargets": [{"agentId": "a1", "eventKind": "room_event"}]}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("decision", [None, {"fallback": True}])
-async def test_fallback_dispatches_every_candidate_without_routing(monkeypatch, decision):
+async def test_fallback_with_one_candidate_still_dispatches_it(monkeypatch, decision):
+    """Jev down/undecided with exactly one Listening candidate: unchanged, it just runs."""
+    posted, created, dims = await _dispatch(
+        monkeypatch, "room_event", agent="a1", message=ONE, route=AsyncMock(return_value=decision)
+    )
+    assert len(posted) == 1 and len(created) == 1 and dims == [{"outcome": "fallback"}]
+    assert "routing" not in posted[0] and "replyThreadRootId" not in posted[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", [None, {"fallback": True}])
+async def test_fallback_with_two_candidates_dispatches_exactly_one(monkeypatch, decision):
+    """Jev down/undecided with >=2 Listening candidates (spec #2942): dispatch exactly one
+    deterministic responder -- the CEO if it's a candidate, else the lowest agent id -- instead
+    of every candidate running independently."""
+    monkeypatch.setattr(work, "_fallback_ceo_id", AsyncMock(return_value=None))
+    outcomes = {}
     for agent in ("a1", "a2"):
-        posted, created, dims = await _dispatch(
+        outcomes[agent] = await _dispatch(
             monkeypatch, "room_event", agent=agent, route=AsyncMock(return_value=decision)
         )
-        assert len(posted) == 1 and len(created) == 1 and dims == [{"outcome": "fallback"}]
-        assert "routing" not in posted[0] and "replyThreadRootId" not in posted[0]
+    posted_a1, created_a1, dims_a1 = outcomes["a1"]
+    assert len(posted_a1) == 1 and len(created_a1) == 1 and dims_a1 == [{"outcome": "fallback_single"}]
+    assert "routing" not in posted_a1[0] and "replyThreadRootId" not in posted_a1[0]
+    posted_a2, created_a2, dims_a2 = outcomes["a2"]
+    assert posted_a2 == [] and created_a2 == [] and dims_a2 == [{"outcome": "skipped"}]
+
+
+@pytest.mark.asyncio
+async def test_fallback_dispatches_the_ceo_when_it_is_a_candidate(monkeypatch):
+    monkeypatch.setattr(work, "_fallback_ceo_id", AsyncMock(return_value="a2"))
+    outcomes = {}
+    for agent in ("a1", "a2", "a3"):
+        outcomes[agent] = await _dispatch(
+            monkeypatch, "room_event", agent=agent, message=THREE, route=AsyncMock(return_value=None)
+        )
+    posted_a2, created_a2, dims_a2 = outcomes["a2"]
+    assert len(posted_a2) == 1 and len(created_a2) == 1 and dims_a2 == [{"outcome": "fallback_single"}]
+    for other in ("a1", "a3"):
+        posted, created, dims = outcomes[other]
+        assert posted == [] and created == [] and dims == [{"outcome": "skipped"}]
 
 
 @pytest.mark.asyncio
@@ -346,7 +383,7 @@ async def test_real_route_failing_still_dispatches(monkeypatch):
     monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value="k"))
     monkeypatch.setattr(jev.messaging_repo, "claim_decision", AsyncMock(side_effect=RuntimeError("ddb down")))
     monkeypatch.setattr(jev, "put_metric", lambda *a, **k: None)
-    posted, created, dims = await _dispatch(monkeypatch, "room_event")
+    posted, created, dims = await _dispatch(monkeypatch, "room_event", message=ONE)
     assert len(posted) == 1 and len(created) == 1 and dims == [{"outcome": "fallback"}]
 
 

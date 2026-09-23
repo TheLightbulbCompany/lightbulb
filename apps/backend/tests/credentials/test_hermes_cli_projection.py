@@ -326,4 +326,47 @@ async def test_set_profile_cli_env_creates_the_file_and_none_deletes_the_key(s3)
 
     await hermes_cli.set_profile_cli_env("org_1", "ceo", {"GOG_ACCOUNT": None})
 
-    assert json.loads(s3["org_1/hermes/ceo/cli-env.json"].decode()) == {}
+    assert "org_1/hermes/ceo/cli-env.json" not in s3  # the last key went: no empty file left
+
+
+@pytest.mark.asyncio
+async def test_a_google_connect_and_disconnect_keep_another_providers_cli_env_keys(s3, roster, monkeypatch):
+    """cli-env.json is shared by every CLI provider. Writing it whole from one provider's keys
+    wiped the others' (reconnecting Google deleted VERCEL_TOKEN); it is merged key-by-key."""
+    import json
+
+    from core.services.credentials.materializers import gog_cli
+
+    for agent in ("ceo", "eng"):
+        s3[f"org_1/hermes/{agent}/cli-env.json"] = json.dumps({"VERCEL_TOKEN": "vt"}).encode()
+    monkeypatch.setattr(hermes_cli.settings, "GOG_KEYRING_PASSWORD", "kp")
+    monkeypatch.setattr(gog_cli, "_fetch_account_email", lambda token: "a@b.co")
+    monkeypatch.setattr(
+        gog_cli,
+        "subprocess",
+        type(
+            "S",
+            (),
+            {
+                "run": staticmethod(
+                    lambda argv, **kw: (base.materializer_root() / ".local" / "share" / "gogcli").mkdir(
+                        parents=True, exist_ok=True
+                    )
+                )
+            },
+        ),
+    )
+
+    await hermes_cli.project(
+        "org_1",
+        "google",
+        "gog_cli",
+        {"access_token": "at", "client_id": "c", "client_secret": "s", "refresh_token": "r"},
+    )
+    for agent in ("ceo", "eng"):
+        env = json.loads(s3[f"org_1/hermes/{agent}/cli-env.json"])
+        assert env["VERCEL_TOKEN"] == "vt" and env["GOG_KEYRING_PASSWORD"] == "kp"
+
+    await hermes_cli.clear("org_1", "google", "gog_cli", {"disconnect_all": True, "accounts": []})
+    for agent in ("ceo", "eng"):
+        assert json.loads(s3[f"org_1/hermes/{agent}/cli-env.json"]) == {"VERCEL_TOKEN": "vt"}

@@ -111,6 +111,17 @@ def _shell_env(materializer: str, provider_key: str, credential: dict[str, Any])
     return {}
 
 
+def _shell_env_keys(materializer: str, provider_key: str) -> tuple[str, ...]:
+    """The ``cli-env.json`` keys this provider owns — known without a credential, so a
+    disconnect can remove exactly its own entries and nobody else's."""
+    if materializer == "gog_cli":
+        return ("GOG_KEYRING_PASSWORD", "GOG_KEYRING_BACKEND")
+    if materializer == "skill_cli":
+        spec = registry.get_provider(provider_key).skill
+        return (spec.primary_env,) if spec else ()
+    return ()
+
+
 def supports(materializer: str | None) -> bool:
     """Whether connecting this materializer's provider projects into a Hermes profile."""
     return bool(materializer) and materializer in OWNED_PATHS
@@ -134,13 +145,14 @@ def profile_paths(materializer: str) -> tuple[str, ...]:
 # Upgrade path if that ever bites: the DynamoDB claim-lease the provisioning path already uses.
 # Not built, because the window is one owner connecting two accounts of one provider within the
 # same couple of seconds from two browser tabs.
-_owner_locks: dict[str, threading.Lock] = {}
+_owner_locks: dict[str, threading.RLock] = {}
 _owner_locks_guard = threading.Lock()
 
 
-def _owner_lock(owner_id: str) -> threading.Lock:
+def _owner_lock(owner_id: str) -> threading.RLock:
+    # Reentrant: _run_and_sync merges cli-env.json (which takes it too) inside its own hold.
     with _owner_locks_guard:
-        return _owner_locks.setdefault(owner_id, threading.Lock())
+        return _owner_locks.setdefault(owner_id, threading.RLock())
 
 
 def _snapshot(root: Path, materializer: str) -> dict[str, bytes]:
@@ -186,19 +198,20 @@ def _run_and_sync(
         # materializer needs the CURRENT file to preserve the entries it does not own.
         hermes_profiles.fetch_profile_subtree(owner_id, agent_ids[0], owned, root)
         before = set(_snapshot(root, materializer))
-        if _shell_env(materializer, provider_key, credential):
-            # B2: cli-env.json is written only on the WRITE leg, so it is never in `before` from
-            # the snapshot and would survive every disconnect — leaving the fleet-shared gog
-            # keyring password in the profile forever. Seed it here so a disconnect prunes it.
-            before.add(CLI_ENV_FILE)
         with base.materialize_into(root / root_dir if root_dir else root):
             result = fn(owner_id, provider_key, credential)  # type: ignore[operator]
         files = _snapshot(root, materializer)
-        if write and (shell_env := _shell_env(materializer, provider_key, credential)):
-            files[CLI_ENV_FILE] = json.dumps(shell_env).encode()
         gone = before - set(files)
         for agent_id in agent_ids:
             hermes_profiles.write_profile_subtree(owner_id, agent_id, files, gone)
+        # cli-env.json is SHARED by every CLI provider (gog's keyring vars, each skill's token), so
+        # it is merged key-by-key — writing it whole from one provider's keys wiped the others'
+        # (reconnecting Google deleted VERCEL_TOKEN). Inside the same hold, so a concurrent
+        # connect/disconnect cannot interleave between the owned files and their shell keys.
+        shell_env = _shell_env(materializer, provider_key, credential) if write else {}
+        updates = shell_env or ({} if write else dict.fromkeys(_shell_env_keys(materializer, provider_key)))
+        for agent_id in agent_ids if updates else ():
+            _merge_cli_env(owner_id, agent_id, updates)
     return result
 
 
@@ -219,7 +232,10 @@ def _merge_cli_env(owner_id: str, agent_id: str, updates: dict[str, str | None])
                 env.pop(key, None)
             else:
                 env[key] = value
-        hermes_profiles.write_profile_subtree(owner_id, agent_id, {CLI_ENV_FILE: json.dumps(env).encode()}, ())
+        if env:
+            hermes_profiles.write_profile_subtree(owner_id, agent_id, {CLI_ENV_FILE: json.dumps(env).encode()}, ())
+        else:  # the last key went (a full disconnect): no empty file left behind
+            hermes_profiles.write_profile_subtree(owner_id, agent_id, {}, (CLI_ENV_FILE,))
 
 
 async def set_profile_cli_env(owner_id: str, agent_id: str, updates: dict[str, str | None]) -> None:
@@ -232,10 +248,8 @@ async def set_profile_cli_env(owner_id: str, agent_id: str, updates: dict[str, s
     ``write_profile_subtree`` so the bridge re-pulls the file on the agent's next turn
     (``cli-env.json`` is in the bridge's ``CLI_CREDENTIAL_PREFIXES``).
 
-    Known gap: a LATER gog connect/disconnect rewrites ``cli-env.json`` wholesale from
-    ``_shell_env`` (one dict fanned out to the whole roster), dropping per-agent keys until the
-    next assign. Left standing on purpose — a per-agent merge inside ``_run_and_sync`` is the
-    thing this module's docstring warns against without a per-profile rail.
+    A projection's connect/disconnect merges only its own keys into the same file (see
+    ``_run_and_sync``), so per-agent keys set here survive it.
     """
     await run_in_thread(_merge_cli_env, owner_id, agent_id, updates)
 

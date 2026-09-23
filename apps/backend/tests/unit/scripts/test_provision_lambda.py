@@ -68,10 +68,11 @@ def test_reconcile_mode_runs_reconcile_runtime_with_the_short_idle_wait(lam, mon
     run.assert_not_awaited()
 
 
-def test_a_failed_reconcile_is_transient(lam, monkeypatch):
+def test_a_failed_reconcile_returns_without_raising(lam, monkeypatch):
+    # Raising would reach the machine's catch writes, which stamp error onto a PROVISIONING row
+    # that a concurrent provision execution owns.
     monkeypatch.setattr(lam.hermes_provisioning, "reconcile_runtime", AsyncMock(return_value="failed"))
-    with pytest.raises(lam.ProvisionTransient, match="org_a"):
-        lam.handler({"owner_id": "org_a", "mode": "reconcile"}, None)
+    assert lam.handler({"owner_id": "org_a", "mode": "reconcile"}, None) == {"outcome": "failed"}
 
 
 def test_an_unknown_mode_fails_deterministically(lam, monkeypatch):

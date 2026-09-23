@@ -2,12 +2,9 @@
  * Web's `VisibilityAdapter` for `useOnboardingStatus` (`@lightbulb/shared`).
  *
  * Deliberately `document.visibilityState`, NOT presence (`@/lib/presence`'s
- * `isPresent`, which additionally requires recent input): occlusion — a tab
- * covered by another window but not minimized/switched-away — never flips
- * `visibilityState`, which is exactly what lets the bounded loop's backstop
- * keep ticking through Chrome's occlusion throttling (the scenario
- * `useOnboardingStatus`'s module doc and the CLIENT-HOOK research pin as the
- * real freeze). A genuinely hidden/backgrounded tab is what pauses it.
+ * `isPresent`, which additionally requires recent input): the transition back
+ * to visible is what refetches the status after a tab spent time hidden,
+ * covering a live event AppSync dropped meanwhile.
  */
 "use client";
 

@@ -65,17 +65,9 @@ afterEach(() => {
 });
 
 describe("useOnboardingStatus", () => {
-  it("does not multiply background polling when several consumers share one status key", async () => {
-    // `/chat` mounts this hook four times against one SWR key (the provisioning
-    // stepper, the chat-ready gate, the join modal, the health indicator), and
-    // SWR dedupes the request between them. So "time of the last fetch attempt"
-    // describes the KEY, not any one instance: only the instance whose fetcher
-    // actually ran would ever stamp a private ref, and the others would read a
-    // ref frozen at 0, conclude on every backstop tick that the poll was
-    // overdue, and call mutate() forever.
-    //
-    // Measured past the 60s fast window, so the cadence is the 15s slow poll
-    // and a 5s backstop tick is the only thing that could add fetches.
+  it("never polls: consumers sharing the key fetch once on mount and never again on a timer", async () => {
+    // `/container/status` is a cold read — refetched on events, focus and reconnect, never on
+    // an interval. `/chat` mounts this hook several times against one SWR key.
     vi.useFakeTimers();
     try {
       const fetchSpy = vi.fn(jsonResponder(200, contractBody()));
@@ -88,15 +80,13 @@ describe("useOnboardingStatus", () => {
 
       mount(); mount(); mount(); mount();
       await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
-      await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      const afterMount = fetchSpy.mock.calls.length;
+      expect(afterMount).toBe(1);
 
-      const settled = fetchSpy.mock.calls.length;
-      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-      const overOneMinute = fetchSpy.mock.calls.length - settled;
-
-      // A 15s cadence over 60s is four polls. Four instances each running their
-      // own overdue backstop would be several times that.
-      expect(overOneMinute).toBeLessThanOrEqual(5);
+      // A not-ready status used to re-poll every 5-15s; now nothing fires on its own.
+      await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000); });
+      expect(fetchSpy.mock.calls.length).toBe(afterMount);
     } finally {
       vi.useRealTimers();
     }
@@ -138,7 +128,7 @@ describe("useOnboardingStatus", () => {
     expect(result.current.classified).toBeNull();
   });
 
-  it("keeps the last good status when a single poll fails", async () => {
+  it("keeps the last good status when a single refetch fails", async () => {
     vi.useFakeTimers();
     try {
       const fetchSpy = vi
@@ -156,19 +146,20 @@ describe("useOnboardingStatus", () => {
       });
       expect(result.current.classified?.kind).toBe("container");
 
-      // The next poll fails outright — a transient blip, or the
-      // AbortController firing on a slow cold-start request.
+      // The next fetch fails outright — a transient blip, or the
+      // AbortController firing on a slow request.
       fetchSpy.mockImplementation(() => Promise.reject(new TypeError("Failed to fetch")));
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(6_000);
+        result.current.refresh();
+        await vi.advanceTimersByTimeAsync(100);
       });
 
       // The failure is REPORTED, but the last good status must SURVIVE it.
       // The rejection-safe fetcher resolves failures as data, so without
       // stickiness SWR overwrites the good response and `classified` blanks
-      // for one cadence tick — which unmounts every consumer rendering on
+      // until the next fetch — which unmounts every consumer rendering on
       // top of it (the first-run funnel most visibly, destroying whatever
-      // the user had typed) and remounts it a few seconds later.
+      // the user had typed).
       expect(result.current.networkError).toBeDefined();
       expect(result.current.classified?.kind).toBe("container");
       expect(result.current.derived?.phase).toBe("cold_start");
@@ -177,7 +168,7 @@ describe("useOnboardingStatus", () => {
     }
   });
 
-  it("keeps the last good status when a poll returns a server error", async () => {
+  it("keeps the last good status when a refetch returns a server error", async () => {
     vi.useFakeTimers();
     try {
       const fetchSpy = vi
@@ -203,7 +194,8 @@ describe("useOnboardingStatus", () => {
         Promise.resolve(jsonResponse(503, { detail: "upstream unavailable" })),
       );
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(6_000);
+        result.current.refresh();
+        await vi.advanceTimersByTimeAsync(100);
       });
 
       expect(result.current.classified?.kind).toBe("container");
@@ -213,7 +205,7 @@ describe("useOnboardingStatus", () => {
     }
   });
 
-  it("reports an error when the FIRST poll is a server error and there is no last good", async () => {
+  it("reports an error when the FIRST fetch is a server error and there is no last good", async () => {
     global.fetch = vi
       .fn()
       .mockImplementation(() => Promise.resolve(jsonResponse(500, { detail: "boom" })));
@@ -233,69 +225,6 @@ describe("useOnboardingStatus", () => {
     renderHook(() => useOnboardingStatus({ api: makeApi(), enabled: false }), { wrapper });
     await new Promise((r) => setTimeout(r, 20));
     expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it("cadence: 5s while unsettled, 15s after the first 60s, 0 once ready", async () => {
-    vi.useFakeTimers();
-    try {
-      const fetchSpy = vi.fn().mockImplementation(jsonResponder(200, contractBody()));
-      global.fetch = fetchSpy;
-      const { result } = renderHook(
-        () => useOnboardingStatus({ api: makeApi(), enabled: true }),
-        { wrapper },
-      );
-      await vi.waitFor(() => expect(result.current.classified).not.toBeNull());
-      const callsAfterMount = fetchSpy.mock.calls.length;
-
-      // Fast cadence: another fetch lands within ~5s.
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(fetchSpy.mock.calls.length).toBeGreaterThan(callsAfterMount);
-
-      // Cross the 60s fast-window boundary — cadence should now be 15s, not 5s.
-      await vi.advanceTimersByTimeAsync(60_000);
-      const callsAtBoundary = fetchSpy.mock.calls.length;
-      await vi.advanceTimersByTimeAsync(5_000);
-      // A pure 5s cadence would have produced another call by now; the 15s
-      // cadence should not have.
-      expect(fetchSpy.mock.calls.length).toBe(callsAtBoundary);
-      await vi.advanceTimersByTimeAsync(10_000);
-      expect(fetchSpy.mock.calls.length).toBeGreaterThan(callsAtBoundary);
-
-      // Now flip to ready — polling should stop.
-      fetchSpy.mockImplementation(
-        jsonResponder(200, contractBody({ lifecycle: "ready", runtime_phase: "ready", chat_available: true })),
-      );
-      await vi.advanceTimersByTimeAsync(15_000);
-      await vi.waitFor(() => expect(result.current.derived?.phase).toBe("ready"));
-      const callsAtReady = fetchSpy.mock.calls.length;
-      await vi.advanceTimersByTimeAsync(60_000);
-      expect(fetchSpy.mock.calls.length).toBe(callsAtReady);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("keeps polling (does not go quiet) while parked — the poll's own wake param is what wakes it", async () => {
-    vi.useFakeTimers();
-    try {
-      const fetchSpy = vi.fn().mockImplementation(
-        jsonResponder(200, contractBody({ lifecycle: "parked", runtime_phase: "provisioning", parked: true })),
-      );
-      global.fetch = fetchSpy;
-      const { result } = renderHook(
-        () => useOnboardingStatus({ api: makeApi(), enabled: true, wake: () => true }),
-        { wrapper },
-      );
-      await vi.waitFor(() => expect(result.current.derived?.phase).toBe("parked"));
-      const callsAtParked = fetchSpy.mock.calls.length;
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(fetchSpy.mock.calls.length).toBeGreaterThan(callsAtParked);
-      // wake=1 was appended.
-      const lastUrl = fetchSpy.mock.calls.at(-1)?.[0] as string;
-      expect(lastUrl).toContain("wake=1");
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("appends the signup flow id as ?flow= WITHOUT letting it reach the SWR key", async () => {
@@ -336,15 +265,10 @@ describe("useOnboardingStatus", () => {
     }
   });
 
-  it("bounded loop converges after simulating occlusion-throttling: a hung fetcher times out via AbortController and the loop keeps trying until the network recovers", async () => {
+  it("a hung fetcher times out via AbortController and settles as a network error; a refetch recovers", async () => {
     vi.useFakeTimers();
     try {
-      // First attempt: NEVER settles on its own — a genuinely hung request,
-      // the exact real-world "occlusion-throttling kills the tab" scenario
-      // the research pinned as the actual kill vector (not a dropped SWR
-      // tick). It DOES respect AbortSignal, exactly like real fetch() —
-      // this is what lets the fetcher's own timeout recover it without
-      // depending on the backstop.
+      // A genuinely hung request that respects AbortSignal, exactly like real fetch().
       let hungRejected = false;
       const hungFetch = (_url: unknown, init?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
@@ -362,39 +286,18 @@ describe("useOnboardingStatus", () => {
         { wrapper },
       );
 
-      // Nothing has resolved yet — the hook must not be stuck rendering an
-      // uncaught rejection (it would surface as a jsdom unhandled-rejection
-      // failure, not a hang, if the fetcher weren't rejection-safe).
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(1_000);
-      });
-      expect(result.current.classified).toBeNull();
-
-      // Cross the fetch timeout — the AbortController fires and the hung
-      // request is aborted. The fetcher must resolve (not throw) to a
-      // network-error outcome, which the loop treats as recoverable, not
-      // terminal. Deliberately NOT `vi.waitFor` here — under fake timers it
-      // nudges the clock forward on its own to re-poll the condition, which
-      // would race past the next scheduled attempt (still on the hung mock)
-      // before the test gets a chance to swap in the healthy one below.
-      // Pure `advanceTimersByTimeAsync` keeps the timeline fully explicit.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(9_500);
+        await vi.advanceTimersByTimeAsync(10_500);
       });
       expect(hungRejected).toBe(true);
       expect(result.current.networkError).toBeDefined();
       expect(result.current.classified).toBeNull();
 
-      // The network recovers on a LATER attempt — the bounded loop must
-      // still be scheduling one (it did not die with the hung request). The
-      // window is generous (well past the single 5s fast-cadence step) since
-      // the backstop may itself have re-issued one more hung attempt (still
-      // on the old mock, raced against this test swapping it) that needs its
-      // own AbortController timeout to clear before a healthy attempt lands
-      // — the declared ceiling this test is proving, not a tight bound.
+      // The network recovers; the next event/focus/refresh refetch lands it.
       fetchSpy.mockImplementation(() => Promise.resolve(jsonResponse(200, contractBody())));
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(25_000);
+        result.current.refresh();
+        await vi.advanceTimersByTimeAsync(100);
       });
       expect(result.current.classified?.kind).toBe("container");
       expect(result.current.networkError).toBeUndefined();
@@ -403,45 +306,7 @@ describe("useOnboardingStatus", () => {
     }
   });
 
-  it("keeps its cadence when a consumer re-renders faster than the poll interval", async () => {
-    vi.useFakeTimers();
-    try {
-      const fetchSpy = vi.fn().mockImplementation(jsonResponder(200, contractBody()));
-      global.fetch = fetchSpy;
-      // The web stepper ticks an elapsed counter once a second for the whole
-      // cold start. SWR's polling effect lists `refreshInterval` in its deps
-      // and clears the pending tick on cleanup, so an unstable identity there
-      // re-armed the 5s timer every second and it never fired — leaving the
-      // status poll running at whatever the backstop rescued.
-      const { result } = renderHook(
-        () => {
-          const [, setTick] = React.useState(0);
-          React.useEffect(() => {
-            const id = setInterval(() => setTick((t) => t + 1), 1_000);
-            return () => clearInterval(id);
-          }, []);
-          return useOnboardingStatus({ api: makeApi(), enabled: true });
-        },
-        { wrapper },
-      );
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(100);
-      });
-      expect(result.current.derived?.phase).toBe("cold_start");
-
-      const before = fetchSpy.mock.calls.length;
-      // Deliberately NOT inside act(): act batches the 1s tick's re-renders,
-      // which is precisely the render churn this test exists to expose.
-      await vi.advanceTimersByTimeAsync(30_000);
-      // 30s at the 5s fast cadence is ~6 polls. The backstop alone (it only
-      // fires once an attempt is cadence+3s stale) yields ~3.
-      expect(fetchSpy.mock.calls.length - before).toBeGreaterThanOrEqual(5);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("refresh() forces an immediate revalidation and resets the fast-poll window", async () => {
+  it("refresh() forces an immediate revalidation", async () => {
     const fetchSpy = vi.fn().mockImplementation(jsonResponder(200, contractBody()));
     global.fetch = fetchSpy;
     const { result } = renderHook(
@@ -454,7 +319,7 @@ describe("useOnboardingStatus", () => {
     await waitFor(() => expect(fetchSpy.mock.calls.length).toBeGreaterThan(before));
   });
 
-  it("pauses the backstop while the injected visibility adapter reports hidden, and resumes on visible", async () => {
+  it("refetches on the transition to visible (the dropped-event safety net)", async () => {
     vi.useFakeTimers();
     try {
       const fetchSpy = vi.fn().mockImplementation(jsonResponder(200, contractBody()));
@@ -477,10 +342,7 @@ describe("useOnboardingStatus", () => {
       await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
       const callsWhileHidden = fetchSpy.mock.calls.length;
 
-      // Hidden: the backstop must not force extra fetches. (SWR's own
-      // refreshInterval keeps running regardless of this adapter — only the
-      // raw backstop is gated — so allow it, but visibility flip + resume
-      // must fire an immediate one on transition to visible.)
+      // The flip to visible must fire an immediate refetch.
       visible = true;
       onChangeRef.current?.();
       await vi.waitFor(() => expect(fetchSpy.mock.calls.length).toBeGreaterThan(callsWhileHidden));

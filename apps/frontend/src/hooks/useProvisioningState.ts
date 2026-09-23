@@ -89,11 +89,11 @@ export interface ProvisioningStateResult {
  * SWR instance — with its own two-phase (5s/30s) pending-cadence state
  * machine, its own `pendingGen`/`slowAfterGen` timers, and a per-consumer
  * `refreshInterval`/`revalidateOnFocus` override — into a single shared
- * fetch + a single shared bounded backstop loop that every consumer (this
- * hook, `useSystemHealth`, `OverviewPanel`) now rides for free. Consumer-
- * supplied polling cadence is gone: there is exactly one cadence for the
- * whole app (5s while unsettled and within the first 60s, 15s after,
- * 0/off once ready — see `useOnboardingStatus`'s module doc).
+ * fetch that every consumer (this hook, `useSystemHealth`, `OverviewPanel`)
+ * rides for free. There is no polling: the status is fetched on mount,
+ * visible and reconnect, and refetched when `LiveEventsProvider` sees a
+ * `runtime.resource.invalidated{resource:"onboarding"}` event — see
+ * `useOnboardingStatus`'s module doc.
  *
  *   /status load
  *        |
@@ -103,8 +103,8 @@ export interface ProvisioningStateResult {
  *  normal     team-pending   blocked        needs-signup
  *
  * 200 covers both the "have a container" case and the "owner has no
- * container yet, gate is clear, backend kicked off provisioning" case
- * (`runtime_phase: "provisioning"`). 202 is returned only for org members
+ * container yet, gate is clear" case (`runtime_phase: "provisioning"`; the
+ * `organization.created` webhook provisions it). 202 is returned only for org members
  * waiting on their admin-owned workspace. 404 is the explicit "owner has
  * never started signup" signal — the backend returns it for admins whose
  * provision gate would fire `signup_required`, so the chat surface can
@@ -133,8 +133,8 @@ export function useProvisioningState(
   const { isSignedIn, orgId, userId, sessionId, getToken } = useAuth();
   const { organization, isLoaded: orgLoaded } = useOrganization();
 
-  // /container/status can provision. UI context alone does not prove that
-  // Clerk has minted a token for the active workspace yet.
+  // /container/status must be read for the ACTIVE workspace. UI context alone does
+  // not prove that Clerk has minted a token for it yet.
   const uiOrgId = organization?.id;
   const scope = useMemo(() => ({
     orgId,
@@ -188,7 +188,7 @@ export function useProvisioningState(
     let delay = 500;
     async function verify() {
       // Force fresh once at the scope boundary, not for propagation retries
-      // or steady status polls. Every returned token still has its org checked.
+      // or later status reads. Every returned token still has its org checked.
       const forceFresh = freshlyRequestedScope.current !== scope;
       freshlyRequestedScope.current = scope;
       const token = await getWorkspaceToken(forceFresh);
@@ -211,9 +211,6 @@ export function useProvisioningState(
     // container instead of starting it. `wake: false` pins it to 0 for a
     // reader that is not itself a reason to start one — see the option.
     wake: () => wake && isPresent(),
-    // This poll is what creates a brand-new workspace's trial_local
-    // row, so it is the only request that can carry the client's
-    // signup_flow_id to the server-side trial events.
     flow: signupFlowId,
     visibility: webVisibilityAdapter,
   });

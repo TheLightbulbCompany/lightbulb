@@ -94,8 +94,8 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
     #   * a cancellation webhook is redelivered after they resubscribed (Stripe
     #     and Apple both retry on 5xx).
     #
-    # Destroying the container self-heals — the next /container/status poll
-    # reprovisions. The Bedrock resources `delete_user_service` reaps behind it
+    # Destroying the container self-heals — the resubscribe's durable reconcile
+    # reprovisions a workspace with no running runtime. The Bedrock resources `delete_user_service` reaps behind it
     # do NOT: the resubscribe's provision has already returned success, so
     # nothing retries, and the owner's chat just hard-fails on Bedrock. Cheap
     # strongly-consistent read against that.

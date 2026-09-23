@@ -35,7 +35,6 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal, Optional
 
-from core.billing.metronome_provisioning import is_ledger_eligible
 from core.repositories import billing_repo, container_repo
 from core.repositories.paperclip_repo import ONBOARDING_STATE_DEFAULTS
 from core.services.provision_gate import is_subscription_active
@@ -122,8 +121,7 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
         owner_id: the container/company owner (org_id for org members,
             else the user_id).
         container: an already-fetched (and possibly locally mutated, e.g.
-            by ``maybe_restore_trial_bedrock`` or an auto-retry dispatch's
-            optimistic ``status`` flip) containers row, OR an explicit
+            by ``maybe_restore_trial_bedrock``) containers row, OR an explicit
             ``None``. Pass this when the caller already read/mutated the
             row this request -- it avoids a redundant DDB read AND lets
             the contract reflect same-request local mutations a fresh read
@@ -158,12 +156,6 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
     provider_choice = (account or {}).get("provider_choice")
     subscription_status = (account or {}).get("subscription_status")
     sub_active = is_subscription_active(account)
-    # Derived off the SAME already-fetched `account` — no extra read. Lets
-    # routers/container.py's running-container poll re-dispatch
-    # ensure_user_ready for a ledger-eligible owner whose Metronome
-    # provisioning never landed (e.g. a transient failure at signup), without
-    # this composer growing a second INV-1-violating cross-store read.
-    metronome_ledger_missing = is_ledger_eligible(account) and not (account or {}).get("metronome_customer_id")
 
     parked = False
     runtime_phase: RuntimePhase
@@ -234,9 +226,6 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
         "runtime_phase": runtime_phase,
         "chat_available": chat_available,
         "container_status": (container or {}).get("status"),
-        # NOT an ECS-lifecycle leftover, despite the deletion plan's A.4 row: the status
-        # router synthesizes its own values on top (auto_retry / error_retrying /
-        # ensure_user_ready).
         "container_substatus": (container or {}).get("substatus"),
         "parked": parked,
         "onboarded": onboarded,
@@ -262,9 +251,4 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
             "subscription_status": subscription_status,
         },
         "teams_state": onboarding.get("teams_state"),
-        # Internal-only -- NOT part of the wire StatusContract (see
-        # routers/container.py's `_status_response`, which whitelists fields
-        # and does not forward this one). Consumed solely by the
-        # running-container poll's ensure_user_ready re-dispatch check.
-        "metronome_ledger_missing": metronome_ledger_missing,
     }

@@ -120,7 +120,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
 
   const dispatchEvent = useCallback((event: LiveEvent) => {
     // The web twin's rule (hooks/useLiveEvents.tsx): a status nudge refetches the one
-    // /container/status key useOnboardingStatus reads, instead of waiting for its poll.
+    // /container/status key useOnboardingStatus reads — the event is how the stepper advances.
     if (event.type === "runtime.resource.invalidated" && (event.payload.resource === "onboarding" || event.payload.resource === "health")) {
       refreshOnboardingStatus();
     }

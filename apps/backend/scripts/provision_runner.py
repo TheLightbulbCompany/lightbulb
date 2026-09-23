@@ -160,6 +160,7 @@ async def run(owner_id: str) -> int:
         )
         return seed_exit
     await _drain_pending_brief(owner_id)
+    await _seat_workspace_rooms(owner_id)
 
     try:
         await hermes_provisioning.provision_hermes_runtime(owner_id)
@@ -190,6 +191,28 @@ async def _drain_pending_brief(owner_id: str) -> None:
         put_metric("onboarding_brief.provision_drain.error")
 
 
+async def _seat_workspace_rooms(owner_id: str) -> None:
+    """Step 0 just made the company active: create the vendor shared channel and seat every
+    current teammate in ``#general``. A member who joined before the room existed was missed by
+    the ``organizationMembership.created`` webhook's seat. Both are idempotent (a removed member
+    is never re-seated: the AUTOJOIN marker stays). Never fails the provision."""
+    from core.observability.metrics import put_metric
+    from core.services.clerk_admin import list_organization_members
+    from core.services.messaging import ensure_vendor_room, join_default_room
+
+    try:
+        await ensure_vendor_room(owner_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("provision: vendor room reconcile failed for owner %s", owner_id)
+        put_metric("messaging.vendor_room.error")
+    for member in await list_organization_members(owner_id):
+        try:
+            await join_default_room(owner_id, member["user_id"])
+        except Exception:  # noqa: BLE001
+            logger.exception("provision: default room join failed for owner %s user %s", owner_id, member["user_id"])
+            put_metric("messaging.default_room.error")
+
+
 async def _arm_trial(owner_id: str) -> None:
     """The runtime is created and the row ``running``: start an unarmed ``trial_local`` clock,
     once (a conditional write -- a no-op for a paid or already-armed row). Never fails the
@@ -206,7 +229,7 @@ async def _arm_trial(owner_id: str) -> None:
 
 async def _record_failure(owner_id: str, exc: Exception, stage: str) -> int:
     """Classify a Hermes-leg failure, record it on the row, map it to the exit-code ABI —
-    so the status poll (and the SFN retry loop) can act on it instead of an open spinner."""
+    so the stepper's Retry (and the SFN retry loop) can act on it instead of an open spinner."""
     from core.repositories.container_repo import classify_provision_error
     from core.services.openrouter_keys import KeyClaimConflict
 

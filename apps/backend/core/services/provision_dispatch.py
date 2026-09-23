@@ -108,9 +108,18 @@ async def dispatch_provision(owner_id: str) -> bool:
             input=execution_input(owner_id),
         )
         return True
-    except Exception:  # noqa: BLE001 — dispatch must never take down the caller; the next poll retries
+    except Exception as exc:  # noqa: BLE001 — dispatch must never take down the caller
         logger.exception("dispatch_provision: dispatch failed for owner %s", owner_id)
         emit_provision_metric("dispatch_start_failed")
+        # Nothing re-drives a lost dispatch any more (the status poll is gone): release the
+        # row to a retryable error so the user sees Retry, never a "provisioning" row that no
+        # execution owns. Never overwrites a running row.
+        try:
+            await container_repo.mark_provision_error(
+                owner_id, last_error=f"provision could not start: {type(exc).__name__}", retryable=True
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("dispatch_provision: could not record the failed dispatch for %s", owner_id)
         return False
 
 

@@ -17,6 +17,7 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories import container_repo
 from core.services import container_rpc, provision_gate, trial_cap
 from core.services.provision_dispatch import dispatch_provision
+from core.services.user_provision import ensure_workspace_trial_default
 from routers.container import _owner_role
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,8 @@ def _health_verdict(health) -> bool | None:
     ),
     operation_id="container_recover",
     responses={
-        404: {"description": "No container for this user"},
+        404: {"description": "No container for this user (org member)"},
+        402: {"description": "Provision gate is up (structured blocked payload)"},
     },
 )
 async def container_recover(
@@ -71,15 +73,25 @@ async def container_recover(
     #    task IP to discover and no "running but unreachable" shape to detect up front.
     container = await container_repo.get_by_owner_id(owner_id)
     if not container:
-        raise HTTPException(status_code=404, detail="No container found")
+        # No row at all (its organization.created provision never started). Nothing re-drives
+        # that any more, so an admin's Retry starts it -- behind the same trial row + gate
+        # POST /container/provision applies. Members ride the admin's workspace.
+        if not auth.is_org_admin:
+            raise HTTPException(status_code=404, detail="No container found")
+        await ensure_workspace_trial_default(auth, owner_id)
+        gate = await provision_gate.evaluate_provision_gate(owner_id=owner_id, is_admin=True)
+        if gate is not None:
+            raise HTTPException(status_code=402, detail=gate.to_payload())
+        await dispatch_provision(owner_id)
+        return {"action": "reprovision", "state": "CONTAINER_DOWN", "reason": "Workspace not provisioned yet"}
 
     status = container.get("status", "unknown")
 
     # A provisioning row must never be probed: /recover used to fire during a
     # conversion's provision, probe the mid-boot gateway, write status="error"
-    # over the in-flight run (prod 2026-08-10). Stand down; a wedged row with
-    # nothing running is re-driven by the status poll (ensure_user_ready), which
-    # carries the gates this branch would otherwise skip.
+    # over the in-flight run (prod 2026-08-10). Stand down: the execution ends in
+    # MarkRunning or a MarkFailed* error row, and a dispatch that never started
+    # releases the row to error itself (provision_dispatch).
     if status == "provisioning":
         return {
             "action": "already_recovering",
@@ -111,9 +123,8 @@ async def container_recover(
         reason = container.get("last_error", f"Container is {status}")
         logger.info("Recovering owner %s: reprovision (status=%s)", owner_id, status)
         # Route through the PROVISION executor (spec §7) — dispatch_provision
-        # never raises; a StartExecution failure releases the row to
-        # status="error" instead, picked up by the caller's next
-        # GET /container/status poll.
+        # never raises; a StartExecution failure releases the row to a
+        # retryable status="error" instead.
         await dispatch_provision(owner_id)
         return {
             "action": "reprovision",

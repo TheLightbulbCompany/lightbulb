@@ -163,21 +163,13 @@ async def get_dashboard(
     Defensive: if upstream returns None or a non-dict, normalize to
     an empty dict so the frontend can still render an empty-state.
     """
-    # #802 — container-readiness gate. The Paperclip row goes ``active`` ~2-3s
-    # into provisioning (``_ctx`` resolves past it), but the owner's container
-    # is created in the BACKGROUND (``asyncio.create_task(dispatch_provision)``
-    # in ``ensure_user_ready``) and may still be starting — or its single
-    # dispatch may have failed silently, leaving no container at all. Since the
-    # frontend uses THIS endpoint as its workspace-status probe
-    # (``useTeamsWorkspaceStatus`` polls it, auto-retrying only on the 202
-    # sentinel), mirror ``/container/status`` here: if the container isn't
-    # reachable yet, re-dispatch provisioning (gate-first, off the request path
-    # — the same #801 self-heal ``/chat`` uses, which decides the restart-safe
-    # container flag from live ECS state) and return 202 so the UI stays on the
-    # provisioning overlay instead of reporting the workspace ready before the
-    # container is. Scoped to this probe only — NOT ``_ctx`` — so the other
-    # ``/teams/*`` data endpoints keep zero per-request ECS cost. Members ride
-    # the owner's shared container, so only owners/admins gate on it.
+    # #802 — container-readiness gate. The Paperclip row can go ``active`` before the
+    # owner's container is up, and the frontend uses THIS endpoint as its workspace-status
+    # probe (``useTeamsWorkspaceStatus`` auto-retries only on the 202 sentinel). So while the
+    # container isn't reachable, run the lazy self-heal (the Paperclip JOIN; it never
+    # provisions — the chat stepper's Retry owns a failed workspace) and answer 202, so the
+    # UI stays on the provisioning overlay. Scoped to this probe only — NOT ``_ctx``. Members
+    # ride the owner's shared container, so only owners/admins gate on it.
     if not auth.is_org_context or auth.is_org_admin:
         reachable, _ip, _token = await _agents._container_is_reachable(resolve_owner_id(auth))
         if not reachable:

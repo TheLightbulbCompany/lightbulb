@@ -889,6 +889,28 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       expect(screen.getByText(/taking longer than it should/i)).toBeInTheDocument();
     });
 
+    it('"Check again" on a workspace with NO container row starts it through /container/recover', async () => {
+      // Its first provision never started (organization.created gave up) and nothing
+      // re-drives it, so a plain re-read would be a dead button.
+      useProvMock.mockReturnValue({
+        phase: "normal",
+        container: { container_status: null, runtime_phase: "provisioning", lifecycle: "provisioning" },
+        blocked: null,
+        refresh: refreshSpy,
+      });
+      render(
+        <ProvisioningStepper>
+          <div>children</div>
+        </ProvisioningStepper>,
+      );
+      act(() => void vi.advanceTimersByTime(PROVISION_TIMEOUT_MS + 1_000));
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /Check again/ }));
+      });
+      expect(apiPost).toHaveBeenCalledWith("/container/recover", {});
+    });
+
     it("rolls the setup card's counter to h:mm:ss instead of rendering 1260:37", () => {
       // The card (and its counter) only remains while no status has arrived.
       renderColdStart(false);

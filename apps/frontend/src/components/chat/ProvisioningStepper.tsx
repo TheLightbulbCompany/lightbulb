@@ -276,12 +276,9 @@ export function ProvisioningStepper({
   }, [providerStepDone]);
 
   // The single canonical `/container/status` reader — a pure consumer of the
-  // ONE shared `useOnboardingStatus` bounded loop (spec PR-9, CLIENT-HOOK).
-  // This call site used to own its own SWR poll (3s cold-start cadence,
-  // `revalidateOnFocus: true`, and a mirrored `pollActive`/`shouldPollContainer`
-  // state machine to zero the interval once ready) — all deleted. Cadence,
-  // visibility gating, and the resume-on-focus/visible kick now live once,
-  // shared by every consumer, inside `useOnboardingStatus` itself.
+  // ONE shared `useOnboardingStatus` read (spec PR-9, CLIENT-HOOK). There is no
+  // poll: it advances on the live status events (below) and refetches on
+  // visible/reconnect, all inside `useOnboardingStatus` itself.
   const {
     phase: gatePhase,
     blocked,
@@ -289,16 +286,15 @@ export function ProvisioningStepper({
     refresh,
   } = useProvisioningState();
   // Same /container/recover call HealthIndicator's CONTAINER_DOWN action uses
-  // (useSystemHealth) — a deterministic (non-retryable) provisioning error is
-  // no longer auto-redispatched by the /container/status poll, so the failed
-  // state's Retry button below drives it explicitly instead of just re-polling.
+  // (useSystemHealth) — nothing re-dispatches a failed provision on its own, so
+  // the failed state's Retry button below drives it explicitly.
   const { recover, isRecovering: isRetryingProvision } = useSystemHealth();
   const [retryFailed, setRetryFailed] = useState(false);
 
   // Private runtime health/onboarding events invalidate this shared status key
   // in LiveEventsProvider, so the stepper observes readiness through HTTP.
 
-  // The trial_local row is created as a side effect of /container/status, not
+  // The trial_local row is created by the organization.created webhook, not
   // by /billing/account — and useBilling does not revalidate on focus or an
   // interval. So when a container is provisioning but billing still shows no
   // active subscription/trial, pull /billing/account once so isTrialLocal /
@@ -311,12 +307,10 @@ export function ProvisioningStepper({
     }
   }, [container, isSubscribed, isTrialLocal, billingLoading, refreshBilling]);
 
-  // Provisioning is now driven by /container/status: when the gate clears
-  // and no container exists, the backend's status endpoint fires
-  // ensure_user_ready itself. The frontend stepper is purely passive — it
-  // reads the ONE shared bounded-loop poll (see useProvisioningState above)
-  // and renders the appropriate phase. No explicit POST /container/provision
-  // from here.
+  // Provisioning is driven by the backend's own events (the organization.created
+  // webhook, billing events, the user's Retry). The stepper is purely passive —
+  // it reads the ONE shared status (see useProvisioningState above) and renders
+  // the appropriate phase. No explicit POST /container/provision from here.
 
   const containerReady =
     container?.container_status === "running" || container?.container_substatus === "gateway_healthy";
@@ -343,11 +337,16 @@ export function ProvisioningStepper({
   const isTerminalError =
     container?.container_status === "error" && !isRetryingError;
 
-  // AgentsBanner's "Check again"/"Retry" button. A terminal error needs the
-  // real recover call (see the useSystemHealth destructure above); every
-  // other alarming state (stuck/slow) is still a live re-poll.
+  // A 200 with no container row: the workspace's first provision never started (its
+  // organization.created webhook gave up). Nothing re-drives it on its own, so the
+  // banner's check starts it through /container/recover, exactly like a failed one.
+  const needsRecover = isTerminalError || (container != null && container.container_status == null);
+
+  // AgentsBanner's "Check again"/"Retry" button. A terminal error (or no row) needs
+  // the real recover call (see the useSystemHealth destructure above); every
+  // other alarming state (stuck/slow) is a plain re-read.
   const handleAgentsBannerCheck = useCallback(async () => {
-    if (!isTerminalError) {
+    if (!needsRecover) {
       refresh();
       return;
     }
@@ -358,7 +357,7 @@ export function ProvisioningStepper({
       return;
     }
     refresh();
-  }, [isTerminalError, recover, refresh]);
+  }, [needsRecover, recover, refresh]);
 
   // Readiness decision (backend runtime_phase="provisioning"/"starting"/
   // "ready", lifecycle="parked"/"error"/…) is sourced from the ONE shared
@@ -668,15 +667,10 @@ export function ProvisioningStepper({
     }
   }, [phase]);
 
-  // Elapsed-time tick ONLY — the poll-watchdog half of this effect (an
-  // out-of-band `refresh()` fired at most once/10s to route around a
-  // throttled SWR chain) is DELETED (spec PR-9, CLIENT-HOOK). That was a
-  // compensating layer for the 3s-poll `useProvisioningState` call this
-  // stepper used to own; the shared `useOnboardingStatus` bounded loop
-  // behind it now has its own belt-and-suspenders backstop (a raw
-  // `setInterval`, independent of SWR's self-rescheduling chain, plus a
-  // fetch-timeout so a genuinely hung request can't wedge it either — see
-  // that hook's module doc) instead of each consumer improvising its own.
+  // Elapsed-time tick ONLY — a display clock, never a status fetch. The status
+  // advances on live events and visible/reconnect refetches (see
+  // `useOnboardingStatus`); past TIMEOUT_MS the timed-out card offers a manual
+  // check, which is the backstop for an event AppSync dropped.
   useEffect(() => {
     if (
       phase !== "container" &&
@@ -1216,8 +1210,8 @@ export function ProvisioningStepper({
           phase={phase}
           onCheck={handleAgentsBannerCheck}
           onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
-          isChecking={isTerminalError && isRetryingProvision}
-          checkFailed={isTerminalError && retryFailed}
+          isChecking={needsRecover && isRetryingProvision}
+          checkFailed={needsRecover && retryFailed}
         />
         {children}
       </>

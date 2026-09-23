@@ -1,13 +1,12 @@
 """Container lifecycle management endpoints.
 
-Provides container status (with auto-retry for failed containers)
-and a manual retry-provision endpoint.
+Provides the container status read and the manual provision/retry endpoints.
 """
 
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, HttpUrl
 from typing import Literal
 
@@ -21,7 +20,7 @@ from core.services.provision_gate import (
     evaluate_provision_gate,
     maybe_restore_trial_bedrock,
 )
-from core.services.user_provision import arm_workspace_trial_if_unset, ensure_workspace_trial_default, ensure_user_ready
+from core.services.user_provision import ensure_workspace_trial_default
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +30,8 @@ router = APIRouter()
 def _watch_provision_task(task: "asyncio.Task") -> None:
     """Done-callback for the detached ``ensure_user_ready`` dispatches.
 
-    ``ensure_user_ready`` is fired with ``asyncio.create_task`` from the status
-    poll and never awaited, so a raised exception would otherwise be a silent
+    ``ensure_user_ready`` is fired with ``asyncio.create_task`` from the Paperclip-proxy
+    handshake and never awaited, so a raised exception would otherwise be a silent
     "Task exception was never retrieved" — invisible to the W1
     provision-error alarm. Surface it: log the task's traceback and emit the
     SAME ``container.provision`` ``{status: error}`` metric the synchronous
@@ -98,13 +97,11 @@ async def _assert_provision_allowed(
     "/status",
     summary="Get container metadata for current user",
     description=(
-        "Returns the user's container status and metadata. "
-        "If no container row exists yet and the provision gate is clear, "
-        "dispatches ensure_user_ready in the background and returns a "
-        "synthetic provisioning response (owners) or 202 'workspace pending' "
-        "(org members). If the container is in error state and the user "
-        "has an active subscription, auto-triggers re-provisioning in the "
-        "background."
+        "A cold read of the workspace's status contract, fetched on mount and after a "
+        "live event. It triggers no provisioning: a new workspace is provisioned by the "
+        "Clerk organization.created webhook, and a failed or stopped one waits for the "
+        "user's Retry (POST /container/recover). The one write it keeps is the trial "
+        "owner's daily Bedrock restore."
     ),
     operation_id="container_status",
     responses={
@@ -114,18 +111,6 @@ async def _assert_provision_allowed(
 )
 async def container_status(
     auth: AuthContext = Depends(get_current_user),
-    flow: str | None = Query(
-        default=None,
-        description=(
-            "Client-minted signup_flow_id, joining this owner's server-side "
-            "trial events back to the anonymous half of their signup journey "
-            "(apps/frontend/src/lib/signupFlow.ts). Opaque and untrusted — it "
-            "only ever lands in a PostHog property. Deliberately NOT validated "
-            "here: a bad value is dropped inside ensure_workspace_trial_default, "
-            "never 422'd, because this is the readiness poll and a polluted "
-            "localStorage entry must not be able to strand a user on a spinner."
-        ),
-    ),
 ):
     owner_id = resolve_owner_id(auth)
     # One paperclip-companies read, threaded into both compute_status calls below.
@@ -133,74 +118,38 @@ async def container_status(
 
     container = await container_repo.get_by_owner_id(owner_id)
     if not container:
-        # No container row at all. Evaluate the same provision gate
-        # POST /provision uses — if a gate is up, the frontend needs the
-        # structured payload (402) so it can render the picker / "top up"
-        # CTA instead of trapping the user in a generic "no container"
-        # state.
-        # Create the workspace's unarmed trial before the gate reads billing.
-        await ensure_workspace_trial_default(auth, owner_id, signup_flow_id=flow)
+        # No row: surface a gate as its structured 402 payload so the frontend renders the
+        # picker / "top up" CTA instead of a generic "no container" state.
         gate = await evaluate_provision_gate(owner_id=owner_id, is_admin=auth.is_org_admin)
         if gate is not None:
             raise HTTPException(status_code=402, detail=gate.to_payload())
-
-        # Gate clear, no container row. After Tasks 6 + 7 stripped the
-        # eager Clerk-webhook provisioning, this endpoint is the canonical
-        # poll-driven trigger that drives every authenticated user from
-        # "Clerk-authed" to "container provisioning." Fire ensure_user_ready
-        # in the background; it's idempotent and gate-checks again itself.
-        #
-        # Org members can't drive container provisioning themselves —
-        # they ride the owner's container. But ensure_user_ready (member
-        # role) handles paperclip-membership-add against the owner's
-        # company; if the owner's company isn't active yet, it returns
-        # gracefully. Surface 202 so the frontend renders "workspace
-        # pending" rather than a generic loading state.
+        # Org members ride the owner's container: 202 renders "workspace pending".
         if auth.is_org_context and not auth.is_org_admin:
-            _dispatch_watched(ensure_user_ready(auth))
-            raise HTTPException(
-                status_code=202,
-                detail="team workspace pending",
-            )
-
-        # Owner role: dispatch ensure_user_ready and return a provisioning
-        # response composed through compute_status (which handles
-        # container=None -> runtime_phase="provisioning") rather than a
-        # hand-built stub. Two reasons this must NOT hardcode onboarded=False:
-        #  1. Container-only recreation (G1 bumped, the company + G2 onboarding
-        #     preserved) transiently has no container row; hardcoding False
-        #     here would re-show a COMPLETED funnel. compute_status reads the
-        #     preserved onboarding state (funnel_state=="complete") independent
-        #     of the container, so onboarded rides correctly.
-        #  2. Wire-shape parity: the has-container return below emits the full
-        #     StatusContract; this path must too, or a no-container poll gives
-        #     deriveUIPhase a different (legacy-only) shape.
-        # We reflect the just-issued dispatch on the (still-absent) row's
-        # status fields; lifecycle/runtime_phase/onboarded stay as composed
-        # (e.g. an org owner with no provider correctly surfaces
-        # provider_selection_required rather than a false "provisioning").
-        _dispatch_watched(ensure_user_ready(auth))
+            raise HTTPException(status_code=202, detail="team workspace pending")
+        # compute_status handles container=None (runtime_phase="provisioning") and keeps a
+        # preserved onboarding state (funnel_state=="complete") across a container-only
+        # recreation, so onboarded is never hardcoded False here.
         contract = await readiness_state.compute_status(owner_id, container=None, onboarding=onboarding)
-        contract["container_status"] = "provisioning"
-        contract["container_substatus"] = "ensure_user_ready"
         return _status_response(contract)
 
-    # Daily Bedrock restore: a capped-out (or previously-expired-and-now-
-    # renewed) trial owner's container row may still carry bedrock_revoked
-    # from the meter Lambda's kill. The owner is polling US right now, so this
-    # is the trigger — no worker. No-op (zero extra reads) unless the flag is
-    # actually set. See provision_gate.maybe_restore_trial_bedrock docstring.
+    # Daily Bedrock restore: a capped-out trial owner's row carries bedrock_revoked (and
+    # status="stopped") from the meter Lambda's kill. No-op (zero extra reads) unless the flag
+    # is set. The one write this read keeps -- ponytail: until the trial cap leaves Bedrock
+    # (A2), when the revoke, this restore and the restart below go together.
+    was_revoked = bool(container.get("bedrock_revoked"))
     await maybe_restore_trial_bedrock(owner_id=owner_id, container=container)
+    if was_revoked and not container.get("bedrock_revoked") and container.get("status") == "stopped":
+        # The day rolled over and the restore succeeded: restart the capped workspace, which
+        # nothing else would (the meter's kill stamped it "stopped"). dispatch_provision no-ops
+        # while an execution is RUNNING and writes the "provisioning" row itself.
+        await dispatch_provision(owner_id)
+        container = await container_repo.get_by_owner_id(owner_id) or container
 
-    # If the row STILL carries the revoke after the restore pass (it declined:
-    # capped or expired), gate NOW — whatever the row's status says. The meter
-    # Lambda's kill stamps status="stopped", but that write is one non-atomic
-    # step of a best-effort kill: if it fails, or a racing backend writer
-    # clobbers it, the row stays "running" with no live task, every branch
-    # below falls through, and this endpoint reports a warm workspace — hiding
-    # the limit card from exactly the owner most likely to convert. Paid owners
-    # also carry bedrock_revoked (Metronome low-balance enforcement) — their trial
-    # reason is None here, so they fall through unchanged.
+    # If the row STILL carries the revoke after the restore pass (it declined: capped or
+    # expired), gate NOW — whatever the row's status says: the kill's status write is
+    # best-effort, so a row left "running" would otherwise hide the limit card. Paid owners
+    # also carry bedrock_revoked (Metronome low-balance enforcement) — their trial reason is
+    # None here, so they fall through unchanged.
     if container.get("bedrock_revoked"):
         from core.services import provision_gate, trial_cap
 
@@ -210,40 +159,15 @@ async def container_status(
         if revoked_gate is not None:
             raise HTTPException(status_code=402, detail=revoked_gate.to_payload())
 
-    # Single readiness+onboarding read (INV-1): compute_status is the SOLE
-    # composer of the containers/billing/paperclip-companies inputs — see core/services/readiness_state.py. Passing the
-    # already-fetched `container` skips a redundant containers-row read and
-    # lets the contract reflect the LOCAL (pre-commit) mutations the
-    # auto-retry branch below makes to `container["status"]` — see
-    # `_sync_contract_with_container`, called after each such mutation.
-    #
-    # Includes the degraded Teams signal (non-blocking): if this owner's
-    # Paperclip company seed failed, a running container still serves chat —
-    # `contract["teams_state"] == "failed"` surfaces alongside a normal
-    # phase so the client can render a "Teams needs attention / retry"
-    # affordance instead of a hard block. Never gates.
-    #
-    # `onboarding` was fetched once at the top of this handler and is threaded
-    # into compute_status. It is the same
-    # paperclip-companies read compute_status would otherwise do internally (a
-    # by-org-id GSI query for an org owner), so without threading it every ~3s
-    # ready poll fleet-wide would pay it twice.
+    # Single readiness+onboarding read (INV-1): compute_status is the SOLE composer of the
+    # containers/billing/paperclip-companies inputs — see core/services/readiness_state.py.
+    # A failed Teams seed surfaces as `teams_state == "failed"` alongside a normal phase
+    # (non-blocking; never gates).
     contract = await readiness_state.compute_status(owner_id, container=container, onboarding=onboarding)
-    if contract["runtime_phase"] == "ready" and contract["provider"]["subscription_status"] == "trial_local":
-        await arm_workspace_trial_if_unset(owner_id)
 
-    # Auto-retry: if the workspace is in a failed/stuck state AND the owner can
-    # currently afford to provision, SAY it is re-provisioning. The same gate as
-    # /provision (audit C1) — bare subscription-id existence wasn't enough; we
-    # need active/trialing status, and bedrock_claude users need a positive
-    # credit balance. The dispatch itself is ensure_user_ready's, below — the
-    # ONE dispatcher per poll (it carries the provision gate, the parked-trial
-    # check and the deterministic-error skip); this branch only gates and
-    # shapes the response.
-    retryable_states = ("error", "stopped")
-    if container.get("status") in retryable_states:
-        # The FULL trial predicate, not just the cap. An over-cap or expired
-        # trial owner gets the limit card rather than a silent re-provision.
+    # A failed/stopped row is reported as it is: nothing re-drives it from here. An over-cap or
+    # expired trial gets the limit card instead of the error card (the FULL trial predicate).
+    if container.get("status") in ("error", "stopped"):
         from core.services import provision_gate, trial_cap
 
         trial_gate = provision_gate.gate_for_trial_reason(
@@ -251,77 +175,8 @@ async def container_status(
         )
         if trial_gate is not None:
             raise HTTPException(status_code=402, detail=trial_gate.to_payload())
-        await ensure_workspace_trial_default(auth, owner_id)
-        try:
-            await _assert_provision_allowed(
-                owner_id,
-                is_admin=auth.is_org_admin,
-            )
-        except HTTPException:
-            pass
-        else:
-            if container.get("status") == "error":
-                # Honest error reporting — never mask a failed provision as
-                # "provisioning". T3 records the cause on the row:
-                #   retryable=True  (transient infra: throttle / 5xx) → still
-                #     auto-dispatch the re-provision, but SAY so: status stays
-                #     "error", substatus="error_retrying", and last_error is
-                #     carried through by _status_response. The client shows
-                #     "hit a problem, retrying" — no timer needed.
-                #   retryable=False (deterministic: 4xx / config / validation)
-                #     → do NOT re-dispatch; the recorded status + last_error
-                #     render the error card immediately.
-                # Default True keeps a cause-less legacy error row self-healing.
-                if container.get("retryable", True):
-                    container["substatus"] = "error_retrying"
-                    _sync_contract_with_container(contract, container)
-            else:
-                # stopped: the poll-driven self-heal. An idle AgentCore workspace
-                # is NOT this case — AWS parks its microVM invisibly and the row
-                # stays "running". dispatch_provision writes the "provisioning"
-                # status itself; the local dict mutation below only shapes THIS
-                # response.
-                container["status"] = "provisioning"
-                container["substatus"] = "auto_retry"
-                _sync_contract_with_container(contract, container)
-
-    # Re-dispatch ensure_user_ready on EVERY running-container poll. Every caller
-    # is an org user (resolve_owner_id 409s anyone else), and ensure_user_ready is
-    # the idempotent self-heal for a running box: the paperclip membership-add for
-    # a co-admin/member who joins an already-provisioned org, a failed Teams seed
-    # (non-fatal to the container, so nothing else retries it), and the Metronome
-    # customer for a ledger-eligible owner whose creation blipped. It reads the
-    # container row itself and reconciles in-thread instead of dispatching a
-    # provision (see _provision_or_reconcile).
-    _dispatch_watched(ensure_user_ready(auth))
 
     return _status_response(contract)
-
-
-def _sync_contract_with_container(contract: dict, container: dict) -> dict:
-    """Refresh the container-derived fields on an already-computed
-    ``contract`` after a LOCAL (pre-commit) mutation to ``container`` --
-    the auto-retry branch above optimistically flips
-    ``container["status"]``/``["substatus"]`` before the row itself
-    catches up, so THIS response should reflect that mutation without a
-    second ``readiness_state.compute_status`` call (which would re-read
-    billing/gateway-liveness/paperclip-companies for no reason -- none of
-    those changed).
-
-    Both mutation sites this is called from only ever set
-    ``status`` to ``"provisioning"`` or leave it ``"error"`` — neither is
-    ``"running"``, so ``runtime_phase`` is unconditionally
-    ``"provisioning"`` here; this intentionally does NOT re-derive that
-    from ``readiness_state.resolve_runtime_phase`` to avoid pretending a
-    gateway-liveness read happened when it didn't.
-    """
-    status = container.get("status")
-    contract["container_status"] = status
-    contract["container_substatus"] = container.get("substatus")
-    contract["lifecycle"] = "error" if status == "error" else "provisioning"
-    contract["runtime_phase"] = "provisioning"
-    contract["chat_available"] = False
-    return contract
 
 
 def _status_response(contract: dict) -> dict:
@@ -567,8 +422,8 @@ async def container_provision(
     # the SOLE provisioning executor, no flag. dispatch_provision is a fast
     # StartExecution call (the real work happens inside
     # scripts.provision_runner, run by the state machine's provisioner Lambda)
-    # and never raises: a StartExecution failure releases the row to
-    # status="error" instead, picked up by this owner's next status poll.
+    # and never raises: a StartExecution failure releases the row to a
+    # retryable status="error", which the stepper shows with its Retry.
     await dispatch_provision(owner_id)
     row = await container_repo.get_by_owner_id(owner_id)
     logger.info("Dispatched provision for owner %s", owner_id)

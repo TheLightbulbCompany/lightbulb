@@ -19,7 +19,7 @@ fail-closed path is the only one that runs off a laptop.
   * ``organization.created``           -> ``provision_new_workspace`` (trial row + gate + provision dispatch)
   * ``organizationMembership.created`` -> log + idempotent Paperclip JOIN via
     ``_ensure_paperclip_for_member`` (join-only: never creates a company; a
-    still-provisioning org self-heals on the member's next /container/status poll)
+    still-provisioning org self-heals on the member's next /teams request)
   * ``organizationMembership.deleted`` -> ``disable`` for that user
   * ``organization.deleted``           -> ``disable`` for every member of the org
   * ``user.deleted``                   -> ``disable`` for that user
@@ -348,8 +348,9 @@ async def _handle_organization_created(data: dict) -> None:
 
     ``provision_new_workspace`` creates the trial row, checks the provision gate and
     dispatches the provision funnel (Paperclip is seeded INSIDE the provision execution,
-    so no half-state). It never raises; if the gate is up or it fails, the
-    GET /container/status poll still provisions once readiness is satisfied.
+    so no half-state). Nothing else starts a first provision, so a failure RAISES: the
+    dedup row is rolled back and the 5xx makes Svix redeliver. A gate that is up is a
+    normal return.
     """
     org_id = data.get("id", "")
     owner_user_id = data.get("created_by", "")
@@ -381,8 +382,8 @@ async def _handle_organization_membership_created(
     The Paperclip join itself is delegated to
     ``core.services.user_provision._ensure_paperclip_for_member`` — the same
     join-only, idempotent helper ``ensure_user_ready`` calls from the member's
-    own ``/container/status`` poll. It returns gracefully when the org's
-    company isn't active yet (the member's later poll self-heals), treats a
+    own ``/teams`` requests. It returns gracefully when the org's company isn't
+    active yet (the member's next ``/teams`` request self-heals), treats a
     409 as success, and records a 422 as a durable failure. Any exception is
     logged and metered here but never re-raised: this must not turn into a
     non-2xx that makes Clerk retry the whole event — the lifecycle bookkeeping
@@ -423,7 +424,7 @@ async def _handle_organization_membership_created(
     except Exception:
         logger.exception(
             "membership.created: paperclip membership-add failed org=%s user=%s "
-            "— member's own /container/status poll will retry",
+            "— the member's next /teams request retries",
             org_id,
             user_id,
         )
@@ -437,8 +438,8 @@ async def _handle_organization_membership_created(
         logger.exception("membership.created: vendor room add failed org=%s user=%s", org_id, user_id)
         put_metric("messaging.vendor_room.error")
 
-    # The PRIMARY #general seat for a new teammate (idempotent: one-time AUTOJOIN
-    # marker). ensure_user_ready's poll call is a temporary backstop.
+    # The #general seat for a new teammate (idempotent: one-time AUTOJOIN marker). A
+    # member who joins before the room exists is seated by the provision executor.
     from core.services.messaging import join_default_room
 
     try:
@@ -688,6 +689,7 @@ async def handle_clerk_webhook(request: Request):
     )
     processing_claim = None
     membership_claim = None
+    recorded_event_id = None
     membership_owner_id = None
     membership_alias = None
 
@@ -761,6 +763,7 @@ async def handle_clerk_webhook(request: Request):
                     put_metric("clerk.webhook.dedup_skipped")
                     logger.info("clerk webhook duplicate suppressed: %s", svix_id)
                     return {"status": "duplicate"}
+                recorded_event_id = svix_id
             except Exception:
                 # Non-security events retain the historical best-effort
                 # behavior; lifecycle claims above deliberately fail closed.
@@ -865,7 +868,17 @@ async def handle_clerk_webhook(request: Request):
         await _handle_user_deleted_paperclip(user_id)
 
     elif event_type == "organization.created":
-        await _handle_organization_created(data)
+        try:
+            await _handle_organization_created(data)
+        except Exception:
+            # The dedup row was recorded before dispatch: roll it back so Svix's redelivery
+            # of this 5xx re-attempts instead of being acked as a duplicate (billing.py's
+            # Stripe pattern). The handler is idempotent, so a partial attempt replays safely.
+            if recorded_event_id:
+                from core.services.webhook_dedup import delete_event
+
+                await delete_event(recorded_event_id)
+            raise
 
     elif event_type == "organizationMembership.created":
         pud = data.get("public_user_data") or {}

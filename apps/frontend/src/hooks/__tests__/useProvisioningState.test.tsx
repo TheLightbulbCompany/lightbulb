@@ -179,15 +179,16 @@ describe("useProvisioningState", () => {
 
 
   describe("workspace JWT barrier", () => {
-    it("forces one fresh scope verification then uses cached org tokens for steady polling", async () => {
+    it("forces one fresh scope verification then uses cached org tokens for later reads", async () => {
       vi.useFakeTimers();
       const fetchMock = vi.fn(async () => new Response(JSON.stringify({
         runtime_phase: "starting", lifecycle: "starting", chat_available: false,
       }), { status: 200 }));
       global.fetch = fetchMock;
-      const { rerender } = renderHook(() => useProvisioningState(), { wrapper });
+      const { result, rerender } = renderHook(() => useProvisioningState(), { wrapper });
       await act(async () => { await vi.advanceTimersByTimeAsync(100); });
-      await act(async () => { await vi.advanceTimersByTimeAsync(6100); });
+      // A later read (a live event, focus or Retry) — there is no poll.
+      await act(async () => { result.current.refresh(); await vi.advanceTimersByTimeAsync(100); });
       expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(auth.getToken.mock.calls.filter(([options]) => options.skipCache)).toEqual([
         [{ organizationId: "org_123", skipCache: true }],
@@ -197,14 +198,14 @@ describe("useProvisioningState", () => {
       auth.getToken.mockResolvedValue(token("org_new"));
       rerender();
       await act(async () => { await vi.advanceTimersByTimeAsync(100); });
-      await act(async () => { await vi.advanceTimersByTimeAsync(6100); });
+      await act(async () => { result.current.refresh(); await vi.advanceTimersByTimeAsync(100); });
       expect(auth.getToken.mock.calls.filter(([options]) => options.skipCache)).toEqual([
         [{ organizationId: "org_123", skipCache: true }],
         [{ organizationId: "org_new", skipCache: true }],
       ]);
       expect(auth.getToken).toHaveBeenLastCalledWith({ organizationId: "org_new" });
     });
-    it("isolates an already-started HTTP response from a new workspace and keeps the new poll running", async () => {
+    it("isolates an already-started HTTP response from a new workspace and keeps reading the new one", async () => {
       vi.useFakeTimers();
       let resolveA!: (response: Response) => void;
       let resolveB!: (response: Response) => void;
@@ -230,7 +231,7 @@ describe("useProvisioningState", () => {
       expect(result.current.container?.service_name).toBe("workspace-b");
       expect(result.current.container?.runtime_phase).toBe("starting");
       const calls = fetchMock.mock.calls.length;
-      await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+      await act(async () => { result.current.refresh(); await vi.advanceTimersByTimeAsync(100); });
       expect(fetchMock.mock.calls.length).toBeGreaterThan(calls);
       expect(result.current.container?.service_name).toBe("workspace-b");
     });

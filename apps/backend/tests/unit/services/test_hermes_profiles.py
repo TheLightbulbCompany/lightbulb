@@ -3,20 +3,21 @@ import pytest
 
 from core.services import hermes_profiles
 
-AIPS = {
-    "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/son",
-    "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/opu",
-    "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/hai",
-}
-
 
 def cfg(**kw):
-    base = dict(agent_role="engineering", provider_choice="bedrock_claude", aip_arns=AIPS)
+    base = dict(agent_role="engineering", provider_choice="chatgpt_oauth", aip_arns=None)
     return hermes_profiles.build_profile_config(**(base | kw))
 
 
 def test_model_is_written_as_a_dict_with_default_never_a_bare_string():
-    assert cfg()["model"] == {"default": AIPS["sonnet"], "provider": "bedrock", "context_length": 200_000}
+    assert cfg()["model"] == {"default": "gpt-5.6-sol", "provider": "openai-codex"}
+
+
+@pytest.mark.parametrize("retired", ["bedrock_claude", "bedrock_trial", "anything_else"])
+def test_a_retired_or_unknown_provider_choice_refuses_to_render(retired):
+    """No silent fallthrough to the ChatGPT block for a choice nothing handles."""
+    with pytest.raises(ValueError, match="unsupported provider_choice"):
+        cfg(provider_choice=retired)
 
 
 def test_managed_openrouter_refuses_to_render_without_server_model_and_gate(monkeypatch):
@@ -47,21 +48,6 @@ def test_managed_openrouter_primary_and_all_auxiliary_tasks_use_only_the_gate(mo
         }
     assert "bedrock" not in config
     assert "sk-or-" not in str(config)
-
-
-def test_the_ceo_profile_is_pinned_to_the_premium_tier():
-    assert cfg(agent_role="ceo", is_ceo=True)["model"]["default"] == AIPS["opus"]
-
-
-def test_a_trial_owner_with_one_aip_keeps_every_tier_on_that_one_profile():
-    trial = cfg(provider_choice="bedrock_trial", aip_arns={"sonnet": AIPS["sonnet"]}, is_ceo=True)
-    assert trial["model"]["default"] == AIPS["sonnet"]
-    assert trial["auxiliary"]["compression"]["model"] == AIPS["sonnet"]
-
-
-def test_bedrock_discovery_is_pinned_off():
-    assert cfg()["bedrock"]["discovery"]["enabled"] is False
-    assert cfg()["bedrock"]["region"] == "us-east-1"
 
 
 # Fix round 1, C1: the real 18 provider-bearing keys of Hermes 0.21.3's
@@ -96,15 +82,6 @@ _REAL_AUXILIARY_TASKS = (
 def test_auxiliary_tasks_is_the_real_18_task_hermes_default_config_list():
     assert len(_REAL_AUXILIARY_TASKS) == 18
     assert hermes_profiles.AUXILIARY_TASKS == _REAL_AUXILIARY_TASKS
-
-
-def test_every_one_of_the_18_auxiliary_tasks_is_pinned_to_bedrock_with_an_empty_fallback_chain():
-    aux = cfg()["auxiliary"]
-    assert aux["free_only"] is True
-    for task in _REAL_AUXILIARY_TASKS:
-        assert aux[task]["provider"] == "bedrock", task
-        assert aux[task]["fallback_chain"] == [], task
-        assert aux[task]["model"] == AIPS["haiku"], task
 
 
 def test_approvals_are_off_with_an_unattended_approve_and_a_deny_backstop():
@@ -387,11 +364,6 @@ def test_build_profile_config_takes_no_listening_paid_parameter_and_emits_no_gua
     assert "guard_agent_created" not in cfg()["skills"]
 
 
-def test_bedrock_region_is_sourced_from_settings_not_hardcoded(monkeypatch):
-    monkeypatch.setattr(hermes_profiles.settings, "AWS_REGION", "eu-west-1")
-    assert cfg()["bedrock"]["region"] == "eu-west-1"
-
-
 def test_dotenv_carries_the_paperclip_identity_a_chat_turn_needs(monkeypatch):
     """A chat turn's shell env is the profile's .env alone (bridge/turn.py ``_secret_scope``); only a
     Paperclip-woken run adds the identity on top. Without URL/agent/company here, every
@@ -400,8 +372,8 @@ def test_dotenv_carries_the_paperclip_identity_a_chat_turn_needs(monkeypatch):
     files = hermes_profiles.write_agent_profile(
         "org_1",
         {"id": "agent-1", "name": "Friday", "role": "ceo", "companyId": "company-1"},
-        provider_choice="bedrock_claude",
-        aip_arns={"sonnet": "arn:aip:sonnet"},
+        provider_choice="chatgpt_oauth",
+        aip_arns=None,
         paperclip_api_key="pcp_x",
         integrations={},
         env_vars={},
@@ -418,8 +390,8 @@ def test_dotenv_omits_an_unknown_company_rather_than_writing_it_empty(monkeypatc
     files = hermes_profiles.write_agent_profile(
         "org_1",
         {"id": "agent-1", "name": "Friday", "role": "ceo"},
-        provider_choice="bedrock_claude",
-        aip_arns={"sonnet": "arn:aip:sonnet"},
+        provider_choice="chatgpt_oauth",
+        aip_arns=None,
         paperclip_api_key="pcp_x",
         integrations={},
         env_vars={},

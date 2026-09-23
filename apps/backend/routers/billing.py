@@ -233,12 +233,9 @@ async def get_spend(auth: AuthContext = Depends(get_current_user)):
         require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     # resolve_provider_choice is THE single resolver (container_provision.py)
-    # — it subsumes the old raw billing-row read + None short-circuit here,
-    # and additionally defaults a legacy owner with no stored provider_choice
-    # to bedrock_claude (instead of silently degrading them to tokens_only),
-    # and maps trial_local owners to the bedrock_trial config mode, which
-    # spend_service.get_spend_summary has no branch for and so falls through
-    # to tokens_only — the free tier deliberately shows no dollars.
+    # — it subsumes the old raw billing-row read + None short-circuit here.
+    # trial_local and no-choice rows resolve to openrouter_managed, which
+    # spend_service.get_spend_summary shows as tokens_only.
     try:
         provider_choice, _byo_provider = await resolve_provider_choice(owner_id)
     except Exception:
@@ -366,9 +363,9 @@ _TOP_UP_MAX_CENTS = 100_000  # $1,000.00 — single-shot prepay ceiling
 
 class ChangeProviderRequest(BaseModel):
     # Pydantic validates choices before any DDB read or container side-effect.
-    provider_choice: Literal["chatgpt_oauth", "byo_key", "bedrock_claude", "openrouter_managed"] = Field(
+    provider_choice: Literal["chatgpt_oauth", "byo_key", "openrouter_managed"] = Field(
         ...,
-        description="chatgpt_oauth | byo_key | bedrock_claude | openrouter_managed",
+        description="chatgpt_oauth | byo_key | openrouter_managed",
     )
     byo_provider: Literal["openai", "anthropic"] | None = Field(
         None,
@@ -457,7 +454,7 @@ def _is_exhausted(balance_microcents: int | None) -> bool:
     constant. A null balance (Metronome outage / no customer) is INDETERMINATE
     and never exhausted — a false banner is worse than a late one.
     """
-    from core.services.trial_cap import RESERVE_ESTIMATE_MICROCENTS
+    from core.services.metronome_gate import RESERVE_ESTIMATE_MICROCENTS
 
     if balance_microcents is None:
         return False

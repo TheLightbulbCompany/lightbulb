@@ -256,7 +256,7 @@ def _not_credit_blocked():
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
-            AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
+            AsyncMock(return_value={"provider_choice": "openrouter_managed"}),
         ),
         patch("core.services.metronome_gate.is_owner_blocked", AsyncMock(return_value=False)) as blocked,
     ):

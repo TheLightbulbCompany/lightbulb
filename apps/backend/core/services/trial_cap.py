@@ -33,6 +33,12 @@ from datetime import datetime, timezone
 
 from core.repositories import billing_repo
 
+# The bedrock-gate's per-request reservation hold (apps/infra/lambda/
+# bedrock-gate/ledger.mjs). Admission is `spent + reserved + estimate <= cap`,
+# so the LAST admissible spend is CAP - RESERVE — not CAP. It lives in
+# metronome_gate, where it is also the paid-balance floor.
+from core.services.metronome_gate import RESERVE_ESTIMATE_MICROCENTS
+
 # A TRUE $3.00/day. The bedrock-gate's synchronous pre-flight reservation is
 # the primary enforcement (admission refused before a token is generated;
 # overshoot bounded to in-flight requests), so the old $2.60 enforce-early
@@ -43,17 +49,6 @@ from core.repositories import billing_repo
 # meter's backstop kill, and the restore eligibility all read the same
 # number; moving one alone desynchronizes kill/restore/admission.
 CAP_MICROCENTS = 3_000_000
-
-# The bedrock-gate's per-request reservation hold (apps/infra/lambda/
-# bedrock-gate/ledger.mjs). Admission is `spent + reserved + estimate <= cap`,
-# so the LAST admissible spend is CAP - RESERVE — not CAP. Every predicate that
-# claims to answer "will the next request be admitted?" must subtract it, or it
-# opens a dead zone where the backend forwards a turn the gate then refuses.
-#
-# Lockstep with RESERVE_ESTIMATE_MICROCENTS in
-# apps/infra/lib/stacks/bedrock-gate-stack.ts — moving one alone desynchronizes
-# admission from every door that predicts it.
-RESERVE_ESTIMATE_MICROCENTS = 300_000
 
 # The two ways a free-tier owner runs out of runway. Returned by
 # ``trial_block_reason`` and mapped to the matching blocked-gate payload by

@@ -989,7 +989,7 @@ async def set_subscription(
     return await _put_with_apple_cas(owner_id, _mutate)
 
 
-_VALID_PROVIDER_CHOICES = frozenset({"bedrock_claude", "byo_key", "chatgpt_oauth", "openrouter_managed"})
+_VALID_PROVIDER_CHOICES = frozenset({"byo_key", "chatgpt_oauth", "openrouter_managed"})
 
 
 async def set_provider_choice(
@@ -1003,7 +1003,7 @@ async def set_provider_choice(
 
     Args:
         owner_id: org_id or personal user_id (the billing row's PK).
-        provider_choice: one of ``bedrock_claude``, ``byo_key``, ``chatgpt_oauth``,
+        provider_choice: one of ``byo_key``, ``chatgpt_oauth``,
             ``openrouter_managed``.
         byo_provider: optional even when ``provider_choice == "byo_key"`` —
             the picker submits ``byo_key`` alone at /trial-checkout time, and

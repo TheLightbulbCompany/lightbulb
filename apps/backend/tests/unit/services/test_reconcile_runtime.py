@@ -24,7 +24,6 @@ AGENT = "11111111-1111-1111-1111-111111111111"
 MANAGED_GATE = "https://openrouter-gate.example/v1"
 
 BILLING = {
-    "bedrock_claude": {"subscription_status": "active", "provider_choice": "bedrock_claude"},
     "chatgpt_oauth": {
         "subscription_status": "active",
         "provider_choice": "chatgpt_oauth",
@@ -36,7 +35,6 @@ BILLING = {
     "trial": {"subscription_status": "trial_local"},
 }
 EXPECTED_PROVIDER = {
-    "bedrock_claude": "bedrock",
     "chatgpt_oauth": "openai-codex",
     "byo_anthropic": "anthropic",
     "byo_openai": "openai-api",
@@ -218,8 +216,8 @@ async def test_switch_matrix_rewrites_profiles_without_stopping_the_session(monk
 
 
 @pytest.mark.asyncio
-async def test_switching_into_bedrock_re_ensures_aips_role_and_gate_row(monkeypatch, boot_secrets):
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+async def test_reconcile_re_ensures_aips_role_and_gate_row(monkeypatch, boot_secrets):
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     await hp.reconcile_runtime("org_a")
 
     world.ensure_aips.assert_awaited()
@@ -252,7 +250,7 @@ async def test_two_concurrent_reconciles_converge_on_one_secret_and_profile_set(
 async def test_a_stale_switch_generation_in_the_boot_secret_restarts_the_session_once(monkeypatch, boot_secrets):
     """A pre-#8a secret carries the provider-switch generation a live bridge admits turns
     against. Dropping it is a boot-time change, so the idle session is stopped -- once."""
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     await hp.reconcile_runtime("org_a")
     stale = {**_boot(boot_secrets), "providerSwitchGeneration": "gen-old", "providerSwitchFrozen": True}
     boot_secrets.put_secret_value(SecretId=agentcore_runtime.boot_secret_name("org_a"), SecretString=json.dumps(stale))
@@ -270,7 +268,7 @@ async def test_a_stale_switch_generation_in_the_boot_secret_restarts_the_session
 
 @pytest.mark.asyncio
 async def test_env_diff_rolls_a_runtime_missing_the_managed_vars(monkeypatch, boot_secrets):
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     await hp.reconcile_runtime("org_a")
     env_without_managed = {
         k: v for k, v in world.last_request["environmentVariables"].items() if not k.startswith("LIGHTBULB_MANAGED")
@@ -289,7 +287,7 @@ async def test_env_diff_rolls_a_runtime_missing_the_managed_vars(monkeypatch, bo
 
 @pytest.mark.asyncio
 async def test_a_reconcile_failure_leaves_a_running_row_running_and_emits_the_metric(monkeypatch, boot_secrets):
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     world.ensure_role.side_effect = RuntimeError("iam down")
 
     assert await hp.reconcile_runtime("org_a") == "failed"
@@ -300,7 +298,7 @@ async def test_a_reconcile_failure_leaves_a_running_row_running_and_emits_the_me
 
 @pytest.mark.asyncio
 async def test_a_workspace_with_no_live_runtime_goes_through_the_provision_funnel(monkeypatch, boot_secrets):
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"], row={"status": "provisioning"})
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"], row={"status": "provisioning"})
     dispatch = AsyncMock(return_value=True)
     monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
 
@@ -336,7 +334,7 @@ async def test_a_first_provision_on_chatgpt_billing_writes_codex_profiles_with_n
 @pytest.mark.asyncio
 async def test_superseded_bearers_expire_only_after_a_confirmed_session_stop(monkeypatch, boot_secrets):
     """C1: the stop is what makes a superseded bearer unpresentable; a busy session keeps it."""
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     await hp.reconcile_runtime("org_a")  # first secret write: boot change -> idle stop
     assert world.calls == [("stop", ARN)] and world.expired == ["org_a"]
 
@@ -369,7 +367,7 @@ async def test_an_unchanged_owner_reconciles_to_current(monkeypatch, boot_secret
 @pytest.mark.asyncio
 async def test_a_transient_browser_error_does_not_re_spec(monkeypatch, boot_secrets):
     """I1: ensure_browser_profile answers "" on any error; the row's recorded id stands in."""
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"], row={"browser_profile_id": "prof-1"})
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"], row={"browser_profile_id": "prof-1"})
     world.browser_profile = "prof-1"
     await hp.reconcile_runtime("org_a")
     assert world.runtime_env["AGENTCORE_PROFILE_ID"] == "prof-1"
@@ -382,7 +380,7 @@ async def test_a_transient_browser_error_does_not_re_spec(monkeypatch, boot_secr
 
 @pytest.mark.asyncio
 async def test_a_key_aws_adds_to_the_env_is_not_drift(monkeypatch, boot_secrets):
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     await hp.reconcile_runtime("org_a")
     world.calls.clear()
     world.runtime_env["AWS_SOMETHING_INJECTED"] = "x"
@@ -393,7 +391,7 @@ async def test_a_key_aws_adds_to_the_env_is_not_drift(monkeypatch, boot_secrets)
 @pytest.mark.asyncio
 async def test_an_owner_edited_soul_survives_a_reconcile(monkeypatch, boot_secrets):
     """I2: the Instructions tab strips the generated marker; a reconcile keeps that file."""
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     world.souls[AGENT] = "You are Ada, the owner's own words."
     await hp.reconcile_runtime("org_a")
     assert world.souls[AGENT] == "You are Ada, the owner's own words."
@@ -403,7 +401,7 @@ async def test_an_owner_edited_soul_survives_a_reconcile(monkeypatch, boot_secre
 async def test_a_generated_soul_is_still_regenerated(monkeypatch, boot_secrets):
     from core.services.hermes_profiles import SOUL_GENERATED_MARKER, is_generated_soul
 
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     world.souls[AGENT] = f"{SOUL_GENERATED_MARKER}\nstale"
     await hp.reconcile_runtime("org_a")
     assert is_generated_soul(world.souls[AGENT]) and "stale" not in world.souls[AGENT]
@@ -412,7 +410,7 @@ async def test_a_generated_soul_is_still_regenerated(monkeypatch, boot_secrets):
 @pytest.mark.asyncio
 async def test_billing_that_moves_mid_reconcile_is_rendered_again(monkeypatch, boot_secrets):
     """I3: an overlapping reconcile that finishes last must not leave the older provider."""
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     real_upload = hp.write_profiles
     runs = []
 
@@ -424,7 +422,7 @@ async def test_billing_that_moves_mid_reconcile_is_rendered_again(monkeypatch, b
 
     monkeypatch.setattr(hp, "write_profiles", _write_profiles)
     await hp.reconcile_runtime("org_a")
-    assert runs == [{"bedrock"}, {"openai-codex"}]
+    assert runs == [{"custom"}, {"openai-codex"}]
     assert world.provider_of_profiles() == {"openai-codex"}
 
 
@@ -433,7 +431,7 @@ async def test_a_concurrent_update_is_not_a_reconcile_failure(monkeypatch, boot_
     """I3: a runtime already UPDATING (another roll) answers ConflictException."""
     from botocore.exceptions import ClientError
 
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     await hp.reconcile_runtime("org_a")
     world.runtime_env["AGENTCORE_PROFILE_ID"] = "drifted"
 
@@ -448,7 +446,7 @@ async def test_a_concurrent_update_is_not_a_reconcile_failure(monkeypatch, boot_
 @pytest.mark.asyncio
 async def test_a_failed_row_read_is_a_counted_reconcile_failure(monkeypatch, boot_secrets):
     """M1: every exception, the row read included, is logged and counted."""
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     monkeypatch.setattr(hp.container_repo, "get_by_owner_id", AsyncMock(side_effect=RuntimeError("ddb")))
     assert await hp.reconcile_runtime("org_a") == "failed"
     assert world.metrics == ["provision.reconcile.failed"]

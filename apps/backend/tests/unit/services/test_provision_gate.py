@@ -154,7 +154,7 @@ async def test_active_subscription_bedrock_blocked_returns_credits_required():
             return_value={
                 "subscription_status": "active",
                 "stripe_subscription_id": "sub_x",
-                "provider_choice": "bedrock_claude",
+                "provider_choice": "openrouter_managed",
             },
         )
         gate = await evaluate_provision_gate(
@@ -193,7 +193,7 @@ async def test_trialing_with_credits_returns_none():
             return_value={
                 "subscription_status": "trialing",
                 "stripe_subscription_id": "sub_x",
-                "provider_choice": "bedrock_claude",
+                "provider_choice": "openrouter_managed",
             },
         )
         gate = await evaluate_provision_gate(
@@ -399,7 +399,7 @@ async def test_bedrock_balance_keyed_on_owner_id():
             return_value={
                 "subscription_status": "active",
                 "stripe_subscription_id": "sub_x",
-                "provider_choice": "bedrock_claude",
+                "provider_choice": "openrouter_managed",
             },
         )
         gate = await evaluate_provision_gate(

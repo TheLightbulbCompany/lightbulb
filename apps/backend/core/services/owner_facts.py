@@ -40,12 +40,8 @@ def format_provider_label(provider_choice: str | None, byo_provider: str | None)
     """Map (provider_choice, byo_provider) to a human-readable label."""
     if provider_choice == "chatgpt_oauth":
         return "ChatGPT (their own OpenAI account)"
-    if provider_choice == "bedrock_claude":
-        return "Bedrock (Claude, Lightbulb-managed credits)"
     if provider_choice == "openrouter_managed":
         return "Lightbulb-managed credits"
-    if provider_choice == "bedrock_trial":
-        return "Bedrock (Claude Sonnet, free trial — $3/day)"
     if provider_choice == "byo_key":
         if byo_provider == "anthropic":
             return "BYO Anthropic key"
@@ -67,7 +63,7 @@ def build_owner_facts(
 
     # Single row-level mapping shared with the provision surface — handles
     # the trial_local short-circuit (trial rows carry NO provider_choice)
-    # and the bedrock_claude legacy default. Lazy import: container_provision
+    # and the managed default. Lazy import: container_provision
     # pulls in repos this module doesn't otherwise need.
     from core.services.container_provision import provider_choice_from_row
 

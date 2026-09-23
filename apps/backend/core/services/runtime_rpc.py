@@ -573,12 +573,6 @@ async def _mirror_paperclip_update_with_retry(
             await asyncio.sleep(0.2 * 2**attempt)
 
 
-#: The owner's own Bedrock application inference profiles, by the key ``aip_arns`` stores each
-#: under, mapped to the tier vocabulary ``hermes_profiles.model_block`` reasons in. A trial owner
-#: holds only ``sonnet``. Display names come from ``spend_service.TIER_DISPLAY_NAMES`` -- the one
-#: place the platform already names these (for the usage panel) -- never a second copy here.
-_BEDROCK_AIP_TIERS: dict[str, str] = {"opus": "premium", "sonnet": "standard", "haiku": "cheap"}
-_BEDROCK_PROVIDER_CHOICES = ("bedrock_claude", "bedrock_trial")
 #: The pseudo-key ``config.patch`` carries the owner-level overhead-model choice on (M6 task
 #: 10-C, scan rows 4/23). It is NEVER stored: ``_expand_agentcore_config_patch`` replaces it with
 #: the real per-task ``auxiliary`` block ``hermes_profiles.auxiliary_tasks_block`` builds, so the
@@ -597,10 +591,6 @@ async def _owner_model_inputs(owner_id: str) -> tuple[str, str | None, dict[str,
     provider_choice, byo_provider = await resolve_provider_choice(owner_id)
     container_row = await container_repo.get_by_owner_id(owner_id) or {}
     aip_arns = container_row.get("bedrock_aip_arns") or {}
-    if provider_choice == "bedrock_trial":
-        # Keep the full inventory for teardown/paid reuse, but never offer a
-        # migrated trial owner premium tiers its gate bearer cannot invoke.
-        aip_arns = {tier: arn for tier, arn in aip_arns.items() if tier == "sonnet"}
     return provider_choice, byo_provider, aip_arns
 
 
@@ -639,9 +629,8 @@ async def agentcore_disabled_skill_names(owner_id: str) -> list[str]:
 async def _agentcore_models_list(owner_id: str) -> dict[str, Any] | None:
     """``models.list`` for an AgentCore owner, or ``None`` when the bridge owns the answer.
 
-    M6-R50: the picker lists the models the owner can ACTUALLY invoke. On a Bedrock-managed
-    workspace the bedrock-gate admits only that owner's own application inference profiles, so
-    the list is exactly those -- built here, with no microVM wake for a settings read. On a
+    M6-R50: the picker lists the models the owner can ACTUALLY invoke. On a managed workspace
+    that is the one server model -- built here, with no microVM wake for a settings read. On a
     BYO-key / ChatGPT-OAuth workspace the catalog is Hermes's own and only the runtime holds it,
     so ``None`` means "fall through to the bridge".
     """
@@ -650,29 +639,7 @@ async def _agentcore_models_list(owner_id: str) -> dict[str, Any] | None:
         model_id = hermes_profiles.settings.OPENROUTER_MANAGED_MODEL_ID.strip()
         models = [{"id": model_id, "name": model_id, "provider": "custom"}] if model_id else []
         return {"models": models, "defaultId": model_id}
-    if provider_choice not in _BEDROCK_PROVIDER_CHOICES:
-        return None
-    from core.services.spend_service import TIER_DISPLAY_NAMES
-
-    models = [
-        {"id": aip_arns[key], "name": TIER_DISPLAY_NAMES.get(key, key), "provider": "bedrock", "tier": tier}
-        for key, tier in _BEDROCK_AIP_TIERS.items()
-        if aip_arns.get(key)
-    ]
-    if not models:
-        # No AIPs on the row yet (mid-provision). An empty list is the honest answer: the picker
-        # then shows the agent's current model alone, and the next read fills it in.
-        return {"models": [], "defaultId": ""}
-    if not aip_arns.get("sonnet"):
-        # `model_block` requires sonnet (it is the standard tier and every fresh profile's
-        # default, so provisioning raises loudly without it -- see hermes_profiles.model_block). A
-        # READ must not 500 on the same fact: report the first model the owner does hold as the
-        # default instead (fix round 1, M3).
-        return {"models": models, "defaultId": models[0]["id"]}
-    default, _aux_model, _aux_provider = hermes_profiles.model_block(
-        provider_choice=provider_choice, byo_provider=byo_provider, aip_arns=aip_arns, is_ceo=False
-    )
-    return {"models": models, "defaultId": default["default"]}
+    return None
 
 
 async def _validated_model_id(owner_id: str, model: str, *, method: str) -> str:

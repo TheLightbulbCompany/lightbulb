@@ -130,7 +130,7 @@ async def test_set_provider_choice_publishes_status_changed(billing_table):
 
     billing_table.put_item(Item={"owner_id": "owner_1", "created_at": "2026-01-01T00:00:00Z"})
     with patch("core.repositories.billing_repo.publish_status_changed") as mocked:
-        await billing_repo.set_provider_choice("owner_1", provider_choice="bedrock_claude", byo_provider=None)
+        await billing_repo.set_provider_choice("owner_1", provider_choice="openrouter_managed", byo_provider=None)
     mocked.assert_called_once_with("owner_1")
 
 

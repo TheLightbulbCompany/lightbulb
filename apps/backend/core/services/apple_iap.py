@@ -265,7 +265,7 @@ async def _reconcile_active_subscription(owner_id: str, *, subscription: AppleSu
     The provider write is still needed: a ``trial_local`` row deliberately carries no
     ``provider_choice``, and once the status leaves ``trial_local`` the provision gate answers
     ``provider_required`` for a None provider (mobile renders that as a dead-end web handoff).
-    Bedrock is what the trial ran on and asks the buyer for nothing; it is changeable in-app.
+    The managed model is what the trial ran on and asks the buyer for nothing; it is changeable in-app.
     Decided on a strongly consistent re-read, never overwriting a provider already chosen.
 
     Raises when the provider write or the dispatch fails: ``apply_notification`` rolls back its
@@ -276,7 +276,7 @@ async def _reconcile_active_subscription(owner_id: str, *, subscription: AppleSu
     if not row:
         return
     if not row.get("provider_choice"):
-        await billing_repo.set_provider_choice(owner_id, provider_choice="bedrock_claude", byo_provider=None)
+        await billing_repo.set_provider_choice(owner_id, provider_choice="openrouter_managed", byo_provider=None)
 
     from core.services.provision_dispatch import dispatch_reconcile
 

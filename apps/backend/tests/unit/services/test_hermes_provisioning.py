@@ -9,9 +9,12 @@ from core.services import hermes_provisioning
 
 @pytest.fixture(autouse=True)
 def _no_billing_row(monkeypatch):
-    """Provisioning resolves the provider from billing on every path; default to no row
-    (bedrock_claude). Tests that care patch billing_repo themselves, which wins."""
-    monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=None))
+    """Provisioning resolves the provider from billing on every path; default to a ChatGPT row.
+    Tests that care patch billing_repo themselves, which wins."""
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "chatgpt_oauth"}),
+    )
 
 
 HERMES_IMAGE = "acct.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:h-v1"
@@ -137,7 +140,7 @@ def test_every_provider_carries_the_managed_gate_once_it_is_configured(monkeypat
         hermes_provisioning.build_runtime_request_for_owner(
             "org_a", "arn:aws:iam::123456789012:role/owner", {"sonnet": "arn:aip:sonnet"}, provider_choice=choice
         )["environmentVariables"]
-        for choice in ("bedrock_claude", "chatgpt_oauth", "byo_key", "openrouter_managed")
+        for choice in ("chatgpt_oauth", "byo_key", "openrouter_managed")
     ]
     assert all(env == envs[0] for env in envs)
     assert envs[0]["LIGHTBULB_MANAGED_GATE_URL"] == "https://openrouter-gate.example/v1"
@@ -152,7 +155,7 @@ def test_no_managed_gate_is_discovered_while_managed_inference_is_unconfigured(m
         lambda: (_ for _ in ()).throw(AssertionError("must not read OpenRouter SSM")),
     )
     request = hermes_provisioning.build_runtime_request_for_owner(
-        "org_a", "arn:aws:iam::123456789012:role/owner", {"sonnet": "arn:aip:sonnet"}, provider_choice="bedrock_claude"
+        "org_a", "arn:aws:iam::123456789012:role/owner", {"sonnet": "arn:aip:sonnet"}, provider_choice="chatgpt_oauth"
     )
     assert "LIGHTBULB_MANAGED_GATE_URL" not in request["environmentVariables"]
 
@@ -364,7 +367,7 @@ def _patch_owner_aws(monkeypatch, *, hook_token=None, gateway_token=None, existi
 
     monkeypatch.setattr(
         "core.repositories.billing_repo.get_by_owner_id",
-        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
+        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "chatgpt_oauth"}),
     )
     monkeypatch.setattr(bedrock_gate_tokens_mod, "reconcile_gate_token_tiers", AsyncMock(), raising=False)
     monkeypatch.setattr(bedrock_aip_mod, "ensure_owner_aips", AsyncMock(return_value={"sonnet": "arn:aip:sonnet"}))
@@ -496,7 +499,7 @@ async def test_prepare_hermes_workspace_mints_tokens_and_writes_one_json_boot_se
     assert await hermes_provisioning.prepare_hermes_workspace("org_a") is True
 
     assert set(written) == {"hookToken", "gatewayToken", "bedrockBearer", "providerChoice"}
-    assert written["providerChoice"] == "bedrock_claude"
+    assert written["providerChoice"] == "chatgpt_oauth"
     assert written["bedrockBearer"] == "bearer-plaintext"
     # The tokens on the row are the ones in the secret (ensure_owner_tokens' read-back).
     assert row["hook_token"] == written["hookToken"]
@@ -1131,7 +1134,7 @@ async def test_the_freshly_created_arn_record_is_not_conditioned_on_no_arn_yet(m
 def _patch_write_profiles_collaborators(
     monkeypatch,
     *,
-    provider_choice="bedrock_claude",
+    provider_choice="chatgpt_oauth",
     byo_provider=None,
     env_vars=None,
     read_byo_key=None,
@@ -1244,7 +1247,7 @@ async def test_write_profiles_bakes_the_byo_key_into_the_env_for_a_byo_owner(mon
 async def test_write_profiles_never_reads_a_byo_key_for_a_non_byo_owner(monkeypatch):
     _patch_write_profiles_collaborators(
         monkeypatch,
-        provider_choice="bedrock_claude",
+        provider_choice="chatgpt_oauth",
         byo_provider=None,
         read_byo_key=_explode,
     )
@@ -1329,7 +1332,7 @@ async def test_write_profiles_uploads_a_facts_file_to_every_agent_in_a_six_agent
     roster = [
         {"id": f"1111111{i}-1111-1111-1111-111111111111", "name": f"Agent{i}", "role": "general"} for i in range(6)
     ]
-    _patch_write_profiles_collaborators(monkeypatch, provider_choice="bedrock_claude", mock_facts_staging=False)
+    _patch_write_profiles_collaborators(monkeypatch, provider_choice="chatgpt_oauth", mock_facts_staging=False)
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
     monkeypatch.setattr(
         "core.repositories.billing_repo.get_by_owner_id",
@@ -1353,7 +1356,7 @@ async def test_write_profiles_uploads_a_facts_file_to_every_agent_in_a_six_agent
     for owner_id, agent_ids, facts_json in uploaded:
         assert owner_id == "org_a"
         assert len(agent_ids) == 1
-        assert '"provider_choice": "bedrock_claude"' in facts_json
+        assert '"provider_choice": "chatgpt_oauth"' in facts_json
 
 
 @pytest.mark.asyncio
@@ -1372,7 +1375,7 @@ async def test_write_profiles_facts_staging_uses_this_provisions_own_provider_ch
         # The billing row itself still says bedrock_claude (an eventually-consistent read racing
         # this provision's own provider switch) -- the override must still win.
         "core.repositories.billing_repo.get_by_owner_id",
-        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
+        AsyncMock(return_value={"subscription_status": "active", "provider_choice": "chatgpt_oauth"}),
     )
     monkeypatch.setattr("core.services.owner_facts._lookup_email_address", AsyncMock(return_value=None))
     monkeypatch.setattr("core.services.owner_facts._lookup_provisioning", AsyncMock(return_value=[]))
@@ -1412,7 +1415,7 @@ async def test_write_profile_for_agent_writes_and_uploads(monkeypatch):
     from core.services.hermes_provisioning import ProfileInputs
 
     inputs = ProfileInputs(
-        provider_choice="bedrock_claude",
+        provider_choice="chatgpt_oauth",
         byo_provider=None,
         byo_api_key=None,
         aip_arns={"sonnet": "arn:aip:sonnet"},
@@ -1445,7 +1448,7 @@ async def test_write_profile_for_agent_writes_and_uploads(monkeypatch):
 
     assert written["owner_id"] == "owner_1"
     assert written["agent"] is agent_row
-    assert written["kwargs"]["provider_choice"] == "bedrock_claude"
+    assert written["kwargs"]["provider_choice"] == "chatgpt_oauth"
     assert written["kwargs"]["aip_arns"] == {"sonnet": "arn:aip:sonnet"}
     assert written["kwargs"]["paperclip_api_key"] == "pk-123"
     upload_mock.assert_awaited_once()
@@ -1464,7 +1467,7 @@ async def test_write_profile_for_agent_stages_facts_for_the_new_agent(monkeypatc
     from core.services.hermes_provisioning import ProfileInputs
 
     inputs = ProfileInputs(
-        provider_choice="bedrock_claude",
+        provider_choice="chatgpt_oauth",
         byo_provider=None,
         byo_api_key=None,
         aip_arns={"sonnet": "arn:aip:sonnet"},
@@ -1527,7 +1530,7 @@ async def test_write_profile_for_agent_raises_when_paperclip_key_mint_fails(monk
     from core.services.hermes_provisioning import ProfileInputs
 
     inputs = ProfileInputs(
-        provider_choice="bedrock_claude",
+        provider_choice="chatgpt_oauth",
         byo_provider=None,
         byo_api_key=None,
         aip_arns={},
@@ -1554,7 +1557,7 @@ async def test_write_profile_for_agent_soul_md_override_replaces_the_derived_sou
     from core.services.hermes_provisioning import ProfileInputs
 
     inputs = ProfileInputs(
-        provider_choice="bedrock_claude",
+        provider_choice="chatgpt_oauth",
         byo_provider=None,
         byo_api_key=None,
         aip_arns={"sonnet": "arn:aip:sonnet"},
@@ -1616,7 +1619,7 @@ def _patch_resolve_profile_inputs_collaborators(
 
 @pytest.mark.asyncio
 async def test_resolve_profile_inputs_reads_aip_arns_from_the_container_row(monkeypatch):
-    _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"provider_choice": "bedrock_claude"})
+    _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"provider_choice": "chatgpt_oauth"})
 
     inputs = await hermes_provisioning.resolve_profile_inputs(
         "org_a", container_row={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet", "opus": "arn:aip:opus"}}
@@ -1626,7 +1629,7 @@ async def test_resolve_profile_inputs_reads_aip_arns_from_the_container_row(monk
 
 @pytest.mark.asyncio
 async def test_resolve_profile_inputs_defaults_aip_arns_to_empty_when_row_has_none(monkeypatch):
-    _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"provider_choice": "bedrock_claude"})
+    _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"provider_choice": "chatgpt_oauth"})
 
     inputs = await hermes_provisioning.resolve_profile_inputs("org_a", container_row={})
     assert inputs.aip_arns == {}
@@ -1685,11 +1688,11 @@ async def test_resolve_profile_inputs_raises_when_byo_key_missing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_profile_inputs_defaults_to_bedrock_claude_when_billing_row_missing(monkeypatch):
+async def test_resolve_profile_inputs_defaults_to_managed_when_billing_row_missing(monkeypatch):
     _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row=None)
 
     inputs = await hermes_provisioning.resolve_profile_inputs("org_a", container_row={})
-    assert inputs.provider_choice == "bedrock_claude"
+    assert inputs.provider_choice == "openrouter_managed"
     assert inputs.byo_api_key is None
 
 
@@ -1991,7 +1994,7 @@ def test_create_runtime_gives_up_after_the_bound(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider,tiers", [("bedrock_claude", None)])
+@pytest.mark.parametrize("provider,tiers", [("chatgpt_oauth", None)])
 @pytest.mark.parametrize("prepare", [True, False])
 async def test_hermes_aips_follow_authoritative_provider_and_reconcile_live_tokens(
     monkeypatch, provider, tiers, prepare
@@ -2004,7 +2007,7 @@ async def test_hermes_aips_follow_authoritative_provider_and_reconcile_live_toke
         AsyncMock(
             return_value={
                 "subscription_status": "trial_local" if provider == "bedrock_trial" else "active",
-                "provider_choice": "bedrock_claude",
+                "provider_choice": "chatgpt_oauth",
             }
         ),
     )
@@ -2026,7 +2029,7 @@ async def test_reconcile_uses_committed_paid_billing_instead_of_stale_trial(monk
     async def billing_read(owner_id, *, consistent_read=False):
         return {
             "subscription_status": "active" if consistent_read else "trial_local",
-            "provider_choice": "bedrock_claude",
+            "provider_choice": "chatgpt_oauth",
         }
 
     read = AsyncMock(side_effect=billing_read)

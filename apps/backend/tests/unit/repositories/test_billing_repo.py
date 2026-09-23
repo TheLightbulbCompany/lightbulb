@@ -1074,7 +1074,7 @@ async def test_an_apple_write_cannot_revert_a_concurrent_provider_change(dynamod
     from core.repositories import billing_repo
 
     await billing_repo.create_if_not_exists("user_pc", "cus_pc")
-    await billing_repo.set_provider_choice("user_pc", provider_choice="bedrock_claude", byo_provider=None)
+    await billing_repo.set_provider_choice("user_pc", provider_choice="openrouter_managed", byo_provider=None)
 
     real_get = billing_repo.get_by_owner_id
     interleaved = {"done": False}

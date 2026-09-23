@@ -102,7 +102,7 @@ async def test_gate_does_not_read_the_container_row():
 
 @pytest.mark.asyncio
 async def test_paid_owner_is_never_capped():
-    """A paid (bedrock_claude) owner never hits the cap check at all — the
+    """A paid (openrouter_managed) owner never hits the cap check at all — the
     free tier's cap is a trial_local-only mechanism. Layer 3 (Metronome
     balance) still runs."""
     with (
@@ -111,7 +111,7 @@ async def test_paid_owner_is_never_capped():
             new=AsyncMock(
                 return_value={
                     "subscription_status": "active",
-                    "provider_choice": "bedrock_claude",
+                    "provider_choice": "openrouter_managed",
                 }
             ),
         ),
@@ -207,7 +207,7 @@ async def test_trial_owner_under_cap_never_reaches_the_credits_layer():
     """A trial owner under the cap is ADMITTED, and Layer 3 is never consulted.
 
     This is the free-tier lockout guard. `/billing/trial-checkout` writes
-    provider_choice="bedrock_claude" SYNCHRONOUSLY before redirecting to
+    provider_choice="openrouter_managed" SYNCHRONOUSLY before redirecting to
     Stripe, so anyone who opens Checkout and closes the tab keeps that value
     while staying trial_local. Trial owners are deliberately never given a
     Metronome ledger (ensure_metronome_customer short-circuits them), so if
@@ -226,7 +226,7 @@ async def test_trial_owner_under_cap_never_reaches_the_credits_layer():
                 return_value={
                     "subscription_status": "trial_local",
                     # The abandoned-checkout residue.
-                    "provider_choice": "bedrock_claude",
+                    "provider_choice": "openrouter_managed",
                 }
             ),
         ),
@@ -253,7 +253,7 @@ async def test_card3_blocked_by_metronome_gate():
             new=AsyncMock(
                 return_value={
                     "subscription_status": "active",
-                    "provider_choice": "bedrock_claude",
+                    "provider_choice": "openrouter_managed",
                 }
             ),
         ),
@@ -293,7 +293,7 @@ async def test_card3_not_blocked_when_gate_clear():
             new=AsyncMock(
                 return_value={
                     "subscription_status": "active",
-                    "provider_choice": "bedrock_claude",
+                    "provider_choice": "openrouter_managed",
                 }
             ),
         ),
@@ -312,7 +312,7 @@ async def test_card3_gate_keyed_on_owner_for_org_credits_pool():
     billing_mock = AsyncMock(
         return_value={
             "subscription_status": "active",
-            "provider_choice": "bedrock_claude",
+            "provider_choice": "openrouter_managed",
         }
     )
     blocked = AsyncMock(return_value=False)

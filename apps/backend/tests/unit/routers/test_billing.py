@@ -392,7 +392,7 @@ class TestStripeWebhook:
                     "status": "trialing",
                     "trial_end": 1700000000,
                     "metadata": {
-                        "provider_choice": "bedrock_claude",
+                        "provider_choice": "chatgpt_oauth",
                         "clerk_user_id": "user_clerk_x",
                     },
                     "items": {
@@ -442,12 +442,12 @@ class TestStripeWebhook:
         assert kwargs["status"] == "trialing"
         assert kwargs["trial_end"] == 1700000000
         # Webhook backup writes provider_choice to billing_repo, keyed on
-        # account["owner_id"] (NOT clerk_user_id, NOT user_repo). bedrock is
-        # not connector-backed, so connector_user_id is None despite the
+        # account["owner_id"] (NOT clerk_user_id, NOT user_repo). Metadata is
+        # unauthenticated, so connector_user_id is None despite the
         # clerk_user_id present in metadata.
         mock_repo.set_provider_choice.assert_awaited_once_with(
             "org_x",
-            provider_choice="bedrock_claude",
+            provider_choice="chatgpt_oauth",
             byo_provider=None,
             connector_user_id=None,
         )

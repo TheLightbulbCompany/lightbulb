@@ -1025,9 +1025,9 @@ async def test_buying_off_the_free_tier_persists_a_provider_and_reprovisions(mon
     ):
         await apple_iap.apply_notification("signed")
 
-    # Bedrock: what the trial already ran on, and it asks the buyer for nothing
+    # The managed gate: what the trial already ran on, and it asks the buyer for nothing
     # — the App Store sheet has no provider picker.
-    assert provider.await_args.kwargs["provider_choice"] == "bedrock_claude"
+    assert provider.await_args.kwargs["provider_choice"] == "openrouter_managed"
     # And the trial container is rolled, or the customer keeps the capped box.
     assert started == ["user_1"]
 
@@ -1104,7 +1104,7 @@ async def test_the_subscribed_notification_can_convert_when_it_beats_the_link(mo
     ):
         await apple_iap.apply_notification("signed")
 
-    assert provider.await_args.kwargs["provider_choice"] == "bedrock_claude"
+    assert provider.await_args.kwargs["provider_choice"] == "openrouter_managed"
     assert started == ["user_1"]
 
 
@@ -1207,7 +1207,7 @@ async def test_a_trial_owner_with_a_pre_picked_provider_still_gets_reprovisioned
     ):
         await apple_iap.apply_notification("signed")
 
-    # Their chosen provider is NOT overwritten with the Bedrock default...
+    # Their chosen provider is NOT overwritten with the managed default...
     provider.assert_not_awaited()
     # ...but the trial container is still rolled to the paid shape.
     assert started == ["user_1"]
@@ -1243,7 +1243,7 @@ async def test_a_redelivery_after_a_failed_dispatch_dispatches_again(monkeypatch
             await apple_iap._apply_verified_notification(
                 notification=notification, notification_type="SUBSCRIBED", signed_date=1_700_000_000_000
             )
-        assert row == {"owner_id": "org_1", "subscription_status": "active", "provider_choice": "bedrock_claude"}
+        assert row == {"owner_id": "org_1", "subscription_status": "active", "provider_choice": "openrouter_managed"}
 
         result = await apple_iap._apply_verified_notification(
             notification=notification, notification_type="SUBSCRIBED", signed_date=1_700_000_000_000

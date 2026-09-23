@@ -13,22 +13,21 @@ from core.services.hermes_profiles import (
     write_agent_profile,
 )
 
-AIPS = {"sonnet": "arn:son", "opus": "arn:opu", "haiku": "arn:hai"}
-
 
 def test_write_agent_profile_returns_the_three_files():
     files = write_agent_profile(
         "org_a",
         {"id": "a1", "name": "Ada", "role": "ceo"},
-        provider_choice="bedrock_claude",
-        aip_arns=AIPS,
+        provider_choice="byo_key",
+        byo_provider="anthropic",
+        aip_arns=None,
         paperclip_api_key="pcp_live_x",
         integrations={"stripe": {"url": "https://mcp.stripe.com", "auth": "oauth"}},
         env_vars={"STRIPE_SECRET_KEY": "sk_live_x"},
     )
     assert isinstance(files, ProfileFiles)
     config = yaml.safe_load(files.config_yaml)
-    assert config["model"]["default"] == "arn:opu"  # role ceo -> premium tier
+    assert config["model"]["default"] == "claude-opus-5"  # role ceo -> premium tier
     assert config["mcp_servers"]["stripe"]["auth"] == "oauth"
     assert "STRIPE_SECRET_KEY=sk_live_x" in files.dotenv
     assert "PAPERCLIP_API_KEY=pcp_live_x" in files.dotenv
@@ -41,8 +40,9 @@ def test_config_yaml_carries_no_secret_even_though_dotenv_does():
     files = write_agent_profile(
         "org_a",
         {"id": "a1", "role": "engineering"},
-        provider_choice="bedrock_claude",
-        aip_arns=AIPS,
+        provider_choice="byo_key",
+        byo_provider="anthropic",
+        aip_arns=None,
         paperclip_api_key="pcp_live_x",
         integrations={},
         env_vars={"STRIPE_SECRET_KEY": "sk_live_x"},
@@ -82,8 +82,9 @@ def test_soul_md_override_replaces_the_generated_identity():
     files = write_agent_profile(
         "org_a",
         {"id": "a1", "name": "Ada", "role": "ceo"},
-        provider_choice="bedrock_claude",
-        aip_arns=AIPS,
+        provider_choice="byo_key",
+        byo_provider="anthropic",
+        aip_arns=None,
         paperclip_api_key="pcp_live_x",
         integrations={},
         env_vars={},
@@ -96,8 +97,9 @@ def test_no_soul_md_override_falls_back_to_build_soul_md():
     files = write_agent_profile(
         "org_a",
         {"id": "a1", "name": "Ada", "role": "ceo"},
-        provider_choice="bedrock_claude",
-        aip_arns=AIPS,
+        provider_choice="byo_key",
+        byo_provider="anthropic",
+        aip_arns=None,
         paperclip_api_key="pcp_live_x",
         integrations={},
         env_vars={},

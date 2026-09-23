@@ -1,6 +1,8 @@
+import type { RoomMember } from "./types";
+
 // Structural inputs, so web and mobile hand in whatever shape their own hooks
 // return (web `useConnections`/`useBilling`, mobile's REST reads).
-export interface SetupParticipant { kind: string; id: string; displayName: string }
+export type SetupParticipant = Pick<RoomMember, "kind" | "id" | "displayName">;
 export interface SetupConnection { provider: string; status: string }
 export interface SetupBilling { is_subscribed?: boolean | null; plan?: string | null; provider_choice?: string | null }
 

@@ -1205,12 +1205,15 @@ S3 profile, and its code IS the runtime's pinned image — two different levers
 with two different blast radii.
 
 - **Config** — write the profile (`hermes_profiles.write_agent_profile` /
-  `write_profiles`) and bump `.revision`. The bridge restores the profile once
-  per process and compares, so the `.revision` bump delivers to the next cold
-  start on its own — but only to that: a change that must land on an
-  ALREADY-WARM microVM needs the session stopped too, which is what
-  `PATCH /debug/provision` does. Either way nothing has to be restarted, and
-  the old "restart could not be started" failure mode is gone.
+  `write_profiles`) and bump `.revision`. The bridge calls
+  `sync.ensure_profile` before every turn and RPC: when the S3 `.revision`
+  differs from the one it holds, it re-pulls the backend-owned files
+  (`config.yaml`, `.env`, `SOUL.md`, `lightbulb-facts.json`) plus the CLI
+  credentials, so a bump reaches even an ALREADY-WARM microVM on its next
+  turn — no session stop needed. What a re-pull cannot change is the
+  runtime's own spec (its `environmentVariables`, e.g. `LIGHTBULB_MANAGED_MODEL_ID`):
+  that needs `roll_hermes_runtimes.py --respec`. `PATCH /debug/provision`
+  still stops the session, which is harmless belt-and-braces.
 - **Code** — flip `hermes-version.json`'s `dev.tag`, deploy, validate, flip
   `prod.tag`, then **run `apps/backend/scripts/roll_hermes_runtimes.py`**. A pin
   flip alone changes only what a NEW runtime is created with; every existing

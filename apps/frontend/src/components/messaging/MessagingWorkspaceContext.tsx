@@ -190,27 +190,32 @@ export function MessagingWorkspaceProvider({
   const selectRoomError = rooms.selectRoomError && rooms.selectRoomError !== selectErrorDismissed
     ? rooms.selectRoomError
     : null;
-  // A fresh workspace has no rooms until setup seeds #general, so nothing gets
-  // auto-selected and the viewer sits on an empty pane. Open #general the first
-  // time it appears — once, and only while nothing has ever been open here and
-  // no DM/room open is in flight, so it never yanks a viewer out of a choice.
-  const firstRoomSettled = useRef(false);
-  const { activeRoomId: autoOpenActive, rooms: autoOpenRooms, selectRoom: autoOpenSelect } = rooms;
+  // A fresh workspace has no rooms until setup seeds #general, so the viewer
+  // sits on an empty pane (or on the vendor shared room, which the shared
+  // hook's rooms[0] pick can land on). Open #general once per workspace — but
+  // only while the workspace is FRESH (nothing but #general and the shared
+  // room exists) and the viewer has not chosen a room themselves. A returning
+  // viewer has other rooms, so the shared hook's most-recent pick stands.
+  // Both refs hold the scope they apply to, so switching workspaces re-arms.
+  const explicitChoiceScope = useRef<string | null>(null);
+  const autoOpenedScope = useRef<string | null>(null);
+  const markExplicitChoice = useCallback(() => { explicitChoiceScope.current = scope; }, [scope]);
+  const { activeRoomId: autoOpenActive, rooms: autoOpenRooms, selectRoom: hookSelectRoom } = rooms;
+  /** Every selection a person (or a link/notification they followed) makes. */
+  const chooseRoom = useCallback((roomId: string) => {
+    markExplicitChoice();
+    hookSelectRoom(roomId);
+  }, [markExplicitChoice, hookSelectRoom]);
   useEffect(() => {
-    if (firstRoomSettled.current) return;
-    if (autoOpenActive) {
-      firstRoomSettled.current = true;
-      return;
-    }
-    if (creationBusy || openingParticipant) return;
+    if (autoOpenedScope.current === scope || explicitChoiceScope.current === scope) return;
     const general = autoOpenRooms.find((room) => room.isDefault);
-    if (!general) return;
-    firstRoomSettled.current = true;
-    autoOpenSelect(general.roomId);
-  }, [autoOpenActive, autoOpenRooms, creationBusy, openingParticipant, autoOpenSelect]);
+    if (!general || !autoOpenRooms.every((room) => room.isDefault || room.shared)) return;
+    autoOpenedScope.current = scope;
+    if (autoOpenActive !== general.roomId) hookSelectRoom(general.roomId);
+  }, [scope, autoOpenActive, autoOpenRooms, hookSelectRoom]);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const toggleShortcuts = useCallback(() => setShortcutsOpen((open) => !open), []);
-  useMessagingShortcuts(rooms.rooms, rooms.activeRoomId, rooms.selectRoom, toggleShortcuts, shortcutsOpen);
+  useMessagingShortcuts(rooms.rooms, rooms.activeRoomId, chooseRoom, toggleShortcuts, shortcutsOpen);
   const [draftRoomId, setDraftRoomId] = useState(rooms.activeRoomId);
   const [draftThreadId, setDraftThreadId] = useState<string | null>(null);
   const typingActive = useRef(false);
@@ -481,6 +486,7 @@ export function MessagingWorkspaceProvider({
     setCreationBusy(true);
     setCreationError(undefined);
     try {
+      markExplicitChoice();
       await rooms.createRoom({ clientRoomId: crypto.randomUUID(), ...creation });
       return true;
     } catch (error) {
@@ -498,6 +504,7 @@ export function MessagingWorkspaceProvider({
     setOpeningParticipant(`${participant.kind}:${participant.id}`);
     setCreationError(undefined);
     try {
+      markExplicitChoice();
       await rooms.selectDm(participant);
     } catch (error) {
       setCreationError(error instanceof Error ? error.message : "Conversation could not be opened.");
@@ -527,7 +534,7 @@ export function MessagingWorkspaceProvider({
   const [target, setTarget] = useState<{ roomId: string; messageId: string | null } | null>(null);
   const [sessionTarget, setSessionTarget] = useState<{ roomId: string; sessionId: string; nonce: number } | null>(null);
   const sessionNonce = useRef(0);
-  const selectRoom = rooms.selectRoom;
+  const selectRoom = chooseRoom;
   const selectDm = rooms.selectDm;
   // A permalink applied before the workspace session list lands (a cold load,
   // a new tab, a deep link) cannot yet tell a live session from an ended one,
@@ -660,7 +667,7 @@ export function MessagingWorkspaceProvider({
     currentRoomId: rooms.activeRoomId ?? undefined,
     // Picking any conversation leaves focus placement — the session goes back
     // to being something you open, not the thing you are looking at.
-    onSelectRoom: (roomId: string) => { closeSession(); rooms.selectRoom(roomId); },
+    onSelectRoom: (roomId: string) => { closeSession(); chooseRoom(roomId); },
     onSelectParticipant: async (participant: DirectoryParticipant) => { closeSession(); await selectParticipant(participant); },
     openingParticipant,
     onMarkUnread: rooms.markUnread,

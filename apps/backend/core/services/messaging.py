@@ -2331,6 +2331,18 @@ RUN_ERROR_MESSAGES = {
 # the classifier is down.
 RUN_FAILURE_OUTCOMES = frozenset({"error"})
 
+# Where a BUDGET_BLOCK_MESSAGES reason sends the owner to fix it: (path, link
+# label). Only appended to the room note below — BUDGET_BLOCK_MESSAGES itself
+# stays plain text for its other readers (ChatErrorCard renders from `code`
+# alone). Panel keys verified against apps/frontend/src/app/settings/page.tsx's
+# `PANELS` registry, not the workspace-dock's separate `llm` alias.
+BUDGET_BLOCK_LINKS: dict[str, tuple[str, str]] = {
+    "trial_daily_cap": ("/settings?panel=billing", "Upgrade"),
+    "trial_expired": ("/settings?panel=billing", "Upgrade"),
+    "included_daily_cap": ("/settings?panel=billing", "Upgrade"),
+    "out_of_credits": ("/settings?panel=providers", "Add credits"),
+}
+
 
 async def count_first_turn_failure(owner_id: str, error_kind: str | None) -> None:
     """A failed run for a free-tier workspace that has NEVER had an agent reply is a new user's
@@ -2380,10 +2392,12 @@ async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error
         from core.services.metronome_gate import is_owner_blocked
         from core.services.trial_cap import trial_block_reason
 
+        budget_reason: str | None = None
         if error_kind in (None, "model_unavailable"):  # the sweeper's own kinds are real infra failures
             reason = await trial_block_reason(owner_id)
             if reason:
                 text = BUDGET_BLOCK_MESSAGES.get(reason, text)
+                budget_reason = reason
             else:
                 # Same predicate gate_chat's Layer 3 and the provision gate's
                 # Layer 3 use: only bedrock_claude/openrouter_managed owners
@@ -2394,6 +2408,11 @@ async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error
                     "openrouter_managed",
                 } and await is_owner_blocked(owner_id):
                     text = BUDGET_BLOCK_MESSAGES["out_of_credits"]
+                    budget_reason = "out_of_credits"
+        link = BUDGET_BLOCK_LINKS.get(budget_reason) if budget_reason else None
+        if link:
+            path, label = link
+            text = f"{text} [{label}]({settings.FRONTEND_URL.rstrip('/')}{path})"
         trigger = (
             await messaging_repo.get_message_by_id(room_id, row["triggerMessageId"])
             if row.get("triggerMessageId")

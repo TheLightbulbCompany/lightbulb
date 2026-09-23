@@ -329,26 +329,21 @@ class TestContainerStatus:
 
     @pytest.mark.asyncio
     @patch("routers.container.container_repo.get_by_owner_id")
-    async def test_returns_last_error_fields(self, mock_get_row, async_client):
-        """Should include last_error and last_error_at when present on the container."""
+    async def test_a_running_row_hides_a_leftover_last_error(self, mock_get_row, async_client):
+        """A stale last_error from an earlier failed attempt must not show on a live workspace."""
         mock_get_row.return_value = {
             "owner_id": "user_test_123",
-            "gateway_token": "secret-token-value",
             "status": "running",
             "substatus": None,
-            "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
-            "access_point_id": "fsap-test123",
-            "created_at": "2026-01-15T12:00:00+00:00",
-            "updated_at": "2026-01-15T14:00:00+00:00",
-            "last_error": "OutOfMemoryError",
+            "last_error": "AgentCore runtime failed to start",
             "last_error_at": "2026-01-15T13:00:00+00:00",
         }
 
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
         data = response.json()
-        assert data["last_error"] == "OutOfMemoryError"
-        assert data["last_error_at"] == "2026-01-15T13:00:00+00:00"
+        assert data["last_error"] is None
+        assert data["last_error_at"] is None
 
     @pytest.mark.asyncio
     @patch("routers.container.container_repo.get_by_owner_id")
@@ -1021,14 +1016,6 @@ class TestContainerStatusTrialConversion:
             coro.close()
             return MagicMock()
 
-        # The stale-lease recovery branch calls this PURE predicate on the
-        # container dict; a truthy MagicMock here would make every row look
-        # like a dead provision. Use the real function.
-        from core.repositories.container_repo import is_provision_claim_stale as _real_stale
-
-        if repo is not None:
-            repo.is_provision_claim_stale = _real_stale
-
         return (
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
             patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
@@ -1145,7 +1132,9 @@ class TestContainerStatusTrialConversion:
         # only dispatches and shapes its own response.
         repo.update_status.assert_not_awaited()
         assert initialized is True
-        assert captured == ["dispatch_provision"], f"expected the ordinary auto-retry, got {captured}"
+        assert captured == [], (
+            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
+        )
         assert result["container_status"] == "provisioning"
         assert result["container_substatus"] == "auto_retry"
 
@@ -1260,7 +1249,9 @@ class TestContainerStatusTrialBedrockRestore:
 
         restore.assert_awaited_once_with("org_x")
         assert row["bedrock_revoked"] is False
-        assert captured == ["dispatch_provision"], f"expected auto-retry to still fire, got {captured}"
+        assert captured == [], (
+            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
+        )
         assert result["container_status"] == "provisioning"
 
     @pytest.mark.asyncio
@@ -1340,10 +1331,9 @@ class TestContainerStatusHonestError:
     """GET /container/status must tell the truth about a FAILED provision
     (Part B). An `error` row is no longer masked as `provisioning`/`auto_retry`:
     it reports status=`error` + last_error, and the row's `retryable` flag
-    (written by container_repo.release_provision_to_error) decides whether a
+    (written by container_repo.mark_provision_error) decides whether a
     re-provision is auto-dispatched (transient) or the terminal error card is
-    shown (deterministic). `stopped` keeps its silent auto-wake, and the
-    stale-lease liveness recovery is untouched.
+    shown (deterministic). `stopped` keeps its silent auto-wake.
     """
 
     @classmethod
@@ -1416,7 +1406,9 @@ class TestContainerStatusHonestError:
         assert result["container_substatus"] == "error_retrying"
         assert result["container_substatus"] != "provisioning", "an error must never be masked as provisioning"
         assert result["last_error"] == "EcsManagerError: spot reclaimed"
-        assert captured == ["dispatch_provision"], f"transient error must re-dispatch, got {captured}"
+        assert captured == [], (
+            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
+        )
 
     @pytest.mark.asyncio
     async def test_error_defaults_to_retryable_when_flag_absent(self):
@@ -1433,7 +1425,9 @@ class TestContainerStatusHonestError:
 
         assert result["container_status"] == "error"
         assert result["container_substatus"] == "error_retrying"
-        assert captured == ["dispatch_provision"]
+        assert captured == [], (
+            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
+        )
 
     @pytest.mark.asyncio
     async def test_stopped_row_still_auto_wakes_as_provisioning(self):
@@ -1451,33 +1445,9 @@ class TestContainerStatusHonestError:
 
         assert result["container_status"] == "provisioning"
         assert result["container_substatus"] == "auto_retry"
-        assert captured == ["dispatch_provision"]
-
-    @pytest.mark.asyncio
-    async def test_stale_provisioning_lease_still_reclaims(self):
-        """Liveness path intact: a `provisioning` row whose lease has gone stale
-        AND has no live ECS service still re-claims (dispatches a provision) and
-        reports provisioning/auto_retry — the SIGKILL'd-worker recovery the
-        error split must not disturb."""
-        import time as _time
-
-        from core.repositories.container_repo import PROVISION_CLAIM_STALE_S
-        from routers.container import container_status
-
-        row = {
-            "status": "provisioning",
-            "substatus": None,
-            "provision_claimed_at": int(_time.time()) - PROVISION_CLAIM_STALE_S - 100,
-        }
-        captured: list[str] = []
-        with contextlib.ExitStack() as stack:
-            for p in self._patches(row, captured=captured):
-                stack.enter_context(p)
-            result = await container_status(_workspace_auth())
-
-        assert captured == ["dispatch_provision"], f"stale lease must re-claim, got {captured}"
-        assert result["container_status"] == "provisioning"
-        assert result["container_substatus"] == "auto_retry"
+        assert captured == [], (
+            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
+        )
 
 
 class TestContainerStatusTeamsStatus:

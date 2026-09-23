@@ -20,20 +20,6 @@ function RelativeTimestamp({ value }: { value: string | number | undefined | nul
   return <span title={when.iso ?? undefined}>{when.label}</span>;
 }
 
-/**
- * `provision_claimed_at` is stored as epoch **seconds**
- * (`int(time.time())` in `container_repo.py`), unlike every other timestamp
- * in this payload which is an ISO string. `formatRelativeTime` treats a raw
- * number as epoch milliseconds, so feeding it seconds directly would render
- * a bogus 1970 date. Render it as a precise, copyable ISO string instead —
- * matches the "mono, copyable text" treatment the rest of the lease fields
- * get.
- */
-function formatEpochSeconds(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  return new Date(value * 1000).toISOString();
-}
-
 function yesNoChip(value: boolean | null | undefined): React.ReactNode {
   if (value === null || value === undefined) return "—";
   return (
@@ -111,66 +97,24 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
             variant="error"
           />
         ) : containerRow ? (
-          <>
-            <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-              <DefRow label="Status" value={containerRow.status ?? "—"} />
-              <DefRow label="Substatus" value={containerRow.substatus ?? "—"} />
-              <DefRow label="Last error" value={containerRow.last_error ?? "—"} />
-              <DefRow
-                label="Last error at"
-                value={<RelativeTimestamp value={containerRow.last_error_at} />}
-                mono
-              />
-              <DefRow
-                label="Retryable"
-                value={
-                  containerRow.retryable === null || containerRow.retryable === undefined
-                    ? "—"
-                    : containerRow.retryable
-                      ? "Yes"
-                      : "No"
-                }
-              />
-            </dl>
-            {containerRow.claim_stale ? (
-              <div className="mt-3">
-                <StatusChip status="degraded" label="STALE CLAIM" />
-              </div>
-            ) : null}
-          </>
-        ) : (
-          <p className="text-sm text-muted-foreground">No container row.</p>
-        )}
-      </Card>
-
-      {/* 3. Lease / generations */}
-      <Card title="Lease / generations">
-        {containerRow ? (
           <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+            <DefRow label="Status" value={containerRow.status ?? "—"} />
+            <DefRow label="Substatus" value={containerRow.substatus ?? "—"} />
+            <DefRow label="Last error" value={containerRow.last_error ?? "—"} />
             <DefRow
-              label="Provision generation"
-              value={containerRow.provision_generation ?? "—"}
+              label="Last error at"
+              value={<RelativeTimestamp value={containerRow.last_error_at} />}
               mono
             />
             <DefRow
-              label="Provision claim ID"
-              value={containerRow.provision_claim_id ?? "—"}
-              mono
-            />
-            <DefRow
-              label="Claimed at"
-              value={formatEpochSeconds(containerRow.provision_claimed_at)}
-              mono
-            />
-            <DefRow
-              label="Attempt token"
-              value={containerRow.provision_attempt_token ?? "—"}
-              mono
-            />
-            <DefRow
-              label="Execution name"
-              value={containerRow.provision_execution_name ?? "—"}
-              mono
+              label="Retryable"
+              value={
+                containerRow.retryable === null || containerRow.retryable === undefined
+                  ? "—"
+                  : containerRow.retryable
+                    ? "Yes"
+                    : "No"
+              }
             />
           </dl>
         ) : (
@@ -178,7 +122,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
         )}
       </Card>
 
-      {/* 4. Paperclip company */}
+      {/* 3. Paperclip company */}
       {paperclipReadError ? (
         <Card title="Paperclip company">
           <ErrorBanner
@@ -251,7 +195,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
         />
       )}
 
-      {/* 5. Onboarding */}
+      {/* 4. Onboarding */}
       <Card title="Onboarding">
         <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
           <DefRow
@@ -266,7 +210,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
         </dl>
       </Card>
 
-      {/* 6. Gate + SFN */}
+      {/* 5. Gate + SFN */}
       <Card title="Gate & SFN execution">
         <div>
           <div className="mb-2 text-xs uppercase tracking-caps text-muted-foreground">Gate</div>
@@ -312,7 +256,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
         </div>
       </Card>
 
-      {/* 7. Levers */}
+      {/* 6. Levers */}
       <ProvisioningActionsPanel
         userId={id}
         containerStatus={containerRow?.status ?? null}

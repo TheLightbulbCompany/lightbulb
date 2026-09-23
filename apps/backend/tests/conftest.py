@@ -11,6 +11,7 @@ import os
 # CLERK_ISSUER is missing, so collection fails without these defaults.
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 os.environ.setdefault("ENCRYPTION_KEY", "wHc3hAOcLlFzWyu3Ph7xIyClIdVQTrIzFOZDtu_pIEY=")
+os.environ.setdefault("GATE_BEARER_HMAC_KEY", "test-gate-bearer-hmac-key")
 os.environ.setdefault("AWS_REGION", "us-east-1")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
@@ -54,6 +55,18 @@ def _reset_shutdown_flag():
     shutdown_aware.set_shutting_down(False)
     yield
     shutdown_aware.set_shutting_down(False)
+
+
+@pytest.fixture(autouse=True)
+def _clear_inflight_reconciles():
+    """``reconcile_in_background`` records its task in a process-global set that the app's
+    lifespan shutdown gathers. A test that patches ``asyncio.create_task`` to a MagicMock leaves
+    that mock in the set (its done-callback never fires), and the NEXT test's lifespan then fails
+    gathering a non-awaitable. Clear it after every test."""
+    yield
+    from core.services import hermes_provisioning
+
+    hermes_provisioning._INFLIGHT_RECONCILES.clear()
 
 
 @pytest.fixture(autouse=True)

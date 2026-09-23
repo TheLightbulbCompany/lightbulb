@@ -45,7 +45,7 @@ describe("ContainerStack — dev", () => {
     template = buildStack("dev");
   });
 
-  test("owns the platform ECS cluster the backend and the provisioner run on", () => {
+  test("owns the platform ECS cluster the backend runs on", () => {
     template.hasResourceProperties("AWS::ECS::Cluster", {
       ClusterName: "lightbulb-dev-container",
     });
@@ -91,7 +91,7 @@ describe("ContainerStack — dev", () => {
 
   test("keeps the ECS task-state-change trail for the platform cluster", () => {
     // Scoped to the CLUSTER, not to the retired per-user services: the backend
-    // service, the provisioner task and the Paperclip service still run there,
+    // service and the Paperclip service still run there,
     // and ECS drops stoppedReason after ~1h. This log group is the only durable
     // record of why one of them stopped.
     template.hasResourceProperties("AWS::Events::Rule", {

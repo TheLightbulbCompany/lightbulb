@@ -40,10 +40,10 @@ async def test_write_boot_secret_round_trips_through_the_bridges_own_reader():
     with mock_aws():
         sm = boto3.client("secretsmanager", region_name="us-east-1")
 
-        name = await agentcore_runtime.write_boot_secret(
+        assert await agentcore_runtime.write_boot_secret(
             "org_a", hook_token="hook-1", gateway_token="gw-1", bedrock_bearer="bearer-1"
         )
-        assert name == agentcore_runtime.boot_secret_name("org_a")
+        name = agentcore_runtime.boot_secret_name("org_a")
         assert name.startswith("lightbulb/")
         assert name.endswith("/org_a/boot")
 
@@ -66,9 +66,18 @@ async def test_write_boot_secret_update_also_round_trips(monkeypatch):
         await agentcore_runtime.write_boot_secret(
             "org_b", hook_token="hook-old", gateway_token="gw-old", bedrock_bearer="bearer-old"
         )
-        name = await agentcore_runtime.write_boot_secret(
+        changed = await agentcore_runtime.write_boot_secret(
             "org_b", hook_token="hook-old", gateway_token="gw-old", bedrock_bearer="bearer-new"
         )
 
-        loaded = bridge_sync.load_boot_secrets(name, client=sm)
+        loaded = bridge_sync.load_boot_secrets(agentcore_runtime.boot_secret_name("org_b"), client=sm)
         assert loaded["bedrockBearer"] == "bearer-new"
+        assert changed is True  # the bearer is a boot-time input
+
+
+async def test_only_a_provider_choice_change_is_not_a_boot_time_change():
+    with mock_aws():
+        kwargs = {"hook_token": "h", "gateway_token": "g", "bedrock_bearer": "b"}
+        assert await agentcore_runtime.write_boot_secret("org_c", **kwargs) is True
+        assert await agentcore_runtime.write_boot_secret("org_c", **kwargs) is False
+        assert await agentcore_runtime.write_boot_secret("org_c", provider_choice="chatgpt_oauth", **kwargs) is False

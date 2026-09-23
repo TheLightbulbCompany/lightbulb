@@ -122,8 +122,8 @@ class Settings(BaseSettings):
     # PROVISION Step Functions state machine ARN — THE provisioning executor
     # (spec §7, PR-10; no flag, active on merge). Dispatched by
     # core.services.provision_dispatch.dispatch_provision via StartExecution;
-    # the one-shot scripts/provision_runner.py runs as a task the machine
-    # supervises, never in-process in this backend.
+    # the one-shot scripts/provision_runner.py runs in the machine's provisioner
+    # Lambda, never in-process in this backend.
     PROVISION_STATE_MACHINE_ARN: str = ""
 
     # Public S3 URL of the hosted AWS read-only connector CloudFormation
@@ -471,6 +471,11 @@ class Settings(BaseSettings):
 
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
     ENCRYPTION_KEY: str = ""
+
+    # HMAC key for bedrock_gate_tokens.derive_gate_bearer (secret
+    # lightbulb/{env}/gate_bearer_hmac_key). Dedicated, never ENCRYPTION_KEY; empty makes the
+    # derivation refuse rather than fall back.
+    GATE_BEARER_HMAC_KEY: str = ""
 
     # Shared password for the gog CLI file-keyring backend. The gog_cli
     # materializer runs gog with GOG_KEYRING_BACKEND=file and this password to

@@ -448,12 +448,7 @@ export interface AdminProvisioning {
     last_error?: string | null;
     last_error_at?: string | null;
     retryable?: boolean | null;
-    claim_stale?: boolean;
     provision_generation?: string | null;
-    provision_claim_id?: string | null;
-    provision_claimed_at?: number | null;
-    provision_attempt_token?: string | null;
-    provision_execution_name?: string | null;
     onboarded_at?: string | null;
     bedrock_revoked?: boolean | null;
     stop_reason?: string | null;

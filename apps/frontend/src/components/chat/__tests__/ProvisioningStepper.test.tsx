@@ -692,7 +692,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
   // banner over the working app rather than a card in front of it.
   it.each(["provision_failed", "deployment_failed", null])(
     "shows Setup failed with Retry over the working app for a TERMINAL error (substatus=%s)",
-    (substatus) => {
+    async (substatus) => {
       const refresh = vi.fn();
       useProvMock.mockReturnValue({
         phase: "normal",
@@ -716,10 +716,49 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       expect(screen.getByText("children")).toBeInTheDocument();
       expect(screen.getByText(/Setup failed/i)).toBeInTheDocument();
       expect(screen.getByRole("link", { name: /Contact support/i })).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: /Retry/i }));
+      // A deterministic failure is no longer auto-redispatched by the
+      // /container/status poll, so Retry must drive the same /container/recover
+      // call HealthIndicator's CONTAINER_DOWN action uses -- a bare re-poll
+      // would be a dead button.
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /Retry/i }));
+      });
+      expect(apiPost).toHaveBeenCalledWith("/container/recover", {});
       expect(refresh).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("shows an inline error and stays retryable when /container/recover fails", async () => {
+    const refresh = vi.fn();
+    apiPost.mockRejectedValueOnce(new Error("network error"));
+    useProvMock.mockReturnValue({
+      phase: "normal",
+      container: {
+        container_status: "error",
+        container_substatus: "provision_failed",
+        runtime_phase: "provisioning",
+        last_error: "ECS task failed to start",
+      },
+      blocked: null,
+      refreshInterval: 3000,
+      refresh,
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Retry/i }));
+    });
+
+    expect(apiPost).toHaveBeenCalledWith("/container/recover", {});
+    expect(refresh).not.toHaveBeenCalled();
+    expect(screen.getByText(/Retry failed/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
+  });
 
   it("says retrying (NOT Setup failed) for a RETRYING error", () => {
     // status="error" + substatus="error_retrying" is transient — the backend is

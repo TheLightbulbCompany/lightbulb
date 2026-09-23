@@ -32,7 +32,11 @@ async def _roles(owner_id):
 def _wire(monkeypatch, *, current_image, row=ROW):
     monkeypatch.setattr(hermes_provisioning.settings, "AGENTCORE_HERMES_IMAGE", IMAGE)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(row))
-    monkeypatch.setattr(hermes_provisioning, "_runtime_image_uri", lambda arn: current_image)
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_runtime_description",
+        lambda arn: {"agentRuntimeArtifact": {"containerConfiguration": {"containerUri": current_image}}},
+    )
     monkeypatch.setattr(hermes_provisioning, "_load_role_and_aips", _roles)
     calls = []
     # The roll is how an already-provisioned workspace gets its first Browser profile, so
@@ -136,7 +140,9 @@ async def test_roll_refuses_an_ecs_row(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_respec_moves_a_current_runtime_and_rewrites_profiles_after_the_stop(monkeypatch):
+async def test_respec_on_a_matching_spec_rewrites_profiles_after_the_stop_without_an_update(monkeypatch):
+    # The env diff already catches a model flip (roll_runtime_image re-specs on it); --respec adds the
+    # profile rewrite, after the stop, and forces the idle stop even when nothing drifted.
     calls = _wire(monkeypatch, current_image=IMAGE)
 
     async def _write(owner_id, aip_arns):
@@ -144,4 +150,23 @@ async def test_respec_moves_a_current_runtime_and_rewrites_profiles_after_the_st
 
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _write)
     assert await hermes_provisioning.roll_runtime_image("org_a", respec=True) == "updated"
+    assert [c[0] for c in calls] == ["health", "stop", "profiles"]
+
+
+@pytest.mark.asyncio
+async def test_an_env_drift_rewrites_profiles_after_the_stop_without_respec(monkeypatch):
+    # A managed-model flip moves LIGHTBULB_MANAGED_MODEL_ID in the env; bridge sync.py refuses an
+    # env/profile pair that disagrees, so the plain roll must carry the profiles with it.
+    calls = _wire(monkeypatch, current_image=IMAGE)
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "build_runtime_request_for_owner",
+        lambda o, r, a, **kw: {"environmentVariables": {"LIGHTBULB_MANAGED_MODEL_ID": "new/model"}},
+    )
+
+    async def _write(owner_id, aip_arns):
+        calls.append(("profiles", owner_id))
+
+    monkeypatch.setattr(hermes_provisioning, "write_profiles", _write)
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
     assert [c[0] for c in calls] == ["update", "ready", "health", "stop", "profiles"]

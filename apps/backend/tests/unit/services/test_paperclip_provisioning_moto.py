@@ -863,6 +863,98 @@ async def test_provision_org_company_recreated_mints_a_new_onboarding_generation
     assert second.onboarding_project_id is None
 
 
+async def test_provision_org_conditional_mint_loses_and_adopts_the_stored_generation(repo):
+    """Fix round 1 (Important #2): read-then-put is not atomic, so a peer's write can land
+    between provision_org's read (which decided to mint a fresh generation) and its own put.
+    The mint-site put is now conditioned (attribute_not_exists(onboarding_generation) OR
+    onboarding_generation = :g); when that conditional put loses to a peer who landed first with
+    a DIFFERENT generation, provision_org must re-read (consistent) and adopt the STORED
+    generation rather than raising or silently overwriting it."""
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
+    admin.create_company = AsyncMock(return_value={"id": "co_acme"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    real_put = repo.put
+    injected = {"done": False}
+
+    async def _racing_put(company, **kwargs):
+        if not injected["done"] and kwargs.get("condition"):
+            injected["done"] = True
+            # A concurrent peer's own mint attempt lands FIRST (unconditioned put, exactly what
+            # ITS "not reconciling_company" branch would do) with a DIFFERENT generation --
+            # simulates the window between this call's read and its put.
+            now = datetime.now(timezone.utc)
+            peer = PaperclipCompany(
+                user_id=company.user_id,
+                org_id=company.org_id,
+                company_id=company.company_id,
+                paperclip_user_id=company.paperclip_user_id,
+                paperclip_password_encrypted=company.paperclip_password_encrypted,
+                paperclip_email=company.paperclip_email,
+                service_token_encrypted=company.service_token_encrypted,
+                status="active",
+                created_at=now,
+                updated_at=now,
+                onboarding_generation="peer-generation",
+                funnel_state="not_started",
+            )
+            await real_put(peer)
+        return await real_put(company, **kwargs)
+
+    repo.put = _racing_put
+
+    row = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
+
+    assert injected["done"], "the conditioned put was never attempted -- the race was never exercised"
+    assert row.onboarding_generation == "peer-generation"
+    fetched = await repo.get("user_owner")
+    assert fetched.onboarding_generation == "peer-generation"
+
+
+async def test_provision_org_retry_with_no_company_preserves_a_concurrently_set_generation(repo):
+    """#20 / no more leases: a confirmed-identity, company-less failed row
+    (create_company itself raised, after signup already succeeded) is
+    retried WITHOUT the seed-claim fence -- reconciling_company is False
+    because ``company_id`` is empty, so the "not reconciling_company" mint
+    branch is reachable UNCLAIMED. If a concurrent peer's retry already
+    minted and persisted onboarding_generation before this read, this retry
+    must adopt it (if_not_exists semantics) rather than stomping it with a
+    fresh random ULID -- exactly the clobber the reconcile branch already
+    guards against for the company_id-bearing case."""
+    from core.encryption import encrypt
+
+    now = datetime.now(timezone.utc)
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_owner",
+            org_id="org_acme",
+            company_id="",
+            paperclip_user_id="pc_user_owner",
+            paperclip_password_encrypted=encrypt("owner-password-plain"),
+            paperclip_email="owner@acme.test",
+            service_token_encrypted="",
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            onboarding_generation="peer-minted-generation",
+            funnel_state="not_started",
+        )
+    )
+
+    admin = _make_admin_mock()
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
+    admin.create_company = AsyncMock(return_value={"id": "co_acme"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    row = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
+
+    assert row.company_id == "co_acme"  # confirms the not-reconciling create path ran
+    assert row.onboarding_generation == "peer-minted-generation"  # NOT re-minted
+    fetched = await repo.get("user_owner")
+    assert fetched.onboarding_generation == "peer-minted-generation"
+
+
 async def test_provision_member_does_not_mint_onboarding_generation(repo):
     """INV-3: a seat-join (provision_member) is NEVER a generation bump --
     the member's own row carries no onboarding fields at all."""

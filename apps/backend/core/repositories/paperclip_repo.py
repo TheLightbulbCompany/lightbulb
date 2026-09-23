@@ -326,7 +326,13 @@ class PaperclipRepo:
     def _table(self):
         return get_table(self._table_name)
 
-    async def put(self, company: PaperclipCompany) -> None:
+    async def put(
+        self,
+        company: PaperclipCompany,
+        *,
+        condition: str | None = None,
+        condition_values: dict | None = None,
+    ) -> None:
         """Whole-item put — replaces the row entirely.
 
         ⚠️ WRITER-SAFETY (see the architecture spec's "load-bearing safety
@@ -341,6 +347,13 @@ class PaperclipRepo:
         (``claim_funnel_submission`` / ``record_onboarding_ids`` /
         ``revert_funnel_submission``) for any onboarding-only write — they
         cannot clobber unrelated fields by construction.
+
+        ``condition``/``condition_values`` are an escape hatch used ONLY by the G2 mint site
+        (read-then-put is not atomic): the caller passes
+        ``attribute_not_exists(onboarding_generation) OR onboarding_generation = :g`` so a
+        concurrent peer's already-persisted generation wins instead of being silently
+        overwritten. On mismatch, boto3 raises ``ClientError``/``ConditionalCheckFailedException``
+        (uncaught here — the caller re-reads and retries).
         """
         item = {
             "user_id": company.user_id,
@@ -390,7 +403,12 @@ class PaperclipRepo:
             item["first_contact_attempts"] = company.first_contact_attempts
         if company.first_contact_reason is not None:
             item["first_contact_reason"] = company.first_contact_reason
-        await run_in_thread(self._table().put_item, Item=item)
+        put_kwargs: dict = {"Item": item}
+        if condition:
+            put_kwargs["ConditionExpression"] = condition
+            if condition_values:
+                put_kwargs["ExpressionAttributeValues"] = condition_values
+        await run_in_thread(self._table().put_item, **put_kwargs)
         publish_status_changed(_broadcast_owner_key(user_id=company.user_id, org_id=company.org_id))
 
     async def get(self, user_id: str, *, consistent_read: bool = False) -> Optional[PaperclipCompany]:
@@ -1134,10 +1152,16 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False
 
-    async def stage_signup_credentials(
-        self, user_id: str, *, claim_id: str, email: str, password_encrypted: str
-    ) -> tuple[str, str]:
-        """Persist the signup secret before sending it, fenced on our lease."""
+    async def stage_signup_credentials(self, user_id: str, *, email: str, password_encrypted: str) -> tuple[str, str]:
+        """Persist the signup secret before sending it.
+
+        NOT fenced on any claim — two concurrent provision runs must both
+        succeed and converge. ``if_not_exists`` is the convergence primitive:
+        whichever run's write lands first fixes the value, and
+        ``ReturnValues=ALL_NEW`` hands every caller that same converged
+        (email, password) pair, so a retry never mints a second random
+        password for an account that may already have signed up with the
+        first one."""
         response = await run_in_thread(
             self._table().update_item,
             Key={"user_id": user_id},
@@ -1145,11 +1169,10 @@ class PaperclipRepo:
                 "SET paperclip_email = if_not_exists(paperclip_email, :email), "
                 "paperclip_password_encrypted = if_not_exists(paperclip_password_encrypted, :password)"
             ),
-            ConditionExpression="#s = :seeding AND seeding_claim_id = :claim",
+            ConditionExpression="#s = :seeding",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={
                 ":seeding": "seeding",
-                ":claim": claim_id,
                 ":email": email,
                 ":password": password_encrypted,
             },

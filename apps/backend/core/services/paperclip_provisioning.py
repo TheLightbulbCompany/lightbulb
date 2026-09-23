@@ -55,6 +55,7 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
+from botocore.exceptions import ClientError
 from ulid import ULID
 
 from core.auth import is_org_owner_id
@@ -517,7 +518,7 @@ class PaperclipProvisioning:
             else:
                 owner_auth_email = owner_email
                 signup, owner_auth_email, password = await self._sign_up_with_staged_credentials(
-                    user_id=owner_user_id, claim_id=seed_claim_id, email=owner_email, password=password
+                    user_id=owner_user_id, email=owner_email, password=password
                 )
                 paperclip_user_id = signup["user"]["id"]
                 new_user_session_cookie = signup["_session_cookie"]
@@ -773,8 +774,20 @@ class PaperclipProvisioning:
             if reconciling_company:
                 onboarding_fields = _carry_forward_onboarding_fields(existing)
             else:
+                # if_not_exists, mapped onto this whole-item put: a company-less
+                # retry (create_company itself failed after signup succeeded) is
+                # UNCLAIMED (reconciling_company is False with no company_id, so
+                # the seed-claim fence never engages -- see #15/#20). A
+                # concurrent peer's retry may have already minted and persisted
+                # a generation before this read; adopt it instead of stomping it
+                # with a fresh random ULID. Only a genuinely generation-less
+                # existing row (or none at all) mints fresh.
                 onboarding_fields = {
-                    "onboarding_generation": str(ULID()),
+                    "onboarding_generation": (
+                        existing.onboarding_generation
+                        if existing is not None and existing.onboarding_generation
+                        else str(ULID())
+                    ),
                     "funnel_state": "not_started",
                 }
 
@@ -801,7 +814,26 @@ class PaperclipProvisioning:
                 ),
                 **onboarding_fields,
             )
-            await self._repo.put(row)
+            if reconciling_company:
+                await self._repo.put(row)
+            else:
+                # Fix round 1 (Important #2): the read that decided onboarding_fields above and
+                # this put are not atomic -- a peer's own mint can land in between. Condition the
+                # put so a peer who landed first WINS instead of being silently overwritten; on
+                # loss, adopt the stored generation with one consistent re-read and put once
+                # more (a single retry, not a new lease).
+                try:
+                    await self._repo.put(
+                        row,
+                        condition="attribute_not_exists(onboarding_generation) OR onboarding_generation = :g",
+                        condition_values={":g": row.onboarding_generation},
+                    )
+                except ClientError as e:
+                    if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                        raise
+                    winner = await self._repo.get(owner_user_id, consistent_read=True)
+                    row.onboarding_generation = winner.onboarding_generation if winner else row.onboarding_generation
+                    await self._repo.put(row)
             if seed_ok:
                 logger.info(
                     "paperclip_provisioning.provision_org: owner_id %s active (company=%s, owner=%s)",
@@ -959,7 +991,7 @@ class PaperclipProvisioning:
                 member_session_cookie = member_signin["_session_cookie"]
             else:
                 member_signup, member_auth_email, member_password = await self._sign_up_with_staged_credentials(
-                    user_id=user_id, claim_id=member_claim_id, email=email, password=member_password
+                    user_id=user_id, email=email, password=member_password
                 )
                 member_paperclip_user_id = member_signup["user"]["id"]
                 member_session_cookie = member_signup["_session_cookie"]
@@ -1134,14 +1166,12 @@ class PaperclipProvisioning:
             raise
 
     async def _sign_up_with_staged_credentials(
-        self, *, user_id: str, claim_id: str | None, email: str, password: str
+        self, *, user_id: str, email: str, password: str
     ) -> tuple[dict, str, str]:
-        # A lost response can mean signup succeeded. Save the secret under
-        # the existing claim before making that external side effect.
-        if not claim_id:
-            raise RuntimeError("Paperclip signup requires a seed claim")
+        # A lost response can mean signup succeeded. Save the secret before
+        # making that external side effect (if_not_exists + read-back converges).
         email, encrypted = await self._repo.stage_signup_credentials(
-            user_id, claim_id=claim_id, email=email, password_encrypted=encrypt(password)
+            user_id, email=email, password_encrypted=encrypt(password)
         )
         password = decrypt(encrypted)
         try:

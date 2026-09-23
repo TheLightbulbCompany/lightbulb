@@ -10,7 +10,8 @@ it is returned to the caller for the owner's boot secret, from which the runtime
 exports ``AWS_BEARER_TOKEN_BEDROCK``. Nothing persists the
 plaintext (mirrors ``api_key_repo`` / hook-token posture): a leaked table row
 cannot be turned back into a usable token, and a compromised token is handled by
-rotate (reprovision) or deny (kill switch), never by reading it back.
+rotate (bump the row's ``gate_bearer_generation``; the plaintext is re-derivable, see
+``derive_gate_bearer``) or deny (kill switch), never by reading it back.
 
 The token row's ``aip_tiers`` map is the INVERSE of the owner's
 ``bedrock_aip_arns`` map. The gateway authorizes + prices a request by looking
@@ -60,11 +61,12 @@ it.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
-import secrets
 
 import boto3
 from botocore.exceptions import ClientError
@@ -86,13 +88,6 @@ logger = logging.getLogger(__name__)
 # most the one bearer the owner's boot secret carries. (A swap that
 # loses the race adds the winner's hash on top of that, but the winner's own
 # list was pruned the same way, so the bound holds.)
-#
-# That holds only while the list SURVIVES every write to the containers row.
-# ``container_repo.upsert`` is a whole-item put, so the field is named in its
-# ``_UPSERT_PRESERVED_FIELDS`` — without that, a reprovision through
-# ``create_user_service`` would silently drop the list and strand its rows
-# forever (they are live bearer credentials: the plaintext is still in the
-# retained task-definition revision).
 _SUPERSEDED_FIELD = "bedrock_gate_superseded_hashes"
 
 # The env var whose value the predicate hashes. Provisioning injects the same
@@ -148,6 +143,42 @@ def hash_token(token: str) -> str:
     the raw bearer string) so a token minted here resolves there.
     """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def derive_gate_bearer(owner_id: str, row_id: str, generation: int = 0) -> str:
+    """The owner's gate bearer for this containers-row incarnation and ``generation``:
+    deterministic, so every concurrent provision run for one owner derives the SAME bearer
+    and writes the same boot secret, token row and pointer instead of racing to rotate.
+
+    ``urlsafe_b64(HMAC-SHA256(key=GATE_BEARER_HMAC_KEY,
+    msg="lightbulb-gate-bearer:v1:<owner_id>:<row_id>:<generation>"))``, padding stripped
+    (the ``token_urlsafe(32)`` shape the random mint had). The key is the
+    ``GATE_BEARER_HMAC_KEY`` string's UTF-8 bytes -- a DEDICATED secret
+    (``lightbulb/{env}/gate_bearer_hmac_key``), never ``ENCRYPTION_KEY``: rotating that one
+    must not silently change every bearer, and holding it must not let anyone derive them.
+
+    ``row_id`` is the containers row's ``id``: every creator writes it ``if_not_exists``, so
+    concurrent runs read back the same one, and teardown deletes the row, so a reprovision
+    gets a new id and therefore a new bearer (a bearer copied out of the old runtime stays
+    dead). Within one incarnation, rotation is an explicit bump of the row's
+    ``gate_bearer_generation``. Rotating ``GATE_BEARER_HMAC_KEY`` changes every owner's NEXT
+    derivation, not a live runtime's bearer.
+
+    A derived bearer cannot be un-issued, so revocation stays where it always was: the
+    token row's ``denied`` flag (``deny_gate_token``) and deleting the row.
+
+    Refuses an empty key (no fallback to any other key) or row id: without the key every
+    bearer is computable from public ids, and without the row id a teardown would no longer
+    change it.
+    """
+    key = settings.GATE_BEARER_HMAC_KEY
+    if not key:
+        raise RuntimeError("GATE_BEARER_HMAC_KEY is not configured; refusing to derive a gate bearer")
+    if not row_id:
+        raise ValueError(f"no containers row id for {owner_id}; refusing to derive a gate bearer")
+    msg = f"lightbulb-gate-bearer:v1:{owner_id}:{row_id}:{int(generation)}".encode()
+    digest = hmac.new(key.encode("utf-8"), msg, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
 def _describe_agent_runtime(runtime_arn: str) -> dict:
@@ -283,9 +314,19 @@ def _log_still_armed(token_hash: str) -> None:
 
 
 async def _drain_superseded(
-    owner_id: str, tracked: list[str], *, current_hash: str | None, adopt_orphans: bool = False
+    owner_id: str,
+    tracked: list[str],
+    *,
+    current_hash: str | None,
+    adopt_orphans: bool = False,
+    expire: bool = True,
 ) -> list[str]:
     """Delete each tracked hash nothing can present; return the survivors.
+
+    ``expire=False`` (``mint_gate_token``) keeps every candidate: the predicate reads the boot
+    secret, and on the reconcile path a mint that has just rewritten that secret would judge a
+    warm session's old bearer unpresentable while the session still holds it. Deletion is left
+    to ``expire_superseded_gate_tokens`` after a confirmed ``StopRuntimeSession``.
 
     Deliberately does NOT write the survivors back to the containers row: that
     list is ``swap_gate_token_hash``'s alone (``container_repo`` refuses it from
@@ -308,7 +349,7 @@ async def _drain_superseded(
 
     OFF by default, and that is a COST decision, not a correctness one: adopting
     requires the runtime view, so it cannot share the empty-list early return below.
-    ``expire_superseded_gate_tokens`` runs on every wake for every owner and
+    ``expire_superseded_gate_tokens`` runs after every confirmed session stop and
     must keep that early return; ``mint_gate_token`` runs once per provision, a
     path already making far more AWS calls than this, so it adopts.
     """
@@ -344,6 +385,8 @@ async def _drain_superseded(
                 survivors.append(orphan)
     for token_hash in candidates:
         reason = presentable.get(token_hash)
+        if reason is None and not expire:
+            reason = "kept until a confirmed session stop"
         if reason is not None:
             logger.info(
                 "bedrock-gate token %s.. kept for owner %s: %s",
@@ -357,7 +400,7 @@ async def _drain_superseded(
             # ALL_OLD so the "expired" line fires exactly ONCE, on the
             # evaluation that actually removed the row. The survivor list is not
             # written back (see the docstring), so a hash stays tracked until
-            # the next mint and every wake in between re-evaluates it and
+            # the next mint and every expiry in between re-evaluates it and
             # re-issues this no-op delete — logging each of those as an expiry
             # would make N re-confirmations indistinguishable from N expiries,
             # which is the one question these logs exist to answer.
@@ -404,8 +447,9 @@ async def _retain(table, hashes: list[str]) -> list[str]:
 async def expire_superseded_gate_tokens(owner_id: str) -> None:
     """Delete the owner's superseded gate-token rows IFF nothing can present them.
 
-    Call this wherever a redeploy is CONFIRMED to have landed (the container now
-    holds the current token) and as a backstop at mint time. The predicate is the
+    Called ONLY where a session stop is CONFIRMED (``roll_runtime_image``'s stop
+    branch): the next session reads the current boot secret, so nothing can
+    present a superseded bearer any more. The mint never deletes. The predicate is the
     correctness; the call site is only scheduling — a skipped call leaves a stale
     row, which is safe, and an extra call is a no-op.
 
@@ -422,25 +466,31 @@ async def expire_superseded_gate_tokens(owner_id: str) -> None:
         logger.warning("expire_superseded_gate_tokens failed for owner %s", owner_id, exc_info=True)
 
 
-async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
-    """Mint (rotating) a per-owner bedrock-gate bearer token; return the PLAINTEXT.
+async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, row_id: str, generation: int = 0) -> str:
+    """Ensure the per-owner bedrock-gate bearer for ``generation``; return the PLAINTEXT.
 
-    - 32 random bytes, urlsafe-base64 (``secrets.token_urlsafe(32)``).
-    - Writes a hash-keyed row ``{token_hash, owner_id, denied=False,
-      aip_tiers={arn: tier}, created_at}``. ``aip_tiers`` is the INVERSE of the
-      owner's ``{tier: arn}`` map — the gateway keys authorization + pricing on
+    - ``derive_gate_bearer(owner_id, row_id, generation)`` -- the same value on every run
+      against one row incarnation, so a second run is a no-op below; a bumped generation or
+      a new row (teardown + reprovision) rotates.
+    - Writes a hash-keyed row ``{token_hash, owner_id, denied, aip_tiers={arn: tier},
+      created_at}``, CREATE-ONLY; ``denied`` is True when any hash the owner still tracks
+      is denied (a trial cap / kill must survive a rotation): a row that already exists (an
+      earlier or concurrent run) is left exactly as it is, including a ``denied`` flag.
+      Its tiers are ``reconcile_gate_token_tiers``' to update. ``aip_tiers`` is the INVERSE
+      of the owner's ``{tier: arn}`` map — the gateway keys authorization + pricing on
       the AIP ARN.
     - Points the containers row's ``bedrock_gate_token_hash`` at the new hash,
       through ``container_repo.swap_gate_token_hash`` — a conditional write, so
       a concurrent mint cannot silently overwrite this one's hash; it is either
-      merged or reported (see ``_swap_hash_pointer``). Still a no-op on a
-      not-yet-created row; ``persist_gate_token_hash`` re-runs the same swap
-      once ``create_user_service``'s upsert has created it.
+      merged or reported (see ``_swap_hash_pointer``). A no-op on a
+      not-yet-created row (dispatch creates the row before the runner mints).
     - ROTATION SCHEDULES NOTHING. The superseded hash is recorded in
       ``_SUPERSEDED_FIELD`` and its row survives until the liveness predicate
-      proves the owner's runtime cannot present it. The mint first
-      runs that drain as a backstop for a confirmation that never came, then
-      writes the pruned survivors plus the outgoing hash in the SAME row update.
+      proves the owner's runtime cannot present it -- judged only after a confirmed
+      session stop (``expire_superseded_gate_tokens``), never here: the mint runs on
+      every reconcile, right before the boot secret is rewritten, and a warm session
+      still presents the bearer it read at cold start. It retains (and adopts) instead,
+      then writes the survivors plus the outgoing hash in the SAME row update.
 
     CONCURRENCY. The mint block in ``provision_user_container`` sits AHEAD of
     the first ``_provision_checkpoint``, so the provision lease does not
@@ -459,34 +509,42 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     prior_hash = prior.get("bedrock_gate_token_hash") if prior else None
     tracked = list(prior.get(_SUPERSEDED_FIELD) or []) if prior else []
 
-    # Backstop pass: anything superseded by an EARLIER mint whose roll was never
-    # confirmed. At this point the service still references the pre-mint task
-    # definition, so the token the container is actually holding is presentable
-    # and survives — only genuinely orphaned rows go.
-    #
-    # ADOPTING here too (the once-per-provision path, which already makes the AWS
-    # calls this needs) is what heals an owner deployed into from the legacy
-    # state: the runtime presents A, the pointer is B, nothing tracks A, and A's
-    # row still carries the one-hour ttl the old code wrote.
-    superseded = await _drain_superseded(owner_id, tracked, current_hash=prior_hash, adopt_orphans=True)
+    # Retention pass: keep every tracked hash (expire=False -- see the docstring) and
+    # re-assert that none carries a legacy ttl. ADOPTING here too is what heals an owner
+    # deployed into from the legacy state: the runtime presents A, the pointer is B,
+    # nothing tracks A, and A's row still carries the one-hour ttl the old code wrote.
+    superseded = await _drain_superseded(owner_id, tracked, current_hash=prior_hash, adopt_orphans=True, expire=False)
 
-    token = secrets.token_urlsafe(32)
+    token = derive_gate_bearer(owner_id, row_id, generation)
     token_hash = hash_token(token)
     # Invert {tier: arn} -> {arn: tier}: the gateway looks a request's model-id
     # (an AIP ARN) up in this map to authorize + price it.
     aip_tiers = {arn: tier for tier, arn in (aip_arns or {}).items()}
 
     table = _tokens_table()
-    await run_in_thread(
-        table.put_item,
-        Item={
-            "token_hash": token_hash,
-            "owner_id": owner_id,
-            "denied": False,
-            "aip_tiers": aip_tiers,
-            "created_at": utc_now_iso(),
-        },
-    )
+    # A capped/killed owner stays denied across the rotation: the new row inherits a deny
+    # from ANY hash the owner can still present, or the mint itself would lift the kill.
+    denied = False
+    for tracked_hash in dict.fromkeys([*owner_gate_token_hashes(prior), *superseded]):
+        resp = await run_in_thread(table.get_item, Key={"token_hash": tracked_hash}, ConsistentRead=True)
+        if (resp.get("Item") or {}).get("denied"):
+            denied = True
+            break
+    try:
+        await run_in_thread(
+            table.put_item,
+            Item={
+                "token_hash": token_hash,
+                "owner_id": owner_id,
+                "denied": denied,
+                "aip_tiers": aip_tiers,
+                "created_at": utc_now_iso(),
+            },
+            ConditionExpression="attribute_not_exists(token_hash)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
 
     if prior_hash and prior_hash != token_hash and prior_hash not in superseded:
         superseded.append(prior_hash)
@@ -502,7 +560,8 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     if prior_hash and prior_hash in superseded:
         await _disarm_ttl(table, prior_hash)
 
-    await _swap_hash_pointer(owner_id, token_hash, superseded=superseded, expected_prior_hash=prior_hash)
+    if prior_hash != token_hash:
+        await _swap_hash_pointer(owner_id, token_hash, superseded=superseded, expected_prior_hash=prior_hash)
 
     logger.info(
         "bedrock-gate token minted for owner %s: new=%s.. prior=%s tiers=%s",
@@ -514,58 +573,12 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     return token
 
 
-async def persist_gate_token_hash(
-    owner_id: str,
-    token_hash: str,
-    *,
-    claim_id: str | None = None,
-    attempt_token: str | None = None,
-) -> None:
-    """Re-assert the row's pointer at ``token_hash`` once the row exists.
-
-    ``mint_gate_token`` runs BEFORE ``create_user_service``, so on any path
-    where the containers row is not there yet its swap answers ``"absent"`` and
-    writes nothing — leaving a ``denied=False`` token row reachable from
-    nowhere. ``create_user_service`` calls this immediately after its
-    row-creating upsert, which is the first moment there is a row to condition
-    on. Through the SAME conditional swap, deliberately: a whole-item put here
-    is precisely the read-to-write race that made the row's pointer clobberable
-    in the first place.
-
-    A no-op in the ordinary case, where the row already existed at mint time
-    (``try_claim_provision``/``takeover_provision`` create it before the
-    provision runs) and the mint's own swap already landed this hash.
-
-    ``claim_id``/``attempt_token`` put the caller's provision lease INTO the
-    swap's condition, so a run superseded between its last checkpoint and this
-    write is refused atomically rather than pointing the row at a token no task
-    of its will ever present. Raises ``ProvisionSuperseded`` when that happens;
-    the caller must stop. Omitted for callers that hold no lease.
-    """
-    row = await container_repo.get_by_owner_id(owner_id) or {}
-    prior_hash = row.get("bedrock_gate_token_hash")
-    if prior_hash == token_hash:
-        return
-    tracked = [*(row.get(_SUPERSEDED_FIELD) or []), prior_hash]
-    superseded = [h for h in dict.fromkeys(tracked) if h and h != token_hash]
-    await _swap_hash_pointer(
-        owner_id,
-        token_hash,
-        superseded=superseded,
-        expected_prior_hash=prior_hash,
-        claim_id=claim_id,
-        attempt_token=attempt_token,
-    )
-
-
 async def _swap_hash_pointer(
     owner_id: str,
     token_hash: str,
     *,
     superseded: list[str],
     expected_prior_hash: str | None,
-    claim_id: str | None = None,
-    attempt_token: str | None = None,
 ) -> None:
     """Conditional swap of the row's gate-token pointer, with bounded retry.
 
@@ -581,16 +594,8 @@ async def _swap_hash_pointer(
 
     Why three: every interfering write to ``bedrock_gate_token_hash`` costs at
     most one attempt, and a rival provision makes exactly ONE — its own
-    ``mint_gate_token`` swap. Its later ``persist_gate_token_hash`` re-assert
-    does not write at all, since the pointer already equals the hash that swap
-    wrote. The shape this path actually has is a poll provision racing a
-    ``container_recover`` takeover, so 1 + 1 = 2 suffices and the third is
-    spare. N concurrent minters would want N + 1, but nothing produces them
-    today, and exhaustion is a LOGGED leak, not a lockout.
-
-    A lease that moves is NOT retried — ``swap_gate_token_hash`` raises
-    ``ProvisionSuperseded`` straight through this loop, because retrying would
-    be the loser re-arming against the winner's row and writing anyway.
+    ``mint_gate_token`` swap — so two concurrent provisions need 1 + 1 = 2 and
+    the third is spare. Exhaustion is a LOGGED leak, not a lockout.
     """
     expected = expected_prior_hash
     outcome, conflicting = "conflict", None
@@ -600,10 +605,12 @@ async def _swap_hash_pointer(
             new_hash=token_hash,
             superseded=superseded,
             expected_prior_hash=expected,
-            claim_id=claim_id,
-            attempt_token=attempt_token,
         )
         if outcome != "conflict":
+            break
+        if conflicting and conflicting.get("bedrock_gate_token_hash") == token_hash:
+            # A concurrent run for the same generation already pointed the row here.
+            outcome = "written"
             break
         if not conflicting:
             # Conflicted but the prior row could not be parsed (see

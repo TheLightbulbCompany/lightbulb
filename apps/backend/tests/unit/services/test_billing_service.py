@@ -180,49 +180,6 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_change_provider_takes_over_before_it_dispatches(monkeypatch):
-    """ONE path: re-provision, which re-derives the owner's Bedrock AIPs and rewrites every agent
-    profile from the committed provider_choice. Nothing is stopped or drained -- the provision is
-    two S3 writes, and the agent reads the rewritten profile on its next turn.
-
-    The takeover is the load-bearing half: ``dispatch_provision``'s claim does not admit a
-    "running" row, so a bare dispatch would stand down SILENTLY while we told the caller
-    ``restart: True`` and the owner kept running on the old provider.
-    """
-    monkeypatch.setattr(
-        billing_service.billing_repo,
-        "get_by_owner_id",
-        AsyncMock(return_value={"subscription_status": "active", "stripe_subscription_id": "sub_1"}),
-    )
-    # change_provider imports is_subscription_active LAZILY from
-    # core.services.provision_gate, so patch it at the source module.
-    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda a: True)
-    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
-    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"owner_id": "user_x"})
-    )
-    takeover = AsyncMock()
-    monkeypatch.setattr("core.repositories.container_repo.takeover_provision", takeover)
-    dispatch = MagicMock()
-    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
-    created: list = []
-    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: created.append(coro) or MagicMock())
-
-    result = await billing_service.change_provider(
-        owner_id="user_x",
-        clerk_user_id="user_x",
-        owner_type="personal",
-        provider_choice="bedrock_claude",
-    )
-
-    assert result["restart"] is True
-    takeover.assert_awaited_once_with("user_x")
-    dispatch.assert_called_once_with("user_x")
-    assert len(created) == 1
-
-
-@pytest.mark.asyncio
 async def test_managed_switch_ensures_owner_key_before_provider_commit(monkeypatch):
     monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_ENABLED", True)
     monkeypatch.setattr(billing_service.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
@@ -246,11 +203,7 @@ async def test_managed_switch_ensures_owner_key_before_provider_commit(monkeypat
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
     monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
 
-    async def dispatch(owner):
-        pass
-
-    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
-    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: coro.close())
+    monkeypatch.setattr("core.services.hermes_provisioning.reconcile_in_background", MagicMock())
 
     await billing_service.change_provider(
         owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="openrouter_managed"
@@ -326,139 +279,52 @@ async def test_managed_switch_requires_a_selected_server_model_before_commit(mon
 
 
 @pytest.mark.asyncio
-async def test_retry_of_committed_provider_with_pending_marker_dispatches_again(monkeypatch):
+async def test_reselecting_the_committed_provider_reruns_the_reconcile(monkeypatch):
+    """Re-selecting is how an owner retries a switch whose reconcile was lost: it commits
+    nothing and schedules the idempotent reconcile again."""
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",
         AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
     )
     monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda row: True)
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"needs_provision": True})
-    )
-    monkeypatch.setattr("core.repositories.container_repo.takeover_provision", AsyncMock())
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
-    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
-
-    async def dispatch(owner):
-        pass
-
-    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
-    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: coro.close())
+    reconcile = MagicMock()
+    monkeypatch.setattr("core.services.hermes_provisioning.reconcile_in_background", reconcile)
 
     result = await billing_service.change_provider(
         owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="bedrock_claude"
     )
-    assert result["restart"] is True
+    assert result["status"] == "noop"
     billing_service.billing_repo.set_provider_choice.assert_not_awaited()
+    reconcile.assert_called_once_with("org_a")
 
 
 @pytest.mark.asyncio
-async def test_change_provider_refuses_different_choice_while_switch_pending(monkeypatch):
+async def test_a_switch_commits_billing_then_schedules_the_reconcile(monkeypatch):
+    """No switch marker, no dispatch: the committed row is the only state, and the reconcile
+    reads it."""
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",
         AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
     )
     monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda row: True)
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"needs_provision": True})
-    )
     commit = AsyncMock()
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", commit)
-    monkeypatch.setattr(
-        "core.services.key_service.get_secret_arn", AsyncMock(return_value="arn:aws:secretsmanager:key")
-    )
-
-    with pytest.raises(billing_service.ChangeProviderError) as exc:
-        await billing_service.change_provider(
-            owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="byo_key", byo_provider="openai"
-        )
-    assert exc.value.code == "provider_switch_pending"
-    commit.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_change_provider_skips_the_takeover_for_a_workspace_with_no_row(monkeypatch):
-    """With no row there is no lease to fence, and a takeover would CREATE one as
-    "provisioning" with a fresh lease -- which the dispatch's own claim then refuses, breaking
-    the create-from-scratch path for a never-provisioned owner."""
-    monkeypatch.setattr(
-        billing_service.billing_repo,
-        "get_by_owner_id",
-        AsyncMock(return_value={"subscription_status": "active", "stripe_subscription_id": "sub_1"}),
-    )
-    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda a: True)
-    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
+    monkeypatch.setattr("core.services.key_service.get_secret_arn", AsyncMock(return_value="arn:key"))
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
-    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
-    takeover = AsyncMock()
-    monkeypatch.setattr("core.repositories.container_repo.takeover_provision", takeover)
-    dispatch = MagicMock()
+    reconcile = MagicMock()
+    monkeypatch.setattr("core.services.hermes_provisioning.reconcile_in_background", reconcile)
+    dispatch = AsyncMock(side_effect=AssertionError("a switch no longer dispatches a provision"))
     monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
-    created: list = []
-    monkeypatch.setattr(billing_service.asyncio, "create_task", lambda coro: created.append(coro) or MagicMock())
 
     result = await billing_service.change_provider(
-        owner_id="user_x",
-        clerk_user_id="user_x",
-        owner_type="personal",
-        provider_choice="bedrock_claude",
+        owner_id="org_a", clerk_user_id="user_a", owner_type="org", provider_choice="byo_key", byo_provider="openai"
     )
-
-    assert result["restart"] is True
-    takeover.assert_not_awaited()
-    dispatch.assert_called_once_with("user_x")
-
-
-@pytest.mark.asyncio
-async def test_change_provider_reverts_the_commit_when_the_takeover_fails(monkeypatch):
-    """The new provider is committed BEFORE the takeover, so a failed takeover leaves a row that
-    matches the request -- and a retry would hit the no-op fast path and dispatch nothing. The
-    commit is reverted so the retry re-runs the whole switch."""
-    monkeypatch.setattr(
-        billing_service.billing_repo,
-        "get_by_owner_id",
-        AsyncMock(
-            return_value={
-                "subscription_status": "active",
-                "stripe_subscription_id": "sub_1",
-                "provider_choice": "byo_key",
-                "byo_provider": "openai",
-            }
-        ),
-    )
-    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda a: True)
-    mark = {"generation": "gen-new", "previous_needs_provision": False, "previous_generation": "gen-old"}
-    set_choice = AsyncMock(side_effect=[{"_switch_mark": mark}, {}])
-    monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", set_choice)
-    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
-    monkeypatch.setattr("core.services.key_service.KeyService", MagicMock())
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"owner_id": "user_x"})
-    )
-    monkeypatch.setattr(
-        "core.repositories.container_repo.takeover_provision", AsyncMock(side_effect=RuntimeError("ddb down"))
-    )
-    restore_marker = AsyncMock(return_value=True)
-    monkeypatch.setattr("core.repositories.container_repo.restore_needs_provision", restore_marker)
-    dispatch = MagicMock()
-    monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", dispatch)
-
-    with pytest.raises(billing_service.ChangeProviderError) as exc:
-        await billing_service.change_provider(
-            owner_id="user_x",
-            clerk_user_id="user_x",
-            owner_type="personal",
-            provider_choice="bedrock_claude",
-        )
-
-    assert exc.value.code == "reprovision_stop_failed"
-    dispatch.assert_not_called()
-    # Committed to bedrock, then restored to what the workspace is actually running.
-    assert [c.kwargs["provider_choice"] for c in set_choice.await_args_list] == ["bedrock_claude", "byo_key"]
-    assert set_choice.await_args_list[1].kwargs["requires_reprovision"] is False
-    restore_marker.assert_awaited_once_with("user_x", mark)
+    assert result["status"] == "ok"
+    commit.assert_awaited_once()
+    reconcile.assert_called_once_with("org_a")
 
 
 @pytest.mark.asyncio

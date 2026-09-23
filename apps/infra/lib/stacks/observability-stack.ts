@@ -639,23 +639,25 @@ def handler(event, context):
         "Marketplace agent export path traversal attempt blocked - security event",
     });
 
-    // P23: provider-switch-wedged
-    // runtime_transport answers every turn ingress 503 while a row carries
-    // needs_provision. A real switch clears it within ~11 min (10-min idle
-    // wait + profile writes); 15 min of refusals means nothing is converging
-    // the flag and chat is being dead-lettered (the 2026-09-22 outage).
+    // P28: provision-reconcile-failed
+    // hermes_provisioning.reconcile_runtime (provider switch, plan change,
+    // admin door, end of every provision) never flips a RUNNING workspace to
+    // error: the old runtime keeps serving and this metric is the only trace
+    // that billing and the runtime now disagree. Every step is idempotent, so
+    // a failure is deterministic until someone looks. The SFN side of the same
+    // pair is service-stack's provision-executions-failed alarm.
     this.createAlarm({
-      id: "P23",
-      name: "provider-switch-wedged",
-      metricName: "runtime.ingress.provider_switch_pending",
+      id: "P28",
+      name: "provision-reconcile-failed",
+      metricName: "provision.reconcile.failed",
       threshold: 0,
-      evaluationPeriods: 3,
+      evaluationPeriods: 1,
       periodMinutes: 5,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       severity: "page",
       description:
-        "Turn ingress refused for 15+ min on a pending provider switch - a needs_provision flag is not converging",
+        "reconcile_runtime failed - a workspace runtime no longer matches its billing (provider/plan); the old runtime is still serving",
     });
 
     // P24: paperclip-run-hook-auth-failed
@@ -2175,7 +2177,7 @@ def handler(event, context):
     this.createAlarm({
       id: "W58",
       name: "per-user-crash-loop",
-      description: ">=3 unexpected task stops in 5 min on the platform cluster (backend, provisioner, paperclip) - a crash/restart loop. Provisional threshold.",
+      description: ">=3 unexpected task stops in 5 min on the platform cluster (backend, paperclip) - a crash/restart loop. Provisional threshold.",
       metric: crashLoopMetric,
       threshold: 3,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,

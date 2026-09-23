@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { useBilling } from "@/hooks/useBilling";
 import { useProvisioningState, type BlockedPayload } from "@/hooks/useProvisioningState";
 import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
+import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
 import { replaceSearchParams } from "@/lib/shellNav";
 import { SUPPORT_MAILTO } from "@/lib/domain";
@@ -279,6 +280,12 @@ export function ProvisioningStepper({
     container,
     refresh,
   } = useProvisioningState();
+  // Same /container/recover call HealthIndicator's CONTAINER_DOWN action uses
+  // (useSystemHealth) — a deterministic (non-retryable) provisioning error is
+  // no longer auto-redispatched by the /container/status poll, so the failed
+  // state's Retry button below drives it explicitly instead of just re-polling.
+  const { recover, isRecovering: isRetryingProvision } = useSystemHealth();
+  const [retryFailed, setRetryFailed] = useState(false);
 
   // Private runtime health/onboarding events invalidate this shared status key
   // in LiveEventsProvider, so the stepper observes readiness through HTTP.
@@ -327,6 +334,23 @@ export function ProvisioningStepper({
     container?.container_status === "error" && container?.container_substatus === "error_retrying";
   const isTerminalError =
     container?.container_status === "error" && !isRetryingError;
+
+  // AgentsBanner's "Check again"/"Retry" button. A terminal error needs the
+  // real recover call (see the useSystemHealth destructure above); every
+  // other alarming state (stuck/slow) is still a live re-poll.
+  const handleAgentsBannerCheck = useCallback(async () => {
+    if (!isTerminalError) {
+      refresh();
+      return;
+    }
+    setRetryFailed(false);
+    const result = await recover();
+    if (result === null) {
+      setRetryFailed(true);
+      return;
+    }
+    refresh();
+  }, [isTerminalError, recover, refresh]);
 
   // Readiness decision (backend runtime_phase="provisioning"/"starting"/
   // "ready", lifecycle="parked"/"error"/…) is sourced from the ONE shared
@@ -1182,8 +1206,10 @@ export function ProvisioningStepper({
         <AgentsBanner
           state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : isRetryingError ? "retrying" : "starting"}
           phase={phase}
-          onCheck={() => refresh()}
+          onCheck={handleAgentsBannerCheck}
           onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
+          isChecking={isTerminalError && isRetryingProvision}
+          checkFailed={isTerminalError && retryFailed}
         />
         {children}
       </>
@@ -1621,11 +1647,17 @@ function AgentsBanner({
   phase,
   onCheck,
   onSupport,
+  isChecking,
+  checkFailed,
 }: {
   state: keyof typeof AGENTS_BANNER_COPY;
   phase: Phase;
   onCheck: () => void;
   onSupport: () => void;
+  /** True while a `failed`-state Retry's /container/recover call is in flight. */
+  isChecking: boolean;
+  /** True when that recover call itself errored (not just "nothing to recover"). */
+  checkFailed: boolean;
 }) {
   const alarming = state === "stuck" || state === "failed";
   const progress = state in ADVANCING_BANNER_COPY ? agentsBannerProgress(phase) : null;
@@ -1643,11 +1675,14 @@ function AgentsBanner({
             <span className="font-medium text-[var(--midnight)]">{progress.activeLabel}</span>
           )}
           <span>{(progress && ADVANCING_BANNER_COPY[state]) || AGENTS_BANNER_COPY[state]}</span>
+          {state === "failed" && checkFailed && (
+            <span className="text-err">Retry failed — try again or contact support.</span>
+          )}
         </span>
         {state !== "starting" && state !== "retrying" && (
           <span className="flex gap-4">
-            <button type="button" className="underline" onClick={onCheck}>
-              {state === "failed" ? "Retry" : "Check again"}
+            <button type="button" className="underline disabled:opacity-60" onClick={onCheck} disabled={isChecking}>
+              {isChecking ? "Retrying…" : state === "failed" ? "Retry" : "Check again"}
             </button>
             {alarming && (
               <a className="underline" href={SUPPORT_MAILTO} onClick={onSupport}>Contact support</a>

@@ -494,13 +494,14 @@ async def _run_state_capturing_reprovision(mock_repo, prior_status, new_status):
             "owner_type": "org",
             "stripe_customer_id": "cus_x",
             "subscription_status": prior_status,
+            "plan": "standard",
         }
     )
     event = _subscription_event(default_payment_method=None, status=new_status)
     dispatch = AsyncMock(return_value={"status": "reprovisioning"})
     created: list = []
     with (
-        patch("core.services.provision_dispatch.dispatch_provision", dispatch),
+        patch("core.services.hermes_provisioning.reconcile_runtime", dispatch),
         patch.object(
             handlers.asyncio,
             "create_task",
@@ -523,12 +524,13 @@ async def _run_state_capturing_telemetry(mock_repo, prior_status, new_status):
             "owner_type": "org",
             "stripe_customer_id": "cus_x",
             "subscription_status": prior_status,
+            "plan": "standard",
         }
     )
     event = _subscription_event(default_payment_method=None, status=new_status)
     dispatch = AsyncMock(return_value={"status": "reprovisioning"})
     with (
-        patch("core.services.provision_dispatch.dispatch_provision", dispatch),
+        patch("core.services.hermes_provisioning.reconcile_runtime", dispatch),
         patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: coro.close() or MagicMock()),
         patch.object(handlers, "capture_product_event") as mock_capture,
     ):
@@ -565,6 +567,28 @@ async def test_active_renewal_does_not_dispatch_reprovision(mock_repo):
 
     reprovision.assert_not_called()
     assert created == []
+
+
+@pytest.mark.asyncio
+async def test_a_plan_change_on_a_live_subscription_reconciles_the_runtime(mock_repo):
+    """Task 8a: the plan decides the CEO's premium tier (and, for Base, the provider), so a
+    committed plan change reconciles -- no provider-switch marker is involved."""
+    mock_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "owner_id": "org_x",
+            "owner_type": "org",
+            "stripe_customer_id": "cus_x",
+            "subscription_status": "active",
+            "plan": "base",
+        }
+    )
+    reconcile = AsyncMock(return_value="current")
+    with (
+        patch("core.services.hermes_provisioning.reconcile_runtime", reconcile),
+        patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: coro.close() or MagicMock()),
+    ):
+        await handlers.handle_subscription_state(_subscription_event(status="active"), MagicMock())
+    reconcile.assert_called_once_with("org_x")
 
 
 @pytest.mark.asyncio
@@ -694,7 +718,7 @@ async def test_trial_converted_telemetry_failure_does_not_break_webhook(mock_rep
     event = _subscription_event(default_payment_method=None, status="active")
     dispatch = AsyncMock(return_value={"status": "reprovisioning"})
     with (
-        patch("core.services.provision_dispatch.dispatch_provision", dispatch),
+        patch("core.services.hermes_provisioning.reconcile_runtime", dispatch),
         patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: coro.close() or MagicMock()),
         patch.object(
             handlers,
@@ -778,8 +802,8 @@ async def test_non_conversion_event_does_not_stamp_the_container_row(mock_repo, 
 async def test_reprovision_success_clears_substatus_and_pending(mock_container_repo):
     """Success: the converting marker is cleared AND conversion_pending drops,
     so the self-heal below never re-fires a conversion that already landed."""
-    dispatch = AsyncMock(return_value=True)
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+    dispatch = AsyncMock(return_value="current")
+    with patch("core.services.hermes_provisioning.reconcile_runtime", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
     dispatch.assert_awaited_once_with("org_x")
@@ -790,8 +814,8 @@ async def test_reprovision_success_clears_substatus_and_pending(mock_container_r
 
 @pytest.mark.asyncio
 async def test_reprovision_claim_loss_keeps_recovery_markers(mock_container_repo):
-    dispatch = AsyncMock(return_value=False)
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+    dispatch = AsyncMock(return_value="failed")
+    with patch("core.services.hermes_provisioning.reconcile_runtime", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
     fields = _stamped_fields(mock_container_repo.update_conversion_fields)
@@ -807,7 +831,7 @@ async def test_reprovision_failure_clears_substatus_but_keeps_pending(mock_conta
     status-path self-heal keys off to re-fire the dead conversion. The task
     itself must not raise (it's a fire-and-forget create_task target)."""
     dispatch = AsyncMock(side_effect=RuntimeError("ecs boom"))
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+    with patch("core.services.hermes_provisioning.reconcile_runtime", dispatch):
         await handlers.run_conversion_reprovision("org_x")  # must not raise
 
     fields = _stamped_fields(mock_container_repo.update_conversion_fields)
@@ -831,7 +855,7 @@ async def test_reprovision_is_deferred_while_oauth_tokens_are_missing(mock_conta
     anchor); record why it was deferred so the completion path can re-arm."""
     prerequisite_gate.return_value = _gate("oauth_required")
     dispatch = AsyncMock()
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+    with patch("core.services.hermes_provisioning.reconcile_runtime", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
     dispatch.assert_not_awaited()
@@ -856,7 +880,7 @@ async def test_deferral_rearms_itself_when_the_prerequisite_lands_before_the_mar
         }
     )
     dispatch = AsyncMock()
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+    with patch("core.services.hermes_provisioning.reconcile_runtime", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
     dispatch.assert_not_awaited()
@@ -869,7 +893,7 @@ async def test_deferral_rearms_itself_when_the_prerequisite_lands_before_the_mar
 async def test_reprovision_is_deferred_while_byo_provider_is_unchosen(mock_container_repo, prerequisite_gate):
     prerequisite_gate.return_value = _gate("byo_provider_required")
     dispatch = AsyncMock()
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+    with patch("core.services.hermes_provisioning.reconcile_runtime", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
     dispatch.assert_not_awaited()
@@ -884,7 +908,7 @@ async def test_reprovision_proceeds_past_gates_the_provisioner_can_survive(mock_
     them would leave a paying owner on the trial shape."""
     prerequisite_gate.return_value = _gate("credits_required")
     dispatch = AsyncMock(return_value={"status": "reprovisioning"})
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+    with patch("core.services.hermes_provisioning.reconcile_runtime", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
     dispatch.assert_awaited_once_with("org_x")
@@ -896,7 +920,7 @@ async def test_prerequisite_gate_read_failure_fails_open_to_reprovision(mock_con
     the provisioner is the real fence."""
     prerequisite_gate.side_effect = RuntimeError("ddb blip")
     dispatch = AsyncMock(return_value={"status": "reprovisioning"})
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+    with patch("core.services.hermes_provisioning.reconcile_runtime", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
     dispatch.assert_awaited_once_with("org_x")
@@ -908,13 +932,13 @@ async def test_a_real_attempt_spends_the_deferral_marker(mock_container_repo):
     deferral marker is cleared — it only describes a conversion that has NOT
     been tried yet."""
     dispatch = AsyncMock(return_value={"status": "ok"})
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+    with patch("core.services.hermes_provisioning.reconcile_runtime", dispatch):
         await handlers.run_conversion_reprovision("org_x")
     assert _stamped_fields(mock_container_repo.update_conversion_fields)["conversion_deferred_reason"] is None
 
     mock_container_repo.update_conversion_fields.reset_mock()
     dispatch = AsyncMock(side_effect=RuntimeError("ecs down"))
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+    with patch("core.services.hermes_provisioning.reconcile_runtime", dispatch):
         await handlers.run_conversion_reprovision("org_x")
     assert _stamped_fields(mock_container_repo.update_conversion_fields)["conversion_deferred_reason"] is None
 
@@ -1336,19 +1360,6 @@ async def test_stranded_stopped_row_releases_the_guard(mock_repo, mock_container
 
 
 @pytest.mark.asyncio
-async def test_stopped_row_with_successor_claim_keeps_the_guard(mock_repo):
-    """A claim on the row means an SFN execution owns it — the guard holds so
-    the poll cannot race a provision on top of the successor."""
-    container = {
-        "status": "stopped",
-        "conversion_pending": False,
-        "conversion_started_at": _fresh_ts(),
-        "provision_claim_id": "claim-successor",
-    }
-    assert await handlers.maybe_resume_stuck_conversion("org_x", container) is True
-
-
-@pytest.mark.asyncio
 async def test_stopped_row_with_last_error_keeps_the_guard(mock_repo):
     """A recorded error means some release already landed — the ordinary error
     auto-retry owns recovery once the guard lapses; no early release needed."""
@@ -1529,12 +1540,13 @@ async def _run_state(mock_repo, prior_status, new_status, **event_overrides):
             "owner_type": "org",
             "stripe_customer_id": "cus_x",
             "subscription_status": prior_status,
+            "plan": "standard",
         }
     )
     event = _subscription_event(default_payment_method=None, status=new_status, **event_overrides)
     dispatch = AsyncMock(return_value={"status": "reprovisioning"})
     with (
-        patch("core.services.provision_dispatch.dispatch_provision", dispatch),
+        patch("core.services.hermes_provisioning.reconcile_runtime", dispatch),
         patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: coro.close() or MagicMock()),
     ):
         await handlers.handle_subscription_state(event, MagicMock())
@@ -1620,7 +1632,7 @@ async def test_successful_conversion_clears_the_guard_timestamp(mock_repo, mock_
     Gateway" action, so a stale stamp means a user clicking Restart on a wedged
     gateway gets `already_recovering` for minutes."""
     dispatch = AsyncMock(return_value={"status": "ok"})
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+    with patch("core.services.hermes_provisioning.reconcile_runtime", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
     fields = mock_container_repo.update_conversion_fields.await_args.args[1]
@@ -1634,7 +1646,7 @@ async def test_failed_conversion_keeps_the_guard_markers(mock_repo, mock_contain
     record that this owner is paying for a trial-shaped container, and what
     `maybe_resume_stuck_conversion` re-fires off."""
     dispatch = AsyncMock(side_effect=RuntimeError("ecs down"))
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatch):
+    with patch("core.services.hermes_provisioning.reconcile_runtime", dispatch):
         await handlers.run_conversion_reprovision("org_x")
 
     fields = mock_container_repo.update_conversion_fields.await_args.args[1]

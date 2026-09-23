@@ -265,7 +265,7 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
             return_value=_paperclip_repo_returning(paperclip_company),
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
         result = await admin_service.get_provisioning("user_1")
 
@@ -275,7 +275,7 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
     assert "SECRET-ST" not in flat
     assert result["container"]["status"] == "error"
     assert result["container"]["last_error"] == "boom"
-    assert result["container"]["claim_stale"] in (True, False)
+    assert "claim_stale" not in result["container"]
     assert result["paperclip"]["funnel_state"] == "submitted"
     assert result["paperclip"]["starter_agent_ids"] == {"ceo": "agent-ceo"}
 
@@ -323,7 +323,7 @@ async def test_get_provisioning_includes_inactive_authoritative_org_row(status):
         ),
         patch("core.services.admin_service._paperclip_repo", return_value=repo),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
         result = await admin_service.get_provisioning("admin_user")
 
@@ -357,7 +357,7 @@ async def test_get_provisioning_no_rows_degrades_to_nones():
             return_value=_paperclip_repo_returning(None),
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
         result = await admin_service.get_provisioning("user_1")
 
@@ -399,7 +399,7 @@ async def test_get_provisioning_container_read_failure_isolated_from_compute_sta
             return_value=_paperclip_repo_returning(None),
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
         result = await admin_service.get_provisioning("user_1")  # must not raise
 
@@ -445,7 +445,7 @@ async def test_get_provisioning_paperclip_read_failure_not_mistaken_for_empty_ro
             return_value=failing_repo,
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
         result = await admin_service.get_provisioning("user_1")  # must not raise
 
@@ -457,9 +457,9 @@ async def test_get_provisioning_paperclip_read_failure_not_mistaken_for_empty_ro
 
 @pytest.mark.asyncio
 async def test_get_provisioning_sfn_read_failure_not_mistaken_for_no_execution():
-    """A failing/timed-out describe_dispatch_execution flows through
+    """A failing/timed-out running_execution flows through
     _with_timeout as an {"error", "source"} sentinel -- not None, and not a
-    real DescribeExecution response. _narrow_execution only special-cases a
+    real ListExecutions item. _narrow_execution only special-cases a
     falsy `resp`; threading the sentinel through it unnarrowed would silently
     fabricate a present-but-all-None execution row instead of surfacing that
     the read itself failed. The composer must surface the raw sentinel in the
@@ -469,8 +469,6 @@ async def test_get_provisioning_sfn_read_failure_not_mistaken_for_no_execution()
 
     container_row = {
         "status": "provisioning",
-        "provision_claim_id": "claim-123",
-        "provision_execution_name": "provision-owner_1-claim123",
     }
 
     with (
@@ -492,7 +490,7 @@ async def test_get_provisioning_sfn_read_failure_not_mistaken_for_no_execution()
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
         patch(
-            "core.services.admin_service.describe_dispatch_execution",
+            "core.services.admin_service.running_execution",
             new=AsyncMock(side_effect=RuntimeError("sfn_blip")),
         ),
     ):
@@ -506,15 +504,12 @@ async def test_get_provisioning_sfn_read_failure_not_mistaken_for_no_execution()
 
 @pytest.mark.asyncio
 async def test_get_provisioning_narrows_sfn_response():
-    """The SFN DescribeExecution response is boto3-shaped (datetimes +
-    ResponseMetadata); only name/status/start_date/stop_date should survive,
-    with dates ISO-serialized and ResponseMetadata dropped."""
+    """The SFN ListExecutions item is boto3-shaped (datetimes); only
+    name/status/start_date/stop_date should survive, with dates ISO-serialized."""
     from core.services import admin_service
 
     container_row = {
         "status": "provisioning",
-        "provision_claim_id": "claim-123",
-        "provision_execution_name": "provision-owner_1-claim123",
     }
     start = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
     stop = datetime(2026, 7, 24, 12, 5, 0, tzinfo=timezone.utc)
@@ -547,11 +542,11 @@ async def test_get_provisioning_narrows_sfn_response():
             return_value=_paperclip_repo_returning(None),
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.admin_service.describe_dispatch_execution", new=describe_mock),
+        patch("core.services.admin_service.running_execution", new=describe_mock),
     ):
         result = await admin_service.get_provisioning("user_1")
 
-    describe_mock.assert_awaited_once_with("owner_1", "claim-123")
+    describe_mock.assert_awaited_once_with("owner_1")
     assert set(result["sfn_execution"]) == {"name", "status", "start_date", "stop_date"}
     assert result["sfn_execution"]["name"] == "provision-owner_1-claim123"
     assert result["sfn_execution"]["status"] == "RUNNING"
@@ -595,7 +590,7 @@ async def test_get_provisioning_gate_payload_shape():
             return_value=_paperclip_repo_returning(None),
         ),
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=gate)),
-        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
         result = await admin_service.get_provisioning("user_1")
 
@@ -633,7 +628,7 @@ async def test_get_provisioning_gate_probe_failure_degrades_to_none_not_crash():
             "core.services.admin_service.probe_provision_gate",
             new=AsyncMock(side_effect=RuntimeError("ddb_blip")),
         ),
-        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
         result = await admin_service.get_provisioning("user_1")  # must not raise
 

@@ -157,7 +157,7 @@ class TestMint:
         fake_runtime.bearer = "old-plaintext"
 
         with caplog.at_level("INFO", logger=mod.logger.name):
-            token = await mod.mint_gate_token("org_abc", _AIPS)
+            token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
 
         new_hash = mod.hash_token(token)
         mint_records = [r for r in caplog.records if "minted" in r.message]
@@ -176,7 +176,7 @@ class TestMint:
         _put_container_row(gate_tables, "org_abc")
 
         with caplog.at_level("INFO", logger=mod.logger.name):
-            await mod.mint_gate_token("org_abc", _AIPS)
+            await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
 
         mint_records = [r for r in caplog.records if "minted" in r.message]
         assert len(mint_records) == 1
@@ -192,7 +192,7 @@ class TestMint:
         fake_runtime.bearer = "old-plaintext"
 
         with caplog.at_level("DEBUG"):
-            token = await mod.mint_gate_token("org_abc", _AIPS)
+            token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
             await mod.expire_superseded_gate_tokens("org_abc")
 
         for record in caplog.records:
@@ -203,7 +203,7 @@ class TestMint:
     async def test_writes_hash_only_row_with_inverted_aip_tiers(self, gate_tables):
         _put_container_row(gate_tables, "org_abc")
 
-        token = await mod.mint_gate_token("org_abc", _AIPS)
+        token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
 
         rows = _token_rows(gate_tables)
         assert len(rows) == 1
@@ -221,7 +221,7 @@ class TestMint:
     async def test_no_plaintext_token_is_persisted_anywhere(self, gate_tables):
         _put_container_row(gate_tables, "org_abc")
 
-        token = await mod.mint_gate_token("org_abc", _AIPS)
+        token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
 
         # The plaintext must appear in NO stored attribute (hash-only storage).
         for row in _token_rows(gate_tables):
@@ -237,7 +237,7 @@ class TestMint:
     async def test_points_containers_row_at_new_hash(self, gate_tables):
         _put_container_row(gate_tables, "org_abc")
 
-        token = await mod.mint_gate_token("org_abc", _AIPS)
+        token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
 
         crow = gate_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_abc"}})["Item"]
         assert crow["bedrock_gate_token_hash"]["S"] == mod.hash_token(token)
@@ -257,7 +257,7 @@ class TestMint:
         _put_token_row(gate_tables, old_hash)
         fake_runtime.bearer = "old-plaintext"
 
-        token = await mod.mint_gate_token("org_abc", _AIPS)
+        token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
 
         rows = {r["token_hash"]["S"]: r for r in _token_rows(gate_tables)}
         assert old_hash in rows and mod.hash_token(token) in rows
@@ -267,38 +267,35 @@ class TestMint:
         assert _tracked(gate_tables) == [old_hash]
 
     @pytest.mark.asyncio
-    async def test_mint_backstop_drains_an_orphaned_hash_but_keeps_the_live_one(self, gate_tables, fake_runtime):
-        """Mint is the backstop for a confirmation that never came.
+    async def test_a_warm_sessions_old_bearer_survives_every_mint_until_a_confirmed_stop(
+        self, gate_tables, fake_runtime
+    ):
+        """C1 (Task 8a fix round 1): a pre-derivation owner's first reconcile mints the derived
+        bearer and rewrites the boot secret; a SECOND mint (the runner's two prepares) then saw
+        the old hash as unpresentable -- the secret no longer carries it -- and deleted the
+        token row a warm microVM was still presenting. The mint never deletes now; only the
+        expiry after a confirmed session stop does."""
+        old_plaintext = "random-pre-derivation-bearer"
+        old_hash = mod.hash_token(old_plaintext)
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=old_hash)
+        _put_token_row(gate_tables, old_hash)
+        fake_runtime.bearer = old_plaintext
 
-        Two supersessions with no roll in between: the FIRST one's token is not
-        in any task definition (it was never delivered) and must go; the one the
-        service still references must survive.
-        """
-        orphan = "1" * 64
-        live_plaintext = "live-token"
-        live_hash = mod.hash_token(live_plaintext)
-        _put_container_row(
-            gate_tables,
-            "org_abc",
-            bedrock_gate_token_hash=live_hash,
-            superseded=[orphan],
-        )
-        _put_token_row(gate_tables, orphan)
-        _put_token_row(gate_tables, live_hash)
-        fake_runtime.bearer = live_plaintext
+        token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
+        fake_runtime.bearer = token  # prepare rewrote the boot secret; the warm session did not reload
+        assert await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1") == token
 
-        token = await mod.mint_gate_token("org_abc", _AIPS)
+        assert old_hash in {r["token_hash"]["S"] for r in _token_rows(gate_tables)}
+        assert _tracked(gate_tables) == [old_hash]
 
-        remaining = {r["token_hash"]["S"] for r in _token_rows(gate_tables)}
-        assert orphan not in remaining
-        assert remaining == {live_hash, mod.hash_token(token)}
-        assert _tracked(gate_tables) == [live_hash]
+        await mod.expire_superseded_gate_tokens("org_abc")  # after StopRuntimeSession
+        assert {r["token_hash"]["S"] for r in _token_rows(gate_tables)} == {mod.hash_token(token)}
 
     @pytest.mark.asyncio
-    async def test_returned_tokens_are_unique_per_mint(self, gate_tables, fake_runtime):
+    async def test_a_bumped_generation_rotates_the_token(self, gate_tables, fake_runtime):
         _put_container_row(gate_tables, "org_abc")
-        t1 = await mod.mint_gate_token("org_abc", _AIPS)
-        t2 = await mod.mint_gate_token("org_abc", _AIPS)
+        t1 = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
+        t2 = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1", generation=1)
         assert t1 != t2
         # The superseded token OUTLIVES the mint by design — it is tracked, not
         # scheduled — and only goes when the predicate proves it unreachable.
@@ -313,6 +310,66 @@ class TestMint:
 
         assert [r["token_hash"]["S"] for r in _token_rows(gate_tables)] == [mod.hash_token(t2)]
 
+    @pytest.mark.asyncio
+    async def test_the_same_generation_is_the_same_token_and_a_second_mint_changes_nothing(
+        self, gate_tables, fake_runtime
+    ):
+        """Two provision runs for one owner must converge, not rotate: the bearer is
+        derived, the token row is create-only (a deny survives), and the pointer
+        already names the hash so nothing is superseded."""
+        _put_container_row(gate_tables, "org_abc", agentcore_runtime_arn="")
+        t1 = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
+        await mod.deny_gate_token("org_abc", True)
+
+        t2 = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
+
+        assert t1 == t2 == mod.derive_gate_bearer("org_abc", "c-1", 0)
+        rows = _token_rows(gate_tables)
+        assert [r["token_hash"]["S"] for r in rows] == [mod.hash_token(t1)]
+        assert rows[0]["denied"]["BOOL"] is True  # the second run did not un-deny it
+        assert _container_row(gate_tables)["bedrock_gate_token_hash"]["S"] == mod.hash_token(t1)
+        assert _tracked(gate_tables) == []
+
+
+class TestDeriveGateBearer:
+    def test_stable_per_owner_row_and_generation(self):
+        assert mod.derive_gate_bearer("org_a", "row-1", 0) == mod.derive_gate_bearer("org_a", "row-1", 0)
+
+    def test_differs_across_generation_row_and_owner(self):
+        tokens = {
+            mod.derive_gate_bearer("org_a", "row-1", 0),
+            mod.derive_gate_bearer("org_a", "row-1", 1),  # explicit rotation
+            mod.derive_gate_bearer("org_a", "row-2", 0),  # teardown + reprovision: a new row id
+            mod.derive_gate_bearer("org_b", "row-1", 0),
+        }
+        assert len(tokens) == 4
+
+    def test_is_hmac_sha256_of_the_versioned_label_keyed_by_the_dedicated_key(self, monkeypatch):
+        import base64
+        import hmac
+
+        monkeypatch.setattr(mod.settings, "GATE_BEARER_HMAC_KEY", "k")
+        monkeypatch.setattr(mod.settings, "ENCRYPTION_KEY", "other")
+        want = base64.urlsafe_b64encode(
+            hmac.new(b"k", b"lightbulb-gate-bearer:v1:org_a:row-1:3", hashlib.sha256).digest()
+        ).rstrip(b"=")
+        assert mod.derive_gate_bearer("org_a", "row-1", 3) == want.decode()
+
+    def test_never_depends_on_encryption_key(self, monkeypatch):
+        before = mod.derive_gate_bearer("org_a", "row-1", 0)
+        monkeypatch.setattr(mod.settings, "ENCRYPTION_KEY", "rotated")
+        assert mod.derive_gate_bearer("org_a", "row-1", 0) == before
+
+    def test_refuses_an_empty_key_with_no_fallback(self, monkeypatch):
+        """An empty HMAC key would make every bearer computable from public ids."""
+        monkeypatch.setattr(mod.settings, "GATE_BEARER_HMAC_KEY", "")
+        with pytest.raises(RuntimeError):
+            mod.derive_gate_bearer("org_a", "row-1", 0)
+
+    def test_refuses_an_empty_row_id(self):
+        with pytest.raises(ValueError):
+            mod.derive_gate_bearer("org_a", "", 0)
+
 
 class TestConcurrentMints:
     """Two mints for the same owner, both reading before either writes.
@@ -325,7 +382,7 @@ class TestConcurrentMints:
     """
 
     @staticmethod
-    def _interleave(monkeypatch, owner_id: str = "org_abc") -> dict:
+    def _interleave(monkeypatch, owner_id: str = "org_abc", generation: int = 1) -> dict:
         """Force mint B to run to completion between mint A's read and its write.
 
         No sleeps and no real concurrency: the wrapper runs the whole second
@@ -340,7 +397,7 @@ class TestConcurrentMints:
         async def swap(*args, **kwargs):
             if not state.get("started"):
                 state["started"] = True  # set BEFORE the await, or B recurses
-                state["token_b"] = await mod.mint_gate_token(owner_id, _AIPS)
+                state["token_b"] = await mod.mint_gate_token(owner_id, _AIPS, row_id="c-1", generation=generation)
             return await real_swap(*args, **kwargs)
 
         monkeypatch.setattr(container_repo, "swap_gate_token_hash", swap)
@@ -357,7 +414,7 @@ class TestConcurrentMints:
         _put_container_row(gate_tables, "org_abc")
         state = self._interleave(monkeypatch)
 
-        token_a = await mod.mint_gate_token("org_abc", _AIPS)
+        token_a = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
 
         hash_a, hash_b = mod.hash_token(token_a), mod.hash_token(state["token_b"])
         assert hash_a != hash_b
@@ -368,13 +425,28 @@ class TestConcurrentMints:
         assert {r["token_hash"]["S"] for r in _token_rows(gate_tables)} == {hash_a, hash_b}
 
     @pytest.mark.asyncio
+    async def test_two_same_generation_mints_converge_on_one_row_and_one_pointer(
+        self, gate_tables, fake_runtime, monkeypatch
+    ):
+        """The ordinary shape once leases go: two provision runs, same generation."""
+        _put_container_row(gate_tables, "org_abc", agentcore_runtime_arn="")
+        state = self._interleave(monkeypatch, generation=0)
+
+        token_a = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
+
+        assert token_a == state["token_b"]
+        assert [r["token_hash"]["S"] for r in _token_rows(gate_tables)] == [mod.hash_token(token_a)]
+        assert _container_row(gate_tables)["bedrock_gate_token_hash"]["S"] == mod.hash_token(token_a)
+        assert _tracked(gate_tables) == []
+
+    @pytest.mark.asyncio
     async def test_deny_reaches_the_race_loser(self, gate_tables, fake_runtime, monkeypatch):
         """THE CONSEQUENCE. An untracked hash is a live bearer credential the
         trial-cap backstop and admin revoke cannot kill."""
         _put_container_row(gate_tables, "org_abc")
         state = self._interleave(monkeypatch)
 
-        token_a = await mod.mint_gate_token("org_abc", _AIPS)
+        token_a = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
 
         await mod.deny_gate_token("org_abc", True)
 
@@ -400,7 +472,7 @@ class TestConcurrentMints:
         monkeypatch.setattr(container_repo, "swap_gate_token_hash", always_conflict)
 
         with caplog.at_level("ERROR", logger=mod.logger.name):
-            token = await mod.mint_gate_token("org_abc", _AIPS)
+            token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
 
         assert len(attempts) == 3  # bounded
         # ONE token row: the mint happened once, ahead of the loop.
@@ -452,7 +524,7 @@ class TestConcurrentMints:
         monkeypatch.setattr(container_repo, "get_by_owner_id", stale_get)
         monkeypatch.setattr(container_repo, "swap_gate_token_hash", swap)
 
-        token = await mod.mint_gate_token("org_abc", _AIPS)
+        token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
 
         row = _container_row(gate_tables)
         assert row["bedrock_gate_token_hash"]["S"] == mod.hash_token(token)
@@ -465,270 +537,16 @@ class TestConcurrentMints:
         }
 
     @pytest.mark.asyncio
-    async def test_a_later_upsert_cannot_drop_a_swapped_hash(self, gate_tables, fake_runtime):
-        """The composition, one function later. create_user_service upserts the
-        row MID-provision, and that upsert is a whole-item put — it rewrites
-        both gate fields whether it means to or not.
-
-        Shape: a container_recover takeover mints HB and swaps; the superseded
-        poll provision mints HA and swaps (correctly merging HB); it then dies
-        at its next _provision_checkpoint, and the survivor's upsert lands.
-        Nothing may drop out of the reachable set.
-        """
-        h0_plaintext = "h0-token"
-        h0 = mod.hash_token(h0_plaintext)
-        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=h0)
-        _put_token_row(gate_tables, h0)
-        fake_runtime.bearer = h0_plaintext  # H0 is live: the drain must keep it
-
-        token_b = await mod.mint_gate_token("org_abc", _AIPS)
-        token_a = await mod.mint_gate_token("org_abc", _AIPS)
-        assert _tracked(gate_tables) == [h0, mod.hash_token(token_b)]
-
-        # The survivor's create_user_service upsert. It names NEITHER gate
-        # field — swap_gate_token_hash is their only writer.
-        from core.repositories import container_repo
-
-        await container_repo.upsert("org_abc", {"status": "provisioning"})
-
-        row = _container_row(gate_tables)
-        reachable = {row["bedrock_gate_token_hash"]["S"], *_tracked(gate_tables)}
-        assert reachable == {h0, mod.hash_token(token_a), mod.hash_token(token_b)}
-
-        await mod.deny_gate_token("org_abc", True)
-        assert {r["token_hash"]["S"]: r["denied"]["BOOL"] for r in _token_rows(gate_tables)} == {
-            h0: True,
-            mod.hash_token(token_a): True,
-            mod.hash_token(token_b): True,
-        }
-
-    @pytest.mark.asyncio
-    async def test_a_mint_inside_the_upserts_write_window_is_not_orphaned(self, gate_tables, fake_runtime, monkeypatch):
-        """THE RACE NO GUARD ON upsert COULD CLOSE (Codex P1 on the fold).
-
-        ``upsert`` reads the row, then writes the whole item back. A rival mint
-        that lands BETWEEN those two makes the snapshot stale — the fold that
-        used to live there was computed from that same snapshot, so it could
-        never see the newly minted hash, and the put restored the caller's own.
-
-        Here the rival mint is forced into exactly that window. Both hashes must
-        stay reachable, because the pointer is not the upsert's to move: the run
-        re-asserts its own hash afterwards through the conditional swap.
-        """
-        from core.repositories import container_repo
-
-        _put_container_row(gate_tables, "org_abc")
-        token_a = await mod.mint_gate_token("org_abc", _AIPS)
-
-        real_run_in_thread = container_repo.run_in_thread
-        state: dict = {}
-
-        async def racing_run_in_thread(fn, **kwargs):
-            # Fire the rival mint on the way INTO upsert's put_item — after its
-            # read has already been taken.
-            if getattr(fn, "__name__", "") == "put_item" and not state.get("fired"):
-                state["fired"] = True  # set BEFORE the await, or the rival recurses
-                state["token_b"] = await mod.mint_gate_token("org_abc", _AIPS)
-            return await real_run_in_thread(fn, **kwargs)
-
-        monkeypatch.setattr(container_repo, "run_in_thread", racing_run_in_thread)
-        await container_repo.upsert("org_abc", {"status": "provisioning"})
-        monkeypatch.setattr(container_repo, "run_in_thread", real_run_in_thread)
-        assert state.get("fired"), "the rival mint never landed in the window"
-
-        # create_user_service's re-assert, straight after its upsert.
-        await mod.persist_gate_token_hash("org_abc", mod.hash_token(token_a))
-
-        hash_a, hash_b = mod.hash_token(token_a), mod.hash_token(state["token_b"])
-        row = _container_row(gate_tables)
-        assert row["bedrock_gate_token_hash"]["S"] == hash_a
-        assert {row["bedrock_gate_token_hash"]["S"], *_tracked(gate_tables)} == {hash_a, hash_b}
-
-        # THE CONSEQUENCE: an unreachable hash is a live bearer credential the
-        # trial-cap backstop and admin revoke cannot kill.
-        await mod.deny_gate_token("org_abc", True)
-        assert {r["token_hash"]["S"]: r["denied"]["BOOL"] for r in _token_rows(gate_tables)} == {
-            hash_a: True,
-            hash_b: True,
-        }
-
-    @pytest.mark.asyncio
-    async def test_a_superseded_run_cannot_point_the_row_at_its_own_dead_token(self, gate_tables, fake_runtime):
-        """THE LAST NON-ATOMIC GAP ON THIS PATH.
-
-        create_user_service checkpoints, then re-asserts its hash. A takeover
-        landing between the two used to sail through, because the swap
-        conditioned only on the prior HASH: the loser moved the pointer to its
-        own token AFTER the winner had asserted theirs. Nothing presents that
-        token — the loser never gets to register a task definition — and the
-        drain only ever judges the superseded list, so it stayed current
-        indefinitely while the winner's LIVE hash sat as merely superseded.
-
-        A checkpoint cannot close this (verify-then-act is not atomic), but the
-        swap is a conditional write, so it carries the lease itself.
-        """
-        from core.repositories import container_repo
-
-        _put_container_row(gate_tables, "org_abc", status="stopped")
-        loser = await container_repo.try_claim_provision("org_abc", claim_id="claim-loser")
-        assert loser == "claim-loser"  # or the lease clause below is silently absent
-        # The winner takes over and asserts ITS hash, exactly as a real rival
-        # provision's own mint would.
-        winner = await container_repo.takeover_provision("org_abc")
-        await container_repo.swap_gate_token_hash(
-            "org_abc", new_hash="hash_winner", superseded=[], expected_prior_hash=None
-        )
-
-        with pytest.raises(container_repo.ProvisionSuperseded, match="provision_claim_id"):
-            await mod.persist_gate_token_hash("org_abc", "hash_loser", claim_id=loser, attempt_token=loser)
-
-        assert winner != loser
-        row = _container_row(gate_tables)
-        assert row["bedrock_gate_token_hash"]["S"] == "hash_winner"
-        assert "hash_loser" not in {row["bedrock_gate_token_hash"]["S"], *_tracked(gate_tables)}
-
-    @pytest.mark.asyncio
-    async def test_a_lease_holder_still_re_asserts_and_a_hash_conflict_still_merges(self, gate_tables, fake_runtime):
-        """The over-tightening guard, both halves: the lease clause must admit
-        the run that still HOLDS the lease, and a hash-only conflict under a
-        held lease is still the benign merge-and-retry."""
-        from core.repositories import container_repo
-
-        _put_container_row(gate_tables, "org_abc", status="stopped")
-        claim = await container_repo.try_claim_provision("org_abc", claim_id="claim-held")
-        assert claim == "claim-held"
-        await container_repo.swap_gate_token_hash(
-            "org_abc", new_hash="hash_rival", superseded=[], expected_prior_hash=None
-        )
-
-        # Lease held throughout; only the hash moved. Merge, don't stop.
-        await mod.persist_gate_token_hash("org_abc", "hash_mine", claim_id=claim, attempt_token=claim)
-
-        row = _container_row(gate_tables)
-        assert row["bedrock_gate_token_hash"]["S"] == "hash_mine"
-        assert _tracked(gate_tables) == ["hash_rival"]  # merged, not erased
-
-    @staticmethod
-    def _stale_hash_snapshot(monkeypatch, owner_id: str, stale_hash: str):
-        """Make persist read a pointer the row has already moved past, so its
-        swap is refused SOLELY by the hash clause."""
-        from core.repositories import container_repo
-
-        real_get = container_repo.get_by_owner_id
-
-        async def stale_get(oid, **kw):
-            row = dict(await real_get(oid, **kw) or {})
-            if oid == owner_id and row:
-                row["bedrock_gate_token_hash"] = stale_hash
-            return row or None
-
-        monkeypatch.setattr(container_repo, "get_by_owner_id", stale_get)
-
-    @pytest.mark.asyncio
-    async def test_a_hash_only_refusal_never_blames_an_unpinned_attempt_token(
-        self, gate_tables, fake_runtime, monkeypatch
-    ):
-        """LOCKOUT DIRECTION: the triage must compare only what the condition pinned.
-
-        A deliberate takeover mints its claim internally and passes NO attempt
-        token — a live production shape (the SFN runner passes both; every other
-        caller defaults to None). The condition then pins the claim alone, but
-        the row still CARRIES an attempt token, stamped atomically by
-        takeover_provision. Comparing that against the expected value the
-        condition never pinned turns an ordinary hash-only conflict into a
-        ProvisionSuperseded and aborts a perfectly valid lease holder.
-        """
-        from core.repositories import container_repo
-
-        _put_container_row(gate_tables, "org_abc", status="stopped")
-        claim = await container_repo.takeover_provision("org_abc")
-        await container_repo.swap_gate_token_hash(
-            "org_abc", new_hash="hash_rival", superseded=[], expected_prior_hash=None
-        )
-        # The row carries an attempt token; the caller holds none.
-        assert _container_row(gate_tables)["provision_attempt_token"]["S"] == claim
-        self._stale_hash_snapshot(monkeypatch, "org_abc", "hash_stale")
-
-        await mod.persist_gate_token_hash("org_abc", "hash_mine", claim_id=claim)
-
-        row = _container_row(gate_tables)
-        assert row["bedrock_gate_token_hash"]["S"] == "hash_mine"
-        assert _tracked(gate_tables) == ["hash_rival"]  # merged on the retry
-
-    @pytest.mark.asyncio
-    async def test_the_same_caller_shape_still_stops_when_the_claim_itself_moves(
-        self, gate_tables, fake_runtime, monkeypatch
-    ):
-        """The other half: pinning fewer fields must not blunt the fence. Same
-        no-attempt-token caller, but the CLAIM moved — still superseded."""
-        from core.repositories import container_repo
-
-        _put_container_row(gate_tables, "org_abc", status="stopped")
-        loser = await container_repo.takeover_provision("org_abc")
-        winner = await container_repo.takeover_provision("org_abc")
-        assert winner != loser
-        self._stale_hash_snapshot(monkeypatch, "org_abc", "hash_stale")
-
-        with pytest.raises(container_repo.ProvisionSuperseded, match="provision_claim_id"):
-            await mod.persist_gate_token_hash("org_abc", "hash_loser", claim_id=loser)
-
-    @pytest.mark.asyncio
-    async def test_both_lease_fields_supplied_and_both_moved_is_superseded(self, gate_tables, fake_runtime):
-        """The SFN runner's shape: both pinned, both moved."""
-        from core.repositories import container_repo
-
-        _put_container_row(gate_tables, "org_abc", status="stopped")
-        loser = await container_repo.try_claim_provision("org_abc", claim_id="claim-loser")
-        assert loser == "claim-loser"
-        await container_repo.takeover_provision("org_abc")
-
-        with pytest.raises(container_repo.ProvisionSuperseded):
-            await mod.persist_gate_token_hash("org_abc", "hash_loser", claim_id=loser, attempt_token=loser)
-
-    @pytest.mark.asyncio
-    async def test_a_claimless_caller_needs_no_lease(self, gate_tables, fake_runtime):
-        """routers/debug.create_user_service(owner_id, gateway_token) passes no
-        claim. An unconditional lease clause would fail every such call — and
-        mint_gate_token's own swap has no lease context either."""
-        from core.repositories import container_repo
-
-        _put_container_row(gate_tables, "org_abc", status="stopped")
-        assert await container_repo.takeover_provision("org_abc")  # someone else holds it
-
-        await mod.persist_gate_token_hash("org_abc", "hash_nolease")
-
-        assert _container_row(gate_tables)["bedrock_gate_token_hash"]["S"] == "hash_nolease"
-
-    @pytest.mark.asyncio
     async def test_absent_row_stays_a_silent_no_op(self, gate_tables, fake_runtime, caplog):
         """The fresh-provision path: no containers row yet. The swap must not
-        create one (create_user_service's upsert does that) and must not look
+        create one (dispatch does that) and must not look
         like a lost race."""
         with caplog.at_level("ERROR", logger=mod.logger.name):
-            token = await mod.mint_gate_token("org_new", _AIPS)
+            token = await mod.mint_gate_token("org_new", _AIPS, row_id="c-1")
 
         assert [r["token_hash"]["S"] for r in _token_rows(gate_tables)] == [mod.hash_token(token)]
         assert "Item" not in gate_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_new"}})
         assert [r for r in caplog.records if r.levelname == "ERROR"] == []
-
-    @pytest.mark.asyncio
-    async def test_the_fresh_provision_path_ends_with_the_row_pointing_at_the_mint(self, gate_tables, fake_runtime):
-        """Row absent at mint, created by the upsert, pointed by the swap.
-
-        The mint's own swap answers "absent" and writes nothing, so without the
-        re-assert the token row would live on with denied=False and NOTHING
-        would reference it — unfindable (hash-keyed table, no owner index),
-        unexpirable, and outside deny_gate_token's reach.
-        """
-        from core.repositories import container_repo
-
-        token = await mod.mint_gate_token("org_new", _AIPS)
-        await container_repo.upsert("org_new", {"status": "provisioning"})
-        await mod.persist_gate_token_hash("org_new", mod.hash_token(token))
-
-        assert _container_row(gate_tables, "org_new")["bedrock_gate_token_hash"]["S"] == mod.hash_token(token)
-        await mod.deny_gate_token("org_new", True)
-        assert [r["denied"]["BOOL"] for r in _token_rows(gate_tables)] == [True]
 
 
 class TestLegacyTtlDisarm:
@@ -760,7 +578,7 @@ class TestLegacyTtlDisarm:
         _put_token_row(gate_tables, hash_a, ttl=self._FUTURE_TTL)
         fake_runtime.bearer = a_plaintext  # the service presents A
 
-        await mod.mint_gate_token("org_abc", _AIPS)
+        await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
 
         # Adopted: tracked, so the predicate protects it and deny reaches it.
         assert hash_a in _tracked(gate_tables)
@@ -779,7 +597,7 @@ class TestLegacyTtlDisarm:
         _put_token_row(gate_tables, old_hash, ttl=self._FUTURE_TTL)  # the old task's grace clock
         fake_runtime.bearer = old_plaintext
 
-        await mod.mint_gate_token("org_abc", _AIPS)
+        await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
 
         assert _tracked(gate_tables) == [old_hash]
         assert "ttl" not in _token_row(gate_tables, old_hash)
@@ -796,7 +614,7 @@ class TestLegacyTtlDisarm:
         fake_runtime.bearer = old_plaintext
         before = _token_row(gate_tables, old_hash)
 
-        await mod.mint_gate_token("org_abc", _AIPS)
+        await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
         for _ in range(3):  # every wake re-evaluates retention
             await mod.expire_superseded_gate_tokens("org_abc")
 
@@ -819,7 +637,7 @@ class TestLegacyTtlDisarm:
         _put_token_row(gate_tables, hash_a)  # NO ttl yet — nothing to disarm
         fake_runtime.bearer = a_plaintext
 
-        await mod.mint_gate_token("org_abc", _AIPS)
+        await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
         assert hash_a in _tracked(gate_tables)
         assert "ttl" not in _token_row(gate_tables, hash_a)
 
@@ -858,7 +676,7 @@ class TestLegacyTtlDisarm:
 
         monkeypatch.setattr(mod, "run_in_thread", throttle_first_update)
         with caplog.at_level("WARNING", logger=mod.logger.name):
-            await mod.mint_gate_token("org_abc", _AIPS)  # completes despite the failure
+            await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")  # completes despite the failure
 
         assert throttled, "the disarm never ran"
         assert _tracked(gate_tables) == [old_hash]
@@ -883,7 +701,7 @@ class TestLegacyTtlDisarm:
         _put_token_row(gate_tables, hash_a, ttl=self._FUTURE_TTL)
         fake_runtime.bearer = a_plaintext
 
-        await mod.mint_gate_token("org_abc", _AIPS)
+        await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
 
         # The kill switch reaches it.
         await mod.deny_gate_token("org_abc", True)
@@ -1125,7 +943,7 @@ class TestDeny:
     @pytest.mark.asyncio
     async def test_toggles_denied_flag_on_the_current_token_row(self, gate_tables):
         _put_container_row(gate_tables, "org_abc")
-        token = await mod.mint_gate_token("org_abc", _AIPS)
+        token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
         h = mod.hash_token(token)
 
         await mod.deny_gate_token("org_abc", True)
@@ -1135,6 +953,38 @@ class TestDeny:
         await mod.deny_gate_token("org_abc", False)
         row = gate_tables.get_item(TableName="test-gate-tokens", Key={"token_hash": {"S": h}})["Item"]
         assert row["denied"]["BOOL"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("denied_slot", ["current", "superseded"])
+    async def test_a_denied_owners_new_derived_row_is_born_denied(self, gate_tables, fake_runtime, denied_slot):
+        """A capped/killed owner's reconcile mints the derived bearer: its NEW row must not
+        start at denied=False, or the rotation itself lifts the kill."""
+        current, old = mod.hash_token("token-B"), mod.hash_token("token-A")
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=current, superseded=[old])
+        _put_token_row(gate_tables, current)
+        _put_token_row(gate_tables, old)
+        gate_tables.update_item(
+            TableName="test-gate-tokens",
+            Key={"token_hash": {"S": current if denied_slot == "current" else old}},
+            UpdateExpression="SET denied = :t",
+            ExpressionAttributeValues={":t": {"BOOL": True}},
+        )
+        fake_runtime.bearer = "token-A"
+
+        token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
+
+        assert _token_row(gate_tables, mod.hash_token(token))["denied"]["BOOL"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_undenied_owners_new_row_is_not_denied(self, gate_tables, fake_runtime):
+        current = mod.hash_token("token-B")
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=current)
+        _put_token_row(gate_tables, current)
+        fake_runtime.bearer = "token-B"
+
+        token = await mod.mint_gate_token("org_abc", _AIPS, row_id="c-1")
+
+        assert _token_row(gate_tables, mod.hash_token(token))["denied"]["BOOL"] is False
 
     @pytest.mark.asyncio
     async def test_denies_the_superseded_rows_too(self, gate_tables):

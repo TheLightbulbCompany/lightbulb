@@ -16,8 +16,8 @@ import { logGroupPath } from "../table-names";
  * is a Bedrock AgentCore runtime running the Hermes bridge image, so this stack
  * keeps only
  *
- *  - the PLATFORM ECS cluster (the backend Fargate service and the Step
- *    Functions provisioner task run on it),
+ *  - the PLATFORM ECS cluster (the backend Fargate service runs on it; the
+ *    provisioner is a Lambda now),
  *  - the Cloud Map private DNS namespace PaperclipStack registers
  *    `paperclip.<namespace>` into,
  *  - the per-owner Bedrock base policy + permissions boundary, which double as
@@ -63,8 +63,8 @@ export class ContainerStack extends cdk.Stack {
 
     const litestreamBucketName = `lightbulb-${props.environment}-openclaw-replicas`;
 
-    // THE PLATFORM ECS cluster — the backend Fargate service (service-stack) and
-    // the Step Functions provisioner EcsRunTask run on it. Nothing per-user does
+    // THE PLATFORM ECS cluster — the backend Fargate service (service-stack)
+    // runs on it. Nothing per-user does
     // any more. Container Insights stays off: it is ~15 metrics per service, and
     // AWS/ECS standard metrics (CPUUtilization, MemoryUtilization) plus custom
     // EMF cover the backend's alarms.
@@ -542,8 +542,7 @@ export class ContainerStack extends cdk.Stack {
     //
     // KEPT through the runtime move on purpose: the rule is scoped to the CLUSTER,
     // not to the retired per-user services, and the cluster still carries the
-    // backend service, the Step Functions provisioner task and the Paperclip
-    // service. ~1 KB an event, well under $1/mo.
+    // backend service and the Paperclip service. ~1 KB an event, well under $1/mo.
     const ecsTaskEventsLogGroup = new logs.LogGroup(
       this,
       "EcsTaskEventsLogGroup",

@@ -228,12 +228,12 @@ async def _mint_and_store(
 
     name = _secret_name(owner_id, paperclip_agent_id)
 
-    def _put() -> None:
+    def _put() -> str:
         sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-        create_or_update_secret(sm, name, plaintext)
+        return create_or_update_secret(sm, name, plaintext, create_only=True)
 
     try:
-        await run_in_thread(_put)
+        stored = await run_in_thread(_put)
     except Exception:
         logger.exception(
             "paperclip_api_key: failed to persist key owner=%s agent=%s — Paperclip "
@@ -243,6 +243,30 @@ async def _mint_and_store(
         )
         put_metric("paperclip_api_key.store.error")
         return None
+
+    if stored != plaintext:
+        # A concurrent provision stored its key first. Create-only: that key wins, and the
+        # one minted here is revoked so the agent does not keep two live credentials.
+        logger.info(
+            "paperclip_api_key: a concurrent writer stored first owner=%s agent=%s — using it",
+            owner_id,
+            paperclip_agent_id,
+        )
+        key_id = result.get("id")
+        try:
+            if key_id:
+                await admin_client.revoke_agent_api_key(
+                    session_cookie=cookie, agent_id=paperclip_agent_id, key_id=key_id
+                )
+        except (PaperclipApiError, httpx.HTTPError):
+            logger.warning(
+                "paperclip_api_key: could not revoke duplicate key owner=%s agent=%s key=%s",
+                owner_id,
+                paperclip_agent_id,
+                key_id,
+                exc_info=True,
+            )
+        return stored
 
     put_metric("paperclip_api_key.mint.success")
     logger.info(

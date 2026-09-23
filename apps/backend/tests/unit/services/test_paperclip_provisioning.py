@@ -834,7 +834,22 @@ class _StatefulRepo:
     async def get(self, user_id: str, *, consistent_read: bool = False):
         return self._rows.get(user_id)
 
-    async def put(self, row):
+    async def put(self, row, *, condition: str | None = None, condition_values: dict | None = None):
+        # Fix round 1 (Important #2): mirrors the real repo's
+        # (attribute_not_exists(onboarding_generation) OR onboarding_generation = :g) condition
+        # closely enough for this double's callers -- provision_org's G2 mint site is the only
+        # caller that ever passes one.
+        if condition is not None:
+            existing = self._rows.get(row.user_id)
+            current = getattr(existing, "onboarding_generation", None) if existing else None
+            expected = (condition_values or {}).get(":g")
+            if current is not None and current != expected:
+                from botocore.exceptions import ClientError
+
+                raise ClientError(
+                    {"Error": {"Code": "ConditionalCheckFailedException", "Message": "conditional check failed"}},
+                    "PutItem",
+                )
         self._rows[row.user_id] = row
 
     async def try_acquire_seed_claim(
@@ -867,9 +882,8 @@ class _StatefulRepo:
         self._rows[user_id] = row
         return True
 
-    async def stage_signup_credentials(self, user_id, *, claim_id, email, password_encrypted):
+    async def stage_signup_credentials(self, user_id, *, email, password_encrypted):
         row = self._rows[user_id]
-        assert row.seeding_claim_id == claim_id
         row.paperclip_email = row.paperclip_email or email
         row.paperclip_password_encrypted = row.paperclip_password_encrypted or password_encrypted
         return row.paperclip_email, row.paperclip_password_encrypted
@@ -1355,3 +1369,19 @@ async def test_provision_member_signup_failure_right_after_claim_downgrades_clai
     row = await repo.get("user_member", consistent_read=True)
     assert row is not None and row.status == "failed", "claim must be downgraded, not left seeding"
     assert row.company_id == "co_xyz"
+
+
+async def test_sign_up_with_staged_credentials_needs_no_claim(monkeypatch):
+    """Staging signup credentials is unfenced (#15 — no more leases): it
+    reaches signup without any seed claim."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    account, email, password = await svc._sign_up_with_staged_credentials(
+        user_id="user_owner", email="owner@example.com", password="plain-pw"
+    )
+
+    assert account == {"user": {"id": "pc_user_1"}, "_session_cookie": "cookie_new"}
+    repo.stage_signup_credentials.assert_awaited_once()

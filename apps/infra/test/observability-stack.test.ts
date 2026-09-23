@@ -199,7 +199,6 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "messaging.jev.decision": [["outcome"]],
   // core/services/run_analytics.py _enrich_and_capture; P27 (prod) binds outcome=success.
   "nightly_ceo.run": [["outcome"]],
-  "runtime.ingress.provider_switch_pending": [[]],
   // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---
   // core/services/messaging.py — create_human_message / create_agent_message.
   "messaging.message.created": [["author_kind", "has_targets", "room_kind"]],
@@ -233,6 +232,8 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   // core/services/push_service.py — send_push_to_user.
   "push.send": [["error_kind", "outcome"]],
   "provision.gate.blocked": [["code"]],
+  // core/services/hermes_provisioning.py — reconcile_runtime's except arm.
+  "provision.reconcile.failed": [[]],
   // run_analytics.schedule_run_completed — full set {outcome, source}; W67
   // binds {outcome=failure, source=paperclip} (autonomous-run reliability).
   "run.completed": [["outcome", "source"]],

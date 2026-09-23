@@ -281,21 +281,15 @@ async def container_status(
         await arm_workspace_trial_if_unset(owner_id)
 
     # Auto-retry: if the workspace is in a failed/stuck state AND the owner can
-    # currently afford to provision, trigger re-provisioning in the
-    # background. The same gate as /provision (audit C1) — bare
-    # subscription-id existence wasn't enough; we need active/trialing
-    # status, and bedrock_claude users need a positive credit balance.
-    #
-    # Stale-lease recovery: a "provisioning" row whose lease has had no
-    # checkpoint refresh for PROVISION_CLAIM_STALE_S means the process running
-    # the provision died mid-flight (a raise releases the lease to "error"
-    # immediately — only hard process death leaves it to go stale). Fold it
-    # into the retryable branch so it inherits every gate below, then let
-    # try_claim_provision's stale clause decide ATOMICALLY who re-provisions —
-    # two polls can both enter here, exactly one wins the re-claim.
+    # currently afford to provision, SAY it is re-provisioning. The same gate as
+    # /provision (audit C1) — bare subscription-id existence wasn't enough; we
+    # need active/trialing status, and bedrock_claude users need a positive
+    # credit balance. The dispatch itself is ensure_user_ready's, below — the
+    # ONE dispatcher per poll (it carries the provision gate, the parked-trial
+    # check and the deterministic-error skip); this branch only gates and
+    # shapes the response.
     retryable_states = ("error", "stopped")
-    stale_provision = container_repo.is_provision_claim_stale(container)
-    if (container.get("status") in retryable_states or stale_provision) and not conversion_active:
+    if container.get("status") in retryable_states and not conversion_active:
         # The FULL trial predicate, not just the cap. An over-cap or expired
         # trial owner gets the limit card rather than a silent re-provision.
         from core.services import provision_gate, trial_cap
@@ -327,22 +321,14 @@ async def container_status(
                 #     render the error card immediately.
                 # Default True keeps a cause-less legacy error row self-healing.
                 if container.get("retryable", True):
-                    asyncio.create_task(dispatch_provision(owner_id))
                     container["substatus"] = "error_retrying"
                     _sync_contract_with_container(contract, container)
             else:
-                # stopped / stale-provisioning lease: the poll-driven self-heal.
-                # An idle AgentCore workspace is NOT this case — AWS parks its
-                # microVM invisibly and the row stays "running", which is why
-                # there is no wake to suppress here any more.
-                #
-                # No status pre-write: dispatch_provision's atomic lease claim IS
-                # the transition to "provisioning". A pre-write would (a) race
-                # concurrent polls into double-dispatch and (b) flip the row to
-                # "provisioning" with a stale lease, which the claim's stale
-                # clause could then mis-time. The local dict mutation below only
-                # shapes THIS response.
-                asyncio.create_task(dispatch_provision(owner_id))
+                # stopped: the poll-driven self-heal. An idle AgentCore workspace
+                # is NOT this case — AWS parks its microVM invisibly and the row
+                # stays "running". dispatch_provision writes the "provisioning"
+                # status itself; the local dict mutation below only shapes THIS
+                # response.
                 container["status"] = "provisioning"
                 container["substatus"] = "auto_retry"
                 _sync_contract_with_container(contract, container)
@@ -410,8 +396,9 @@ def _status_response(contract: dict) -> dict:
         "created_at": contract.get("created_at"),
         "updated_at": contract.get("updated_at"),
         "region": settings.AWS_REGION,
-        "last_error": contract.get("last_error"),
-        "last_error_at": contract.get("last_error_at"),
+        # Only an errored row explains itself: a live one may carry a stale earlier failure.
+        "last_error": contract.get("last_error") if contract.get("container_status") == "error" else None,
+        "last_error_at": contract.get("last_error_at") if contract.get("container_status") == "error" else None,
         # Per-CONTAINER onboarding fact. RECONCILE-WITH-ONBOARD: this was
         # `container.get("onboarded_at") is not None`; the
         # composer now derives it as `funnel_state == "complete"` once
@@ -596,7 +583,7 @@ async def container_provision(
     # Provision via the PROVISION Step Functions executor (spec §7 / PR-10) —
     # the SOLE provisioning executor, no flag. dispatch_provision is a fast
     # StartExecution call (the real work happens inside
-    # scripts.provision_runner, a one-shot task the state machine supervises)
+    # scripts.provision_runner, run by the state machine's provisioner Lambda)
     # and never raises: a StartExecution failure releases the row to
     # status="error" instead, picked up by this owner's next status poll.
     await dispatch_provision(owner_id)

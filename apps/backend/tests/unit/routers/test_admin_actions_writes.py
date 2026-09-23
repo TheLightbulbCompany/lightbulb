@@ -125,35 +125,18 @@ class TestContainerReprovision:
 
     @staticmethod
     @contextlib.contextmanager
-    def _wired(row={"owner_id": "u_target", "status": "running"}):
-        """The route is a takeover plus a dispatch now -- there is no ECS manager to call. It
-        MUST take over first: ``dispatch_provision``'s claim does not admit a "running" row, so a
-        bare dispatch on a live workspace stands down silently and the admin sees "provisioning"
-        while nothing runs."""
-        with (
-            patch("routers.admin.container_repo.get_by_owner_id", new_callable=AsyncMock, return_value=row),
-            patch("routers.admin.container_repo.takeover_provision", new_callable=AsyncMock) as takeover,
-            patch("routers.admin.dispatch_provision", new_callable=AsyncMock) as dispatch,
-        ):
-            yield takeover, dispatch
+    def _wired():
+        """The route schedules the idempotent reconcile -- no lease to take over."""
+        with patch("routers.admin.reconcile_in_background") as dispatch:
+            yield dispatch
 
     @pytest.mark.asyncio
     async def test_happy_path(self, async_client, admin_env):
-        with self._wired() as (takeover, dispatch):
+        with self._wired() as dispatch:
             res = await async_client.post("/api/v1/admin/users/u_target/container/reprovision")
         assert res.status_code == 200
-        assert res.json()["status"] == "provisioning"
-        takeover.assert_awaited_once_with("u_target")
-        dispatch.assert_awaited_once_with("u_target")
-
-    @pytest.mark.asyncio
-    async def test_a_workspace_with_no_row_is_dispatched_without_a_takeover(self, async_client, admin_env):
-        """Nothing to supersede, and ``takeover_provision`` is conditioned on the row existing."""
-        with self._wired(row=None) as (takeover, dispatch):
-            res = await async_client.post("/api/v1/admin/users/u_target/container/reprovision")
-        assert res.status_code == 200
-        takeover.assert_not_awaited()
-        dispatch.assert_awaited_once_with("u_target")
+        assert res.json()["status"] == "reconciling"
+        dispatch.assert_called_once_with("u_target")
 
     @pytest.mark.asyncio
     async def test_403_for_non_admin(self, async_client, non_admin_env):
@@ -174,13 +157,13 @@ class TestContainerReprovision:
     @pytest.mark.asyncio
     async def test_idempotent_within_window(self, async_client, admin_env):
         """Same Idempotency-Key within 60s => the dispatch runs once."""
-        with self._wired() as (_takeover, dispatch):
+        with self._wired() as dispatch:
             headers = {"Idempotency-Key": "reprov-key-1"}
             r1 = await async_client.post("/api/v1/admin/users/u_target/container/reprovision", headers=headers)
             r2 = await async_client.post("/api/v1/admin/users/u_target/container/reprovision", headers=headers)
         assert r1.status_code == 200
         assert r2.status_code == 409
-        assert dispatch.await_count == 1
+        assert dispatch.call_count == 1
 
 
 # ===========================================================================
@@ -192,7 +175,7 @@ class TestProvisionRetry:
     """POST /api/v1/admin/users/{user_id}/provisioning/retry.
 
     Re-dispatches provisioning through dispatch_provision (never raises).
-    Covers the error-row retry AND the stale-claim wedge rescue — unlike
+    Covers the error-row retry AND the wedged-provisioning rescue — unlike
     the owner-facing /container/retry, there is no billing gate here: this
     is an operator break-glass, audited.
     """
@@ -216,19 +199,9 @@ class TestProvisionRetry:
         assert res.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_409_when_provisioning_with_fresh_claim(self, async_client, admin_env):
-        row = {"status": "provisioning", "provision_claim_id": "claim-1"}
-        with (
-            patch("routers.admin.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
-            patch("routers.admin.container_repo.is_provision_claim_stale", return_value=False),
-        ):
-            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/retry")
-        assert res.status_code == 409
-
-    @pytest.mark.asyncio
     async def test_200_dispatches_when_error(self, async_client, admin_env):
         before = {"status": "error", "substatus": "boom"}
-        after = {"status": "provisioning", "substatus": None, "provision_claim_id": "claim-2"}
+        after = {"status": "provisioning", "substatus": None}
         mock_get = AsyncMock(side_effect=[before, after])
         mock_dispatch = AsyncMock(return_value=None)
         with (
@@ -241,17 +214,17 @@ class TestProvisionRetry:
         body = res.json()
         assert body["ok"] is True
         assert body["status"] == "provisioning"
-        assert body["provision_claim_id"] == "claim-2"
+        assert "provision_claim_id" not in body
 
     @pytest.mark.asyncio
-    async def test_200_dispatches_when_provisioning_and_stale(self, async_client, admin_env):
-        before = {"status": "provisioning", "provision_claim_id": "claim-old"}
-        after = {"status": "provisioning", "substatus": None, "provision_claim_id": "claim-new"}
+    async def test_200_dispatches_when_provisioning(self, async_client, admin_env):
+        """A wedged provisioning row is re-driven; dispatch itself no-ops while one runs."""
+        before = {"status": "provisioning"}
+        after = {"status": "provisioning", "substatus": None}
         mock_get = AsyncMock(side_effect=[before, after])
         mock_dispatch = AsyncMock(return_value=None)
         with (
             patch("routers.admin.container_repo.get_by_owner_id", new=mock_get),
-            patch("routers.admin.container_repo.is_provision_claim_stale", return_value=True),
             patch("routers.admin.dispatch_provision", new=mock_dispatch),
         ):
             res = await async_client.post("/api/v1/admin/users/u_target/provisioning/retry")

@@ -43,6 +43,19 @@ def test_stage_preserves_other_providers_state(monkeypatch):
     assert blob["active_provider"] == "openai-codex"
 
 
+def test_a_reconcile_stage_never_replaces_an_existing_grant(monkeypatch):
+    """only_if_absent: the stored grant may carry a refresh token the runtime has rotated since;
+    overwriting it with the connect-time one would revoke the whole token family."""
+    existing = {"providers": {"openai-codex": {"tokens": {"refresh_token": "rotated"}}}}
+    puts = _wire(monkeypatch, json.dumps(existing))
+    hermes_profiles.stage_codex_auth("org_a", {"access_token": "at", "refresh_token": "old"}, only_if_absent=True)
+    assert puts == {}
+
+    puts = _wire(monkeypatch, None)
+    hermes_profiles.stage_codex_auth("org_a", {"access_token": "at", "refresh_token": "rt"}, only_if_absent=True)
+    assert json.loads(puts["org_a/hermes/auth.json"])["providers"]["openai-codex"]["tokens"]["refresh_token"] == "rt"
+
+
 def test_stage_writes_a_uuid4_revision_last(monkeypatch):
     """C3/M4-R44: the same .revision-written-LAST contract a profile's own writers use, so the
     bridge's restore_root_auth (per-turn revision compare) notices a staged grant."""

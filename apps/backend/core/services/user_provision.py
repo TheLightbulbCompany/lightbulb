@@ -338,17 +338,14 @@ async def _provision_or_reconcile(auth: AuthContext, owner_id: str) -> None:
     ONE decision, made from live container state rather than from a
     caller-supplied flag, because the two halves are not independent:
 
-    * **Row absent / error / stopped / stale-provisioning → DISPATCH.** The
-      executor's runner does the seed itself (step 0) under
-      ``try_claim_provision``'s one-execution-per-owner election, which is what
-      makes the duplicate-company race (#1442 — a load-balanced poll fan-out
-      double-running ``provision_org``) structurally impossible for a first
-      provision. Seeding here as well would put that race straight back.
-    * **Row already ``running`` → NO dispatch, seed HERE.**
-      ``try_claim_provision`` refuses a ``running`` row by design (see its
-      docstring: "NOT claimable: running"), so a dispatch would only lose the
-      claim and stand down — no execution, and therefore no step 0. The seed
-      still has work to do in exactly this state (a ``failed`` Teams row on a
+    * **Row absent / retryable error / stopped / provisioning → DISPATCH.**
+      The executor's runner does the seed itself (step 0), under the seed's own
+      durable claims — seeding here as well would reopen the duplicate-company
+      race (#1442 — a load-balanced poll fan-out double-running
+      ``provision_org``). A deterministic error (``retryable=False``) is left
+      for a user action instead.
+    * **Row already ``running`` → NO dispatch, seed HERE.** The seed still has
+      work to do in exactly this state (a ``failed`` Teams row on a
       healthy box; a legacy container that never had a company), so it runs on
       this thread. No new race: an owner with a RUNNING container has already
       been through a provision, so this path never competes with the executor
@@ -368,9 +365,12 @@ async def _provision_or_reconcile(auth: AuthContext, owner_id: str) -> None:
     if await wake_policy.is_parked_trial(owner_id, row):
         wake_policy.note_wake_suppressed(owner_id, row, door="ensure_user_ready", reason="gated")
     elif (row or {}).get("status") != "running":
-        # dispatch_provision is idempotent on the absent/0-desired cases, so
-        # repeated owner polls on a not-yet-running container are safe: the
-        # atomic claim collapses them to one execution.
+        # A deterministic failure is NOT re-driven by a poll: it would fail
+        # identically forever. /container/recover, a user action or an input
+        # change re-dispatches it.
+        if (row or {}).get("status") == "error" and row.get("retryable") is False:
+            return
+        # Repeated polls are safe: dispatch no-ops while an execution is RUNNING.
         asyncio.create_task(dispatch_provision(owner_id))
         return
 
@@ -545,11 +545,10 @@ async def _ensure_paperclip_for_org(
     ``_reconcile_owner_seed`` for the one state the executor never reaches (an
     org whose container is already running or parked, so no provision — and
     therefore no step 0 — will run). A FIRST provision always goes through the
-    executor, where try_claim_provision elects one execution per owner, so the
-    duplicate-company race stays closed on the path that had it. The
-    per-org asyncio lock and ``try_acquire_org_create_claim`` below are KEPT as
-    defense-in-depth for the reconcile path (and for a bare/local runner
-    invocation outside the state machine).
+    executor. Concurrent executions are possible (dispatch is racy by design),
+    so the per-org asyncio lock and ``try_acquire_org_create_claim`` below are
+    the fence against a duplicate company until Paperclip company create is
+    idempotent in prod.
 
     Decided by company existence:
       - Company exists → JOIN it (provision_member), regardless of role.

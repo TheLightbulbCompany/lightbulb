@@ -87,3 +87,11 @@ def test_persistent_deletion_eventually_raises(monkeypatch):
     sm.create_secret = always_deleting
     with pytest.raises(_InvalidRequest):
         create_or_update_secret(sm, "n", "v")
+
+
+def test_create_only_keeps_the_first_writer_and_returns_its_value():
+    sm = _FakeSM()
+    sm.get_secret_value = lambda SecretId: {"SecretString": sm.store[SecretId]}
+    assert create_or_update_secret(sm, "n", "first", create_only=True) == "first"
+    assert create_or_update_secret(sm, "n", "second", create_only=True) == "first"
+    assert sm.store["n"] == "first"

@@ -121,6 +121,46 @@ async def test_seeded_agent_ids_absent_round_trips_as_none(repo):
     assert retrieved.seeded_agent_ids is None
 
 
+async def test_put_condition_passes_when_generation_absent_or_matching(repo):
+    """Fix round 1 (Important #2): put()'s optional condition — used only at the G2 mint site —
+    is (attribute_not_exists(onboarding_generation) OR onboarding_generation = :g). It must
+    succeed on a genuinely fresh row (attribute absent) and on a self-retry with the SAME
+    generation it already holds."""
+    company = _make_company(user_id="user_cond", onboarding_generation="gen-a")
+    await repo.put(
+        company,
+        condition="attribute_not_exists(onboarding_generation) OR onboarding_generation = :g",
+        condition_values={":g": "gen-a"},
+    )
+    assert (await repo.get("user_cond")).onboarding_generation == "gen-a"
+
+    # Self-retry with the identical generation still satisfies the condition.
+    await repo.put(
+        company,
+        condition="attribute_not_exists(onboarding_generation) OR onboarding_generation = :g",
+        condition_values={":g": "gen-a"},
+    )
+    assert (await repo.get("user_cond")).onboarding_generation == "gen-a"
+
+
+async def test_put_condition_raises_when_a_different_generation_already_won(repo):
+    """A peer already minted a DIFFERENT generation onto the row -- the conditioned put must
+    fail (ClientError/ConditionalCheckFailedException), not silently clobber the winner."""
+    from botocore.exceptions import ClientError
+
+    await repo.put(_make_company(user_id="user_race", onboarding_generation="gen-winner"))
+
+    losing_company = _make_company(user_id="user_race", onboarding_generation="gen-loser")
+    with pytest.raises(ClientError) as exc_info:
+        await repo.put(
+            losing_company,
+            condition="attribute_not_exists(onboarding_generation) OR onboarding_generation = :g",
+            condition_values={":g": "gen-loser"},
+        )
+    assert exc_info.value.response["Error"]["Code"] == "ConditionalCheckFailedException"
+    assert (await repo.get("user_race")).onboarding_generation == "gen-winner"
+
+
 async def test_starter_agent_ids_round_trip(repo):
     starter_ids = {
         "ceo": "agent-ceo",
@@ -1354,18 +1394,25 @@ async def test_member_seed_claim_carries_company_id_and_keeps_it_through_reclaim
     assert "company_id" not in repo._table().get_item(Key={"user_id": "user_o"}, ConsistentRead=True)["Item"]
 
 
-async def test_signup_credentials_remain_fenced_when_seed_claim_is_stolen(repo):
+async def test_signup_credentials_converge_regardless_of_which_claim_stages_them(repo):
+    """No more leases: two concurrent provision runs (the original claim holder
+    and whoever won a later takeover) must both succeed and converge on the
+    SAME staged email/password, rather than the loser hitting a
+    ConditionalCheckFailedException. ``if_not_exists`` + read-back is the
+    convergence primitive — first writer's values win, every caller reads
+    them back regardless of which claim_id is doing the staging."""
     await repo.try_acquire_seed_claim("user_new", org_id="org_a", claim_id="first")
     assert await repo.stage_signup_credentials(
-        "user_new", claim_id="first", email="first@example.com", password_encrypted="first-secret"
+        "user_new", email="first@example.com", password_encrypted="first-secret"
     ) == ("first@example.com", "first-secret")
     await repo.try_acquire_seed_claim("user_new", org_id="org_a", claim_id="second", stale_after_seconds=0)
-    with pytest.raises(repo._table().meta.client.exceptions.ConditionalCheckFailedException):
-        await repo.stage_signup_credentials(
-            "user_new", claim_id="first", email="stale@example.com", password_encrypted="stale-secret"
-        )
+    # The ORIGINAL claim staging again (e.g. a slow holder that wasn't really
+    # dead) must still succeed and read back the converged values.
     assert await repo.stage_signup_credentials(
-        "user_new", claim_id="second", email="new@example.com", password_encrypted="new-secret"
+        "user_new", email="stale@example.com", password_encrypted="stale-secret"
+    ) == ("first@example.com", "first-secret")
+    assert await repo.stage_signup_credentials(
+        "user_new", email="new@example.com", password_encrypted="new-secret"
     ) == ("first@example.com", "first-secret")
 
 
@@ -1381,7 +1428,7 @@ async def test_seed_takeover_does_not_erase_credentials_staged_after_its_read(re
         if not staged and ":prev" in kwargs.get("ConditionExpression", ""):
             staged = True
             await repo.stage_signup_credentials(
-                "user_race", claim_id="original", email="original@example.com", password_encrypted="original-secret"
+                "user_race", email="original@example.com", password_encrypted="original-secret"
             )
         return await run_in_thread(func, *args, **kwargs)
 
@@ -1395,5 +1442,5 @@ async def test_seed_takeover_does_not_erase_credentials_staged_after_its_read(re
             "user_race", org_id="org_a", claim_id="takeover", stale_after_seconds=0
         )
     assert await repo.stage_signup_credentials(
-        "user_race", claim_id="takeover", email="replacement@example.com", password_encrypted="replacement-secret"
+        "user_race", email="replacement@example.com", password_encrypted="replacement-secret"
     ) == ("original@example.com", "original-secret")

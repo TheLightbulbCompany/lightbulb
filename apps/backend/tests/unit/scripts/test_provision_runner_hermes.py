@@ -1,9 +1,6 @@
-"""``scripts/provision_runner.run()`` — step 1 provisions the AgentCore runtime, and the
-M4-R33 ordering fix: hook_token/gateway_token must exist BEFORE step 0 seeds the roster,
-because the seed's adapter config bakes hook_token in as its ``apiKey`` at seed time.
-
-The ``settings.HERMES_RUNTIME`` flag these tests were written around is deleted -- there is
-one leg -- and so is the ECS manager they stubbed to prove the other one never ran.
+"""``scripts/provision_runner.run()`` — the M4-R33 ordering fix: hook_token/gateway_token
+must exist BEFORE step 0 seeds the roster, because the seed's adapter config bakes hook_token
+in as its ``apiKey`` at seed time — plus the Hermes legs' failure recording.
 """
 
 from unittest.mock import AsyncMock
@@ -27,48 +24,22 @@ def _explodes_if_called(*args, **kwargs):
 
 @pytest.fixture
 def runner_env(monkeypatch):
-    """Enough of run()'s dependencies wired for a full run() call, so these tests can call
-    run() end-to-end rather than mocking around it. ``container_repo`` is imported at
-    function-call time inside run(), so the SOURCE module is what gets patched."""
+    """Enough of run()'s dependencies wired for a full run() call. ``container_repo`` is
+    imported at function-call time inside run(), so the SOURCE module is what gets patched."""
     import core.repositories.container_repo as _repo_module
 
-    monkeypatch.setattr(_repo_module, "claim_attempt", AsyncMock())
+    monkeypatch.setattr(_repo_module, "mark_provision_error", AsyncMock())
     monkeypatch.setattr(_repo_module, "get_by_owner_id", AsyncMock(return_value=None))
-    monkeypatch.setattr(_repo_module, "release_stranded_stop_to_error", AsyncMock(return_value=True))
-    monkeypatch.setattr(_repo_module, "release_provision_to_error", AsyncMock())
-
-
-@pytest.mark.asyncio
-async def test_step_1_provisions_the_agentcore_runtime(monkeypatch, runner_env):
-    prepare = AsyncMock()
-    provision = AsyncMock(return_value="arn:r1")
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _ok)
-    monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", prepare)
-    monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", provision)
-    assert await provision_runner.run("org_a", "claim-1") == provision_runner.EXIT_OK
-    # claim_id/attempt_token are threaded through for the fenced writes (M4-R28/R33) -- no
-    # PROVISION_ATTEMPT_TOKEN env var here, so attempt_token falls back to claim_id.
-    prepare.assert_awaited_once_with("org_a", claim_id="claim-1", attempt_token="claim-1")
-    provision.assert_awaited_once_with("org_a", claim_id="claim-1", attempt_token="claim-1")
-
-
-@pytest.mark.asyncio
-async def test_there_is_no_boot_poll_to_wait_on(monkeypatch, runner_env):
-    """CreateAgentRuntime + a short READY poll inside provision_hermes_runtime replaces the
-    SFN-watched, many-minutes ECS boot wait run() used to own in the foreground."""
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _ok)
-    monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", AsyncMock())
-    monkeypatch.setattr(
-        provision_runner.hermes_provisioning, "provision_hermes_runtime", AsyncMock(return_value="arn:r1")
-    )
-    await provision_runner.run("org_a", "claim-1")
+    return _repo_module
 
 
 @pytest.mark.asyncio
 async def test_step_0_still_runs_and_still_refuses_a_non_org_owner(monkeypatch, runner_env):
     monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", AsyncMock())
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", _explodes_if_called)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _refuses_non_org)
-    assert await provision_runner.run("user_a", "claim-1") == 10
+    assert await provision_runner.run("user_a") == 10
+    assert "not a workspace" in runner_env.mark_provision_error.await_args.kwargs["last_error"]
 
 
 # --- M4-R33: hook_token must exist BEFORE step 0 seeds the roster (the exact bug) ----------
@@ -88,13 +59,13 @@ async def test_hook_token_exists_before_step_0_seeds_the_roster(monkeypatch, run
     async def _fake_get_by_owner_id(owner_id, *, consistent=False):
         return dict(row)
 
-    async def _fake_prepare(owner_id, *, claim_id, attempt_token=None):
+    async def _fake_prepare(owner_id):
         row["hook_token"] = "minted-hook-token"
         row["gateway_token"] = "minted-gateway-token"
 
     hook_token_seen_at_seed_time = {}
 
-    async def _spy_seed(owner_id, *, runtime_host=None):
+    async def _spy_seed(owner_id):
         current = await repo_mod.get_by_owner_id(owner_id)
         hook_token_seen_at_seed_time["value"] = (current or {}).get("hook_token")
         return provision_runner.EXIT_OK
@@ -105,96 +76,24 @@ async def test_hook_token_exists_before_step_0_seeds_the_roster(monkeypatch, run
     monkeypatch.setattr(
         provision_runner.hermes_provisioning, "provision_hermes_runtime", AsyncMock(return_value="arn:r1")
     )
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "reconcile_runtime", AsyncMock(return_value="current"))
 
-    await provision_runner.run("org_a", "claim-1")
+    await provision_runner.run("org_a")
     assert hook_token_seen_at_seed_time["value"] == "minted-hook-token"
 
 
-# --- C2/M4-R36: the Hermes leg releases the lease to error on failure -----------------------
+# --- C2/M4-R36: a Hermes-leg failure is recorded on the row, never an open spinner ----------
 
 
 @pytest.mark.asyncio
-async def test_a_provision_hermes_runtime_failure_releases_the_lease_to_error(monkeypatch, runner_env):
-    monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", AsyncMock())
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _ok)
-    monkeypatch.setattr(
-        provision_runner.hermes_provisioning,
-        "provision_hermes_runtime",
-        AsyncMock(side_effect=RuntimeError("boom")),
-    )
-
-    released = {}
-
-    async def _fake_release(
-        owner_id, claim_id, *, last_error=None, retryable=True, attempt_token=None, generation=None
-    ):
-        released.update(
-            owner_id=owner_id,
-            claim_id=claim_id,
-            last_error=last_error,
-            retryable=retryable,
-            attempt_token=attempt_token,
-        )
-
-    import core.repositories.container_repo as repo_mod
-
-    monkeypatch.setattr(repo_mod, "release_provision_to_error", _fake_release)
-
-    exit_code = await provision_runner.run("org_a", "claim-1")
-    assert exit_code != provision_runner.EXIT_OK
-    assert released["owner_id"] == "org_a"
-    assert released["claim_id"] == "claim-1"
-    assert released["attempt_token"] == "claim-1"
-    assert "boom" in released["last_error"]
-
-
-@pytest.mark.asyncio
-async def test_a_prepare_hermes_workspace_failure_releases_the_lease_to_error(monkeypatch, runner_env):
+async def test_a_prepare_hermes_workspace_failure_is_recorded_and_stops_the_run(monkeypatch, runner_env):
     monkeypatch.setattr(
         provision_runner.hermes_provisioning, "prepare_hermes_workspace", AsyncMock(side_effect=RuntimeError("boom"))
     )
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _explodes_if_called)  # must never be reached
     monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", _explodes_if_called)
 
-    released = {}
-
-    async def _fake_release(
-        owner_id, claim_id, *, last_error=None, retryable=True, attempt_token=None, generation=None
-    ):
-        released.update(owner_id=owner_id, claim_id=claim_id, last_error=last_error)
-
-    import core.repositories.container_repo as repo_mod
-
-    monkeypatch.setattr(repo_mod, "release_provision_to_error", _fake_release)
-
-    exit_code = await provision_runner.run("org_a", "claim-1")
-    assert exit_code != provision_runner.EXIT_OK
-    assert released["owner_id"] == "org_a"
-    assert "boom" in released["last_error"]
-
-
-@pytest.mark.asyncio
-async def test_a_superseded_hermes_leg_stands_down_quietly_not_as_an_error(monkeypatch, runner_env):
-    """ProvisionSuperseded must never be treated as a failure to release -- a takeover already
-    owns the row."""
-    from core.repositories.container_repo import ProvisionSuperseded
-
-    monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", AsyncMock())
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _ok)
-    monkeypatch.setattr(
-        provision_runner.hermes_provisioning,
-        "provision_hermes_runtime",
-        AsyncMock(side_effect=ProvisionSuperseded("stale")),
-    )
-
-    import core.repositories.container_repo as repo_mod
-
-    release = AsyncMock()
-    monkeypatch.setattr(repo_mod, "release_provision_to_error", release)
-    # _stand_down_superseded re-reads the row to verify who owns it -- absent row (the
-    # runner_env default) is the "gone/real successor" branch, which exits quietly.
-    monkeypatch.setattr(repo_mod, "get_by_owner_id", AsyncMock(return_value=None))
-
-    exit_code = await provision_runner.run("org_a", "claim-1")
-    assert exit_code == provision_runner.EXIT_SUPERSEDED
-    release.assert_not_awaited()
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_TRANSIENT
+    runner_env.mark_provision_error.assert_awaited_once()
+    assert runner_env.mark_provision_error.await_args.args == ("org_a",)
+    assert "boom" in runner_env.mark_provision_error.await_args.kwargs["last_error"]

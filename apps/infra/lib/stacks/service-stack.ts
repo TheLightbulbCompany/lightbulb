@@ -8,6 +8,7 @@ import { DockerImageAsset, Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as s3 from "aws-cdk-lib/aws-s3";
@@ -15,6 +16,7 @@ import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import * as sns from "aws-cdk-lib/aws-sns";
+import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import {
@@ -1755,6 +1757,12 @@ export class ServiceStack extends cdk.Stack {
       ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),
       ),
+      // Keys bedrock_gate_tokens.derive_gate_bearer. By name, like the Stripe
+      // Connect secret above: AuthStack deploys first and creates it. Same CMK,
+      // so KmsDecryptForSecrets covers decrypt.
+      GATE_BEARER_HMAC_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportGateBearerHmacKey", `lightbulb/${env}/gate_bearer_hmac_key`),
+      ),
       // PostHog personal API key for the admin Activity tab. Empty value
       // → posthog_admin.py returns {stubbed: true}; populated value →
       // real Persons API calls. Rotate via `aws secretsmanager update-secret`.
@@ -1839,66 +1847,99 @@ export class ServiceStack extends cdk.Stack {
     };
 
     // ---------------------------------------------------------------------
-    // Provisioning executor: one-shot provisioner task + state machine.
-    // Same image / roles / env / SG as the backend so provision_user_container
-    // runs with identical capability, but OUTSIDE the deployable web process.
-    // serviceSg is mandatory: the per-user container 18789 ingress rule
-    // (ContainerFromServiceIngress above) is keyed to it.
+    // Provisioning executor: a Lambda running scripts.provision_lambda from the
+    // backend image, driven by the state machine below. Same image, env, secrets,
+    // role and security group as the backend, so the runner has identical
+    // capability OUTSIDE the deployable web process. Lambda, not an ECS RunTask:
+    // the task's ~60 s cold start was most of a fresh provision.
     // ---------------------------------------------------------------------
-    const provisionerTaskDef = new ecs.FargateTaskDefinition(this, "ProvisionerTaskDef", {
-      family: `lightbulb-${env}-provisioner`,
-      cpu: 1024,
-      memoryLimitMiB: 2048,
-      taskRole: this.taskRole,
-      executionRole: taskExecutionRole,
+    // Lambda has no ECS `secrets:` injection and a 4 KB env limit the backend's
+    // env (~4.5 KB) exceeds, so the handler rebuilds the task def's environment at
+    // cold start, before core.config is imported: the plain env from this
+    // parameter (Advanced tier: up to 8 KB) and each secret from the map below.
+    // Both are derived from the task def's own maps.
+    // Lambda reserves AWS_REGION and sets it itself (to the same region).
+    const { AWS_REGION: _reservedRegion, ...provisionerEnvironment } = backendContainerEnvironment;
+    const provisionerEnvParameter = new ssm.StringParameter(this, "ProvisionerEnvironment", {
+      parameterName: `/lightbulb/${env}/provisioner-env`,
+      stringValue: this.toJsonString(provisionerEnvironment),
+      tier: ssm.ParameterTier.ADVANCED,
     });
-    const provisionerContainer = provisionerTaskDef.addContainer("provisioner", {
-      image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
-      // Run as root, exactly like the backend container. Kept in lockstep with it
-      // deliberately: the two share one image, env and role so the provisioner runs
-      // with identical capability, and dropping root from one alone would break that.
-      user: "0:0",
-      environment: backendContainerEnvironment,
-      secrets: backendContainerSecrets,
-      // No healthCheck and no port mappings: a batch job must not be killed
-      // for not serving HTTP. Command is overridden per-execution by the
-      // state machine ($.command).
-      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "provisioner", logGroup }),
-    });
-
-    const runProvisioner = new tasks.EcsRunTask(this, "RunProvisioner", {
-      integrationPattern: sfn.IntegrationPattern.RUN_JOB,
-      cluster: props.container.cluster,
-      taskDefinition: provisionerTaskDef,
-      launchTarget: new tasks.EcsFargateLaunchTarget({
-        platformVersion: ecs.FargatePlatformVersion.VERSION1_4,
+    provisionerEnvParameter.grantRead(this.taskRole);
+    const secretEnvMap = this.toJsonString(
+      Object.fromEntries(Object.entries(backendContainerSecrets).map(([name, secret]) => [name, secret.arn])),
+    );
+    // The ECS provisioner ran as the backend task role; this keeps that. A Lambda
+    // execution role also needs ENI + log writes, which this managed policy adds.
+    this.taskRole.assumeRolePolicy?.addStatements(
+      new iam.PolicyStatement({
+        actions: ["sts:AssumeRole"],
+        principals: [new iam.ServicePrincipal("lambda.amazonaws.com")],
       }),
-      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    );
+    this.taskRole.addManagedPolicy(
+      iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaVPCAccessExecutionRole"),
+    );
+    const provisioner = new lambda.DockerImageFunction(this, "Provisioner", {
+      functionName: `${resourcePrefix(env)}provisioner`,
+      code: lambda.DockerImageCode.fromEcr(backendImage.repository, {
+        tagOrDigest: backendImage.imageTag,
+        // The image's venv python directly: `uv run` would write a cache to the
+        // read-only Lambda filesystem.
+        entrypoint: ["/app/.venv/bin/python", "-m", "awslambdaric"],
+        cmd: ["scripts.provision_lambda.handler"],
+        workingDirectory: "/app",
+      }),
+      architecture: lambda.Architecture.X86_64,
+      role: this.taskRole,
+      // 2048 MB matches the ECS task's memory, and Lambda CPU scales with memory
+      // (~1.2 vCPU here) -- the cold start imports the whole backend.
+      memorySize: 2048,
+      // A provision is ~1 min of AWS/Paperclip calls; 5 min is the ceiling, and
+      // waits belong in the state machine, not the function.
+      timeout: cdk.Duration.minutes(5),
+      vpc: props.vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       securityGroups: [serviceSg],
-      assignPublicIp: false,
-      containerOverrides: [
-        {
-          containerDefinition: provisionerContainer,
-          command: sfn.JsonPath.listAt("$.command"),
-          // PROVISION_ATTEMPT_TOKEN is THIS attempt's fencing token — fresh
-          // every retry via BumpAttempt's States.UUID() below, while
-          // $.command (owner/claim args) stays static across the whole
-          // execution. An env override (not a $.command element) because
-          // CDK/SFN can splice ONE dynamic field per override cleanly; see
-          // scripts/provision_runner.py module docstring for the full
-          // hazard this closes and why it is NOT in the StartExecution
-          // input (that must stay byte-identical for Branch-A idempotency —
-          // core/services/provision_dispatch.py).
-          environment: [
-            {
-              name: "PROVISION_ATTEMPT_TOKEN",
-              value: sfn.JsonPath.stringAt("$.attempt_token"),
-            },
-          ],
-        },
-      ],
+      logGroup,
+      environment: {
+        // Only /tmp is writable on Lambda.
+        HOME: "/tmp",
+        LAMBDA_ENV_PARAMETER: provisionerEnvParameter.parameterName,
+        LAMBDA_SECRET_ENV_MAP: secretEnvMap,
+      },
+    });
+    // Exactly the secrets the task def injects. KMS decrypt is the task role's
+    // existing KmsAccess grant (same CMK).
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "ProvisionerSecrets",
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: Object.values(backendContainerSecrets).map((secret) => `${secret.arn}-??????`),
+      }),
+    );
+
+    const runProvisioner = new tasks.LambdaInvoke(this, "RunProvisioner", {
+      lambdaFunction: provisioner,
+      // No payload: the Lambda gets the state input, i.e. the execution input.
+      payloadResponseOnly: true,
       resultPath: sfn.JsonPath.DISCARD,
-      taskTimeout: sfn.Timeout.duration(cdk.Duration.minutes(30)),
+      retryOnServiceExceptions: false,
+      taskTimeout: sfn.Timeout.duration(cdk.Duration.minutes(6)),
+    });
+    // The runner's typed transient error and Lambda's own service errors.
+    const transientErrors = [
+      "ProvisionTransient",
+      "Lambda.ServiceException",
+      "Lambda.AWSLambdaException",
+      "Lambda.SdkClientException",
+      "Lambda.TooManyRequestsException",
+    ];
+    runProvisioner.addRetry({
+      errors: transientErrors,
+      maxAttempts: 3,
+      interval: cdk.Duration.seconds(10),
+      backoffRate: 2,
     });
 
     const succeedProvisioned = new sfn.Succeed(this, "Provisioned");
@@ -1908,15 +1949,14 @@ export class ServiceStack extends cdk.Stack {
       cause: "provisioner exhausted retries or failed deterministically",
     });
 
-    // Claim-conditioned row writes — the SIGKILL backstop. On a clean runner
-    // exit the runner already wrote these values; these writes are idempotent
-    // re-assertions that also cover the case where the runner died mid-write.
+    // Status-conditioned row writes — the crash backstop. On a clean runner
+    // failure the runner already wrote these values; these writes are idempotent
+    // re-assertions that also cover a runner that died mid-write (timeout, OOM).
     // Condition accepts BOTH "provisioning" (runner died before its own
-    // release) AND "error" (runner released cleanly, this re-asserts) — a
-    // clean transient failure leaves the row at "error", and conditioning on
-    // "provisioning" alone would fail every write after attempt 1 and kill
-    // the retry loop. Rows at "running"/"stopped", or under a different
-    // claim, are never touched (routes to Superseded via the catch below).
+    // error write) AND "error" (runner wrote it, this re-asserts). Rows at "running"/"stopped" (a concurrent execution
+    // already finished, or someone stopped the box) or gone are never
+    // touched (routes to Superseded via the catch below). No claim: a RUNNING
+    // execution owns the provision, and every provision step is idempotent.
     const ddbWrite = (id: string, updateExpr: string, values: Record<string, tasks.DynamoAttributeValue>) => {
       const write = new tasks.DynamoUpdateItem(this, id, {
         table: containersTableRef,
@@ -1924,20 +1964,19 @@ export class ServiceStack extends cdk.Stack {
           owner_id: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.owner_id")),
         },
         updateExpression: updateExpr,
-        conditionExpression: "provision_claim_id = :cid AND (#s = :prov OR #s = :err)",
+        conditionExpression: "#s = :prov OR #s = :err",
         expressionAttributeNames: { "#s": "status" },
         expressionAttributeValues: {
           ...values,
-          ":cid": tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.claim_id")),
           ":prov": tasks.DynamoAttributeValue.fromString("provisioning"),
           ":ts": tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$$.State.EnteredTime")),
         },
         resultPath: sfn.JsonPath.DISCARD,
       });
-      // These writes are the SIGKILL backstop — without a Retry policy a
+      // These writes are the crash backstop — without a Retry policy a
       // single DDB throttle fails the whole execution and the row wedges at
-      // "provisioning". Retriers evaluate IN ORDER, so the fencing signal
-      // (ConditionalCheckFailed = the row was taken over) is excluded FIRST
+      // "provisioning". Retriers evaluate IN ORDER, so the condition miss
+      // (ConditionalCheckFailed = the row moved on) is excluded FIRST
       // with maxAttempts 0 — it must fall through to the Superseded catch,
       // never be retried; every other error is transient and retried.
       write.addRetry({
@@ -1953,135 +1992,42 @@ export class ServiceStack extends cdk.Stack {
       return write;
     };
 
-    const markFailedDeterministic = ddbWrite(
-      "MarkFailedDeterministic",
-      "SET #s = :err, substatus = :sub, retryable = :r, updated_at = :ts",
-      {
-        ":err": tasks.DynamoAttributeValue.fromString("error"),
-        ":sub": tasks.DynamoAttributeValue.fromString("provision_failed"),
-        ":r": tasks.DynamoAttributeValue.fromBoolean(false),
-      },
+    // The runner already wrote last_error for its own failures; only a crash,
+    // timeout or unknown error needs the machine to write it.
+    const markFailed = (id: string, retryable: boolean, lastError?: string) =>
+      ddbWrite(
+        id,
+        `SET #s = :err, substatus = :sub, retryable = :r, updated_at = :ts${lastError ? ", last_error = :le" : ""}`,
+        {
+          ":err": tasks.DynamoAttributeValue.fromString("error"),
+          ":sub": tasks.DynamoAttributeValue.fromString("provision_failed"),
+          ":r": tasks.DynamoAttributeValue.fromBoolean(retryable),
+          ...(lastError ? { ":le": tasks.DynamoAttributeValue.fromString(lastError) } : {}),
+        },
+      );
+    const markFailedExhausted = markFailed("MarkFailedExhausted", true);
+    const markFailedDeterministic = markFailed("MarkFailedDeterministic", false);
+    const markFailedUnhandled = markFailed(
+      "MarkFailedUnhandled",
+      false,
+      sfn.JsonPath.format("provisioner {}: {}", sfn.JsonPath.stringAt("$.error.Error"), sfn.JsonPath.stringAt("$.error.Cause")),
     );
-    const markFailedExhausted = ddbWrite(
-      "MarkFailedExhausted",
-      "SET #s = :err, substatus = :sub, retryable = :r, updated_at = :ts",
-      {
-        ":err": tasks.DynamoAttributeValue.fromString("error"),
-        ":sub": tasks.DynamoAttributeValue.fromString("provision_failed"),
-        ":r": tasks.DynamoAttributeValue.fromBoolean(true),
-      },
-    );
-    const markRetrying = ddbWrite(
-      "MarkRetrying",
-      "SET #s = :err, substatus = :sub, retryable = :r, updated_at = :ts",
-      {
-        ":err": tasks.DynamoAttributeValue.fromString("error"),
-        ":sub": tasks.DynamoAttributeValue.fromString("error_retrying"),
-        ":r": tasks.DynamoAttributeValue.fromBoolean(true),
-      },
-    );
-    // ConditionalCheckFailed on any write means a deliberate reprovision took
-    // the row over — stop quietly, exactly the runner's superseded rule.
+    // ConditionalCheckFailed on any write means the row moved on (running,
+    // stopped or gone) — stop quietly.
     // (Optimized-integration exception prefix is "DynamoDB", uppercase DB.)
-    for (const write of [markFailedDeterministic, markFailedExhausted, markRetrying]) {
+    for (const write of [markFailedExhausted, markFailedDeterministic, markFailedUnhandled]) {
       write.addCatch(succeedSuperseded, {
         errors: ["DynamoDB.ConditionalCheckFailedException"],
         resultPath: sfn.JsonPath.DISCARD,
       });
+      write.next(failProvision);
     }
-    markFailedDeterministic.next(failProvision);
-    markFailedExhausted.next(failProvision);
 
-    const bumpAttempt = new sfn.Pass(this, "BumpAttempt", {
-      parameters: {
-        "attempt.$": "States.MathAdd($.attempt, 1)",
-        // Fresh per-retry fencing token (spec §7 hazard 1): the state
-        // machine's task timeout does not guarantee the previous attempt's
-        // ECS task is dead, so a straggler must be fenced out by something
-        // OTHER than the (stable, reused) claim_id/execution name. The
-        // runner re-stamps container_repo's provision_attempt_token to this
-        // value as its first action every attempt
-        // (container_repo.claim_attempt) — a still-running previous attempt
-        // then fails its NEXT checkpoint with a stale token. claim_id and
-        // the execution name stay untouched, preserving Branch-A idempotency
-        // (core/services/provision_dispatch.py).
-        "attempt_token.$": "States.UUID()",
-        "claim_id.$": "$.claim_id",
-        "command.$": "$.command",
-        "owner_id.$": "$.owner_id",
-      },
-    });
-    const wait60 = new sfn.Wait(this, "WaitBeforeRetry", {
-      time: sfn.WaitTime.duration(cdk.Duration.seconds(60)),
-    });
-    markRetrying.next(wait60);
-    wait60.next(bumpAttempt);
-    bumpAttempt.next(runProvisioner);
-
-    const transientGate = new sfn.Choice(this, "AttemptsRemain")
-      .when(sfn.Condition.numberLessThan("$.attempt", 2), markRetrying)
-      .otherwise(markFailedExhausted);
-
-    // Non-TaskFailed catches (timeout, launch failure): the Cause is not the
-    // ECS task JSON, so skip parsing and treat as transient.
-    const shapeForRetry = new sfn.Pass(this, "ShapeForRetry", {
-      parameters: {
-        "attempt.$": "$.attempt",
-        "claim_id.$": "$.claim_id",
-        "command.$": "$.command",
-        "owner_id.$": "$.owner_id",
-      },
-    });
-    shapeForRetry.next(transientGate);
-
-    // TaskFailed: Cause is the stringified ECS task object — parse it and
-    // classify on the container exit code (design doc §11: a non-zero
-    // essential-container exit fails the .sync state with States.TaskFailed).
-    const parseCause = new sfn.Pass(this, "ParseFailureCause", {
-      parameters: {
-        "attempt.$": "$.attempt",
-        "cause.$": "States.StringToJson($.error.Cause)",
-        "claim_id.$": "$.claim_id",
-        "command.$": "$.command",
-        "owner_id.$": "$.owner_id",
-      },
-    });
-    const classify = new sfn.Choice(this, "ClassifyFailure")
-      // MUST be the FIRST rule: a task that never started (EFS mount /
-      // image-pull ResourceInitializationError) stops with NO exitCode in the
-      // Cause, and a Choice rule referencing a missing path throws
-      // States.Runtime — which Choice states cannot Catch, killing the
-      // execution with no DDB write (row stuck at "provisioning"). That is
-      // exactly the transient case the retry loop exists for.
-      .when(
-        sfn.Condition.not(sfn.Condition.isPresent("$.cause.Containers[0].ExitCode")),
-        transientGate, // task never started (EFS mount / image pull) — no exit code, retry
-      )
-      .when(sfn.Condition.numberEquals("$.cause.Containers[0].ExitCode", 20), succeedSuperseded)
-      .when(sfn.Condition.numberEquals("$.cause.Containers[0].ExitCode", 10), markFailedDeterministic)
-      .otherwise(transientGate); // 11, SIGKILL-after-start (137), Spot reclaim
-    parseCause.next(classify);
-
-    runProvisioner.addCatch(shapeForRetry, {
-      errors: ["States.Timeout"],
-      resultPath: "$.error",
-    });
-    runProvisioner.addCatch(parseCause, {
-      errors: ["States.TaskFailed"],
-      resultPath: "$.error",
-    });
-    runProvisioner.addCatch(shapeForRetry, {
-      errors: ["States.ALL"], // AmazonECS.Unknown launch failures etc.
-      resultPath: "$.error",
-    });
+    runProvisioner.addCatch(markFailedExhausted, { errors: transientErrors, resultPath: "$.error" });
+    runProvisioner.addCatch(markFailedDeterministic, { errors: ["ProvisionFailed"], resultPath: "$.error" });
+    runProvisioner.addCatch(markFailedUnhandled, { errors: ["States.ALL"], resultPath: "$.error" });
 
     runProvisioner.next(succeedProvisioned);
-
-    // The machine STARTS at RunProvisioner. #2875 deleted the backend's inline
-    // attempt 0, so the old watch loop (which waited up to 40 x 60s for that
-    // attempt before running the ECS leg) left every fresh provision idle for
-    // ~40 minutes. The runner re-checks its own claim first (claim_attempt), so
-    // a superseded execution still stands down via exit 20 -> Superseded.
 
     const provisionStateMachine = new sfn.StateMachine(this, "ProvisionStateMachine", {
       stateMachineName: `${resourcePrefix(env)}provision`,
@@ -2089,9 +2035,12 @@ export class ServiceStack extends cdk.Stack {
         roleName: `${resourcePrefix(env)}provision-state-machine`,
         assumedBy: new iam.ServicePrincipal("states.amazonaws.com"),
       }),
+      // The provisioner runs at once: the backend no longer runs an inline
+      // attempt, so there is no row to watch first. (The watch loop that used
+      // to sit here keyed on the provision claim, which is gone.)
       definitionBody: sfn.DefinitionBody.fromChainable(runProvisioner),
-      // Up to 3 x 30-min ECS attempts + retry waits ~= 92 min; 3h leaves headroom.
-      timeout: cdk.Duration.hours(3),
+      // 3 x 6-min attempts + backoff, with room to spare.
+      timeout: cdk.Duration.minutes(30),
     });
 
     // The MarkRetrying/MarkFailed* DynamoUpdateItem tasks auto-grant only
@@ -2113,17 +2062,21 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "ProvisionStateMachineDispatch",
-        actions: ["states:StartExecution", "states:DescribeExecution", "states:StopExecution"],
-        resources: [
-          provisionStateMachine.stateMachineArn,
-          // DescribeExecution/StopExecution operate on execution ARNs.
-          `arn:aws:states:${this.region}:${this.account}:execution:${resourcePrefix(env)}provision:*`,
-        ],
-      }),
-    );
+    // Its own policy, not the task role's default one: the provisioner Lambda
+    // runs as the task role and depends on that default policy, while this
+    // statement references the machine that invokes the Lambda -- a cycle.
+    new iam.Policy(this, "ProvisionDispatchPolicy", {
+      roles: [this.taskRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: "ProvisionStateMachineDispatch",
+          // ListExecutions (RUNNING, by name prefix) is dispatch's whole
+          // single-flight check — provision_dispatch.py.
+          actions: ["states:StartExecution", "states:ListExecutions"],
+          resources: [provisionStateMachine.stateMachineArn],
+        }),
+      ],
+    });
 
     // Provisioning failures page. This is the signup path — a failed or timed
     // out execution means a new user never gets a container.

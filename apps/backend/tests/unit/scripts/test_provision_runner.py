@@ -1,8 +1,8 @@
-"""Tests for scripts/provision_runner.py exit-code ABI + fencing plumbing.
+"""Tests for scripts/provision_runner.py's exit-code ABI and error recording.
 
-There is ONE leg: prepare the workspace, create the AgentCore runtime. The ECS-only coverage
-(provision_user_container / wait_for_running / the post-wait row status mapping) went with that
-runtime, and so did the ``runtime_host`` hint step 0 used to carry.
+No lease: the runner takes no claim and holds no fence. Three legs — prepare
+the workspace, seed Paperclip (step 0), create the AgentCore runtime — and a
+failure is recorded on the row with its retryability before the mapped exit.
 """
 
 import subprocess
@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from core.repositories.container_repo import ProvisionSuperseded
 from scripts import provision_runner
 
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
@@ -21,43 +20,32 @@ BACKEND_ROOT = Path(__file__).resolve().parents[3]
 
 @pytest.fixture
 def hermes(monkeypatch):
-    """run()'s only leg.
-
-    Step 0 (the owner Paperclip seed) is unconditional, so every run() test traverses it.
-    Neutralize it here so the runtime-work tests below stay about the runtime work; the step-0
-    tests re-patch it with their own double, and the _seed_owner_paperclip helper tests never
-    take this fixture (they call the real function directly).
-    """
+    """Step 0 is neutralized here so the runtime tests stay about the runtime
+    work; the step-0 tests re-patch it, and the _seed_owner_paperclip helper
+    tests never take this fixture."""
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", AsyncMock(return_value=provision_runner.EXIT_OK))
     prepare = AsyncMock()
     provision = AsyncMock(return_value="arn:hermes-1")
     monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", prepare)
     monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", provision)
-    return SimpleNamespace(prepare=prepare, provision=provision)
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+    reconcile = AsyncMock(return_value="current")
+    monkeypatch.setattr(provision_runner.hermes_provisioning, "reconcile_runtime", reconcile)
+    return SimpleNamespace(prepare=prepare, provision=provision, reconcile=reconcile)
 
 
 @pytest.fixture
 def repo(monkeypatch):
-    """Patch core.repositories.container_repo as imported INTO provision_runner
-    (it's imported at function-call time inside run(), so patch the source
-    module — matches ecs_manager's own lazy-import test pattern). Returns the
-    REAL module object (not a wrapper) so a test's later
-    ``repo.claim_attempt = AsyncMock(...)`` reassignment is what run() sees —
-    a wrapper mock's attribute would silently stop being the patched value."""
+    """The REAL container_repo module (imported lazily inside run()), with its
+    error writer stubbed."""
     import core.repositories.container_repo as _repo_module
 
-    monkeypatch.setattr(_repo_module, "claim_attempt", AsyncMock())
-    monkeypatch.setattr(_repo_module, "get_by_owner_id", AsyncMock(return_value=None))
-    monkeypatch.setattr(_repo_module, "release_stranded_stop_to_error", AsyncMock(return_value=True))
-    monkeypatch.setattr(_repo_module, "release_provision_to_error", AsyncMock())
+    monkeypatch.setattr(_repo_module, "mark_provision_error", AsyncMock())
     return _repo_module
 
 
 def test_module_is_invocable_as_dash_m():
-    # Transport smoke: the state machine launches the runner as
-    # `uv run python -m scripts.provision_runner …` from the backend root.
-    # Pins that the module resolves under -m with argparse wired — a rename
-    # or import-time crash fails here, not at the first real dispatch.
+    # The manual CLI: `uv run python -m scripts.provision_runner --owner …` from the backend root.
     result = subprocess.run(
         [sys.executable, "-m", "scripts.provision_runner", "--help"],
         cwd=BACKEND_ROOT,
@@ -65,131 +53,70 @@ def test_module_is_invocable_as_dash_m():
         text=True,
     )
     assert result.returncode == 0, result.stderr
+    assert "--claim" not in result.stdout
 
 
-async def test_first_action_is_claim_attempt(monkeypatch, hermes, repo):
-    """The runner's FIRST checkpoint, before the workspace prepare, before
-    provision_hermes_runtime -- fences out a straggler from a superseded
-    attempt (spec §7 hazard 1) as early as possible."""
-    await provision_runner.run("org_a", "claim")
-    repo.claim_attempt.assert_awaited_once_with("org_a", "claim", "claim")
+async def test_happy_path_runs_every_leg_and_exits_0(monkeypatch, hermes, repo):
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
+    hermes.prepare.assert_awaited_once_with("org_a")
+    hermes.provision.assert_awaited_once_with("org_a")
+    hermes.reconcile.assert_awaited_once_with("org_a")
+    repo.mark_provision_error.assert_not_awaited()
 
 
-async def test_attempt_token_from_env_overrides_claim_id_fallback(monkeypatch, hermes, repo):
-    monkeypatch.setenv("PROVISION_ATTEMPT_TOKEN", "fresh-retry-token")
-    await provision_runner.run("org_a", "claim")
-    repo.claim_attempt.assert_awaited_once_with("org_a", "claim", "fresh-retry-token")
-    # The claim_id/attempt_token pass-through is the fencing seam: the runner must thread them
-    # into the AgentCore leg's fenced writes unchanged, or they fence out its own run.
-    hermes.prepare.assert_awaited_once_with("org_a", claim_id="claim", attempt_token="fresh-retry-token")
-    hermes.provision.assert_awaited_once_with("org_a", claim_id="claim", attempt_token="fresh-retry-token")
-
-
-async def test_claim_attempt_superseded_exits_20_before_any_provisioning(monkeypatch, hermes, repo):
-    """A straggler whose claim was taken over entirely (not just its attempt)
-    must stop at the very first checkpoint -- never touch the runtime."""
-    repo.claim_attempt = AsyncMock(side_effect=ProvisionSuperseded("taken over"))
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
+async def test_a_live_row_skips_the_early_prepare_so_the_reconcile_sees_the_boot_change(monkeypatch, hermes, repo):
+    """C1: step -1 on a live row rewrote the boot secret first, so the end reconcile saw no
+    boot-time change and never restarted the warm session holding the old bearer."""
+    monkeypatch.setattr(
+        "core.repositories.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"agentcore_runtime_arn": "arn:rt", "status": "running"}),
+    )
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
     hermes.prepare.assert_not_awaited()
-    hermes.provision.assert_not_awaited()
+    hermes.reconcile.assert_awaited_once_with("org_a")
 
 
-async def test_superseded_exits_20(monkeypatch, hermes, repo):
-    hermes.provision.side_effect = ProvisionSuperseded("taken over")
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
+async def test_a_failed_end_reconcile_is_not_a_provision_failure(monkeypatch, hermes, repo):
+    """The runtime is already serving; reconcile_runtime reports its own failure by metric."""
+    hermes.reconcile.return_value = "failed"
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
+    repo.mark_provision_error.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# Superseded-without-successor verification (#1428)
-# ---------------------------------------------------------------------------
-#
-# ProvisionSuperseded used to be trusted as proof a successor owns the row.
-# It failed live: a conversion-marker get→put clobber erased the lease, this
-# runner "stood down" behind a successor that did not exist, and the row sat
-# stopped/claim-less/error-less with nothing running and nothing scheduled.
-# The superseded exit now re-reads the row and, on that exact stranded shape,
-# flips it to error(retryable) so the status poll's auto-retry re-dispatches.
+async def test_a_failed_provision_skips_the_end_reconcile(monkeypatch, hermes, repo):
+    hermes.provision.side_effect = RuntimeError("create failed")
+    await provision_runner.run("org_a")
+    hermes.reconcile.assert_not_awaited()
 
 
-async def test_superseded_with_successor_claim_stands_down_quietly(monkeypatch, hermes, repo):
-    """A claim on the row == a real successor. The quiet exit stays quiet —
-    and the runner must NOT second-guess the successor with a release."""
-    hermes.provision.side_effect = ProvisionSuperseded("taken over")
-    repo.get_by_owner_id = AsyncMock(return_value={"status": "provisioning", "provision_claim_id": "claim-successor"})
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
-    repo.release_stranded_stop_to_error.assert_not_awaited()
-
-
-async def test_superseded_with_row_gone_stands_down_quietly(monkeypatch, hermes, repo):
-    """No row at all (deliberate delete) — nothing to release. (The repo
-    fixture's get_by_owner_id defaults to None, so this is also the shape the
-    older superseded tests above run through.)"""
-    hermes.provision.side_effect = ProvisionSuperseded("taken over")
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
-    repo.release_stranded_stop_to_error.assert_not_awaited()
-
-
-async def test_superseded_stranded_stopped_row_is_released_to_error(monkeypatch, hermes, repo):
-    """THE strand: superseded, but the re-read shows a stopped row with NO
-    claim — nobody running, nothing scheduled. The runner must release it to
-    error(retryable) via the CAS so pollers can recover, and still exit 20
-    (the machine ABI is unchanged; the row write is the recovery arm)."""
-    hermes.provision.side_effect = ProvisionSuperseded("clobbered")
-    repo.get_by_owner_id = AsyncMock(return_value={"status": "stopped"})
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
-    repo.release_stranded_stop_to_error.assert_awaited_once()
-    assert repo.release_stranded_stop_to_error.await_args.args == ("org_a",)
-    assert "no successor" in repo.release_stranded_stop_to_error.await_args.kwargs["last_error"]
-
-
-async def test_superseded_unclaimed_provisioning_row_is_not_touched(monkeypatch, hermes, repo):
-    """An UNCLAIMED provisioning row belongs to a wake/resize transition
-    (those paths never claim — see main.py's boot resume). The runner logs and
-    stands down; flipping it to error would clobber their in-process poller."""
-    hermes.provision.side_effect = ProvisionSuperseded("taken over")
-    repo.get_by_owner_id = AsyncMock(return_value={"status": "provisioning"})
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
-    repo.release_stranded_stop_to_error.assert_not_awaited()
-
-
-async def test_superseded_release_failure_still_exits_20(monkeypatch, hermes, repo):
-    """The stranded-row release is best-effort: a DDB blip there must not
-    change the exit-code ABI (the machine still classifies Superseded)."""
-    hermes.provision.side_effect = ProvisionSuperseded("clobbered")
-    repo.get_by_owner_id = AsyncMock(return_value={"status": "stopped"})
-    repo.release_stranded_stop_to_error = AsyncMock(side_effect=RuntimeError("ddb down"))
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
-
-
-async def test_deterministic_error_exits_10(monkeypatch, hermes, repo):
+async def test_deterministic_error_exits_10_and_is_recorded(monkeypatch, hermes, repo):
     hermes.provision.side_effect = Exception("byo_provider is required when provider_choice == 'byo_key'")
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_DETERMINISTIC
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_DETERMINISTIC
+    assert repo.mark_provision_error.await_args.kwargs["retryable"] is False
 
 
-async def test_transient_error_exits_11(monkeypatch, hermes, repo):
+async def test_transient_error_exits_11_and_is_recorded(monkeypatch, hermes, repo):
     hermes.provision.side_effect = Exception("ThrottlingException")
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_TRANSIENT
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_TRANSIENT
+    assert repo.mark_provision_error.await_args.kwargs["retryable"] is True
+
+
+async def test_error_record_failure_still_returns_the_exit_code(monkeypatch, hermes, repo):
+    hermes.provision.side_effect = Exception("ThrottlingException")
+    repo.mark_provision_error = AsyncMock(side_effect=RuntimeError("ddb down"))
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_TRANSIENT
 
 
 # ---------------------------------------------------------------------------
-# Step 0: owner Paperclip seed under the executor single-flight
+# Step 0: owner Paperclip seed, before the runtime work
 # ---------------------------------------------------------------------------
-#
-# The OWNER company-create seed runs in the runner, BEFORE the container work,
-# so it inherits try_claim_provision's single-flight (one execution per owner)
-# — closing the duplicate-company race (#1442) at its source. Unconditional:
-# there is no flag and no poll-thread alternative.
 
 
 async def test_seed_step_0_always_runs_then_provisions_runtime(monkeypatch, hermes, repo):
-    """Seed OK → the runner continues to the runtime work (step 0 is an
-    ADDITIONAL first step, not a replacement). The seed is unconditional and
-    runs AFTER claim_attempt (a taken-over straggler stands down first)."""
     seed = AsyncMock(return_value=provision_runner.EXIT_OK)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_OK
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
     seed.assert_awaited_once_with("org_a")
-    repo.claim_attempt.assert_awaited_once()
     hermes.provision.assert_awaited_once()
 
 
@@ -199,43 +126,25 @@ async def test_seed_step_0_deterministic_fail_exits_10_skips_runtime_surfaces_er
     failure instead of looping it."""
     seed = AsyncMock(return_value=provision_runner.EXIT_DETERMINISTIC)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_DETERMINISTIC
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_DETERMINISTIC
     hermes.provision.assert_not_awaited()
-    repo.release_provision_to_error.assert_awaited_once()
-    kwargs = repo.release_provision_to_error.await_args.kwargs
-    assert kwargs["retryable"] is False
-    assert kwargs["attempt_token"] == "claim"
+    repo.mark_provision_error.assert_awaited_once()
+    assert repo.mark_provision_error.await_args.kwargs["retryable"] is False
 
 
 async def test_seed_step_0_transient_fail_exits_11_skips_runtime_retryable_error(monkeypatch, hermes, repo):
-    """Seed transient-fail (11): exit 11 (SFN retries) WITHOUT the runtime,
-    row flipped to error(retryable=True) for the poll's auto-retry."""
     seed = AsyncMock(return_value=provision_runner.EXIT_TRANSIENT)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_TRANSIENT
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_TRANSIENT
     hermes.provision.assert_not_awaited()
-    repo.release_provision_to_error.assert_awaited_once()
-    assert repo.release_provision_to_error.await_args.kwargs["retryable"] is True
+    assert repo.mark_provision_error.await_args.kwargs["retryable"] is True
 
 
-async def test_seed_step_0_error_release_failure_still_returns_exit_code(monkeypatch, hermes, repo):
-    """The container-row error release is best-effort: a DDB blip there must
-    not change the exit-code ABI the machine reads."""
+async def test_seed_step_0_error_record_failure_still_returns_exit_code(monkeypatch, hermes, repo):
     seed = AsyncMock(return_value=provision_runner.EXIT_DETERMINISTIC)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    repo.release_provision_to_error = AsyncMock(side_effect=RuntimeError("ddb down"))
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_DETERMINISTIC
-    hermes.provision.assert_not_awaited()
-
-
-async def test_seed_step_0_superseded_claim_stands_down_before_seeding(monkeypatch, hermes, repo):
-    """A straggler whose claim was taken over stops at claim_attempt — the seed
-    (like the runtime work) never runs, and the runner exits 20."""
-    seed = AsyncMock(return_value=provision_runner.EXIT_OK)
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    repo.claim_attempt = AsyncMock(side_effect=ProvisionSuperseded("taken over"))
-    assert await provision_runner.run("org_a", "claim") == provision_runner.EXIT_SUPERSEDED
-    seed.assert_not_awaited()
+    repo.mark_provision_error = AsyncMock(side_effect=RuntimeError("ddb down"))
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_DETERMINISTIC
     hermes.provision.assert_not_awaited()
 
 

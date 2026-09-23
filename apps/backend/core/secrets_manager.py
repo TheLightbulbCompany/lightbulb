@@ -18,8 +18,12 @@ import time
 _RETRY_BACKOFFS = (0.5, 1.0, 1.5, 2.0)
 
 
-def create_or_update_secret(sm, name: str, value: str) -> None:
-    """Create the secret, or update it if it already exists.
+def create_or_update_secret(sm, name: str, value: str, *, create_only: bool = False) -> str:
+    """Create the secret, or update it if it already exists; return the value it now holds.
+
+    ``create_only`` makes the FIRST writer win: an existing secret is left alone and its
+    stored value is returned, so concurrent writers of a value that cannot be re-derived
+    all converge on one.
 
     Retries past the async name-reuse window left by a prior
     ``ForceDeleteWithoutRecovery``. ``sm`` is a boto3 ``secretsmanager`` client;
@@ -28,10 +32,12 @@ def create_or_update_secret(sm, name: str, value: str) -> None:
     for attempt in range(len(_RETRY_BACKOFFS) + 1):
         try:
             sm.create_secret(Name=name, SecretString=value)
-            return
+            return value
         except sm.exceptions.ResourceExistsException:
+            if create_only:
+                return sm.get_secret_value(SecretId=name)["SecretString"]
             sm.put_secret_value(SecretId=name, SecretString=value)
-            return
+            return value
         except sm.exceptions.InvalidRequestException as exc:
             # Only the "scheduled for deletion" case is a transient race worth
             # retrying; any other InvalidRequest is a genuine bad request.

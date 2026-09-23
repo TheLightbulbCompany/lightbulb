@@ -11,8 +11,10 @@ Runs INSIDE the backend task (ECS exec), like ``reapply_hermes_skills_dirs``:
     uv run python -m scripts.refresh_owner_facts --owner-id <org> [--dry-run]
     uv run python -m scripts.refresh_owner_facts --all [--dry-run]
 
-Idempotent. Sequential. ``write_owner_facts`` is best-effort and never raises (it logs a warning
-per skipped owner), so the exit code is always 0; read the log for skips.
+Safe to re-run, but not free: every run rewrites each profile's facts and bumps its ``.revision``
+(so every bridge re-pulls on its next turn), whether or not anything changed. Sequential.
+``write_owner_facts`` is best-effort and never raises (it logs a warning per skipped owner), so a
+"refreshed" line and exit code 0 do not prove the write landed; read the log for skips.
 """
 
 from __future__ import annotations

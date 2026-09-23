@@ -750,11 +750,10 @@ class FramePublisher:
         self._queue: list[dict] = []
         self._queued_at = 0.0
         # Ordering (dev 2026-09-23: a stream rendered scrambled): every frame gets a per-run
-        # monotonically increasing `seq` under the lock, and one sender at a time POSTs, so
-        # batches leave in seq order. The client orders/de-duplicates by seq; AppSync does not
-        # guarantee order across publishes, so seq is the real fix and the send lock the cheap half.
+        # monotonically increasing `seq` under the lock and the client orders/de-duplicates by
+        # it. No send lock: AppSync does not keep order across publishes anyway, and a shared
+        # send lock made the model's stream-callback thread wait behind a slow lifecycle POST.
         self._seq = 0
-        self._send_lock = threading.RLock()
 
     def _numbered(self, frame: dict) -> dict:
         """Caller holds self._lock."""
@@ -776,26 +775,24 @@ class FramePublisher:
         under the lock so the cap is an invariant, not a hope. A failed batch DROPS its
         streaming frames (runs.ts does the same: text catch-up rides the final full-text
         chunk, so deltas are the first thing to give up on)."""
-        with self._send_lock:
-            while True:
-                with self._lock:
-                    batch, self._queue = self._queue[:FRAME_BATCH], self._queue[FRAME_BATCH:]
-                if not batch:
-                    return
-                self._send(batch)
+        while True:
+            with self._lock:
+                batch, self._queue = self._queue[:FRAME_BATCH], self._queue[FRAME_BATCH:]
+            if not batch:
+                return
+            self._send(batch)
 
     def emit(self, frame: dict) -> None:
         if not self._endpoint or not self._channel:
             return
-        with self._send_lock:
-            # Take the queued deltas AND number this frame in one step: a delta queued after
-            # it then gets a higher seq and stays queued behind it.
-            with self._lock:
-                pending, self._queue = self._queue, []
-                frame = self._numbered(frame)
-            for i in range(0, len(pending), FRAME_BATCH):
-                self._send(pending[i : i + FRAME_BATCH])
-            self._send([frame])
+        # Take the queued deltas AND number this frame in one step, so its seq sits after
+        # every delta it follows; those deltas still go out first on this thread.
+        with self._lock:
+            pending, self._queue = self._queue, []
+            frame = self._numbered(frame)
+        for i in range(0, len(pending), FRAME_BATCH):
+            self._send(pending[i : i + FRAME_BATCH])
+        self._send([frame])
 
     def _stream(self, frame: dict) -> None:
         """Queue a streaming frame; ship the batch once it is full or has aged out. No timer

@@ -110,7 +110,9 @@ def test_every_frame_gets_a_monotonic_per_run_seq():
     assert seqs == list(range(1, len(sent) + 1))
 
 
-def test_concurrent_flushes_leave_in_seq_order():
+def test_concurrent_flushes_send_every_frame_once_with_its_seq():
+    # Arrival order across threads (and across AppSync publishes) is not guaranteed; the client
+    # orders by seq. What must hold: each frame goes out exactly once and its seq matches it.
     sent = []
     frames = _publisher(sent, delay=0.01)
     for i in range(40):
@@ -118,5 +120,15 @@ def test_concurrent_flushes_leave_in_seq_order():
     threads = [threading.Thread(target=frames.delta, args=(None,)) for _ in range(4)]
     [t.start() for t in threads]
     [t.join() for t in threads]
-    seqs = [f["seq"] for f in sent]
-    assert seqs == sorted(seqs) and len(seqs) == len(set(seqs)) == 40
+    assert sorted(f["seq"] for f in sent) == list(range(1, 41))
+    assert all(f["content"] == str(f["seq"] - 1) for f in sent)
+
+
+def test_a_lifecycle_frame_is_numbered_after_the_deltas_it_follows():
+    sent = []
+    frames = _publisher(sent)
+    frames.delta("a")
+    frames.delta("b")
+    frames.finished("completed", "ab", None)
+    assert max(f["seq"] for f in sent if f.get("append")) < min(f["seq"] for f in sent if not f.get("append"))
+

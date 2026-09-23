@@ -23,7 +23,7 @@ SLUG = "-Users-me-repo"
 CID = f"Users-me-repo-{hashlib.sha256(SLUG.encode()).hexdigest()[:10]}"
 
 CLAUDE_HOME = {
-    ".claude/CLAUDE.md": b"# me\n",
+    ".claude/CLAUDE.md": b"# me\n\n- prefers tabs\n",
     f".claude/projects/{SLUG}/memory/MEMORY.md": b"- [a](a.md)\n",
     f".claude/projects/{SLUG}/memory/fact.md": b"a fact\n",
     ".claude/skills/graphify/SKILL.md": b"---\nname: graphify\n---\n",

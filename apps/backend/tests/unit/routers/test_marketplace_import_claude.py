@@ -77,7 +77,7 @@ class FakeProfile:
 
     def merge_context(self, owner_id, agent_id, text):
         assert (owner_id, agent_id) == (OWNER, AGENT)
-        if not text.strip():
+        if not marketplace_import.context_import.extract_entries(text):
             raise ValueError("nothing to import")
         self.merged.append(text)
         return {"merged": len(text), "overflowed": False}
@@ -276,9 +276,23 @@ def test_confirm_applies_into_the_agents_profile(client):
     # CLAUDE.md goes through the paste door's merge into memories/USER.md -- never the
     # profile-root USER.md, which Hermes does not read.
     assert "USER.md" not in written
-    assert len(profile.merged) == 1 and "# me" in profile.merged[0]
+    assert len(profile.merged) == 1 and "prefers tabs" in profile.merged[0]
     # Object consumed, so a second confirm cannot re-apply.
     assert s3.deleted == [KEY]
+
+
+def test_confirm_with_a_heading_only_claude_md_reports_no_user_memory(client):
+    """A CLAUDE.md with no entries has nothing to merge -- still a 200, not a 500 from an
+    unschema'd status after the upload is already deleted."""
+    c, s3, profile = client
+    s3.objects[KEY] = _tar({**CLAUDE_HOME, ".claude/CLAUDE.md": b"# me\n"})
+    assert c.post("/api/v1/marketplace/import", json={"key": KEY}).status_code == 200
+
+    r = c.post(f"/api/v1/marketplace/import/{IMPORT_ID}/confirm", json={"target_agent_id": AGENT})
+
+    assert r.status_code == 200, r.text
+    assert "user-memory" not in {i["item"] for i in r.json()["claude_items"]}
+    assert profile.merged == []
 
 
 def test_confirm_never_overwrites_an_existing_skill(client):

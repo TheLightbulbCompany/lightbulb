@@ -275,8 +275,8 @@ def _apply_into_profile(
             try:
                 context_import.merge_context(owner_id, agent_id, claude_md.read_text(errors="replace"))
                 items.append({"item": "user-memory", "status": "applied"})
-            except ValueError:  # a CLAUDE.md with no entries
-                items.append({"item": "user-memory", "status": "skipped_empty"})
+            except ValueError:
+                pass  # a heading-only CLAUDE.md holds no entries: nothing to merge, nothing to report
         return items
 
 

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyRunFrame,
   buildTimeline,
   dateDividerLabel,
   lastSequence,
   mergeCanonicalMessages,
   roomDisplayName,
   runView,
+  type LiveRoomRun,
 } from "./timeline";
 import type { ChatIncomingMessage } from "../live/types";
 import type { CanonicalRoomMessage as RoomMessage } from "./types";
@@ -132,5 +134,56 @@ describe("roomDisplayName", () => {
     expect(roomDisplayName({ kind: "group-dm", name: null }, p)).toBe("Friday and Aden");
     expect(roomDisplayName({ kind: "channel", name: null }, [])).toBe("Untitled channel");
     expect(roomDisplayName(undefined, [])).toBe("Conversation");
+  });
+});
+
+describe("applyRunFrame", () => {
+  const base = { roomId: "r1", agentId: "a1", runId: "run1" };
+  const chunk = (seq: number | undefined, content: string, append = true) =>
+    ({ ...base, frame: { type: "chunk", content, append, runId: "run1", ...(seq === undefined ? {} : { seq }) } as never });
+  const fold = (payloads: ReturnType<typeof chunk>[]) =>
+    payloads.reduce<LiveRoomRun | undefined>((run, payload) => applyRunFrame(run, payload), undefined)!;
+
+  it("orders deltas by seq whatever the arrival order", () => {
+    const run = fold([chunk(1, "a"), chunk(3, "c"), chunk(2, "b"), chunk(4, "d")]);
+    expect(run.text).toBe("abcd");
+    expect(run.frames.map((f) => (f as { seq?: number }).seq)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("drops a duplicate seq and returns the same run", () => {
+    const run = fold([chunk(1, "a"), chunk(2, "b")]);
+    expect(applyRunFrame(run, chunk(2, "b"))).toBe(run);
+  });
+
+  it("a full-text resync with the highest seq wins even if deltas straggle in after it", () => {
+    const run = fold([chunk(1, "he"), chunk(3, "hello world", false), chunk(2, "llo")]);
+    expect(run.text).toBe("hello world");
+  });
+
+  it("applies seq-less frames on arrival, after everything held", () => {
+    const run = fold([chunk(1, "a"), chunk(undefined, "b"), chunk(2, "c")]);
+    // A seq-less frame keeps its arrival slot; seq'd frames only reorder among themselves.
+    expect(run.text).toBe("abc");
+  });
+
+  it("a seq-less run_ended ends the run and a straggler never revives it", () => {
+    let run = fold([chunk(1, "a")]);
+    run = applyRunFrame(run, { ...base, frame: { type: "run_ended", runId: "run1", outcome: "aborted" } });
+    expect(run.state).toBe("aborted");
+    run = applyRunFrame(run, chunk(2, "b"));
+    expect(run.state).toBe("aborted");
+    run = applyRunFrame(run, { ...base, frame: { type: "error", message: "late", runId: "run1", seq: 3 } as never });
+    expect(run.state).toBe("aborted");
+  });
+
+  it("a late seq-less sweeper run_ended never flips a finished run", () => {
+    let run = applyRunFrame(fold([chunk(1, "a")]), { ...base, frame: { type: "run_ended", runId: "run1", outcome: "done", seq: 2 } as never });
+    run = applyRunFrame(run, { ...base, frame: { type: "run_ended", runId: "run1", outcome: "error" } });
+    expect(run.state).toBe("completed");
+  });
+
+  it("an error on a live run fails it", () => {
+    const run = applyRunFrame(fold([chunk(1, "a")]), { ...base, frame: { type: "error", message: "x", runId: "run1" } });
+    expect(run.state).toBe("failed");
   });
 });

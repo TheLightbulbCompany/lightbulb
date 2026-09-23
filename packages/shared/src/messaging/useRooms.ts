@@ -8,10 +8,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { ApiError } from "../api/error";
-import { accumulateStreamText } from "../live/streamText";
 import type { LiveEvent } from "../live/types";
 import type { MessagingClient, RoomAttachmentInput } from "./client";
-import { lastSequence, mergeCanonicalMessages, type LiveRoomRun } from "./timeline";
+import { applyRunFrame, lastSequence, mergeCanonicalMessages, type LiveRoomRun } from "./timeline";
 import type {
   CanonicalRoomMessage,
   CreateMessageRequest,
@@ -685,21 +684,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       const key = `${payload.roomId}:${payload.agentId}:${payload.runId}`;
       setRuns((current) => {
         const previous = current.get(key);
-        const frame = payload.frame;
-        const state = frame.type === "run_ended"
-          ? frame.outcome === "done" ? "completed" : frame.outcome === "aborted" ? "aborted" : "failed"
-          : frame.type === "error" ? "failed" : previous?.state ?? "running";
-        const next: LiveRoomRun = {
-          roomId: payload.roomId,
-          agentId: payload.agentId,
-          runId: payload.runId,
-          triggerMessageId: previous?.triggerMessageId,
-          threadRootMessageId: payload.threadRootMessageId ?? previous?.threadRootMessageId ?? null,
-          text: frame.type === "chunk" ? accumulateStreamText(previous?.text ?? "", frame) : previous?.text ?? "",
-          thinking: frame.type === "thinking" ? accumulateStreamText(previous?.thinking ?? "", frame) : previous?.thinking ?? "",
-          frames: [...(previous?.frames ?? []), frame],
-          state,
-        };
+        const next = applyRunFrame(previous, payload);
+        if (next === previous) return current;
         return new Map(current).set(key, next);
       });
     }

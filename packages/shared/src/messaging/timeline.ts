@@ -4,7 +4,8 @@
  * room display name. No React, no platform globals.
  */
 import { extractResultText } from "../chat/history";
-import type { ChatIncomingMessage } from "../live/types";
+import { accumulateStreamText } from "../live/streamText";
+import type { ChatIncomingMessage, RoomRunFrame } from "../live/types";
 import type { CanonicalRoomMessage, RoomMember, RoomSummary } from "./types";
 
 export function mergeCanonicalMessages(
@@ -34,6 +35,52 @@ export interface LiveRoomRun {
   thinking: string;
   frames: ChatIncomingMessage[];
   state: "running" | "completed" | "failed" | "aborted";
+}
+
+const frameSeq = (frame: ChatIncomingMessage): number | undefined => {
+  const seq = (frame as { seq?: unknown }).seq;
+  return typeof seq === "number" && Number.isFinite(seq) ? seq : undefined;
+};
+
+const foldText = (frames: readonly ChatIncomingMessage[], type: "chunk" | "thinking") =>
+  frames.reduce((acc, frame) => (frame.type === type ? accumulateStreamText(acc, frame) : acc), "");
+
+/**
+ * Fold one `room.run.frame` into its run. AppSync reorders and duplicates, so the
+ * bridge numbers every frame of a run (`seq`): frames are kept in `seq` order and a
+ * repeated `seq` is dropped. Frames without one -- the backend sweeper's `error` +
+ * `run_ended`, an older image -- apply on arrival, after everything already held.
+ * The text is refolded only when a frame lands out of order; in order it just
+ * appends. A run that has ended stays ended: a straggler never revives it, and a
+ * late `error` or sweeper `run_ended` never overwrites the outcome.
+ */
+export function applyRunFrame(previous: LiveRoomRun | undefined, payload: RoomRunFrame): LiveRoomRun {
+  const frame = payload.frame;
+  const seq = frameSeq(frame);
+  const held = previous?.frames ?? [];
+  if (seq !== undefined && previous && held.some((f) => frameSeq(f) === seq)) return previous;
+  const later = seq === undefined ? -1 : held.findIndex((f) => (frameSeq(f) ?? -Infinity) > seq);
+  const at = later < 0 ? held.length : later;
+  const frames = [...held.slice(0, at), frame, ...held.slice(at)];
+  const inOrder = at === held.length;
+  const ended = previous !== undefined && previous.state !== "running";
+  // Once ended, only the bridge's own (seq'd) run_ended may restate the outcome: a late
+  // seq-less sweeper run_ended must not flip a run that already finished.
+  const state: LiveRoomRun["state"] =
+    frame.type === "run_ended" && (!ended || seq !== undefined)
+      ? frame.outcome === "done" ? "completed" : frame.outcome === "aborted" ? "aborted" : "failed"
+      : ended ? previous.state : frame.type === "error" ? "failed" : "running";
+  return {
+    roomId: payload.roomId,
+    agentId: payload.agentId,
+    runId: payload.runId,
+    triggerMessageId: previous?.triggerMessageId,
+    threadRootMessageId: payload.threadRootMessageId ?? previous?.threadRootMessageId ?? null,
+    text: frame.type !== "chunk" ? previous?.text ?? "" : inOrder ? accumulateStreamText(previous?.text ?? "", frame) : foldText(frames, "chunk"),
+    thinking: frame.type !== "thinking" ? previous?.thinking ?? "" : inOrder ? accumulateStreamText(previous?.thinking ?? "", frame) : foldText(frames, "thinking"),
+    frames,
+    state,
+  };
 }
 
 /** One tool/activity row of a run. Assignable to the web's `ToolCall`. */
@@ -90,7 +137,7 @@ export function runView(run: LiveRoomRun): RoomRunView {
         });
       }
     } else if (frame.type === "agent_activity" && frame.activity !== "run_status") {
-      const id = `${frame.runId}:activity:${index}`;
+      const id = `${frame.runId}:activity:${frameSeq(frame) ?? index}`;
       tools.set(id, {
         id,
         name: frame.title,

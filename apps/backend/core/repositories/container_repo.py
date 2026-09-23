@@ -773,8 +773,8 @@ async def mark_provisioning(owner_id: str) -> None:
 async def mark_provision_error(owner_id: str, *, last_error: str, retryable: bool) -> None:
     """Record a failed provision: ``status="error"`` with its cause.
 
-    ``retryable`` is what the status poll reads: True (transient) auto-retries,
-    False (deterministic) surfaces the error card and waits for a user action.
+    ``retryable`` records the cause's class (True transient, False deterministic);
+    either way the row waits for the user's Retry (``/container/recover``).
     Never overwrites a ``running`` row -- a concurrent run that already
     succeeded wins, and a failed reconcile of a live workspace leaves it live.
     No-op when the row is gone.

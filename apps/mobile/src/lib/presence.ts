@@ -10,9 +10,8 @@
  * or two, which backgrounds it. So presence = active, full stop; there is no
  * "visible but unattended" state to defend against the way there is on desktop.
  *
- * This is the signal the status poll uses to decide `wake=1` (present → a poll
- * may wake a parked container) vs `wake=0` (backgrounded → read-only), and the
- * gateway provider uses AppState transitions directly to park/unpark.
+ * The gateway provider uses AppState transitions directly to park/unpark; the
+ * status read no longer takes a wake hint (it has no side effects).
  */
 import { AppState } from "react-native";
 

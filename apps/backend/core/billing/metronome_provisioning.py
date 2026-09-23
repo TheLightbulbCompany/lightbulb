@@ -20,19 +20,10 @@ whose conflict responses are adopted (lookup by ingest alias / contract
 list) instead of failing — so a half-provisioned customer converges instead
 of stranding.
 
-Who retries a failure: every caller (``ensure_user_ready``, the Stripe
-``entering_live`` webhook, the on-demand credit-top-up path) treats this
-function as best-effort and swallows its exceptions — retrying is entirely
-the CALLER's job, not this module's. That is NOT the same as "the next
-/container/status poll retries": ``ensure_user_ready`` is only re-dispatched
-on an already-running container for org context, a failed Teams seed, or
-(see ``core.services.readiness_state.compute_status``'s
-``metronome_ledger_missing``) a ledger-eligible owner still missing
-``metronome_customer_id``. A personal owner whose only failure was HERE, with
-no other reason to re-enter, relied on that third condition existing — before
-it did, a transient failure (a Metronome outage, a mid-migration Secrets
-Manager blip) left the owner permanently un-ledgered despite an active paid
-subscription.
+Who retries a failure: every caller (the durable reconcile execution, the Stripe
+``entering_live`` webhook, the on-demand credit-top-up path) owns its own retry —
+not this module. ``hermes_provisioning.reconcile_runtime`` fails its execution
+on an error here, so the state machine retries it.
 """
 
 from __future__ import annotations
@@ -123,10 +114,9 @@ async def ensure_metronome_customer(
     # each status is in or out. This used to test ONLY `== "trial_local"`,
     # which was sufficient while the sole caller sat BEHIND the provision gate:
     # a canceled or paused owner never reached it, because the gate returned
-    # first. `ensure_user_ready` now calls this BEFORE the gate (the gate
-    # depends on the ledger existing, so it cannot also guard it), which
-    # removed that filter — and a canceled owner polling /container/status
-    # would have had a real customer + contract + two low-balance alerts
+    # first. Callers run this BEFORE the gate (the gate depends on the
+    # ledger existing, so it cannot also guard it), which removed that
+    # filter — and a canceled owner reaching such a caller would have had a real customer + contract + two low-balance alerts
     # created over live HTTP, for an account that can never spend from them.
     # The guard belongs here rather than at the caller: this function owns
     # "who gets a ledger", and every caller routes through it.

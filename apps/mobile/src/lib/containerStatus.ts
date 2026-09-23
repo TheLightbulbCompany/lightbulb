@@ -12,8 +12,8 @@
  * body's `container_status`/`runtime_phase` fields — a rendering decision the
  * shared classifier deliberately leaves to each platform).
  *
- * The React binding (fetch + poll loop + AppState wake/foreground handling)
- * is no longer hand-rolled here — it's the ONE shared `useOnboardingStatus`
+ * The React binding (fetch + AppState foreground refetch) is no longer
+ * hand-rolled here — it's the ONE shared `useOnboardingStatus`
  * hook (spec PR-9, CLIENT-HOOK; `packages/shared/src/hooks/
  * useOnboardingStatus.ts`), the same hook web's `useProvisioningState`
  * delegates to. This is what makes mobile re-onboarding parity-by-
@@ -23,11 +23,10 @@
  * how the pre-COMPOSER mobile classifier drifted from web's (dropped the
  * top-level `blocked` fallback, never surfaced a "container failed" state —
  * see this file's original mobile onboarding-parity Slice 1 motivation).
- * Cadence (5s while unsettled and within the first 60s, 15s after, 0 once
- * ready) is now that ONE hook's cadence too — see its module doc for the
- * visibility-gated backstop-loop rationale; the old per-kind
- * `pollIntervalFor` table (5s starting/parked/error/teamPending, 30s
- * blocked, 0 ready/loading/needsSignup/unreachable) is deleted.
+ * There is no polling: the status is fetched on mount and on foreground
+ * (AppState "active"), and refetched by `providers/live-events.tsx` on a
+ * `runtime.resource.invalidated{resource:"onboarding"}` event — see the
+ * shared hook's module doc.
  *
  * Classification (contract §B1/§B3):
  *
@@ -75,7 +74,6 @@ import {
 } from "@lightbulb/shared";
 
 import { makeAdapter } from "./adapter";
-import { isPresent } from "./presence";
 
 export type ContainerStatus =
   | { kind: "loading" }
@@ -271,27 +269,24 @@ export function useContainerStatus() {
   getTokenRef.current = getToken;
   const config = useMemo(() => makeAdapter(() => getTokenRef.current()), []);
 
-  // The ONE shared bounded loop (spec PR-9, CLIENT-HOOK) — same hook web's
-  // `useProvisioningState` delegates to. `wake` mirrors the old manual
-  // `?wake=1|0` query-param construction: present (foregrounded) → a poll
-  // may wake a parked trial container; backgrounded → read-only.
+  // The ONE shared status read (spec PR-9, CLIENT-HOOK) — same hook web's
+  // `useProvisioningState` delegates to.
   const { classified, networkError, refresh } = useOnboardingStatus({
     api: config,
     enabled: true,
-    wake: () => isPresent(),
     visibility: mobileVisibilityAdapter,
   });
 
   // A LIVE failure outranks the sticky last-good body. `useOnboardingStatus`
-  // keeps the last successfully classified status across a failed poll.
+  // keeps the last successfully classified status across a failed fetch.
   // That stickiness broke the old `classified ? … : networkError ? …`
-  // order here: once ANY good poll had
+  // order here: once ANY good fetch had
   // landed, `classified` stayed truthy for the rest of the session and the
   // `networkError` branch became unreachable, so a sustained outage rendered
   // a frozen cold-start screen with no way out.
   //
   // Checking `networkError` FIRST restores this binding's pre-existing
-  // semantics exactly (before stickiness, a failed poll nulled `classified`,
+  // semantics exactly (before stickiness, a failed fetch nulled `classified`,
   // so a failure always landed here). That is the right policy for MOBILE
   // specifically: `unreachable` is NON-BLOCKING here — ProvisionGate falls
   // through to `children` — so it degrades to the app rather than trapping

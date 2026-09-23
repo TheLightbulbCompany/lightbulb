@@ -150,16 +150,20 @@ async def run(owner_id: str) -> int:
         return await _record_failure(owner_id, exc, "prepare")
 
     seed_exit = await _seed_owner_paperclip(owner_id)
-    if seed_exit != EXIT_OK:
+    if seed_exit == EXIT_DETERMINISTIC:
         await _mark_error(
             owner_id,
             "provision refused: owner is not a workspace (org)"
             if not is_org_owner_id(owner_id)
             else "provision seed: owner paperclip seed or nightly-CEO arm failed (see log)",
-            retryable=seed_exit == EXIT_TRANSIENT,
+            retryable=False,
         )
+    if seed_exit != EXIT_OK:
+        # A transient failure writes nothing: the machine retries it, and its MarkFailedExhausted
+        # writes the error row if the retries run out (see _record_failure).
         return seed_exit
     await _drain_pending_brief(owner_id)
+    await _seat_workspace_rooms(owner_id)
 
     try:
         await hermes_provisioning.provision_hermes_runtime(owner_id)
@@ -190,6 +194,34 @@ async def _drain_pending_brief(owner_id: str) -> None:
         put_metric("onboarding_brief.provision_drain.error")
 
 
+async def _seat_workspace_rooms(owner_id: str) -> None:
+    """Step 0 just made the company active: create the vendor shared channel and seat every
+    current teammate in ``#general``. A member who joined before the room existed was missed by
+    the ``organizationMembership.created`` webhook's seat. Both are idempotent (a removed member
+    is never re-seated: the AUTOJOIN marker stays). Never fails the provision."""
+    from core.observability.metrics import put_metric
+    from core.services.clerk_admin import list_organization_members
+    from core.services.messaging import ensure_vendor_room, join_default_room
+
+    try:
+        await ensure_vendor_room(owner_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("provision: vendor room reconcile failed for owner %s", owner_id)
+        put_metric("messaging.vendor_room.error")
+    try:
+        for member in await list_organization_members(owner_id):
+            try:
+                await join_default_room(owner_id, member["user_id"])
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "provision: default room join failed for owner %s user %s", owner_id, member["user_id"]
+                )
+                put_metric("messaging.default_room.error")
+    except Exception:  # noqa: BLE001 — a roster read failure never fails the provision
+        logger.exception("provision: teammate roster read failed for owner %s", owner_id)
+        put_metric("messaging.default_room.error")
+
+
 async def _arm_trial(owner_id: str) -> None:
     """The runtime is created and the row ``running``: start an unarmed ``trial_local`` clock,
     once (a conditional write -- a no-op for a paid or already-armed row). Never fails the
@@ -206,7 +238,7 @@ async def _arm_trial(owner_id: str) -> None:
 
 async def _record_failure(owner_id: str, exc: Exception, stage: str) -> int:
     """Classify a Hermes-leg failure, record it on the row, map it to the exit-code ABI —
-    so the status poll (and the SFN retry loop) can act on it instead of an open spinner."""
+    so the stepper's Retry (and the SFN retry loop) can act on it instead of an open spinner."""
     from core.repositories.container_repo import classify_provision_error
     from core.services.openrouter_keys import KeyClaimConflict
 
@@ -222,8 +254,13 @@ async def _record_failure(owner_id: str, exc: Exception, stage: str) -> int:
         # retries run out first.
         return EXIT_TRANSIENT
     _, retryable = classify_provision_error(exc)
-    await _mark_error(owner_id, f"hermes {stage} failed: {exc}", retryable=retryable)
-    return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC
+    if retryable:
+        # Same reasoning as the claim loser above: the SFN retries a transient failure within
+        # this execution, so an error row now would flash "Setup failed" over a provision that
+        # is about to succeed. MarkFailedExhausted writes it if the retries run out.
+        return EXIT_TRANSIENT
+    await _mark_error(owner_id, f"hermes {stage} failed: {exc}", retryable=False)
+    return EXIT_DETERMINISTIC
 
 
 async def _mark_error(owner_id: str, last_error: str, *, retryable: bool) -> None:

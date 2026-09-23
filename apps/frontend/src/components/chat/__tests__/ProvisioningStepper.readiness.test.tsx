@@ -5,14 +5,15 @@
 //   (a) the page loads mid-boot and the container becomes ready afterwards
 //   (b) the page loads when the container is ALREADY ready
 //
-// Both must end on the workspace, and (a) must get there on the poll's own
-// cadence — the stepper's 1s elapsed tick re-renders this tree the whole time,
-// which is exactly what used to starve that poll.
+// Both must end on the workspace. There is no status poll: (a) gets there on the
+// live `runtime.resource.invalidated{resource:"onboarding"}` event, which
+// LiveEventsProvider turns into a mutate of the scoped status key (simulated
+// below exactly as it does it).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
-import { SWRConfig } from "swr";
+import { SWRConfig, useSWRConfig } from "swr";
 
 vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: { id: "org_1" }, membership: { role: "org:admin" }, isLoaded: true }),
@@ -102,10 +103,20 @@ const STARTING = {
 };
 
 let body: unknown = READY;
+let liveMutate: ReturnType<typeof useSWRConfig>["mutate"] | null = null;
+
+function CaptureMutate() {
+  const { mutate } = useSWRConfig();
+  React.useEffect(() => {
+    liveMutate = mutate;
+  }, [mutate]);
+  return null;
+}
 
 function renderStepper() {
   return render(
     <SWRConfig value={{ provider: () => new Map() }}>
+      <CaptureMutate />
       <ProvisioningStepper>
         <div>workspace</div>
       </ProvisioningStepper>
@@ -156,11 +167,16 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
     expect(screen.getByText(/Almost ready/i)).toBeInTheDocument();
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "5");
 
-    // The container finishes booting. Nothing else happens: no click, no
-    // reload, no websocket push — only the status poll, whose cadence is 5s
-    // while the elapsed timer re-renders this tree every second.
+    // The container finishes booting. Time alone changes nothing: there is no poll.
     body = READY;
-    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(screen.getByText(/ready in about a minute/i)).toBeInTheDocument();
+
+    // The provision execution's status event arrives: LiveEventsProvider mutates the key.
+    await act(async () => {
+      await liveMutate?.(["/container/status", "u1:org_1"]);
+      await vi.advanceTimersByTimeAsync(100);
+    });
 
     await vi.waitFor(() => expect(screen.queryByText(/ready in about a minute/i)).not.toBeInTheDocument());
     expect(screen.getByText("workspace")).toBeInTheDocument();

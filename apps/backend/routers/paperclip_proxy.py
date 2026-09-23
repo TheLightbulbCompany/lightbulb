@@ -847,8 +847,8 @@ async def handshake(request: Request) -> Response:
     # session path forward into a dead Teams. This XHR can't redirect the
     # way the handoff does, so it simply declines to seed; the
     # unprovisioned-entry stub the user then sees is the pre-existing
-    # behavior for this path, resolved by normal /chat usage (whose
-    # status poll provisions the container and seeds Paperclip).
+    # behavior for this path, resolved once the workspace is provisioned
+    # (its provision execution seeds Paperclip).
     if email:
         container = await container_repo.get_by_owner_id(resolve_owner_id(auth))
         repo = PaperclipRepo(table_name="paperclip-companies")
@@ -1027,10 +1027,9 @@ async def proxy(path: str, request: Request) -> Response:
         # free: an org member hitting Teams now correctly JOINS the
         # org's shared company instead of a personal-only provision_org
         # call attempting to CREATE one keyed on their own user_id. The
-        # container already exists (checked above); ensure_user_ready reads
-        # that row itself and resolves this to a seed reconcile rather than a
-        # provision, so the running box is never force-redeployed from here
-        # (see user_provision._provision_or_reconcile).
+        # container already exists (checked above); ensure_user_ready never
+        # dispatches a provision, so the running box is never force-redeployed
+        # from here.
         repo = PaperclipRepo(table_name="paperclip-companies")
         existing = await repo.get(auth.user_id)
         # "Already provisioned" must be org-scoped, not status-only — the

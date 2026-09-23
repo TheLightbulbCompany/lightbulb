@@ -11,9 +11,8 @@
  *
  *   • ready / loading / unreachable            → `children` and nothing else.
  *   • parked (deliberately-asleep trial box)   → thin banner over live
- *     children, ALWAYS. It is healthy and one intent away from running; the
- *     poll already carries wake=1, so it clears in seconds and never takes
- *     the screen.
+ *     children, ALWAYS. It is healthy and one intent away from running (the
+ *     next invoke wakes it), so it never takes the screen.
  *   • starting on a FIRST cold start, elapsed < PROMOTE_MS
  *                                              → thin banner over live children.
  *   • starting on a FIRST cold start, elapsed ≥ PROMOTE_MS

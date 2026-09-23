@@ -8,8 +8,7 @@ since ``last_interactive_at`` against the runtime's own idle timeout
 
 It is a REPORT, not a gate. There is no scaled-to-zero service left for a
 passive read to start by accident, so nothing here suppresses a wake any more;
-the one remaining consumer that acts on it is ``ensure_user_ready``, which
-declines to dispatch a provision for a workspace that is merely idle. Every
+its one consumer is ``readiness_state.compute_status``'s ``parked`` report. Every
 public entry point returns "not parked" / no-op when ``TRIAL_WAKE_GATE_ENABLED``
 is off, so the CDK flag still restores the pre-gate reporting wholesale.
 """
@@ -21,14 +20,8 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from core.config import settings
-from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
-
-# Dedup for the suppressed metric: emitting on every 3s poll of a parked row
-# would be pure spam, so emit once per (owner, park episode, door, reason).
-# In-process cache — a restart re-emitting once is fine.
-_suppressed_emitted: dict[str, str] = {}
 
 
 async def _is_trial(owner_id: str, account: Mapping[str, Any] | None) -> bool:
@@ -94,22 +87,3 @@ async def is_parked_trial(
     from core.services.agentcore_runtime import IDLE_TIMEOUT_S
 
     return (datetime.now(timezone.utc).timestamp() - last) > IDLE_TIMEOUT_S
-
-
-def note_wake_suppressed(
-    owner_id: str,
-    container: Mapping[str, Any] | None,
-    *,
-    door: str,
-    reason: str,
-) -> None:
-    """Emit the suppressed metric once per (owner, park episode, door, reason)."""
-    episode = str((container or {}).get("parked_at") or "")
-    key = f"{owner_id}:{door}:{reason}"
-    if _suppressed_emitted.get(key) == episode:
-        return
-    _suppressed_emitted[key] = episode
-    try:
-        put_metric("container.wake.suppressed", dimensions={"door": door, "reason": reason})
-    except Exception:
-        logger.debug("wake suppressed metric emission failed", exc_info=True)

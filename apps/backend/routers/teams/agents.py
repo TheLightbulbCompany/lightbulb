@@ -340,37 +340,29 @@ async def _ctx(
         session_factory=get_user_session_cookie_for,
         cookies=request.cookies,
         response=response,
-        # Self-heal: if this user has no Paperclip row yet, /teams drives
-        # reconciliation itself (it never polls /container/status). Fired in
-        # the background by resolve_teams_context; ensure_user_ready is
-        # idempotent + gate-first, so it no-ops when the org isn't ready and
-        # the frontend keeps polling the 202 until the row goes active.
+        # Self-heal: if this user has no Paperclip row yet, /teams runs the
+        # lazy JOIN itself. Fired in the background by resolve_teams_context;
+        # ensure_user_ready is idempotent, so it no-ops when the org isn't
+        # ready and the frontend keeps polling the 202 until the row goes active.
         reconcile=lambda: _self_heal_reconcile(auth),
     )
 
 
 async def _self_heal_reconcile(auth: AuthContext) -> dict | None:
-    """Drive provisioning for a /teams visitor with no Paperclip row.
+    """The lazy Paperclip JOIN for a /teams visitor with no Paperclip row.
 
     Returns the blocked-gate payload (-> 402 "subscribe required") when a
     provision gate is up, else None (-> 202 "keep polling") after launching
-    provisioning in the background.
+    ``ensure_user_ready`` in the background. It never provisions a workspace:
+    that is the ``organization.created`` webhook's (and the user's Retry's) job.
 
-    **Gate first (awaited).** If the visitor has no subscription / credits /
-    provider, ``ensure_user_ready`` would no-op forever and the UI would spin
-    on 202 indefinitely. So evaluate the same gate ``/container/status`` uses;
-    when it's up, surface its structured payload so the frontend renders the
-    subscribe/setup CTA (it maps 402 -> subscribe_required) instead of an
-    endless provisioning spinner. (Codex P2.)
+    **Gate first (awaited)**, so a visitor with no subscription / credits /
+    provider gets the subscribe/setup CTA instead of an endless 202.
 
-    **Provisioning in the background.** Once the gate clears, the actual
-    provisioning (``_provision_after_gate`` -> ``ensure_user_ready``) is fired
-    off the request path, mirroring ``/container/status``. ``ensure_user_ready``
-    can fail transiently (Paperclip admin 5xx/timeout, owner-email lookup), and
-    the Teams frontend only auto-retries the **202** sentinel — awaiting it
-    inline would let such a failure escape ``resolve_teams_context`` as a 500
-    and strand the user on the error overlay. Backgrounding it keeps these
-    failures retryable: the next /teams poll re-fires. (Codex P2.)
+    **Join in the background**: ``ensure_user_ready`` can fail transiently
+    (Paperclip admin 5xx/timeout, owner-email lookup), and the Teams frontend
+    only auto-retries the **202** sentinel — awaiting it inline would let such a
+    failure escape as a 500. The next /teams request re-fires it.
     """
     owner_id = resolve_owner_id(auth)
     is_admin = auth.is_org_admin
@@ -390,23 +382,10 @@ async def _self_heal_reconcile(auth: AuthContext) -> dict | None:
 
 
 async def _provision_after_gate(auth: AuthContext, owner_id: str) -> None:
-    """Background half of the self-heal (runs after the gate has cleared).
-
-    Off the request path so transient failures stay retryable rather than
-    500-ing /teams (see ``_self_heal_reconcile``).
-
-    This used to derive a ``provision_container`` flag from live ECS state
-    (skip the container start when the box is already up, and again when it is
-    a deliberately parked trial box that a /teams READ must not wake). That
-    decision now lives inside ``ensure_user_ready`` itself
-    (``_provision_or_reconcile``), which reads the same row and additionally
-    keeps the SEED running in the cases where no provision is dispatched —
-    the half the flag silently skipped, which is why an owner entering via
-    /teams on a running container could sit on 202 forever.
-
-    Org members are excluded from container provisioning by ensure_user_ready
-    itself (the role guard at user_provision.py: members ride the owner's
-    shared container).
+    """Background half of the self-heal (runs after the gate has cleared): the
+    Paperclip JOIN, plus the owner seed reconcile on a running workspace — see
+    ``ensure_user_ready``. Off the request path so transient failures stay
+    retryable rather than 500-ing /teams.
     """
     try:
         await ensure_user_ready(auth)

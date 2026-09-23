@@ -76,12 +76,26 @@ async def test_each_start_gets_a_fresh_name(sfn, mark):
     assert first != second
 
 
-async def test_start_failure_returns_false_and_never_raises(sfn, mark):
+async def test_start_failure_returns_false_and_releases_the_row_to_a_retryable_error(sfn, mark, monkeypatch):
+    """Nothing re-drives a lost dispatch any more, so the row must not sit on "provisioning"
+    with no execution: it becomes an error the stepper offers Retry on."""
+    error = AsyncMock()
+    monkeypatch.setattr(provision_dispatch.container_repo, "mark_provision_error", error)
+    sfn.start_execution.side_effect = Exception("sfn down")
+    assert await provision_dispatch.dispatch_provision(ORG) is False
+    error.assert_awaited_once_with(ORG, last_error="provision could not start: Exception", retryable=True)
+
+
+async def test_a_failed_error_write_still_never_raises(sfn, mark, monkeypatch):
+    monkeypatch.setattr(
+        provision_dispatch.container_repo, "mark_provision_error", AsyncMock(side_effect=RuntimeError("ddb"))
+    )
     sfn.start_execution.side_effect = Exception("sfn down")
     assert await provision_dispatch.dispatch_provision(ORG) is False
 
 
-async def test_list_failure_starts_nothing(sfn, mark):
+async def test_list_failure_starts_nothing(sfn, mark, monkeypatch):
+    monkeypatch.setattr(provision_dispatch.container_repo, "mark_provision_error", AsyncMock())
     sfn.get_paginator.return_value.paginate.side_effect = Exception("throttled")
     assert await provision_dispatch.dispatch_provision(ORG) is False
     sfn.start_execution.assert_not_called()

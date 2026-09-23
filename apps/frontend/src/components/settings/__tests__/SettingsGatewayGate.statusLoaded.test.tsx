@@ -88,13 +88,10 @@ describe("a hard load of /settings resolves the status signal", () => {
   });
 
   /**
-   * Review N1. Before this publisher existed, `/settings` issued ZERO `/container/status`
-   * requests. The default `wake: () => isPresent()` would have made merely opening Settings —
-   * Billing included, which talks to no runtime — send `wake=1`, and `wake_policy` suppresses
-   * only `wake=0`, so a free-trial owner checking their plan would have started a Fargate task
-   * or a microVM. This reader wants to KNOW the runtime, not to be a reason to spend on it.
+   * Review N1. This reader wants to KNOW the runtime, not to be a reason to spend on it. The
+   * status read is cold now and the `wake` param is gone, so it is a plain GET.
    */
-  it("never asks the backend to wake a parked container", async () => {
+  it("reads the status with a plain GET and no wake param", async () => {
     auth.orgId = "org_nowake";
     auth.uiOrgId = "org_nowake";
     auth.getToken.mockResolvedValue(token("org_nowake"));
@@ -112,7 +109,6 @@ describe("a hard load of /settings resolves the status signal", () => {
     await waitFor(() => expect(screen.getByTestId("loaded")).toHaveTextContent("loaded"));
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
     expect(urls.length).toBeGreaterThan(0);
-    expect(urls.every((url) => url.includes("wake=0"))).toBe(true);
-    expect(urls.some((url) => url.includes("wake=1"))).toBe(false);
+    expect(urls.some((url) => url.includes("wake="))).toBe(false);
   });
 });

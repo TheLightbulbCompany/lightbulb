@@ -742,13 +742,15 @@ generator and no EFS file I/O. What replaced it:
 `ls apps/backend/core/services/` for the current list. The ones whose behaviour
 you cannot guess from the filename:
 
-- `user_provision.py` — `ensure_user_ready` is the canonical readiness entry
-  point. It is dispatched from `GET /container/status` polls **and** from the
-  Teams reconcile path (`routers/teams/deps.py`) and the Paperclip-proxy
-  handshake (`routers/paperclip_proxy.py`). Pre-gate steps:
-  `ensure_workspace_trial_default` (auto `trial_local` row, org-only),
-  `ensure_metronome_customer` (a retry backstop until the poll retires) and
-  `evaluate_provision_gate`. The nightly CEO loop is armed by the provision
+- `user_provision.py` — `provision_new_workspace` is the ONE door that starts a
+  new workspace's first provision: the Clerk `organization.created` webhook calls
+  it (trial row + gate + `dispatch_provision`) and it RAISES on a failure so Svix
+  redelivers (the webhook rolls its dedup row back). `ensure_user_ready` is the
+  lazy, on-demand Paperclip JOIN (plus the owner seed reconcile on a RUNNING
+  workspace) for the Teams self-heal (`routers/teams/agents.py`) and the
+  Paperclip-proxy handshake; it never dispatches a provision.
+  `GET /container/status` calls neither — it is a cold read (Phase 3 slice 4).
+  The nightly CEO loop is armed by the provision
   executor's step 0 and by every `reconcile_runtime` (so a Stripe re-entitlement,
   which dispatches a durable reconcile, re-arms it) via `arm_nightly_ceo`.
   It is armed for EVERY live owner, not just paid ones: `should_arm_nightly_ceo`
@@ -759,7 +761,7 @@ you cannot guess from the filename:
   no-row) is left unarmed. On a FRESH provision the Paperclip seed runs
   **inside the provision executor** (step 0 of `scripts/provision_runner.py`,
   fenced by the seed's own durable claims against the duplicate-company
-  race); `ensure_user_ready` seeds on the poll thread only as reconcile for
+  race); `ensure_user_ready` seeds in-request only as reconcile for
   already-running rows.
 - `provision_dispatch.py` — `dispatch_provision`, the single provisioning
   funnel, and stateless: a RUNNING SFN execution named `provision-{owner}-…`
@@ -1086,13 +1088,11 @@ A first-time user moves from "just signed up" to "ready to chat" through one can
 
 ```
 Clerk sign-up  ->  workspace (Clerk org) created or joined
-   └─ frontend polls GET /container/status every ~3s
-        └─ routers/container.py dispatches ensure_user_ready(auth)
-             └─ core/services/user_provision.py
-                  1. ensure_workspace_trial_default (org-only; 403 on a user_ id)
-                     + ensure_metronome_customer
-                  2. evaluate_provision_gate — subscription/credits/OAuth pre-checks
-                  3. asyncio.create_task(dispatch_provision(owner_id))
+   └─ Clerk organization.created webhook (routers/webhooks.py; a failure 5xx's + Svix redelivers)
+        └─ core/services/user_provision.provision_new_workspace(org_id)
+                  1. _ensure_trial_row (the unarmed trial_local row)
+                  2. evaluate_provision_gate — a gate that is up returns; its clearing event provisions
+                  3. dispatch_provision(owner_id)
                        └─ SFN execution (unless one is RUNNING) runs scripts/provision_runner.py
                             -1. hermes_provisioning.prepare_hermes_workspace — mint hook/gateway
                                 tokens + the Bedrock gate bearer into ONE Secrets Manager boot
@@ -1119,13 +1119,14 @@ Clerk sign-up  ->  workspace (Clerk org) created or joined
                                 EVERY live owner: paid, OR an unexpired trial_local (see
                                 should_arm_nightly_ceo — only an EXPIRED trial is left unarmed);
                                 every path to provisioned runs this executor, so this is the one door
-                  (on later polls of an already-running ORG row, ensure_user_ready reconciles the
-                   Paperclip seed inline)
+                  (the executor then creates the vendor room and seats every teammate in #general;
+                   clients read GET /container/status on mount/focus and after each execution's
+                   runtime.resource.invalidated{onboarding} event — it drives nothing)
 ```
 
 Key invariants:
 
-- **`ensure_user_ready` is the canonical readiness entry point** — dispatched from `GET /container/status` polls, plus the Teams reconcile path and the Paperclip-proxy handshake. Clerk webhooks never CREATE a company — that stays gated behind readiness — but `organizationMembership.created` performs the idempotent Paperclip JOIN inline (`_ensure_paperclip_for_member`), so a member who never polls is still added to Teams.
+- **`GET /container/status` is a cold read** — no dispatch, no trial row, no seat, no retry. Its one kept write is the capped trial's daily Bedrock restore (and the restart of that stopped row) until the trial cap leaves Bedrock. A failed/stopped workspace — or an admin's workspace with no row at all — waits for the user's Retry (`POST /container/recover`). `organizationMembership.created` performs the idempotent Paperclip JOIN inline (`_ensure_paperclip_for_member`); a member it missed is joined lazily by the Teams self-heal (`ensure_user_ready`).
 - **The Paperclip binding is on the Paperclip side, not in the profile** — each seeded agent's `hermes_gateway` `adapterConfig` points at `/api/v1/internal/paperclip/hermes/{owner}` with the owner's hook token as `apiKey`. That token is a **snapshot** (Paperclip persists it as a managed company secret), so rotating an owner's `hook_token` requires `repoint_agent_adapter`. An EMPTY hook token raises at WIRING time rather than minting a config, because the adapter would otherwise 401 on every run and Paperclip reports that per-run, not as a broken agent.
 - **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success.
 - **Fresh-provision Paperclip seeding is single-flight inside the executor** (`provision_runner.py` step 0) — deliberately, to kill the duplicate-company race a poll-thread seed allowed.
@@ -1137,7 +1138,7 @@ Key invariants:
 An owner with a containers row but no `PaperclipCompany` row gets 409s from
 `/teams` and has no roster to chat with. The fix is a **full reprovision** —
 `DELETE /api/v1/debug/provision` then `POST /api/v1/debug/provision` — so the
-next poll runs `ensure_user_ready` against an empty slate. (The one-shot
+POST re-runs the provision funnel against an empty slate. (The one-shot
 `backfill_paperclip_for_legacy_users.py` that swept the original pre-Paperclip
 cohort has run and been deleted; recover it from git history only if a new
 cohort appears.)

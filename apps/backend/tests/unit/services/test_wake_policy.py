@@ -29,7 +29,6 @@ def _row(**over):
 @pytest.fixture(autouse=True)
 def _gate_on(monkeypatch):
     monkeypatch.setattr(wake_policy.settings, "TRIAL_WAKE_GATE_ENABLED", True)
-    wake_policy._suppressed_emitted.clear()
 
 
 @pytest.fixture
@@ -99,20 +98,3 @@ class TestIsParkedTrial:
 
         monkeypatch.setattr(billing_repo, "get_by_owner_id", AsyncMock(return_value=trial_account))
         assert await wake_policy.is_parked_trial("org_a", _row()) is True
-
-
-class TestSuppressedEmissionDedup:
-    def test_emits_once_per_park_episode(self, monkeypatch):
-        calls: list[dict] = []
-        monkeypatch.setattr(wake_policy, "put_metric", lambda name, dimensions=None: calls.append(dimensions))
-        row = _row()
-        wake_policy.note_wake_suppressed("u1", row, door="ensure_user_ready", reason="gated")
-        wake_policy.note_wake_suppressed("u1", row, door="ensure_user_ready", reason="gated")
-        assert len(calls) == 1
-        # A NEW park episode (fresh parked_at) re-emits.
-        row2 = _row(parked_at="2026-07-19T09:00:00+00:00")
-        wake_policy.note_wake_suppressed("u1", row2, door="ensure_user_ready", reason="gated")
-        assert len(calls) == 2
-        # Different door tracks independently.
-        wake_policy.note_wake_suppressed("u1", row2, door="status_poll", reason="gated")
-        assert len(calls) == 3

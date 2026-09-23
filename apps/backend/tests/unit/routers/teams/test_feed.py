@@ -449,11 +449,13 @@ def test_dashboard_aggregates_dashboard_and_badges_in_parallel(client, monkeypat
 
 def test_dashboard_202_and_redispatches_when_container_not_reachable(client, monkeypatch):
     """#802: the Paperclip row goes active ~2-3s in while the container is still
-    provisioning in the background (or its one dispatch failed silently). The
-    dashboard is the workspace-status probe, so an unreachable container must
-    return 202 (keep the UI polling) and re-dispatch provisioning — NOT report
-    the workspace ready and fetch dashboard data."""
+    provisioning. The dashboard is the workspace-status probe, so an unreachable
+    container must return 202 (keep the UI polling) and run the lazy self-heal —
+    NOT report the workspace ready and fetch dashboard data."""
+    from core.repositories import container_repo
     from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={"status": "provisioning"}))
 
     async def not_reachable(owner_id):
         return False, None, None
@@ -481,11 +483,34 @@ def test_dashboard_202_and_redispatches_when_container_not_reachable(client, mon
     admin.get_dashboard.assert_not_awaited()
 
 
+def test_dashboard_503_when_the_workspace_provision_failed(client, monkeypatch):
+    """A failed provision waits for the user's Retry (nothing re-drives it), so the probe
+    answers the overlay's error state instead of a 202 it would poll forever."""
+    from core.repositories import container_repo
+    from routers.teams import agents as agents_mod
+
+    async def not_reachable(owner_id):
+        return False, None, None
+
+    monkeypatch.setattr(agents_mod, "_container_is_reachable", not_reachable)
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={"status": "error"}))
+    reconcile = AsyncMock(return_value=None)
+    monkeypatch.setattr(agents_mod, "_self_heal_reconcile", reconcile)
+
+    r = client.get("/api/v1/teams/dashboard", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 503
+    assert "Retry" in r.json()["detail"]
+    reconcile.assert_not_awaited()
+
+
 def test_dashboard_402_when_provision_gate_blocks(client, monkeypatch):
     """If the container is unreachable AND the provision gate is up (no
     subscription/credits/provider), surface the gate's CTA payload as 402 (the
     frontend maps it to subscribe_required) instead of spinning on 202 forever."""
+    from core.repositories import container_repo
     from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value=None))
 
     async def not_reachable(owner_id):
         return False, None, None

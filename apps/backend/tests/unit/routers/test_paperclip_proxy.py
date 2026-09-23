@@ -1220,10 +1220,8 @@ def test_http_handoff_autoprovision_routes_through_canonical_trigger(monkeypatch
     )
     assert resp.status_code == 302
 
-    # Dispatched through the canonical trigger for the active workspace. No
-    # container flag: ensure_user_ready
-    # reads the row itself and resolves an already-running box to a seed-only
-    # reconcile (see user_provision._provision_or_reconcile).
+    # Dispatched through the lazy JOIN for the active workspace; ensure_user_ready
+    # never provisions, so a running box only gets the seed reconcile.
     assert calls == ["user_trigger_fold"]
 
 

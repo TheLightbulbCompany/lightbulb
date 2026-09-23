@@ -69,7 +69,7 @@ function networkErrorResult(message: string) {
   };
 }
 
-describe("useContainerStatus parked + wake wiring", () => {
+describe("useContainerStatus parked + visibility wiring", () => {
   beforeEach(() => {
     mockUseOnboardingStatus.mockReset();
     setActive("active");
@@ -83,15 +83,10 @@ describe("useContainerStatus parked + wake wiring", () => {
     await waitFor(() => expect(result.current.status.kind).toBe("parked"));
   });
 
-  it("passes a `wake` function reflecting presence (AppState active) to the shared hook", async () => {
+  it("sends no `wake` option (the status read is cold)", async () => {
     mockUseOnboardingStatus.mockReturnValue(containerResult({ runtime_phase: "ready", lifecycle: "ready" }));
-    setActive("active");
     await renderHook(() => useContainerStatus());
-    const options = mockUseOnboardingStatus.mock.calls[0][0];
-    expect(options.wake()).toBe(true);
-
-    setActive("background");
-    expect(options.wake()).toBe(false);
+    expect(mockUseOnboardingStatus.mock.calls[0][0]).not.toHaveProperty("wake");
   });
 
   it("passes a `visibility` adapter wired to AppState", async () => {

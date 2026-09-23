@@ -35,7 +35,21 @@ def hermes(monkeypatch):
     monkeypatch.setattr("core.services.onboarding_brief.reconcile_pending_brief", drain)
     arm_trial = AsyncMock(return_value=None)
     monkeypatch.setattr("core.repositories.billing_repo.arm_trial_if_unset", arm_trial)
-    return SimpleNamespace(prepare=prepare, provision=provision, reconcile=reconcile, drain=drain, arm_trial=arm_trial)
+    vendor_room = AsyncMock()
+    monkeypatch.setattr("core.services.messaging.ensure_vendor_room", vendor_room)
+    join_room = AsyncMock()
+    monkeypatch.setattr("core.services.messaging.join_default_room", join_room)
+    members = AsyncMock(return_value=[{"user_id": "user_creator"}, {"user_id": "user_early"}])
+    monkeypatch.setattr("core.services.clerk_admin.list_organization_members", members)
+    return SimpleNamespace(
+        prepare=prepare,
+        provision=provision,
+        reconcile=reconcile,
+        drain=drain,
+        arm_trial=arm_trial,
+        vendor_room=vendor_room,
+        join_room=join_room,
+    )
 
 
 @pytest.fixture
@@ -76,12 +90,32 @@ async def test_the_brief_drains_after_step_0_and_the_trial_arms_after_the_runtim
         provision_runner, "_seed_owner_paperclip", AsyncMock(side_effect=lambda _o: order.append("seed") or 0)
     )
     hermes.drain.side_effect = lambda _o: order.append("drain")
+    hermes.vendor_room.side_effect = lambda _o: order.append("vendor_room")
     hermes.provision.side_effect = lambda _o: order.append("runtime")
     hermes.arm_trial.side_effect = lambda _o: order.append("arm_trial")
     hermes.reconcile.side_effect = lambda _o: order.append("reconcile")
 
     assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
-    assert order == ["seed", "drain", "runtime", "arm_trial", "reconcile"]
+    assert order == ["seed", "drain", "vendor_room", "runtime", "arm_trial", "reconcile"]
+
+
+async def test_every_teammate_is_seated_once_the_company_is_active(monkeypatch, hermes, repo):
+    """The status poll used to create the vendor room and seat teammates the membership webhook
+    missed (one who joined before #general existed). The executor does it after step 0; a
+    failure never fails the provision."""
+    hermes.join_room.side_effect = [RuntimeError("ddb"), True]
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
+    hermes.vendor_room.assert_awaited_once_with("org_a")
+    assert [c.args for c in hermes.join_room.await_args_list] == [("org_a", "user_creator"), ("org_a", "user_early")]
+    repo.mark_provision_error.assert_not_awaited()
+
+
+async def test_a_roster_read_failure_never_fails_the_provision(monkeypatch, hermes, repo):
+    monkeypatch.setattr(
+        "core.services.clerk_admin.list_organization_members", AsyncMock(side_effect=RuntimeError("clerk"))
+    )
+    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
+    hermes.provision.assert_awaited_once_with("org_a")
 
 
 async def test_drain_and_trial_arm_failures_never_fail_the_provision(monkeypatch, hermes, repo):
@@ -142,10 +176,12 @@ async def test_deterministic_error_exits_10_and_is_recorded(monkeypatch, hermes,
     assert repo.mark_provision_error.await_args.kwargs["retryable"] is False
 
 
-async def test_transient_error_exits_11_and_is_recorded(monkeypatch, hermes, repo):
+async def test_transient_error_exits_11_and_writes_no_error_row(monkeypatch, hermes, repo):
+    """The machine retries a transient failure within the execution; an error row now would
+    flash "Setup failed" over a provision about to succeed. MarkFailedExhausted is the backstop."""
     hermes.provision.side_effect = Exception("ThrottlingException")
     assert await provision_runner.run("org_a") == provision_runner.EXIT_TRANSIENT
-    assert repo.mark_provision_error.await_args.kwargs["retryable"] is True
+    repo.mark_provision_error.assert_not_awaited()
 
 
 async def test_error_record_failure_still_returns_the_exit_code(monkeypatch, hermes, repo):
@@ -191,12 +227,12 @@ async def test_seed_step_0_deterministic_fail_exits_10_skips_runtime_surfaces_er
     assert repo.mark_provision_error.await_args.kwargs["retryable"] is False
 
 
-async def test_seed_step_0_transient_fail_exits_11_skips_runtime_retryable_error(monkeypatch, hermes, repo):
+async def test_seed_step_0_transient_fail_exits_11_skips_runtime_writes_no_error(monkeypatch, hermes, repo):
     seed = AsyncMock(return_value=provision_runner.EXIT_TRANSIENT)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
     assert await provision_runner.run("org_a") == provision_runner.EXIT_TRANSIENT
     hermes.provision.assert_not_awaited()
-    assert repo.mark_provision_error.await_args.kwargs["retryable"] is True
+    repo.mark_provision_error.assert_not_awaited()
 
 
 async def test_seed_step_0_error_record_failure_still_returns_exit_code(monkeypatch, hermes, repo):

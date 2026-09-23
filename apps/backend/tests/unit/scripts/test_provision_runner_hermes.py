@@ -88,14 +88,13 @@ async def test_hook_token_exists_before_step_0_seeds_the_roster(monkeypatch, run
 
 
 @pytest.mark.asyncio
-async def test_a_prepare_hermes_workspace_failure_is_recorded_and_stops_the_run(monkeypatch, runner_env):
+async def test_a_transient_prepare_hermes_workspace_failure_stops_the_run_without_an_error_row(monkeypatch, runner_env):
     monkeypatch.setattr(
         provision_runner.hermes_provisioning, "prepare_hermes_workspace", AsyncMock(side_effect=RuntimeError("boom"))
     )
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", _explodes_if_called)  # must never be reached
     monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", _explodes_if_called)
 
+    # Transient: the machine retries it, so no error row is written (MarkFailedExhausted is the backstop).
     assert await provision_runner.run("org_a") == provision_runner.EXIT_TRANSIENT
-    runner_env.mark_provision_error.assert_awaited_once()
-    assert runner_env.mark_provision_error.await_args.args == ("org_a",)
-    assert "boom" in runner_env.mark_provision_error.await_args.kwargs["last_error"]
+    runner_env.mark_provision_error.assert_not_awaited()

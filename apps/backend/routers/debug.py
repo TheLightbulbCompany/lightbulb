@@ -87,7 +87,7 @@ async def provision_container(
     # AgentCore runtime, in that order. DELETE below destroys the AIPs along with the
     # row that named them, so re-minting here is the only honest recovery -- which is
     # exactly what the runner does. ``dispatch_provision`` never raises; a failed
-    # dispatch is retried by the status poll.
+    # dispatch leaves a retryable error row.
     await dispatch_provision(owner_id)
     return {"status": "provisioning", "owner_id": owner_id, "owner_type": owner_type}
 

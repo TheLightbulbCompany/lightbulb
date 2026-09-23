@@ -194,6 +194,29 @@ async def test_organization_created_dispatches_the_first_provision():
     mock_provision.assert_awaited_once_with("org_acme")
 
 
+@pytest.mark.asyncio
+async def test_a_failed_organization_created_rolls_back_its_dedup_row_so_svix_redelivers(async_client, monkeypatch):
+    """The webhook is the only thing that starts a first provision, so a failure must 5xx AND
+    drop the dedup row -- otherwise Svix's redelivery is acked as a duplicate and the
+    workspace is never provisioned."""
+    from core.services import webhook_dedup
+
+    _bypass_svix(monkeypatch)
+    monkeypatch.setattr(
+        webhook_dedup, "record_event_or_skip", AsyncMock(return_value=webhook_dedup.WebhookDedupResult.RECORDED)
+    )
+    delete_event = AsyncMock()
+    monkeypatch.setattr(webhook_dedup, "delete_event", delete_event)
+    monkeypatch.setattr(
+        "core.services.user_provision.provision_new_workspace", AsyncMock(side_effect=RuntimeError("sfn down"))
+    )
+    payload = {"type": "organization.created", "data": {"id": "org_acme", "created_by": "user_owner"}}
+
+    with pytest.raises(RuntimeError):
+        await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=_svix_headers())
+    delete_event.assert_awaited_once_with("msg_test")
+
+
 # ----------------------------------------------------------------------
 # organizationMembership.created -> lifecycle record + idempotent Paperclip JOIN
 # ----------------------------------------------------------------------

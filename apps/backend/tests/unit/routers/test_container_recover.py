@@ -204,15 +204,37 @@ class TestContainerRecover:
     # --- No container ---
 
     @pytest.mark.asyncio
-    async def test_recover_no_container_returns_404(
-        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+    @pytest.mark.parametrize(
+        ("role", "gate", "status"),
+        [("org:admin", None, 200), ("org:admin", "blocked", 402), ("org:member", None, 404)],
+    )
+    async def test_recover_with_no_row_starts_the_first_provision_for_an_admin(
+        self, mock_container_repo, mock_dispatch_provision, role, gate, status
     ):
-        """No container at all should return 404."""
-        mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
+        """No row at all: its organization.created provision never started and nothing
+        re-drives it, so an admin's Retry starts it behind the provision gate. A member
+        rides the admin's workspace and gets the 404."""
+        from fastapi import HTTPException
+        from unittest.mock import MagicMock
 
-        response = await async_client.post("/api/v1/container/recover")
-        assert response.status_code == 404
-        mock_dispatch_provision.assert_not_called()
+        from core.auth import AuthContext
+        from routers.container_recover import container_recover
+
+        auth = AuthContext(user_id="user_a", org_id="org_a", org_role=role, email="a@example.com")
+        blocked = MagicMock(to_payload=lambda: {"blocked": {"code": "subscription_required"}}) if gate else None
+        with (
+            patch("routers.container_recover.ensure_workspace_trial_default", new=AsyncMock()) as trial,
+            patch("core.services.provision_gate.evaluate_provision_gate", new=AsyncMock(return_value=blocked)),
+        ):
+            if status == 200:
+                result = await container_recover(auth)
+                assert result["action"] == "reprovision"
+                trial.assert_awaited_once_with(auth, "org_a")
+            else:
+                with pytest.raises(HTTPException) as exc:
+                    await container_recover(auth)
+                assert exc.value.status_code == status
+        assert mock_dispatch_provision.await_count == (1 if status == 200 else 0)
 
     # --- The start guards (Task 13) ---
     #

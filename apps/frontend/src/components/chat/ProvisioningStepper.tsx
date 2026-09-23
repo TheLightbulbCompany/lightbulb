@@ -276,12 +276,9 @@ export function ProvisioningStepper({
   }, [providerStepDone]);
 
   // The single canonical `/container/status` reader — a pure consumer of the
-  // ONE shared `useOnboardingStatus` bounded loop (spec PR-9, CLIENT-HOOK).
-  // This call site used to own its own SWR poll (3s cold-start cadence,
-  // `revalidateOnFocus: true`, and a mirrored `pollActive`/`shouldPollContainer`
-  // state machine to zero the interval once ready) — all deleted. Cadence,
-  // visibility gating, and the resume-on-focus/visible kick now live once,
-  // shared by every consumer, inside `useOnboardingStatus` itself.
+  // ONE shared `useOnboardingStatus` read (spec PR-9, CLIENT-HOOK). There is no
+  // poll: it advances on the live status events (below) and refetches on
+  // visible/reconnect, all inside `useOnboardingStatus` itself.
   const {
     phase: gatePhase,
     blocked,
@@ -289,16 +286,15 @@ export function ProvisioningStepper({
     refresh,
   } = useProvisioningState();
   // Same /container/recover call HealthIndicator's CONTAINER_DOWN action uses
-  // (useSystemHealth) — a deterministic (non-retryable) provisioning error is
-  // no longer auto-redispatched by the /container/status poll, so the failed
-  // state's Retry button below drives it explicitly instead of just re-polling.
+  // (useSystemHealth) — nothing re-dispatches a failed provision on its own, so
+  // the failed state's Retry button below drives it explicitly.
   const { recover, isRecovering: isRetryingProvision } = useSystemHealth();
   const [retryFailed, setRetryFailed] = useState(false);
 
   // Private runtime health/onboarding events invalidate this shared status key
   // in LiveEventsProvider, so the stepper observes readiness through HTTP.
 
-  // The trial_local row is created as a side effect of /container/status, not
+  // The trial_local row is created by the organization.created webhook, not
   // by /billing/account — and useBilling does not revalidate on focus or an
   // interval. So when a container is provisioning but billing still shows no
   // active subscription/trial, pull /billing/account once so isTrialLocal /
@@ -311,12 +307,10 @@ export function ProvisioningStepper({
     }
   }, [container, isSubscribed, isTrialLocal, billingLoading, refreshBilling]);
 
-  // Provisioning is now driven by /container/status: when the gate clears
-  // and no container exists, the backend's status endpoint fires
-  // ensure_user_ready itself. The frontend stepper is purely passive — it
-  // reads the ONE shared bounded-loop poll (see useProvisioningState above)
-  // and renders the appropriate phase. No explicit POST /container/provision
-  // from here.
+  // Provisioning is driven by the backend's own events (the organization.created
+  // webhook, billing events, the user's Retry). The stepper is purely passive —
+  // it reads the ONE shared status (see useProvisioningState above) and renders
+  // the appropriate phase. No explicit POST /container/provision from here.
 
   const containerReady =
     container?.container_status === "running" || container?.container_substatus === "gateway_healthy";
@@ -328,26 +322,23 @@ export function ProvisioningStepper({
   // "provisioning" for an error row, so it could never tell a dead
   // container from a live one).
   //
-  // Error is TERMINAL by DEFAULT — `error_retrying` is the ONLY non-terminal
-  // exception. Keying "terminal" off a specific substatus (e.g. only
-  // `provision_failed`) is too narrow: the backend also emits terminal rows
-  // with `deployment_failed` (rollout circuit breaker) and a bare
-  // `container_status:"error"` with NO substatus (auto-retry gated /
-  // standing down), and those would fall through to the plain spinner with
-  // no Retry/Support CTA — the exact endless-spinner bug this contract
-  // exists to kill. Treating any non-retrying error as terminal restores the
-  // old catch-all's coverage and absorbs any future terminal substatus.
-  // `last_error` carries the reason.
-  const isRetryingError =
-    container?.container_status === "error" && container?.container_substatus === "error_retrying";
-  const isTerminalError =
-    container?.container_status === "error" && !isRetryingError;
+  // Every error row is TERMINAL: the backend writes one only for a deterministic
+  // failure or once the state machine's retries are exhausted (a transient failure
+  // it is still retrying writes nothing). Keyed off `container_status`, never a
+  // specific substatus, so a bare error or any future substatus still gets the
+  // Retry/Support CTA. `last_error` carries the reason.
+  const isTerminalError = container?.container_status === "error";
 
-  // AgentsBanner's "Check again"/"Retry" button. A terminal error needs the
-  // real recover call (see the useSystemHealth destructure above); every
-  // other alarming state (stuck/slow) is still a live re-poll.
+  // A 200 with no container row: the workspace's first provision never started (its
+  // organization.created webhook gave up). Nothing re-drives it on its own, so the
+  // banner's check starts it through /container/recover, exactly like a failed one.
+  const needsRecover = isTerminalError || (container != null && container.container_status == null);
+
+  // AgentsBanner's "Check again"/"Retry" button. A terminal error (or no row) needs
+  // the real recover call (see the useSystemHealth destructure above); every
+  // other alarming state (stuck/slow) is a plain re-read.
   const handleAgentsBannerCheck = useCallback(async () => {
-    if (!isTerminalError) {
+    if (!needsRecover) {
       refresh();
       return;
     }
@@ -358,7 +349,7 @@ export function ProvisioningStepper({
       return;
     }
     refresh();
-  }, [isTerminalError, recover, refresh]);
+  }, [needsRecover, recover, refresh]);
 
   // Readiness decision (backend runtime_phase="provisioning"/"starting"/
   // "ready", lifecycle="parked"/"error"/…) is sourced from the ONE shared
@@ -668,15 +659,10 @@ export function ProvisioningStepper({
     }
   }, [phase]);
 
-  // Elapsed-time tick ONLY — the poll-watchdog half of this effect (an
-  // out-of-band `refresh()` fired at most once/10s to route around a
-  // throttled SWR chain) is DELETED (spec PR-9, CLIENT-HOOK). That was a
-  // compensating layer for the 3s-poll `useProvisioningState` call this
-  // stepper used to own; the shared `useOnboardingStatus` bounded loop
-  // behind it now has its own belt-and-suspenders backstop (a raw
-  // `setInterval`, independent of SWR's self-rescheduling chain, plus a
-  // fetch-timeout so a genuinely hung request can't wedge it either — see
-  // that hook's module doc) instead of each consumer improvising its own.
+  // Elapsed-time tick ONLY — a display clock, never a status fetch. The status
+  // advances on live events and visible/reconnect refetches (see
+  // `useOnboardingStatus`); past TIMEOUT_MS the timed-out card offers a manual
+  // check, which is the backstop for an event AppSync dropped.
   useEffect(() => {
     if (
       phase !== "container" &&
@@ -1212,12 +1198,12 @@ export function ProvisioningStepper({
     return (
       <>
         <AgentsBanner
-          state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : isRetryingError ? "retrying" : "starting"}
+          state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : "starting"}
           phase={phase}
           onCheck={handleAgentsBannerCheck}
           onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
-          isChecking={isTerminalError && isRetryingProvision}
-          checkFailed={isTerminalError && retryFailed}
+          isChecking={needsRecover && isRetryingProvision}
+          checkFailed={needsRecover && retryFailed}
         />
         {children}
       </>
@@ -1596,7 +1582,6 @@ export function ProvisioningStepper({
 
 const AGENTS_BANNER_COPY = {
   starting: "Your team is getting ready — it'll be ready in about a minute.",
-  retrying: "Your agents hit a snag and are retrying automatically. You can keep messaging in the meantime.",
   slow: "Still going — your agents are taking a little longer than usual. You can keep messaging in the meantime.",
   stuck: "Starting your agents is taking longer than it should — something is stuck on our side. Messaging still works; contact us and we'll get it moving.",
   failed: "Setup failed — your agents couldn't start. Messaging still works; retry, or contact support if it keeps failing.",
@@ -1624,9 +1609,8 @@ export function agentsBannerProgress(
 // The only states allowed to draw the bar, each with the sentence it uses once
 // the step label is carrying the "what's happening" half. `starting` drops its
 // now-redundant "Your agents are getting ready." — the label above it already
-// says which step is running — and keeps only the reassurance; `retrying` and
-// `slow` keep their full sentence, because each says something the step label
-// does not.
+// says which step is running — and keeps only the reassurance; `slow` keeps its
+// full sentence, because it says something the step label does not.
 //
 // `stuck` and `failed` are absent deliberately: a bar sitting at 4 of 6 next to
 // "something is stuck on our side" reads as progress, and the point of the
@@ -1635,7 +1619,6 @@ export function agentsBannerProgress(
 // actions, unchanged — and so does any phase we can't place on the ladder.
 const ADVANCING_BANNER_COPY: Partial<Record<keyof typeof AGENTS_BANNER_COPY, string>> = {
   starting: "Your team will be ready in about a minute.",
-  retrying: AGENTS_BANNER_COPY.retrying,
   slow: AGENTS_BANNER_COPY.slow,
 };
 
@@ -1687,7 +1670,7 @@ function AgentsBanner({
             <span className="text-err">Retry failed — try again or contact support.</span>
           )}
         </span>
-        {state !== "starting" && state !== "retrying" && (
+        {state !== "starting" && (
           <span className="flex gap-4">
             <button type="button" className="underline disabled:opacity-60" onClick={onCheck} disabled={isChecking}>
               {isChecking ? "Retrying…" : state === "failed" ? "Retry" : "Check again"}

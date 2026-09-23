@@ -9,7 +9,6 @@ import pytest
 from fastapi import HTTPException
 
 from core.auth import AuthContext
-from core.services.messaging import ApiProblem
 
 
 @pytest.fixture
@@ -68,15 +67,6 @@ def _org_admin_auth(
         org_role="org:admin",
         email=email,
     )
-
-
-async def _noop_ensure_user_ready(auth):
-    """No-op stand-in with the real qualname so capture_task can verify
-    we dispatched the right coroutine. Using AsyncMock here would yield
-    coro.__qualname__ == 'AsyncMockMixin._execute_mock_call', which
-    defeats the contract assertion. Mirrors the real ensure_user_ready
-    signature — one positional AuthContext, no flags."""
-    return None
 
 
 @pytest.fixture(autouse=True)
@@ -153,62 +143,6 @@ def _stub_teams_status_repo():
         yield repo
 
 
-@pytest.fixture(autouse=True)
-def _stub_trial_armer(request):
-    if request.node.name == "test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll":
-        yield
-    else:
-        with patch("routers.container.arm_workspace_trial_if_unset", AsyncMock(return_value=None)):
-            yield
-
-
-@pytest.mark.asyncio
-async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll():
-    """The trial clock arms exactly once, at the poll where the composed `runtime_phase`
-    first reads "ready" -- never before, never twice. This used to cycle a RUNNING row
-    through a "starting" (not-yet-gateway-connected) intermediate before "ready", but
-    `resolve_runtime_phase` now reports "ready" for any running row unconditionally, with
-    no health probe at all (`host_for` is pinned to "agentcore" fleet-wide) -- a running row
-    is ready on its very first poll. "provisioning"/"error" are what still exercise the
-    not-yet-ready leg the arm-only-once assertion depends on."""
-    import boto3
-    from moto import mock_aws
-    from core.repositories import billing_repo
-    from routers.container import container_status
-
-    with mock_aws():
-        table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
-            TableName="workspace-trials",
-            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        table.put_item(Item={"owner_id": "org_x", "owner_type": "org", "subscription_status": "trial_local"})
-        row = {"owner_id": "org_x", "status": "provisioning"}
-        _row = row
-
-        with (
-            patch.object(billing_repo, "_get_table", return_value=table),
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch("core.services.container_rpc.call", AsyncMock(return_value={"ok": True})),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
-            patch("routers.container.evaluate_provision_gate", AsyncMock(return_value=None)),
-        ):
-            for status, phase in [("provisioning", "provisioning"), ("error", "provisioning")]:
-                row["status"] = status
-                result = await container_status(_workspace_auth(), flow=None)
-                assert result["runtime_phase"] == phase
-                assert "trial_end" not in (await billing_repo.get_by_owner_id("org_x"))
-            row["status"] = "running"
-            with patch("core.repositories.billing_repo.time.time", return_value=1_000):
-                result = await container_status(_workspace_auth(), flow=None)
-            assert result["runtime_phase"] == "ready"
-            assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 2_593_000
-            with patch("core.repositories.billing_repo.time.time", return_value=9_999):
-                await container_status(_workspace_auth(), flow=None)
-                assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 2_593_000
-
-
 @pytest.mark.asyncio
 async def test_ready_paid_workspace_does_not_try_to_arm_a_trial():
     import boto3
@@ -239,12 +173,8 @@ async def test_ready_paid_workspace_does_not_try_to_arm_a_trial():
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("core.services.container_rpc.call", AsyncMock(return_value={"ok": True})),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
-            patch(
-                "routers.container.arm_workspace_trial_if_unset",
-                AsyncMock(side_effect=AssertionError("paid workspaces must not hit the trial armer")),
-            ),
         ):
-            result = await container_status(_workspace_auth(), flow=None)
+            result = await container_status(_workspace_auth())
 
         assert result["runtime_phase"] == "ready"
         assert result["provider"]["subscription_status"] == "active"
@@ -357,23 +287,21 @@ class TestContainerStatus:
 
     @pytest.mark.asyncio
     @patch("routers.container.asyncio.create_task")
-    @patch("routers.container.ensure_user_ready", new_callable=AsyncMock)
     @patch("routers.container.evaluate_provision_gate", new_callable=AsyncMock)
     @patch("routers.container.container_repo.get_by_owner_id")
     async def test_returns_provisioning_without_container(
-        self, mock_get_row, mock_gate, mock_ensure, mock_create_task, async_client
+        self, mock_get_row, mock_gate, mock_create_task, async_client
     ):
-        """No container row + no gate fires (owner) -> dispatch ensure_user_ready
-        and return 200 with phase=provisioning. Replaces former 404 contract."""
+        """No container row + no gate fires (owner) -> 200 with phase=provisioning, and
+        no background dispatch (the status read triggers nothing)."""
         mock_get_row.return_value = None
         mock_gate.return_value = None  # no gate fires
-        mock_create_task.side_effect = lambda c: c.close() or MagicMock()
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
         body = response.json()
-        assert body["container_status"] == "provisioning"
+        assert body["container_status"] is None
         assert body["runtime_phase"] == "provisioning"
-        assert mock_create_task.call_count == 1
+        mock_create_task.assert_not_called()
 
 
 class TestContainerStatusGate:
@@ -381,10 +309,80 @@ class TestContainerStatusGate:
 
     When there's no container row yet, /status should evaluate the same
     provision gate POST /provision uses and return 402 + structured
-    `blocked` payload if a gate fires. If no gate fires, /status now
-    dispatches ensure_user_ready and returns a synthetic provisioning
-    response.
+    `blocked` payload if a gate fires. If no gate fires, it answers the
+    composed contract for "no row" -- and dispatches nothing.
     """
+
+    @pytest.mark.asyncio
+    async def test_no_container_no_gate_is_a_cold_read(self):
+        """No row + gate clear: the composed contract (runtime_phase provisioning, no
+        container status) -- no dispatch, no background task. The organization.created
+        webhook owns the first provision."""
+        from routers.container import container_status
+
+        with (
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+            patch("routers.container.evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
+            patch("routers.container.dispatch_provision", new=AsyncMock()) as dispatch,
+            patch("routers.container.asyncio.create_task") as create_task,
+        ):
+            result = await container_status(auth=_workspace_auth())
+
+        assert result["runtime_phase"] == "provisioning"
+        assert result["container_status"] is None
+        assert result["container_substatus"] is None
+        dispatch.assert_not_awaited()
+        create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_first_admin_read_that_beats_the_webhook_sees_the_trial_not_the_paywall(self):
+        """The GET can arrive before organization.created has written the trial row. It creates
+        it (create-if-absent) BEFORE the gate reads billing, so the gate is clear and the admin
+        gets the no-row contract instead of team_billing_required."""
+        from core.repositories import billing_repo
+        from core.services import provision_gate
+        from routers.container import container_status
+
+        rows: dict = {}
+
+        async def create(*, owner_id, owner_type, trial_end):
+            rows[owner_id] = {"owner_id": owner_id, "owner_type": owner_type, "subscription_status": "trial_local"}
+            return True
+
+        async def gate(**kwargs):
+            return await provision_gate.evaluate_provision_gate(**kwargs)
+
+        from core.services.user_provision import ensure_workspace_trial_default as real_default
+
+        with (
+            patch("routers.container.ensure_workspace_trial_default", new=real_default),
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+            patch.object(billing_repo, "get_by_owner_id", AsyncMock(side_effect=lambda o, **k: rows.get(o))),
+            patch.object(billing_repo, "create_trial_local_if_absent", AsyncMock(side_effect=create)),
+            patch.object(billing_repo, "get_trial_daily_spend", AsyncMock(return_value=0)),
+            patch("routers.container.evaluate_provision_gate", new=gate),
+            patch("routers.container.dispatch_provision", new=AsyncMock()) as dispatch,
+        ):
+            result = await container_status(auth=_org_admin_auth())
+
+        assert rows["org_xyz"]["subscription_status"] == "trial_local"
+        assert result["runtime_phase"] == "provisioning"
+        assert result["container_status"] is None
+        dispatch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_container_org_member_gets_202_and_dispatches_nothing(self):
+        from routers.container import container_status
+
+        with (
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+            patch("routers.container.asyncio.create_task") as create_task,
+            pytest.raises(HTTPException) as exc,
+        ):
+            await container_status(_org_member_auth())
+        assert exc.value.status_code == 202
+        create_task.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_container_with_gate_raises_402_structured(self):
@@ -426,35 +424,6 @@ class TestContainerStatusGate:
         assert exc.value.detail["blocked"]["action"]["href"] == "/settings/billing#credits"
 
     @pytest.mark.asyncio
-    async def test_no_container_no_gate_dispatches_ensure_user_ready(self):
-        """No container row + no gate fires (owner) -> dispatch ensure_user_ready
-        and return synthetic provisioning response (was 404 pre-Task-8)."""
-        from routers.container import container_status
-
-        captured = []
-        _row = None
-
-        with (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch(
-                "routers.container.evaluate_provision_gate",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-            patch(
-                "routers.container.asyncio.create_task",
-                side_effect=lambda c: captured.append(c) or c.close() or c,
-            ),
-        ):
-            result = await container_status(auth=_workspace_auth())
-
-        assert result["container_status"] == "provisioning"
-        assert result["runtime_phase"] == "provisioning"
-        assert result["container_substatus"] == "ensure_user_ready"
-        assert [c.__qualname__ for c in captured] == ["_noop_ensure_user_ready"]
-
-    @pytest.mark.asyncio
     async def test_no_container_preserves_onboarded_during_recreation(self):
         """Container-only recreation (no container row yet, but the company +
         G2 onboarding preserved) must NOT re-show a completed funnel: the
@@ -473,13 +442,12 @@ class TestContainerStatusGate:
         with (
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
             patch("routers.container.evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
-            patch("routers.container.ensure_user_ready", new=AsyncMock()),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close() or c),
         ):
             result = await container_status(auth=_workspace_auth())
 
-        assert result["container_status"] == "provisioning"
+        assert result["container_status"] is None
         assert result["onboarded"] is True  # NOT re-funneled
 
     @pytest.mark.asyncio
@@ -536,8 +504,6 @@ class TestContainerStatusGate:
 
         with (
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            # Restore declines (still capped) and leaves the flag set.
-            patch("routers.container.maybe_restore_trial_bedrock", new=AsyncMock()),
             patch(
                 "core.services.trial_cap.trial_block_reason",
                 new=AsyncMock(return_value=trial_cap.DAILY_CAP),
@@ -566,7 +532,6 @@ class TestContainerStatusGate:
 
         with (
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch("routers.container.maybe_restore_trial_bedrock", new=AsyncMock()),
             patch(
                 "core.services.trial_cap.trial_block_reason",
                 new=AsyncMock(return_value=None),
@@ -585,7 +550,7 @@ class TestContainerStatusGate:
         from routers.container import container_status
 
         with pytest.raises(HTTPException) as exc_info:
-            await container_status(AuthContext(user_id="user_x"), flow="flow-abc")
+            await container_status(AuthContext(user_id="user_x"))
 
         assert exc_info.value.status_code == 409
         assert exc_info.value.detail["code"] == "workspace_required"
@@ -667,542 +632,79 @@ class TestContainerStatusGate:
         assert exc.value.detail["blocked"]["action"]["href"] == "/settings/billing"
 
 
-class TestContainerStatusEnsureUserReadyDispatch:
-    """/container/status as the canonical readiness trigger.
+class TestContainerStatusColdRead:
+    """GET /container/status is a cold read: it reports a failed or stopped row as it is and
+    re-drives nothing (no restore, no restart). Its one write is an admin's missing trial row."""
 
-    With Clerk-webhook eager-provisioning removed, this endpoint is the
-    only path that drives a fresh user from "Clerk-authed" to "container
-    provisioning." Owners get a synthetic provisioning response; org
-    members get 202 'workspace pending'.
-    """
+    @staticmethod
+    def _patches(row):
+        return (
+            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
+            patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
+            patch("routers.container.dispatch_provision", new=AsyncMock()),
+            patch("routers.container.asyncio.create_task"),
+            patch("routers.container.ensure_workspace_trial_default", new=AsyncMock()),
+        )
 
     @pytest.mark.asyncio
-    async def test_status_no_container_gate_passes_owner_dispatches_ensure_user_ready(self):
-        """Owner role + no container + gate clear -> fire ensure_user_ready,
-        return 200 with phase=provisioning (not 404)."""
+    @pytest.mark.parametrize(
+        "row",
+        [
+            {"status": "error", "substatus": "provision_failed", "last_error": "boom", "retryable": True},
+            {"status": "error", "substatus": "provision_failed", "last_error": "boom", "retryable": False},
+            {"status": "error", "substatus": None, "last_error": None},
+            {"status": "stopped", "substatus": None},
+        ],
+    )
+    async def test_a_failed_or_stopped_row_is_reported_as_is_and_never_redispatched(self, row):
         from routers.container import container_status
 
-        captured: list[str] = []
-
-        def capture_task(coro):
-            # Snapshot qualname BEFORE closing — coro.close() destroys the
-            # frame after which __qualname__ inspection is unsafe.
-            captured.append(coro.__qualname__)
-            coro.close()
-
-        _row = None
-        with (
-            patch(
-                "routers.container.evaluate_provision_gate",
-                new=AsyncMock(return_value=None),
-            ),
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch(
-                "routers.container.ensure_user_ready",
-                new=_noop_ensure_user_ready,
-            ),
-            patch(
-                "routers.container.asyncio.create_task",
-                side_effect=capture_task,
-            ),
-        ):
+        with contextlib.ExitStack() as stack:
+            dispatch, create_task, trial_default = [stack.enter_context(p) for p in self._patches(row)][2:]
             result = await container_status(_workspace_auth())
-        assert result["container_status"] == "provisioning"
-        assert result["runtime_phase"] == "provisioning"
-        assert captured == ["_noop_ensure_user_ready"], f"expected ensure_user_ready dispatched, got {captured}"
+
+        assert result["container_status"] == row["status"]
+        assert result["container_substatus"] == row["substatus"]
+        assert result["last_error"] == (row.get("last_error") if row["status"] == "error" else None)
+        dispatch.assert_not_awaited()
+        create_task.assert_not_called()
+        trial_default.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_status_no_container_org_admin_dispatches_ensure_user_ready(self):
-        """Org-admin owner role + no container + gate clear → fire ensure_user_ready,
-        return 200 with phase=provisioning. Same path as personal-owner; this test
-        pins the org-admin variant so a regression in is_org_admin → 202 short-circuit
-        is caught."""
+    async def test_a_capped_trial_row_still_gets_the_limit_card(self):
+        from core.services import trial_cap
         from routers.container import container_status
 
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-
-        _row = None
-        with (
-            patch(
-                "routers.container.evaluate_provision_gate",
-                new=AsyncMock(return_value=None),
-            ),
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch(
-                "routers.container.ensure_user_ready",
-                new=_noop_ensure_user_ready,
-            ),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        ):
-            result = await container_status(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
-        assert result["container_status"] == "provisioning"
-        assert result["runtime_phase"] == "provisioning"
-        # Org-context owner_id (org_xyz) also triggers the fire-and-forget
-        assert captured == ["_noop_ensure_user_ready"], f"expected ensure_user_ready dispatched, got {captured}"
-
-    @pytest.mark.asyncio
-    async def test_status_no_container_org_member_dispatches_ensure_user_ready_returns_202(self):
-        """Org member + no owner container + gate clear -> fire ensure_user_ready
-        (member role; will add to paperclip if owner's company is active,
-        otherwise return gracefully) AND return 202 'team workspace pending'."""
-        from fastapi import HTTPException
-
-        from routers.container import container_status
-
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-
-        _row = None
-        with (
-            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch(
-                "routers.container.ensure_user_ready",
-                new=_noop_ensure_user_ready,
-            ),
-            patch(
-                "routers.container.asyncio.create_task",
-                side_effect=capture_task,
-            ),
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await container_status(_org_member_auth())
-        assert exc_info.value.status_code == 202
-        # Org-context owner_id also triggers the fire-and-forget seat
-        # reconcile (Task 8), dispatched before ensure_user_ready.
-        assert captured == ["_noop_ensure_user_ready"], f"expected ensure_user_ready dispatched, got {captured}"
-
-    @pytest.mark.asyncio
-    async def test_status_no_container_gate_blocks_returns_402_unchanged(self):
-        """Existing 402 behavior preserved when gate is up."""
-        from fastapi import HTTPException
-
-        from routers.container import container_status
-
-        fake_gate = MagicMock(to_payload=lambda: {"blocked": {"code": "x"}})
-        _row = None
-        with (
-            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=fake_gate)),
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
-        ):
-            with pytest.raises(HTTPException) as exc_info:
+        row = {"status": "stopped", "substatus": "trial_daily_cap"}
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(row):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=trial_cap.DAILY_CAP))
+            )
+            with pytest.raises(HTTPException) as exc:
                 await container_status(_workspace_auth())
-        assert exc_info.value.status_code == 402
-
-
-class TestContainerStatusOrgMemberDispatchOnExisting:
-    """For an org member joining an org whose owner already has a container,
-    /container/status resolves the owner's existing container row via
-    resolve_running_container and skips the missing-container branch
-    (which is the canonical paperclip-add trigger). Without an explicit
-    dispatch on the existing-container path, the member's
-    paperclip-membership-add never fires and /teams 409s indefinitely.
-    """
+        assert exc.value.status_code == 402
+        assert exc.value.detail["blocked"]["code"] == "trial_daily_cap"
 
     @pytest.mark.asyncio
-    async def test_status_container_exists_org_member_dispatches_ensure_user_ready(self):
-        """When the org owner's container exists (200-OK path), an org member
-        polling /container/status must STILL dispatch ensure_user_ready so
-        their paperclip-membership-add fires."""
+    async def test_a_ready_trial_read_never_arms_the_trial_clock(self):
+        """Arming moved to the provision executor (MarkRunning); a status read writes nothing."""
+        from core.repositories import billing_repo
         from routers.container import container_status
-
-        fake_container = {
-            "status": "running",
-            "substatus": None,
-            "created_at": "2026-05-08T00:00:00Z",
-            "updated_at": "2026-05-08T00:00:00Z",
-            "last_error": None,
-            "last_error_at": None,
-        }
-        _row = fake_container
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
 
         with (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-            patch("core.services.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}),
-        ):
-            result = await container_status(_org_member_auth())
-
-        assert result["container_status"] == "running"
-        # Org-context owner_id also triggers the fire-and-forget seat
-        # reconcile (Task 8), dispatched before ensure_user_ready.
-        assert captured == ["_noop_ensure_user_ready"], (
-            f"expected ensure_user_ready dispatched for org member on container-exists path, got {captured}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_status_container_exists_org_admin_dispatches_ensure_user_ready(self):
-        """Org admin with an existing container MUST dispatch ensure_user_ready
-        too. The dispatch is now role-blind (is_org_context), not gated on
-        NOT is_org_admin. Excluding admins here was the /teams "team workspace
-        not provisioned" bug for multi-admin orgs: a co-admin who joins an
-        already-provisioned org never got their paperclip-membership-add."""
-        from routers.container import container_status
-
-        fake_container = {
-            "status": "running",
-            "substatus": None,
-            "created_at": "2026-05-08T00:00:00Z",
-            "updated_at": "2026-05-08T00:00:00Z",
-            "last_error": None,
-            "last_error_at": None,
-        }
-        _row = fake_container
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-
-        with (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-            patch("core.services.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}),
-        ):
-            await container_status(_org_admin_auth())
-
-        # Org-context owner_id also triggers the fire-and-forget seat
-        # reconcile (Task 8), dispatched before ensure_user_ready.
-        assert captured == ["_noop_ensure_user_ready"], (
-            f"org admin on container-exists path must dispatch ensure_user_ready, got {captured}"
-        )
-
-
-class TestContainerStatusStoppedRow:
-    """GET /container/status on a plain stopped row."""
-
-    @staticmethod
-    def _patches(row, *, captured=None, repo=None):
-        def capture_task(coro):
-            name = coro.__qualname__
-            if captured is not None and name != "ensure_user_ready":
-                captured.append(name)
-            coro.close()
-            return MagicMock()
-
-        return (
-            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
-            patch("routers.container.container_repo", new=repo),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        )
-
-    @staticmethod
-    def _repo(row):
-        return MagicMock(get_by_owner_id=AsyncMock(side_effect=lambda _owner_id: row), update_status=AsyncMock())
-
-    @pytest.mark.asyncio
-    async def test_plain_stopped_row_still_auto_retries(self):
-        """A stopped workspace initializes its trial before auto-retry gating."""
-        from routers.container import container_status
-
-        row = {"status": "stopped", "substatus": None}
-        repo = self._repo(row)
-        captured: list[str] = []
-        initialized = False
-
-        async def initialize(_auth, owner_id):
-            nonlocal initialized
-            assert owner_id == "org_x"
-            initialized = True
-
-        async def gate(**_kwargs):
-            assert initialized, "status auto-retry evaluated its gate before trial initialization"
-            return None
-
-        with contextlib.ExitStack() as stack:
-            for p in self._patches(row, captured=captured, repo=repo):
-                stack.enter_context(p)
-            stack.enter_context(patch("routers.container.ensure_workspace_trial_default", new=initialize))
-            stack.enter_context(patch("routers.container.evaluate_provision_gate", new=gate))
-            result = await container_status(_workspace_auth())
-
-        # The racy status pre-write is deliberately gone — dispatch_provision's
-        # atomic lease claim IS the transition to "provisioning" now. The poll
-        # only dispatches and shapes its own response.
-        repo.update_status.assert_not_awaited()
-        assert initialized is True
-        assert captured == [], (
-            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
-        )
-        assert result["container_status"] == "provisioning"
-        assert result["container_substatus"] == "auto_retry"
-
-
-class TestContainerStatusTrialBedrockRestore:
-    """GET /container/status vs. the daily Bedrock restore trigger (Task 7).
-
-    The meter Lambda's IAM revoke does not expire on its own. This is the
-    ONLY place a trial owner's stopped-by-cap container gets its Bedrock
-    grant back — the owner polling /status IS the trigger, so it must fire
-    on the same request that then proceeds to the ordinary auto-retry logic.
-    """
-
-    @staticmethod
-    def _repo(row):
-        async def update_status(owner_id, status, substatus=None):
-            row.update({"status": status, "substatus": substatus})
-            return row
-
-        return MagicMock(
-            get_by_owner_id=AsyncMock(side_effect=lambda _owner_id: row),
-            update_status=AsyncMock(side_effect=update_status),
-        )
-
-    @pytest.mark.asyncio
-    async def test_revoked_stopped_row_restores_bedrock_then_auto_retries(self):
-        """Revoked + new day (under cap, not expired): restore_owner_bedrock
-        fires, bedrock_revoked clears on the row, AND the ordinary auto-retry
-        still proceeds in the SAME poll — 'let the normal provisioning path
-        bring the container back'."""
-        from routers.container import container_status
-
-        row = {"status": "stopped", "substatus": None, "bedrock_revoked": True}
-        repo = self._repo(row)
-        restore = AsyncMock()
-        captured: list[str] = []
-
-        def capture_task(coro):
-            name = coro.__qualname__
-            if name != "ensure_user_ready":
-                captured.append(name)
-            coro.close()
-            return MagicMock()
-
-        with (
-            patch("routers.container.container_repo", new=repo),
             patch(
-                "core.services.provision_gate.billing_repo.get_by_owner_id",
-                new=AsyncMock(return_value={"subscription_status": "trial_local", "trial_end": None}),
+                "routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value={"status": "running"})
             ),
-            patch("core.services.trial_cap.billing_repo.get_trial_daily_spend", new=AsyncMock(return_value=0)),
-            patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
-            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch(
-                "core.services.container_rpc.call",
-                new_callable=AsyncMock,
-                side_effect=ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True),
+            patch.object(
+                billing_repo, "get_by_owner_id", AsyncMock(return_value={"subscription_status": "trial_local"})
             ),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+            patch.object(billing_repo, "arm_trial_if_unset", AsyncMock()) as arm,
         ):
             result = await container_status(_workspace_auth())
-
-        restore.assert_awaited_once_with("org_x")
-        assert row["bedrock_revoked"] is False
-        assert captured == [], (
-            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
-        )
-        assert result["container_status"] == "provisioning"
-
-    @pytest.mark.asyncio
-    async def test_not_revoked_row_makes_no_billing_call_for_restore(self):
-        """The overwhelmingly common poll: no bedrock_revoked flag at all —
-        maybe_restore_trial_bedrock's OWN (second, gated) billing read must
-        not fire.
-
-        readiness_state.compute_status now reads the billing row on EVERY
-        poll (it's one of the composer's four inputs — see
-        core/services/readiness_state.py), so `billing_repo.get_by_owner_id`
-        as a whole is no longer a no-call assertion; what stays true, and
-        stays worth pinning, is that the restore trigger's OWN conditional
-        read (short-circuited by the `bedrock_revoked` flag check before it
-        touches billing at all) never fires."""
-        from routers.container import container_status
-
-        row = {"status": "running", "substatus": None}
-
-        with (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
-            patch(
-                "core.services.provision_gate.billing_repo.get_by_owner_id",
-                new=AsyncMock(return_value=None),
-            ),
-            patch("core.billing.bedrock_aip.restore_owner_bedrock", new=AsyncMock()) as restore,
-            patch("core.services.container_rpc.call", new_callable=AsyncMock, return_value={"ok": True}),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
-        ):
-            result = await container_status(_workspace_auth())
-
-        restore.assert_not_awaited()
-        assert result["container_status"] == "running"
-
-    @pytest.mark.asyncio
-    async def test_restore_failure_does_not_break_the_status_poll(self):
-        """A restore that raises must be logged and swallowed — /status still
-        answers normally (not a 500), and the ordinary auto-retry proceeds
-        regardless (bedrock_revoked simply stays set for the next poll)."""
-        from routers.container import container_status
-
-        row = {"status": "stopped", "substatus": None, "bedrock_revoked": True}
-        repo = self._repo(row)
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-            return MagicMock()
-
-        with (
-            patch("routers.container.container_repo", new=repo),
-            patch(
-                "core.services.provision_gate.billing_repo.get_by_owner_id",
-                new=AsyncMock(return_value={"subscription_status": "trial_local", "trial_end": None}),
-            ),
-            patch("core.services.trial_cap.billing_repo.get_trial_daily_spend", new=AsyncMock(return_value=0)),
-            patch(
-                "core.billing.bedrock_aip.restore_owner_bedrock",
-                new=AsyncMock(side_effect=RuntimeError("boom")),
-            ),
-            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch(
-                "core.services.container_rpc.call",
-                new_callable=AsyncMock,
-                side_effect=ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True),
-            ),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        ):
-            result = await container_status(_workspace_auth())  # must not raise
-
-        assert row["bedrock_revoked"] is True  # restore never landed
-        assert result["container_status"] == "provisioning"  # the poll still answers normally
-
-
-class TestContainerStatusHonestError:
-    """GET /container/status must tell the truth about a FAILED provision
-    (Part B). An `error` row is no longer masked as `provisioning`/`auto_retry`:
-    it reports status=`error` + last_error, and the row's `retryable` flag
-    (written by container_repo.mark_provision_error) decides whether a
-    re-provision is auto-dispatched (transient) or the terminal error card is
-    shown (deterministic). `stopped` keeps its silent auto-wake.
-    """
-
-    @classmethod
-    def _patches(cls, row, *, captured):
-        """Gate clear, not capped, phase stubbed. Records
-        each create_task dispatch's qualname into `captured`."""
-
-        def capture_task(coro):
-            name = coro.__qualname__
-            if name != "ensure_user_ready":
-                captured.append(name)
-            coro.close()
-            return MagicMock()
-
-        return (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
-            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
-            patch(
-                "core.services.container_rpc.call",
-                new_callable=AsyncMock,
-                side_effect=ApiProblem("RUNTIME_UNAVAILABLE", "x", retryable=True),
-            ),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        )
-
-    @pytest.mark.asyncio
-    async def test_error_retryable_false_surfaces_error_and_does_not_redispatch(self):
-        """Deterministic failure (retryable=False): report status=error +
-        last_error, and do NOT auto re-provision."""
-        from routers.container import container_status
-
-        row = {
-            "status": "error",
-            "substatus": "provision_failed",
-            "last_error": "ValueError: bad config",
-            "retryable": False,
-        }
-        captured: list[str] = []
-        with contextlib.ExitStack() as stack:
-            for p in self._patches(row, captured=captured):
-                stack.enter_context(p)
-            result = await container_status(_workspace_auth())
-
-        assert result["container_status"] == "error"
-        assert result["last_error"] == "ValueError: bad config"
-        assert "dispatch_provision" not in captured, f"deterministic error must not re-dispatch, got {captured}"
-        assert captured == []
-
-    @pytest.mark.asyncio
-    async def test_error_retryable_true_reports_error_retrying_and_redispatches(self):
-        """Transient failure (retryable=True): still auto re-provision, but
-        report honestly — status=error, substatus=error_retrying (NEVER
-        provisioning), last_error carried through."""
-        from routers.container import container_status
-
-        row = {
-            "status": "error",
-            "substatus": "provision_failed",
-            "last_error": "EcsManagerError: spot reclaimed",
-            "retryable": True,
-        }
-        captured: list[str] = []
-        with contextlib.ExitStack() as stack:
-            for p in self._patches(row, captured=captured):
-                stack.enter_context(p)
-            result = await container_status(_workspace_auth())
-
-        assert result["container_status"] == "error"
-        assert result["container_substatus"] == "error_retrying"
-        assert result["container_substatus"] != "provisioning", "an error must never be masked as provisioning"
-        assert result["last_error"] == "EcsManagerError: spot reclaimed"
-        assert captured == [], (
-            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
-        )
-
-    @pytest.mark.asyncio
-    async def test_error_defaults_to_retryable_when_flag_absent(self):
-        """A legacy error row with no `retryable` field keeps the pre-T3
-        self-healing behaviour: auto re-dispatch, reported as error_retrying."""
-        from routers.container import container_status
-
-        row = {"status": "error", "substatus": None, "last_error": None}
-        captured: list[str] = []
-        with contextlib.ExitStack() as stack:
-            for p in self._patches(row, captured=captured):
-                stack.enter_context(p)
-            result = await container_status(_workspace_auth())
-
-        assert result["container_status"] == "error"
-        assert result["container_substatus"] == "error_retrying"
-        assert captured == [], (
-            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
-        )
-
-    @pytest.mark.asyncio
-    async def test_stopped_row_still_auto_wakes_as_provisioning(self):
-        """Regression guard: `stopped` (healthy scaled-to-zero) keeps its silent
-        auto-wake — dispatch + status=provisioning/substatus=auto_retry —
-        untouched by the error split."""
-        from routers.container import container_status
-
-        row = {"status": "stopped", "substatus": None}
-        captured: list[str] = []
-        with contextlib.ExitStack() as stack:
-            for p in self._patches(row, captured=captured):
-                stack.enter_context(p)
-            result = await container_status(_workspace_auth())
-
-        assert result["container_status"] == "provisioning"
-        assert result["container_substatus"] == "auto_retry"
-        assert captured == [], (
-            "the router only shapes the response; ensure_user_ready is the one dispatcher (see test_container_status_self_heal)"
-        )
+        assert result["runtime_phase"] == "ready"
+        arm.assert_not_awaited()
 
 
 class TestContainerStatusTeamsStatus:
@@ -1222,11 +724,7 @@ class TestContainerStatusTeamsStatus:
     @pytest.mark.asyncio
     async def test_running_container_with_failed_seed_is_ready_plus_teams_failed(self):
         """The core Part C case: a running container whose company seed failed
-        reports phase=ready (chat works) AND teams_status=failed (degraded). The
-        failed seed also triggers a self-heal re-dispatch of ensure_user_ready on
-        this poll (asserted by test_personal_running_container_with_failed_seed_
-        redispatches_ensure_user_ready); patch it out here so this test doesn't
-        leak a real background provisioning task."""
+        reports phase=ready (chat works) AND teams_status=failed (degraded)."""
         from routers.container import container_status
 
         _row = {"status": "running", "substatus": None}
@@ -1238,7 +736,6 @@ class TestContainerStatusTeamsStatus:
                 new=AsyncMock(return_value={"ok": True}),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=failed_repo),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
             result = await container_status(_workspace_auth())
@@ -1270,149 +767,6 @@ class TestContainerStatusTeamsStatus:
         assert result["teams_state"] == "active"
 
     @pytest.mark.asyncio
-    async def test_workspace_running_container_with_failed_seed_dispatches_reconciliation(self):
-        """A workspace with a failed Teams seed dispatches both reconciliations."""
-        from routers.container import container_status
-
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-
-        _row = {"status": "running", "substatus": None}
-        failed_repo = _paperclip_repo_stub("failed")
-        with (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch(
-                "core.services.container_rpc.call",
-                new=AsyncMock(return_value={"ok": True}),
-            ),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=failed_repo),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        ):
-            result = await container_status(_workspace_auth())
-
-        # CLIENT-HOOK removed the flat teams_status field; the contract's
-        # teams_state carries it now. Bootstrap dispatch is call-site-gated on
-        # funnel_state=="submitted", which this seed stub is not, so only the
-        # failed-seed ensure_user_ready re-dispatch is scheduled here.
-        assert result["teams_state"] == "failed"
-        assert captured == ["_noop_ensure_user_ready"], (
-            f"a workspace with a failed seed must dispatch both reconciliations, got {captured}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_workspace_running_container_with_healthy_seed_dispatches_membership_reconciliation(self):
-        """A healthy workspace still dispatches seat and membership reconciliation."""
-        from routers.container import container_status
-
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-
-        _row = {"status": "running", "substatus": None}
-        active_repo = _paperclip_repo_stub("active")
-        with (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch(
-                "core.services.container_rpc.call",
-                new=AsyncMock(return_value={"ok": True}),
-            ),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        ):
-            result = await container_status(_workspace_auth())
-
-        assert result["teams_state"] == "active"
-        assert captured == ["_noop_ensure_user_ready"]
-
-    @pytest.mark.asyncio
-    async def test_workspace_running_container_with_missing_ledger_dispatches_reconciliation(self):
-        """A workspace with a missing ledger dispatches both reconciliations."""
-        from routers.container import container_status
-
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-
-        _row = {"status": "running", "substatus": None}
-        active_repo = _paperclip_repo_stub("active")
-        with (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch(
-                "core.services.container_rpc.call",
-                new=AsyncMock(return_value={"ok": True}),
-            ),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
-            patch(
-                "core.services.readiness_state.billing_repo.get_by_owner_id",
-                new=AsyncMock(
-                    return_value={
-                        "owner_id": "org_x",
-                        "subscription_status": "active",
-                        "stripe_customer_id": "cus_1",
-                        "stripe_subscription_id": "sub_1",
-                        # No metronome_customer_id -- the ledger never got provisioned.
-                    }
-                ),
-            ),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        ):
-            result = await container_status(_workspace_auth())
-
-        assert result["teams_state"] == "active", "isolate the ledger condition -- Teams is healthy here"
-        assert captured == ["_noop_ensure_user_ready"]
-
-    @pytest.mark.asyncio
-    async def test_workspace_running_container_with_ledger_dispatches_membership_reconciliation(self):
-        """A workspace with a ledger still dispatches seat and membership reconciliation."""
-        from routers.container import container_status
-
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-
-        _row = {"status": "running", "substatus": None}
-        active_repo = _paperclip_repo_stub("active")
-        with (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch(
-                "core.services.container_rpc.call",
-                new=AsyncMock(return_value={"ok": True}),
-            ),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
-            patch(
-                "core.services.readiness_state.billing_repo.get_by_owner_id",
-                new=AsyncMock(
-                    return_value={
-                        "owner_id": "org_x",
-                        "subscription_status": "active",
-                        "stripe_customer_id": "cus_1",
-                        "stripe_subscription_id": "sub_1",
-                        "metronome_customer_id": "mtr_1",
-                        "metronome_contract_id": "ctr_1",
-                    }
-                ),
-            ),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        ):
-            result = await container_status(_workspace_auth())
-
-        assert result["teams_state"] == "active"
-        assert captured == ["_noop_ensure_user_ready"]
-
-    @pytest.mark.asyncio
     async def test_ready_poll_reads_paperclip_companies_exactly_once(self):
         """The hot ready-poll path reads paperclip-companies only once."""
         from routers.container import container_status
@@ -1433,7 +787,6 @@ class TestContainerStatusTeamsStatus:
                 new=AsyncMock(return_value={"ok": True}),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
         ):
             result = await container_status(_workspace_auth())
 
@@ -1509,7 +862,7 @@ class TestContainerStatusOnboarded:
 
 
 class TestProvisionTaskObservability:
-    """Part A: the detached ensure_user_ready dispatches carry a done-callback
+    """Part A: the detached ensure_user_ready dispatches (Paperclip-proxy handshake) carry a done-callback
     so a raised exception is surfaced (metric + log) instead of vanishing as a
     silent "Task exception was never retrieved"."""
 

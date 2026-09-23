@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useRef, useState, type ReactNode } from "react";
-import { Bell, BellOff, Hash, Link, LogOut, MessageCircle, MoreHorizontal, Pencil, Pin, Star, Users } from "lucide-react";
+import { Archive, ArchiveRestore, Bell, BellOff, Hash, Link, LogOut, MessageCircle, MoreHorizontal, Pencil, Pin, Star, Users } from "lucide-react";
 import type { MemberPrefsRequest, RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -28,6 +28,7 @@ interface RoomHeaderProps {
   onRenameRoom?: (name: string) => Promise<void>;
   onSetTopic?: (topic: string | null) => Promise<void>;
   onLeaveRoom?: () => Promise<void>;
+  onSetArchived?: (archived: boolean) => Promise<void>;
 }
 
 export function RoomHeader({
@@ -45,6 +46,7 @@ export function RoomHeader({
   onRenameRoom,
   onSetTopic,
   onLeaveRoom,
+  onSetArchived,
 }: RoomHeaderProps) {
   const id = useId();
   const [editingTopic, setEditingTopic] = useState(false);
@@ -52,6 +54,9 @@ export function RoomHeader({
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(room?.name ?? "");
   const [leaving, setLeaving] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  // The backend refuses #general and the shared channel (ROOM_NOT_ARCHIVABLE); don't offer them.
+  const canArchive = !!onSetArchived && canEditRoom && room?.kind === "channel" && !room.shared && !room.isDefault;
   const { pending, error, run, reset } = useAsyncAction();
   const topicTrigger = useRef<HTMLButtonElement>(null);
   const optionsTrigger = useRef<HTMLButtonElement>(null);
@@ -129,12 +134,15 @@ export function RoomHeader({
           <DropdownMenuItem onSelect={() => void copyText(roomPermalink(room?.roomId ?? ""))}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
           {onRenameRoom && canEditRoom && !room?.shared && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => onOpenDetails()}>Details</DropdownMenuItem>
+          {canArchive && (room?.archivedAt
+            ? <DropdownMenuItem onSelect={() => void run(async () => { await onSetArchived!(false); }, "The channel could not be unarchived.")}><ArchiveRestore aria-hidden="true" />Unarchive channel</DropdownMenuItem>
+            : <DropdownMenuItem onSelect={() => { reset(); setArchiving(true); }}><Archive aria-hidden="true" />Archive channel</DropdownMenuItem>)}
           {onLeaveRoom && canLeave && <><DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
-    {error && !renaming && !leaving && <p role="alert" className="room-header-error text-sm text-err">{error}</p>}
+    {error && !renaming && !leaving && !archiving && <p role="alert" className="room-header-error text-sm text-err">{error}</p>}
     <Dialog open={renaming} onOpenChange={(open) => { if (!open && !pending) { setRenaming(false); reset(); } }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onOpenAutoFocus={(event) => { event.preventDefault(); renameInput.current?.focus(); }}
@@ -172,6 +180,22 @@ export function RoomHeader({
           <Button type="button" variant="destructive" disabled={!actionable || pending}
             onClick={() => void run(async () => { await onLeaveRoom!(); }, "The channel could not be left.", () => setLeaving(false))}>
             {pending ? "Leaving…" : "Leave channel"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={archiving} onOpenChange={(open) => { if (!open && !pending) { setArchiving(false); reset(); } }}>
+      <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
+        onCloseAutoFocus={(event) => { event.preventDefault(); restoreOptionsFocus(); }}>
+        <DialogHeader><DialogTitle className="break-words">Archive {roomName}?</DialogTitle>
+          <DialogDescription>Members keep its history, but nobody can post and agents stop responding until it is unarchived.</DialogDescription>
+        </DialogHeader>
+        {error && <p role="alert" className="text-sm text-err break-words">{error}</p>}
+        <DialogFooter className="gap-2">
+          <Button type="button" variant="outline" disabled={pending} onClick={() => { setArchiving(false); reset(); }}>Cancel</Button>
+          <Button type="button" disabled={!actionable || pending}
+            onClick={() => void run(async () => { await onSetArchived!(true); }, "The channel could not be archived.", () => setArchiving(false))}>
+            {pending ? "Archiving…" : "Archive channel"}
           </Button>
         </DialogFooter>
       </DialogContent>

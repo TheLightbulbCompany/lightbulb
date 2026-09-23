@@ -389,7 +389,7 @@ class OpenClawWorkWorker:
                 (item for item in message.get("dispatchTargets") or [] if item.get("agentId") == agent_id),
                 None,
             )
-            if target is not None:
+            if target is not None and not meta.get("archivedAt"):  # queued before an archive: skip, advance
                 await self._dispatch_message(meta, member, message, target["eventKind"])
             if not await messaging_repo.advance_agent_delivery(room_id, agent_id, expected, seq):
                 latest = await messaging_repo.get_agent_delivery(room_id, agent_id)
@@ -416,6 +416,8 @@ class OpenClawWorkWorker:
         meta = await messaging_repo.get_room(room_id)
         if meta is None:
             return drop("room_gone")
+        if meta.get("archivedAt"):
+            return drop("archived")
         member = await messaging_repo.get_member(room_id, "agent", agent_id)
         if member is None:
             return drop("not_member")

@@ -74,3 +74,16 @@ describe("groupRooms", () => {
     expect(groupRooms(rooms, [], { sort: "unread", nameOf })[0].rooms.map((value) => value.roomId)).toEqual(["alpha", "muted"]);
   });
 });
+
+describe("archived rooms", () => {
+  it("leave starred, custom and built-in groups for one Archived group at the bottom", () => {
+    const archivedAt = "2026-09-23T00:00:00Z";
+    const groups = groupRooms(
+      [room("live"), room("old", { archivedAt }), room("fav", { archivedAt, starred: true }), room("kept", { archivedAt, sectionId: "s-1" })],
+      [{ id: "s-1", name: "Ship" }],
+      { sort: "alpha", nameOf },
+    );
+    expect(groups.map((group) => group.label)).toEqual(["Channels", "Archived"]);
+    expect(groups[1].rooms.map((value) => value.roomId)).toEqual(["fav", "kept", "old"]);
+  });
+});

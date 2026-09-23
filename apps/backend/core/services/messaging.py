@@ -89,6 +89,7 @@ DEFAULT_ROOM_WELCOME = (
     "another assistant about your business.\n\n"
     "Or try: “Research our top three competitors and tell me where we’re weakest.”"
 )
+ROOM_ARCHIVED_MESSAGE = "This channel is archived. Unarchive it to post."
 API_ERROR_STATUS = {
     "LOCAL_SESSION_FORBIDDEN": 403,
     "LOCAL_SESSION_NOT_FOUND": 404,
@@ -108,6 +109,8 @@ API_ERROR_STATUS = {
     "MESSAGE_CONFLICT": 409,
     "MEMBER_LIMIT": 409,
     "PIN_LIMIT": 409,
+    "ROOM_ARCHIVED": 409,
+    "ROOM_NOT_ARCHIVABLE": 409,
     "RUN_NOT_ACTIVE": 409,
     "RATE_LIMITED": 429,
     "RUNTIME_UNAVAILABLE": 503,
@@ -200,6 +203,9 @@ class RoomSummary(ContractModel):
     shared: bool = False
     # The seeded starter channel, where the onboarding setup band renders.
     is_default: bool = False
+    # Set while the channel is archived: history stays readable, nothing new posts.
+    archived_at: datetime | None = None
+    archived_by: str | None = None
 
 
 class ActiveRun(ContractModel):
@@ -283,6 +289,9 @@ class CreateRoomRequest(ContractModel):
 class PatchRoomRequest(ContractModel):
     name: str | None = None
     topic: str | None = None
+    # A PATCH field rather than /archive + /unarchive routes: it rides this route's admin
+    # check, revision CAS and metadata live event unchanged.
+    archived: bool | None = None
 
     @field_validator("name")
     @classmethod
@@ -1230,6 +1239,8 @@ def _room_summary_fields(meta: dict, member: dict, last_read: int) -> dict[str, 
         "workspace_id": meta.get("workspaceId"),
         "shared": is_vendor_room(meta),
         "is_default": is_default_room(meta),
+        "archived_at": meta.get("archivedAt"),
+        "archived_by": meta.get("archivedBy"),
     }
 
 
@@ -1776,6 +1787,12 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
         raise ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")
     if "name" in updates and is_vendor_room(meta):
         raise ApiProblem("ROOM_FORBIDDEN", "This channel's name is managed by Lightbulb.")
+    if request.archived is not None and request.archived != bool(meta.get("archivedAt")):
+        if request.archived:
+            _require_archivable(meta)
+            updates |= {"archivedAt": utc_now().isoformat(), "archivedBy": auth.user_id}
+        else:
+            updates |= {"archivedAt": None, "archivedBy": None}
     if not updates:
         return await _room_detail(meta, auth.user_id)
     try:
@@ -1784,6 +1801,14 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.") from exc
     await _publish_room_metadata(meta)
     return await _room_detail(meta, auth.user_id)
+
+
+def _require_archivable(meta: dict) -> None:
+    """Only a plain channel archives. #general is where join_default_room seats every new
+    teammate and onboarding renders; the shared vendor channel is the customer's support line."""
+    if meta.get("kind") != "channel" or is_default_room(meta) or is_vendor_room(meta):
+        name = "#general" if is_default_room(meta) else "This room"
+        raise ApiProblem("ROOM_NOT_ARCHIVABLE", f"{name} can't be archived.")
 
 
 def get_live_event_publisher():
@@ -2266,6 +2291,8 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
             client_message_id=str(request.client_message_id),
             attachments=attachments,
         )
+    except messaging_repo.RoomArchived as exc:
+        raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE) from exc
     except messaging_repo.MessageForbidden as exc:
         # Lost the race: removed between require_room_member and the transaction committing.
         # Same code require_room_member itself raises for "no longer a member".
@@ -2623,6 +2650,9 @@ async def create_follow_up(owner_id: str, request: FollowUpRequest) -> FollowUpR
     meta = await messaging_repo.get_room(room_id)
     if meta is None or meta.get("ownerId") != owner_id:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+    # Read-then-write is enough: openclaw_work._room_follow_up re-reads the room and drops archived ones.
+    if meta.get("archivedAt"):
+        raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE)
     if await messaging_repo.get_member(room_id, "agent", agent_id) is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")
     if await messaging_repo.get_message_by_id(room_id, str(request.trigger_message_id)) is None:
@@ -2722,6 +2752,10 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             client_message_id=None,
             attachments=attachments,
         )
+    except messaging_repo.RoomArchived as exc:
+        # Deliberate: a reply to a turn that began before the archive is refused too, so an
+        # archived channel's history ends where the archive did. The bridge drops a 4xx.
+        raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE) from exc
     except messaging_repo.MessageForbidden as exc:
         # Lost the race: removed between the get_member pre-check above and the
         # transaction committing. Same code that pre-check itself raises.

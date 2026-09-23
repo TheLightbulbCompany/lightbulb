@@ -650,6 +650,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     }
     if (event.type === "room.metadata.changed" && event.payload.roomId === activeRoomId) {
       void mutateRoom();
+      void mutateRooms();
       return;
     }
     if (event.type === "room.member.updated") { refreshRoomsSoon(); return; }

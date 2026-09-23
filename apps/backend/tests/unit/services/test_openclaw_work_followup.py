@@ -213,3 +213,29 @@ async def test_build_ingress_body_history_through_seq_includes_the_trigger(monke
         meta=META, target_agent_id=AGENT, event_kind="user_request", message=message, members=[]
     )
     before.assert_awaited_once_with(ROOM, 4, work._HISTORY_LIMIT)
+
+
+@pytest.mark.asyncio
+async def test_handler_drops_a_follow_up_into_an_archived_room(monkeypatch):
+    worker, dispatch, metrics, _ = _handler_fixture(monkeypatch, meta={**META, "archivedAt": "2026-09-23T00:00:00Z"})
+    await worker._room_follow_up({"kind": "room_follow_up", "roomId": ROOM, "agentId": AGENT, "followUpId": FOLLOW})
+    dispatch.assert_not_awaited()
+    assert ("messaging.followup.dispatched", {"dimensions": {"outcome": "archived"}}) in metrics
+
+
+@pytest.mark.asyncio
+async def test_room_dispatch_queued_before_the_archive_wakes_nobody_but_advances_the_cursor(monkeypatch):
+    meta = {**META, "lastSeq": 4, "archivedAt": "2026-09-23T00:00:00Z"}
+    message = {**MESSAGE, "dispatchTargets": [{"agentId": AGENT, "eventKind": "user_request"}]}
+    monkeypatch.setattr(work.messaging_repo, "get_agent_delivery", AsyncMock(return_value={"lastSeq": 3}))
+    monkeypatch.setattr(work.messaging_repo, "get_room", AsyncMock(return_value=meta))
+    monkeypatch.setattr(work.messaging_repo, "list_messages_between", AsyncMock(return_value=[message]))
+    monkeypatch.setattr(work.messaging_repo, "get_member", AsyncMock(return_value=MEMBER))
+    advance = AsyncMock(return_value=True)
+    monkeypatch.setattr(work.messaging_repo, "advance_agent_delivery", advance)
+    worker = OpenClawWorkWorker(sqs_client=MagicMock())
+    dispatch = AsyncMock()
+    monkeypatch.setattr(worker, "_dispatch_message", dispatch)
+    await worker._room_dispatch({"roomId": ROOM, "agentId": AGENT, "throughSeq": 4})
+    dispatch.assert_not_awaited()
+    advance.assert_awaited_once_with(ROOM, AGENT, 3, 4)

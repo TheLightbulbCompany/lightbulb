@@ -54,6 +54,9 @@ export interface RoomSummary {
    * and nowhere else.
    */
   isDefault?: boolean;
+  /** Set while the channel is archived: history stays readable, nothing new posts. */
+  archivedAt?: string | null;
+  archivedBy?: string | null;
 }
 
 export interface ActiveRoomRun {
@@ -114,6 +117,8 @@ export interface CreateRoomRequest {
 export interface PatchRoomRequest {
   name?: string | null;
   topic?: string | null;
+  /** Owner/admin only, channels only; never #general or the shared channel. */
+  archived?: boolean;
 }
 
 export interface UpsertRoomMemberRequest {

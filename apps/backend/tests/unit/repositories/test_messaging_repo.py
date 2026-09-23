@@ -1095,3 +1095,38 @@ async def test_claim_autojoin_is_one_time_until_released(table):
     assert await repo.claim_autojoin("room-1", USER_B) is True
     await repo.release_autojoin("room-1", USER_A)
     assert await repo.claim_autojoin("room-1", USER_A) is True
+
+
+@pytest.mark.asyncio
+async def test_archived_room_refuses_every_post_writes_no_work_and_unarchive_restores_it(table):
+    room_id, meta = await _room()
+    archived = await repo.patch_room_meta(room_id, {"archivedAt": "2026-09-23T00:00:00+00:00", "archivedBy": USER_A})
+    assert archived["archivedAt"] and archived["revision"] == meta["revision"] + 1
+    with pytest.raises(repo.RoomArchived):
+        await _post(room_id)
+    rows = [i["sk"] for i in table.scan()["Items"] if i["pk"] == f"ROOM#{room_id}"]
+    assert not any(sk.startswith(("WORK#", "MSG#")) for sk in rows)
+
+    restored = await repo.patch_room_meta(room_id, {"archivedAt": None, "archivedBy": None})
+    assert "archivedAt" not in restored and "archivedAt" not in await repo.get_room(room_id)
+    assert (await _post(room_id))["messageSeq"] == 1
+
+
+@pytest.mark.asyncio
+async def test_archive_landing_between_the_meta_read_and_the_commit_still_refuses(table, monkeypatch):
+    room_id, _ = await _room()
+    stale = await repo.get_room(room_id)
+    await repo.patch_room_meta(room_id, {"archivedAt": "2026-09-23T00:00:00+00:00", "archivedBy": USER_A})
+    real_get_room = repo.get_room
+    reads = iter([stale])
+    monkeypatch.setattr(repo, "get_room", lambda rid: _first_then(reads, real_get_room, rid))
+    with pytest.raises(repo.RoomArchived):
+        await _post(room_id)
+    assert (await real_get_room(room_id))["lastSeq"] == 0
+
+
+async def _first_then(reads, fallback, rid):
+    try:
+        return next(reads)
+    except StopIteration:
+        return await fallback(rid)

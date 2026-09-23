@@ -187,3 +187,25 @@ it("marks a shared channel", () => {
   render(<RoomHeader {...props} room={{ ...room, shared: true }} />);
   expect(screen.getByText("Shared")).toHaveAttribute("title", "Shared between this workspace and Lightbulb");
 });
+
+it("archives a channel only after confirming, and unarchives an archived one directly", async () => {
+  const onSetArchived = vi.fn().mockResolvedValue(undefined);
+  const { rerender } = render(<RoomHeader {...props} onSetArchived={onSetArchived} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Archive channel" }));
+  const dialog = screen.getByRole("dialog", { name: "Archive Roadmap?" });
+  expect(onSetArchived).not.toHaveBeenCalled();
+  await userEvent.click(within(dialog).getByRole("button", { name: "Archive channel" }));
+  await waitFor(() => expect(onSetArchived).toHaveBeenCalledWith(true));
+
+  rerender(<RoomHeader {...props} room={{ ...room, archivedAt: "2026-09-23T00:00:00Z" }} onSetArchived={onSetArchived} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Unarchive channel" }));
+  await waitFor(() => expect(onSetArchived).toHaveBeenCalledWith(false));
+});
+
+it.each([{ isDefault: true }, { shared: true }, { kind: "group-dm" as const }])("offers no archive for %o", async (extra) => {
+  render(<RoomHeader {...props} room={{ ...room, ...extra }} onSetArchived={vi.fn()} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  expect(screen.queryByRole("menuitem", { name: "Archive channel" })).not.toBeInTheDocument();
+});

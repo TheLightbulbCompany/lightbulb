@@ -628,3 +628,162 @@ async def test_mark_room_unread_threads_from_seq_and_defaults_to_the_whole_room(
 def test_mark_unread_request_rejects_a_non_positive_sequence():
     with pytest.raises(ValueError):
         messaging.MarkUnreadRequest(from_seq=0)
+
+
+def _archive_fixture(monkeypatch, meta):
+    require_admin = AsyncMock(return_value=(meta, {"role": "admin"}))
+    patch_meta = AsyncMock(side_effect=lambda room_id, updates: {**meta, **updates})
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "require_room_admin", require_admin)
+    monkeypatch.setattr(messaging.messaging_repo, "patch_room_meta", patch_meta)
+    monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
+    monkeypatch.setattr(messaging, "_publish_room_metadata", publish)
+    return patch_meta, publish
+
+
+@pytest.mark.asyncio
+async def test_patch_room_archives_and_unarchives_a_channel_idempotently(monkeypatch):
+    auth = AuthContext(user_id="admin", org_id="org_1")
+    meta = {"roomId": "chan", "ownerId": "org_1", "kind": "channel", "revision": 2}
+    patch_meta, publish = _archive_fixture(monkeypatch, meta)
+
+    assert await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(archived=True)) == "detail"
+    updates = patch_meta.await_args.args[1]
+    assert updates["archivedBy"] == "admin" and updates["archivedAt"]
+    publish.assert_awaited_once()
+
+    # Already archived: a no-op 200, nothing written, nothing published.
+    meta["archivedAt"] = updates["archivedAt"]
+    await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(archived=True))
+    assert patch_meta.await_count == 1 and publish.await_count == 1
+
+    await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(archived=False))
+    assert patch_meta.await_args.args[1] == {"archivedAt": None, "archivedBy": None}
+
+
+@pytest.mark.parametrize("kind", ["dm", "group-dm"])
+@pytest.mark.asyncio
+async def test_patch_room_refuses_to_archive_a_dm(monkeypatch, kind):
+    auth = AuthContext(user_id="admin", org_id="org_1")
+    patch_meta, _ = _archive_fixture(monkeypatch, {"roomId": "r", "ownerId": "org_1", "kind": kind, "revision": 1})
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.patch_room(auth, "r", messaging.PatchRoomRequest(archived=True))
+    assert exc.value.error.code == "ROOM_NOT_ARCHIVABLE" and exc.value.status_code == 409
+    patch_meta.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_room_refuses_to_archive_general_and_the_shared_vendor_channel(monkeypatch):
+    auth = AuthContext(user_id="admin", org_id="org_1")
+    general = {"roomId": messaging.default_room_id("org_1"), "ownerId": "org_1", "kind": "channel", "revision": 1}
+    patch_meta, _ = _archive_fixture(monkeypatch, general)
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.patch_room(auth, general["roomId"], messaging.PatchRoomRequest(archived=True))
+    assert exc.value.error.code == "ROOM_NOT_ARCHIVABLE"
+
+    monkeypatch.setattr(messaging.settings, "VENDOR_ORG_ID", "org_vendor")
+    vendor = {"roomId": messaging.messaging_repo.vendor_room_id("org_1"), "ownerId": "org_1", "kind": "channel"}
+    _archive_fixture(monkeypatch, {**vendor, "revision": 1})
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.patch_room(auth, vendor["roomId"], messaging.PatchRoomRequest(archived=True))
+    assert exc.value.error.code == "ROOM_NOT_ARCHIVABLE"
+    patch_meta.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_room_archive_keeps_the_admin_check_in_front(monkeypatch):
+    auth = AuthContext(user_id="member", org_id="org_1")
+    monkeypatch.setattr(
+        messaging,
+        "require_room_admin",
+        AsyncMock(side_effect=ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")),
+    )
+    patch_meta = AsyncMock()
+    monkeypatch.setattr(messaging.messaging_repo, "patch_room_meta", patch_meta)
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(archived=True))
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    patch_meta.assert_not_awaited()
+
+
+def test_room_summary_carries_archived_fields():
+    meta = {
+        "roomId": str(uuid.uuid4()),
+        "ownerId": "org_1",
+        "kind": "channel",
+        "revision": 3,
+        "lastSeq": 0,
+        "updatedAt": "2026-09-23T00:00:00+00:00",
+        "archivedAt": "2026-09-23T00:00:00+00:00",
+        "archivedBy": "admin",
+    }
+    fields = messaging._room_summary_fields(meta, {"joinedSeq": 0}, 0)
+    summary = messaging.RoomSummary(**fields).model_dump(mode="json", by_alias=True)
+    assert summary["archivedAt"].startswith("2026-09-23") and summary["archivedBy"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_human_and_agent_posts_to_an_archived_room_are_a_409(monkeypatch):
+    """Rule: once archived, NOTHING new lands -- a human send or an agent reply, even one
+    answering a turn that started before the archive. The bridge treats a 4xx as final."""
+    room = str(uuid.uuid4())
+    meta = {"roomId": room, "ownerId": "org_1", "kind": "channel", "revision": 1}
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(meta, {"role": "member"})))
+    monkeypatch.setattr(messaging, "_validate_mentions", AsyncMock(return_value=[]))
+    monkeypatch.setattr(messaging, "_validate_message_links", AsyncMock(return_value=None))
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[]))
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Ann"))
+    monkeypatch.setattr(
+        messaging.messaging_repo, "create_message", AsyncMock(side_effect=messaging.messaging_repo.RoomArchived(room))
+    )
+    auth = AuthContext(user_id="u1", org_id="org_1")
+    request = messaging.CreateMessageRequest.model_validate(
+        {"clientMessageId": str(uuid.uuid4()), "text": "hi", "replyToMessageId": None, "threadRootMessageId": None}
+    )
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.create_human_message(auth, room, request)
+    assert exc.value.error.code == "ROOM_ARCHIVED" and exc.value.status_code == 409
+    assert "Unarchive it to post" in exc.value.error.message
+
+    agent = str(uuid.uuid4())
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=meta))
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value={"id": agent}))
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": agent, "name": "CEO"}]))
+    monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))
+    reply = messaging.AgentMessageRequest.model_validate(
+        {
+            "eventId": str(uuid.uuid4()),
+            "roomId": room,
+            "agentId": agent,
+            "text": "late reply",
+            "replyToMessageId": None,
+            "threadRootMessageId": None,
+        }
+    )
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.create_agent_message("org_1", reply)
+    assert exc.value.error.code == "ROOM_ARCHIVED"
+
+
+@pytest.mark.asyncio
+async def test_follow_up_into_an_archived_room_is_a_409(monkeypatch):
+    room = str(uuid.uuid4())
+    meta = {"roomId": room, "ownerId": "org_1", "kind": "channel", "archivedAt": "2026-09-23T00:00:00+00:00"}
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=meta))
+    create = AsyncMock()
+    monkeypatch.setattr(messaging.messaging_repo, "create_follow_up", create)
+    request = messaging.FollowUpRequest.model_validate(
+        {
+            "roomId": room,
+            "agentId": str(uuid.uuid4()),
+            "followUpId": str(uuid.uuid4()),
+            "triggerMessageId": str(uuid.uuid4()),
+            "eventKind": "user_request",
+            "reason": "delegation_completed",
+            "text": "done",
+        }
+    )
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.create_follow_up("org_1", request)
+    assert exc.value.error.code == "ROOM_ARCHIVED"
+    create.assert_not_awaited()

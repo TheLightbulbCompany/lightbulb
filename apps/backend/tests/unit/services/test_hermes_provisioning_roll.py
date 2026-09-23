@@ -97,8 +97,30 @@ async def test_roll_keeps_managed_provider_in_replacement_spec(monkeypatch):
     monkeypatch.setattr(
         hermes_provisioning, "build_runtime_request_for_owner", lambda *a, **kw: {"provider": kw["provider_choice"]}
     )
+    mint = AsyncMock(return_value="hash")
+    monkeypatch.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", mint)
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
     assert calls[0][2]["provider"] == "openrouter_managed"
+    mint.assert_awaited_once_with("org_a")
+
+
+@pytest.mark.asyncio
+async def test_roll_mints_the_managed_owner_key_even_when_current_but_not_on_dry_run(monkeypatch):
+    """The 2026-09-23 prod gap: a respec pointed trial runtimes at the gate with no key minted,
+    so every turn 503'd. A roll of a managed owner mints (idempotently) even with nothing to
+    update; a dry run never writes."""
+    calls = _wire(monkeypatch, current_image=IMAGE)
+    monkeypatch.setattr(
+        "core.services.container_provision.resolve_provider_choice",
+        AsyncMock(return_value=("openrouter_managed", None)),
+    )
+    mint = AsyncMock(return_value="hash")
+    monkeypatch.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", mint)
+    assert await hermes_provisioning.roll_runtime_image("org_a", dry_run=True) == "current"
+    mint.assert_not_awaited()
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "current"
+    mint.assert_awaited_once_with("org_a")
+    assert calls == []
 
 
 @pytest.mark.asyncio

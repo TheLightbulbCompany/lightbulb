@@ -2650,6 +2650,7 @@ async def create_follow_up(owner_id: str, request: FollowUpRequest) -> FollowUpR
     meta = await messaging_repo.get_room(room_id)
     if meta is None or meta.get("ownerId") != owner_id:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+    # Read-then-write is enough: openclaw_work._room_follow_up re-reads the room and drops archived ones.
     if meta.get("archivedAt"):
         raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE)
     if await messaging_repo.get_member(room_id, "agent", agent_id) is None:

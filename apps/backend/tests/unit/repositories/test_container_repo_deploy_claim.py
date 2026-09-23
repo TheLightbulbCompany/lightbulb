@@ -336,8 +336,8 @@ async def test_a_non_timeout_failure_releases_the_claim_immediately(dynamodb_tab
 
 @pytest.mark.asyncio
 async def test_a_timeout_wrapped_in_an_http_error_still_holds_the_claim(dynamodb_table):
-    """Callers re-raise the failure wrapped (the marketplace router as a 500,
-    the agent-builder as a 502), so the timeout reaches the release one link
+    """Callers re-raise the failure wrapped (the marketplace router as a 500),
+    so the timeout reaches the release one link
     down the ``__cause__`` chain. Matching only the outermost type would let
     every real deploy path release on timeout while the unit test passed.
     """

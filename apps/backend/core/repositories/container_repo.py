@@ -404,8 +404,7 @@ async def try_claim_owner_deploy(
     owner-approves hire (``marketplace_hire.deploy_for_approval``, reached from
     the Teams approvals route — the "Needs Attention" band lists several at once,
     so approving three in a row is the same three-in-nine-seconds shape as the
-    incident), and Atlas registering an agent it built
-    (``routers/agent_builder.register_built_agent``).
+    incident).
 
     ``marketplace_hire.create_hire_approval`` also takes this claim before its
     Paperclip pre-create and approval reconciliation. It installs no workspace,
@@ -637,8 +636,7 @@ def _has_timeout_cause(exc: BaseException | None) -> bool:
     """True when ``exc`` is a ``TimeoutError`` or was raised ``from`` one.
 
     Deploy callers wrap the failure before it reaches the claim release — the
-    marketplace router re-raises as ``HTTPException(500) from exc``, the
-    agent-builder as a 502 — so the timeout that matters usually sits one link
+    marketplace router re-raises as ``HTTPException(500) from exc`` — so the timeout that matters usually sits one link
     down the chain. Only ``__cause__`` is followed, never ``__context__``:
     implicit chaining would pick up an unrelated exception that merely happened
     to be in flight and wedge the owner's claim for nothing. Depth-capped so a

@@ -1333,7 +1333,7 @@ class TestAuthorizeFromContainer:
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_dance")
     @patch("routers.connections.integrations_repo")
-    @patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+    @patch("core.services.container_auth.container_repo.get_by_owner_id", new_callable=AsyncMock)
     async def test_mints_with_valid_hook_token(
         self, mock_get_container, mock_repo, mock_dance, async_client, monkeypatch
     ):
@@ -1355,7 +1355,7 @@ class TestAuthorizeFromContainer:
 
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_dance")
-    @patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+    @patch("core.services.container_auth.container_repo.get_by_owner_id", new_callable=AsyncMock)
     async def test_missing_or_wrong_token_401(self, mock_get_container, mock_dance, async_client):
         mock_get_container.return_value = {"hook_token": "tok-123"}
         mock_dance.start = AsyncMock()
@@ -1366,7 +1366,7 @@ class TestAuthorizeFromContainer:
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_dance")
     @patch("routers.connections.integrations_repo")
-    @patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+    @patch("core.services.container_auth.container_repo.get_by_owner_id", new_callable=AsyncMock)
     async def test_already_connected_409_never_rebinds(self, mock_get_container, mock_repo, mock_dance, async_client):
         mock_get_container.return_value = {"hook_token": "tok-123"}
         mock_repo.get = AsyncMock(return_value={"status": "connected"})

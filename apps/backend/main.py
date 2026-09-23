@@ -29,7 +29,6 @@ from core.services.messaging import ApiProblem
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
 from routers import (
-    agent_builder,
     agent_mail,
     apple_iap,
     automations,
@@ -845,9 +844,6 @@ app.include_router(slack_app.router, prefix="/api/v1/slack", tags=["slack"])
 # Human operator diagnostics; every route requires a Clerk platform admin.
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])
 app.include_router(launch.router, prefix="/api/v1/launch", tags=["launch"])
-# Agent-callable bridge (hook_token auth, no Clerk) — Atlas registers built
-# agents into the owner's container. See routers/agent_builder.py.
-app.include_router(agent_builder.router, prefix="/api/v1/agent-builder", tags=["agent-builder"])
 
 # Public connectable catalog (integrations + channels) read live by the baked
 # isol8 skill from inside per-owner containers. No auth — non-sensitive catalog

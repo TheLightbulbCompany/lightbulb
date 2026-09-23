@@ -110,3 +110,34 @@ async def test_the_module_reaches_no_runtime_and_schedules_no_bounce():
     ``auth.revision``), so a staged grant needs no restart -- and there is no gateway to RPC."""
     for gone in ("get_ecs_manager", "runtime_transport", "container_rpc", "_logout_provider_via_gateway"):
         assert not hasattr(container_auth, gone), gone
+
+
+# ---------------------------------------------------------------------------
+# hook-token guard
+# ---------------------------------------------------------------------------
+
+
+class _Req:
+    def __init__(self, authorization: str | None):
+        self.headers = {} if authorization is None else {"Authorization": authorization}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authorization", [None, "Bearer wrong", "Bearer \u00fcn\u00efcode"])
+async def test_hook_token_rejects_missing_wrong_and_non_ascii_bearer_with_401(authorization):
+    """Non-ASCII must be a clean 401, not a 500: compare_digest raises TypeError on non-ASCII str
+    (seen live 2026-08-31 when a container agent's curl mangled the token)."""
+    from fastapi import HTTPException
+
+    row = {"owner_id": "org_a", "hook_token": "tok"}
+    with patch.object(container_auth.container_repo, "get_by_owner_id", AsyncMock(return_value=row)):
+        with pytest.raises(HTTPException) as exc:
+            await container_auth._require_hook_token("org_a", _Req(authorization))
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_hook_token_returns_the_container_row_on_match():
+    row = {"owner_id": "org_a", "hook_token": "tok"}
+    with patch.object(container_auth.container_repo, "get_by_owner_id", AsyncMock(return_value=row)):
+        assert await container_auth._require_hook_token("org_a", _Req("Bearer tok")) is row

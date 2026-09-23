@@ -35,7 +35,7 @@ async def runtime_credentials(
     One per connected backend-refreshed provider, keyed by its MCP server key (the
     bridge maps it to ``MCP_<KEY>_ACCESS_TOKEN`` in the turn's secret scope) or, for
     a provider with no MCP server (microsoft365, called with curl), its own key."""
-    from routers.agent_builder import _require_hook_token
+    from core.services.container_auth import _require_hook_token
 
     await _require_hook_token(owner_id, request)
     roster = await messaging.load_agent_roster(owner_id)

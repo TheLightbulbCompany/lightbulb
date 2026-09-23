@@ -11,7 +11,7 @@
 # EXECUTES fine, but is PERSISTED as `Bearer ***`. On the next turn the agent
 # reads its own history, copies the masked form, and sends a literal `***` —
 # which the backend rejects 401 "invalid hook token"
-# (routers/agent_builder.py::_require_hook_token). Prod 2026-08-30: an owner
+# (core/services/container_auth.py::_require_hook_token). Prod 2026-08-30: an owner
 # lost ~15 minutes of first run to that loop, then wrote throwaway Python
 # trying to route around a filter it had misdiagnosed as an input guard.
 # Assignment form (FOO=$FOO) is preserved; the header form is not.

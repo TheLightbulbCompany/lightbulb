@@ -1975,20 +1975,3 @@ def test_enumerate_for_preview_cleans_up_scratch_dir_when_download_raises(fake_e
         )
 
     assert captured and not captured[0].exists()
-
-
-def test_export_built_agent_from_staging_cleans_up_scratch_dir_when_download_raises(monkeypatch):
-    captured: list[Path] = []
-
-    def _raising_download(prefix, dest):
-        captured.append(dest)
-        raise RuntimeError("s3 unavailable")
-
-    monkeypatch.setattr(agent_export, "_download_s3_profile", _raising_download)
-
-    with pytest.raises(RuntimeError, match="s3 unavailable"):
-        agent_export.export_built_agent_from_staging(
-            owner_id="owner_1", staging_agent_id="atlas-staging-build_1", container={"runtime_host": "agentcore"}
-        )
-
-    assert captured and not captured[0].exists()

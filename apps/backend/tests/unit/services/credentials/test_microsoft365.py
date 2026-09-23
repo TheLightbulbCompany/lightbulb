@@ -149,11 +149,12 @@ async def test_access_token_refreshes_an_expired_grant_and_stores_the_rotation(m
 
 @pytest.mark.asyncio
 async def test_broker_vends_graph_token_only_to_the_owning_org(async_client, monkeypatch):
-    from routers import agent_builder, runtime_rpc
+    from core.services import container_auth
+    from routers import runtime_rpc
 
     containers = {"org_a": {"hook_token": "hook-a"}, "org_b": {"hook_token": "hook-b"}}
     rows = {"org_a": [{"provider": "microsoft365", "status": "connected"}], "org_b": []}
-    monkeypatch.setattr(agent_builder.container_repo, "get_by_owner_id", AsyncMock(side_effect=containers.get))
+    monkeypatch.setattr(container_auth.container_repo, "get_by_owner_id", AsyncMock(side_effect=containers.get))
     monkeypatch.setattr(runtime_rpc.integrations_repo, "list_for_owner", AsyncMock(side_effect=rows.get))
     monkeypatch.setattr(runtime_rpc.messaging, "load_agent_roster", AsyncMock(return_value=[{"id": "ceo"}]))
     minted = AsyncMock(side_effect=lambda owner, provider: f"graph-{owner}")

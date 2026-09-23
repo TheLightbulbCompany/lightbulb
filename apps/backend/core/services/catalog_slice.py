@@ -38,7 +38,7 @@ REMOVED_AGENT_ENTRY_KEYS = frozenset({"embeddedHarness", "embeddedPi", "agentRun
 # owner's gateway down until the config is repaired. Sources of agent entries
 # are not trusted to be schema-shaped: an Atlas-built staging config invented
 # ``archetype`` (bricking the founders' container on the first live
-# register-built-agent), and a seller export can carry anything its author
+# register), and a seller export can carry anything its author
 # typed. Whitelist, don't blacklist.
 #
 # Derived from the deployed fork tag's ``src/config/zod-schema.agent-runtime.ts``

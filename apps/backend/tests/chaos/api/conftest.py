@@ -71,12 +71,8 @@ NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
     # Exchanges the OAuth code with the external provider after an oauth-state
     # lookup; both the state table and the provider call are absent hermetically.
     "GET /api/v1/oauth/{provider}/callback": "external OAuth code exchange + oauth-state table not provisioned hermetically",
-    # Atlas register-built-agent bridge: hook-token lookup on the DDB containers
-    # table then snapshot + deploy into a live container; both absent hermetically.
-    # Covered by tests/unit/routers/test_agent_builder.py.
-    "POST /api/v1/agent-builder/u/{owner_id}/register-built-agent": "hook-token lookup + live container; containers table not provisioned hermetically",
     # Marketplace hire recommendation: same hook-token lookup on the DDB
-    # containers table as agent-builder above, before anything else can run, so
+    # containers table as the hooks route above, before anything else can run, so
     # an unmocked GetItem raises ResourceNotFoundException -> 5xx. With a real
     # table any owner_id simply misses and the handler 401s, so this is a
     # harness artifact, not a production 5xx. Covered by

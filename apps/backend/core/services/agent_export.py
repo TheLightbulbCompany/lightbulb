@@ -308,15 +308,6 @@ class AgentNotInConfigError(Exception):
     """
 
 
-class BuiltAgentConfigError(Exception):
-    """An Atlas-built staging agent dir has no parseable openclaw.json (neither
-    ``workspace/openclaw.json`` nor a root-level fallback) or its config has no
-    ``agents.list[].id``. Unlike the seller path, the built agent is supposed to
-    be self-describing — without its own config we can't synthesize the slice
-    that registers it in the owner's openclaw.json. The router maps this to 400.
-    """
-
-
 # Export ceiling (uncompressed). A working agent's workspace accumulates
 # things that are not the agent — repo checkouts, reports, run scratch —
 # and walking + tarring + scanning tens of thousands of EFS files takes
@@ -932,17 +923,12 @@ def export_agent_from_profile(
             tmp_dir.cleanup()
 
 
-# ---------------------------------------------------------------------------
-# Atlas agent-builder: snapshot a freshly-built STAGING agent
-# ---------------------------------------------------------------------------
-
-
 def _read_profile_openclaw_config(profile_dir: Path) -> dict | None:
     """Read an agent's OWN openclaw.json out of a downloaded profile.
 
     THE SLICE SOURCE, for both publish paths. It used to be the seller's per-USER
     ``openclaw.json`` on EFS, which no longer exists — the profile is the only place an
-    agent's config can live now, and it is what the Atlas path already read.
+    agent's config can live now.
 
     The skeleton-generator nests a built agent's config (and persona files) under a
     ``workspace/`` subdir — see atlas-skeleton-generator.js ``draftToFastIo`` (every generated
@@ -960,183 +946,6 @@ def _read_profile_openclaw_config(profile_dir: Path) -> dict | None:
             if isinstance(data, dict):
                 return data
     return None
-
-
-def export_built_agent_from_staging(
-    owner_id: str,
-    staging_agent_id: str,
-    *,
-    selected_mcps: list[str] | None = None,
-    selected_skills: list[str] | None = None,
-    container: dict | None = None,
-) -> CatalogPackage:
-    """Snapshot an Atlas-built STAGING agent dir on EFS into a CatalogPackage.
-
-    Atlas (the in-container recruiter) builds a new specialist agent's files
-    into a staging workspace dir, then asks the backend to register it. Unlike
-    ``export_agent_from_profile`` — which sources the slice from the OWNER's root
-    openclaw.json and 400s if the agent isn't listed there — the staging agent
-    is **self-describing**: the skeleton-generator writes the agent's own
-    ``openclaw.json`` + persona files under a ``workspace/`` subdir of the
-    staging dir, plus a ``build-manifest.json`` at the staging-dir root. So we
-    tar the inner ``workspace/`` (files land at the tarball root —
-    ``./openclaw.json``, ``./AGENTS.md``, … — the convention
-    ``deploy_from_artifact`` expects) and build the slice from the staging
-    dir's OWN config.
-
-    ``build-manifest.json`` sits OUTSIDE ``workspace/`` so it never reaches the
-    shipped tarball (it documents the build, not the runtime workspace).
-
-    **The build never supplies an agent id.** ``staging_agent_id`` is a
-    build-scoped staging TOKEN (``atlas-staging-{build_id}``, minted by
-    ``atlas-skeleton-generator.js``) that names a directory, not an agent. Any
-    ``id`` in the staged ``agents.list[0]`` is normalized to that token before
-    slicing, and the real id is assigned downstream by the Paperclip mint. So a
-    build that writes a display-name slug into its own config cannot make that
-    slug an agent id — it can only name its own staging dir contents.
-
-    Args:
-        owner_id: Clerk/org id that owns the EFS dir (same role ``seller_id``
-            plays in ``export_agent_from_profile``).
-        staging_agent_id: The ``workspace-{token}/`` dir name Atlas built into.
-        selected_mcps / selected_skills: forwarded to extract_agent_slice; None (Atlas) keeps the {agent, plugins, tools} shape.
-        container: Accepted for the caller's convenience and unused -- every export reads
-            the agent's S3 profile (see ``_resolve_agent_location``).
-
-    Raises:
-        InvalidAgentIdError: staging_agent_id failed format / path-traversal check.
-        AgentNotFoundError: no staging dir at workspace-{staging_agent_id}.
-        BuiltAgentConfigError: the staging dir has no parseable openclaw.json
-            (or its config carries no ``agents.list[]`` entry).
-        CredentialLeakError: a credential survived scrubbing in the built slice.
-    """
-    # Resolve the staging workspace location. owner_id is the dir owner,
-    # exactly as seller_id is for export_agent_from_profile. Direct-hit EFS
-    # resolution only (config=None) — the staging dir name IS a live workspace
-    # dir, so the legacy slug-forwarding the seller path needs doesn't apply
-    # here. An AgentCore owner's staging build instead lives under the same
-    # Hermes S3 profile prefix convention (see _resolve_agent_location).
-    _kind, location = _resolve_agent_location(
-        seller_id=owner_id, agent_id=staging_agent_id, container=container, config=None
-    )
-    tmp_dir: tempfile.TemporaryDirectory | None = None
-    try:
-        # Fix round 1, item 3: the download itself is inside this try/finally
-        # so a raising downloader still cleans up the scratch dir.
-        tmp_dir = tempfile.TemporaryDirectory()
-        staging_dir = Path(tmp_dir.name)
-        _download_s3_profile(location, staging_dir)
-        # The shippable files live under workspace/ (see atlas-skeleton-generator.js
-        # draftToFastIo). Tar that subdir so files land at the tarball root; this
-        # also leaves build-manifest.json (staging root) out of the tarball. Fall
-        # back to the staging root if no workspace/ subdir exists (defensive).
-        workspace_subdir = staging_dir / "workspace"
-        tar_root = workspace_subdir if workspace_subdir.is_dir() else staging_dir
-        tarball_bytes, contents, _ = _build_tarball(tar_root)
-
-        # Build the slice from the staging dir's OWN openclaw.json (not the owner's
-        # root config) — agents.list[0] is the built agent. Same extract_agent_slice
-        # logic as the seller path, just a different config source.
-        staging_config = _read_profile_openclaw_config(staging_dir)
-        if not staging_config:
-            raise BuiltAgentConfigError(
-                f"staging agent {staging_agent_id!r} has no parseable openclaw.json — "
-                "the build did not write its config (expected workspace/openclaw.json)"
-            )
-        agents = [a for a in _agents_list(staging_config) if isinstance(a, dict)]
-        if not agents:
-            raise BuiltAgentConfigError(f"staging agent {staging_agent_id!r} openclaw.json has no agents.list[] entry")
-        if len(agents) > 1:
-            # The skeleton generator always emits a single-agent config. More than
-            # one means a malformed build — fail loud rather than silently snapshot
-            # agents[0] and discard the rest.
-            names = [a.get("name") or a.get("id") for a in agents]
-            raise BuiltAgentConfigError(
-                f"staging agent {staging_agent_id!r} openclaw.json lists multiple agents ({names}); "
-                "a built agent must be single-agent"
-            )
-        agent_entry = agents[0]
-        # THE BUILD DOES NOT GET TO CHOOSE AN AGENT ID. Whatever the staged entry
-        # carries in ``id`` — a display-name slug, a guessed uuid, nothing at all —
-        # is overwritten here with the staging handle the platform itself resolved,
-        # and the real id is assigned later (the Paperclip uuid pinned by
-        # ``deploy_from_artifact``, which sets ``agent_entry["id"] = new_agent_id``).
-        # The generator emits this same token, so the happy path is a no-op; the
-        # normalization is what makes an improvised id inert rather than adopted.
-        # A ``product-analytics-scorecard``-shaped slug reaching production as a live
-        # agent id is exactly the incident this closes.
-        built_agent_id = staging_agent_id
-        agent_entry["id"] = built_agent_id
-
-        workspace_skill_names = _enumerate_workspace_skill_names(tar_root)
-        try:
-            slice_ = extract_agent_slice(
-                staging_config,
-                built_agent_id,
-                selected_mcps=selected_mcps,
-                selected_skills=selected_skills,
-                workspace_skill_names=workspace_skill_names,
-            )
-        except KeyError as exc:
-            raise BuiltAgentConfigError(
-                f"built agent {built_agent_id!r} is not registered in its own openclaw.json agents.list"
-            ) from exc
-
-        # Rewrite workspace-relative MCP arg paths to the __AGENT_DIR__ sentinel that
-        # deploy_from_artifact substitutes back to the new agent's workspace — same
-        # as the seller path. No-op today (built agents have no MCP servers) but
-        # required once the skeleton generator emits MCP config pointing at the
-        # staging workspace, else those paths would survive pointing at the staging dir.
-        _rewrite_mcp_args_paths(slice_, seller_agent_id=built_agent_id)
-
-        # Same post-scrub credential-leak gate the seller path runs: the slice is a
-        # separate artifact the tarball scan never walks, so block if a secret
-        # survived scrubbing. Names the field path, never the secret value.
-        slice_leak_flags = marketplace_safety.assert_slice_scrubbed(slice_)
-        if marketplace_safety.has_blocking_credential_findings(slice_leak_flags):
-            paths = ", ".join(f.snippet.split(" = ", 1)[0] for f in slice_leak_flags)
-            raise CredentialLeakError(
-                f"cannot register: a credential survived scrubbing in the built agent's slice ({paths}); "
-                "remove the secret from the agent's MCP/skill config and retry"
-            )
-
-        safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
-
-        # Display name comes from the built agent's own entry — ``name``, then the
-        # identity block. Deliberately NOT falling back to the entry's id: that is
-        # the build's staging token now, and "atlas-staging-build_042" is a worse
-        # display name than none. The register router passes the caller's ``name``
-        # to the Paperclip mint anyway, and ``deploy_from_artifact`` only reads this
-        # manifest name as its third-choice fallback.
-        identity = agent_entry.get("identity") if isinstance(agent_entry.get("identity"), dict) else {}
-        name = agent_entry.get("name") or identity.get("name") or ""
-        # Entry-level ``description`` is the only schema-legal home for this text
-        # (IdentitySchema is .strict() with name/theme/emoji/avatar only, so the
-        # identity.* fallbacks can only ever match in an unvalidated staging file).
-        description = agent_entry.get("description") or identity.get("description") or identity.get("vibe") or ""
-
-        manifest = {
-            "name": name,
-            "description": description,
-            "format": "openclaw",
-            "exported_at": int(time.time()),
-            # The staging handle, not an agent id — the real one is minted after this
-            # snapshot and pinned by ``deploy_from_artifact``.
-            "agent_id": built_agent_id,
-            "file_count": len(contents),
-            "safety_flags": safety_flags,
-        }
-
-        return CatalogPackage(
-            format="openclaw",
-            manifest=manifest,
-            openclaw_slice=slice_,
-            tarball_bytes=tarball_bytes,
-            tarball_contents=contents,
-        )
-    finally:
-        if tmp_dir is not None:
-            tmp_dir.cleanup()
 
 
 # ---------------------------------------------------------------------------
@@ -1712,8 +1521,7 @@ async def resolve_apex_ceo_agent_id(
 ) -> str | None:
     """The owner's apex CEO (Friday) Paperclip agent id, or ``None``.
 
-    Used by the agent-builder bridge to default ``reports_to`` so Atlas-built
-    hires land under Friday in the org chart instead of unparented. Delegates
+    Delegates
     apex selection to ``company_deploy_service._find_friday_id`` (rootless
     ``role == "ceo"``), which is safe when marketplace company deploys have
     added division-head CEOs. Graceful-degrade: any fetch failure yields

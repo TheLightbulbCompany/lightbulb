@@ -46,7 +46,7 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
     if (lastRequested.current === requested) return;
     lastRequested.current = requested;
     const request = ++navigationRequest.current;
-    void selectAgentDm(requested).then((roomId) => {
+    void selectAgentDm(requested, params.agentId !== DEFAULT_AGENT_SENTINEL).then((roomId) => {
       if (navigationRequest.current !== request) return;
       if (roomId) setFocusDestination({ agentId: requested, roomId });
       else cancelFocusComposerRequest(requested);
@@ -56,7 +56,7 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
         lastRequested.current = null;
       }
     });
-  }, [requested, selectAgentDm]);
+  }, [requested, selectAgentDm, params.agentId]);
 
   const lastOpenedRoom = useRef<string | null>(null);
   useEffect(() => {

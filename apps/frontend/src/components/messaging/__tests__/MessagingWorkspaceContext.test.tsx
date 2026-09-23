@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useEffect, useState } from "react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { useCallback, useEffect, useState } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RoomDetail } from "@lightbulb/shared";
 import type { RoomDirectoryProps } from "../RoomDirectory";
 import type { RoomPanelProps } from "../RoomPanel";
@@ -9,8 +9,8 @@ import { draftKey } from "../drafts";
 import { requestFocusComposer, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
 import type { LiveRoomRun } from "@lightbulb/shared";
 
-const mocks = vi.hoisted(() => ({ rooms: vi.fn(), agents: vi.fn(), roster: vi.fn() }));
-vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "owner", orgId: "org" }) }));
+const mocks = vi.hoisted(() => ({ rooms: vi.fn(), agents: vi.fn(), roster: vi.fn(), orgId: "org" }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "owner", orgId: mocks.orgId }) }));
 vi.mock("@/hooks/useRooms", () => ({ useRooms: mocks.rooms }));
 type NotificationProps = { roomVisible: boolean; onOpen: (roomId: string, threadId: string | null) => void };
 let notifications: NotificationProps;
@@ -1016,4 +1016,105 @@ it("keeps history action inputs stable while the provider draft or live run chan
   expect(panel.onMarkUnreadFrom).toBe(before.unread);
   expect(panel.pinnedMessageIds).toBe(before.pins);
   expect(panel.participants).toBe(before.participants);
+});
+
+describe("opening #general once it is seeded", () => {
+  const general = { ...room, roomId: "general", kind: "channel" as const, name: "general", isDefault: true };
+  const vendor = { ...room, roomId: "vendor", kind: "channel" as const, name: "lightbulb", shared: true };
+  const dm = room;
+  // Stands in for the shared useRooms' own selection: it auto-picks rooms[0]
+  // (most recently active) in an effect whenever nothing is active, and
+  // selectRoom really moves the selection — so the ordering between that
+  // pick and the provider's #general effect is exercised, not mocked away.
+  let list: RoomDetail[] = [];
+  const selectRoomSpy = vi.fn();
+  function useSimulatedRooms() {
+    const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
+    useEffect(() => {
+      // Mirrors packages/shared useRooms' own auto-pick effect verbatim.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (!activeRoomId && list.length > 0) setActiveRoomId((current) => current ?? list[0].roomId);
+    }, [activeRoomId]);
+    const selectRoom = useCallback((roomId: string) => { selectRoomSpy(roomId); setActiveRoomId(roomId); }, []);
+    const activeRoom = list.find((candidate) => candidate.roomId === activeRoomId) ?? null;
+    return { ...state, rooms: list, activeRoomId, activeRoom, selectRoom, selectAgentDm: async () => null, directoryRoomDetails: new Map(list.map((r) => [r.roomId, r])) };
+  }
+  const shell = () => <MessagingWorkspaceProvider subscribeToRoom><CaptureContext /><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>;
+  beforeEach(() => {
+    mocks.orgId = "org";
+    selectRoomSpy.mockClear();
+    mocks.rooms.mockImplementation(useSimulatedRooms);
+  });
+  afterEach(() => { mocks.orgId = "org"; });
+
+  it("says the team is getting ready while there are no rooms, then opens #general exactly once", () => {
+    list = [];
+    const view = render(shell());
+    expect(screen.getByRole("status")).toHaveTextContent("Your team is getting ready — #general will open here.");
+    list = [general];
+    view.rerender(shell());
+    expect(workspaceValue.activeRoomId).toBe("general");
+    view.rerender(shell());
+    expect(selectRoomSpy.mock.calls.filter(([id]) => id === "general").length).toBeLessThanOrEqual(1);
+  });
+
+  it("opens #general in a fresh workspace even when the auto-pick landed on the shared room", () => {
+    list = [vendor, general];
+    render(shell());
+    expect(workspaceValue.activeRoomId).toBe("general");
+  });
+
+  it("leaves a returning viewer on their most recent room when any other room exists", () => {
+    list = [dm, general, vendor];
+    render(shell());
+    expect(workspaceValue.activeRoomId).toBe(dm.roomId);
+    expect(selectRoomSpy).not.toHaveBeenCalledWith("general");
+  });
+
+  it("an agent DM a person asked for counts as their choice; the default-agent fallback does not", async () => {
+    list = [vendor];
+    const view = render(shell());
+    await act(async () => { await workspaceValue.selectAgentDm("agent-x"); });
+    list = [vendor, general];
+    view.rerender(shell());
+    expect(selectRoomSpy).not.toHaveBeenCalledWith("general");
+
+    mocks.orgId = "org-2";
+    list = [vendor];
+    view.rerender(shell());
+    await act(async () => { await workspaceValue.selectAgentDm("default-agent", false); });
+    list = [vendor, general];
+    view.rerender(shell());
+    expect(workspaceValue.activeRoomId).toBe("general");
+  });
+
+  it("never overrides a room the viewer chose", () => {
+    list = [vendor];
+    const view = render(shell());
+    act(() => directory.onSelectRoom("vendor"));
+    list = [vendor, general];
+    view.rerender(shell());
+    expect(workspaceValue.activeRoomId).toBe("vendor");
+    expect(selectRoomSpy).not.toHaveBeenCalledWith("general");
+  });
+
+  it("does not re-open #general after the viewer navigates away", () => {
+    list = [general, vendor];
+    const view = render(shell());
+    expect(workspaceValue.activeRoomId).toBe("general");
+    act(() => directory.onSelectRoom("vendor"));
+    view.rerender(shell());
+    expect(workspaceValue.activeRoomId).toBe("vendor");
+  });
+
+  it("re-arms for a second workspace, even after a choice in the first", () => {
+    list = [general];
+    const view = render(shell());
+    expect(workspaceValue.activeRoomId).toBe("general");
+    act(() => directory.onSelectRoom("general"));
+    mocks.orgId = "org-2";
+    list = [vendor, { ...general, roomId: "general-2" }];
+    view.rerender(shell());
+    expect(workspaceValue.activeRoomId).toBe("general-2");
+  });
 });

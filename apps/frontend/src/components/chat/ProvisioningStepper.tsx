@@ -82,11 +82,11 @@ const PROVIDER_SETTLE_COPY: Record<ProviderChoice | "default", { title: string; 
   },
   byo_key: {
     title: "Saving your API key",
-    desc: "Securing your key and starting your container.",
+    desc: "Securing your key and setting up your workspace.",
   },
   openrouter_managed: {
     title: "Setting up your credits",
-    desc: "Getting your managed models ready and starting your container.",
+    desc: "Getting your managed models ready and setting up your workspace.",
   },
   default: {
     title: "Finishing setup",
@@ -94,14 +94,22 @@ const PROVIDER_SETTLE_COPY: Record<ProviderChoice | "default", { title: string; 
   },
 };
 
-const STEPS_PAID: { phase: Phase; label: string; activeLabel: string }[] = [
-  { phase: "payment", label: "Payment confirmed", activeLabel: "Confirming payment..." },
-  { phase: "container", label: "Container ready", activeLabel: "Provisioning your container..." },
-  { phase: "gateway", label: "Gateway connected", activeLabel: "Connecting to your agent's brain..." },
-  { phase: "channels-sidecars", label: "Channels wired up", activeLabel: "Wiring up your channels..." },
-  { phase: "agent", label: "Agent online", activeLabel: "Putting the finishing touches on your agent..." },
-  { phase: "ready", label: "Ready", activeLabel: "Ready!" },
-];
+// The ONE place setup steps get their user-facing words, keyed by the step ids
+// the provisioning state already exposes. Plain language only — no
+// "container"/"gateway" — because this is what a brand-new user reads while
+// they wait. Swapping the data source (a live stepper) keeps this map.
+export const SETUP_STEP_LABELS = {
+  payment: "Confirming your plan…",
+  container: "Setting up your workspace…",
+  gateway: "Starting your agents…",
+  "channels-sidecars": "Introducing your team…",
+  agent: "Almost ready…",
+  ready: "Ready!",
+} as const satisfies Partial<Record<Phase, string>>;
+
+const STEPS_PAID: { phase: Phase; activeLabel: string }[] = (
+  Object.keys(SETUP_STEP_LABELS) as (keyof typeof SETUP_STEP_LABELS)[]
+).map((phase) => ({ phase, activeLabel: SETUP_STEP_LABELS[phase] }));
 
 // Full ordered phase list for ANALYTICS ONLY. Unlike STEPS_PAID (which drives
 // the visible stepper rows and deliberately omits the interstitial "provider"
@@ -1587,7 +1595,7 @@ export function ProvisioningStepper({
 
 
 const AGENTS_BANNER_COPY = {
-  starting: "Your agents are getting ready. You can keep messaging in the meantime.",
+  starting: "Your team is getting ready — it'll be ready in about a minute.",
   retrying: "Your agents hit a snag and are retrying automatically. You can keep messaging in the meantime.",
   slow: "Still going — your agents are taking a little longer than usual. You can keep messaging in the meantime.",
   stuck: "Starting your agents is taking longer than it should — something is stuck on our side. Messaging still works; contact us and we'll get it moving.",
@@ -1626,7 +1634,7 @@ export function agentsBannerProgress(
 // claiming any. Those two keep the flat AGENTS_BANNER_COPY sentence and their
 // actions, unchanged — and so does any phase we can't place on the ladder.
 const ADVANCING_BANNER_COPY: Partial<Record<keyof typeof AGENTS_BANNER_COPY, string>> = {
-  starting: "You can keep messaging in the meantime.",
+  starting: "Your team will be ready in about a minute.",
   retrying: AGENTS_BANNER_COPY.retrying,
   slow: AGENTS_BANNER_COPY.slow,
 };
@@ -1636,8 +1644,8 @@ const ADVANCING_BANNER_COPY: Partial<Record<keyof typeof AGENTS_BANNER_COPY, str
  * Escalates honestly (issue #1468): a slow start offers "Check again", a stuck
  * or failed one also offers support, and nothing here resets the clock.
  *
- * While it is still honest to claim progress, it shows which of the six setup
- * steps is actually running (`activeLabel` + "Step n of 6" + a bar), because
+ * While it is still honest to claim progress, it shows which setup step is
+ * actually running (its plain-language label + a bar), because
  * the alternative is one unchanging sentence for the 5+ minutes upstream's
  * sidecars.channels can take. The position comes from the real `phase`, so the
  * bar only moves when the backend actually moved.
@@ -1693,15 +1701,15 @@ function AgentsBanner({
       {progress && (
         <div className="mt-1.5 flex items-center gap-3">
           {/* One bar, one live position. aria-valuetext carries the step name
-              so a screen reader gets "Step 4 of 6 — Wiring up your channels..."
-              rather than a bare "67%" with no idea what moved. */}
+              so a screen reader gets "Introducing your team…" rather than a
+              bare "67%" with no idea what moved. */}
           <div
             role="progressbar"
             aria-label="Agent setup progress"
             aria-valuemin={0}
             aria-valuemax={progress.total}
             aria-valuenow={progress.step}
-            aria-valuetext={`Step ${progress.step} of ${progress.total} — ${progress.activeLabel}`}
+            aria-valuetext={progress.activeLabel}
             className="h-1 flex-1 overflow-hidden rounded-full bg-[var(--edge)]"
           >
             <div
@@ -1709,9 +1717,6 @@ function AgentsBanner({
               style={{ width: `${(progress.step / progress.total) * 100}%` }}
             />
           </div>
-          <span className="shrink-0 text-xs tabular-nums text-[var(--midnight-muted)]">
-            Step {progress.step} of {progress.total}
-          </span>
         </div>
       )}
     </div>

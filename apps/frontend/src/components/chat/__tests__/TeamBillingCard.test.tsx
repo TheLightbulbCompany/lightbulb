@@ -14,6 +14,10 @@ describe("TeamBillingCard", () => {
     render(<TeamBillingCard workspacePriceUsd={50} ownerRole="admin" />);
     expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
     expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
+    // Each path is named, not just described.
+    for (const name of ["Lightbulb-managed", "Sign in with ChatGPT", "Bring your own API key"]) {
+      expect(screen.getByText(name)).toBeInTheDocument();
+    }
     expect(screen.getByRole("button", { name: /subscribe workspace/i })).toBeInTheDocument();
   });
 

@@ -108,6 +108,8 @@ async def record_usage(
     # recording that cost as Isol8 spend would contradict the books. Gate the
     # override to Bedrock; anything else falls through to the token path →
     # UnknownModelError → spend 0, even when the override is present.
+    # OpenRouter spend is written by the settlement Lambda from each generation's real cost;
+    # never price OpenRouter models here or lift this Bedrock-only gate, or it counts twice.
     use_raw_cost = raw_cost_microcents is not None and raw_cost_microcents > 0 and _is_bedrock_model(model)
     if use_raw_cost:
         spend_microcents = raw_cost_microcents

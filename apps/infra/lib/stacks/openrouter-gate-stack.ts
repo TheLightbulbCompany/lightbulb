@@ -157,7 +157,12 @@ export class OpenRouterGateStack extends cdk.Stack {
     });
     settlementRole.addToPolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:TransactWriteItems"],
-      resources: [tableArn("openrouter-requests"), `${tableArn("openrouter-requests")}/index/state-created-index`, tableArn("openrouter-keys"), tableArn("metronome-fast-gate"), tableArn("usage-counters")],
+      resources: [tableArn("openrouter-requests"), `${tableArn("openrouter-requests")}/index/state-created-index`, tableArn("openrouter-keys"), tableArn("metronome-fast-gate")],
+    }));
+    // Settlement only ADDs real OpenRouter cost to the usage counters (inside its transaction).
+    settlementRole.addToPolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:UpdateItem"],
+      resources: [tableArn("usage-counters")],
     }));
     settlementRole.addToPolicy(new iam.PolicyStatement({
       actions: ["secretsmanager:GetSecretValue"],

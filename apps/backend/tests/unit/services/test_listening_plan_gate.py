@@ -19,6 +19,7 @@ AGENT = str(uuid.UUID(int=1))
 ROOM = str(uuid.UUID(int=9))
 TRIAL = {"owner_id": OWNER, "subscription_status": "trial_local"}
 PAID = {"owner_id": OWNER, "subscription_status": "active"}
+REAL_REQUIRE_ROOM_MEMBER = messaging.require_room_member
 
 
 def _billing(monkeypatch, account) -> AsyncMock:
@@ -73,18 +74,18 @@ async def test_a_paid_workspace_seeds_every_agent_listening(monkeypatch):
     assert set(_seeded_modes(create_room, starter_ids).values()) == {"active"}
 
 
-def _upsert_fixture(monkeypatch, *, room_kind: str) -> AsyncMock:
+def _upsert_fixture(monkeypatch, *, room_kind: str, role: str = "owner", existing: dict | None = None) -> AsyncMock:
     monkeypatch.setattr(
         messaging,
-        "require_room_admin",
+        "require_room_member",
         AsyncMock(
             return_value=(
                 {"kind": room_kind, "roomId": ROOM, "ownerId": OWNER},
-                {"kind": "human", "id": USER, "role": "owner"},
+                {"kind": "human", "id": USER, "role": role},
             )
         ),
     )
-    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=existing))
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": AGENT, "name": "Friday"}]))
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[]))
     upsert = AsyncMock(return_value={"kind": room_kind})
@@ -120,6 +121,63 @@ async def test_a_paid_workspace_sets_listening(monkeypatch):
     await messaging.upsert_member(AuthContext(user_id=USER, org_id=OWNER), ROOM, _member("active"))
 
     assert upsert.call_args.kwargs["member"]["listenMode"] == "active"
+
+
+IN_ROOM = {"kind": "agent", "id": AGENT, "role": "member", "listenMode": "mentions"}
+
+
+@pytest.mark.asyncio
+async def test_a_member_of_a_paid_workspace_can_set_an_agents_listening(monkeypatch):
+    upsert = _upsert_fixture(monkeypatch, room_kind="channel", role="member", existing=IN_ROOM)
+    _billing(monkeypatch, PAID)
+
+    await messaging.upsert_member(AuthContext(user_id=USER, org_id=OWNER), ROOM, _member("active"))
+
+    assert upsert.call_args.kwargs["member"]["listenMode"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_a_member_on_the_free_tier_cannot_change_a_mode(monkeypatch):
+    upsert = _upsert_fixture(monkeypatch, room_kind="channel", role="member", existing=IN_ROOM)
+    _billing(monkeypatch, TRIAL)
+
+    for mode in ("active", "observe"):
+        with pytest.raises(messaging.ApiProblem) as exc:
+            await messaging.upsert_member(AuthContext(user_id=USER, org_id=OWNER), ROOM, _member(mode))
+        assert exc.value.status_code == 403
+    upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_member_of_a_paid_workspace_still_cannot_add_an_agent(monkeypatch):
+    upsert = _upsert_fixture(monkeypatch, room_kind="channel", role="member", existing=None)
+    _billing(monkeypatch, PAID)
+
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await messaging.upsert_member(AuthContext(user_id=USER, org_id=OWNER), ROOM, _member("mentions"))
+
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_non_member_cannot_change_a_mode(monkeypatch):
+    _upsert_fixture(monkeypatch, room_kind="channel", existing=IN_ROOM)
+    # The real membership check: the caller has no member row in this workspace's room.
+    monkeypatch.setattr(messaging, "require_room_member", REAL_REQUIRE_ROOM_MEMBER)
+    monkeypatch.setattr(
+        messaging.messaging_repo, "get_room", AsyncMock(return_value={"roomId": ROOM, "ownerId": OWNER, "lastSeq": 3})
+    )
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))
+    upsert = AsyncMock()
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert)
+    _billing(monkeypatch, PAID)
+
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await messaging.upsert_member(AuthContext(user_id=USER, org_id=OWNER), ROOM, _member("active"))
+
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    upsert.assert_not_awaited()
 
 
 @pytest.mark.asyncio

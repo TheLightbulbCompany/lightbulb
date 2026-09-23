@@ -53,8 +53,8 @@ it("confirms removal of a non-owner with Cancel focused and restores focus", asy
   expect(onRemoveMember).toHaveBeenCalledWith({ kind: "agent", id: "friday" });
 });
 
-it.each(["dm", "group-dm", "channel"] as const)("does not expose management without room admin permission (%s)", async (kind) => {
-  render(<RoomPanel {...props} room={{ ...props.room!, kind }}
+it.each(["dm", "group-dm", "channel"] as const)("does not expose management without room admin permission on the free tier (%s)", async (kind) => {
+  render(<RoomPanel {...props} room={{ ...props.room!, kind }} listeningAvailable={false}
     participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={vi.fn()} onRemoveMember={vi.fn()} onListenModeChange={vi.fn()} />);
   await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
   expect(screen.queryByRole("button", { name: /Rename (channel|group chat)/ })).not.toBeInTheDocument();
@@ -484,6 +484,18 @@ it("lets wide room details change agent response without giving humans a control
   expect(details.queryByRole("combobox", { name: "Response for Owner" })).not.toBeInTheDocument();
   await user.selectOptions(mode, "observe");
   expect(onListenModeChange).toHaveBeenCalledWith("friday", "observe");
+});
+
+it("lets an ordinary member of a paid workspace change an agent's response, and nothing else", async () => {
+  const user = userEvent.setup();
+  const onListenModeChange = vi.fn();
+  render(<RoomPanel {...props} listeningAvailable participants={[{ ...owner, role: "member" }, friday]}
+    onRemoveMember={vi.fn()} onListenModeChange={onListenModeChange} />);
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  const details = within(screen.getByRole("complementary", { name: "Room details" }));
+  expect(details.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
+  await user.selectOptions(details.getByRole("combobox", { name: "Response for Friday" }), "active");
+  expect(onListenModeChange).toHaveBeenCalledWith("friday", "active");
 });
 
 it("shows an agent response as read-only text to ordinary members", async () => {

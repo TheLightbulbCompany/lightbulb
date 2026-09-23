@@ -106,6 +106,16 @@ async def test_create_contract_sends_rate_card_and_returns_id():
     # Not requested ⇒ no contract-level billing config in the body (sending
     # it without the customer's root-level config existing 404s the create).
     assert "billing_provider_configuration" not in body
+    assert "uniqueness_key" not in body
+
+
+@pytest.mark.asyncio
+async def test_create_contract_forwards_uniqueness_key():
+    client, fake = _client_with(_resp(200, {"data": {"id": "contract-uuid-1"}}))
+    await client.create_contract(customer_id="cust-uuid-1", rate_card_id="rc-1", uniqueness_key="k-1")
+
+    _, kwargs = fake.post.call_args
+    assert kwargs["json"]["uniqueness_key"] == "k-1"
 
 
 @pytest.mark.asyncio
@@ -150,7 +160,8 @@ async def test_list_contracts_shape():
 
     assert contracts == [{"id": "contract-uuid-1"}]
     args, kwargs = fake.post.call_args
-    assert args[0] == "/contracts/list"
+    # v1 list is disabled by Metronome; the v2 surface lives beside it.
+    assert args[0] == "https://api.metronome.com/v2/contracts/list"
     assert kwargs["json"] == {"customer_id": "cust-uuid-1"}
 
 

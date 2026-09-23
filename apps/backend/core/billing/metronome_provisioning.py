@@ -248,22 +248,30 @@ async def _create_or_adopt_customer(owner_id: str, client: MetronomeClient) -> s
 
 
 async def _create_or_adopt_contract(customer_id: str, client: MetronomeClient, *, with_stripe_billing: bool) -> str:
+    # rate_card_id is optional on contract create (sandbox-verified) and is
+    # forwarded only when the env actually has one configured.
+    rate_card_id = settings.METRONOME_RATE_CARD_ID or None
+    # Deterministic per (customer, rate card): concurrent provisions (several
+    # /container/status polls across backend tasks, plus the entering_live
+    # webhook) all race past the persisted-ids short-circuit, and without a
+    # key each one minted its own contract — every one of which prices the
+    # same usage. Keyed on the customer UUID, not the owner id, so a wiped
+    # owner's fresh customer is not blocked by its archived predecessor.
+    uniqueness_key = f"lightbulb-contract:{customer_id}:{rate_card_id or 'none'}"
     try:
-        # rate_card_id is optional on contract create (sandbox-verified) and
-        # is forwarded only when the env actually has one configured.
         return await client.create_contract(
             customer_id=customer_id,
-            rate_card_id=settings.METRONOME_RATE_CARD_ID or None,
+            rate_card_id=rate_card_id,
             with_stripe_billing=with_stripe_billing,
+            uniqueness_key=uniqueness_key,
         )
     except httpx.HTTPStatusError as exc:
-        # Conflict: a prior attempt created the contract but crashed before
-        # its id was persisted. One customer carries at most the one contract
-        # this module creates, so adopting the first listed contract is safe.
+        # Conflict on the key: a concurrent or crashed earlier attempt already
+        # created this contract — adopt it instead of failing.
         if exc.response.status_code != 409:
             raise
         contracts = await client.list_contracts(customer_id=customer_id)
-        adopted = contracts[0].get("id") if contracts else None
+        adopted = next((c.get("id") for c in contracts if c.get("uniqueness_key") == uniqueness_key), None)
         if not adopted:
             raise MetronomeError(
                 f"create_contract conflicted for customer {customer_id} but no contract is listed"

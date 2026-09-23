@@ -485,12 +485,17 @@ class OpenClawWorkWorker:
                 members=room_members,
                 history=body.get("recentHistory") or [],
             )
+            candidates = [
+                item["agentId"]
+                for item in (message.get("dispatchTargets") or [])
+                if item.get("eventKind") == "room_event"
+            ]
+            if decision is None and len(candidates) >= 2:
+                # route() returns None only when routing itself errored, so this consumer can't
+                # see what the others decided: guessing could run beside Jev's real pick.
+                put_metric("messaging.jev.route", dimensions={"outcome": "error_skip"})
+                return
             if decision is None or decision.get("fallback"):
-                candidates = [
-                    item["agentId"]
-                    for item in (message.get("dispatchTargets") or [])
-                    if item.get("eventKind") == "room_event"
-                ]
                 if len(candidates) >= 2:
                     # Jev down or undecided with more than one candidate: dispatch exactly one
                     # deterministic responder instead of every candidate independently (#2942).

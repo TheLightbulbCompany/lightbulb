@@ -413,8 +413,9 @@ async def route(
             put_metric("messaging.jev.decision", dimensions={"outcome": "disabled"})
             stored = await messaging_repo.get_decision(room_id, message_id)
             if stored is None:
-                return await messaging_repo.finalize_decision(
-                    room_id, message_id, {"fallback": True, "reason": "disabled"}
+                # Only into an ABSENT row: never overwrite a keyed task's live claim.
+                stored = await messaging_repo.finalize_decision(
+                    room_id, message_id, {"fallback": True, "reason": "disabled"}, only_if_absent=True
                 )
             if not stored.get("pending"):
                 return stored

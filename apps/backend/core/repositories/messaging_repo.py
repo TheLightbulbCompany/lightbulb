@@ -2003,7 +2003,7 @@ async def claim_decision(room_id: str, message_id: str) -> bool:
         raise
 
 
-async def finalize_decision(room_id: str, message_id: str, decision: dict) -> dict:
+async def finalize_decision(room_id: str, message_id: str, decision: dict, *, only_if_absent: bool = False) -> dict:
     """Write the final decision only while the row is still pending (or gone), and return
     whatever final decision is stored. First final write wins, so a late claim winner and a
     loser that timed out and fell back always act on the SAME decision -- never two responders."""
@@ -2016,9 +2016,16 @@ async def finalize_decision(room_id: str, message_id: str, decision: dict) -> di
                 "decision": _ddb_safe(decision),
                 "expiresAt": _expires_at(),
             },
-            ConditionExpression="attribute_not_exists(sk) OR #d.#p = :t",
-            ExpressionAttributeNames={"#d": "decision", "#p": "pending"},
-            ExpressionAttributeValues={":t": True},
+            # only_if_absent: a caller that never claimed (no key) must not overwrite a live claim.
+            **(
+                {"ConditionExpression": "attribute_not_exists(sk)"}
+                if only_if_absent
+                else {
+                    "ConditionExpression": "attribute_not_exists(sk) OR #d.#p = :t",
+                    "ExpressionAttributeNames": {"#d": "decision", "#p": "pending"},
+                    "ExpressionAttributeValues": {":t": True},
+                }
+            ),
         )
         return decision
     except ClientError as exc:

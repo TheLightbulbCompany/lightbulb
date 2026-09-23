@@ -254,11 +254,15 @@ async def test_workspace_checkout_reuses_its_open_pending_session(monkeypatch):
     monkeypatch.setattr(billing_service.stripe.checkout.Session, "retrieve", MagicMock(return_value=pending))
     create = MagicMock()
     monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+    expire = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "expire", expire)
 
     result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
 
     assert result == {"checkout_url": "https://checkout.test/pending"}
     create.assert_not_called()
+    expire.assert_not_called()
+    billing_service.billing_repo.release_checkout_slot.assert_awaited_once_with("org_1", token="claim")
 
 
 @pytest.mark.asyncio
@@ -297,13 +301,186 @@ async def test_workspace_checkout_rejects_pending_marker_with_conflicting_legacy
         await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
 
 
+def _with_pending_marker(monkeypatch, session: dict) -> dict:
+    """An owner with no live subscription and ``session`` as the pending marker."""
+    monkeypatch.setattr(billing_service.settings, "STRIPE_BASE_PRICE_ID", "price_base")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1", "pending_checkout_session_id": "cs_old"}
+        ),
+    )
+    stripe_calls = {
+        "retrieve": MagicMock(return_value={"id": "cs_old", **session}),
+        "create": MagicMock(return_value={"id": "cs_new", "url": "https://checkout.test/cs_new"}),
+        "expire": MagicMock(),
+    }
+    for name, mock in stripe_calls.items():
+        monkeypatch.setattr(billing_service.stripe.checkout.Session, name, mock)
+    return stripe_calls
+
+
+_OPEN_BASE = {
+    "status": "open",
+    "payment_status": "unpaid",
+    "url": "https://checkout.test/cs_old",
+    "customer": "cus_1",
+    "mode": "subscription",
+    "metadata": {"purpose": "workspace_subscription_v2", "plan": "base", "workspace_id": "org_1", "owner_id": "org_1"},
+}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_checkout_then_another_plan_expires_the_old_session_and_mints_a_new_one(monkeypatch):
+    """The reported bug: cancel Base Checkout, pick Workspace → 400 for ~31 min."""
+    order = []
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "try_claim_checkout_slot",
+        AsyncMock(side_effect=lambda *_a, **_k: order.append("claim") or "claim"),
+    )
+    stripe_calls = _with_pending_marker(monkeypatch, _OPEN_BASE)
+    stripe_calls["expire"].side_effect = lambda *_a, **_k: order.append("expire")
+    stripe_calls["create"].side_effect = lambda **_k: (
+        order.append("create") or {"id": "cs_new", "url": "https://checkout.test/cs_new"}
+    )
+
+    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    assert result == {"checkout_url": "https://checkout.test/cs_new"}
+    # Serialized: the old session is expired under the claim, before the new one exists.
+    assert order == ["claim", "expire", "create"]
+    stripe_calls["expire"].assert_called_once_with("cs_old")
+    assert stripe_calls["create"].call_args.kwargs["metadata"]["plan"] == "workspace"
+    # The marker is re-read strongly consistent under the claim.
+    billing_service.billing_repo.get_by_owner_id.assert_any_await("org_1", consistent_read=True)
+    billing_service.billing_repo.set_pending_checkout.assert_awaited_once_with("org_1", session_id="cs_new")
+    billing_service.billing_repo.release_checkout_slot.assert_awaited_once_with("org_1", token="claim")
+
+
+@pytest.mark.asyncio
+async def test_switching_back_to_a_plan_never_replays_its_expired_session(monkeypatch):
+    """Workspace -> cancel -> Ultra -> cancel -> Workspace inside one 5-minute
+    bucket. Without the superseded id in the key, the third create reuses the
+    first key and Stripe replays the first (expired) session."""
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+    monkeypatch.setattr(billing_service.time, "time", lambda: 1_800_000_001)
+    row = {"owner_id": "org_1", "stripe_customer_id": "cus_1"}
+    sessions = {}
+
+    async def record(_owner_id, *, session_id):
+        row["pending_checkout_session_id"] = session_id
+
+    def create(**kwargs):
+        sid = f"cs_{len(sessions) + 1}"
+        sessions[sid] = kwargs["metadata"]["plan"]
+        return {"id": sid, "url": f"https://checkout.test/{sid}"}
+
+    def retrieve(sid, **_kwargs):
+        return {**_OPEN_BASE, "id": sid, "metadata": {**_OPEN_BASE["metadata"], "plan": sessions[sid]}}
+
+    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(side_effect=lambda *_a, **_k: row))
+    monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", record)
+    create_mock = MagicMock(side_effect=create)
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create_mock)
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "retrieve", MagicMock(side_effect=retrieve))
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "expire", MagicMock())
+
+    for plan in ("workspace", "ultra", "workspace"):
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan=plan)
+
+    keys = [call.kwargs["idempotency_key"] for call in create_mock.call_args_list]
+    assert len(keys) == 3 and len(set(keys)) == 3
+
+
+@pytest.mark.asyncio
+async def test_an_old_session_that_can_no_longer_be_expired_never_gets_a_sibling(monkeypatch):
+    """Expire only succeeds on an open session. If another tab submitted it in
+    between, minting a second session could double-subscribe: 409 and let the
+    retry see the resulting subscription instead."""
+    stripe_calls = _with_pending_marker(monkeypatch, _OPEN_BASE)
+    stripe_calls["expire"].side_effect = billing_service.stripe.error.InvalidRequestError(
+        "session is not open", param=None
+    )
+
+    with pytest.raises(billing_service.BillingServiceError, match="checkout_in_progress"):
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    stripe_calls["create"].assert_not_called()
+    billing_service.billing_repo.set_pending_checkout.assert_not_awaited()
+    billing_service.billing_repo.release_checkout_slot.assert_awaited_once_with("org_1", token="claim")
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_open_marker_for_another_plan_is_never_expired(monkeypatch):
+    stripe_calls = _with_pending_marker(monkeypatch, {**_OPEN_BASE, "customer": "cus_other"})
+
+    with pytest.raises(billing_service.BillingServiceError, match="pending_checkout_invalid"):
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    stripe_calls["expire"].assert_not_called()
+    stripe_calls["create"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_completed_ach_session_still_settling_is_never_superseded(monkeypatch):
+    """ACH: `complete` means "payment processing may still be in progress" and
+    `payment_status` stays `unpaid` for days, while its subscription is live."""
+    stripe_calls = _with_pending_marker(
+        monkeypatch,
+        {
+            **_OPEN_BASE,
+            "status": "complete",
+            "payment_status": "unpaid",
+            "subscription": {"id": "sub_ach", "status": "incomplete"},
+        },
+    )
+
+    with pytest.raises(billing_service.BillingServiceError, match="already_subscribed:checkout_completed"):
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    assert stripe_calls["retrieve"].call_args.kwargs == {"expand": ["subscription"]}
+    stripe_calls["expire"].assert_not_called()
+    stripe_calls["create"].assert_not_called()
+    billing_service.billing_repo.set_pending_checkout.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("subscription", [{"id": "sub_gone", "status": "canceled"}, None])
+async def test_a_completed_marker_whose_subscription_is_gone_no_longer_strands_the_owner(monkeypatch, subscription):
+    """#2748: cancel (or incomplete_expired), then re-subscribe. The complete
+    marker used to raise forever because nothing clears the field."""
+    stripe_calls = _with_pending_marker(
+        monkeypatch, {**_OPEN_BASE, "status": "complete", "payment_status": "paid", "subscription": subscription}
+    )
+
+    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    assert result == {"checkout_url": "https://checkout.test/cs_new"}
+    stripe_calls["expire"].assert_not_called()
+    billing_service.billing_repo.set_pending_checkout.assert_awaited_once_with("org_1", session_id="cs_new")
+
+
+@pytest.mark.asyncio
+async def test_an_expired_marker_mints_fresh(monkeypatch):
+    stripe_calls = _with_pending_marker(monkeypatch, {**_OPEN_BASE, "status": "expired"})
+
+    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="base")
+
+    assert result == {"checkout_url": "https://checkout.test/cs_new"}
+    stripe_calls["expire"].assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_workspace_checkout_retries_within_a_bucket_send_identical_stripe_kwargs(monkeypatch):
     monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
     clock = {"now": 1_800_000_001}
     monkeypatch.setattr(billing_service.time, "time", lambda: clock["now"])
 
-    async def get_account(_owner_id):
+    async def get_account(_owner_id, **_kwargs):
         # The DDB await crosses a five-minute boundary after the key/expiry
         # were captured. The builder must not sample that later clock value.
         clock["now"] = 1_800_000_301

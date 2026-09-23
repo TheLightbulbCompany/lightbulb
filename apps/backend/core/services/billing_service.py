@@ -263,43 +263,74 @@ async def create_workspace_checkout(
             )
         return {"updated": True}
 
-    pending_id = account.get("pending_checkout_session_id")
-    if pending_id:
-        try:
-            with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
-                pending = stripe.checkout.Session.retrieve(pending_id)
-        except stripe.error.InvalidRequestError:
-            pending = None
-        if pending is not None:
-            if pending.get("status") == "complete":
-                raise BillingServiceError("already_subscribed:checkout_completed")
-            if pending.get("status") == "open":
-                metadata = pending.get("metadata") or {}
-                if (
-                    metadata.get("purpose") == "workspace_subscription_v2"
-                    and metadata.get("plan") == plan
-                    and metadata.get("workspace_id") == owner_id
-                    and metadata.get("owner_id") in {None, owner_id}
-                    and pending.get("customer") == account["stripe_customer_id"]
-                    and pending.get("mode") == "subscription"
-                ):
-                    return {"checkout_url": pending["url"]}
-                # A corrupt or foreign marker is not ours to disclose or
-                # expire. Failing closed avoids damaging another workspace.
-                raise BillingServiceError("pending_checkout_invalid")
-
+    # Pending-session lifecycle: reuse, supersede or mint the workspace's one
+    # pending Checkout session. One claim serializes every read and write of
+    # the marker, and the marker is re-read strongly consistent UNDER it, so no
+    # request acts on a marker another is replacing. The claim is released on
+    # every exit; holding it past a recorded marker would 409 an owner who
+    # cancels Checkout and picks another plan within the TTL.
+    #
+    # Stripe's session `status` is the state machine: open = "payment
+    # processing has not started", complete = "payment processing may still be
+    # in progress", expired = "no further processing will occur". We get here
+    # only when the customer has NO live subscription.
+    # - open, ours, same plan  -> return its URL (double click / second tab).
+    # - open, ours, other plan -> expire it, then mint: the newest explicit plan
+    #   choice wins, since two open sessions could complete into two charged
+    #   subscriptions. `expire` only succeeds on an open session, so one
+    #   already submitted in another tab is never cancelled; we 409 instead.
+    # - open, not ours         -> fail closed; not ours to expire.
+    # - complete, its subscription live -> it completed after the list above,
+    #   or is an ACH debit still settling: never supersede it.
+    # - complete, subscription gone (canceled / incomplete_expired), or
+    #   expired -> mint fresh; the new marker retires the stale id. A complete
+    #   marker used to raise forever, since nothing clears the field.
     claim_token = await billing_repo.try_claim_checkout_slot(owner_id)
     if not claim_token:
         raise BillingServiceError("checkout_in_progress")
-
-    metadata = {
-        "workspace_id": owner_id,
-        "owner_id": owner_id,
-        "clerk_user_id": clerk_user_id,
-        "plan": plan,
-        "purpose": "workspace_subscription_v2",
-    }
     try:
+        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+        pending_id = account.get("pending_checkout_session_id")
+        pending = None
+        if pending_id:
+            try:
+                with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
+                    pending = stripe.checkout.Session.retrieve(pending_id, expand=["subscription"])
+            except stripe.error.InvalidRequestError:
+                pass
+        if pending is not None and pending.get("status") == "complete":
+            if (pending.get("subscription") or {}).get("status") in LIVE_SUBSCRIPTION_STATUSES:
+                raise BillingServiceError("already_subscribed:checkout_completed")
+            logger.info("Superseding completed checkout %s with no live subscription owner=%s", pending_id, owner_id)
+        elif pending is not None and pending.get("status") == "open":
+            metadata = pending.get("metadata") or {}
+            if not (
+                metadata.get("purpose") == "workspace_subscription_v2"
+                and metadata.get("workspace_id") == owner_id
+                and metadata.get("owner_id") in {None, owner_id}
+                and pending.get("customer") == account["stripe_customer_id"]
+                and pending.get("mode") == "subscription"
+            ):
+                # A corrupt or foreign marker is not ours to disclose or
+                # expire. Failing closed avoids damaging another workspace.
+                raise BillingServiceError("pending_checkout_invalid")
+            if metadata.get("plan") == plan:
+                return {"checkout_url": pending["url"]}
+            try:
+                with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
+                    stripe.checkout.Session.expire(pending_id)
+            except stripe.error.StripeError as e:
+                # No longer open: submitted in another tab, or it just expired.
+                # Re-evaluate on retry rather than guess.
+                raise BillingServiceError("checkout_in_progress") from e
+
+        metadata = {
+            "workspace_id": owner_id,
+            "owner_id": owner_id,
+            "clerk_user_id": clerk_user_id,
+            "plan": plan,
+            "purpose": "workspace_subscription_v2",
+        }
         session = await _build_subscription_checkout(
             owner_id=owner_id,
             line_items=[{"price": price_id, "quantity": 1}],
@@ -308,27 +339,29 @@ async def create_workspace_checkout(
             cancel_url=f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel",
             idempotency_key=(
                 f"workspace_checkout:v{_CHECKOUT_BODY_VERSION}:{owner_id}:{plan}:{clerk_user_id}:{checkout_bucket}"
+                # A superseded session keys a new bucket: otherwise
+                # Workspace -> Ultra -> Workspace inside one bucket replays the
+                # first (now expired) session.
+                f":{pending_id or ''}"
             ),
             expires_at=checkout_expires_at,
         )
-    except Exception:
-        await billing_repo.release_checkout_slot(owner_id, token=claim_token)
-        raise
-    try:
-        await billing_repo.set_pending_checkout(owner_id, session_id=session["id"], provider_choice=None)
-    except Exception:
-        logger.exception("Failed to record pending workspace checkout for owner %s", owner_id)
         try:
-            with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
-                stripe.checkout.Session.expire(session["id"])
+            await billing_repo.set_pending_checkout(owner_id, session_id=session["id"])
         except Exception:
-            logger.exception("Failed to expire unrecorded workspace checkout %s", session["id"])
+            logger.exception("Failed to record pending workspace checkout for owner %s", owner_id)
+            try:
+                with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
+                    stripe.checkout.Session.expire(session["id"])
+            except Exception:
+                logger.exception("Failed to expire unrecorded workspace checkout %s", session["id"])
+            raise BillingServiceError("checkout_unavailable")
+        return {"checkout_url": session["url"]}
+    finally:
         try:
             await billing_repo.release_checkout_slot(owner_id, token=claim_token)
         except Exception:
             logger.exception("Failed to release workspace checkout slot for owner %s", owner_id)
-        raise BillingServiceError("checkout_unavailable")
-    return {"checkout_url": session["url"]}
 
 
 def subscription_item_on_price(items: list[dict], price_id: str) -> dict:

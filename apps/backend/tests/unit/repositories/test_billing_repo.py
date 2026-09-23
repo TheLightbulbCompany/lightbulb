@@ -428,7 +428,7 @@ async def test_try_claim_checkout_slot_self_heals_after_ttl(dynamodb_table, monk
     await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
     assert await billing_repo.try_claim_checkout_slot("slot_owner")
     real_now = time.time()
-    monkeypatch.setattr(billing_repo, "time", SimpleNamespace(time=lambda: real_now + 91))
+    monkeypatch.setattr(billing_repo, "time", SimpleNamespace(time=lambda: real_now + 241))
     assert await billing_repo.try_claim_checkout_slot("slot_owner")
 
 

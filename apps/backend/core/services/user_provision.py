@@ -229,10 +229,12 @@ async def ensure_user_ready(auth: AuthContext) -> None:
         put_metric("messaging.vendor_room.error")
         logger.exception("vendor room reconcile failed for owner %s", owner_id)
 
-    # #general for any member, BEFORE the gate: a gate speaks to container
-    # economics and must never keep a teammate out of the workspace's rooms
-    # (a trial or unpaid workspace gates most members' polls). Seats teammates
-    # the membership webhook missed; the first read short-circuits once in.
+    # TEMPORARY BACKSTOP -- delete with provisioning Phase 3 (poll path retired).
+    # The primary seat is the organizationMembership.created webhook ->
+    # join_default_room (routers/webhooks.py); this only catches teammates it
+    # missed (members who joined before it shipped; envs whose Clerk webhook is
+    # not wired). Before the gate: a gate is container economics and must never
+    # keep a teammate out of the workspace's rooms. First read short-circuits.
     from core.services.messaging import join_default_room
 
     try:

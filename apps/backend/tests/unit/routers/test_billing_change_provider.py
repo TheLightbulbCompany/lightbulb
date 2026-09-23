@@ -19,22 +19,19 @@ def active_personal_account():
 
 @pytest.fixture
 def patch_dispatch_provision():
-    """Stub the reconcile change_provider schedules so no test reaches AWS.
+    """Stub the durable reconcile change_provider dispatches so no test reaches AWS.
 
-    change_provider does a local ``from core.services.hermes_provisioning
-    import reconcile_runtime`` inside the function body, so patching the
-    source module (not the importing module) is what intercepts. The
-    AsyncMock returns a coroutine so ``asyncio.create_task`` happily wraps
-    it without RuntimeWarning.
+    change_provider imports ``dispatch_reconcile`` inside the function body, so patching the
+    source module (not the importing module) is what intercepts.
     """
-    bg = AsyncMock()
-    with patch("core.services.hermes_provisioning.reconcile_runtime", bg):
+    bg = AsyncMock(return_value=True)
+    with patch("core.services.provision_dispatch.dispatch_reconcile", bg):
         yield bg
 
 
 @pytest.fixture
 def reprovision():
-    """Stub the one seam the switch ends on: ``reconcile_runtime``.
+    """Stub the one seam the switch ends on: ``dispatch_reconcile`` (a durable SFN execution).
 
     The stop-first cold path is gone with the ECS runtime -- there is no service to scale to zero
     and no shared EFS-WAL SQLite for two tasks to corrupt, so the switch rewrites the owner's
@@ -46,7 +43,7 @@ def reprovision():
     authoritative credential revoke on the chatgpt-leaving branch) is stubbed too so it does not
     reach for real S3.
     """
-    dispatch = MagicMock(return_value=MagicMock())
+    dispatch = AsyncMock(return_value=True)
     with (
         patch(
             "core.repositories.container_repo.get_by_owner_id",
@@ -56,8 +53,7 @@ def reprovision():
             "core.services.container_auth.revoke_provider_auth_in_container",
             new=AsyncMock(return_value=True),
         ),
-        patch("core.services.hermes_provisioning.reconcile_runtime", dispatch),
-        patch("asyncio.create_task", lambda coro: coro.close() or MagicMock()),
+        patch("core.services.provision_dispatch.dispatch_reconcile", dispatch),
     ):
         yield dispatch
 

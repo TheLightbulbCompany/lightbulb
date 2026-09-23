@@ -101,8 +101,8 @@ async def test_running_execution_returns_the_owners_summary(sfn):
     assert await provision_dispatch.running_execution("org_nobody") is None
 
 
-def test_execution_input_is_the_owner_only():
-    assert json.loads(provision_dispatch.execution_input(ORG)) == {"owner_id": ORG}
+def test_execution_input_is_the_owner_and_the_provision_mode():
+    assert json.loads(provision_dispatch.execution_input(ORG)) == {"owner_id": ORG, "mode": "provision"}
 
 
 async def test_reconcile_starts_a_reconcile_execution_without_checks_or_row_writes(sfn, mark):

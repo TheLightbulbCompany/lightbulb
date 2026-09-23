@@ -215,6 +215,18 @@ async def ensure_user_ready(auth: AuthContext) -> None:
                 owner_id,
             )
 
+    # #general for any member, BEFORE the gate: a gate speaks to container
+    # economics and must never keep a teammate out of the workspace's rooms
+    # (a trial or unpaid workspace gates most members' polls). Seats teammates
+    # the membership webhook missed; the first read short-circuits once in.
+    from core.services.messaging import join_default_room
+
+    try:
+        await join_default_room(owner_id, auth.user_id)
+    except Exception:
+        put_metric("messaging.default_room.error")
+        logger.exception("default room join failed for owner %s user %s", owner_id, auth.user_id)
+
     # The gate check uses the same predicate as /container/status so
     # the helper and the endpoint can never disagree.
     gate = await evaluate_provision_gate(owner_id=owner_id, is_admin=auth.is_org_admin)
@@ -301,16 +313,6 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     except Exception:
         put_metric("messaging.vendor_room.error")
         logger.exception("vendor room reconcile failed for owner %s", owner_id)
-
-    # #general for any member, not only admins: teammates who joined before the
-    # membership webhook seated them. First read short-circuits once they're in.
-    from core.services.messaging import join_default_room
-
-    try:
-        await join_default_room(owner_id, auth.user_id)
-    except Exception:
-        put_metric("messaging.default_room.error")
-        logger.exception("default room join failed for owner %s user %s", owner_id, auth.user_id)
 
     # Nightly CEO loop: the DETERMINISTIC arm is the provision executor's
     # step 0 (scripts/provision_runner.py::_seed_owner_paperclip), right after

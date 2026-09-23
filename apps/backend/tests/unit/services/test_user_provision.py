@@ -5,6 +5,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from types import SimpleNamespace
 
 from core.auth import AuthContext
 from core.services import user_provision
@@ -2279,6 +2280,21 @@ async def test_any_org_members_poll_joins_them_to_the_default_room_best_effort()
         patch("core.services.user_provision._reconcile_owner_seed", new=AsyncMock()),
         patch("core.services.messaging.ensure_vendor_room", new=AsyncMock()),
         patch("core.services.messaging.join_default_room", new=AsyncMock(side_effect=RuntimeError("boom"))) as join,
+    ):
+        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
+    join.assert_awaited_once_with("org_o", "user_m")
+
+
+@pytest.mark.asyncio
+async def test_a_gated_workspace_still_seats_the_member_in_the_default_room():
+    """Dev acceptance 2026-09-23: a trial workspace's member poll returns at the gate, so a join
+    placed after it never ran and the member never saw #general. The gate is container
+    economics; it must not keep anyone out of the workspace's rooms."""
+    gate = SimpleNamespace(code="credits_required")
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=gate)),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.messaging.join_default_room", new=AsyncMock()) as join,
     ):
         await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
     join.assert_awaited_once_with("org_o", "user_m")

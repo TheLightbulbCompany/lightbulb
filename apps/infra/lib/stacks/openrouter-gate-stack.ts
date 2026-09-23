@@ -176,10 +176,15 @@ export class OpenRouterGateStack extends cdk.Stack {
         `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/metronome_api_key-*`,
       ],
     }));
+    // Secrets Manager too: metronome_api_key is on a CMK, and paid rows can't ingest without it
+    // (free/capped rows never read it, which is why this went unseen).
     settlementRole.addToPolicy(new iam.PolicyStatement({
       actions: ["kms:Decrypt", "kms:GenerateDataKey"],
       resources: ["*"],
-      conditions: { StringEquals: { "kms:ViaService": `dynamodb.${this.region}.amazonaws.com` } },
+      conditions: { StringEquals: { "kms:ViaService": [
+        `secretsmanager.${this.region}.amazonaws.com`,
+        `dynamodb.${this.region}.amazonaws.com`,
+      ] } },
     }));
     const dlq = new sqs.Queue(this, "SettlementDlq", {
       retentionPeriod: cdk.Duration.days(14),

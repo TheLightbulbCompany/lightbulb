@@ -110,6 +110,13 @@ test("dev settlement carries the rate-card proof and runs the daily audit", () =
     Targets: Match.arrayWith([Match.objectLike({ Input: '{"audit_previous_day":true}' })]),
   });
   template.resourceCountIs("AWS::SQS::Queue", 1);
+  // Ingest reads metronome_api_key, which sits on a CMK: KMS must be reachable via Secrets Manager.
+  template.hasResourceProperties("AWS::IAM::Policy", {
+    PolicyDocument: { Statement: Match.arrayWith([Match.objectLike({
+      Action: ["kms:Decrypt", "kms:GenerateDataKey"],
+      Condition: { StringEquals: { "kms:ViaService": ["secretsmanager.us-east-1.amazonaws.com", "dynamodb.us-east-1.amazonaws.com"] } },
+    })]) },
+  });
 });
 
 test("prod settlement is scheduled but cannot ingest money: no proof, audit off", () => {

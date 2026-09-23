@@ -118,8 +118,23 @@ def _unmarshal(item):
 
 
 class Store:
-    def __init__(self, ddb, *, requests_table, fast_table, keys_table=None):
+    def __init__(self, ddb, *, requests_table, fast_table, keys_table=None, usage_table=None):
         self.ddb, self.requests_table, self.fast_table, self.keys_table = ddb, requests_table, fast_table, keys_table
+        self.usage_table = usage_table
+
+    def _spend(self, row, event, actual_nanodollars):
+        """The backend's usage counters (``usage_repo``) have no price for an OpenRouter model, so
+        /billing/account's spend reads 0 unless settlement adds the real cost. Spend only: the
+        backend's ``record_usage`` already counts the turn's tokens and requests. Rides the
+        settle transaction, so the generation claim makes it exactly-once."""
+        if not self.usage_table or not actual_nanodollars:
+            return []
+        return [{"Update": {
+            "TableName": self.usage_table,
+            "Key": {"owner_id": {"S": row["owner_id"]}, "period": {"S": period}},
+            "UpdateExpression": "ADD total_spend_microdollars :spend",
+            "ExpressionAttributeValues": {":spend": {"N": str((actual_nanodollars + 999) // 1000)}},  # USD x 1e6
+        }} for period in (event["timestamp"][:7], "lifetime")]
 
     def pending(self, page_size=25, max_pages=100):
         rows, cursor = [], None
@@ -303,6 +318,7 @@ class Store:
                 },
             }},
             {"Update": projection},
+            *self._spend(row, event, actual_nanodollars),
         ]
         try:
             self.ddb.transact_write_items(TransactItems=transaction)
@@ -353,6 +369,7 @@ class Store:
                     ":provider": {"S": event["properties"]["provider"]},
                 },
             }},
+            *self._spend(row, event, actual_nanodollars),
         ]
         try:
             self.ddb.transact_write_items(TransactItems=transaction)
@@ -590,6 +607,7 @@ def handler(event, context):
         boto3.client("dynamodb"), requests_table=os.environ["REQUESTS_TABLE"],
         fast_table=os.environ["FAST_GATE_TABLE"],
         keys_table=os.environ.get("OPENROUTER_KEYS_TABLE"),
+        usage_table=os.environ.get("USAGE_COUNTERS_TABLE"),
     )
     now = int(datetime.now(timezone.utc).timestamp())
     if event.get("retire_keys"):

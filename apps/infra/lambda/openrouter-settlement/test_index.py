@@ -221,6 +221,21 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(values[":actual"]["N"], "12345678")
         self.assertEqual(values[":cost"]["S"], "0.012345678")
 
+    def test_settled_cost_is_added_to_the_owner_usage_counters_once(self):
+        calls = []
+        class Ddb:
+            def transact_write_items(self, **kwargs):
+                calls.append(kwargs)
+        row = {**self.row, "billing_mode": "capped", "reservation_microcents": 0}
+        store = worker.Store(Ddb(), requests_table="requests", fast_table="fast", usage_table="usage")
+        store.commit_free(row, worker.event_for(row, self.generation), 1_700_000_001, 12345678)
+        store.commit_free(row, worker.event_for(row, {**self.generation, "total_cost": Decimal("0")}), 1_700_000_001, 0)
+        spend = [op["Update"] for op in calls[0]["TransactItems"] if op.get("Update", {}).get("TableName") == "usage"]
+        self.assertEqual([u["Key"]["period"]["S"] for u in spend], ["2023-11", "lifetime"])
+        self.assertTrue(all(u["Key"]["owner_id"]["S"] == "owner-1" for u in spend))
+        self.assertTrue(all(u["ExpressionAttributeValues"][":spend"]["N"] == "12346" for u in spend))
+        self.assertEqual(len(calls[1]["TransactItems"]), 2)  # a zero-cost generation adds nothing
+
     def test_late_settlement_releases_only_openrouter_hold_without_stale_reset(self):
         calls = []
         class Ddb:

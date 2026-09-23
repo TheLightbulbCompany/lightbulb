@@ -182,6 +182,28 @@ describe("applyRunFrame", () => {
     expect(run.state).toBe("completed");
   });
 
+  it("holds text past a seq gap until the missing frame lands, so no hole ever shows", () => {
+    let run = fold([chunk(1, "was inscribed "), chunk(3, "the stone")]);
+    expect(run.text).toBe("was inscribed ");
+    run = applyRunFrame(run, chunk(2, "into "));
+    expect(run.text).toBe("was inscribed into the stone");
+  });
+
+  it("renders through a gap that never fills once enough frames pile up past it", () => {
+    const later = Array.from({ length: 16 }, (_, i) => chunk(i + 3, String.fromCharCode(99 + i)));
+    const run = fold([chunk(1, "a"), ...later]);
+    expect(run.text).toBe("a");
+    expect(applyRunFrame(run, chunk(19, "!")).text).toBe(`a${"cdefghijklmnopqr"}!`);
+  });
+
+  it("an ended run shows everything it has, gap or not", () => {
+    const run = applyRunFrame(fold([chunk(1, "a"), chunk(3, "c")]), {
+      ...base,
+      frame: { type: "run_ended", runId: "run1", outcome: "done", seq: 4 } as never,
+    });
+    expect(run.text).toBe("ac");
+  });
+
   it("an error on a live run fails it", () => {
     const run = applyRunFrame(fold([chunk(1, "a")]), { ...base, frame: { type: "error", message: "x", runId: "run1" } });
     expect(run.state).toBe("failed");

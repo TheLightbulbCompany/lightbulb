@@ -45,6 +45,24 @@ const frameSeq = (frame: ChatIncomingMessage): number | undefined => {
 const foldText = (frames: readonly ChatIncomingMessage[], type: "chunk" | "thinking") =>
   frames.reduce((acc, frame) => (frame.type === type ? accumulateStreamText(acc, frame) : acc), "");
 
+// ponytail: AppSync can drop a frame for good, and waiting on it would freeze the text for
+// the rest of the run -- so after this many frames past a gap, render through the hole.
+const GAP_PATIENCE = 16;
+
+/** The frames a live run shows: everything up to the first `seq` gap, so a late frame fills
+ * in behind the text instead of leaving a hole in it. An ended run shows all it has. */
+const visibleFrames = (frames: ChatIncomingMessage[], ended: boolean): ChatIncomingMessage[] => {
+  if (ended) return frames;
+  let prev: number | undefined;
+  for (let i = 0; i < frames.length; i++) {
+    const seq = frameSeq(frames[i]);
+    if (seq === undefined) continue;
+    if (prev !== undefined && seq !== prev + 1) return frames.length - i > GAP_PATIENCE ? frames : frames.slice(0, i);
+    prev = seq;
+  }
+  return frames;
+};
+
 /**
  * Fold one `room.run.frame` into its run. AppSync reorders and duplicates, so the
  * bridge numbers every frame of a run (`seq`): frames are kept in `seq` order and a
@@ -70,14 +88,19 @@ export function applyRunFrame(previous: LiveRoomRun | undefined, payload: RoomRu
     frame.type === "run_ended" && (!ended || seq !== undefined)
       ? frame.outcome === "done" ? "completed" : frame.outcome === "aborted" ? "aborted" : "failed"
       : ended ? previous.state : frame.type === "error" ? "failed" : "running";
+  const visible = visibleFrames(frames, state !== "running");
+  // Appending is only safe when nothing was held back before this frame and nothing is now.
+  const append = inOrder && visible === frames && visibleFrames(held, ended) === held;
+  const fold = (type: "chunk" | "thinking", prev: string) =>
+    !append ? foldText(visible, type) : frame.type === type ? accumulateStreamText(prev, frame) : prev;
   return {
     roomId: payload.roomId,
     agentId: payload.agentId,
     runId: payload.runId,
     triggerMessageId: previous?.triggerMessageId,
     threadRootMessageId: payload.threadRootMessageId ?? previous?.threadRootMessageId ?? null,
-    text: frame.type !== "chunk" ? previous?.text ?? "" : inOrder ? accumulateStreamText(previous?.text ?? "", frame) : foldText(frames, "chunk"),
-    thinking: frame.type !== "thinking" ? previous?.thinking ?? "" : inOrder ? accumulateStreamText(previous?.thinking ?? "", frame) : foldText(frames, "thinking"),
+    text: fold("chunk", previous?.text ?? ""),
+    thinking: fold("thinking", previous?.thinking ?? ""),
     frames,
     state,
   };

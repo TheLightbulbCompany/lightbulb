@@ -28,8 +28,8 @@ import { Button } from "@/components/ui/button";
  * subscription.
  *
  * UX flow:
- *   1. Pick a provider card (all three for personal and org owners alike;
- *      for orgs the subscribing admin's ChatGPT account backs the
+ *   1. Pick a provider card (every offered path, for personal and org owners
+ *      alike; for orgs the subscribing admin's ChatGPT account backs the
  *      workspace). Cutover warning is rendered at the top so it's visible
  *      BEFORE the user commits.
  *   2. If ChatGPT OAuth → render the device-code flow inline (reuses
@@ -65,11 +65,18 @@ type Stage =
   | { kind: "error"; message: string };
 
 /** Paths that need a credential stage — the only valid `initialChoice` values. */
-export type CredentialProviderChoice = Exclude<ProviderChoice, "bedrock_claude" | "openrouter_managed">;
+export type CredentialProviderChoice = Exclude<ProviderChoice, "openrouter_managed">;
 
 interface ChangeProviderModalProps {
   open: boolean;
-  currentProvider?: ProviderChoice | null;
+  /**
+   * The owner's stored provider_choice — a plain string, not `ProviderChoice`:
+   * it can carry a legacy value (e.g. a retired `bedrock_claude` row) that is
+   * no longer offered by the picker below. `isCurrent` simply won't match it
+   * against any card, which is the correct "no current pick highlighted"
+   * fallback rather than a crash.
+   */
+  currentProvider?: string | null;
   currentByoProvider?: ByoProvider | null;
   managedInferenceAvailable?: boolean;
   /** Open past the picker, on this choice's credential stage. */
@@ -118,7 +125,7 @@ export function ChangeProviderModal({
 }
 
 interface BodyProps {
-  currentProvider?: ProviderChoice | null;
+  currentProvider?: string | null;
   currentByoProvider?: ByoProvider | null;
   managedInferenceAvailable: boolean;
   initialChoice?: CredentialProviderChoice | null;
@@ -246,7 +253,7 @@ function ChangeProviderBody({
 // ---------------------------------------------------------------------------
 
 interface PickerStageProps {
-  currentProvider?: ProviderChoice | null;
+  currentProvider?: string | null;
   currentByoProvider?: ByoProvider | null;
   managedInferenceAvailable: boolean;
   onPick: (choice: ProviderChoice) => void;
@@ -261,9 +268,13 @@ function PickerStage({ currentProvider, currentByoProvider, managedInferenceAvai
     return true;
   };
 
+  const cards = providerSwitchCards(managedInferenceAvailable);
+  // Tailwind's `grid-cols-N` reserves N equal tracks regardless of item
+  // count — with bedrock_claude gone, the base (unmanaged) picker is down
+  // to two cards, so a hardcoded 3-column grid would leave a blank track.
   return (
-    <div className="grid grid-cols-1 gap-3 py-2 md:grid-cols-3">
-      {providerSwitchCards(managedInferenceAvailable).map((card) => {
+    <div className={`grid grid-cols-1 gap-3 py-2 ${cards.length >= 3 ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+      {cards.map((card) => {
         const current = isCurrent(card.id);
         return (
           <button

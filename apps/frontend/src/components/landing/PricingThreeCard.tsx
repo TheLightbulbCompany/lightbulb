@@ -8,16 +8,14 @@ import { captureSignupCta } from "@/lib/signupFlow";
 import { Arrow } from "./Arrow";
 
 /**
- * Pricing — one flat price, three ways to pay for inference.
+ * Pricing — one flat price, a couple of ways to pay for inference.
  *
- * The three cards are provider PATHS, not tiers: every plan is the same $50
- * workspace. Order and highlighting come from `PROVIDER_CARDS`, so "Powered by
- * Claude" is recommended and sits last — do not reorder for visual balance.
+ * The cards are provider PATHS, not tiers: every plan is the same $50
+ * workspace. Order and highlighting come from `PROVIDER_CARDS`.
  */
 const ART: Record<string, { src: string; pos: string }> = {
   chatgpt_oauth: { src: "/landing/ladder-star.jpg", pos: "center 30%" },
   byo_key: { src: "/landing/step-work.jpg", pos: "center 40%" },
-  bedrock_claude: { src: "/landing/plan-lights.jpg", pos: "center 34%" },
 };
 
 function Tick() {
@@ -35,7 +33,7 @@ export function PricingThreeCard() {
         <h2 className="lb-h2">
           One price.{" "}
           <br className="lb-brk" />
-          Three ways to power it.
+          Two ways to power it.
         </h2>
 
         <p className="lb-price-hero">

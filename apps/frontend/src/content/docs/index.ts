@@ -68,6 +68,6 @@ export const docsFaq = [
   {
     question: "Which AI models does Lightbulb run on?",
     answer:
-      "Three provider paths: Lightbulb-managed Claude credits through AWS Bedrock, your own ChatGPT account connected over OAuth, or a bring-your-own Anthropic or OpenAI API key. The free tier runs Claude Sonnet through Lightbulb-managed credits.",
+      "Two provider paths: your own ChatGPT account connected over OAuth, or a bring-your-own Anthropic or OpenAI API key. The free tier runs on Lightbulb-managed credits, no card required.",
   },
 ];

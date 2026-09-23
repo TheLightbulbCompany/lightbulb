@@ -126,7 +126,7 @@ export function buildSetupSteps({ participants, connections, agentNames, workspa
       ? [{
           id: "starter-model" as const,
           label: "You're on the starter model",
-          detail: "Pick Claude (Bedrock), ChatGPT, or your own key",
+          detail: "Pick ChatGPT or your own key",
           doneDetail: "Provider chosen",
           done: false,
           repeatable: false,

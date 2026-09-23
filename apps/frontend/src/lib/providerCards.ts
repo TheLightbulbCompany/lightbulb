@@ -1,5 +1,5 @@
 /**
- * Shared provider-card metadata for the three provider paths.
+ * Shared provider-card metadata for the offered provider paths.
  *
  * Used by:
  *   - `components/landing/PricingThreeCard.tsx` — renders cards with
@@ -14,7 +14,7 @@
  * doesn't read like a different product.
  */
 
-export type ProviderChoiceId = "chatgpt_oauth" | "byo_key" | "bedrock_claude" | "openrouter_managed";
+export type ProviderChoiceId = "chatgpt_oauth" | "byo_key" | "openrouter_managed";
 
 export interface ProviderCard {
   id: ProviderChoiceId;
@@ -29,7 +29,7 @@ export interface ProviderCard {
 }
 
 /**
- * In-app (post-signup) provider choices. Same three paths as
+ * In-app (post-signup) provider choices. Same paths as
  * `PROVIDER_CARDS`, minus the pricing/marketing copy — an owner picking here
  * already has a subscription, so the sales framing would be noise.
  *
@@ -44,11 +44,6 @@ export interface ProviderSwitchCard {
 }
 
 export const PROVIDER_SWITCH_CARDS: ProviderSwitchCard[] = [
-  {
-    id: "bedrock_claude",
-    title: "Powered by Claude",
-    subtitle: "Bedrock-managed Claude credits",
-  },
   {
     id: "chatgpt_oauth",
     title: "Sign in with ChatGPT",
@@ -65,7 +60,7 @@ export function providerSwitchCards(managedAvailable: boolean): ProviderSwitchCa
   return managedAvailable
     ? [
         { id: "openrouter_managed", title: "Lightbulb-managed models", subtitle: "Uses prepaid workspace credits" },
-        ...PROVIDER_SWITCH_CARDS.slice(1),
+        ...PROVIDER_SWITCH_CARDS,
       ]
     : PROVIDER_SWITCH_CARDS;
 }
@@ -97,26 +92,12 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     cta: "Get started",
     href: "/sign-up?provider=byo_key",
   },
-  {
-    id: "bedrock_claude",
-    title: "Powered by Claude",
-    subtitle: "Managed Claude inference uses prepaid workspace credits",
-    trialNote: "Choose and fund managed inference separately after billing",
-    bullets: [
-      "Claude Sonnet 4.6 + Opus 4.7",
-      "All channels",
-      "Always-on container",
-    ],
-    cta: "Get started",
-    href: "/sign-up?provider=bedrock_claude",
-    highlighted: true,
-  },
 ];
 
 export function providerComparisonCards(managedAvailable: boolean): ProviderCard[] {
   return managedAvailable
     ? [
-        ...PROVIDER_CARDS.slice(0, 2),
+        ...PROVIDER_CARDS,
         {
           id: "openrouter_managed",
           title: "Lightbulb-managed models",

@@ -17,7 +17,6 @@ import { replaceSearchParams } from "@/lib/shellNav";
 import { SUPPORT_MAILTO } from "@/lib/domain";
 import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
 import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
-import { CreditsStep } from "@/components/chat/CreditsStep";
 import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
 import { Logo, LogoMark } from "@/components/Logo";
 import { providerComparisonCards } from "@/lib/providerCards";
@@ -63,7 +62,7 @@ export function resolvePostAgentPhase(): "ready" {
 import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
 
 function isProviderChoice(v: string | null): v is ProviderChoice {
-  return v === "chatgpt_oauth" || v === "byo_key" || v === "bedrock_claude";
+  return v === "chatgpt_oauth" || v === "byo_key";
 }
 
 // After the provider step writes its credential (OAuth token / BYO key /
@@ -83,10 +82,6 @@ const PROVIDER_SETTLE_COPY: Record<ProviderChoice | "default", { title: string; 
   byo_key: {
     title: "Saving your API key",
     desc: "Securing your key and starting your container.",
-  },
-  bedrock_claude: {
-    title: "Setting up your credits",
-    desc: "Getting Bedrock access ready and starting your container.",
   },
   openrouter_managed: {
     title: "Setting up your credits",
@@ -222,7 +217,7 @@ export function ProvisioningStepper({
   const [elapsedMs, setElapsedMs] = useState(0);
 
   // Plan 3 (flat-fee pivot): `?provider=` is set by the landing page CTA
-  // (/sign-up?provider=chatgpt_oauth|byo_key|bedrock_claude) and preserved
+  // (/sign-up?provider=chatgpt_oauth|byo_key) and preserved
   // through Clerk's signup redirect to /onboarding -> /chat. When present,
   // we render a provider-specific step BEFORE container provisioning so the
   // user's provider_choice is on file when the gateway first looks at it
@@ -872,9 +867,6 @@ export function ProvisioningStepper({
           )}
           {providerChoice === "byo_key" && (
             <ByoKeyStep onComplete={handleProviderComplete} />
-          )}
-          {providerChoice === "bedrock_claude" && (
-            <CreditsStep onComplete={handleProviderComplete} />
           )}
         </div>
       </div>
@@ -1782,6 +1774,9 @@ export function ProviderPicker({
       : `The $${workspacePriceUsd}/month workspace subscription covers your always-on agent infrastructure.`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const comparisonCards = providerComparisonCards(
+    account?.is_subscribed === true && account?.managed_inference_available === true,
+  );
   const startWorkspaceCheckout = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -1839,8 +1834,8 @@ export function ProviderPicker({
           <div className="text-sm text-err -mt-4">{error}</div>
         )}
 
-        <div className="grid grid-cols-1 gap-4 @3xl:grid-cols-3">
-          {providerComparisonCards(account?.is_subscribed === true && account?.managed_inference_available === true).map((card) => (
+        <div className={`grid grid-cols-1 gap-4 ${comparisonCards.length >= 3 ? "@3xl:grid-cols-3" : "@3xl:grid-cols-2"}`}>
+          {comparisonCards.map((card) => (
             <div
               key={card.id}
               className={

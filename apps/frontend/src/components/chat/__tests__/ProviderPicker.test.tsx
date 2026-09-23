@@ -19,11 +19,10 @@ describe("ProviderPicker", () => {
   it("discloses the server price and that provider selection follows checkout", () => {
     render(<ProviderPicker isOrg={true} orgName="Acme" />);
 
-    expect(screen.getAllByText("$75 / month")).toHaveLength(3);
+    expect(screen.getAllByText("$75 / month")).toHaveLength(2);
     expect(screen.getByText(/Choose your inference provider after checkout/)).toBeInTheDocument();
     expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
     expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
-    expect(screen.getByText(/managed Claude inference uses prepaid workspace credits/i)).toBeInTheDocument();
     expect(screen.queryByText(/Claude credits — no second step/)).not.toBeInTheDocument();
   });
 
@@ -46,7 +45,7 @@ describe("ProviderPicker", () => {
   it("keeps the existing comparison before billing even if the capability is reported", () => {
     billing.account.managed_inference_available = true;
     render(<ProviderPicker isOrg={true} />);
-    expect(screen.getByText("Powered by Claude")).toBeInTheDocument();
+    expect(screen.getByText("Sign in with ChatGPT")).toBeInTheDocument();
     expect(screen.queryByText("Lightbulb-managed models")).toBeNull();
   });
 });

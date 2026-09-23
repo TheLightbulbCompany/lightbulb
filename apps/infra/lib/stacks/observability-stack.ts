@@ -684,16 +684,7 @@ def handler(event, context):
     // a sustained error share means agents silently stop answering room_events.
     // Floor of 10 decisions per 15 min so one bad call on a quiet night is not a page.
     const jevOutcome = (outcome?: string) =>
-      new cloudwatch.Metric({
-        namespace: "LightbulbAI",
-        metricName: "messaging.jev.decision",
-        statistic: "Sum",
-        dimensionsMap: {
-          env: this.envName,
-          service: "lightbulb-backend",
-          ...(outcome ? { outcome } : {}),
-        },
-      });
+      this.messagingMetric("messaging.jev.decision", outcome ? { outcome } : {});
     this.createAlarm({
       id: "P26",
       name: "jev-decision-error-rate",

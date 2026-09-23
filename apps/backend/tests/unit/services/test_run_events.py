@@ -352,3 +352,16 @@ async def test_failed_run_of_a_blocked_owner_says_why(metrics, _not_capped, reas
                 "o", _event(type="run.ended", outcome="error", error_kind="model_unavailable", usage=USAGE)
             )
     assert create.await_args.kwargs["text"] == BUDGET_BLOCK_MESSAGES[reason]
+
+
+@pytest.mark.asyncio
+async def test_a_capped_owners_infra_failure_keeps_its_own_reason(metrics, _not_capped):
+    _not_capped.return_value = "trial_daily_cap"
+    create = AsyncMock(return_value=({"messageId": "x"}, False))
+    patches = _failure_patches(create)
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": "error"})):
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            await messaging.handle_run_event(
+                "o", _event(type="run.ended", outcome="error", error_kind="agent_did_not_start", usage=USAGE)
+            )
+    assert "The agent did not start this run." in create.await_args.kwargs["text"]

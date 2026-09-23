@@ -2352,7 +2352,8 @@ async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error
         from core.services.chat_gate import BUDGET_BLOCK_MESSAGES
         from core.services.trial_cap import trial_block_reason
 
-        text = BUDGET_BLOCK_MESSAGES.get(await trial_block_reason(owner_id) or "", text)
+        if error_kind in (None, "model_unavailable"):  # the sweeper's own kinds are real infra failures
+            text = BUDGET_BLOCK_MESSAGES.get(await trial_block_reason(owner_id) or "", text)
         trigger = (
             await messaging_repo.get_message_by_id(room_id, row["triggerMessageId"])
             if row.get("triggerMessageId")

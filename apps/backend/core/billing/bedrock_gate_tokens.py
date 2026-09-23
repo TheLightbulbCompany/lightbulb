@@ -13,17 +13,15 @@ cannot be turned back into a usable token, and a compromised token is handled by
 rotate (bump the row's ``gate_bearer_generation``; the plaintext is re-derivable, see
 ``derive_gate_bearer``) or deny (kill switch), never by reading it back.
 
-The token row's ``aip_tiers`` map is the INVERSE of the owner's
-``bedrock_aip_arns`` map. The gateway authorizes + prices a request by looking
-up the request's model-id — which is an AIP ARN — in ``aip_tiers`` to recover
-its tier, so the map is keyed ``{aip_arn: tier}`` whereas the owner's containers
-row stores ``{tier: aip_arn}``.
+The bearer is the openrouter-gate's auth (the ``bedrock`` names are a scar from the retired
+Bedrock gate). A row carries no Bedrock ``aip_tiers`` map: without one the retired
+bedrock-gate refuses every model the bearer names.
 
 Table naming: the gate-tokens table is GATE-PRIVATE state, defined in the
-bedrock-gate CDK stack (NOT database-stack), so — unlike ``bedrock-aip-owners``
-/ ``metronome-fast-gate``, whose full names arrive as CDK-injected env vars —
+bedrock-gate CDK stack (NOT database-stack), so — unlike
+``metronome-fast-gate``, whose full name arrives as a CDK-injected env var —
 the backend constructs it by convention from the env name, matching the gateway
-Lambda's own ``TOKENS_TABLE`` and ``bedrock_aip._aip_name``'s ``lightbulb-{env}-``
+Lambda's own ``TOKENS_TABLE`` and the ``lightbulb-{env}-``
 scheme. An explicit ``BEDROCK_GATE_TOKENS_TABLE`` override wins (tests / manual
 wiring).
 
@@ -466,19 +464,15 @@ async def expire_superseded_gate_tokens(owner_id: str) -> None:
         logger.warning("expire_superseded_gate_tokens failed for owner %s", owner_id, exc_info=True)
 
 
-async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, row_id: str, generation: int = 0) -> str:
+async def mint_gate_token(owner_id: str, *, row_id: str, generation: int = 0) -> str:
     """Ensure the per-owner bedrock-gate bearer for ``generation``; return the PLAINTEXT.
 
     - ``derive_gate_bearer(owner_id, row_id, generation)`` -- the same value on every run
       against one row incarnation, so a second run is a no-op below; a bumped generation or
       a new row (teardown + reprovision) rotates.
-    - Writes a hash-keyed row ``{token_hash, owner_id, denied, aip_tiers={arn: tier},
-      created_at}``, CREATE-ONLY; ``denied`` is True when any hash the owner still tracks
+    - Writes a hash-keyed row ``{token_hash, owner_id, denied, created_at}``, CREATE-ONLY; ``denied`` is True when any hash the owner still tracks
       is denied (a trial cap / kill must survive a rotation): a row that already exists (an
       earlier or concurrent run) is left exactly as it is, including a ``denied`` flag.
-      Its tiers are ``reconcile_gate_token_tiers``' to update. ``aip_tiers`` is the INVERSE
-      of the owner's ``{tier: arn}`` map — the gateway keys authorization + pricing on
-      the AIP ARN.
     - Points the containers row's ``bedrock_gate_token_hash`` at the new hash,
       through ``container_repo.swap_gate_token_hash`` — a conditional write, so
       a concurrent mint cannot silently overwrite this one's hash; it is either
@@ -517,9 +511,6 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, row_id: st
 
     token = derive_gate_bearer(owner_id, row_id, generation)
     token_hash = hash_token(token)
-    # Invert {tier: arn} -> {arn: tier}: the gateway looks a request's model-id
-    # (an AIP ARN) up in this map to authorize + price it.
-    aip_tiers = {arn: tier for tier, arn in (aip_arns or {}).items()}
 
     table = _tokens_table()
     # A capped/killed owner stays denied across the rotation: the new row inherits a deny
@@ -537,7 +528,6 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, row_id: st
                 "token_hash": token_hash,
                 "owner_id": owner_id,
                 "denied": denied,
-                "aip_tiers": aip_tiers,
                 "created_at": utc_now_iso(),
             },
             ConditionExpression="attribute_not_exists(token_hash)",
@@ -564,11 +554,10 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str], *, row_id: st
         await _swap_hash_pointer(owner_id, token_hash, superseded=superseded, expected_prior_hash=prior_hash)
 
     logger.info(
-        "bedrock-gate token minted for owner %s: new=%s.. prior=%s tiers=%s",
+        "bedrock-gate token minted for owner %s: new=%s.. prior=%s",
         owner_id,
         token_hash[:_HASH_PREFIX_LEN],
         (prior_hash[:_HASH_PREFIX_LEN] + "..") if prior_hash else "none",
-        ",".join(sorted(aip_arns)) if aip_arns else "none",
     )
     return token
 
@@ -697,10 +686,9 @@ async def deny_gate_token(owner_id: str, denied: bool) -> None:
     The set is the same one ``_drain_superseded`` judges, so a denied token can
     never outlive its tracking: expiry deletes the row outright.
 
-    NO-OP when the owner has no hashes at all (nothing to deny) — callers
-    (``revoke_owner_bedrock`` / ``restore_owner_bedrock``, the provisioner's
-    revoked-owner re-assert) treat this as a best-effort backstop alongside the
-    IAM revoke, so the absence of a token must be silent, not an error. A hash
+    NO-OP when the owner has no hashes at all (nothing to deny): a kill switch
+    is a best-effort backstop, so the absence of a token must be silent, not an
+    error. A hash
     whose row has already been deleted is likewise silent: the write is
     conditioned on the row existing, so a kill never RESURRECTS a dead token as
     a partial row (and a restore never resurrects one as ``denied=false``).
@@ -731,36 +719,5 @@ async def deny_gate_token(owner_id: str, denied: bool) -> None:
             failure = failure or e
         except Exception as e:  # noqa: BLE001 — try every hash, raise the first failure
             failure = failure or e
-    if failure is not None:
-        raise failure
-
-
-async def reconcile_gate_token_tiers(owner_id: str, aip_arns: dict[str, str]) -> None:
-    """Reconcile every tracked bearer generation without rotation or changing deny state.
-
-    Provision/repair and trial-to-paid transitions share this path. Updating the
-    current hash alone leaves a warm runtime's superseded bearer over-permitted.
-    Never resurrect an expired token or update a different owner's row.
-    """
-    row = await container_repo.get_by_owner_id(owner_id, consistent=True)
-    hashes = owner_gate_token_hashes(row)
-    if not hashes:
-        return
-    table = _tokens_table()
-    failure: Exception | None = None
-    for token_hash in hashes:
-        try:
-            await run_in_thread(
-                table.update_item,
-                Key={"token_hash": token_hash},
-                UpdateExpression="SET aip_tiers = :tiers",
-                ConditionExpression="attribute_exists(token_hash) AND owner_id = :owner",
-                ExpressionAttributeValues={":tiers": {arn: tier for tier, arn in aip_arns.items()}, ":owner": owner_id},
-            )
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                failure = failure or exc
-        except Exception as exc:  # noqa: BLE001 -- attempt every generation, then propagate
-            failure = failure or exc
     if failure is not None:
         raise failure

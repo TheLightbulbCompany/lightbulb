@@ -93,19 +93,20 @@ def test_the_runtime_env_carries_identifiers_only_and_no_secret_value(monkeypatc
         api_base="https://api-dev.flickmeon.ai",
         bucket="lightbulb-dev-openclaw-replicas",
         boot_secret_id="lightbulb/dev/hermes/org_a/boot",
-        gate_endpoint="https://gate.example/invoke",
-        sonnet_aip_arn="arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/abc",
     )
     assert env["S3_PREFIX"] == "org_a/hermes"  # owner FIRST -- the IAM grant is <owner>/*
     assert env["S3_BUCKET"] == "lightbulb-dev-openclaw-replicas"
     assert env["HERMES_HOME"] == "/opt/data"
     assert env["HERMES_HEADLESS"] == "1"
-    assert env["AWS_BEDROCK_FORCE_HTTP1"] == "1"
-    assert env["AWS_ENDPOINT_URL_BEDROCK_RUNTIME"] == "https://gate.example/invoke"
-    # I1: both must point at the gate -- Hermes's Claude route may resolve either.
-    assert env["ANTHROPIC_BEDROCK_BASE_URL"] == "https://gate.example/invoke"
     assert env["PYTHONUNBUFFERED"] == "1"
-    assert env["ANTHROPIC_MODEL"].endswith("/abc")
+    # Bedrock is gone: nothing points the runtime at a Bedrock endpoint or model any more.
+    for key in (
+        "AWS_BEDROCK_FORCE_HTTP1",
+        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+        "ANTHROPIC_BEDROCK_BASE_URL",
+        "ANTHROPIC_MODEL",
+    ):
+        assert key not in env
     assert env["LIGHTBULB_SECRET_ID"] == "lightbulb/dev/hermes/org_a/boot"
     for key, value in env.items():
         assert not value.startswith(("sk-", "pcp_")), key
@@ -120,8 +121,6 @@ def test_managed_gate_url_is_a_runtime_identifier_without_a_bearer():
         api_base="https://api-dev.flickmeon.ai",
         bucket="bucket",
         boot_secret_id="lightbulb/dev/hermes/org_a/boot",
-        gate_endpoint="https://bedrock-gate.example",
-        sonnet_aip_arn="arn:aip:sonnet",
         managed_gate_url="https://openrouter-gate.example/v1",
         managed_model_id="candidate/model",
     )
@@ -134,11 +133,10 @@ def test_every_provider_carries_the_managed_gate_once_it_is_configured(monkeypat
     """Task 8a: the env block is a boot-time input, so it carries the managed route for EVERY
     provider -- a switch into openrouter_managed is then a profile rewrite, not a re-spec."""
     monkeypatch.setattr(hermes_provisioning.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
-    monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", lambda: "https://bedrock-gate.example")
     monkeypatch.setattr("core.billing.openrouter_gate_url.gate_url", lambda: "https://openrouter-gate.example/v1")
     envs = [
         hermes_provisioning.build_runtime_request_for_owner(
-            "org_a", "arn:aws:iam::123456789012:role/owner", {"sonnet": "arn:aip:sonnet"}, provider_choice=choice
+            "org_a", "arn:aws:iam::123456789012:role/owner", provider_choice=choice
         )["environmentVariables"]
         for choice in ("chatgpt_oauth", "byo_key", "openrouter_managed")
     ]
@@ -149,13 +147,12 @@ def test_every_provider_carries_the_managed_gate_once_it_is_configured(monkeypat
 
 def test_no_managed_gate_is_discovered_while_managed_inference_is_unconfigured(monkeypatch):
     monkeypatch.setattr(hermes_provisioning.settings, "OPENROUTER_MANAGED_MODEL_ID", "")
-    monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", lambda: "https://bedrock-gate.example")
     monkeypatch.setattr(
         "core.billing.openrouter_gate_url.gate_url",
         lambda: (_ for _ in ()).throw(AssertionError("must not read OpenRouter SSM")),
     )
     request = hermes_provisioning.build_runtime_request_for_owner(
-        "org_a", "arn:aws:iam::123456789012:role/owner", {"sonnet": "arn:aip:sonnet"}, provider_choice="chatgpt_oauth"
+        "org_a", "arn:aws:iam::123456789012:role/owner", provider_choice="chatgpt_oauth"
     )
     assert "LIGHTBULB_MANAGED_GATE_URL" not in request["environmentVariables"]
 
@@ -171,8 +168,6 @@ def test_the_runtime_env_never_carries_the_nous_guest_launch_gate(monkeypatch):
         api_base="https://api-dev.flickmeon.ai",
         bucket="lightbulb-dev-openclaw-replicas",
         boot_secret_id="lightbulb/dev/hermes/org_a/boot",
-        gate_endpoint="https://gate.example/invoke",
-        sonnet_aip_arn="arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/abc",
     )
     assert "HERMES_GUEST_ONBOARDING" not in env
     assert "OPENROUTER_API_KEY" not in env
@@ -185,8 +180,6 @@ def _env(**extra):
         api_base="https://api-dev.flickmeon.ai",
         bucket="lightbulb-dev-openclaw-replicas",
         boot_secret_id="lightbulb/dev/hermes/org_a/boot",
-        gate_endpoint="https://gate.example/invoke",
-        sonnet_aip_arn="arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/abc",
         **extra,
     )
 
@@ -369,8 +362,6 @@ def _patch_owner_aws(monkeypatch, *, hook_token=None, gateway_token=None, existi
         "core.repositories.billing_repo.get_by_owner_id",
         AsyncMock(return_value={"subscription_status": "active", "provider_choice": "chatgpt_oauth"}),
     )
-    monkeypatch.setattr(bedrock_gate_tokens_mod, "reconcile_gate_token_tiers", AsyncMock(), raising=False)
-    monkeypatch.setattr(bedrock_aip_mod, "ensure_owner_aips", AsyncMock(return_value={"sonnet": "arn:aip:sonnet"}))
     monkeypatch.setattr(
         bedrock_aip_mod,
         "ensure_owner_bedrock_role",
@@ -412,7 +403,7 @@ async def test_two_concurrent_prepares_write_the_identical_row_secret_and_bearer
         bedrock_gate_tokens_mod,
         "mint_gate_token",
         AsyncMock(
-            side_effect=lambda owner_id, aips, *, row_id, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
+            side_effect=lambda owner_id, *, row_id, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
                 owner_id, row_id, generation
             )
         ),
@@ -467,7 +458,7 @@ async def test_teardown_then_reprovision_yields_a_different_bearer(monkeypatch):
             bedrock_gate_tokens_mod,
             "mint_gate_token",
             AsyncMock(
-                side_effect=lambda owner_id, aips, *, row_id, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
+                side_effect=lambda owner_id, *, row_id, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
                     owner_id, row_id, generation
                 )
             ),
@@ -561,7 +552,7 @@ async def test_prepare_converges_a_live_workspace_without_rotating_its_bearer(mo
         bedrock_gate_tokens_mod,
         "mint_gate_token",
         AsyncMock(
-            side_effect=lambda owner_id, aips, *, row_id, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
+            side_effect=lambda owner_id, *, row_id, generation: bedrock_gate_tokens_mod.derive_gate_bearer(
                 owner_id, row_id, generation
             )
         ),
@@ -667,11 +658,8 @@ async def test_provision_writes_the_row_fields_every_existing_seam_reads(monkeyp
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:aws:bedrock-agentcore:...:runtime/r1")
     monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
     monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(
-            ("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "arn:aip:sonnet"})
-        ),
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     _configure_hermes_settings(monkeypatch)
@@ -705,11 +693,8 @@ async def test_provision_threads_the_browser_profile_into_the_runtime_request(mo
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: created.update(req) or "arn:rt")
     monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
     monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(
-            ("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "arn:aip:sonnet"})
-        ),
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     _configure_hermes_settings(monkeypatch)
@@ -735,11 +720,8 @@ async def test_provision_still_builds_a_usable_request_when_the_profile_resolve_
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: created.update(req) or "arn:rt")
     monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
     monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(
-            ("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "arn:aip:sonnet"})
-        ),
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     _configure_hermes_settings(monkeypatch)
@@ -801,9 +783,8 @@ async def test_provision_polls_instead_of_creating_when_the_row_has_an_unready_a
         _row({"agentcore_runtime_arn": "arn:not-ready-yet"}),  # no status="running" yet
     )
     monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)  # must not be called
@@ -842,9 +823,8 @@ async def test_a_create_failed_runtime_is_deleted_arn_cleared_and_the_failure_ra
     _no_runtime_found_by_name(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:dead")
@@ -879,9 +859,8 @@ async def test_a_create_failed_arn_clear_is_conditioned_on_the_arn_still_matchin
     _no_runtime_found_by_name(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:dead")
@@ -912,9 +891,8 @@ async def test_a_create_failed_runtime_delete_is_best_effort(monkeypatch):
     _no_runtime_found_by_name(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:dead")
@@ -950,9 +928,8 @@ async def test_provision_skips_write_profiles_for_an_arn_row_in_error(monkeypatc
         _row({"agentcore_runtime_arn": "arn:existing-error-row", "status": "error"}),
     )
     monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _explode)  # must NOT be called
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)
@@ -981,9 +958,8 @@ async def test_provision_resolves_a_name_conflict_via_the_list_lookup(monkeypatc
     _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)  # must not be called
@@ -1014,9 +990,8 @@ async def test_provision_updates_the_reused_runtime_when_the_image_drifted(monke
     _configure_hermes_settings(monkeypatch)
     monkeypatch.setattr(hermes_provisioning.container_repo, "get_by_owner_id", _row(None))
     monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", _explode)
@@ -1060,9 +1035,8 @@ async def test_create_record_statuscheck_happen_in_that_order(monkeypatch):
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: order.append("create") or "arn:r1")
     monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: order.append("check") or "READY")
     monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     _configure_hermes_settings(monkeypatch)
@@ -1105,9 +1079,8 @@ async def test_the_freshly_created_arn_record_is_not_conditioned_on_no_arn_yet(m
     monkeypatch.setattr(hermes_provisioning, "_create_runtime", lambda req: "arn:r1")
     monkeypatch.setattr(hermes_provisioning, "_runtime_status", lambda arn: "READY")
     monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _noop_async)
     _configure_hermes_settings(monkeypatch)
@@ -1190,7 +1163,7 @@ async def test_a_bad_profile_value_surfaces_a_named_provisioning_error(monkeypat
     )
 
     with pytest.raises(RuntimeError, match="BAD_VAR"):
-        await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+        await hermes_provisioning.write_profiles("org_a")
 
 
 @pytest.mark.asyncio
@@ -1211,7 +1184,7 @@ async def test_a_none_paperclip_api_key_raises_named_instead_of_baking_an_empty_
     )
 
     with pytest.raises(RuntimeError, match="org_a.*11111111-1111-1111-1111-111111111111"):
-        await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+        await hermes_provisioning.write_profiles("org_a")
 
 
 # --- BYO key delivery (M4-R32) --------------------------------------------------------------
@@ -1238,7 +1211,7 @@ async def test_write_profiles_bakes_the_byo_key_into_the_env_for_a_byo_owner(mon
         write_agent_profile=_fake_write_agent_profile,
     )
 
-    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+    await hermes_provisioning.write_profiles("org_a")
     assert captured["byo_provider"] == "anthropic"
     assert captured["byo_api_key"] == "sk-real-byo-key"
 
@@ -1254,7 +1227,7 @@ async def test_write_profiles_never_reads_a_byo_key_for_a_non_byo_owner(monkeypa
 
     # Real write_agent_profile runs (not mocked) -- proves the non-BYO path produces a normal
     # profile with byo_api_key=None, with no read ever attempted.
-    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+    await hermes_provisioning.write_profiles("org_a")
 
 
 @pytest.mark.asyncio
@@ -1271,13 +1244,13 @@ async def test_write_profiles_resolves_owner_level_inputs_exactly_once_for_a_six
     real_resolve = hermes_provisioning.resolve_profile_inputs
     calls: list[str] = []
 
-    async def _counting_resolve(owner_id, *, container_row):
+    async def _counting_resolve(owner_id):
         calls.append(owner_id)
-        return await real_resolve(owner_id, container_row=container_row)
+        return await real_resolve(owner_id)
 
     monkeypatch.setattr(hermes_provisioning, "resolve_profile_inputs", _counting_resolve)
 
-    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+    await hermes_provisioning.write_profiles("org_a")
 
     assert calls == ["org_a"]
 
@@ -1289,7 +1262,7 @@ async def test_two_concurrent_write_profiles_calls_produce_byte_identical_config
     write_agent_profile/build_profile_config/build_profile_env are pure functions of their
     arguments (no clock, no random id), and Task 1 already made every credential that feeds
     those arguments (the boot secret's hook/gateway/bearer tokens) converge at the source --
-    so two independent write_profiles calls with the same converged inputs (aip_arns, provider
+    so two independent write_profiles calls with the same converged inputs (provider
     choice, paperclip api key, integrations, env vars) must render byte-identical config.yaml
     and .env for every agent, regardless of which of the two concurrent runs' S3 PUT lands
     last."""
@@ -1311,7 +1284,7 @@ async def test_two_concurrent_write_profiles_calls_produce_byte_identical_config
 
     for run_index in range(2):
         monkeypatch.setattr("core.services.hermes_profiles.upload_profile", _make_capturing_upload(run_index))
-        await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+        await hermes_provisioning.write_profiles("org_a")
 
     assert set(uploaded[0]) == set(uploaded[1]) == {row["id"] for row in roster}
     for agent_id in uploaded[0]:
@@ -1348,7 +1321,7 @@ async def test_write_profiles_uploads_a_facts_file_to_every_agent_in_a_six_agent
 
     monkeypatch.setattr("core.services.hermes_profiles.write_facts_to_profiles", _fake_write_facts)
 
-    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+    await hermes_provisioning.write_profiles("org_a")
 
     assert len(uploaded) == 6
     seen_ids = [agent_ids[0] for _owner, agent_ids, _facts in uploaded]
@@ -1386,7 +1359,7 @@ async def test_write_profiles_facts_staging_uses_this_provisions_own_provider_ch
         lambda owner_id, agent_ids, facts_json: captured.update(facts_json=facts_json),
     )
 
-    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+    await hermes_provisioning.write_profiles("org_a")
 
     assert '"provider_choice": "byo_key"' in captured["facts_json"]
     assert "BYO Anthropic key" in captured["facts_json"]
@@ -1401,7 +1374,7 @@ async def test_write_profiles_facts_staging_is_best_effort(monkeypatch):
         "core.repositories.billing_repo.get_by_owner_id", AsyncMock(side_effect=RuntimeError("ddb down"))
     )
 
-    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})  # must not raise
+    await hermes_provisioning.write_profiles("org_a")  # must not raise
 
 
 # --- write_profile_for_agent (M6-R23) -----------------------------------------------------------
@@ -1418,7 +1391,6 @@ async def test_write_profile_for_agent_writes_and_uploads(monkeypatch):
         provider_choice="chatgpt_oauth",
         byo_provider=None,
         byo_api_key=None,
-        aip_arns={"sonnet": "arn:aip:sonnet"},
         integrations={},
         env_vars={},
     )
@@ -1442,14 +1414,11 @@ async def test_write_profile_for_agent_writes_and_uploads(monkeypatch):
     monkeypatch.setattr(hermes_provisioning, "_stage_owner_facts", stage_facts)
     agent_row = {"id": "agent_new", "name": "Demo", "role": "general"}
 
-    await hermes_provisioning.write_profile_for_agent(
-        "owner_1", agent_row, container_row={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
-    )
+    await hermes_provisioning.write_profile_for_agent("owner_1", agent_row)
 
     assert written["owner_id"] == "owner_1"
     assert written["agent"] is agent_row
     assert written["kwargs"]["provider_choice"] == "chatgpt_oauth"
-    assert written["kwargs"]["aip_arns"] == {"sonnet": "arn:aip:sonnet"}
     assert written["kwargs"]["paperclip_api_key"] == "pk-123"
     upload_mock.assert_awaited_once()
     assert upload_mock.await_args.args[0] == "owner_1"
@@ -1470,7 +1439,6 @@ async def test_write_profile_for_agent_stages_facts_for_the_new_agent(monkeypatc
         provider_choice="chatgpt_oauth",
         byo_provider=None,
         byo_api_key=None,
-        aip_arns={"sonnet": "arn:aip:sonnet"},
         integrations={},
         env_vars={},
     )
@@ -1494,9 +1462,7 @@ async def test_write_profile_for_agent_stages_facts_for_the_new_agent(monkeypatc
         lambda owner_id, agent_ids, facts_json: staged.update(owner_id=owner_id, agent_ids=agent_ids),
     )
 
-    await hermes_provisioning.write_profile_for_agent(
-        "owner_1", {"id": "agent_new"}, container_row={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
-    )
+    await hermes_provisioning.write_profile_for_agent("owner_1", {"id": "agent_new"})
 
     assert staged == {"owner_id": "owner_1", "agent_ids": ["agent_new"]}
 
@@ -1517,7 +1483,7 @@ async def test_write_profile_for_agent_propagates_a_hermes_profile_error_from_re
     monkeypatch.setattr("core.services.hermes_profiles.upload_profile", upload_mock)
 
     with pytest.raises(hermes_provisioning.HermesProfileError, match="byo"):
-        await hermes_provisioning.write_profile_for_agent("owner_1", {"id": "agent_new"}, container_row={})
+        await hermes_provisioning.write_profile_for_agent("owner_1", {"id": "agent_new"})
 
     write_mock.assert_not_called()
     upload_mock.assert_not_awaited()
@@ -1533,7 +1499,6 @@ async def test_write_profile_for_agent_raises_when_paperclip_key_mint_fails(monk
         provider_choice="chatgpt_oauth",
         byo_provider=None,
         byo_api_key=None,
-        aip_arns={},
         integrations={},
         env_vars={},
     )
@@ -1546,7 +1511,7 @@ async def test_write_profile_for_agent_raises_when_paperclip_key_mint_fails(monk
     monkeypatch.setattr("core.services.hermes_profiles.upload_profile", upload_mock)
 
     with pytest.raises(RuntimeError, match="paperclip"):
-        await hermes_provisioning.write_profile_for_agent("owner_1", {"id": "agent_new"}, container_row={})
+        await hermes_provisioning.write_profile_for_agent("owner_1", {"id": "agent_new"})
 
     write_mock.assert_not_called()
     upload_mock.assert_not_awaited()
@@ -1560,7 +1525,6 @@ async def test_write_profile_for_agent_soul_md_override_replaces_the_derived_sou
         provider_choice="chatgpt_oauth",
         byo_provider=None,
         byo_api_key=None,
-        aip_arns={"sonnet": "arn:aip:sonnet"},
         integrations={},
         env_vars={},
     )
@@ -1575,9 +1539,7 @@ async def test_write_profile_for_agent_soul_md_override_replaces_the_derived_sou
     monkeypatch.setattr("core.services.hermes_profiles.upload_profile", upload_mock)
     monkeypatch.setattr(hermes_provisioning, "_stage_owner_facts", AsyncMock())
 
-    await hermes_provisioning.write_profile_for_agent(
-        "owner_1", {"id": "agent_new"}, container_row={}, soul_md_override="CUSTOM SOUL"
-    )
+    await hermes_provisioning.write_profile_for_agent("owner_1", {"id": "agent_new"}, soul_md_override="CUSTOM SOUL")
 
     assert upload_mock.await_args.args[2].soul_md == "CUSTOM SOUL"
 
@@ -1618,24 +1580,6 @@ def _patch_resolve_profile_inputs_collaborators(
 
 
 @pytest.mark.asyncio
-async def test_resolve_profile_inputs_reads_aip_arns_from_the_container_row(monkeypatch):
-    _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"provider_choice": "chatgpt_oauth"})
-
-    inputs = await hermes_provisioning.resolve_profile_inputs(
-        "org_a", container_row={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet", "opus": "arn:aip:opus"}}
-    )
-    assert inputs.aip_arns == {"sonnet": "arn:aip:sonnet", "opus": "arn:aip:opus"}
-
-
-@pytest.mark.asyncio
-async def test_resolve_profile_inputs_defaults_aip_arns_to_empty_when_row_has_none(monkeypatch):
-    _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"provider_choice": "chatgpt_oauth"})
-
-    inputs = await hermes_provisioning.resolve_profile_inputs("org_a", container_row={})
-    assert inputs.aip_arns == {}
-
-
-@pytest.mark.asyncio
 async def test_resolve_profile_inputs_returns_managed_choice_for_a_trial_local_owner(monkeypatch):
     """M6-R10, divergence (1): catalog_service used to skip
     provider_choice_from_row's trial_local branch entirely -- a card-less
@@ -1644,13 +1588,10 @@ async def test_resolve_profile_inputs_returns_managed_choice_for_a_trial_local_o
     this proves the real provider_choice_from_row logic fires for real."""
     _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row={"subscription_status": "trial_local"})
 
-    inputs = await hermes_provisioning.resolve_profile_inputs(
-        "org_trial", container_row={"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
-    )
+    inputs = await hermes_provisioning.resolve_profile_inputs("org_trial")
 
     assert inputs.provider_choice == "openrouter_managed"
     assert inputs.byo_provider is None
-    assert inputs.aip_arns == {"sonnet": "arn:aip:sonnet"}
 
 
 @pytest.mark.asyncio
@@ -1669,7 +1610,7 @@ async def test_resolve_profile_inputs_reads_the_anthropic_key_for_an_unset_byo_p
         read_byo_key=_fake_read_byo_key,
     )
 
-    inputs = await hermes_provisioning.resolve_profile_inputs("org_a", container_row={})
+    inputs = await hermes_provisioning.resolve_profile_inputs("org_a")
     assert inputs.byo_api_key == "sk-real-byo-key"
 
 
@@ -1684,14 +1625,14 @@ async def test_resolve_profile_inputs_raises_when_byo_key_missing(monkeypatch):
     )
 
     with pytest.raises(hermes_provisioning.HermesProfileError, match="org_a"):
-        await hermes_provisioning.resolve_profile_inputs("org_a", container_row={})
+        await hermes_provisioning.resolve_profile_inputs("org_a")
 
 
 @pytest.mark.asyncio
 async def test_resolve_profile_inputs_defaults_to_managed_when_billing_row_missing(monkeypatch):
     _patch_resolve_profile_inputs_collaborators(monkeypatch, billing_row=None)
 
-    inputs = await hermes_provisioning.resolve_profile_inputs("org_a", container_row={})
+    inputs = await hermes_provisioning.resolve_profile_inputs("org_a")
     assert inputs.provider_choice == "openrouter_managed"
     assert inputs.byo_api_key is None
 
@@ -1726,9 +1667,8 @@ async def test_provision_creates_fresh_when_the_row_arn_names_a_deleted_runtime(
         _row({"agentcore_runtime_arn": "arn:rolled-back", "status": "provisioning"}),
     )
     monkeypatch.setattr(
-        hermes_provisioning,
-        "_load_role_and_aips",
-        _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+        "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+        _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
     )
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _explode)  # ARN row: profiles already in S3
     monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", _explode)
@@ -1792,9 +1732,8 @@ async def test_fresh_arn_record_succeeds_against_real_conditional_semantics_when
 
         _configure_hermes_settings(monkeypatch)
         monkeypatch.setattr(
-            hermes_provisioning,
-            "_load_role_and_aips",
-            _noop_async_returns(("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "a"})),
+            "core.billing.bedrock_aip.ensure_owner_bedrock_role",
+            _noop_async_returns("arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"),
         )
         monkeypatch.setattr(hermes_provisioning, "write_profiles", _explode)
         monkeypatch.setattr(hermes_provisioning, "_find_existing_runtime_arn", _explode)
@@ -1994,60 +1933,6 @@ def test_create_runtime_gives_up_after_the_bound(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider,tiers", [("chatgpt_oauth", None)])
-@pytest.mark.parametrize("prepare", [True, False])
-async def test_hermes_aips_follow_authoritative_provider_and_reconcile_live_tokens(
-    monkeypatch, provider, tiers, prepare
-):
-    from core.billing import bedrock_aip, bedrock_gate_tokens
-
-    _patch_owner_aws(monkeypatch, existing_row={})
-    monkeypatch.setattr(
-        "core.repositories.billing_repo.get_by_owner_id",
-        AsyncMock(
-            return_value={
-                "subscription_status": "trial_local" if provider == "bedrock_trial" else "active",
-                "provider_choice": "chatgpt_oauth",
-            }
-        ),
-    )
-    monkeypatch.setattr(hermes_provisioning, "write_boot_secret", AsyncMock())
-    monkeypatch.setattr(hermes_provisioning.container_repo, "update_fields", AsyncMock())
-    if prepare:
-        await hermes_provisioning.prepare_hermes_workspace("org_a")
-    else:
-        await hermes_provisioning._load_role_and_aips("org_a")
-    bedrock_aip.ensure_owner_aips.assert_awaited_once_with("org_a", tiers=tiers)
-    bedrock_gate_tokens.reconcile_gate_token_tiers.assert_awaited_once_with("org_a", {"sonnet": "arn:aip:sonnet"})
-
-
-@pytest.mark.asyncio
-async def test_reconcile_uses_committed_paid_billing_instead_of_stale_trial(monkeypatch):
-    from core.billing import bedrock_aip, bedrock_gate_tokens
-    from core.repositories import billing_repo
-
-    async def billing_read(owner_id, *, consistent_read=False):
-        return {
-            "subscription_status": "active" if consistent_read else "trial_local",
-            "provider_choice": "chatgpt_oauth",
-        }
-
-    read = AsyncMock(side_effect=billing_read)
-    monkeypatch.setattr(billing_repo, "get_by_owner_id", read)
-    arns = {"sonnet": "arn:sonnet", "opus": "arn:opus", "haiku": "arn:haiku"}
-
-    async def ensure(owner_id, *, tiers=None):
-        return {tier: arn for tier, arn in arns.items() if tiers is None or tier in tiers}
-
-    monkeypatch.setattr(bedrock_aip, "ensure_owner_aips", ensure)
-    reconcile = AsyncMock()
-    monkeypatch.setattr(bedrock_gate_tokens, "reconcile_gate_token_tiers", reconcile)
-    assert await hermes_provisioning.reconcile_hermes_aips("org_paid") == arns
-    read.assert_awaited_once_with("org_paid", consistent_read=True)
-    reconcile.assert_awaited_once_with("org_paid", arns)
-
-
-@pytest.mark.asyncio
 async def test_write_profiles_never_overwrites_an_owner_edited_soul_md(monkeypatch):
     """M6-R48 on the re-render fan-out (PATCH /debug/provision, a provider switch): a SOUL.md
     that lost the generated marker is the owner's and is carried through verbatim; one still
@@ -2069,10 +1954,19 @@ async def test_write_profiles_never_overwrites_an_owner_edited_soul_md(monkeypat
 
     monkeypatch.setattr(hermes_profiles, "upload_profile", _capture)
 
-    await hermes_provisioning.write_profiles("org_a", {"sonnet": "arn:aip:sonnet"})
+    await hermes_provisioning.write_profiles("org_a")
 
     assert uploaded["a-owner"] == owner_text
     for aid in ("a-gen", "a-none", "a-empty"):
         assert hermes_profiles.is_generated_soul(uploaded[aid])
         assert f"# New {aid}" in uploaded[aid]
         assert "## What you do\n\ndoes things" in uploaded[aid]
+
+
+def test_a_runtime_still_carrying_the_retired_bedrock_env_reads_as_drift():
+    """The Bedrock env keys are no longer set, so the desired env lacks them. They must still
+    read as drift on a runtime that carries them, or ``roll_hermes_runtimes --respec`` would
+    never UpdateAgentRuntime and the fleet would keep them forever."""
+    desired = {"AWS_REGION": "us-east-1"}
+    assert hermes_provisioning._env_drifted({**desired, "ANTHROPIC_MODEL": "arn:aip:sonnet"}, desired)
+    assert not hermes_provisioning._env_drifted(dict(desired), desired)

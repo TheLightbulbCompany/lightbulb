@@ -219,8 +219,6 @@ async def test_trial_local_no_provider_choice_returns_none():
                 # is written for the no-card local trial.
             },
         )
-        # Under the daily cap → the cap-check does not fire, short-circuit to None.
-        repo.get_trial_daily_spend = AsyncMock(return_value=0)
         gate = await evaluate_provision_gate(
             owner_id="org_x",
         )
@@ -229,18 +227,19 @@ async def test_trial_local_no_provider_choice_returns_none():
 
 @pytest.mark.asyncio
 async def test_trial_local_over_cap_returns_trial_daily_cap():
-    """A trial_local owner who has crossed the $3/day $3/day trial cap gets the
+    """A trial_local owner the openrouter-gate stamped capped today gets the
     trial_daily_cap blocked gate (the daily-limit card) instead of a None
     (provision-eligible) result — so /container/status shows the limit and
     never (re)provisions the container."""
-    from core.services.trial_cap import CAP_MICROCENTS
+    from core.services.trial_cap import utc_today
 
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
         patch("core.services.trial_cap.billing_repo", repo),
     ):
-        repo.get_by_owner_id = AsyncMock(return_value={"subscription_status": "trial_local"})
-        repo.get_trial_daily_spend = AsyncMock(return_value=CAP_MICROCENTS)  # at cap
+        repo.get_by_owner_id = AsyncMock(
+            return_value={"subscription_status": "trial_local", "openrouter_capped_day": utc_today()}
+        )
         gate = await evaluate_provision_gate(owner_id="org_x")
     assert gate is not None
     assert gate.code == "trial_daily_cap"
@@ -250,8 +249,7 @@ async def test_trial_local_over_cap_returns_trial_daily_cap():
 @pytest.mark.asyncio
 async def test_trial_local_expired_returns_trial_expired_gate():
     """A trial_local row whose trial_end has passed must block with the
-    dedicated trial_expired gate — BEFORE the daily-cap check runs (an
-    expired trial shouldn't even need a spend lookup to be blocked)."""
+    dedicated trial_expired gate — BEFORE the daily-cap check runs."""
     import time
 
     with (
@@ -269,8 +267,6 @@ async def test_trial_local_expired_returns_trial_expired_gate():
     assert gate.code == "trial_expired"
     assert gate.title == "Your free trial has ended"
     assert gate.action_href == "/settings?panel=billing"
-    # The expiry check must short-circuit before any cap spend lookup.
-    repo.get_trial_daily_spend.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -289,18 +285,16 @@ async def test_trial_local_future_trial_end_cap_logic_unchanged_under_cap():
                 "trial_end": int(time.time()) + 3600,  # 1 hour from now
             },
         )
-        repo.get_trial_daily_spend = AsyncMock(return_value=0)
         gate = await evaluate_provision_gate(owner_id="org_x")
     assert gate is None
 
 
 @pytest.mark.asyncio
 async def test_trial_local_future_trial_end_cap_logic_unchanged_over_cap():
-    """trial_end in the future + over-cap spend still returns
+    """trial_end in the future + capped today still returns
     trial_daily_cap, not trial_expired."""
     import time
-
-    from core.services.trial_cap import CAP_MICROCENTS
+    from core.services.trial_cap import utc_today
 
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
@@ -310,9 +304,9 @@ async def test_trial_local_future_trial_end_cap_logic_unchanged_over_cap():
             return_value={
                 "subscription_status": "trial_local",
                 "trial_end": int(time.time()) + 3600,
+                "openrouter_capped_day": utc_today(),
             },
         )
-        repo.get_trial_daily_spend = AsyncMock(return_value=CAP_MICROCENTS)
         gate = await evaluate_provision_gate(owner_id="org_x")
     assert gate is not None
     assert gate.code == "trial_daily_cap"
@@ -322,7 +316,7 @@ async def test_trial_local_future_trial_end_cap_logic_unchanged_over_cap():
 async def test_trial_local_missing_trial_end_not_expired():
     """A trial_local row with no trial_end at all (legacy dev row created
     before trial_end was stamped) must NOT be treated as expired — the
-    daily cap still bounds it, so under-cap spend returns None."""
+    daily cap still bounds it, so an uncapped day returns None."""
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
         patch("core.services.trial_cap.billing_repo", repo),
@@ -333,7 +327,6 @@ async def test_trial_local_missing_trial_end_not_expired():
                 # No trial_end field.
             },
         )
-        repo.get_trial_daily_spend = AsyncMock(return_value=0)
         gate = await evaluate_provision_gate(owner_id="org_x")
     assert gate is None
 
@@ -915,208 +908,6 @@ async def test_has_oauth_tokens_uses_state_check_not_decrypt():
     assert result is True
     active.assert_awaited_once_with(user_id="user_c", bound_to="org_1")
     decrypt.assert_not_called()
-
-
-class TestMaybeRestoreTrialBedrock:
-    """Task 7 — give a capped-out trial owner their Bedrock access back once
-    they're eligible again. This is the ONLY trigger for the inverse of the
-    meter Lambda's revoke; IAM revocation never expires on its own.
-
-    ``maybe_restore_trial_bedrock`` is the sole entry point exercised here —
-    ``core.services.provision_gate.billing_repo`` is the function's own
-    account read; ``core.services.trial_cap.billing_repo`` is the SEPARATE
-    reference the reused ``trial_cap.reason_for_account`` predicate calls
-    internally for the daily-spend counter — both must be patched.
-    """
-
-    @staticmethod
-    def _trial_account(*, trial_end: int | None = None) -> dict:
-        import time as _time
-
-        return {
-            "subscription_status": "trial_local",
-            "trial_end": trial_end if trial_end is not None else int(_time.time()) + 3600,
-        }
-
-    @pytest.mark.asyncio
-    async def test_revoked_new_day_under_cap_restores_and_clears_flag(self):
-        """The core case: the day rolled over, the owner is under today's cap
-        and their 3-day window hasn't expired -> restore fires, the flag
-        clears on the row already in hand, and nothing else is touched (the
-        normal provisioning/auto-retry path picks the container back up)."""
-        from core.services.provision_gate import maybe_restore_trial_bedrock
-
-        container = {"status": "stopped", "bedrock_revoked": True}
-        restore = AsyncMock()
-        with (
-            patch(
-                "core.services.provision_gate.billing_repo.get_by_owner_id",
-                new=AsyncMock(return_value=self._trial_account()),
-            ),
-            patch(
-                "core.services.trial_cap.billing_repo.get_trial_daily_spend",
-                new=AsyncMock(return_value=0),  # fresh UTC day, nothing spent yet
-            ),
-            patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
-        ):
-            await maybe_restore_trial_bedrock(owner_id="org_x", container=container)
-
-        restore.assert_awaited_once_with("org_x")
-        assert container["bedrock_revoked"] is False
-
-    @pytest.mark.asyncio
-    async def test_revoked_still_over_cap_today_does_not_restore(self):
-        """The day has NOT rolled over yet — the owner is still over the
-        $3/day cap. No restore; the flag stays set."""
-        from core.services.provision_gate import maybe_restore_trial_bedrock
-        from core.services.trial_cap import CAP_MICROCENTS
-
-        container = {"status": "stopped", "bedrock_revoked": True}
-        restore = AsyncMock()
-        with (
-            patch(
-                "core.services.provision_gate.billing_repo.get_by_owner_id",
-                new=AsyncMock(return_value=self._trial_account()),
-            ),
-            patch(
-                "core.services.trial_cap.billing_repo.get_trial_daily_spend",
-                new=AsyncMock(return_value=CAP_MICROCENTS),  # still at/over the cap
-            ),
-            patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
-        ):
-            await maybe_restore_trial_bedrock(owner_id="org_x", container=container)
-
-        restore.assert_not_awaited()
-        assert container["bedrock_revoked"] is True
-
-    @pytest.mark.asyncio
-    async def test_revoked_expired_trial_does_not_restore(self):
-        """Expiry is PERMANENT — a 3-day window that has elapsed must never be
-        restored, even though the daily-spend counter itself is at 0 (a fresh
-        day). This is exactly the gap 802be591c closed for the start
-        chokepoint; the restore trigger must not reopen it."""
-        import time
-
-        from core.services.provision_gate import maybe_restore_trial_bedrock
-
-        container = {"status": "stopped", "bedrock_revoked": True}
-        restore = AsyncMock()
-        with (
-            patch(
-                "core.services.provision_gate.billing_repo.get_by_owner_id",
-                new=AsyncMock(return_value=self._trial_account(trial_end=int(time.time()) - 60)),
-            ),
-            patch(
-                "core.services.trial_cap.billing_repo.get_trial_daily_spend",
-                new=AsyncMock(return_value=0),
-            ),
-            patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
-        ):
-            await maybe_restore_trial_bedrock(owner_id="org_x", container=container)
-
-        restore.assert_not_awaited()
-        assert container["bedrock_revoked"] is True
-
-    @pytest.mark.asyncio
-    async def test_not_revoked_makes_no_calls_at_all(self):
-        """The overwhelmingly common case: bedrock_revoked absent (or False).
-        Zero reads, zero restore attempt — not even a billing lookup."""
-        from core.services.provision_gate import maybe_restore_trial_bedrock
-
-        billing_read = AsyncMock()
-        restore = AsyncMock()
-        with (
-            patch("core.services.provision_gate.billing_repo.get_by_owner_id", new=billing_read),
-            patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
-        ):
-            await maybe_restore_trial_bedrock(owner_id="org_x", container={"status": "running"})
-            await maybe_restore_trial_bedrock(
-                owner_id="org_x", container={"status": "running", "bedrock_revoked": False}
-            )
-            await maybe_restore_trial_bedrock(owner_id="org_x", container=None)
-
-        billing_read.assert_not_called()
-        restore.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_restore_failure_is_logged_and_swallowed(self):
-        """A restore that raises must not propagate — the status/provision
-        poll this is called from must keep answering normally. The flag stays
-        set so the next poll retries."""
-        from core.services.provision_gate import maybe_restore_trial_bedrock
-
-        container = {"status": "stopped", "bedrock_revoked": True}
-        restore = AsyncMock(side_effect=RuntimeError("no persisted AIP map"))
-        with (
-            patch(
-                "core.services.provision_gate.billing_repo.get_by_owner_id",
-                new=AsyncMock(return_value=self._trial_account()),
-            ),
-            patch(
-                "core.services.trial_cap.billing_repo.get_trial_daily_spend",
-                new=AsyncMock(return_value=0),
-            ),
-            patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
-        ):
-            # Must not raise.
-            await maybe_restore_trial_bedrock(owner_id="org_x", container=container)
-
-        restore.assert_awaited_once()
-        assert container["bedrock_revoked"] is True  # unchanged — restore never landed
-
-    @pytest.mark.asyncio
-    async def test_paid_owner_is_never_restored_here(self):
-        """A PAID owner can also carry bedrock_revoked (Metronome low-balance
-        enforcement uses the same flag). This trigger is trial-only — a paid
-        owner's restore path is metronome_gate._maybe_restore_bedrock, gated
-        on a CONFIRMED positive Metronome balance, and must be the only thing
-        that ever restores a paid owner. Assert this function makes no
-        restore attempt and never even consults trial_cap for a paid row."""
-        from core.services.provision_gate import maybe_restore_trial_bedrock
-
-        container = {"status": "running", "bedrock_revoked": True}
-        restore = AsyncMock()
-        spend_read = AsyncMock()
-        with (
-            patch(
-                "core.services.provision_gate.billing_repo.get_by_owner_id",
-                new=AsyncMock(return_value={"subscription_status": "active"}),
-            ),
-            patch("core.services.trial_cap.billing_repo.get_trial_daily_spend", new=spend_read),
-            patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
-        ):
-            await maybe_restore_trial_bedrock(owner_id="user_paid", container=container)
-
-        restore.assert_not_awaited()
-        spend_read.assert_not_called()
-        assert container["bedrock_revoked"] is True
-
-    @pytest.mark.asyncio
-    async def test_paid_owner_restore_path_is_metronome_gate_and_is_unaffected(self):
-        """Sibling assertion to the above, from the OTHER side: the real paid
-        restore path (metronome_gate._maybe_restore_bedrock) still requires a
-        confirming positive balance read and is untouched by this feature —
-        it is not rerouted through maybe_restore_trial_bedrock or
-        trial_cap at all."""
-        from core.services.metronome_gate import _maybe_restore_bedrock
-
-        restore = AsyncMock()
-        with (
-            patch(
-                "core.repositories.container_repo.get_by_owner_id",
-                new=AsyncMock(return_value={"bedrock_revoked": True}),
-            ),
-            patch(
-                "core.services.metronome_gate.read_net_balance_microcents",
-                new=AsyncMock(return_value=0),  # confirming re-read: NOT positive
-            ),
-            patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
-        ):
-            await _maybe_restore_bedrock("owner_paid")
-
-        # A non-positive confirming read must abort the restore — unchanged
-        # behavior, and no dependency on trial_cap whatsoever.
-        restore.assert_not_awaited()
 
 
 @pytest.mark.asyncio

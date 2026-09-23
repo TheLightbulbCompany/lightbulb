@@ -20,13 +20,10 @@ from core.services import runtime_rpc as rpc
 from core.services.messaging import ApiProblem
 
 
-def _wire_owner(monkeypatch, *, provider_choice="openrouter_managed", aip_arns=None):
+def _wire_owner(monkeypatch, *, provider_choice="openrouter_managed"):
     monkeypatch.setattr(
         "core.services.container_provision.resolve_provider_choice",
         AsyncMock(return_value=(provider_choice, None)),
-    )
-    monkeypatch.setattr(
-        rpc.container_repo, "get_by_owner_id", AsyncMock(return_value={"bedrock_aip_arns": dict(aip_arns or {})})
     )
 
 
@@ -42,7 +39,7 @@ async def _models_list(owner_id="org_a"):
 
 @pytest.mark.asyncio
 async def test_managed_openrouter_catalog_is_server_owned_and_requires_an_selected_model(monkeypatch):
-    _wire_owner(monkeypatch, provider_choice="openrouter_managed", aip_arns={})
+    _wire_owner(monkeypatch, provider_choice="openrouter_managed")
     _no_bridge(monkeypatch)
     monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
     assert await _models_list() == {
@@ -57,7 +54,7 @@ async def test_managed_openrouter_catalog_is_server_owned_and_requires_an_select
 async def test_byo_owner_falls_through_to_the_bridges_hermes_catalog(monkeypatch):
     """Only the runtime holds Hermes's own provider catalog, so a BYO/OAuth workspace's list
     comes from the bridge -- passed through unchanged."""
-    _wire_owner(monkeypatch, provider_choice="byo_key", aip_arns={})
+    _wire_owner(monkeypatch, provider_choice="byo_key")
     payload = {"models": [{"id": "claude-sonnet-5", "name": "claude-sonnet-5", "provider": "anthropic"}]}
     call = AsyncMock(return_value=payload)
     monkeypatch.setattr(rpc.container_rpc, "call", call)
@@ -75,7 +72,7 @@ async def test_byo_owner_falls_through_to_the_bridges_hermes_catalog(monkeypatch
 async def test_managed_overhead_patch_keeps_every_task_on_the_gate(monkeypatch):
     from core.services.hermes_profiles import AUXILIARY_TASKS
 
-    _wire_owner(monkeypatch, provider_choice="openrouter_managed", aip_arns={})
+    _wire_owner(monkeypatch, provider_choice="openrouter_managed")
     _no_bridge(monkeypatch)
     monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
     monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1")

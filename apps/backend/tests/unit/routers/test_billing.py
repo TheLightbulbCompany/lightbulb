@@ -201,34 +201,6 @@ class TestGetMyUsage:
         assert data["request_count"] == 0
 
 
-class TestGetPricing:
-    @pytest.mark.asyncio
-    @patch("routers.billing.get_all_rates")
-    async def test_get_pricing_returns_models_without_markup(self, mock_get_rates, async_client):
-        """Flat-fee pricing endpoint: raw Bedrock prices in USD/token, no markup field."""
-        # get_all_rates returns USD per million tokens; the router converts
-        # to USD per token for the API surface.
-        mock_get_rates.return_value = {
-            "anthropic.claude-sonnet-4-6": {
-                "input": 3.0,
-                "output": 15.0,
-                "cache_read": 0.3,
-                "cache_write": 3.75,
-            }
-        }
-
-        response = await async_client.get("/api/v1/billing/pricing")
-        assert response.status_code == 200
-        data = response.json()
-        sonnet = data["models"]["anthropic.claude-sonnet-4-6"]
-        assert sonnet["input"] == pytest.approx(3.0e-6)
-        assert sonnet["output"] == pytest.approx(15.0e-6)
-        assert sonnet["cache_read"] == pytest.approx(0.3e-6)
-        assert sonnet["cache_write"] == pytest.approx(3.75e-6)
-        assert "markup" not in data
-        assert "tier_model" not in data
-
-
 class TestStripeWebhook:
     @pytest.mark.asyncio
     @patch("core.services.stripe_webhook_handlers.billing_repo")

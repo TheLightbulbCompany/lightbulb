@@ -73,13 +73,6 @@ class UsageSummary(BaseModel):
     by_member: list[MemberUsage] = []
 
 
-class ModelPriceResponse(BaseModel):
-    input: float
-    output: float
-    cache_read: float
-    cache_write: float
-
-
 class MyUsageResponse(BaseModel):
     period: str
     total_spend: float
@@ -88,26 +81,9 @@ class MyUsageResponse(BaseModel):
     request_count: int
 
 
-class PricingResponse(BaseModel):
-    models: dict[str, ModelPriceResponse]
-
-
-class SpendByModel(BaseModel):
-    model: str
-    tier: str
-    cents: int
-
-
 class SpendResponse(BaseModel):
-    """Provider-aware spend summary. `mode` picks the render variant:
-    bedrock -> billed fields; tokens_only -> neither (the panel keeps its
-    token grid). ChatGPT-OAuth used to have its own "oauth_quota" mode with
-    plan-quota windows read from the container's models.authStatus RPC, but
-    the Hermes bridge never returns a usage block, so that read was always
-    None while still costing an InvokeAgentRuntime wake per read -- removed
-    2026-09-23 (ponytail audit #14)."""
+    """Spend summary. Always ``tokens_only`` now: the panel keeps its token grid. The Bedrock
+    billed-dollars card and ChatGPT's plan-quota windows (the Hermes bridge never returned
+    them) are both gone."""
 
-    mode: Literal["bedrock", "tokens_only"]
-    billed_month_to_date_cents: int | None = None
-    by_model: list[SpendByModel] | None = None
-    period_start: str | None = None
+    mode: Literal["tokens_only"]

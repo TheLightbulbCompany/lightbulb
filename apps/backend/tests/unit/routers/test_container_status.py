@@ -359,7 +359,6 @@ class TestContainerStatusGate:
             patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
             patch.object(billing_repo, "get_by_owner_id", AsyncMock(side_effect=lambda o, **k: rows.get(o))),
             patch.object(billing_repo, "create_trial_local_if_absent", AsyncMock(side_effect=create)),
-            patch.object(billing_repo, "get_trial_daily_spend", AsyncMock(return_value=0)),
             patch("routers.container.evaluate_provision_gate", new=gate),
             patch("routers.container.dispatch_provision", new=AsyncMock()) as dispatch,
         ):
@@ -481,68 +480,6 @@ class TestContainerStatusGate:
         # Working container path must never call the gate — billing churn
         # (cancel/resubscribe) shouldn't 402 a user with a live container.
         mock_gate.assert_not_called()
-        assert result["container_status"] == "running"
-
-    @pytest.mark.asyncio
-    async def test_revoked_zombie_running_row_returns_the_limit_card_not_a_spinner(self):
-        """The meter Lambda's kill stamps status="stopped", but that write is
-        one non-atomic step of a best-effort kill. If it fails (or a racing
-        writer clobbers it) the row stays "running" with no live task — every
-        status-keyed branch below falls through and the poll returns
-        phase="starting" forever: an indefinite cold-start stepper with NO
-        Upgrade path, for exactly the owner most likely to convert. The
-        bedrock_revoked flag itself must therefore gate, whatever the row's
-        status says."""
-        from core.services import trial_cap
-        from routers.container import container_status
-
-        _row = {
-            "status": "running",
-            "substatus": "gateway_healthy",
-            "bedrock_revoked": True,
-        }
-
-        with (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch(
-                "core.services.trial_cap.trial_block_reason",
-                new=AsyncMock(return_value=trial_cap.DAILY_CAP),
-            ),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
-            pytest.raises(HTTPException) as exc,
-        ):
-            await container_status(auth=_workspace_auth())
-
-        assert exc.value.status_code == 402
-        assert exc.value.detail["blocked"]["code"] == "trial_daily_cap"
-
-    @pytest.mark.asyncio
-    async def test_revoked_paid_owner_is_not_gated_by_the_trial_check(self):
-        """Paid owners carry the same bedrock_revoked flag (Metronome
-        low-balance enforcement) — their trial reason is None, so the revoked
-        gate must fall through and the response stay the normal row (their
-        restore path is metronome_gate's, not the trial one)."""
-        from routers.container import container_status
-
-        _row = {
-            "status": "running",
-            "substatus": "gateway_healthy",
-            "bedrock_revoked": True,
-        }
-
-        with (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=_row)),
-            patch(
-                "core.services.trial_cap.trial_block_reason",
-                new=AsyncMock(return_value=None),
-            ),
-            patch(
-                "core.services.container_rpc.call",
-                new=AsyncMock(return_value={"ok": True}),
-            ),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
-        ):
-            result = await container_status(auth=_workspace_auth())
         assert result["container_status"] == "running"
 
     @pytest.mark.asyncio

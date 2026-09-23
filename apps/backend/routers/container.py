@@ -134,20 +134,6 @@ async def container_status(
         contract = await readiness_state.compute_status(owner_id, container=None, onboarding=onboarding)
         return _status_response(contract)
 
-    # A row carrying the meter's revoke gates NOW — whatever the row's status says: the
-    # kill's status write is best-effort, so a row left "running" would otherwise hide the
-    # limit card. Paid owners
-    # also carry bedrock_revoked (Metronome low-balance enforcement) — their trial reason is
-    # None here, so they fall through unchanged.
-    if container.get("bedrock_revoked"):
-        from core.services import provision_gate, trial_cap
-
-        revoked_gate = provision_gate.gate_for_trial_reason(
-            await trial_cap.trial_block_reason(owner_id), _owner_role(auth)
-        )
-        if revoked_gate is not None:
-            raise HTTPException(status_code=402, detail=revoked_gate.to_payload())
-
     # Single readiness+onboarding read (INV-1): compute_status is the SOLE composer of the
     # containers/billing/paperclip-companies inputs — see core/services/readiness_state.py.
     # A failed Teams seed surfaces as `teams_state == "failed"` alongside a normal phase

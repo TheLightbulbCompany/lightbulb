@@ -1,12 +1,10 @@
 // AgentSpendSection's contract is HONESTY: every figure it prints must be one
 // it can source, and anything missing or unverified must say so rather than
-// render a confident zero. These pin that, plus the section chrome (a region
-// labelled "Agent spend", the by-model rows) and the never-run-an-agent
-// empty state.
+// render a confident zero. These pin that, plus the section chrome and the
+// never-run-an-agent empty state.
 //
-// Mocking convention copied from UsagePanel.spend.test.tsx:
-// mock useBilling/useSpend/clerk, and mock swr by key so this section reads
-// the same fixture shape /billing/usage returns.
+// Mocking convention: mock useBilling/clerk, and mock swr by key so this
+// section reads the same fixture shape /billing/usage returns.
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -23,13 +21,11 @@ const usageFixture = {
 };
 
 const state: {
-  spend: unknown;
   account: Record<string, unknown> | null;
   usage: typeof usageFixture | null;
   usageLoading: boolean;
 } = {
-  spend: { mode: "tokens_only" },
-  account: { subscription_status: "active", provider_choice: "bedrock_claude" },
+  account: { subscription_status: "active", provider_choice: "openrouter_managed" },
   usage: usageFixture,
   usageLoading: false,
 };
@@ -41,9 +37,6 @@ vi.mock("@/hooks/useBilling", () => ({
     fetchUsage: async () => state.usage,
     refresh: () => {},
   }),
-}));
-vi.mock("@/hooks/useSpend", () => ({
-  useSpend: () => ({ spend: state.spend, isLoading: false }),
 }));
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ membership: null }) }));
 vi.mock("swr", () => ({
@@ -60,12 +53,11 @@ vi.mock("swr", () => ({
   },
 }));
 
-import { AgentSpendSection, spendHeadline } from "../AgentSpendSection";
+import { AgentSpendSection } from "../AgentSpendSection";
 
 function setup(over: Partial<typeof state> = {}) {
   Object.assign(state, {
-    spend: { mode: "tokens_only" },
-    account: { subscription_status: "active", provider_choice: "bedrock_claude" },
+    account: { subscription_status: "active", provider_choice: "openrouter_managed" },
     usage: usageFixture,
     usageLoading: false,
     ...over,
@@ -75,105 +67,59 @@ function setup(over: Partial<typeof state> = {}) {
 
 describe("AgentSpendSection chrome", () => {
   it("is a section labelled Agent spend that names the period and links to Model & Credits", () => {
-    setup({ spend: { mode: "bedrock", billed_month_to_date_cents: 1400, by_model: [{ model: "Claude Opus 5", tier: "opus", cents: 1000 }, { model: "Claude Sonnet 5", tier: "sonnet", cents: 400 }], period_start: null } });
+    setup();
     const section = screen.getByRole("region", { name: "Agent spend" });
-    expect(within(section).getByText("$14")).toBeInTheDocument();
-    expect(within(section).getByText("Claude Opus 5")).toBeInTheDocument();
-    expect(within(section).getByText("$10")).toBeInTheDocument();
     expect(within(section).getByText("August")).toBeInTheDocument(); // the month, not the raw "2026-08"
     expect(within(section).getByRole("link", { name: "Manage credits" })).toHaveAttribute("href", "/chat?panel=llm");
     expect(within(section).queryByText(/Cache/)).toBeNull(); // the token grid does not come along
   });
 });
 
-describe("AgentSpendSection headline — live figures", () => {
-  it("bedrock: shows the billed month-to-date figure and names the invoice", () => {
-    setup({
-      spend: { mode: "bedrock", billed_month_to_date_cents: 1234, by_model: [], period_start: null },
-    });
-    const headline = screen.getByTestId("spend-headline");
-    expect(headline).toHaveTextContent("$12.34");
-    expect(screen.getByText(/the invoiced amount, not an estimate/i)).toBeInTheDocument();
-    expect(screen.queryByText("Partial")).toBeNull();
-  });
-
+describe("AgentSpendSection headline", () => {
   it("shows the live agent-run count beside the figure", () => {
-    setup({
-      spend: { mode: "bedrock", billed_month_to_date_cents: 1234, by_model: [], period_start: null },
-    });
+    setup();
     const headline = screen.getByTestId("spend-headline");
     expect(headline).toHaveTextContent("Agent runs");
     expect(headline).toHaveTextContent("42");
   });
 
   it("oauth: says the plan covers it instead of inventing a dollar amount", () => {
-    setup({
-      account: { subscription_status: "active", provider_choice: "chatgpt_oauth" },
-      spend: { mode: "tokens_only" },
-    });
+    setup({ account: { subscription_status: "active", provider_choice: "chatgpt_oauth" } });
     expect(screen.getByTestId("spend-headline")).toHaveTextContent("Not billed by us");
     expect(screen.getByText(/run on your ChatGPT plan/i)).toBeInTheDocument();
     expect(screen.queryByText("Partial")).toBeNull();
   });
 
   it("never prints the analytics-only usage-counter dollars", () => {
-    setup({
-      spend: { mode: "bedrock", billed_month_to_date_cents: 1234, by_model: [], period_start: null },
-    });
+    setup();
     // /billing/usage's total_spend (12.3456) and lifetime_spend (99.5) are DDB
     // counters, not a billed figure — #1236 removed them from the UI and this
     // tab must not sneak them back in under the name "spend".
     expect(screen.queryByText(/12\.3456/)).toBeNull();
     expect(screen.queryByText(/99\.5/)).toBeNull();
   });
-});
-
-describe("AgentSpendSection headline — partial / unverifiable figures", () => {
-  it("labels a degraded bedrock read Partial instead of showing $0", () => {
-    // spend_service falls back to tokens_only when the Metronome read fails,
-    // so a bedrock owner landing on tokens_only means "could not read", not
-    // "spent nothing".
-    setup({
-      account: { subscription_status: "active", provider_choice: "bedrock_claude" },
-      spend: { mode: "tokens_only" },
-    });
-    expect(screen.getByTestId("spend-headline")).toHaveTextContent("Unavailable");
-    expect(screen.getByText("Partial")).toBeInTheDocument();
-    expect(screen.getByText(/not a zero-dollar period/i)).toBeInTheDocument();
-    expect(screen.queryByText("$0")).toBeNull();
-    expect(screen.queryByText("$0.00")).toBeNull();
-  });
 
   it("labels an unknown provider Partial and admits it cannot tell which case it is", () => {
-    setup({
-      account: { subscription_status: "active", provider_choice: null },
-      spend: { mode: "tokens_only" },
-    });
+    setup({ account: { subscription_status: "active", provider_choice: null } });
     expect(screen.getByTestId("spend-headline")).toHaveTextContent("Not shown");
     expect(screen.getByText("Partial")).toBeInTheDocument();
   });
 
   it("BYO key: states the charges are on the provider's invoice, not Partial", () => {
-    setup({
-      account: { subscription_status: "active", provider_choice: "byo_key" },
-      spend: { mode: "tokens_only" },
-    });
+    setup({ account: { subscription_status: "active", provider_choice: "byo_key" } });
     expect(screen.getByTestId("spend-headline")).toHaveTextContent("Not billed by us");
     expect(screen.getByText(/we cannot see them/i)).toBeInTheDocument();
     expect(screen.queryByText("Partial")).toBeNull();
   });
 
   it("free tier: 'No charge' is a fact, so it carries no Partial chip", () => {
-    setup({
-      account: { subscription_status: "trial_local", provider_choice: null },
-      spend: { mode: "tokens_only" },
-    });
+    setup({ account: { subscription_status: "trial_local", provider_choice: null } });
     expect(screen.getByTestId("spend-headline")).toHaveTextContent("No charge");
     expect(screen.queryByText("Partial")).toBeNull();
   });
 
-  it("renders no headline at all while /billing/spend is still in flight", () => {
-    setup({ spend: undefined });
+  it("renders no headline until the account and usage have loaded", () => {
+    setup({ usageLoading: true, usage: null });
     expect(screen.queryByTestId("spend-headline")).toBeNull();
   });
 });
@@ -182,10 +128,7 @@ describe("AgentSpendSection empty state", () => {
   it("an owner who has never run an agent gets a true statement, not an error", () => {
     // lifetime_spend 0 as well as request_count 0 — the genuine first-run
     // owner, not a company sitting on a freshly rolled-over calendar month.
-    setup({
-      usage: { ...usageFixture, request_count: 0, lifetime_spend: 0 },
-      spend: { mode: "tokens_only" },
-    });
+    setup({ usage: { ...usageFixture, request_count: 0, lifetime_spend: 0 } });
     expect(screen.getByText(/No agent runs this period\./)).toBeInTheDocument();
     expect(screen.getByText(/nothing has run yet/i)).toBeInTheDocument();
     // The all-zero token grid would be noise, so the body stands down too.
@@ -193,17 +136,8 @@ describe("AgentSpendSection empty state", () => {
   });
 
   it("a 404 (no usage row at all) lands on the same empty state", () => {
-    setup({ usage: null, spend: { mode: "tokens_only" } });
+    setup({ usage: null });
     expect(screen.getByText(/No agent runs this period\./)).toBeInTheDocument();
-  });
-
-  it("never claims 'no runs' while a billed figure exists — a lagging counter is not an empty month", () => {
-    setup({
-      usage: { ...usageFixture, request_count: 0 },
-      spend: { mode: "bedrock", billed_month_to_date_cents: 500, by_model: [], period_start: null },
-    });
-    expect(screen.queryByText(/No agent runs this period\./)).toBeNull();
-    expect(screen.getByTestId("spend-headline")).toHaveTextContent("$5");
   });
 
   it("does not flash the empty state while usage is still loading", () => {
@@ -221,15 +155,9 @@ describe("AgentSpendSection empty state — month boundary vs a genuinely idle f
   const boundary = {
     usage: { ...usageFixture, period: "2026-09", request_count: 0, lifetime_spend: 1.4 },
   };
-  const zeroBedrock = {
-    mode: "bedrock",
-    billed_month_to_date_cents: 0,
-    by_model: [],
-    period_start: null,
-  };
 
   it("names the period reset instead of claiming nothing has ever run", () => {
-    setup({ ...boundary, spend: zeroBedrock });
+    setup(boundary);
     expect(screen.getByText(/No agent runs yet in September\./)).toBeInTheDocument();
     expect(screen.queryByText(/No agent runs this period\./)).toBeNull();
     expect(screen.queryByText(/nothing has run yet/i)).toBeNull();
@@ -237,7 +165,7 @@ describe("AgentSpendSection empty state — month boundary vs a genuinely idle f
   });
 
   it("prints no dollar figure — there is no prior-period amount to source", () => {
-    setup({ ...boundary, spend: zeroBedrock });
+    setup(boundary);
     // lifetime_spend is read as a boolean and nothing else. #1236 pulled the
     // DDB analytics counters out of this tab; naming the boundary must not
     // smuggle one back in as "last month you spent…".
@@ -246,40 +174,22 @@ describe("AgentSpendSection empty state — month boundary vs a genuinely idle f
   });
 
   it("oauth owners get the same boundary copy and still no dollars", () => {
-    // An owner who moved from Bedrock to ChatGPT OAuth carries a non-zero
-    // lifetime counter. They pay OpenAI directly and we cannot see that
-    // invoice, so the copy names the reset without implying any figure.
-    setup({
-      ...boundary,
-      account: { subscription_status: "active", provider_choice: "chatgpt_oauth" },
-      spend: { mode: "tokens_only" },
-    });
+    // An owner who moved from managed inference to ChatGPT OAuth carries a
+    // non-zero lifetime counter. They pay OpenAI directly and we cannot see
+    // that invoice, so the copy names the reset without implying any figure.
+    setup({ ...boundary, account: { subscription_status: "active", provider_choice: "chatgpt_oauth" } });
     expect(screen.getByText(/No agent runs yet in September\./)).toBeInTheDocument();
     expect(screen.queryByText(/\$/)).toBeNull();
   });
 
   it("a company that has never run anything keeps the first-run copy", () => {
-    setup({
-      usage: { ...usageFixture, period: "2026-09", request_count: 0, lifetime_spend: 0 },
-      spend: { mode: "tokens_only" },
-    });
+    setup({ usage: { ...usageFixture, period: "2026-09", request_count: 0, lifetime_spend: 0 } });
     expect(screen.getByText(/No agent runs this period\./)).toBeInTheDocument();
     expect(screen.queryByText(/ran in an earlier period/i)).toBeNull();
   });
 
   it("falls back to the first-run copy when the period label is unreadable", () => {
-    setup({
-      usage: { ...usageFixture, period: "", request_count: 0, lifetime_spend: 1.4 },
-      spend: { mode: "tokens_only" },
-    });
+    setup({ usage: { ...usageFixture, period: "", request_count: 0, lifetime_spend: 1.4 } });
     expect(screen.getByText(/No agent runs this period\./)).toBeInTheDocument();
-  });
-});
-
-// spendHeadline is exported so the honesty rules can be pinned directly, not
-// just observed through the rendered component.
-describe("spendHeadline", () => {
-  it("returns null while spend has not loaded", () => {
-    expect(spendHeadline(undefined, "bedrock_claude", "active")).toBeNull();
   });
 });

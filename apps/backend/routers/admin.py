@@ -295,8 +295,8 @@ async def admin_user_cloudwatch_url(
 # ---------------------------------------------------------------------------
 @router.post(
     "/users/{user_id}/container/reprovision",
-    description="Reconcile the workspace with billing: re-derives the owner's credentials and "
-    "Bedrock AIPs, rewrites every agent profile and re-specs the AgentCore runtime on drift "
+    description="Reconcile the workspace with billing: re-derives the owner's credentials, "
+    "rewrites every agent profile and re-specs the AgentCore runtime on drift "
     "(or dispatches the provision funnel when there is no live runtime). Runs as a durable "
     "Step Functions execution. Idempotency-Key supported.",
 )

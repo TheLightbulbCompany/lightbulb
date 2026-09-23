@@ -30,7 +30,7 @@ def _activity_epoch(row: dict) -> int:
     # No recorded interaction ever (legacy row, or nobody has messaged this
     # container yet): fall back to created_at only, never updated_at.
     # updated_at is a generic write timestamp touched by unrelated writers
-    # (gate-token swaps, task-def refreshes, bedrock_revoked flips) -- and,
+    # (gate-token swaps, task-def refreshes) -- and,
     # self-referentially, by this sweep's OWN try_claim_idle_stop claim. A
     # row without last_interactive_at would otherwise never go idle: each
     # claim attempt re-stamps updated_at, which this function would then read

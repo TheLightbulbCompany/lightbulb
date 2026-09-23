@@ -599,16 +599,6 @@ class TestDdbRows:
             app.dependency_overrides.clear()
         assert res.status_code == 403
 
-    # NOTE: `test_patch_redeploy_resolves_the_provider_and_reuses_row_aips` was deleted. Its
-    # point -- PATCH must RESOLVE provider_choice rather than hardcode "bedrock_claude" when
-    # rewriting the ECS config via `write_user_configs` -- is unreachable now: `host_for` is
-    # pinned to "agentcore" fleet-wide, so PATCH always takes the `hermes_provisioning.
-    # write_profiles` branch instead (see `routers/debug.py`'s PATCH handler), which has no
-    # provider_choice/build_provider_block concept to mis-hardcode in the first place. The
-    # AgentCore PATCH branch's own "reuses the row's aip_arns" behaviour is covered by
-    # test_patch_provision_rewrites_profiles_and_stops_the_session in TestAgentCoreDebugRoutes
-    # below.
-
 
 class TestAgentCoreDebugRoutes:
     """/debug/provision: POST runs the canonical provision funnel, DELETE tears the
@@ -621,7 +611,6 @@ class TestAgentCoreDebugRoutes:
             "status": "running",
             "runtime_host": "agentcore",
             "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/x",
-            "bedrock_aip_arns": {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/sonnet"},
         }
         row.update(overrides)
         return row
@@ -695,7 +684,7 @@ class TestAgentCoreDebugRoutes:
         assert res.status_code == 200, res.text
         body = res.json()
         assert body["status"] == "profiles_rewritten"
-        write_profiles.assert_awaited_once_with("org_test_456", row["bedrock_aip_arns"])
+        write_profiles.assert_awaited_once_with("org_test_456")
         stop_session.assert_called_once()
 
     @pytest.mark.asyncio

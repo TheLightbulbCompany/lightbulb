@@ -30,7 +30,7 @@ export function isCreditsBlocked(
   balance: CreditsBalance | null | undefined,
   providerChoice: string | null | undefined,
 ): boolean {
-  return (providerChoice === "bedrock_claude" || providerChoice === "openrouter_managed") && isCreditsExhausted(balance);
+  return providerChoice === "openrouter_managed" && isCreditsExhausted(balance);
 }
 
 export type TopUpResult = {

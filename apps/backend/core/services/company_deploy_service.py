@@ -284,7 +284,7 @@ async def _run_company_deploy(
         # Owner-level profile inputs (billing/Secrets/integrations/env) are resolved ONCE for
         # the whole roster, mirroring hermes_provisioning.write_profiles's own fan-out — never
         # once per agent.
-        profile_inputs = await resolve_profile_inputs(owner_id, container_row=container)
+        profile_inputs = await resolve_profile_inputs(owner_id)
         skipped_aux: dict[str, int] = defaultdict(int)
 
         for planned in plan.agents:
@@ -328,7 +328,7 @@ async def _run_company_deploy(
             # Paperclip key and writes config.yaml/.env/SOUL.md; the package's own per-agent
             # content (today: just AGENTS.md) rides in a second small upload ending in its own
             # .revision.
-            await write_profile_for_agent(owner_id, pc, container_row=container, inputs=profile_inputs)
+            await write_profile_for_agent(owner_id, pc, inputs=profile_inputs)
             await upload_profile_files(owner_id, pc_id, {"AGENTS.md": render_agent_identity_md(planned).encode()})
             # apply_deploy_aux_mutations (the agents.list entry -- including the planner's
             # skills binding -- and the paperclip-creds plugin enable) has no Hermes equivalent:

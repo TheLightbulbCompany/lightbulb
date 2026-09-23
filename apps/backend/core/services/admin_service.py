@@ -283,7 +283,6 @@ _CONTAINER_PROVISION_FIELDS = (
     "retryable",
     "provision_generation",
     "onboarded_at",
-    "bedrock_revoked",
     "stop_reason",
     # The runtime's own handle, in place of the ECS service name: it is what an operator
     # pastes into `aws bedrock-agentcore get-agent-runtime` when a workspace misbehaves.

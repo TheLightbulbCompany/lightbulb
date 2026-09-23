@@ -41,7 +41,11 @@ async def test_write_boot_secret_round_trips_through_the_bridges_own_reader():
         sm = boto3.client("secretsmanager", region_name="us-east-1")
 
         assert await agentcore_runtime.write_boot_secret(
-            "org_a", hook_token="hook-1", gateway_token="gw-1", bedrock_bearer="bearer-1"
+            "org_a",
+            hook_token="hook-1",
+            gateway_token="gw-1",
+            bedrock_bearer="bearer-1",
+            provider_choice="openrouter_managed",
         )
         name = agentcore_runtime.boot_secret_name("org_a")
         assert name.startswith("lightbulb/")
@@ -52,7 +56,7 @@ async def test_write_boot_secret_round_trips_through_the_bridges_own_reader():
             "hookToken": "hook-1",
             "gatewayToken": "gw-1",
             "bedrockBearer": "bearer-1",
-            "providerChoice": "bedrock_claude",
+            "providerChoice": "openrouter_managed",
             "providerSwitchFrozen": False,
         }
 
@@ -64,10 +68,18 @@ async def test_write_boot_secret_update_also_round_trips(monkeypatch):
         sm = boto3.client("secretsmanager", region_name="us-east-1")
 
         await agentcore_runtime.write_boot_secret(
-            "org_b", hook_token="hook-old", gateway_token="gw-old", bedrock_bearer="bearer-old"
+            "org_b",
+            hook_token="hook-old",
+            gateway_token="gw-old",
+            bedrock_bearer="bearer-old",
+            provider_choice="chatgpt_oauth",
         )
         changed = await agentcore_runtime.write_boot_secret(
-            "org_b", hook_token="hook-old", gateway_token="gw-old", bedrock_bearer="bearer-new"
+            "org_b",
+            hook_token="hook-old",
+            gateway_token="gw-old",
+            bedrock_bearer="bearer-new",
+            provider_choice="chatgpt_oauth",
         )
 
         loaded = bridge_sync.load_boot_secrets(agentcore_runtime.boot_secret_name("org_b"), client=sm)
@@ -78,6 +90,10 @@ async def test_write_boot_secret_update_also_round_trips(monkeypatch):
 async def test_only_a_provider_choice_change_is_not_a_boot_time_change():
     with mock_aws():
         kwargs = {"hook_token": "h", "gateway_token": "g", "bedrock_bearer": "b"}
-        assert await agentcore_runtime.write_boot_secret("org_c", **kwargs) is True
-        assert await agentcore_runtime.write_boot_secret("org_c", **kwargs) is False
+        assert (
+            await agentcore_runtime.write_boot_secret("org_c", provider_choice="openrouter_managed", **kwargs) is True
+        )
+        assert (
+            await agentcore_runtime.write_boot_secret("org_c", provider_choice="openrouter_managed", **kwargs) is False
+        )
         assert await agentcore_runtime.write_boot_secret("org_c", provider_choice="chatgpt_oauth", **kwargs) is False

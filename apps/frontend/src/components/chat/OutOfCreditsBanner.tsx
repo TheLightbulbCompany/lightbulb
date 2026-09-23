@@ -26,9 +26,7 @@ export function OutOfCreditsBanner() {
 
   return (
     <div className="bg-cream border-b border-err px-4 py-2 text-ui text-err flex items-center justify-between">
-      <span>
-        You&apos;re out of {me?.provider_choice === "openrouter_managed" ? "workspace" : "Claude"} credits. Top up to keep chatting.
-      </span>
+      <span>You&apos;re out of workspace credits. Top up to keep chatting.</span>
       <Link href="/chat?panel=llm" className="underline">
         Top up now
       </Link>

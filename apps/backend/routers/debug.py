@@ -83,10 +83,9 @@ async def provision_container(
         return {"status": "already_running", "owner_id": owner_id, "owner_type": owner_type}
 
     # The SAME entry point production uses, rather than a hand-rolled sequence: the
-    # runner owns the Bedrock AIP / role / gate-token mint, the roster profiles and the
-    # AgentCore runtime, in that order. DELETE below destroys the AIPs along with the
-    # row that named them, so re-minting here is the only honest recovery -- which is
-    # exactly what the runner does. ``dispatch_provision`` never raises; a failed
+    # runner owns the role / gate-token mint, the roster profiles and the AgentCore
+    # runtime, in that order. DELETE below destroys the role along with the row, so
+    # re-minting here is the only honest recovery -- which is exactly what the runner does. ``dispatch_provision`` never raises; a failed
     # dispatch leaves a retryable error row.
     await dispatch_provision(owner_id)
     return {"status": "provisioning", "owner_id": owner_id, "owner_type": owner_type}
@@ -96,7 +95,7 @@ async def provision_container(
     "/provision",
     summary="Rewrite the roster profiles and cold-restart the runtime (dev only)",
     description=(
-        "Rewrites every roster profile from the container row's own AIP ARNs, then stops "
+        "Rewrites every roster profile, then stops "
         "the AgentCore session so the next invoke cold-restores instead of a warm microVM "
         "serving whatever it cached mid-turn."
     ),
@@ -117,12 +116,12 @@ async def redeploy_container(
     if not container:
         raise HTTPException(status_code=404, detail="No container found")
 
-    # Row #18: rewrite every roster profile from the row's own aip_arns (the same inputs
-    # write_profiles already sources at fresh provision -- resolve_profile_inputs), then
-    # stop the runtime session so the NEXT invoke cold-restores.
+    # Row #18: rewrite every roster profile (the same inputs write_profiles sources at fresh
+    # provision -- resolve_profile_inputs), then stop the runtime session so the NEXT invoke
+    # cold-restores.
     from core.services import hermes_provisioning
 
-    await hermes_provisioning.write_profiles(owner_id, container.get("bedrock_aip_arns") or {})
+    await hermes_provisioning.write_profiles(owner_id)
     runtime_arn = container.get("agentcore_runtime_arn")
     if runtime_arn:
         from core.dynamodb import run_in_thread

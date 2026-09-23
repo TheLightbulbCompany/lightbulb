@@ -99,7 +99,6 @@ async def test_ended_records_usage_and_pushes_only_on_error(metrics):
             output_tokens=300,
             cache_read=5000,
             cache_write=100,
-            raw_cost_microcents=12300,
             room_turn=True,
             event_kind="user_request",
         )

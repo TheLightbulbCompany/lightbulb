@@ -29,15 +29,12 @@ is a nested-map ADD that DynamoDB rejects if written naively, so a mock would
 happily pass code that fails in production. IAM is stubbed — the assertions
 are on the exact calls, which is the whole contract.
 
-The rate-card/CAP_MICROCENTS lockstep tests below exist because the gate/
-meter/backend copies are forced by process boundaries (the gate has no
-Python import path, the meter has no VPC) and must NOT be consolidated —
-see `docs/superpowers/plans/2026-09-07-audit-report.md` §6, "Deliberately
-NOT recommended".
+The backend-side lockstep copies (rate table, CAP_MICROCENTS) went with the
+backend's Bedrock removal; the gate/meter copies go with these stacks. See
+`docs/superpowers/plans/2026-09-07-audit-report.md` §6 for why they were never
+consolidated.
 
-Running: these tests need `boto3`, `moto` and the backend importable (the
-lockstep rate-table test imports core.billing.bedrock_pricing) — run them with
-the backend's env, e.g.
+Running: these tests need `boto3` and `moto` — run them with the backend's env, e.g.
     apps/backend/.venv/bin/python -m pytest apps/infra/lambda/bedrock-usage-meter -q
 """
 
@@ -45,7 +42,6 @@ import base64
 import gzip
 import json
 import os
-import re
 import sys
 import time
 from contextlib import contextmanager
@@ -59,9 +55,6 @@ from moto import mock_aws
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.join(HERE, "fixtures")
-BACKEND = os.path.abspath(os.path.join(HERE, "..", "..", "..", "backend"))
-INFRA_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-GATE_STACK_TS = os.path.join(INFRA_ROOT, "lib", "stacks", "bedrock-gate-stack.ts")
 
 BILLING_TABLE = "isol8-dev-billing-accounts"
 CONTAINERS_TABLE = "isol8-dev-containers"
@@ -135,9 +128,7 @@ def _stub_resolver(owner="org_abc", tier="opus", plan="paid"):
 
 
 @contextmanager
-def _aws_world(
-    *, owner="org_abc", starting_spend=None, billing_row=True, container_row=True, gate_token_hash=None
-):
+def _aws_world(*, owner="org_abc", starting_spend=None, billing_row=True, container_row=True, gate_token_hash=None):
     """A real (moto) DynamoDB with the four tables the counter + kill path touch,
     plus a stubbed IAM client. Yields (ddb, iam).
 
@@ -515,8 +506,9 @@ def test_dlq_copy_is_redacted_but_still_meterable():
     sqs = MagicMock()
     sqs.send_message.side_effect = lambda **kw: sent.append(kw)
 
-    with patch.object(index, "_sqs", return_value=sqs), patch.dict(
-        os.environ, {"DLQ_URL": "https://sqs.test.local/dlq"}
+    with (
+        patch.object(index, "_sqs", return_value=sqs),
+        patch.dict(os.environ, {"DLQ_URL": "https://sqs.test.local/dlq"}),
     ):
         index._send_to_dlq(log_event, "counter_error: boom")
 
@@ -786,94 +778,6 @@ def test_send_to_dlq_raises_when_no_queue_configured(monkeypatch):
     monkeypatch.delenv("DLQ_URL", raising=False)
     with pytest.raises(RuntimeError):
         index._send_to_dlq({"message": "{}"}, "transport_error: boom")
-
-
-# ---------------------------------------------------------------------------
-# LOCAL PRICING. Third copy of the rate table (backend _RATES + the config.py
-# catalog cost blocks are the other two) — the Lambda has no VPC and no backend
-# import path, so it cannot share the module. The lockstep test is what keeps
-# the three from drifting; without it the cap would silently enforce the wrong
-# dollar amount.
-# ---------------------------------------------------------------------------
-
-
-def _backend_pricing():
-    """Import the backend's pricing module (the source of truth for the rates).
-
-    Deliberately a HARD import, not an importorskip: a skipped lockstep test is
-    a drift detector that never fires.
-    """
-    os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
-    if BACKEND not in sys.path:
-        sys.path.insert(0, BACKEND)
-    from core.billing import bedrock_aip, bedrock_pricing
-
-    return bedrock_pricing, bedrock_aip
-
-
-def test_lambda_rate_table_matches_backend_bedrock_pricing():
-    """The Lambda's rate table and tier map must equal the backend's, exactly."""
-    import index
-
-    bedrock_pricing, bedrock_aip = _backend_pricing()
-
-    assert index._RATES == bedrock_pricing._RATES
-    assert index.TIER_TO_FM == bedrock_aip.TIER_TO_FM
-
-
-def test_lambda_pricing_matches_backend_price_from_tier():
-    """Same table AND same arithmetic (per-component int() truncation) — a
-    matching table with a different rounding rule would still drift the cap."""
-    import index
-
-    bedrock_pricing, _ = _backend_pricing()
-    record = _load("inline_record.json")
-    counts = {
-        "input_tokens": record["input"]["inputTokenCount"],
-        "output_tokens": record["output"]["outputTokenCount"],
-        "cache_read_tokens": record["input"]["cacheReadInputTokenCount"],
-        "cache_write_tokens": record["input"]["cacheWriteInputTokenCount"],
-    }
-    for tier in index.TIER_TO_FM:
-        assert index._price_from_tier(tier, **counts) == bedrock_pricing.price_from_tier(tier, **counts)
-
-
-def test_cap_microcents_matches_backend_trial_cap():
-    """The meter's async-backstop threshold must equal the gate's primary
-    reservation cap (core.services.trial_cap.CAP_MICROCENTS) — a silent drift
-    here means the backstop kill fires at the wrong dollar amount."""
-    import index
-
-    os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
-    if BACKEND not in sys.path:
-        sys.path.insert(0, BACKEND)
-    from core.services import trial_cap
-
-    assert index.CAP_MICROCENTS == trial_cap.CAP_MICROCENTS
-
-
-def _gate_stack_env_int(name):
-    """Regex a `NAME: "<digits>"` CDK environment literal out of
-    bedrock-gate-stack.ts. Raises if the name doesn't appear exactly once —
-    a silent 0-match would make this test vacuously pass."""
-    with open(GATE_STACK_TS) as f:
-        src = f.read()
-    matches = re.findall(rf'{re.escape(name)}:\s*"(\d+)"', src)
-    assert len(matches) == 1, f"expected exactly one {name} literal in {GATE_STACK_TS}, found {matches}"
-    return int(matches[0])
-
-
-def test_gate_stack_cap_and_reserve_env_literals_match_backend():
-    """CAP_MICROCENTS and RESERVE_ESTIMATE_MICROCENTS are hardcoded CDK env
-    string literals (the Lambda has no import path to the backend) — this is
-    the only thing keeping them from drifting off core.services.trial_cap."""
-    os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
-    if BACKEND not in sys.path:
-        sys.path.insert(0, BACKEND)
-    from core.services import trial_cap
-
-    assert _gate_stack_env_int("CAP_MICROCENTS") == trial_cap.CAP_MICROCENTS
-    assert _gate_stack_env_int("RESERVE_ESTIMATE_MICROCENTS") == trial_cap.RESERVE_ESTIMATE_MICROCENTS
 
 
 def test_price_includes_cache_read_and_cache_write():

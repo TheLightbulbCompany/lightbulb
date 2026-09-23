@@ -267,33 +267,12 @@ class Settings(BaseSettings):
     definition and written into WARP's mdm.xml as proxy_port. Both come from
     one constant, BROWSER_EGRESS_PROXY_PORT in container-stack.ts."""
 
-    BEDROCK_ENFORCEMENT_LIVE: bool = True
-    """Arms the revoke-only enforcement off the Metronome low-balance
-    webhook. Defaults True now that Metronome is the only ledger — there is
-    no other biller to fall back to, so a depleted balance must revoke the
-    owner's Bedrock IAM grant. Set "false" per env only to run the pipeline
-    in shadow (flag set, no revoke) during validation."""
-
-    # Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). Empty defaults
-    # keep the backend booting in non-AWS unit-test contexts.
-    BEDROCK_AIP_OWNERS_TABLE: str = ""
-    """Reverse index PK aip_arn -> owner_id/tier/plan. Read by the
-    bedrock-usage-meter Lambda via its own boto3 GetItem — no backend code
-    reads this table directly."""
+    # The per-owner IAM role (each workspace's AgentCore execution role). Empty defaults keep the
+    # backend booting in non-AWS unit-test contexts.
     BEDROCK_OWNER_BOUNDARY_ARN: str = ""
     """Permissions-boundary policy ARN every backend-minted role must carry."""
     BEDROCK_OWNER_BASE_POLICY_ARN: str = ""
     """CDK-managed EFS/logs/ssm managed-policy ARN attached to every per-owner role."""
-    BEDROCK_AIP_FAN_OUT_REGIONS: str = "us-east-1,us-east-2,us-west-2"
-    """Comma-separated regions the per-owner role permits the FM ARN in."""
-    BEDROCK_GATE_URL: str = ""
-    """OVERRIDE for the bedrock-gate Function URL (tests / local dev only).
-
-    Production resolution is RUNTIME discovery from SSM
-    (``/lightbulb/{env}/bedrock-gate-url``, published by the bedrock-gate CDK
-    stack) via ``core.billing.bedrock_gate_url.gate_url`` — the gateway is the
-    STANDARD Bedrock path, so nothing is wired through task env. When this
-    override is set it wins over SSM; empty (the default) means "ask SSM"."""
     OPENROUTER_GATE_URL: str = ""
     OPENROUTER_MANAGED_MODEL_ID: str = ""
 
@@ -587,8 +566,8 @@ class Settings(BaseSettings):
         # The fence assertions below apply ONLY to the actual backend task. The
         # Fargate metadata URI is always injected by the agent for the running
         # container and is NEVER present locally, in CI, or in out-of-task
-        # operational CLIs (scripts.bedrock_gate_break_glass /
-        # scripts.reapply_openclaw_config set ENVIRONMENT=prod to target prod
+        # operational CLIs (scripts.reap_owner_aips / scripts.roll_hermes_runtimes
+        # set ENVIRONMENT=prod to target prod
         # resources but don't serve /ws and needn't carry the WS secret).
         if not os.environ.get("ECS_CONTAINER_METADATA_URI_V4"):
             return self

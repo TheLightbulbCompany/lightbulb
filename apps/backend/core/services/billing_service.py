@@ -906,7 +906,7 @@ async def change_provider(
             )
 
     # Apply the swap. ONE path: reconcile the workspace, which re-derives the owner's
-    # Bedrock AIPs and rewrites every agent profile (config.yaml + .env) from the committed
+    # credentials and rewrites every agent profile (config.yaml + .env) from the committed
     # provider_choice. The bridge re-reads the profile's .revision on its next turn.
     #
     # The old hot/cold split is gone with openclaw.json. The "hot" half patched the three

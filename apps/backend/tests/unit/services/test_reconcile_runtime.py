@@ -58,7 +58,6 @@ class World:
         mp.setattr(hp.settings, "AGENTCORE_HERMES_IMAGE", IMAGE)
         mp.setattr(hp.settings, "OWNER_STATE_BUCKET", "bucket")
         mp.setattr(hp.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
-        mp.setattr("core.billing.bedrock_gate_url.gate_url", lambda: "https://bedrock-gate.example")
         mp.setattr("core.billing.openrouter_gate_url.gate_url", lambda: MANAGED_GATE)
 
         async def _billing(owner_id, **kwargs):
@@ -88,17 +87,12 @@ class World:
         import core.billing.bedrock_aip as aip
         import core.billing.bedrock_gate_tokens as gate
 
-        self.ensure_aips = AsyncMock(return_value={"sonnet": "arn:aip:sonnet", "opus": "arn:aip:opus"})
         self.ensure_role = AsyncMock(return_value="arn:aws:iam::877352799272:role/owner-org_a")
         self.mint = AsyncMock(
-            side_effect=lambda owner_id, aips, *, row_id, generation: gate.derive_gate_bearer(
-                owner_id, row_id, generation
-            )
+            side_effect=lambda owner_id, *, row_id, generation: gate.derive_gate_bearer(owner_id, row_id, generation)
         )
-        mp.setattr(aip, "ensure_owner_aips", self.ensure_aips)
         mp.setattr(aip, "ensure_owner_bedrock_role", self.ensure_role)
         mp.setattr(gate, "mint_gate_token", self.mint)
-        mp.setattr(gate, "reconcile_gate_token_tiers", AsyncMock())
         mp.setattr(hp, "ensure_agentcore_trust", AsyncMock(return_value=True))
         mp.setattr("core.services.paperclip_agent_lifecycle.sync_agent_adapter_tokens", AsyncMock(return_value=0))
         self.ensure_or_key = AsyncMock(return_value="hash")
@@ -216,11 +210,10 @@ async def test_switch_matrix_rewrites_profiles_without_stopping_the_session(monk
 
 
 @pytest.mark.asyncio
-async def test_reconcile_re_ensures_aips_role_and_gate_row(monkeypatch, boot_secrets):
+async def test_reconcile_re_ensures_role_and_gate_row(monkeypatch, boot_secrets):
     world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     await hp.reconcile_runtime("org_a")
 
-    world.ensure_aips.assert_awaited()
     world.ensure_role.assert_awaited()
     world.mint.assert_awaited()
     assert world.mint.await_args.kwargs == {"row_id": "row-1", "generation": 0}
@@ -414,8 +407,8 @@ async def test_billing_that_moves_mid_reconcile_is_rendered_again(monkeypatch, b
     real_upload = hp.write_profiles
     runs = []
 
-    async def _write_profiles(owner_id, aip_arns):
-        await real_upload(owner_id, aip_arns)
+    async def _write_profiles(owner_id):
+        await real_upload(owner_id)
         runs.append(world.provider_of_profiles())
         if len(runs) == 1:
             world.billing = BILLING["chatgpt_oauth"]  # a switch committed while we rendered
@@ -460,7 +453,7 @@ async def test_a_failed_row_read_is_a_counted_reconcile_failure(monkeypatch, boo
 async def test_reconcile_ensures_the_metronome_customer_and_arms_the_nightly_ceo(monkeypatch, boot_secrets, row):
     """A Stripe re-entitlement (trial->paid, re-subscribe) reaches both through its reconcile --
     whether the runtime is live or the reconcile hands off to the provision funnel."""
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"], row=row)
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"], row=row)
     monkeypatch.setattr("core.services.provision_dispatch.dispatch_provision", AsyncMock(return_value=True))
 
     await hp.reconcile_runtime("org_a")
@@ -484,7 +477,7 @@ async def test_a_chatgpt_or_byo_owner_gets_no_metronome_customer(monkeypatch, bo
 @pytest.mark.asyncio
 async def test_a_metronome_failure_fails_the_reconcile_after_the_runtime_work(monkeypatch, boot_secrets):
     """So the reconcile execution is retried; the runtime half still ran (profiles written)."""
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     world.metronome.side_effect = RuntimeError("metronome down")
 
     assert await hp.reconcile_runtime("org_a") == "failed"
@@ -494,7 +487,7 @@ async def test_a_metronome_failure_fails_the_reconcile_after_the_runtime_work(mo
 
 @pytest.mark.asyncio
 async def test_a_nightly_arm_failure_does_not_fail_the_reconcile(monkeypatch, boot_secrets):
-    world = World(monkeypatch, billing=BILLING["bedrock_claude"])
+    world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     world.arm.side_effect = RuntimeError("paperclip down")
 
     assert await hp.reconcile_runtime("org_a") != "failed"

@@ -1,19 +1,13 @@
-"""Tests for the free-tier $3/day cap wired into the live chat path.
+"""Tests for the free-tier daily cap wired into the live chat path.
 
-``chat_gate.gate_chat`` Layer 2 is a **read-only** check of the
-daily-spend counter (via ``trial_cap.reason_for_account``). It places NO
-reserve and writes nothing — the counter itself has two writers, both
-outside this backend: the bedrock-gate settles it first (JS, hot inference
-path) and the meter Lambda backstops on invocations the gate missed, with
-exactly-once guaranteed by the shared ``requestId`` dedup table rather than
-single-writer discipline. The meter is also the authoritative enforcement
-(revoke the owner's inference profile + ``desiredCount=0``). Blocking here
-is UX.
+``chat_gate.gate_chat`` Layer 2 is a **read-only** check (via
+``trial_cap.reason_for_account``) of the trial window and the openrouter-gate's
+``openrouter_capped_day`` stamp. It places NO reserve and writes nothing; the
+OpenRouter per-key daily limit is the real valve. Blocking here is UX.
 
 The predicate is ``subscription_status == "trial_local"``. The container row's
 ``provider_choice`` is NOT consulted: the moment billing flips to paid, the
-owner is off the cap by definition (their spend lands on Metronome), and the
-meter keys on the owner's inference profile, not on any container-row stamp.
+owner is off the trial cap by definition.
 """
 
 import time
@@ -56,17 +50,11 @@ async def test_gate_blocks_trial_owner_at_cap():
 
 @pytest.mark.asyncio
 async def test_gate_allows_trial_owner_under_cap_and_writes_nothing():
-    """An under-cap trial owner passes. gate_chat itself writes nothing to
-    the counter — add_trial_daily_spend (zero production callers) is deleted,
-    so that guard is now structural rather than a runtime mock assertion."""
+    """An uncapped trial owner passes, and gate_chat writes nothing."""
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"subscription_status": "trial_local"}),
-        ),
-        patch(
-            "core.repositories.billing_repo.get_trial_daily_spend",
-            new=AsyncMock(return_value=0),
         ),
         patch(
             "core.observability.product_analytics.capture_once_per_owner_per_day",
@@ -158,7 +146,7 @@ async def test_paid_owner_with_stale_trial_end_is_not_expired_or_capped():
 @pytest.mark.asyncio
 async def test_gate_blocks_expired_trial_before_the_cap_check():
     """An owner still on subscription_status='trial_local' whose trial_end has
-    passed is blocked with code=trial_expired BEFORE the cap read."""
+    passed is blocked with code=trial_expired."""
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -169,18 +157,12 @@ async def test_gate_blocks_expired_trial_before_the_cap_check():
                 }
             ),
         ),
-        patch(
-            "core.services.trial_cap.billing_repo.get_trial_daily_spend",
-            new=AsyncMock(return_value=0),
-        ) as spend_mock,
     ):
         gate = await gate_chat(user_id="u", owner_id="u", session_key="sk1")
 
     assert gate["blocked"] is True
     assert gate["code"] == "trial_expired"
     assert isinstance(gate["message"], str) and gate["message"]
-    # Expiry short-circuits: the daily-spend counter is never even read.
-    spend_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,7 @@ vi.mock("swr", () => ({ default: () => mockSwr() }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: vi.fn() }) }));
 
 beforeEach(() => {
-  mockSwr.mockReturnValue({ data: { provider_choice: "bedrock_claude" } });
+  mockSwr.mockReturnValue({ data: { provider_choice: "openrouter_managed" } });
 });
 
 describe("OutOfCreditsBanner", () => {
@@ -29,7 +29,7 @@ describe("OutOfCreditsBanner", () => {
     // exactly the owners already being refused.
     mockCredits.mockReturnValue({ balance: { balance_microcents: 200_000, is_exhausted: true } });
     render(<OutOfCreditsBanner />);
-    expect(screen.getByText(/out of Claude credits/i)).toBeInTheDocument();
+    expect(screen.getByText(/out of workspace credits/i)).toBeInTheDocument();
   });
 
   it("routes a managed-model owner to workspace credits", () => {
@@ -62,7 +62,7 @@ describe("OutOfCreditsBanner", () => {
     // regression against pre-branch behaviour).
     mockCredits.mockReturnValue({ balance: { balance_microcents: 0 } });
     render(<OutOfCreditsBanner />);
-    expect(screen.getByText(/out of Claude credits/i)).toBeInTheDocument();
+    expect(screen.getByText(/out of workspace credits/i)).toBeInTheDocument();
   });
 
   it("stays hidden on a positive balance when is_exhausted is absent (deploy skew)", () => {

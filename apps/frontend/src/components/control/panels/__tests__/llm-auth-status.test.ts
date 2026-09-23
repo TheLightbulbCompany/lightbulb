@@ -32,33 +32,6 @@ describe("statusToDotColor", () => {
 });
 
 describe("resolveProviderStatus", () => {
-  it("matches bedrock_claude to the bedrock provider entry", () => {
-    const list = providers(
-      { provider: "bedrock", displayName: "Bedrock", status: "ok" },
-      { provider: "anthropic", displayName: "Anthropic", status: "expired" },
-    );
-    expect(resolveProviderStatus("bedrock_claude", null, list)).toBe("ok");
-  });
-
-  it("matches bedrock_claude to the amazon-bedrock provider entry (the real container id)", () => {
-    const list = providers(
-      { provider: "amazon-bedrock", displayName: "Amazon Bedrock", status: "ok" },
-    );
-    expect(resolveProviderStatus("bedrock_claude", null, list)).toBe("ok");
-  });
-
-  it("prefers the priority candidate (amazon-bedrock) over a legacy bedrock entry listed first", () => {
-    // Snapshot contains BOTH a stale legacy `bedrock` entry (listed first) and
-    // the current `amazon-bedrock` entry. Candidate priority puts
-    // `amazon-bedrock` first, so resolution must honor that ranking rather than
-    // returning whichever entry happens to appear earlier in the list.
-    const list = providers(
-      { provider: "bedrock", displayName: "Bedrock (legacy)", status: "expired" },
-      { provider: "amazon-bedrock", displayName: "Amazon Bedrock", status: "ok" },
-    );
-    expect(resolveProviderStatus("bedrock_claude", null, list)).toBe("ok");
-  });
-
   it("matches byo_key + anthropic to the anthropic provider entry", () => {
     const list = providers(
       { provider: "anthropic", displayName: "Anthropic", status: "expiring" },
@@ -129,12 +102,12 @@ describe("resolveProviderStatus", () => {
   });
 
   it("returns undefined when the provider list is empty or absent", () => {
-    expect(resolveProviderStatus("bedrock_claude", null, [])).toBeUndefined();
-    expect(resolveProviderStatus("bedrock_claude", null, undefined)).toBeUndefined();
+    expect(resolveProviderStatus("chatgpt_oauth", null, [])).toBeUndefined();
+    expect(resolveProviderStatus("chatgpt_oauth", null, undefined)).toBeUndefined();
   });
 
   it("returns undefined when provider_choice is null", () => {
-    const list = providers({ provider: "bedrock", displayName: "B", status: "ok" });
+    const list = providers({ provider: "anthropic", displayName: "Anthropic", status: "ok" });
     expect(resolveProviderStatus(null, null, list)).toBeUndefined();
   });
 });

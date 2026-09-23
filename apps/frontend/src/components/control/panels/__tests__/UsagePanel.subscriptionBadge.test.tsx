@@ -25,7 +25,6 @@ vi.mock("@/hooks/useBilling", () => ({
     refresh: () => {},
   }),
 }));
-vi.mock("@/hooks/useSpend", () => ({ useSpend: () => ({ spend: undefined, isLoading: false }) }));
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ membership: null }) }));
 vi.mock("swr", () => ({
   default: () => ({ data: undefined, error: undefined, isLoading: false, mutate: vi.fn() }),

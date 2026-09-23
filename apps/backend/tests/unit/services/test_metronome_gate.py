@@ -1,8 +1,6 @@
 """is_owner_blocked: the shared credits gate over the Metronome fast-gate
 row — blocked from the cached flag, lazy getNetBalance refresh when stale,
-stale-row fallback on Metronome outage, the pull-based Bedrock restore
-(with confirming re-read) when a refresh shows a revoked owner has paid up,
-and the revoke re-assert when a refresh comes back non-positive."""
+and stale-row fallback on Metronome outage."""
 
 import contextlib
 import time
@@ -34,12 +32,10 @@ def _gate(
     metronome_customer_id: str | None = None,
     metronome_contract_id: str | None = "ct-default",
     net_balance_cents: float | Exception | list | None = None,
-    container_row: dict | None = None,
 ):
     """Patch the gate's collaborators; yields a namespace of the mocks.
 
-    ``net_balance_cents`` accepts a list for multi-read sequences (the
-    restore path does a confirming second getNetBalance). The mocked
+    ``net_balance_cents`` accepts a list for multi-read sequences. The mocked
     response uses the live-verified getNetBalance shape: the cents number
     rides under ``balance``.
     """
@@ -67,8 +63,6 @@ def _gate(
         if metronome_contract_id:
             account["metronome_contract_id"] = metronome_contract_id
 
-    restore = AsyncMock()
-    enforce = AsyncMock()
     with (
         patch("core.services.metronome_gate.MetronomeFastGate", return_value=fast_gate),
         patch(
@@ -76,19 +70,11 @@ def _gate(
             new=AsyncMock(return_value=account),
         ) as billing_read,
         patch("core.billing.metronome_client.for_settings", return_value=client),
-        patch(
-            "core.repositories.container_repo.get_by_owner_id",
-            new=AsyncMock(return_value=container_row),
-        ),
-        patch("core.billing.bedrock_aip.restore_owner_bedrock", new=restore),
-        patch("core.services.metronome_gate.enforce_on_low_balance", new=enforce),
     ):
         mocks = MagicMock()
         mocks.fast_gate = fast_gate
         mocks.client = client
         mocks.billing_read = billing_read
-        mocks.restore = restore
-        mocks.enforce = enforce
         yield mocks
 
 
@@ -111,7 +97,7 @@ async def test_fresh_row_positive_not_blocked():
 @pytest.mark.asyncio
 async def test_no_metronome_ledger_blocks():
     """No ledger means no credits can exist, and every caller has already
-    established the owner is on bedrock_claude — i.e. billing inference to US.
+    established the owner draws managed credits — i.e. billing inference to US.
 
     This used to return False, reasoning that a brand-new owner must not be
     gated by a missing projection. That conflated "projection not written yet"
@@ -172,32 +158,8 @@ async def test_stale_row_refreshes_from_metronome_and_rewrites_row():
 
 @pytest.mark.asyncio
 async def test_stale_row_refresh_non_positive_blocks():
-    with _gate(row=_stale_row(5_000_000), metronome_customer_id="mc-uuid", net_balance_cents=0) as m:
+    with _gate(row=_stale_row(5_000_000), metronome_customer_id="mc-uuid", net_balance_cents=0):
         assert await is_owner_blocked(OWNER) is True
-    m.restore.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_refresh_non_positive_reasserts_enforcement():
-    """The low-balance webhook is one-shot and can be lost (stale-skip race,
-    or a stale-positive refresh un-revoking a drained owner) — every fresh
-    non-positive gate read must re-fire enforce_on_low_balance (itself
-    idempotent on the bedrock_revoked stamp)."""
-    with _gate(row=_stale_row(5_000_000), metronome_customer_id="mc-uuid", net_balance_cents=0) as m:
-        assert await is_owner_blocked(OWNER) is True
-    m.enforce.assert_awaited_once_with(OWNER, 0)
-
-
-@pytest.mark.asyncio
-async def test_refresh_positive_never_fires_enforcement():
-    with _gate(
-        row=_stale_row(0),
-        metronome_customer_id="mc-uuid",
-        net_balance_cents=1000,
-        container_row={"owner_id": OWNER, "bedrock_revoked": False},
-    ) as m:
-        assert await is_owner_blocked(OWNER) is False
-    m.enforce.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -219,79 +181,6 @@ async def test_metronome_down_uses_stale_row_never_raises():
 
 
 @pytest.mark.asyncio
-async def test_refresh_positive_restores_revoked_owner_after_confirm_read():
-    """The pull-based re-arm: a paid top-up has no webhook, so the first
-    gate refresh that sees balance > 0 on a revoked owner un-revokes — but
-    only after a confirming second getNetBalance also says > 0."""
-    with _gate(
-        row=_stale_row(0),
-        metronome_customer_id="mc-uuid",
-        net_balance_cents=[1000, 1000],
-        container_row={"owner_id": OWNER, "bedrock_revoked": True},
-    ) as m:
-        assert await is_owner_blocked(OWNER) is False
-    m.restore.assert_awaited_once_with(OWNER)
-    # Exactly two reads: the refresh + the restore's confirming re-read.
-    assert m.client.get_net_balance.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_refresh_positive_but_confirm_read_non_positive_skips_restore():
-    """getNetBalance is async/no-SLA: a single stale-positive read against a
-    truly-drained owner must NOT restore — that would permanently disarm the
-    one-shot low-balance alert (it already fired for this crossing)."""
-    with _gate(
-        row=_stale_row(0),
-        metronome_customer_id="mc-uuid",
-        net_balance_cents=[1000, 0],
-        container_row={"owner_id": OWNER, "bedrock_revoked": True},
-    ) as m:
-        assert await is_owner_blocked(OWNER) is False
-    m.restore.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_confirm_read_failure_skips_restore_without_blocking():
-    """A failed confirming re-read aborts the restore (the owner stays
-    revoked until the next refresh) but never flips the gate answer."""
-    with _gate(
-        row=_stale_row(0),
-        metronome_customer_id="mc-uuid",
-        net_balance_cents=1000,
-        container_row={"owner_id": OWNER, "bedrock_revoked": True},
-    ) as m:
-        m.client.get_net_balance.side_effect = [{"balance": 1000}, RuntimeError("metronome blip")]
-        assert await is_owner_blocked(OWNER) is False
-    m.restore.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_refresh_positive_skips_restore_when_not_revoked():
-    with _gate(
-        row=_stale_row(0),
-        metronome_customer_id="mc-uuid",
-        net_balance_cents=1000,
-        container_row={"owner_id": OWNER, "bedrock_revoked": False},
-    ) as m:
-        assert await is_owner_blocked(OWNER) is False
-    m.restore.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_restore_failure_does_not_block_the_gate():
-    """Restore is best-effort: an IAM blip must not turn a positive-balance
-    gate read into blocked (or an exception)."""
-    with _gate(
-        row=_stale_row(0),
-        metronome_customer_id="mc-uuid",
-        net_balance_cents=1000,
-        container_row={"owner_id": OWNER, "bedrock_revoked": True},
-    ) as m:
-        m.restore.side_effect = RuntimeError("iam down")
-        assert await is_owner_blocked(OWNER) is False
-
-
-@pytest.mark.asyncio
 async def test_row_blocked_at_reserve_estimate():
     """The gate denies paid admission on `remaining - reserved - estimate <= 0`,
     so an owner holding exactly one reservation's worth is already refused. The
@@ -299,7 +188,7 @@ async def test_row_blocked_at_reserve_estimate():
     had: a paying customer with $0.20 left got 'Provider rate limit reached'
     and no out-of-credits banner."""
     from core.services.metronome_gate import _row_blocked
-    from core.services.trial_cap import RESERVE_ESTIMATE_MICROCENTS
+    from core.services.metronome_gate import RESERVE_ESTIMATE_MICROCENTS
 
     assert _row_blocked({"remaining_microcents": RESERVE_ESTIMATE_MICROCENTS}) is True
     assert _row_blocked({"remaining_microcents": RESERVE_ESTIMATE_MICROCENTS - 1}) is True

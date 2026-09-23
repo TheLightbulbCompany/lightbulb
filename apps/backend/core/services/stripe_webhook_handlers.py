@@ -568,7 +568,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # provider/plan change -- and any live event at all, because a REDELIVERY of a
         # conversion finds old_status already "active" (entering_live False, no plan diff) and
         # must still reach the reconcile. That costs one idempotent reconcile per renewal event.
-        # ``reconcile_runtime`` re-derives the AIPs and gate-token tiers, moves the OpenRouter key
+        # ``reconcile_runtime`` re-derives the owner role and gate token, moves the OpenRouter key
         # onto the paid limit, rewrites every profile, ensures the Metronome customer and re-arms
         # the nightly CEO. ORDER: every billing write above has committed, and the reconcile
         # reads billing strongly consistent, so it never renders the trial shape.

@@ -125,7 +125,7 @@ vi.mock("../ChangeProviderModal", () => ({
 
 // CreditsSection owns its own data fetching (billing/credits SWR) and is
 // covered by its own test file — stub it so LLMPanel tests only assert
-// when the panel chooses to mount it (Bedrock owners only).
+// when the panel chooses to mount it (openrouter_managed owners only).
 vi.mock("../CreditsSection", () => ({
   CreditsSection: () => <div data-testid="credits-section" />,
 }));
@@ -214,16 +214,17 @@ describe("LLMPanel", () => {
   });
 
   it("renders the Model & Credits heading", () => {
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     render(<LLMPanel />);
     expect(screen.getByText("Model & Credits")).toBeInTheDocument();
     expect(screen.queryByText("LLM Provider")).toBeNull();
   });
 
-  it("embeds CreditsSection for bedrock users and drops the Manage credits button", () => {
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+  it("embeds CreditsSection for managed users and drops the Manage credits button", () => {
+    managedAvailable = true;
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     render(<LLMPanel />);
-    expect(screen.getByText("Powered by Claude")).toBeInTheDocument();
+    expect(screen.getByText("Lightbulb-managed models")).toBeInTheDocument();
     expect(screen.getByTestId("credits-section")).toBeInTheDocument();
     // The credits surface now lives inline — the old jump-to-panel button
     // must be gone so there's no dead affordance pointing at the retired
@@ -241,7 +242,7 @@ describe("LLMPanel", () => {
     expect(screen.queryByPlaceholderText(/sk-/)).toBeNull();
   });
 
-  it("hides CreditsSection for non-bedrock users", () => {
+  it("hides CreditsSection for non-managed users", () => {
     mockSWRData.mockReturnValue({ provider_choice: "byo_key", byo_provider: "anthropic" });
     render(<LLMPanel />);
     expect(screen.queryByTestId("credits-section")).toBeNull();
@@ -353,7 +354,7 @@ describe("LLMPanel", () => {
   });
 
   it("renders a Change provider button on every populated block and opens the modal", () => {
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     render(<LLMPanel />);
     expect(screen.queryByTestId("change-provider-modal-open")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change provider/i }));
@@ -378,10 +379,11 @@ describe("LLMPanel", () => {
   });
 
   it("colors the provider dot green when models.authStatus reports ok", () => {
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    managedAvailable = true;
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     mockAuthStatusData.mockReturnValue({
       ts: 1,
-      providers: [{ provider: "bedrock", displayName: "Bedrock", status: "ok" }],
+      providers: [{ provider: "custom", displayName: "Lightbulb", status: "ok" }],
     });
     render(<LLMPanel />);
     const dot = screen.getByTestId("provider-health-dot");
@@ -409,7 +411,8 @@ describe("LLMPanel", () => {
   });
 
   it("falls back to a neutral dot when no provider entry matches", () => {
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    managedAvailable = true;
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     mockAuthStatusData.mockReturnValue({ ts: 1, providers: [] });
     render(<LLMPanel />);
     expect(screen.getByTestId("provider-health-dot")).toHaveAttribute("data-color", "neutral");
@@ -418,10 +421,11 @@ describe("LLMPanel", () => {
   it("holds models.authStatus while the runtime is unknown, and a neutral dot with it", () => {
     statusLoaded = false;
     authStatusMethods.length = 0;
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    managedAvailable = true;
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     mockAuthStatusData.mockReturnValue({
       ts: 1,
-      providers: [{ provider: "bedrock", displayName: "Bedrock", status: "ok" }],
+      providers: [{ provider: "custom", displayName: "Lightbulb", status: "ok" }],
     });
     render(<LLMPanel />);
     // Only this panel's own read is asserted — a child card fires `config.get`,
@@ -444,7 +448,7 @@ describe("LLMPanel", () => {
   });
 
   it("opens the change-provider modal from the initialAction prop", () => {
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     render(<LLMPanel initialAction="change-provider" />);
     expect(screen.getByTestId("change-provider-modal-open")).toBeInTheDocument();
   });
@@ -453,13 +457,13 @@ describe("LLMPanel", () => {
     mockSWRData.mockReturnValue({ provider_choice: null });
     render(<LLMPanel initialAction="change-provider" />);
     expect(screen.getByTestId("change-provider-modal-open")).toBeInTheDocument();
-    // The null-provider picker commit path is covered immediately above by
-    // the Bedrock POST assertion; this handoff must never redirect to Checkout.
+    // The null-provider picker commit path is covered by the no-POST
+    // assertions elsewhere in this file; this handoff must never redirect to Checkout.
     expect(mockApiPost).not.toHaveBeenCalled();
   });
 
   it("re-opens the modal when initialAction goes null→change-provider on a mounted panel", () => {
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     const { rerender } = render(<LLMPanel initialAction={null} />);
     expect(
       screen.queryByTestId("change-provider-modal-open"),
@@ -471,7 +475,7 @@ describe("LLMPanel", () => {
   });
 
   it("reports consumption via onActionConsumed when initialAction is delivered", async () => {
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     const onActionConsumed = vi.fn();
     render(
       <LLMPanel initialAction="change-provider" onActionConsumed={onActionConsumed} />,
@@ -480,10 +484,10 @@ describe("LLMPanel", () => {
   });
 
   it("busts the gateway cache then revalidates the read key when Refresh is clicked", async () => {
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     mockAuthStatusData.mockReturnValue({
       ts: 1,
-      providers: [{ provider: "amazon-bedrock", displayName: "Amazon Bedrock", status: "ok" }],
+      providers: [{ provider: "custom", displayName: "Lightbulb", status: "ok" }],
     });
     render(<LLMPanel />);
     fireEvent.click(screen.getByRole("button", { name: /refresh status/i }));
@@ -502,7 +506,7 @@ describe("LLMPanel", () => {
   // H4: a models.authStatus RPC failure used to be silent — resolveProviderStatus
   // fell through to undefined, rendering the same neutral dot as "still loading".
   it("surfaces a models.authStatus RPC failure with a retry, instead of failing silently", () => {
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     mockAuthStatusError = new Error("gateway unreachable");
     render(<LLMPanel />);
     expect(screen.getByText("Couldn't check provider status.")).toBeInTheDocument();
@@ -511,7 +515,7 @@ describe("LLMPanel", () => {
   });
 
   it("shows no error state when models.authStatus has not failed", () => {
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     render(<LLMPanel />);
     expect(screen.queryByText("Couldn't check provider status.")).toBeNull();
   });
@@ -531,7 +535,7 @@ describe("CodingHarnessBlock", () => {
     render(<LLMPanel />);
     expect(screen.getByTestId("coding-harness-block")).toBeInTheDocument();
 
-    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    mockSWRData.mockReturnValue({ provider_choice: "openrouter_managed" });
     render(<LLMPanel />);
     expect(screen.getAllByTestId("coding-harness-block")).toHaveLength(1);
   });

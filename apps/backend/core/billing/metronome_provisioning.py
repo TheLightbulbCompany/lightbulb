@@ -122,8 +122,7 @@ async def ensure_metronome_customer(
     # "who gets a ledger", and every caller routes through it.
     #
     # On conversion to a paid plan, subscription_status flips and this runs
-    # normally. enforce_on_low_balance's provider guard remains the fence that
-    # holds even for a stray existing customer.
+    # normally.
     if not is_ledger_eligible(account):
         return None
 
@@ -289,9 +288,8 @@ async def _ensure_low_balance_alerts(owner_id: str, customer_id: str, client: Me
 
     Metronome alerts fire once on crossing into in_alarm, with
     remaining_balance ≈ the alert's threshold — so the warn alert always
-    delivers a POSITIVE remaining and the ≤0 kill in enforce_on_low_balance
-    would never fire off it. The -zero alert (threshold 0) is the one that
-    actually delivers remaining ≤ 0; the webhook handler itself needs no
+    delivers a POSITIVE remaining and would never block off it. The -zero
+    alert (threshold 0) is the one that actually delivers remaining ≤ 0; the webhook handler itself needs no
     special-casing.
     """
     alerts = (

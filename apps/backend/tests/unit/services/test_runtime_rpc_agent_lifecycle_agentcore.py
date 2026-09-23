@@ -83,7 +83,6 @@ _MANAGED_INPUTS = ProfileInputs(
     provider_choice="openrouter_managed",
     byo_provider=None,
     byo_api_key=None,
-    aip_arns={},
     integrations={},
     env_vars={},
 )
@@ -244,7 +243,6 @@ async def test_a_model_change_alongside_a_role_change_still_writes_the_picked_mo
     expected_model, _aux, _prov = model_block(
         provider_choice="openrouter_managed",
         byo_provider=None,
-        aip_arns=_MANAGED_INPUTS.aip_arns,
         is_ceo=False,
         default_id="candidate/model",
     )
@@ -332,18 +330,13 @@ async def test_rename_still_writes_soul_md_when_there_is_nothing_to_preserve(mon
     upload_soul.assert_called_once()
 
 
-def _wire_owner_models(monkeypatch, *, provider_choice="openrouter_managed", aip_arns=None):
-    """The two reads ``_agentcore_models_list`` makes -- the owner's provider choice and the
-    container row's AIP map. With them, ``agents.update {model}`` validates against exactly the
-    ids ``models.list`` would have offered this owner (M6 task 10-C)."""
+def _wire_owner_models(monkeypatch, *, provider_choice="openrouter_managed"):
+    """The read ``_agentcore_models_list`` makes -- the owner's provider choice. With it,
+    ``agents.update {model}`` validates against exactly the ids ``models.list`` would have
+    offered this owner (M6 task 10-C)."""
     monkeypatch.setattr(
         "core.services.container_provision.resolve_provider_choice",
         AsyncMock(return_value=(provider_choice, None)),
-    )
-    monkeypatch.setattr(
-        rpc.container_repo,
-        "get_by_owner_id",
-        AsyncMock(return_value={"bedrock_aip_arns": _MANAGED_INPUTS.aip_arns if aip_arns is None else aip_arns}),
     )
 
 
@@ -391,7 +384,6 @@ async def test_mirror_agent_update_accepts_an_offered_id_and_writes_it_through_t
     expected_model, _aux_model, _aux_provider = model_block(
         provider_choice="openrouter_managed",
         byo_provider=None,
-        aip_arns=_MANAGED_INPUTS.aip_arns,
         is_ceo=False,
         default_id="candidate/model",
     )

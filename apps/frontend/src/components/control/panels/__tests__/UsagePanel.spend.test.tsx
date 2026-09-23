@@ -24,8 +24,6 @@ const usageFixture = {
   ],
 };
 
-const spendState: { value: unknown } = { value: { mode: "tokens_only" } };
-
 vi.mock("@/hooks/useBilling", () => ({
   useBilling: () => ({
     account: { subscription_status: "active" },
@@ -33,9 +31,6 @@ vi.mock("@/hooks/useBilling", () => ({
     fetchUsage: async () => usageFixture,
     refresh: () => {},
   }),
-}));
-vi.mock("@/hooks/useSpend", () => ({
-  useSpend: () => ({ spend: spendState.value, isLoading: false }),
 }));
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ membership: null }) }));
 
@@ -54,7 +49,6 @@ vi.mock("swr", () => ({
 
 describe("UsagePanel spend display", () => {
   it("never renders the usage-counters dollar figures", async () => {
-    spendState.value = { mode: "tokens_only" };
     render(<UsagePanel />);
     expect(await screen.findByText(/5 requests/)).toBeInTheDocument();
     expect(screen.queryByText(/Total spend/)).toBeNull();
@@ -63,21 +57,4 @@ describe("UsagePanel spend display", () => {
     // member table keeps requests, drops the Spend column
     expect(screen.queryByText("Spend")).toBeNull();
   });
-
-  it("bedrock mode renders billed month-to-date and per-model split", async () => {
-    spendState.value = {
-      mode: "bedrock",
-      billed_month_to_date_cents: 1234,
-      by_model: [{ model: "Claude Opus", tier: "opus", cents: 900 }],
-      period_start: "2026-07-01T00:00:00+00:00",
-    };
-    render(<UsagePanel />);
-    expect(await screen.findByText("$12.34")).toBeInTheDocument();
-    expect(screen.getByText(/Billed this month/i)).toBeInTheDocument();
-    expect(screen.getByText("Claude Opus")).toBeInTheDocument();
-    const creditsLink = screen.getByText("Manage credits");
-    expect(creditsLink).toBeInTheDocument();
-    expect(creditsLink.closest("a")).toHaveAttribute("href", "/chat?panel=llm");
-  });
-
 });

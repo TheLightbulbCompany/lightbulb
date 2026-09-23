@@ -44,9 +44,9 @@ def test_non_deployed_env_skips_security_checks(env):
 
 
 def test_out_of_task_cli_with_prod_env_and_no_ws_is_ok():
-    # scripts.bedrock_gate_break_glass / reapply_openclaw_config set
+    # scripts.reap_owner_aips / roll_hermes_runtimes set
     # ENVIRONMENT=prod to target prod but run outside Fargate and carry no WS
-    # secret — they must import cleanly, or the break-glass tool is bricked.
+    # secret — they must import cleanly, or the ops tool is bricked.
     _settings(ENVIRONMENT="prod", WS_ENFORCE_INTERNAL_SECRET=False, WS_INTERNAL_SECRET="", CLERK_AUTHORIZED_PARTIES="")
 
 

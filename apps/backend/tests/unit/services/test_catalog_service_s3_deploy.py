@@ -184,7 +184,7 @@ async def test_build_and_upload_agent_profile_resolves_the_row_and_delegates():
             owner_id="owner_1", agent_id="agent_new", container=container
         )
 
-    write_profile.assert_awaited_once_with("owner_1", roster[0], container_row=container, soul_md_override=None)
+    write_profile.assert_awaited_once_with("owner_1", roster[0], soul_md_override=None)
 
 
 @pytest.mark.asyncio
@@ -243,7 +243,6 @@ def _wire_agentcore_profile_writer(monkeypatch, roster):
         provider_choice="chatgpt_oauth",
         byo_provider=None,
         byo_api_key=None,
-        aip_arns={"sonnet": "arn:aip:sonnet"},
         integrations={},
         env_vars={},
     )

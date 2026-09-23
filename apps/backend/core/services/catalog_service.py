@@ -346,7 +346,7 @@ async def _build_and_upload_agent_profile(
     from core.services.hermes_provisioning import write_profile_for_agent
 
     agent_row = await _resolve_agent_row_for_profile(owner_id, agent_id)
-    await write_profile_for_agent(owner_id, agent_row, container_row=container, soul_md_override=soul_md_override)
+    await write_profile_for_agent(owner_id, agent_row, soul_md_override=soul_md_override)
 
 
 def _read_soul_md_from_tar(tar_bytes: bytes) -> str | None:

@@ -8,16 +8,13 @@
 // This is the Spend tab's headline, lifted into a `MoneySection` — no
 // masthead, no sub-tab. The token/cache grid and the per-member table are
 // deliberately left on the control Usage panel (`?panel=usage`, Settings) —
-// see spec §4 rule 4. This section renders only the billed figure, the run
-// count, and the by-model rows.
+// see spec §4 rule 4. This section renders only the headline sentence and
+// the run count.
 //
 // ── WHICH FIGURES ARE REAL ────────────────────────────────────────────────
 // This panel shows no number it cannot source. An owner makes a spending
 // decision here, so a confident wrong number is worse than no number.
 //
-//  LIVE      `billed_month_to_date_cents` from GET /billing/spend in
-//            `bedrock` mode. Read off the Metronome DRAFT INVOICE (#1236) —
-//            the ledger that actually bills — so it is the figure charged.
 //  LIVE      request count + period label from GET /billing/usage, and the
 //            per-member split (org admins only; personal owners get []).
 //  NEVER     /billing/usage's `total_spend` and `lifetime_spend` AS FIGURES.
@@ -28,13 +25,11 @@
 //            `lifetime_spend` is read in ONE place below — as a boolean, to
 //            tell a month rollover apart from a company that has never run
 //            anything. No number derived from it is ever printed.
-//  PARTIAL   `tokens_only` is ambiguous by construction:
-//            spend_service.get_spend_summary returns it BOTH for owners with
-//            no platform-billed inference (BYOK, ChatGPT OAuth, free tier)
-//            AND as the degraded fallback when a bedrock_claude owner's
-//            invoice read fails. The two are told apart here by the owner's
-//            stored `provider_choice`, and a degraded bedrock read is
-//            labelled "Unavailable" rather than rendered as a confident $0.
+//  NO DOLLAR FIGURE  GET /billing/spend was retired with backend Bedrock
+//            billing (see CLAUDE.md "Free tier"/"Paid provider paths") — it
+//            now carries no billed amount at all, so this section no longer
+//            reads it. The headline is a plan-derived sentence (free tier /
+//            BYOK / ChatGPT OAuth / not shown), never a number.
 //
 // NO TREND, DELIBERATELY. The only owner-day time series in the product is
 // P0c's rollup table, which has no HTTP read route at all and whose writers
@@ -45,8 +40,6 @@
 import Link from "next/link";
 import useSWR from "swr";
 import { useBilling, type UsageSummary } from "@/hooks/useBilling";
-import { useSpend, type SpendResponse } from "@/hooks/useSpend";
-import { formatUsdCents } from "@/lib/creditAmounts";
 import { MoneySection, MoneyEmptyLine } from "./MoneySection";
 
 interface Headline {
@@ -59,29 +52,13 @@ interface Headline {
 }
 
 /** The one honest sentence about this owner's billed spend, chosen from what
- *  /billing/spend and the billing row can actually prove. `undefined` while
- *  /billing/spend is still in flight — a placeholder zero would be a wrong
- *  number in the window before it lands. */
+ *  the billing row can actually prove. There is no dollar-figure source left
+ *  on this page (see the header comment), so every branch is a sentence
+ *  about the plan, never a number. */
 export function spendHeadline(
-  spend: SpendResponse | undefined,
   providerChoice: string | null | undefined,
   subscriptionStatus: string | null | undefined,
-): Headline | null {
-  if (!spend) return null;
-
-  if (spend.mode === "bedrock" && spend.billed_month_to_date_cents !== null) {
-    return {
-      figure: formatUsdCents(spend.billed_month_to_date_cents ?? 0),
-      money: true,
-      // Deliberately NOT the same sentence as the "Billed this month" card in
-      // the body below — one page, two phrasings of one number reads as two
-      // numbers. This one names what the figure is; the card names its source.
-      caption: "Billed so far this period — the invoiced amount, not an estimate from token counts.",
-      partial: false,
-    };
-  }
-
-  // Everything past here is `tokens_only`, which carries no dollars at all.
+): Headline {
   if (subscriptionStatus === "trial_local") {
     return {
       figure: "No charge",
@@ -108,23 +85,12 @@ export function spendHeadline(
       partial: false,
     };
   }
-  if (providerChoice === "bedrock_claude") {
-    return {
-      figure: "Unavailable",
-      money: false,
-      caption:
-        "We could not read your billed spend just now. This is a temporary read failure, not a zero-dollar period — check back shortly.",
-      partial: true,
-    };
-  }
-  // No stored provider (legacy row, or a billing row that has not landed yet):
-  // both "nothing to bill" and "the read failed" reach here, and the frontend
-  // cannot tell which. Say exactly that.
+  // Every other case (managed OpenRouter included, plus a legacy/unknown
+  // row) has no billed figure left to show on this page.
   return {
     figure: "Not shown",
     money: false,
-    caption:
-      "No billed figure for this period — either your plan does not bill per run, or we could not read the invoice. The volume below is what we measured.",
+    caption: "We don't show a billed figure here. The volume below is what we measured.",
     partial: true,
   };
 }
@@ -148,18 +114,17 @@ function periodMonthName(period: string | undefined): string | null {
 }
 
 export function AgentSpendSection() {
-  const { account, fetchUsage } = useBilling();
-  const { spend } = useSpend();
+  const { account, fetchUsage, isLoading: accountLoading } = useBilling();
   // Same SWR key UsagePanel uses, so this reads the shared cache entry rather
   // than issuing a second /billing/usage request.
-  const { data: usage, isLoading } = useSWR<UsageSummary | null>("/billing/usage", () => fetchUsage(), { dedupingInterval: 30000 });
+  const { data: usage, isLoading: usageLoading } = useSWR<UsageSummary | null>("/billing/usage", () => fetchUsage(), { dedupingInterval: 30000 });
 
-  const headline = spendHeadline(spend, account?.provider_choice, account?.subscription_status);
-  const billedCents = spend?.mode === "bedrock" ? (spend.billed_month_to_date_cents ?? 0) : 0;
-  // "Nothing has happened yet" is a claim about the company, so it needs both
-  // halves to be true: no runs counted AND nothing billed. A non-zero invoice
-  // with a lagging counter must never render as "no agent runs".
-  const nothingThisPeriod = !isLoading && (!usage || usage.request_count === 0) && billedCents === 0;
+  // No headline until both the account and the usage row have loaded — a
+  // placeholder sentence would be a wrong claim in that window.
+  const headline = accountLoading || usageLoading ? null : spendHeadline(account?.provider_choice, account?.subscription_status);
+  // "Nothing has happened yet" is a claim about the company, so it waits for
+  // usage to load before deciding.
+  const nothingThisPeriod = !usageLoading && (!usage || usage.request_count === 0);
   // "Period" is the calendar month, so on the 1st every active company's
   // counters read zero. Name the rollover instead of implying the fleet is
   // dead — see SpendPanel's original comment (git history) for the full case.
@@ -200,16 +165,6 @@ export function AgentSpendSection() {
                 </div>
               )}
             </div>
-          )}
-          {spend?.mode === "bedrock" && (spend.by_model ?? []).length > 0 && (
-            <dl className="flex flex-col divide-y divide-[var(--edge-soft)] border-t border-[var(--edge-soft)]">
-              {(spend.by_model ?? []).map((row) => (
-                <div key={row.tier} className="flex items-center justify-between py-1.5 text-sm">
-                  <dt>{row.model}</dt>
-                  <dd className="font-mono text-xs tabular-nums text-[var(--midnight-muted)]">{formatUsdCents(row.cents)}</dd>
-                </div>
-              ))}
-            </dl>
           )}
         </div>
       )}

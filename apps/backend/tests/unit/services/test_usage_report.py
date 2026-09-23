@@ -59,7 +59,6 @@ async def test_first_report_records_usage_and_analytics():
         output_tokens=2,
         cache_read=0,
         cache_write=0,
-        raw_cost_microcents=10_000,
         room_turn=False,
         event_kind=None,
     )

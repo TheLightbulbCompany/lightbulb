@@ -2024,7 +2024,13 @@ async def finalize_decision(room_id: str, message_id: str, decision: dict) -> di
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
-    return await get_decision(room_id, message_id) or decision
+    stored = await get_decision(room_id, message_id)
+    if stored is None:
+        # Unreachable unless something deletes DECISION rows (a consistent read follows the
+        # failed conditional write); loud, because returning our own value could split-brain.
+        logger.warning("finalize_decision: row vanished after a conditional failure room=%s", room_id)
+        return decision
+    return stored
 
 
 async def get_decision(room_id: str, message_id: str) -> dict | None:

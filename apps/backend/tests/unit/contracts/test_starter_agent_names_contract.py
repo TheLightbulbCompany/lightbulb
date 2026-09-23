@@ -2,7 +2,7 @@
 
 ``STARTER_ROSTER`` (backend) decides what a fresh workspace's six agents are
 called. ``STARTER_AGENT_DEFAULT_NAMES`` in
-``apps/frontend/src/components/messaging/onboardingSteps.ts`` holds the same six
+``packages/shared/src/messaging/onboardingSteps.ts`` holds the same six
 strings, and the onboarding setup band uses them to answer one question: has
 anybody named this team yet? An agent whose name is NOT in that set has been
 renamed, which marks the "Name your agents" card done.
@@ -28,7 +28,7 @@ from core.services.paperclip_provisioning import STARTER_ROSTER  # noqa: E402
 
 # apps/backend/tests/unit/contracts/<this file> -> repo root
 _REPO_ROOT = Path(__file__).resolve().parents[5]
-_ONBOARDING_STEPS = _REPO_ROOT / "apps" / "frontend" / "src" / "components" / "messaging" / "onboardingSteps.ts"
+_ONBOARDING_STEPS = _REPO_ROOT / "packages" / "shared" / "src" / "messaging" / "onboardingSteps.ts"
 
 
 def _frontend_default_names() -> list[str]:

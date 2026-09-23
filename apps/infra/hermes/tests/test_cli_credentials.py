@@ -291,3 +291,30 @@ def test_a_backend_write_mid_turn_is_never_overwritten(home, monkeypatch):
     sync.save_rotated_cli_credentials()
 
     assert s3.objects[key][0] == b"reconnected" and not s3.puts
+
+
+def test_a_quickbooks_rotation_in_any_agents_copy_propagates(home, monkeypatch):
+    """Intuit rotates on every refresh, and each agent's MCP server writes its OWN profile's
+    home/quickbooks/.env -- so every profile is scanned, and the newest rotation wins."""
+    import os
+
+    rel = "home/quickbooks/.env"
+    key = lambda agent: f"{sync.S3_PREFIX}/{agent}/{rel}"
+    roster = ("ceo", "engineering", "finance")
+    s3 = _RotatingS3({key(a): (b"REFRESH=old", f'"etag-{a}"') for a in roster})
+    monkeypatch.setattr(sync, "_s3", lambda: s3)
+    monkeypatch.setattr(sync, "S3_BUCKET", "owner-state")
+    for agent in ("ceo", "engineering"):
+        sync._pull_cli_credentials(agent)
+    older = home / "profiles" / "ceo" / rel
+    newer = home / "profiles" / "engineering" / rel
+    older.write_bytes(b"REFRESH=ceo-rotated")
+    newer.write_bytes(b"REFRESH=eng-rotated")
+    os.utime(older, (1, 1))
+
+    sync.save_rotated_cli_credentials()
+
+    assert all(s3.objects[key(a)][0] == b"REFRESH=eng-rotated" for a in roster)
+    for agent in ("ceo", "engineering"):
+        sync._pull_cli_credentials(agent)  # a re-pull brings the winner, never the old token
+        assert (home / "profiles" / agent / rel).read_bytes() == b"REFRESH=eng-rotated"

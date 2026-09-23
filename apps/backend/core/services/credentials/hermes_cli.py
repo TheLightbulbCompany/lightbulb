@@ -44,8 +44,8 @@ an explicit owner action delivering a fresh credential and must win, exactly as 
 "replaced on the next connect": for a single-use rotating refresh token (X via ``.xurl``) the
 first in-VM refresh kills the copy in S3, so the bridge writes that rotation back to every
 roster profile (``sync.save_rotated_cli_credentials``, If-Match on the ETag it replaced — a
-connect/disconnect landing first still wins). Only ``.xurl`` is covered; ``qbo_dotenv``'s
-``quickbooks/`` rotates the same way and is not.
+connect/disconnect landing first still wins). Covered: X's ``.xurl`` and QuickBooks'
+``quickbooks/.env`` (the bridge's ``ROTATING_CLI_CREDENTIALS``).
 """
 
 from __future__ import annotations

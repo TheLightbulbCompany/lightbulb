@@ -678,6 +678,65 @@ def handler(event, context):
         "Paperclip-woken runs rejected with a stale hook token - nightly CEO and issue runs are failing silently for an owner (see backend log 'internal hook auth failed')",
     });
 
+    // P26: jev-decision-error-rate
+    // Jev routes ambient room traffic. An error/timeout/429 decision fails the
+    // routing call (the message still lands; only the wake decision is lost), so
+    // a sustained error share means agents silently stop answering room_events.
+    // Floor of 10 decisions per 15 min so one bad call on a quiet night is not a page.
+    const jevOutcome = (outcome?: string) =>
+      new cloudwatch.Metric({
+        namespace: "LightbulbAI",
+        metricName: "messaging.jev.decision",
+        statistic: "Sum",
+        dimensionsMap: {
+          env: this.envName,
+          service: "lightbulb-backend",
+          ...(outcome ? { outcome } : {}),
+        },
+      });
+    this.createAlarm({
+      id: "P26",
+      name: "jev-decision-error-rate",
+      metric: new cloudwatch.MathExpression({
+        expression:
+          "IF(all >= 10, 100 * (FILL(e, 0) + FILL(t, 0) + FILL(r, 0)) / all, 0)",
+        usingMetrics: {
+          all: jevOutcome(),
+          e: jevOutcome("error"),
+          t: jevOutcome("timeout"),
+          r: jevOutcome("rate_limited"),
+        },
+        period: cdk.Duration.minutes(15),
+      }),
+      threshold: 20,
+      evaluationPeriods: 1,
+      severity: "page",
+      description:
+        "Jev routing decisions failing (error/timeout/429) > 20% over 15 min with >= 10 decisions - room agents are not being woken",
+    });
+
+    // P27: nightly-ceo-fleet-zero (prod only)
+    // The nightly CEO routine is the retention loop. Zero successful runs across
+    // the whole fleet in 24 h means it is broken for everyone (stale adapter
+    // token, Paperclip scheduler down, wake path failing) - the 09-22 dev 401s
+    // went unnoticed exactly this way. Missing data BREACHES: silence is the failure.
+    if (this.envName === "prod") {
+      this.createAlarm({
+        id: "P27",
+        name: "nightly-ceo-fleet-zero",
+        metricName: "nightly_ceo.run",
+        dimensions: { outcome: "success" },
+        threshold: 1,
+        evaluationPeriods: 1,
+        periodMinutes: 1440,
+        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+        severity: "page",
+        description:
+          "No successful nightly CEO run anywhere in the fleet in 24 h - the retention loop is down",
+      });
+    }
+
     // P5: debug-endpoint-prod-hit
     this.createAlarm({
       id: "P5",
@@ -3414,6 +3473,33 @@ def handler(event, context):
         width: 6,
         height: 6,
       }),
+    );
+    dashboard.addWidgets(
+      ...(
+        [
+          ["Jev decisions by outcome", "messaging.jev.decision", "outcome", ["ok", "error", "timeout", "rate_limited", "disabled"]],
+          ["Nightly CEO runs by outcome", "nightly_ceo.run", "outcome", ["success", "failure", "aborted"]],
+          ["Rejected hook tokens by route", "internal_hook.auth_failed", "route", ["paperclip_run", "other"]],
+        ] as const
+      ).map(
+        ([title, metricName, dim, values]) =>
+          new cloudwatch.GraphWidget({
+            title,
+            left: values.map(
+              (value) =>
+                new cloudwatch.Metric({
+                  namespace: "LightbulbAI",
+                  metricName,
+                  statistic: "Sum",
+                  period: cdk.Duration.hours(1),
+                  dimensionsMap: { ...dims, [dim]: value },
+                  label: value,
+                }),
+            ),
+            width: 8,
+            height: 6,
+          }),
+      ),
     );
   }
 

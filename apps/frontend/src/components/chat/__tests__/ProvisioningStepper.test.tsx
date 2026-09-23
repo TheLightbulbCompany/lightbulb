@@ -210,7 +210,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
           </ProvisioningStepper>,
         );
         expect(screen.getByText("children")).toBeInTheDocument();
-        expect(screen.getByText(/You can keep messaging in the meantime/i)).toBeInTheDocument();
+        expect(screen.getByText(/ready in about a minute/i)).toBeInTheDocument();
         // The step label now also appears in the BANNER, so "is the card
         // gone?" can no longer be asked of a step label. Ask it of something
         // only the full-screen card renders: its rotating-ideas eyebrow.
@@ -228,7 +228,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
         <div>children</div>
       </ProvisioningStepper>,
     );
-    expect(screen.getByText("Provisioning your container...")).toBeInTheDocument();
+    expect(screen.getByText("Setting up your workspace…")).toBeInTheDocument();
     expect(screen.queryByText("children")).not.toBeInTheDocument();
   });
 
@@ -575,7 +575,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     ).not.toBeInTheDocument();
     // Must proceed past "payment" into the workspace while the container boots.
     expect(screen.getByText("children")).toBeInTheDocument();
-    expect(screen.getByText(/You can keep messaging in the meantime/i)).toBeInTheDocument();
+    expect(screen.getByText(/ready in about a minute/i)).toBeInTheDocument();
   });
 
   it("renders ChatGPTOAuthStep when ?provider=chatgpt_oauth even if gate is blocked", async () => {
@@ -1055,27 +1055,27 @@ describe("agents banner progress", () => {
     expect(agentsBannerProgress("payment")).toEqual({
       step: 1,
       total: 6,
-      activeLabel: "Confirming payment...",
+      activeLabel: "Confirming your plan…",
     });
     expect(agentsBannerProgress("container")).toEqual({
       step: 2,
       total: 6,
-      activeLabel: "Provisioning your container...",
+      activeLabel: "Setting up your workspace…",
     });
     expect(agentsBannerProgress("gateway")).toEqual({
       step: 3,
       total: 6,
-      activeLabel: "Connecting to your agent's brain...",
+      activeLabel: "Starting your agents…",
     });
     expect(agentsBannerProgress("channels-sidecars")).toEqual({
       step: 4,
       total: 6,
-      activeLabel: "Wiring up your channels...",
+      activeLabel: "Introducing your team…",
     });
     expect(agentsBannerProgress("agent")).toEqual({
       step: 5,
       total: 6,
-      activeLabel: "Putting the finishing touches on your agent...",
+      activeLabel: "Almost ready…",
     });
     expect(agentsBannerProgress("ready")).toEqual({
       step: 6,
@@ -1096,28 +1096,28 @@ describe("agents banner progress", () => {
       { container_status: "provisioning", runtime_phase: "provisioning", container_substatus: "service_created" },
       null,
       2,
-      "Provisioning your container...",
+      "Setting up your workspace…",
     ],
     [
       "gateway",
       { container_status: "provisioning", runtime_phase: "provisioning", container_substatus: "task_running" },
       null,
       3,
-      "Connecting to your agent's brain...",
+      "Starting your agents…",
     ],
     [
       "channels-sidecars",
       { container_status: "running", runtime_phase: "starting", container_substatus: "gateway_healthy" },
       null,
       4,
-      "Wiring up your channels...",
+      "Introducing your team…",
     ],
     [
       "agent",
       { container_status: "running", runtime_phase: "starting", container_substatus: "gateway_healthy" },
       { ok: true },
       5,
-      "Putting the finishing touches on your agent...",
+      "Almost ready…",
     ],
   ])(
     "shows the live step (%s) with a labelled progressbar over the working app",
@@ -1127,18 +1127,20 @@ describe("agents banner progress", () => {
 
       expect(screen.getByText("children")).toBeInTheDocument();
       expect(screen.getByText(activeLabel as string)).toBeInTheDocument();
-      expect(screen.getByText(`Step ${step} of 6`)).toBeInTheDocument();
+      // Plain language only: no infrastructure jargon, no bare step counter.
+      expect(screen.queryByText(/container/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Step \d of 6/)).not.toBeInTheDocument();
 
       const bar = screen.getByRole("progressbar");
       expect(bar).toHaveAttribute("aria-valuenow", String(step));
       expect(bar).toHaveAttribute("aria-valuemin", "0");
       expect(bar).toHaveAttribute("aria-valuemax", "6");
-      expect(bar).toHaveAttribute("aria-valuetext", `Step ${step} of 6 — ${activeLabel}`);
+      expect(bar).toHaveAttribute("aria-valuetext", activeLabel as string);
 
       // The banner stays the polite live region it was.
       const banner = screen.getByRole("status");
       expect(banner).toHaveAttribute("aria-live", "polite");
-      expect(banner).toHaveTextContent(/You can keep messaging in the meantime/i);
+      expect(banner).toHaveTextContent(/ready in about a minute/i);
     },
   );
 
@@ -1162,7 +1164,6 @@ describe("agents banner progress", () => {
 
       expect(screen.getByText(/Still going/i)).toBeInTheDocument();
       expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "5");
-      expect(screen.getByText("Step 5 of 6")).toBeInTheDocument();
     });
 
     it("drops the bar entirely when STUCK — a bar next to 'something is stuck' reads as progress", () => {
@@ -1178,7 +1179,7 @@ describe("agents banner progress", () => {
       expect(screen.getByText(/something is stuck on our side/i)).toBeInTheDocument();
       expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
       expect(screen.queryByText(/Step \d of 6/)).not.toBeInTheDocument();
-      expect(screen.queryByText(/finishing touches/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Almost ready/i)).not.toBeInTheDocument();
       // The escalation's own actions survive untouched.
       expect(screen.getByRole("button", { name: /Check again/ })).toBeInTheDocument();
       expect(screen.getByRole("link", { name: /Contact support/i })).toBeInTheDocument();

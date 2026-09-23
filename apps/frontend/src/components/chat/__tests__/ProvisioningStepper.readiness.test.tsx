@@ -134,7 +134,7 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
   it("(b) renders the workspace when the FIRST status response is already ready", async () => {
     renderStepper();
     await waitFor(() => expect(screen.getByText("workspace")).toBeInTheDocument());
-    expect(screen.queryByText(/finishing touches/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Almost ready/i)).not.toBeInTheDocument();
   });
 
   it("(a) shows the workspace mid-boot and drops the agents banner once the container is ready", async () => {
@@ -148,12 +148,12 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
     // Messaging never needs the container: the workspace renders mid-boot,
     // with the agents banner instead of the setup card.
     expect(screen.getByText("workspace")).toBeInTheDocument();
-    expect(screen.getByText(/You can keep messaging in the meantime/i)).toBeInTheDocument();
+    expect(screen.getByText(/ready in about a minute/i)).toBeInTheDocument();
     // The banner now names the live step too, so "is the card gone?" has to be
     // asked of something only the card renders — its rotating-ideas eyebrow.
     expect(screen.queryByText(/try asking your agent to/i)).not.toBeInTheDocument();
     // …and the banner is carrying real progress while it waits.
-    expect(screen.getByText(/finishing touches/i)).toBeInTheDocument();
+    expect(screen.getByText(/Almost ready/i)).toBeInTheDocument();
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "5");
 
     // The container finishes booting. Nothing else happens: no click, no
@@ -162,7 +162,7 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
     body = READY;
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
 
-    await vi.waitFor(() => expect(screen.queryByText(/keep messaging in the meantime/i)).not.toBeInTheDocument());
+    await vi.waitFor(() => expect(screen.queryByText(/ready in about a minute/i)).not.toBeInTheDocument());
     expect(screen.getByText("workspace")).toBeInTheDocument();
   });
 });

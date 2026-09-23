@@ -33,7 +33,7 @@ export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: Direct
 }
 
 export function MessagingConversation() {
-  const { roomProps, sessionFocus, closeSession, sessionSource, scope } = useMessagingWorkspace();
+  const { roomProps, sessionFocus, closeSession, sessionSource, scope, directoryProps } = useMessagingWorkspace();
   if (sessionFocus) {
     return <SessionFocus key={scope} focus={sessionFocus} source={sessionSource} onClose={closeSession}
       conversation={roomProps ? <RoomPanel {...roomProps} /> : null} scope={scope} />;
@@ -41,7 +41,10 @@ export function MessagingConversation() {
   return roomProps
     ? <RoomPanel {...roomProps} />
     : <section className="room-panel room-blocked" aria-label="No conversation selected">
-        <p role="status">Choose or create a conversation.</p>
+        <p role="status">{directoryProps.state === "ready" && directoryProps.rooms.length === 0
+          // No rooms at all only happens before setup seeds #general.
+          ? "Your team is getting ready — #general will open here."
+          : "Choose or create a conversation."}</p>
       </section>;
 }
 

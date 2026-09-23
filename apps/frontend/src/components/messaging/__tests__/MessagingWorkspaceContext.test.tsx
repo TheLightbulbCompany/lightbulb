@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useEffect, useState } from "react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RoomDetail } from "@lightbulb/shared";
 import type { RoomDirectoryProps } from "../RoomDirectory";
 import type { RoomPanelProps } from "../RoomPanel";
@@ -1016,4 +1016,46 @@ it("keeps history action inputs stable while the provider draft or live run chan
   expect(panel.onMarkUnreadFrom).toBe(before.unread);
   expect(panel.pinnedMessageIds).toBe(before.pins);
   expect(panel.participants).toBe(before.participants);
+});
+
+describe("opening #general once it is seeded", () => {
+  const general = { ...room, roomId: "general", kind: "channel" as const, name: "general", isDefault: true };
+  const shell = () => <MessagingWorkspaceProvider subscribeToRoom><MessagingConversation /></MessagingWorkspaceProvider>;
+  const noSelection = () => {
+    state.activeRoomId = null;
+    state.activeRoom = null as unknown as RoomDetail;
+  };
+
+  it("says the team is getting ready while there are no rooms, then opens #general exactly once", () => {
+    noSelection();
+    state.rooms = [];
+    const view = render(shell());
+    expect(screen.getByRole("status")).toHaveTextContent("Your team is getting ready — #general will open here.");
+    expect(state.selectRoom).not.toHaveBeenCalled();
+
+    state.rooms = [general];
+    view.rerender(shell());
+    expect(state.selectRoom).toHaveBeenCalledTimes(1);
+    expect(state.selectRoom).toHaveBeenCalledWith("general");
+
+    view.rerender(shell());
+    expect(state.selectRoom).toHaveBeenCalledTimes(1);
+  });
+
+  it("never overrides a room the viewer already has open", () => {
+    state.rooms = [];
+    const view = render(shell());
+    state.rooms = [room, general];
+    view.rerender(shell());
+    expect(state.selectRoom).not.toHaveBeenCalled();
+  });
+
+  it("does not re-open #general after the viewer navigates away", () => {
+    state.rooms = [room, general];
+    const view = render(shell());
+    noSelection();
+    view.rerender(shell());
+    expect(state.selectRoom).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("Choose or create a conversation.");
+  });
 });

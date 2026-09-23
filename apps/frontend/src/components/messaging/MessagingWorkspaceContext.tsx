@@ -190,6 +190,24 @@ export function MessagingWorkspaceProvider({
   const selectRoomError = rooms.selectRoomError && rooms.selectRoomError !== selectErrorDismissed
     ? rooms.selectRoomError
     : null;
+  // A fresh workspace has no rooms until setup seeds #general, so nothing gets
+  // auto-selected and the viewer sits on an empty pane. Open #general the first
+  // time it appears — once, and only while nothing has ever been open here and
+  // no DM/room open is in flight, so it never yanks a viewer out of a choice.
+  const firstRoomSettled = useRef(false);
+  const { activeRoomId: autoOpenActive, rooms: autoOpenRooms, selectRoom: autoOpenSelect } = rooms;
+  useEffect(() => {
+    if (firstRoomSettled.current) return;
+    if (autoOpenActive) {
+      firstRoomSettled.current = true;
+      return;
+    }
+    if (creationBusy || openingParticipant) return;
+    const general = autoOpenRooms.find((room) => room.isDefault);
+    if (!general) return;
+    firstRoomSettled.current = true;
+    autoOpenSelect(general.roomId);
+  }, [autoOpenActive, autoOpenRooms, creationBusy, openingParticipant, autoOpenSelect]);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const toggleShortcuts = useCallback(() => setShortcutsOpen((open) => !open), []);
   useMessagingShortcuts(rooms.rooms, rooms.activeRoomId, rooms.selectRoom, toggleShortcuts, shortcutsOpen);

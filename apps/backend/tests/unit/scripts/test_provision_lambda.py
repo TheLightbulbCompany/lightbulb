@@ -20,8 +20,10 @@ BACKEND_ROOT = Path(__file__).resolve().parents[3]
 def lam(monkeypatch):
     monkeypatch.delenv("LAMBDA_SECRET_ENV_MAP", raising=False)
     monkeypatch.delenv("LAMBDA_ENV_PARAMETER", raising=False)
-    from scripts import provision_lambda
+    from scripts import provision_lambda, provision_runner
 
+    # Warm: the first invocation's env load + import has already happened.
+    monkeypatch.setattr(provision_lambda, "provision_runner", provision_runner)
     return provision_lambda
 
 
@@ -95,8 +97,9 @@ def test_load_environment_sets_the_plain_env_then_every_mapped_secret(lam):
 
 
 def test_secrets_are_in_the_environment_before_settings_is_first_imported():
-    """Cold start in a clean interpreter: importing the handler module loads the mapped
-    secrets BEFORE core.config is imported, so Settings reads them like ECS-injected env."""
+    """Cold start in a clean interpreter: importing the handler module does NOTHING heavy
+    (Lambda's 10 s init cap), and the first invocation loads the mapped secrets BEFORE
+    core.config is imported, so Settings reads them like ECS-injected env."""
     code = """
 import sys, boto3
 
@@ -110,7 +113,9 @@ class _Ssm:
 
 boto3.client = lambda service, *a, **k: _Ssm() if service == "ssm" else _Sm()
 assert "core.config" not in sys.modules
-import scripts.provision_lambda
+import scripts.provision_lambda as lam
+assert "core.config" not in sys.modules  # init stays light
+lam.load_environment()  # what the first invoke runs before importing the runner
 from core.config import settings
 assert settings.CLERK_SECRET_KEY == "from-arn:clerk", settings.CLERK_SECRET_KEY
 assert settings.OWNER_STATE_BUCKET == "from-ssm", settings.OWNER_STATE_BUCKET

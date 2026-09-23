@@ -7,10 +7,15 @@ transient -> ``ProvisionTransient`` (retried), deterministic -> ``ProvisionFaile
 No waiting here beyond what ``run`` does; waits belong in machine states.
 
 Lambda has no ECS ``secrets:`` injection and a 4 KB env limit the backend's env
-exceeds, so each cold start first rebuilds the task definition's environment --
+exceeds, so the first invocation rebuilds the task definition's environment --
 the plain env from an SSM parameter and every injected secret from Secrets
 Manager, both written by CDK from the task def's own maps -- BEFORE anything
 imports ``core.config``, whose Settings read env once at import.
+
+That rebuild and the backend import run in the first INVOKE, not at module init:
+Lambda caps init at 10 s, and the first cold start after a deploy (a fresh image
+to page in, ~20 Secrets Manager reads, the whole backend to import) hit it on dev
+2026-09-23 -- Lambda then re-ran init inside the invoke, paying it twice.
 """
 
 from __future__ import annotations
@@ -43,9 +48,8 @@ def load_environment(environ=os.environ, *, ssm=None, secretsmanager=None) -> No
             environ[name] = secretsmanager.get_secret_value(SecretId=arn)["SecretString"]
 
 
-load_environment()
-
-from scripts import provision_runner  # noqa: E402 -- imports core.config; secrets must be loaded first
+#: ``scripts.provision_runner``, imported by the first invocation once the env is loaded.
+provision_runner = None
 
 
 class ProvisionTransient(Exception):
@@ -67,6 +71,12 @@ _loop = asyncio.new_event_loop()
 
 
 def handler(event, context):
+    global provision_runner
+    if provision_runner is None:
+        load_environment()
+        from scripts import provision_runner as runner  # imports core.config: env first
+
+        provision_runner = runner
     owner_id = event["owner_id"]
     code = _loop.run_until_complete(provision_runner.run(owner_id))
     if code == provision_runner.EXIT_TRANSIENT:

@@ -243,6 +243,7 @@ turbo run lint                        # All linting
 
 Backend: `cd apps/backend && uv run pytest tests/ -v`
 Frontend unit: `cd apps/frontend && pnpm test`
+TLA+ model checks (concurrency protocols): `tla/check.sh` — see `tla/README.md`
 
 ### Workspace Re-provisioning (Dev)
 

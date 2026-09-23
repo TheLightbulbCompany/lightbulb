@@ -1,8 +1,6 @@
 """M6 task 10-C: ``models.list`` on the bridge.
 
-The backend serves this itself for a Bedrock-managed workspace (the owner's own application
-inference profiles are the only models the gate admits, and they live in DynamoDB). It forwards
-here only for BYO-key / ChatGPT-OAuth workspaces, where the catalog is Hermes's own.
+The catalog is Hermes's own for whatever provider the profile pins.
 """
 
 from bridge import server, sync
@@ -13,18 +11,6 @@ RPC = "/plugins/lightbulb-channel/rpc"
 
 def call(params):
     return server.handle_plugin(RPC, "POST", AUTH, {"method": "models.list", "params": params})
-
-
-def test_a_bedrock_profile_answers_an_empty_list_and_its_own_default(home):
-    (home / "profiles" / "ceo").mkdir(parents=True)
-    sync.write_profile_config("ceo", {"model": {"default": "arn:aip:opus", "provider": "bedrock"}})
-
-    code, obj = call({"agentId": "ceo"})
-
-    # Empty is the CORRECT answer, not a stub: the backend owns the Bedrock list and never
-    # forwards here for it. `defaultId` still reports what this profile actually runs on.
-    assert code == 200 and obj["ok"] is True
-    assert obj["payload"] == {"models": [], "defaultId": "arn:aip:opus"}
 
 
 def test_a_byo_profile_lists_hermes_own_catalog_for_its_provider(home, monkeypatch):

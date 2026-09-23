@@ -46,7 +46,7 @@ def test_pin_profile_defaults_adds_plugins_enabled_and_preserves_disabled(home):
 
 # ---- fix round, M4-R2: pin_profile_defaults is FILL-MISSING, not force-pin --------------------
 # M4's config writer (hermes_profiles.build_profile_config) is now the source of truth for a
-# profile's aux/bedrock pins, written at provision and kept current by Task 13's ensure_profile()
+# profile's aux pins, written at provision and kept current by Task 13's ensure_profile()
 # re-pull on a changed .revision -- the bridge no longer needs to force-overwrite them every turn.
 def test_pin_profile_defaults_never_overwrites_a_task_the_profile_already_pins(home):
     """The discriminating case: BOTH sides set every key on ``vision``, so the two merge
@@ -61,14 +61,12 @@ def test_pin_profile_defaults_never_overwrites_a_task_the_profile_already_pins(h
     assert config["auxiliary"]["vision"] == {"provider": "openrouter", "model": "x", "fallback_chain": ["a"]}
 
 
-def test_chatgpt_oauth_aux_is_left_to_hermes_and_never_pinned_to_bedrock(home):
-    """Bedrock removal A1: an unpinned task stays unpinned (Hermes's "auto" = the main provider), and
-    a Bedrock pin an older bridge wrote into a non-Bedrock profile is dropped."""
+def test_chatgpt_oauth_aux_is_left_to_hermes(home):
+    """An unpinned task stays unpinned (Hermes's "auto" = the main provider)."""
     (home / "profiles" / "ceo").mkdir(parents=True)
     codex = {"provider": "openai-codex", "model": "gpt-5.6-sol", "fallback_chain": []}
     sync.write_profile_config("ceo", {"model": {"provider": "openai-codex", "default": "gpt-5.6-sol"},
-                                      "auxiliary": {"vision": codex, "free_only": True,
-                                                    "compression": {"provider": "bedrock", "model": "aip"}}})
+                                      "auxiliary": {"vision": codex, "free_only": True}})
     config = sync.pin_profile_defaults("ceo")
     assert config["auxiliary"] == {"vision": codex, "free_only": True}
     assert sync.read_profile_config("ceo")["auxiliary"] == config["auxiliary"]
@@ -126,19 +124,6 @@ def test_warm_process_booted_on_bedrock_validates_a_pulled_managed_profile(home,
     sync.write_profile_config("ceo", {"model": model, "auxiliary": tasks})
     with pytest.raises(RuntimeError, match="bypasses managed gate"):
         sync.pin_profile_defaults("ceo")
-
-
-def test_warm_process_booted_managed_accepts_a_pulled_bedrock_profile(home, monkeypatch):
-    (home / "profiles" / "ceo").mkdir(parents=True)
-    monkeypatch.setenv("LIGHTBULB_PROVIDER_CHOICE", "openrouter_managed")
-    monkeypatch.setenv("LIGHTBULB_MANAGED_GATE_URL", "https://gate.example/v1")
-    # N-1: the current backend still writes Bedrock-main profiles with their own Bedrock aux pins.
-    pinned = {"compression": {"provider": "bedrock", "model": "arn:aip:haiku", "fallback_chain": []}}
-    sync.write_profile_config("ceo", {"model": {"provider": "bedrock", "default": "arn:aip:sonnet"},
-                                      "auxiliary": pinned})
-
-    config = sync.pin_profile_defaults("ceo")
-    assert config["auxiliary"] == pinned
 
 
 def test_gate_bearer_route_without_a_gate_url_fails_closed(home, monkeypatch):

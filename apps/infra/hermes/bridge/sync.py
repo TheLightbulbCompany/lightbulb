@@ -1180,20 +1180,8 @@ def pin_profile_defaults(agent_id: str) -> dict:
                         or route.get("model") != approved_model
                         or route.get("api_key") != "${LIGHTBULB_GATE_BEARER}"):
                     raise RuntimeError(f"auxiliary route for {name} bypasses managed gate")
-        config = existing
-    else:
-        # Bedrock removal A1 (owner decision): a non-managed profile's aux follows the owner's own
-        # provider -- Hermes's default. An unpinned task is "auto" = main provider + main model,
-        # and once a main provider is set Hermes refuses to guess another one
-        # (agent/auxiliary_client.py _resolve_auto_route/_discovery_chain_allowed, v2026.9.14).
-        # A Bedrock pin an older bridge wrote into a non-Bedrock profile is dropped; a Bedrock-main
-        # profile (the current backend's, N-1) keeps its own pins.
-        config = existing
-        if (existing.get("model") or {}).get("provider") != "bedrock":
-            aux = existing.get("auxiliary") or {}
-            config = {**existing, "auxiliary": {name: block for name, block in aux.items()
-                                                if not (isinstance(block, dict) and block.get("provider") == "bedrock")}}
-    config = deep_merge(config, plugins_pin(existing))
+    # A non-managed profile's aux follows the owner's own provider -- Hermes's default.
+    config = deep_merge(existing, plugins_pin(existing))
     write_profile_config(agent_id, config)
     return config
 

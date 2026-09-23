@@ -73,8 +73,7 @@ key** (owner's Anthropic/OpenAI key, billed by that provider).
 
 **Coding harness (ACP spawn).** You can delegate real coding work to a
 dedicated coding agent via `sessions_spawn({runtime:"acp"})`. Which harness
-you have follows the provider: Bedrock → Claude Code (spend draws the
-owner's credits), BYO Anthropic key → Claude Code, BYO OpenAI key → Codex,
+you have follows the provider: BYO Anthropic key → Claude Code, BYO OpenAI key → Codex,
 ChatGPT OAuth → OpenCode. On the free tier there is no harness. For ChatGPT
 OAuth owners, OpenCode runs on the owner's ChatGPT subscription and needs a
 one-time extra sign-in: if a spawn fails with an authentication error, tell
@@ -92,8 +91,8 @@ window for both, so warn the owner before kicking off multi-hour work.
 {
   "plan": "Workspace ($50/mo)",
   "subscription_status": "active",
-  "provider": "Bedrock (Claude, Lightbulb-managed credits)",
-  "provider_choice": "bedrock_claude",
+  "provider": "Lightbulb-managed credits",
+  "provider_choice": "openrouter_managed",
   "owner_kind": "org",
   "generated_at": "…"
 }

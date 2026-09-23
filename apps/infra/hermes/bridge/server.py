@@ -433,10 +433,7 @@ def _provider_catalog(provider: str) -> list[str]:
 def _models_list(params: dict, **_kwargs) -> dict:
     """The models this workspace can pick from (M6 task 10-C).
 
-    A BEDROCK profile answers an EMPTY list on purpose: the only models the bedrock-gate admits
-    are the owner's own application inference profiles, which live in DynamoDB, not here -- the
-    backend serves that list itself and never forwards. So this is the BYO-key / ChatGPT-OAuth
-    answer, and it is Hermes's own catalog for whatever provider the profile pins. ``name`` is
+    Hermes's own catalog for whatever provider the profile pins. ``name`` is
     the id: Hermes's catalog carries descriptions ("recommended", "free"), not display names,
     and inventing one here would be a second naming authority."""
     names = _profiles()
@@ -448,8 +445,6 @@ def _models_list(params: dict, **_kwargs) -> dict:
     if not agent_id:
         return {"ok": True, "payload": {"models": [], "defaultId": ""}}
     model, provider = turn.profile_model(sync.read_profile_config(agent_id))
-    if provider == "bedrock":
-        return {"ok": True, "payload": {"models": [], "defaultId": model}}
     return {"ok": True, "payload": {
         "models": [{"id": mid, "name": mid, "provider": provider} for mid in _provider_catalog(provider)],
         "defaultId": model,
@@ -476,12 +471,10 @@ def _dotenv_has(agent_id: str, key: str) -> bool:
 
 
 #: Hermes provider name -> (where the credential lives, how to check it). The provider names are
-#: the ones `hermes_profiles.model_block` writes into `config.yaml` -- `bedrock`, `anthropic`,
-#: `openai-api`, `openai-codex` -- and they are what the frontend's `llm-auth-status.ts` already
+#: the ones `hermes_profiles.model_block` writes into `config.yaml` -- `custom` (the managed
+#: gate), `anthropic`, `openai-api`, `openai-codex` -- and they are what the frontend's `llm-auth-status.ts` already
 #: matches on (exactly, or by its `openai-` prefix rule), so no id is translated here.
 def _provider_credential(agent_id: str, provider: str) -> tuple[bool, str]:
-    if provider == "bedrock":
-        return bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK")), "bedrock-gate"
     if provider == "custom" and sync.is_managed_route(sync.read_profile_config(agent_id)):
         return bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK")), "lightbulb-gate"
     if provider == "anthropic":
@@ -526,10 +519,8 @@ def _models_auth_status(params: dict, **_kwargs) -> dict:
             # One profile's worth. Still not free on a cold microVM -- see the docstring.
             sync.ensure_profile(agent_id)
         provider = ((sync.read_profile_config(agent_id).get("model") or {}).get("provider") or "").strip()
-    if not provider:  # no profile readable yet -- the gate bearer is still the runtime's own truth
-        ok = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
-        return {"ok": True, "payload": {"providers": [
-            {"provider": "bedrock", "status": "ok" if ok else "missing", "via": "bedrock-gate"}]}}
+    if not provider:  # no profile readable yet: no provider to report (the panel shows neutral)
+        return {"ok": True, "payload": {"providers": []}}
     ok, via = _provider_credential(agent_id, provider)
     return {"ok": True, "payload": {"providers": [
         {"provider": provider, "status": "ok" if ok else "missing", "via": via}]}}

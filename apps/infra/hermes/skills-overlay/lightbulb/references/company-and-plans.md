@@ -78,8 +78,8 @@ key** (owner's Anthropic/OpenAI key, billed by that provider).
 {
   "plan": "Workspace ($50/mo)",
   "subscription_status": "active",
-  "provider": "Bedrock (Claude, Lightbulb-managed credits)",
-  "provider_choice": "bedrock_claude",
+  "provider": "Lightbulb-managed credits",
+  "provider_choice": "openrouter_managed",
   "owner_kind": "org",
   "generated_at": "…"
 }

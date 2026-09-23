@@ -12,7 +12,6 @@ OWNER = os.environ.get("ISOL8_OWNER_ID", "")
 API = os.environ.get("ISOL8_API_URL", "").rstrip("/")
 HOOK_TOKEN = os.environ.get("OPENCLAW_HOOK_TOKEN", "")
 GATEWAY_TOKEN = os.environ.get("GATEWAY_TOKEN", "")
-MODEL = os.environ.get("ANTHROPIC_MODEL", "")
 S3_BUCKET = os.environ.get("S3_BUCKET", "")
 
 

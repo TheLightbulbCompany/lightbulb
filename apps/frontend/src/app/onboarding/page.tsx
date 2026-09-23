@@ -31,10 +31,13 @@ export default function OnboardingPage() {
 
   // /chat stamps its theme on <html> and a client redirect from /chat keeps it,
   // which repaints this page's ground as the chat pane (white, or dark). Lift
-  // it here; /chat's layout re-stamps it from storage on the way back in.
+  // it while onboarding is mounted and put it back on the way out: /chat's
+  // bootstrap is an inline script that does NOT re-run on a client navigation.
   useEffect(() => {
-    document.documentElement.removeAttribute(THEME_ATTR);
-    document.documentElement.removeAttribute(ACCENT_ATTR);
+    const root = document.documentElement;
+    const saved = [THEME_ATTR, ACCENT_ATTR].map((name) => [name, root.getAttribute(name)] as const);
+    saved.forEach(([name]) => root.removeAttribute(name));
+    return () => saved.forEach(([name, value]) => { if (value !== null) root.setAttribute(name, value); });
   }, []);
 
   useEffect(() => {

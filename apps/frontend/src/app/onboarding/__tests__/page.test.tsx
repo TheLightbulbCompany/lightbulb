@@ -57,9 +57,15 @@ describe("workspace onboarding", () => {
     const root = document.documentElement;
     root.setAttribute("data-chat-theme", "dark");
     root.setAttribute("data-chat-accent", "focus");
-    render(<OnboardingPage />);
+    const { unmount } = render(<OnboardingPage />);
     expect(root.hasAttribute("data-chat-theme")).toBe(false);
     expect(root.hasAttribute("data-chat-accent")).toBe(false);
+    // The way back into /chat is a client navigation: its inline theme
+    // bootstrap won't run again, so onboarding must hand the theme back.
+    unmount();
+    expect(root.getAttribute("data-chat-theme")).toBe("dark");
+    expect(root.getAttribute("data-chat-accent")).toBe("focus");
+    root.removeAttribute("data-chat-theme"); root.removeAttribute("data-chat-accent");
   });
   it("offers Clerk selection instead of activating an arbitrary membership", () => {
     clerk.memberships = [{ organization: { id: "org_a" } }, { organization: { id: "org_b" } }];

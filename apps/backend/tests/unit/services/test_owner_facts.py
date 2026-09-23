@@ -362,3 +362,10 @@ def test_facts_carry_this_environments_app_url(monkeypatch):
     monkeypatch.setattr(owner_facts.settings, "FRONTEND_URL", "https://dev.flickmeon.ai/", raising=False)
     facts = owner_facts.build_owner_facts("org_abc", {"subscription_status": "trial_local"})
     assert facts["app_url"] == "https://dev.flickmeon.ai"
+
+
+def test_base_and_trial_are_labelled_as_what_they_are():
+    base = owner_facts.build_owner_facts("org_a", {"subscription_status": "active", "plan": "base"})
+    assert base["plan"] == "Base ($20/mo)"
+    trial = owner_facts.build_owner_facts("org_a", {"subscription_status": "trial_local"})
+    assert "DeepSeek" in trial["plan"] and "Bedrock" not in trial["plan"]

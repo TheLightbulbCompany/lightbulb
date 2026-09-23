@@ -916,7 +916,10 @@ async def put_byo_app(
     if not p.byo_required:
         raise HTTPException(status_code=400, detail=f"{provider} does not support a bring-your-own app")
     if "•" in body.client_id or "•" in body.client_secret:  # the form's masked display value
-        raise HTTPException(status_code=400, detail="paste the real secret, not the masked value")
+        raise HTTPException(
+            status_code=400,
+            detail="Paste the real client secret — this looks like the masked value shown after saving.",
+        )
     await oauth_app_store.put(
         owner_id,
         provider,

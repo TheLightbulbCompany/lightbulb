@@ -248,22 +248,44 @@ async def _create_or_adopt_customer(owner_id: str, client: MetronomeClient) -> s
 
 
 async def _create_or_adopt_contract(customer_id: str, client: MetronomeClient, *, with_stripe_billing: bool) -> str:
+    # rate_card_id is optional on contract create (sandbox-verified) and is
+    # forwarded only when the env actually has one configured.
+    rate_card_id = settings.METRONOME_RATE_CARD_ID or None
+    # Adopt a live contract on this rate card before creating one: overlapping
+    # contracts on one rate card each price the same usage, and a customer can
+    # already carry an UNKEYED contract from before the key existed (or one
+    # whose id never reached the billing row). Oldest first, as listed.
+    existing = next(
+        (
+            c.get("id")
+            for c in await client.list_contracts(customer_id=customer_id)
+            if c.get("rate_card_id") == rate_card_id
+        ),
+        None,
+    )
+    if existing:
+        logger.info("Adopted existing Metronome contract %s for customer %s", existing, customer_id)
+        return existing
+    # Deterministic per (customer, rate card) so the race between concurrent
+    # provisions (status polls across backend tasks, the entering_live webhook)
+    # ends in a 409 for the loser. Keyed on the customer UUID, not the owner id,
+    # so a wiped owner's fresh customer is not blocked by its archived one.
+    # Contract archive keeps the key: bump the version after archiving the keyed contract.
+    uniqueness_key = f"lightbulb-contract:{customer_id}:{rate_card_id or 'none'}:v1"
     try:
-        # rate_card_id is optional on contract create (sandbox-verified) and
-        # is forwarded only when the env actually has one configured.
         return await client.create_contract(
             customer_id=customer_id,
-            rate_card_id=settings.METRONOME_RATE_CARD_ID or None,
+            rate_card_id=rate_card_id,
             with_stripe_billing=with_stripe_billing,
+            uniqueness_key=uniqueness_key,
         )
     except httpx.HTTPStatusError as exc:
-        # Conflict: a prior attempt created the contract but crashed before
-        # its id was persisted. One customer carries at most the one contract
-        # this module creates, so adopting the first listed contract is safe.
+        # Conflict on the key: a concurrent attempt created this contract
+        # between our lookup and our create — adopt it instead of failing.
         if exc.response.status_code != 409:
             raise
         contracts = await client.list_contracts(customer_id=customer_id)
-        adopted = contracts[0].get("id") if contracts else None
+        adopted = next((c.get("id") for c in contracts if c.get("uniqueness_key") == uniqueness_key), None)
         if not adopted:
             raise MetronomeError(
                 f"create_contract conflicted for customer {customer_id} but no contract is listed"
@@ -296,6 +318,10 @@ async def _ensure_low_balance_alerts(owner_id: str, customer_id: str, client: Me
                 # Required for commit-balance alert types (sandbox-verified:
                 # the create validator rejects the body without it).
                 credit_type_id=settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID,
+                # Makes the 409 branch below real: concurrent provisions
+                # otherwise arm duplicate alerts. Alert archive can release
+                # the key (release_uniqueness_key), so no version segment.
+                uniqueness_key=f"lightbulb-low-balance:{customer_id}:{suffix}",
             )
         except httpx.HTTPStatusError as exc:
             # A duplicate alert (re-entry after a crash between alert-create

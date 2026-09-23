@@ -126,7 +126,12 @@ class MetronomeClient:
         return matches[0].get("id")
 
     async def create_contract(
-        self, *, customer_id: str, rate_card_id: str | None = None, with_stripe_billing: bool = False
+        self,
+        *,
+        customer_id: str,
+        rate_card_id: str | None = None,
+        with_stripe_billing: bool = False,
+        uniqueness_key: str,
     ) -> str:
         """POST /v1/contracts/create — per-customer contract. Returns the
         contract id; prepaid commits and balances hang off it. Sandbox-
@@ -146,9 +151,17 @@ class MetronomeClient:
         the customer's root-level billing-provider configuration exists
         (set_stripe_billing_config) — sent before that, contract create
         404s with "Billing provider configuration not found for STRIPE",
-        which is why callers gate this flag on that call having succeeded."""
+        which is why callers gate this flag on that call having succeeded.
+
+        ``uniqueness_key`` (1-128 chars) makes Metronome 409 a second create
+        with the same key instead of minting another contract — overlapping
+        contracts on one rate card each price the same usage."""
         starting_at = time.strftime("%Y-%m-%dT00:00:00.000Z", time.gmtime())
-        payload: dict[str, Any] = {"customer_id": customer_id, "starting_at": starting_at}
+        payload: dict[str, Any] = {
+            "customer_id": customer_id,
+            "starting_at": starting_at,
+            "uniqueness_key": uniqueness_key,
+        }
         if rate_card_id:
             payload["rate_card_id"] = rate_card_id
         if with_stripe_billing:
@@ -160,14 +173,29 @@ class MetronomeClient:
         return contract_id
 
     async def list_contracts(self, *, customer_id: str) -> list[dict]:
-        """POST /v1/contracts/list — all contracts for one customer. Adoption
-        lookup for when create_contract conflicts (a prior provision attempt
-        created the contract but crashed before persisting its id)."""
-        body = await self._post("/contracts/list", {"customer_id": customer_id})
-        return body.get("data") or []
+        """POST /v2/contracts/list — all contracts for one customer. Adoption
+        lookup for when create_contract conflicts. v1 is disabled: it answers
+        "This endpoint has been disabled. Please use the v2 endpoint"
+        (live-verified 2026-09-23). Follows ``cursor`` to the last page."""
+        contracts: list[dict] = []
+        cursor = None
+        while True:
+            payload = {"customer_id": customer_id, **({"cursor": cursor} if cursor else {})}
+            body = await self._post(f"{self._v2_base_url}/contracts/list", payload)
+            contracts += body.get("data") or []
+            cursor = body.get("cursor")
+            if not cursor:
+                return contracts
 
     async def create_alert(
-        self, *, customer_id: str, name: str, alert_type: str, threshold_cents: int, credit_type_id: str
+        self,
+        *,
+        customer_id: str,
+        name: str,
+        alert_type: str,
+        threshold_cents: int,
+        credit_type_id: str,
+        uniqueness_key: str,
     ) -> None:
         """POST /v1/alerts/create — per-customer threshold alert. The threshold
         passes through in cents: Metronome's USD credit type is
@@ -176,7 +204,8 @@ class MetronomeClient:
         balance-style alert types we use (sandbox-verified: the create
         validator rejects the body without it); the exact body below —
         {alert_type, name, threshold, customer_id, credit_type_id} —
-        returned 200 in the sandbox."""
+        returned 200 in the sandbox. ``uniqueness_key`` makes a duplicate
+        create 409 instead of arming a second copy of the alert."""
         await self._post(
             "/alerts/create",
             {
@@ -185,6 +214,7 @@ class MetronomeClient:
                 "alert_type": alert_type,
                 "threshold": threshold_cents,
                 "credit_type_id": credit_type_id,
+                "uniqueness_key": uniqueness_key,
             },
         )
 

@@ -71,7 +71,10 @@ async def test_creates_customer_contract_links_stripe_arms_alert_and_persists(bi
     assert cust_id == "cust-uuid-1"
     fake.create_customer.assert_awaited_once_with(name="org_abc", ingest_aliases=["org_abc"])
     fake.create_contract.assert_awaited_once_with(
-        customer_id="cust-uuid-1", rate_card_id="rc-1", with_stripe_billing=True
+        customer_id="cust-uuid-1",
+        rate_card_id="rc-1",
+        with_stripe_billing=True,
+        uniqueness_key="lightbulb-contract:cust-uuid-1:rc-1:v1",
     )
     fake.set_stripe_billing_config.assert_awaited_once_with(
         metronome_customer_id="cust-uuid-1",
@@ -97,6 +100,7 @@ async def test_creates_customer_contract_links_stripe_arms_alert_and_persists(bi
             "alert_type": "low_remaining_commit_balance_reached",
             "threshold_cents": 500,
             "credit_type_id": "ct-usd-cents",
+            "uniqueness_key": "lightbulb-low-balance:cust-uuid-1:warn",
         },
         {
             "customer_id": "cust-uuid-1",
@@ -104,6 +108,7 @@ async def test_creates_customer_contract_links_stripe_arms_alert_and_persists(bi
             "alert_type": "low_remaining_commit_balance_reached",
             "threshold_cents": 0,
             "credit_type_id": "ct-usd-cents",
+            "uniqueness_key": "lightbulb-low-balance:cust-uuid-1:zero",
         },
     ]
     set_mock.assert_awaited_once_with(
@@ -122,7 +127,10 @@ async def test_unset_rate_card_is_passed_as_none(billing_repo_mock, monkeypatch)
     fake = _fake_client()
     await ensure_metronome_customer(owner_id="org_abc", client=fake)
     fake.create_contract.assert_awaited_once_with(
-        customer_id="cust-uuid-1", rate_card_id=None, with_stripe_billing=True
+        customer_id="cust-uuid-1",
+        rate_card_id=None,
+        with_stripe_billing=True,
+        uniqueness_key="lightbulb-contract:cust-uuid-1:none:v1",
     )
 
 
@@ -157,7 +165,10 @@ async def test_persisted_customer_without_contract_creates_only_the_contract(bil
     assert cust_id == "existing-uuid"
     fake.create_customer.assert_not_awaited()
     fake.create_contract.assert_awaited_once_with(
-        customer_id="existing-uuid", rate_card_id="rc-1", with_stripe_billing=True
+        customer_id="existing-uuid",
+        rate_card_id="rc-1",
+        with_stripe_billing=True,
+        uniqueness_key="lightbulb-contract:existing-uuid:rc-1:v1",
     )
     set_mock.assert_awaited_once_with(
         "org_abc",
@@ -183,7 +194,10 @@ async def test_alias_conflict_adopts_existing_customer(billing_repo_mock):
     # The adopted customer still gets the contract + Stripe link + alert +
     # persist — the prior attempt may have crashed before any of them.
     fake.create_contract.assert_awaited_once_with(
-        customer_id="adopted-uuid", rate_card_id="rc-1", with_stripe_billing=True
+        customer_id="adopted-uuid",
+        rate_card_id="rc-1",
+        with_stripe_billing=True,
+        uniqueness_key="lightbulb-contract:adopted-uuid:rc-1:v1",
     )
     fake.set_stripe_billing_config.assert_awaited_once()
     fake.create_alert.assert_awaited()
@@ -204,24 +218,80 @@ async def test_alias_conflict_with_no_match_raises(billing_repo_mock):
 
 
 @pytest.mark.asyncio
-async def test_contract_conflict_adopts_first_listed_contract(billing_repo_mock):
-    """A 409 on contract-create means a prior attempt created the contract
-    but crashed before persisting its id — adopt the customer's existing
-    contract instead of failing the retry forever."""
+async def test_contract_conflict_adopts_keyed_contract(billing_repo_mock):
+    """A 409 on contract-create means another attempt already created the
+    keyed contract — adopt it (not merely the first listed) instead of
+    failing the retry forever."""
     _, set_mock, _ = billing_repo_mock
     fake = _fake_client()
     fake.create_contract = AsyncMock(side_effect=_http_error(409))
-    fake.list_contracts = AsyncMock(return_value=[{"id": "adopted-contract"}, {"id": "later-contract"}])
+    fake.list_contracts = AsyncMock(
+        return_value=[
+            {"id": "other-contract"},
+            {"id": "adopted-contract", "uniqueness_key": "lightbulb-contract:cust-uuid-1:rc-1:v1"},
+        ]
+    )
 
     cust_id = await ensure_metronome_customer(owner_id="org_abc", client=fake)
 
     assert cust_id == "cust-uuid-1"
-    fake.list_contracts.assert_awaited_once_with(customer_id="cust-uuid-1")
+    fake.list_contracts.assert_awaited_with(customer_id="cust-uuid-1")
     set_mock.assert_awaited_once_with(
         "org_abc",
         metronome_customer_id="cust-uuid-1",
         metronome_contract_id="adopted-contract",
     )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_provisions_create_one_contract(billing_repo_mock):
+    """Two provisions racing past the persisted-ids short-circuit must end on
+    ONE contract: the deterministic uniqueness_key makes Metronome 409 the
+    loser, which adopts the winner's contract instead of minting a second."""
+    import asyncio
+
+    _, set_mock, _ = billing_repo_mock
+    created: dict[str, dict] = {}
+
+    async def create_contract(*, customer_id, uniqueness_key, **_):
+        await asyncio.sleep(0)  # let the other provision reach the create
+        if uniqueness_key in created:
+            raise _http_error(409)
+        created[uniqueness_key] = {
+            "id": f"contract-{len(created) + 1}",
+            "rate_card_id": "rc-1",
+            "uniqueness_key": uniqueness_key,
+        }
+        return created[uniqueness_key]["id"]
+
+    fake = _fake_client()
+    fake.create_contract = AsyncMock(side_effect=create_contract)
+    fake.list_contracts = AsyncMock(side_effect=lambda **_: list(created.values()))
+
+    await asyncio.gather(
+        ensure_metronome_customer(owner_id="org_abc", client=fake),
+        ensure_metronome_customer(owner_id="org_abc", client=fake),
+    )
+
+    assert list(created) == ["lightbulb-contract:cust-uuid-1:rc-1:v1"]
+    assert {c.kwargs["metronome_contract_id"] for c in set_mock.await_args_list} == {"contract-1"}
+
+
+@pytest.mark.asyncio
+async def test_live_unkeyed_contract_on_rate_card_is_adopted_not_duplicated(billing_repo_mock):
+    """A customer already carrying a pre-key contract on this rate card (whose
+    id never reached the billing row) must adopt it: a new keyed contract
+    would be a second live contract pricing the same usage."""
+    _, set_mock, _ = billing_repo_mock
+    fake = _fake_client()
+    fake.list_contracts = AsyncMock(
+        return_value=[{"id": "other-card", "rate_card_id": "rc-0"}, {"id": "unkeyed", "rate_card_id": "rc-1"}]
+    )
+
+    await ensure_metronome_customer(owner_id="org_abc", client=fake)
+
+    fake.create_contract.assert_not_awaited()
+    assert set_mock.await_args.kwargs["metronome_contract_id"] == "unkeyed"
 
 
 @pytest.mark.asyncio
@@ -327,7 +397,10 @@ async def test_link_retry_after_deferred_contract_converges(billing_repo_mock):
     fake.create_customer.assert_not_awaited()
     fake.set_stripe_billing_config.assert_awaited_once()
     fake.create_contract.assert_awaited_once_with(
-        customer_id="existing-uuid", rate_card_id="rc-1", with_stripe_billing=True
+        customer_id="existing-uuid",
+        rate_card_id="rc-1",
+        with_stripe_billing=True,
+        uniqueness_key="lightbulb-contract:existing-uuid:rc-1:v1",
     )
     set_customer_mock.assert_not_awaited()
     set_mock.assert_awaited_once_with(

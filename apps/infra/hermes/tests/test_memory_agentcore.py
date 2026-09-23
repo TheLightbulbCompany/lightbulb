@@ -85,7 +85,7 @@ def test_prefetch_with_no_records_is_empty(mod):
     assert not provider(mod, FakeClient()).prefetch("codename?")
 
 
-def test_client_has_short_timeouts_and_no_retries(mod, monkeypatch):
+def test_client_has_short_timeouts_and_one_retry(mod, monkeypatch):
     seen = {}
     fake_boto3 = types.SimpleNamespace(client=lambda service, **kw: seen.update(service=service, **kw) or FakeClient())
     monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
@@ -93,7 +93,11 @@ def test_client_has_short_timeouts_and_no_retries(mod, monkeypatch):
     cfg = seen["config"]
     assert seen["service"] == "bedrock-agentcore"
     assert cfg.connect_timeout <= 1 and cfg.read_timeout <= 1.5
-    assert cfg.retries == {"total_max_attempts": 1}
+    # Two attempts, standard mode: the client is cached per process, and its pooled connection
+    # goes stale between turns (dev acceptance 2026-09-23: the first recall after ~16 min idle
+    # failed "Connection was closed before we received a valid response"). One retry on a fresh
+    # connection keeps the worst case (~5 s) under Hermes's 8 s prefetch ceiling.
+    assert cfg.retries == {"total_max_attempts": 2, "mode": "standard"}
 
 
 def test_sync_turn_writes_one_owner_event_inline(mod):

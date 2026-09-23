@@ -51,7 +51,7 @@ def _client():
 
         _CLIENT = boto3.client(
             "bedrock-agentcore", region_name=os.environ.get("AWS_REGION") or None,
-            config=Config(connect_timeout=1, read_timeout=1.5, retries={"total_max_attempts": 1}))
+            config=Config(connect_timeout=1, read_timeout=1.5, retries={"total_max_attempts": 2, "mode": "standard"}))
     return _CLIENT
 
 

@@ -4,6 +4,11 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CreateOrganization, OrganizationList, useAuth, useOrganization, useOrganizationList } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
+import { ACCENT_ATTR, THEME_ATTR } from "@/hooks/useChatTheme";
+
+// The page's own heading carries this step, so Clerk's card header would repeat
+// it; the logo is optional and can be set later in workspace settings.
+const createAppearance = { elements: { header: "hidden", organizationAvatarUploaderContainer: "hidden" } };
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -21,6 +26,14 @@ export default function OnboardingPage() {
   const count = userMemberships?.data?.length ?? 0;
   const soleOrgId = loaded && !invitations.length && !organization && !joiningOrgId && count === 1
     ? userMemberships?.data?.[0]?.organization.id : undefined;
+
+  // /chat stamps its theme on <html> and a client redirect from /chat keeps it,
+  // which repaints this page's ground as the chat pane (white, or dark). Lift
+  // it here; /chat's layout re-stamps it from storage on the way back in.
+  useEffect(() => {
+    document.documentElement.removeAttribute(THEME_ATTR);
+    document.documentElement.removeAttribute(ACCENT_ATTR);
+  }, []);
 
   useEffect(() => {
     if (!soleOrgId || !setActive || error) return;
@@ -100,7 +113,7 @@ export default function OnboardingPage() {
         <>
           <h1 className="text-2xl font-bold">Create your workspace</h1>
           <p>Your workspace brings your agents, work, and billing together.</p>
-          <CreateOrganization afterCreateOrganizationUrl="/onboarding" skipInvitationScreen />
+          <CreateOrganization appearance={createAppearance} afterCreateOrganizationUrl="/onboarding" skipInvitationScreen />
         </>
       )}
     </main>

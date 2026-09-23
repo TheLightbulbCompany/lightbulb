@@ -249,6 +249,20 @@ def _not_capped():
         yield reason
 
 
+@pytest.fixture(autouse=True)
+def _not_credit_blocked():
+    """Default every test to NOT blocked on Bedrock/OpenRouter credits (Layer
+    3's shared predicate), the same way ``_not_capped`` defaults Layer 2's."""
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
+        ),
+        patch("core.services.metronome_gate.is_owner_blocked", AsyncMock(return_value=False)) as blocked,
+    ):
+        yield blocked
+
+
 def _failure_patches(create, trigger=None):
     return (
         patch.object(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=trigger)),
@@ -365,3 +379,21 @@ async def test_a_capped_owners_infra_failure_keeps_its_own_reason(metrics, _not_
                 "o", _event(type="run.ended", outcome="error", error_kind="agent_did_not_start", usage=USAGE)
             )
     assert "The agent did not start this run." in create.await_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_failed_run_of_a_credit_blocked_owner_says_so(metrics, _not_credit_blocked):
+    """A paid owner out of Bedrock/OpenRouter credits gets the out_of_credits
+    note instead of the generic model_unavailable text — same gate as
+    gate_chat/provision_gate Layer 3 (metronome_gate.is_owner_blocked)."""
+    from core.services.chat_gate import BUDGET_BLOCK_MESSAGES
+
+    _not_credit_blocked.return_value = True
+    create = AsyncMock(return_value=({"messageId": "x"}, False))
+    patches = _failure_patches(create)
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": "error"})):
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            await messaging.handle_run_event(
+                "o", _event(type="run.ended", outcome="error", error_kind="model_unavailable", usage=USAGE)
+            )
+    assert create.await_args.kwargs["text"] == BUDGET_BLOCK_MESSAGES["out_of_credits"]

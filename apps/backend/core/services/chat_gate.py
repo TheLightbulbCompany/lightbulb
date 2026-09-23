@@ -12,7 +12,7 @@ BUDGET_BLOCK_MESSAGES = {
     "trial_expired": "Your 3-day free trial has ended. Pick a plan to keep your agent.",
     "trial_daily_cap": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
     "included_daily_cap": "You've used today's included usage. It resets at 00:00 UTC.",
-    "out_of_credits": "You're out of Claude credits. Top up to continue.",
+    "out_of_credits": "You're out of workspace credits. Top up in Settings → Model & Credits to continue.",
     "subscription_inactive": "Your subscription is not active. Reactivate to continue chatting.",
 }
 
@@ -159,13 +159,12 @@ async def gate_chat(*, user_id: str, owner_id: str, session_key: str) -> dict:
         return {"blocked": False}
 
     if await is_owner_blocked(owner_id):
+        # Same copy for both credit-gated providers (bedrock_claude,
+        # openrouter_managed) — the balance is a workspace-level pool either
+        # way, so there is no user-visible reason for the message to differ.
         return {
             "blocked": True,
             "code": "out_of_credits",
-            "message": (
-                "You're out of Lightbulb credits. Top up to continue."
-                if account.get("provider_choice") == "openrouter_managed"
-                else BUDGET_BLOCK_MESSAGES["out_of_credits"]
-            ),
+            "message": BUDGET_BLOCK_MESSAGES["out_of_credits"],
         }
     return {"blocked": False}

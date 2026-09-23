@@ -57,19 +57,19 @@ discover them from the live marketplace rather than assuming they exist.
 
 ## Plans, providers, and this owner's current state
 
-Lightbulb's paid plans are **Workspace, $50/month**
-and **Ultra, $150/month**. Both plans
-allow unlimited agent identities and unlimited members; agent identity count
+Lightbulb's paid plans are **Base, $20/month**, **Workspace, $50/month**
+and **Ultra, $150/month** (this owner's current plan is in the facts file). Every
+plan allows unlimited agent identities and unlimited members; agent identity count
 is not a plan entitlement, and membership and invitations do not change the
 subscription price. Runtime capacity remains finite. Upgrade lives in
-flickmeon.ai/settings. There is also a **free tier** (no card: Bedrock Claude
-Sonnet only, $3/day usage cap). Inference is a
-separate cost and runs on one of three provider paths chosen by the owner:
-**Bedrock managed** (Lightbulb-billed
-credits), **ChatGPT OAuth** (the owner's own OpenAI account — the workspace
-owner/admin who completed the connection is the only one who can manage it;
-one ChatGPT account per workspace), or **BYO API key** (owner's Anthropic/OpenAI
-key).
+flickmeon.ai/settings. There is also a **free trial** (no card, 30 days) on
+Lightbulb-managed DeepSeek within a daily allowance. Inference runs on one of
+three provider paths chosen by the owner:
+**Lightbulb-managed** (DeepSeek within the plan's daily allowance; prepaid
+credits for more models are coming soon), **ChatGPT OAuth** (the owner's own
+OpenAI account — the workspace owner/admin who completed the connection is the
+only one who can manage it; one ChatGPT account per workspace), or **BYO API
+key** (owner's Anthropic/OpenAI key, billed by that provider).
 
 **Never state the owner's plan or provider from memory.** Read
 `$HERMES_HOME/lightbulb-facts.json` — Lightbulb keeps it current:

@@ -1,7 +1,9 @@
 """Materializer registry: name -> callable(owner_id, provider_key, credential).
 
-MATERIALIZERS write a CLI's credential file onto EFS; MATERIALIZER_REMOVERS
-mirror them to clean up on disconnect."""
+MATERIALIZERS write a CLI's credential file into a scratch home that
+``hermes_cli.project`` syncs into every Hermes profile; MATERIALIZER_REMOVERS
+mirror them to clean up on disconnect. Only names in ``hermes_cli.OWNED_PATHS``
+are ever dispatched."""
 
 from core.services.credentials.materializers.aws_cli import remove as _aws_remove
 from core.services.credentials.materializers.aws_cli import write as _aws
@@ -11,25 +13,19 @@ from core.services.credentials.materializers.gog_cli import remove as _gog_remov
 from core.services.credentials.materializers.gog_cli import write as _gog
 from core.services.credentials.materializers.instagram_cli import remove as _instagram_remove
 from core.services.credentials.materializers.instagram_cli import write as _instagram
-from core.services.credentials.materializers.mcp_oauth import remove as _mcp_oauth_remove
-from core.services.credentials.materializers.mcp_oauth import write as _mcp_oauth
 from core.services.credentials.materializers.qbo_dotenv import remove as _qbo_remove
 from core.services.credentials.materializers.qbo_dotenv import write as _qbo
 from core.services.credentials.materializers.shopify_cli import remove as _shopify_remove
 from core.services.credentials.materializers.shopify_cli import write as _shopify
 from core.services.credentials.materializers.skill_cli import remove as _skill_cli_remove
 from core.services.credentials.materializers.skill_cli import write as _skill_cli
-from core.services.credentials.materializers.toml_cli import remove as _toml_remove
-from core.services.credentials.materializers.toml_cli import write as _toml
 from core.services.credentials.materializers.xurl_cli import remove as _xurl_remove
 from core.services.credentials.materializers.xurl_cli import write as _xurl
 
 MATERIALIZERS: dict[str, object] = {
-    "toml_cli": _toml,
     "gog_cli": _gog,
     "gh_cli": _gh,
     "instagram_cli": _instagram,
-    "mcp_oauth": _mcp_oauth,
     "skill_cli": _skill_cli,
     "shopify_cli": _shopify,
     "aws_cli": _aws,
@@ -37,11 +33,9 @@ MATERIALIZERS: dict[str, object] = {
     "xurl_cli": _xurl,
 }
 MATERIALIZER_REMOVERS: dict[str, object] = {
-    "toml_cli": _toml_remove,
     "gog_cli": _gog_remove,
     "gh_cli": _gh_remove,
     "instagram_cli": _instagram_remove,
-    "mcp_oauth": _mcp_oauth_remove,
     "skill_cli": _skill_cli_remove,
     "shopify_cli": _shopify_remove,
     "aws_cli": _aws_remove,

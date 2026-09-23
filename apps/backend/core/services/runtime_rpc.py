@@ -54,63 +54,30 @@ _RUN_DISPATCH_USE = {
 }
 _RUN_DISPATCH_METHODS = frozenset(_RUN_DISPATCH_USE)
 
-# Default deny: only methods used by the control/status surfaces. Room commands,
-# run control, approvals, and questions have dedicated product endpoints.
+# Default deny. Exactly the methods something answers: the ones execute_sync serves itself
+# (agents.*, config.*, and models.list for Bedrock workspaces) plus the ones the Hermes bridge
+# registers in `bridge/server.py`'s RPC_METHODS. The bridge answers anything else with
+# UNAVAILABLE, so an OpenClaw-era method is refused here instead of costing a runtime invoke.
+# Room commands, run control, approvals, and questions have dedicated product endpoints.
 _PROXY_ALLOWED_METHODS = frozenset(
     {
-        "agent.identity.get",
         "agents.create",
         "agents.delete",
         "agents.list",
         "agents.update",
-        "browser.request",
         "channels.status",
-        "chat.history",
-        "commands.list",
         "config.get",
         "config.patch",
         "config.set",
-        "doctor.memory.backfillDreamDiary",
-        "doctor.memory.dedupeDreamDiary",
-        "doctor.memory.dreamDiary",
-        "doctor.memory.repairDreamingArtifacts",
-        "doctor.memory.resetDreamDiary",
-        "doctor.memory.resetGroundedShortTerm",
-        "doctor.memory.status",
         "health",
         "models.authStatus",
         "models.list",
-        "sessions.branches.list",
-        "sessions.branches.switch",
-        "sessions.delete",
-        "sessions.list",
-        "sessions.patch",
-        "sessions.rewind",
-        "sessions.search",
-        "skills.install",
-        "skills.proposals.apply",
-        "skills.proposals.inspect",
         "skills.proposals.list",
-        "skills.proposals.reject",
-        "skills.search",
         "skills.status",
         "skills.update",
-        "tools.catalog",
     }
 )
 
-_SESSION_KEY_PARAM_BY_METHOD = {
-    "sessions.patch": "key",
-    "sessions.delete": "key",
-    "chat.history": "sessionKey",
-    "sessions.rewind": "sessionKey",
-    "sessions.branches.list": "sessionKey",
-    "sessions.branches.switch": "sessionKey",
-}
-_SESSION_KEYS_LIST_PARAM_BY_METHOD = {"sessions.search": "sessionKeys"}
-_FORBIDDEN_PARAMS_BY_METHOD: dict[str, frozenset[str]] = {
-    "sessions.patch": frozenset({"permissionMode"}),
-}
 _MUTATING_METHODS = frozenset(
     {
         "agents.create",
@@ -118,13 +85,6 @@ _MUTATING_METHODS = frozenset(
         "agents.update",
         "config.patch",
         "config.set",
-        "sessions.branches.switch",
-        "sessions.delete",
-        "sessions.patch",
-        "sessions.rewind",
-        "skills.install",
-        "skills.proposals.apply",
-        "skills.proposals.reject",
         "skills.update",
     }
 )
@@ -141,10 +101,7 @@ _INVALIDATES = {
     "agents.delete": "agents",
     "config.set": "config",
     "config.patch": "config",
-    "skills.install": "skills",
     "skills.update": "skills",
-    "skills.proposals.apply": "skills",
-    "skills.proposals.reject": "skills",
 }
 
 
@@ -247,44 +204,7 @@ async def _invalidate(owner_id: str, method: str) -> None:
         logger.warning("resource invalidation publish failed resource=%s", resource, exc_info=True)
 
 
-def _user_owns_session_key(key: Any, user_id: str) -> bool:
-    if not isinstance(key, str):
-        return False
-    parts = key.split(":", 2)
-    if len(parts) < 3 or parts[0] != "agent":
-        return False
-    rest = parts[2].lower()
-    user = user_id.lower()
-    return rest == user or rest.startswith(f"{user}:")
-
-
-def _filter_sessions_for_user(result: Any, user_id: str) -> Any:
-    if not isinstance(result, dict) or not isinstance(result.get("sessions"), list):
-        return result
-    return {
-        **result,
-        "sessions": [
-            row
-            for row in result["sessions"]
-            if isinstance(row, dict) and _user_owns_session_key(row.get("key"), user_id)
-        ],
-    }
-
-
-def _filter_search_hits_for_user(result: Any, user_id: str) -> Any:
-    if not isinstance(result, dict) or not isinstance(result.get("results"), list):
-        return result
-    return {
-        **result,
-        "results": [
-            row
-            for row in result["results"]
-            if isinstance(row, dict) and _user_owns_session_key(row.get("sessionKey"), user_id)
-        ],
-    }
-
-
-def _guard_method(method: str, params: dict[str, Any], user_id: str) -> None:
+def _guard_method(method: str) -> None:
     if method in _RUN_DISPATCH_METHODS:
         raise ApiProblem(
             "INVALID_REQUEST",
@@ -298,26 +218,6 @@ def _guard_method(method: str, params: dict[str, Any], user_id: str) -> None:
             f'"{method}" is not available over the runtime RPC compatibility endpoint.',
             details={"method": method},
         )
-    forbidden = sorted(_FORBIDDEN_PARAMS_BY_METHOD.get(method, frozenset()) & params.keys())
-    if forbidden:
-        put_metric("rpc.refused", dimensions={"method": method, "reason": "forbidden_param"})
-        raise ApiProblem(
-            "INVALID_REQUEST",
-            "That session setting cannot be changed here.",
-            details={"method": method, "fields": forbidden},
-        )
-    key_name = _SESSION_KEY_PARAM_BY_METHOD.get(method)
-    if key_name is not None:
-        key = params.get(key_name)
-        if key is not None and (not isinstance(key, str) or not _user_owns_session_key(key, user_id)):
-            raise ApiProblem("ROOM_FORBIDDEN", "You do not have access to that session.")
-    list_name = _SESSION_KEYS_LIST_PARAM_BY_METHOD.get(method)
-    if list_name is not None:
-        keys = params.get(list_name)
-        if keys is not None and (
-            not isinstance(keys, list) or any(not _user_owns_session_key(key, user_id) for key in keys)
-        ):
-            raise ApiProblem("ROOM_FORBIDDEN", "You do not have access to that session.")
 
 
 def _sanitize_agent_create(params: dict[str, Any]) -> dict[str, Any]:
@@ -410,7 +310,7 @@ async def execute(
 ) -> tuple[int, RuntimeRpcResponse | RuntimeOperationAccepted]:
     owner_id = resolve_owner_id(auth)
     params = dict(request.params)
-    _guard_method(request.method, params, auth.user_id)
+    _guard_method(request.method)
     if request.method in _MUTATING_METHODS:
         # Clear a racing idle-stop claim before any durable or external effect.
         await container_repo.touch_last_interactive(owner_id)
@@ -444,7 +344,7 @@ async def execute_sync(
     params: dict[str, Any],
 ) -> Any:
     """Execute one already-admitted synchronous RPC with all side-effect guards."""
-    _guard_method(method, params, user_id)
+    _guard_method(method)
     if method == "agents.update":
         params = _sanitize_agent_update(params)
     if method == "agents.delete":
@@ -588,11 +488,7 @@ async def execute_sync(
         ) from exc
 
     await _invalidate(owner_id, method)
-    if method == "sessions.list":
-        result = _filter_sessions_for_user(result, user_id)
-    elif method == "sessions.search":
-        result = _filter_search_hits_for_user(result, user_id)
-    elif method == "skills.status":
+    if method == "skills.status":
         # The bridge answers the skill ROWS (it has to -- they come from Hermes's own loaders
         # inside the image). The disabled LIST is the half that gets written back, so it is
         # owned here: see agentcore_disabled_skill_names.

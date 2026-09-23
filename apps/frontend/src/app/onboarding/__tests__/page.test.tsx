@@ -50,7 +50,7 @@ describe("workspace onboarding", () => {
     render(<OnboardingPage />);
     expect(screen.getAllByRole("heading")).toHaveLength(1);
     expect(clerk.createProps).toHaveBeenCalledWith(expect.objectContaining({
-      appearance: { elements: expect.objectContaining({ header: "hidden", organizationAvatarUploaderContainer: "hidden" }) },
+      appearance: { elements: expect.objectContaining({ header: { display: "none" }, organizationAvatarUploaderContainer: { display: "none" } }) },
     }));
   });
   it("sits on the brand ground even after a client navigation from the themed chat", () => {

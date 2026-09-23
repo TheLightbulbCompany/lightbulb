@@ -8,7 +8,9 @@ import { ACCENT_ATTR, THEME_ATTR } from "@/hooks/useChatTheme";
 
 // The page's own heading carries this step, so Clerk's card header would repeat
 // it; the logo is optional and can be set later in workspace settings.
-const createAppearance = { elements: { header: "hidden", organizationAvatarUploaderContainer: "hidden" } };
+// Style objects, not the Tailwind `hidden` class: Clerk's own CSS-in-JS sets
+// `display` on these elements after Tailwind, so the class silently loses.
+const createAppearance = { elements: { header: { display: "none" }, organizationAvatarUploaderContainer: { display: "none" } } };
 
 export default function OnboardingPage() {
   const router = useRouter();

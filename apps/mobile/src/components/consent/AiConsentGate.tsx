@@ -19,8 +19,9 @@
  * real exit, and the account (and its web access) is untouched by it.
  *
  * The recipient list is deliberately the FULL set an owner can be switched to
- * — Bedrock/Anthropic on the default path, OpenAI once ChatGPT sign-in or an
- * OpenAI key is chosen — not just the provider active at the moment of asking.
+ * — OpenRouter and the model hosts it routes to, AWS Bedrock/Anthropic for some
+ * background work, OpenAI once ChatGPT sign-in or an OpenAI key is chosen, and
+ * Vercel/TypeSafe for Listening routing — not just the provider active now.
  * A provider swap made later on the web must not silently widen an agreement
  * that named fewer companies (settings.tsx `providerLabel` is where the live
  * choice is surfaced).
@@ -50,12 +51,16 @@ const DATA_SENT = [
   "Messages you send to your agents, and their replies",
   "Files and images you attach to a message",
   "Content your agents read or produce while working on your tasks",
+  "On paid plans, in channels with Listening on: recent channel messages (with sender names) and short descriptions of your agents, so the right agent picks up the conversation. Attachments, email addresses and account details are never sent for this.",
 ];
 
 const RECIPIENTS = [
-  "Amazon Web Services — runs Anthropic's Claude models on AWS Bedrock, the default provider",
+  "OpenRouter — routes your requests to the AI model that runs your agents",
+  "The AI model providers OpenRouter routes to — companies such as DeepInfra that run open models like DeepSeek",
+  "Amazon Web Services — runs Anthropic's Claude models on AWS Bedrock for some background tasks",
   "Anthropic — the maker of Claude",
   "OpenAI — only if you connect a ChatGPT account or your own OpenAI key",
+  "Vercel and TypeSafe AI — on paid plans, decide which agent answers in channels with Listening on; zero data retention on every request",
 ];
 
 export function AiConsentGate({ children }: { children: ReactNode }) {
@@ -132,8 +137,7 @@ export function AiConsentGate({ children }: { children: ReactNode }) {
           </Text>
         ))}
         <Text style={styles.caption}>
-          These providers process your content to generate a response. Lightbulb
-          does not sell your data or use it to train models.
+          {"These providers process your content only to generate a response. OpenRouter routes your requests only to model providers that don't store your content or use it for training, and Lightbulb never sells your data or trains on it."}
         </Text>
       </View>
 

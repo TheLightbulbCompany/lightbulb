@@ -119,7 +119,7 @@ test("dev settlement carries the rate-card proof and runs the daily audit", () =
   });
 });
 
-test("prod settlement is scheduled but cannot ingest money: no proof, audit off", () => {
+test("prod settlement ingests money with the prod rate-card proof and runs the audit", () => {
   const app = new cdk.App();
   const template = Template.fromStack(new OpenRouterGateStack(app, "OpenRouterGateProd", {
     env: { account: "877352799272", region: "us-east-1" },
@@ -128,12 +128,12 @@ test("prod settlement is scheduled but cannot ingest money: no proof, audit off"
   template.hasResourceProperties("AWS::Lambda::Function", {
     FunctionName: "lightbulb-prod-openrouter-settlement",
     Environment: { Variables: Match.objectLike({
-      OPENROUTER_MONEY_CONTRACT_VERIFIED: "false",
-      OPENROUTER_RATE_CARD_PROOF_ID: "",
+      OPENROUTER_MONEY_CONTRACT_VERIFIED: "true",
+      OPENROUTER_RATE_CARD_PROOF_ID: "653a6187-6fd6-4490-b473-98e1ae85a745",
     }) },
   });
   template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(5 minutes)", State: "ENABLED" });
-  template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "cron(15 1 * * ? *)", State: "DISABLED" });
+  template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "cron(15 1 * * ? *)", State: "ENABLED" });
 });
 
 test("the gate deploys in prod too: a runtime resolved to openrouter_managed needs its URL", () => {

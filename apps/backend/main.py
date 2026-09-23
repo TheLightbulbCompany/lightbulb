@@ -264,13 +264,19 @@ async def _running_count_gauge_loop():
     Also piggybacks the OpenRouter account-balance check here (throttled to
     every ~15 min via a monotonic timestamp) rather than adding a second
     scheduler -- see core.services.openrouter_keys.check_account_balance.
+    The first check waits a full interval rather than firing on the loop's
+    first iteration: this loop starts on every app lifespan (including every
+    test that spins up a TestClient against the shared `main.app` singleton
+    -- see tests/conftest.py's `client` fixture), so an immediate first check
+    would make ~every test using that fixture attempt a real Secrets
+    Manager + openrouter.ai call.
     """
     from core.observability.metrics import gauge
     from core.services.openrouter_keys import check_account_balance
 
     instance = os.getenv("HOSTNAME") or "local"
     balance_check_interval_s = 900
-    last_balance_check = 0.0
+    last_balance_check = time.monotonic()
     while True:
         try:
             rows = await container_repo.get_by_status("running")

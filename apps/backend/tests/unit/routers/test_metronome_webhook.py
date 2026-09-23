@@ -1,6 +1,5 @@
-"""Unit tests for POST /webhooks/metronome (signature + flag set + revoke)."""
+"""Unit tests for POST /webhooks/metronome (signature + fast-gate flag set)."""
 
-import contextlib
 import hashlib
 import hmac
 import json
@@ -46,30 +45,6 @@ def known_customer():
         ),
     ):
         yield
-
-
-@contextlib.contextmanager
-def _revoker(*, already_revoked: bool = False, provider_choice: str = "bedrock_claude"):
-    """Patch the enforcement path's lazy-imported collaborators; yields the
-    revoke mock. Enforcement is revoke-only — no container stop to mock.
-
-    The low-balance webhook only revokes credit-drawing (bedrock_claude) owners,
-    so ``enforce_on_low_balance`` reads the billing row's provider_choice; this
-    path is the paid credit case, so default the row to bedrock_claude."""
-    revoke = AsyncMock()
-    row = {"owner_id": OWNER_ID, "bedrock_revoked": already_revoked}
-    with (
-        patch("core.billing.bedrock_aip.revoke_owner_bedrock", new=revoke),
-        patch(
-            "core.repositories.container_repo.get_by_owner_id",
-            new=AsyncMock(return_value=row),
-        ),
-        patch(
-            "core.services.bedrock_enforcement.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"owner_id": OWNER_ID, "provider_choice": provider_choice}),
-        ),
-    ):
-        yield revoke
 
 
 # Every event-type spelling the handler must accept: the alerts we create
@@ -131,75 +106,12 @@ def test_sets_fast_gate_flag_resolving_owner_from_billing_row(client, known_cust
             new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
         ),
         patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
-        _revoker() as revoke,
     ):
         gate = gate_cls.return_value
         gate.set_balance = AsyncMock()
         resp = _post(client, body)
     assert resp.status_code == 200
     gate.set_balance.assert_awaited_once_with(OWNER_ID, remaining_microcents=1_230_000)
-    # Positive balance: alert fired early (threshold crossing), no revoke.
-    revoke.assert_not_called()
-
-
-def test_non_positive_balance_fires_revoke_when_enforcement_live(client, known_customer, monkeypatch):
-    monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", True)
-    body = _low_balance_body(remaining_balance=0)
-    with (
-        patch(
-            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
-            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
-        ),
-        patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
-        _revoker() as revoke,
-    ):
-        gate = gate_cls.return_value
-        gate.set_balance = AsyncMock()
-        resp = _post(client, body)
-    assert resp.status_code == 200
-    gate.set_balance.assert_awaited_once_with(OWNER_ID, remaining_microcents=0)
-    revoke.assert_awaited_once_with(OWNER_ID)
-    # Revoke-only enforcement: the container is never stopped on low balance.
-
-
-def test_trial_owner_low_balance_webhook_does_not_revoke(client, known_customer, monkeypatch):
-    """The prawahp regression at the webhook boundary. A trial_local owner draws
-    no prepaid credits, so even a balance-0 low-balance webhook with enforcement
-    armed must NOT revoke their Bedrock — this was killing every free trial."""
-    monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", True)
-    body = _low_balance_body(remaining_balance=0)
-    with (
-        patch(
-            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
-            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
-        ),
-        patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
-        _revoker(provider_choice="") as revoke,  # provider_choice != bedrock_claude
-    ):
-        gate_cls.return_value.set_balance = AsyncMock()
-        resp = _post(client, body)
-    assert resp.status_code == 200
-    revoke.assert_not_awaited()
-
-
-def test_non_positive_balance_no_revoke_when_enforcement_off(client, known_customer, monkeypatch):
-    """Shadow mode (the default): flag still set, revoke never fires."""
-    monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", False)
-    body = _low_balance_body(remaining_balance=-100)
-    with (
-        patch(
-            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
-            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
-        ),
-        patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
-        _revoker() as revoke,
-    ):
-        gate = gate_cls.return_value
-        gate.set_balance = AsyncMock()
-        resp = _post(client, body)
-    assert resp.status_code == 200
-    gate.set_balance.assert_awaited_once_with(OWNER_ID, remaining_microcents=-1_000_000)
-    revoke.assert_not_called()
 
 
 def test_unknown_customer_acks_200_without_processing(client, known_customer):
@@ -212,14 +124,12 @@ def test_unknown_customer_acks_200_without_processing(client, known_customer):
             new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
         ),
         patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
-        _revoker() as revoke,
     ):
         gate = gate_cls.return_value
         gate.set_balance = AsyncMock()
         resp = _post(client, body)
     assert resp.status_code == 200
     gate.set_balance.assert_not_awaited()
-    revoke.assert_not_called()
 
 
 def test_replay_is_acked_without_processing(client, known_customer):
@@ -262,12 +172,11 @@ def test_processing_failure_rolls_back_dedup_and_reraises(client, known_customer
     delete_mock.assert_awaited_once_with("evt-1")
 
 
-def test_stale_event_skips_set_balance_and_revoke(client, known_customer, monkeypatch):
+def test_stale_event_skips_set_balance(client, known_customer):
     """A late-delivered low-balance event (older than the fast-gate row's
     updated_at, e.g. a redelivery racing an add_credit re-arm) must not stomp
     a top-up re-arm — a re-revoked paid-up owner emits no usage, so no
     corrective webhook would ever come."""
-    monkeypatch.setattr("core.config.settings.BEDROCK_ENFORCEMENT_LIVE", True)
     body = _low_balance_body(remaining_balance=-100, timestamp="2026-06-08T00:00:00+00:00")
     with (
         patch(
@@ -276,7 +185,6 @@ def test_stale_event_skips_set_balance_and_revoke(client, known_customer, monkey
         ),
         patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
         patch("routers.metronome_webhook.put_metric") as metric_mock,
-        _revoker() as revoke,
     ):
         gate = gate_cls.return_value
         gate.set_balance = AsyncMock()
@@ -285,7 +193,6 @@ def test_stale_event_skips_set_balance_and_revoke(client, known_customer, monkey
         resp = _post(client, body)
     assert resp.status_code == 200
     gate.set_balance.assert_not_awaited()
-    revoke.assert_not_called()
     assert any(call.args[0] == "metronome.webhook.stale_skipped" for call in metric_mock.call_args_list)
 
 
@@ -299,7 +206,6 @@ def test_fresh_event_with_older_row_is_processed(client, known_customer):
             new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
         ),
         patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
-        _revoker(),
     ):
         gate = gate_cls.return_value
         gate.set_balance = AsyncMock()
@@ -319,7 +225,6 @@ def test_event_without_timestamp_is_processed_without_row_read(client, known_cus
             new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
         ),
         patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
-        _revoker(),
     ):
         gate = gate_cls.return_value
         gate.set_balance = AsyncMock()
@@ -347,14 +252,12 @@ def test_non_numeric_remaining_balance_acks_200_and_keeps_dedup_row(client, know
         ) as delete_mock,
         patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
         patch("routers.metronome_webhook.put_metric") as metric_mock,
-        _revoker() as revoke,
     ):
         gate = gate_cls.return_value
         gate.set_balance = AsyncMock()
         resp = _post(client, body)
     assert resp.status_code == 200
     gate.set_balance.assert_not_awaited()
-    revoke.assert_not_called()
     delete_mock.assert_not_awaited()
     assert any(call.args[0] == "metronome.webhook.malformed" for call in metric_mock.call_args_list)
 

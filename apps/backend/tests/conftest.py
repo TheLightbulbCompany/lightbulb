@@ -28,22 +28,6 @@ from core.middleware import shutdown_aware
 
 
 @pytest.fixture(autouse=True)
-def _bedrock_gate_url_direct_default():
-    """Default every test to bedrock-gate BREAK-GLASS 'direct' mode.
-
-    ``core.billing.bedrock_gate_url.gate_url`` reads a deploy-published SSM
-    parameter and RAISES when it is unreadable (deliberate: a silently-direct
-    config would AccessDeny at inference). Unit tests have no SSM, so without
-    this default every config-building test would raise. Returning "" here is
-    the explicit break-glass value ("route direct"), which keeps all
-    direct-baseUrl assertions meaningful; gateway-specific tests patch the
-    resolver (or settings.BEDROCK_GATE_URL) with a URL instead.
-    """
-    with patch("core.billing.bedrock_gate_url.gate_url", return_value=""):
-        yield
-
-
-@pytest.fixture(autouse=True)
 def _reset_shutdown_flag():
     """Reset the process-global shutdown flag around every test.
 

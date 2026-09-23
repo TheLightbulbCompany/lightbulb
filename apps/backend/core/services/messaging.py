@@ -2570,10 +2570,8 @@ async def _record_run_usage(
 ) -> None:
     """Shared ``record_usage`` call for the room (``_after_run_ended``) and
     non-room (``handle_usage_report``) usage paths. Never raises."""
-    cost = usage.estimated_cost_usd
-    raw_cost_microcents = round(cost * 1_000_000) if cost is not None and cost > 0 else None
-    # No token volume and no billable cost -- nothing to record.
-    if usage.input_tokens > 0 or usage.output_tokens > 0 or raw_cost_microcents:
+    # No token volume -- nothing to record.
+    if usage.input_tokens > 0 or usage.output_tokens > 0:
         try:
             await record_usage(
                 owner_id=owner_id,
@@ -2583,7 +2581,6 @@ async def _record_run_usage(
                 output_tokens=usage.output_tokens,
                 cache_read=usage.cache_read_tokens,
                 cache_write=usage.cache_write_tokens,
-                raw_cost_microcents=raw_cost_microcents,
                 room_turn=room_turn,
                 event_kind=event_kind,
             )

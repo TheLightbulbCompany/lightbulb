@@ -1225,29 +1225,6 @@ async def delete(owner_id: str) -> None:
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
 
 
-async def get_trial_daily_spend(owner_id: str, date: str) -> int:
-    """Read-only lookup of the free-tier daily-spend counter for ``date``.
-    Returns 0 when the owner has no billing row, or the row exists but has no
-    spend recorded for that date.
-
-    Backs the free-tier $3/day cost cap read by
-    ``core/services/trial_cap.trial_block_reason``. This module has no writer
-    for ``trial_daily_spend_microcents`` — the counter has TWO writers, both
-    outside this codebase's Python: the bedrock-gate settles it first (in
-    JavaScript, on the hot inference path, before forwarding to Bedrock), and
-    the Bedrock invocation-log meter Lambda backstops by counting only the
-    invocations the gate missed (aborted streams, break-glass direct
-    traffic), via its own raw boto3 ``update_item``. Exactly-once is
-    guaranteed by the shared ``requestId`` dedup table
-    (``lightbulb-{env}-bedrock-invocation-dedup``), not by single-writer
-    discipline — do not add a third writer here believing you'd be the first.
-    """
-    item = await get_by_owner_id(owner_id)
-    if not item:
-        return 0
-    return int(item.get("trial_daily_spend_microcents", {}).get(date, 0))
-
-
 # ---------------------------------------------------------------------------
 # Company Stripe account — the owner's own business account on our Connect
 # platform. One binding per owner; status mirrors Connect `account.updated`.

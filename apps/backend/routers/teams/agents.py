@@ -219,7 +219,7 @@ async def _write_hermes_profile_or_rollback(ctx, owner_id: str, paperclip_agent:
 
     agent_id = paperclip_agent.get("id")
     try:
-        await write_profile_for_agent(owner_id, paperclip_agent, container_row=container)
+        await write_profile_for_agent(owner_id, paperclip_agent)
     except Exception as exc:  # noqa: BLE001 — every failure mode rolls back the same way.
         logger.warning(
             "teams.create_agent: hermes profile write failed for owner=%s agent=%s — rolling back",

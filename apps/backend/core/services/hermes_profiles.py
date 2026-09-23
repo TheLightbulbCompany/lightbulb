@@ -16,7 +16,7 @@ Fix round 1, C3 — three places a value can live, and this module owns exactly 
 ======================  =========================================  =========================
 Scope                   Members                                     Who writes it
 ======================  =========================================  =========================
-Runtime environment     AWS_ENDPOINT_URL_BEDROCK_RUNTIME, AWS_REGION,   Task 17, in the AgentCore
+Runtime environment     AWS_REGION, S3_BUCKET,                          Task 17, in the AgentCore
 (process-wide, one per  identifiers (LIGHTBULB_SECRET_ID, ISOL8_*)      runtime's environmentVariables
 container)                                                              (already-merged lane D's
                                                                          ``agentcore_runtime.build_runtime_env``)
@@ -52,14 +52,8 @@ import yaml
 from core.config import settings
 from core.dynamodb import run_in_thread
 
-#: Nothing produces this provider choice any more; ``hermes_provisioning.reconcile_hermes_aips``
-#: still compares against it until the AIP retirement removes that call.
-_BEDROCK_TRIAL_CHOICE = "bedrock_trial"
 
-
-def premium_model_ref(
-    provider_choice: str, byo_provider: str | None, *, aip_arns: dict[str, str] | None = None
-) -> str | None:
+def premium_model_ref(provider_choice: str, byo_provider: str | None) -> str | None:
     """The premium model ref reserved for the CEO agent (Friday), per provider
     path — or ``None`` when there is no premium tier to reserve.
 
@@ -81,9 +75,7 @@ def premium_model_ref(
     return None
 
 
-def cheap_model_ref(
-    provider_choice: str, byo_provider: str | None, *, aip_arns: dict[str, str] | None = None
-) -> str | None:
+def cheap_model_ref(provider_choice: str, byo_provider: str | None) -> str | None:
     """The cheapest model ref per provider path, routed to pure-overhead aux
     operations — or ``None`` when there is no cheaper tier to route to.
 
@@ -203,7 +195,7 @@ SKILLS_EXTERNAL_DIRS = [SKILLS_DIR_LIGHTBULB, SKILLS_DIR_HERMES_BUNDLED]
 #: uses) and the "standard" (non-premium, non-cheap) default-tier id, which has no standalone
 #: function anywhere — it only lives inline inside ``build_provider_block``'s ``byo_key`` branch.
 #: The premium/cheap ids themselves are NOT duplicated here any more: they come straight from
-#: ``premium_model_ref``/``cheap_model_ref`` above, the same functions the Bedrock branch already
+#: ``premium_model_ref``/``cheap_model_ref`` above, the same functions the rest of this module
 #: calls — those two have already broken a hardcoded ref across two catalog rotations (see their
 #: own docstrings), and a second local copy is exactly the class of bug that causes.
 _BYO_HERMES_PROVIDER = {"anthropic": ("anthropic", "claude-sonnet-5"), "openai": ("openai-api", "gpt-5.4")}
@@ -214,27 +206,25 @@ def _strip_provider_prefix(ref: str | None) -> str | None:
     return ref.split("/", 1)[1] if ref else None
 
 
-def model_block(provider_choice, byo_provider, aip_arns, is_ceo, *, default_id=None) -> tuple[dict, str, str]:
+def model_block(provider_choice, byo_provider, is_ceo, *, default_id=None) -> tuple[dict, str, str]:
     """(model block, aux model id, aux provider).
 
     Public (Q9a fix round 1, M6-R28): this is the ONE place that decides an agent's
-    ``config.yaml`` ``model`` key from ``(provider_choice, byo_provider, aip_arns, is_ceo)`` --
+    ``config.yaml`` ``model`` key from ``(provider_choice, byo_provider, is_ceo)`` --
     ``build_profile_config`` uses it for a fresh profile write, and ``runtime_rpc``'s
     ``agents.update`` door (an AgentCore role/model change) re-derives the same block
     through this function rather than hand-rolling or trusting a client-supplied ref.
 
     ``default_id`` (M6 task 10-C) pins the resolved default to a model the caller has ALREADY
-    validated against this owner's own ``models.list`` -- the owner's own AIPs on a
-    Bedrock-managed workspace, Hermes's provider catalog otherwise. Only ``default`` moves:
-    ``provider`` and Bedrock's ``context_length`` pin still come from here, so a picker choice
-    can never invent a provider or silently drop the pin. Without it the caller could express
-    only the two ``is_ceo`` tiers, so a paid owner could never pick their haiku profile.
+    validated against this owner's own ``models.list`` (Hermes's provider catalog). Only
+    ``default`` moves: ``provider`` and any ``context_length`` pin still come from here, so a
+    picker choice can never invent a provider or silently drop the pin.
     """
-    block, aux_model, aux_provider = _derive_model_block(provider_choice, byo_provider, aip_arns, is_ceo)
+    block, aux_model, aux_provider = _derive_model_block(provider_choice, byo_provider, is_ceo)
     return ({**block, "default": default_id} if default_id else block), aux_model, aux_provider
 
 
-def _derive_model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tuple[dict, str, str]:
+def _derive_model_block(provider_choice, byo_provider, is_ceo) -> tuple[dict, str, str]:
     if provider_choice == "openrouter_managed":
         from core.billing.openrouter_gate_url import gate_url
 
@@ -254,8 +244,8 @@ def _derive_model_block(provider_choice, byo_provider, aip_arns, is_ceo) -> tupl
         )
     if provider_choice == "byo_key":
         hermes_provider, standard = _BYO_HERMES_PROVIDER[byo_provider or "anthropic"]
-        premium = _strip_provider_prefix(premium_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
-        cheap = _strip_provider_prefix(cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns))
+        premium = _strip_provider_prefix(premium_model_ref(provider_choice, byo_provider))
+        cheap = _strip_provider_prefix(cheap_model_ref(provider_choice, byo_provider))
         default = premium if is_ceo else standard
         return {"default": default, "provider": hermes_provider}, cheap or standard, hermes_provider
     if provider_choice != "chatgpt_oauth":
@@ -298,11 +288,10 @@ def build_profile_config(
     agent_role: str,
     provider_choice: str,
     byo_provider: str | None = None,
-    aip_arns: dict[str, str] | None = None,
     mcp_servers: dict | None = None,
     is_ceo: bool = False,
 ) -> dict:
-    model, aux_model, aux_provider = model_block(provider_choice, byo_provider, aip_arns, is_ceo)
+    model, aux_model, aux_provider = model_block(provider_choice, byo_provider, is_ceo)
     aux: dict = {
         "free_only": True,
         "transient_retries": 2,
@@ -665,7 +654,6 @@ def write_agent_profile(
     agent: dict,
     *,
     provider_choice: str,
-    aip_arns: dict[str, str],
     paperclip_api_key: str,
     integrations: dict[str, dict],
     env_vars: dict[str, str],
@@ -699,7 +687,6 @@ def write_agent_profile(
         agent_role=agent.get("role") or "general",
         provider_choice=provider_choice,
         byo_provider=byo_provider,
-        aip_arns=aip_arns,
         mcp_servers=with_profile_home(mcp_config, agent["id"]),
         is_ceo=(agent.get("role") == "ceo"),
     )

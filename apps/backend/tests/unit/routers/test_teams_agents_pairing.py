@@ -196,7 +196,7 @@ async def test_teams_create_agent_writes_the_hermes_profile(monkeypatch):
     args, kwargs = write_profile.await_args
     assert args[0] == "org_xyz"
     assert args[1]["id"] == paperclip_agent["id"]
-    assert kwargs["container_row"] == _AGENTCORE_ROW
+    assert "container_row" not in kwargs
     reachable.assert_not_awaited()
 
 

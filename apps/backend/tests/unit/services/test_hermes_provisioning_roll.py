@@ -26,7 +26,7 @@ def _row(value):
 
 
 async def _roles(owner_id):
-    return "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a", {"sonnet": "arn:aip"}
+    return "arn:aws:iam::877352799272:role/lightbulb-dev-owner-bedrock-org_a"
 
 
 def _wire(monkeypatch, *, current_image, row=ROW):
@@ -37,7 +37,7 @@ def _wire(monkeypatch, *, current_image, row=ROW):
         "_runtime_description",
         lambda arn: {"agentRuntimeArtifact": {"containerConfiguration": {"containerUri": current_image}}},
     )
-    monkeypatch.setattr(hermes_provisioning, "_load_role_and_aips", _roles)
+    monkeypatch.setattr("core.billing.bedrock_aip.ensure_owner_bedrock_role", _roles)
     calls = []
     # The roll is how an already-provisioned workspace gets its first Browser profile, so
     # the request it builds carries the id ensure_browser_profile just resolved -- echoed
@@ -45,7 +45,7 @@ def _wire(monkeypatch, *, current_image, row=ROW):
     monkeypatch.setattr(
         hermes_provisioning,
         "build_runtime_request_for_owner",
-        lambda o, r, a, *, browser_profile_id="", provider_choice="bedrock_claude": {
+        lambda o, r, *, browser_profile_id="", provider_choice: {
             "req": o,
             "profile": browser_profile_id,
         },
@@ -145,7 +145,7 @@ async def test_respec_on_a_matching_spec_rewrites_profiles_after_the_stop_withou
     # profile rewrite, after the stop, and forces the idle stop even when nothing drifted.
     calls = _wire(monkeypatch, current_image=IMAGE)
 
-    async def _write(owner_id, aip_arns):
+    async def _write(owner_id):
         calls.append(("profiles", owner_id))
 
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _write)
@@ -161,10 +161,10 @@ async def test_an_env_drift_rewrites_profiles_after_the_stop_without_respec(monk
     monkeypatch.setattr(
         hermes_provisioning,
         "build_runtime_request_for_owner",
-        lambda o, r, a, **kw: {"environmentVariables": {"LIGHTBULB_MANAGED_MODEL_ID": "new/model"}},
+        lambda o, r, **kw: {"environmentVariables": {"LIGHTBULB_MANAGED_MODEL_ID": "new/model"}},
     )
 
-    async def _write(owner_id, aip_arns):
+    async def _write(owner_id):
         calls.append(("profiles", owner_id))
 
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _write)

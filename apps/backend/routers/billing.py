@@ -20,23 +20,18 @@ from core.auth import (
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
-from core.services import spend_service
 from core.services.billing_service import BillingService
-from core.services.container_provision import resolve_provider_choice
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
     is_paid_subscription,
 )
 from core.services.usage_service import get_usage_summary
-from core.billing.bedrock_pricing import get_all_rates
 from schemas.billing import (
     BillingAccountResponse,
     PortalResponse,
     UsageSummary,
     MemberUsage,
     MyUsageResponse,
-    PricingResponse,
-    ModelPriceResponse,
     SpendResponse,
 )
 
@@ -217,65 +212,15 @@ async def get_my_usage(
 @router.get(
     "/spend",
     response_model=SpendResponse,
-    summary="Provider-aware spend summary",
-    description=(
-        "Bedrock owners: month-to-date BILLED spend from Metronome with a "
-        "per-model split. ChatGPT-OAuth/BYOK/trial/degraded: tokens_only "
-        "(the panel keeps its token grid). Display-only; never errors on "
-        "upstream failure."
-    ),
+    summary="Spend summary",
+    description="Always tokens_only: the panel keeps its token grid. Kept for the web/mobile callers.",
     operation_id="get_spend",
 )
 async def get_spend(auth: AuthContext = Depends(get_current_user)):
-    # Same org-member gating as GET /billing/usage — spend is billing-account
-    # detail, not something a non-admin org member should be able to read.
+    # Same org-member gating as GET /billing/usage.
     if auth.is_org_context:
         require_org_admin(auth)
-    owner_id = resolve_owner_id(auth)
-    # resolve_provider_choice is THE single resolver (container_provision.py)
-    # — it subsumes the old raw billing-row read + None short-circuit here.
-    # trial_local and no-choice rows resolve to openrouter_managed, which
-    # spend_service.get_spend_summary shows as tokens_only.
-    try:
-        provider_choice, _byo_provider = await resolve_provider_choice(owner_id)
-    except Exception:
-        logger.warning(
-            "resolve_provider_choice failed for owner %s — degrading /billing/spend to tokens_only",
-            owner_id,
-            exc_info=True,
-        )
-        return SpendResponse(mode="tokens_only")
-    payload = await spend_service.get_spend_summary(owner_id, provider_choice)
-    return SpendResponse(**payload)
-
-
-@router.get(
-    "/pricing",
-    response_model=PricingResponse,
-    summary="Get model pricing",
-    description=(
-        "Returns per-token Bedrock Claude pricing for the credit-ledger UI. "
-        "Card-3 (bedrock_claude) users pay raw Bedrock prices times the credit-ledger "
-        "markup (applied on deduct, not surfaced here)."
-    ),
-    operation_id="get_pricing",
-)
-async def get_pricing(
-    auth: AuthContext = Depends(get_current_user),
-):
-    # Schema convention is USD per token; rate table is USD per million
-    # tokens. Convert here so the API contract is unchanged.
-    all_rates = get_all_rates()
-    models = {
-        model_id: ModelPriceResponse(
-            input=rate["input"] / 1_000_000,
-            output=rate["output"] / 1_000_000,
-            cache_read=rate["cache_read"] / 1_000_000,
-            cache_write=rate["cache_write"] / 1_000_000,
-        )
-        for model_id, rate in all_rates.items()
-    }
-    return PricingResponse(models=models)
+    return SpendResponse(mode="tokens_only")
 
 
 @router.post(
@@ -446,7 +391,7 @@ class TopUpRequest(BaseModel):
 
 
 def _is_exhausted(balance_microcents: int | None) -> bool:
-    """Whether the owner's credits are unspendable at the bedrock-gate.
+    """Whether the owner's credits are unspendable at the gate.
 
     The gate admits paid traffic only while `remaining - reserved - estimate
     > 0`, so a balance at or below one reservation buys nothing. Surfacing the

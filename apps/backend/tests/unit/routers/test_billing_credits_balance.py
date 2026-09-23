@@ -7,7 +7,7 @@ from routers import billing
 async def test_balance_is_exhausted_at_or_below_reserve(monkeypatch):
     """A balance at or below one reservation is unspendable — the gate would
     refuse the next request — so the banner must show."""
-    from core.services.trial_cap import RESERVE_ESTIMATE_MICROCENTS
+    from core.services.metronome_gate import RESERVE_ESTIMATE_MICROCENTS
 
     for balance, expected in [
         (RESERVE_ESTIMATE_MICROCENTS - 1, True),

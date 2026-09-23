@@ -533,7 +533,7 @@ async def _create_agent(owner_id: str, user_id: str, params: dict[str, Any], con
     # (Q9a fix round 1, M6-R27) -- the meta rides the Paperclip row itself.
     from core.services.hermes_provisioning import write_profile_for_agent
 
-    await write_profile_for_agent(owner_id, paperclip_agent, container_row=container)
+    await write_profile_for_agent(owner_id, paperclip_agent)
     await _invalidate(owner_id, "agents.create")
     from routers.teams.agents import _redact_agent
 
@@ -581,17 +581,13 @@ async def _mirror_paperclip_update_with_retry(
 _AUX_MODEL_KEY = "model"
 
 
-async def _owner_model_inputs(owner_id: str) -> tuple[str, str | None, dict[str, str]]:
-    """``(provider_choice, byo_provider, aip_arns)`` -- the three inputs ``model_block`` and the
-    model list need, read directly rather than through ``resolve_profile_inputs`` (which also
+async def _owner_model_inputs(owner_id: str) -> tuple[str, str | None]:
+    """``(provider_choice, byo_provider)`` -- the inputs ``model_block`` and the model list need, read directly rather than through ``resolve_profile_inputs`` (which also
     reads the BYO key out of Secrets Manager and builds every integration MCP server: work a
     settings READ has no use for)."""
     from core.services.container_provision import resolve_provider_choice
 
-    provider_choice, byo_provider = await resolve_provider_choice(owner_id)
-    container_row = await container_repo.get_by_owner_id(owner_id) or {}
-    aip_arns = container_row.get("bedrock_aip_arns") or {}
-    return provider_choice, byo_provider, aip_arns
+    return await resolve_provider_choice(owner_id)
 
 
 async def agentcore_disabled_skill_names(owner_id: str) -> list[str]:
@@ -634,7 +630,7 @@ async def _agentcore_models_list(owner_id: str) -> dict[str, Any] | None:
     BYO-key / ChatGPT-OAuth workspace the catalog is Hermes's own and only the runtime holds it,
     so ``None`` means "fall through to the bridge".
     """
-    provider_choice, byo_provider, aip_arns = await _owner_model_inputs(owner_id)
+    provider_choice, _byo_provider = await _owner_model_inputs(owner_id)
     if provider_choice == "openrouter_managed":
         model_id = hermes_profiles.settings.OPENROUTER_MANAGED_MODEL_ID.strip()
         models = [{"id": model_id, "name": model_id, "provider": "custom"}] if model_id else []
@@ -647,7 +643,7 @@ async def _validated_model_id(owner_id: str, model: str, *, method: str) -> str:
 
     The closed ``standard``/``premium`` vocabulary this replaces existed only because there was
     no list to check a free-form choice against (M6-R29). There is one now, and the check is the
-    same fence: a Bedrock ref outside the owner's own AIP grant makes the gate refuse every turn.
+    same fence: a model outside the owner's own offer is refused before it reaches a profile.
     BYO/OAuth ids come from the bridge's copy of Hermes's catalog -- the same call the picker
     itself just made, so the microVM it needs is already warm.
     """
@@ -752,9 +748,9 @@ async def _expand_agentcore_config_patch(owner_id: str, patch: dict[str, Any]) -
     if not isinstance(model, str) or not model:
         return patch
     model = await _validated_model_id(owner_id, model, method="config.patch")
-    provider_choice, byo_provider, aip_arns = await _owner_model_inputs(owner_id)
+    provider_choice, byo_provider = await _owner_model_inputs(owner_id)
     model_block, _aux_model, aux_provider = hermes_profiles.model_block(
-        provider_choice=provider_choice, byo_provider=byo_provider, aip_arns=aip_arns, is_ceo=False
+        provider_choice=provider_choice, byo_provider=byo_provider, is_ceo=False
     )
     expanded = {key: value for key, value in aux.items() if key != _AUX_MODEL_KEY}
     expanded.update(
@@ -779,12 +775,10 @@ async def _apply_agentcore_model_patch(owner_id: str, agent_id: str, *, default_
     from core.services.hermes_profiles import model_block
     from core.services.hermes_provisioning import resolve_profile_inputs
 
-    container_row = await container_repo.get_by_owner_id(owner_id) or {}
-    inputs = await resolve_profile_inputs(owner_id, container_row=container_row)
+    inputs = await resolve_profile_inputs(owner_id)
     model, _aux_model, _aux_provider = model_block(
         provider_choice=inputs.provider_choice,
         byo_provider=inputs.byo_provider,
-        aip_arns=inputs.aip_arns,
         is_ceo=False,
         default_id=default_id,
     )

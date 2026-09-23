@@ -435,12 +435,10 @@ async def test_failure_rolls_back_created_set_and_skips_seeded(monkeypatch):
     _install(monkeypatch, h, plan=plan)
     _resolve_calls, write_profile, upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
 
-    async def boom(owner_id, agent_row, *, container_row, inputs=None, soul_md_override=None):
+    async def boom(owner_id, agent_row, *, inputs=None, soul_md_override=None):
         if agent_row["name"] == "CTO":
             raise RuntimeError("profile write exploded")
-        write_profile.calls.append(
-            {"owner_id": owner_id, "agent_row": agent_row, "container_row": container_row, "inputs": inputs}
-        )
+        write_profile.calls.append({"owner_id": owner_id, "agent_row": agent_row, "inputs": inputs})
 
     monkeypatch.setattr(svc, "write_profile_for_agent", boom)
     # Pretend the CEO's freshly-minted id is a seeded agent (never deletable).
@@ -529,10 +527,8 @@ class _RecordingWriteProfile:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    async def __call__(self, owner_id, agent_row, *, container_row, inputs=None, soul_md_override=None):
-        self.calls.append(
-            {"owner_id": owner_id, "agent_row": agent_row, "container_row": container_row, "inputs": inputs}
-        )
+    async def __call__(self, owner_id, agent_row, *, inputs=None, soul_md_override=None):
+        self.calls.append({"owner_id": owner_id, "agent_row": agent_row, "inputs": inputs})
 
 
 class _RecordingUploadFiles:
@@ -555,7 +551,7 @@ def _wire_agentcore_profile(monkeypatch):
     resolve_calls: list[str] = []
     inputs_sentinel = object()
 
-    async def fake_resolve_profile_inputs(owner_id, *, container_row):
+    async def fake_resolve_profile_inputs(owner_id):
         resolve_calls.append(owner_id)
         return inputs_sentinel
 
@@ -585,8 +581,6 @@ async def test_a_company_deploy_runs_the_per_agent_profile_loop(monkeypatch):
     assert resolve_calls == [OWNER]
     assert len(write_profile.calls) == 3
     assert {id(c["inputs"]) for c in write_profile.calls} == {id(inputs_sentinel)}
-    for call in write_profile.calls:
-        assert call["container_row"] is h.container
 
     # Each agent's own content (today: just AGENTS.md) lands under ITS profile.
     by_agent_id = {agent_id: files for _, agent_id, files in upload_files.calls}
@@ -631,12 +625,10 @@ async def test_agentcore_mid_loop_failure_rolls_back_by_paperclip_delete_only(mo
     _install(monkeypatch, h, plan=plan)
     _resolve_calls, write_profile, _upload_files, _inputs = _wire_agentcore_profile(monkeypatch)
 
-    async def boom(owner_id, agent_row, *, container_row, inputs=None, soul_md_override=None):
+    async def boom(owner_id, agent_row, *, inputs=None, soul_md_override=None):
         if agent_row["name"] == "CTO":
             raise HermesProfileError("paperclip API key mint/read failed")
-        write_profile.calls.append(
-            {"owner_id": owner_id, "agent_row": agent_row, "container_row": container_row, "inputs": inputs}
-        )
+        write_profile.calls.append({"owner_id": owner_id, "agent_row": agent_row, "inputs": inputs})
 
     monkeypatch.setattr(svc, "write_profile_for_agent", boom)
 
@@ -808,7 +800,7 @@ async def test_claim_released_with_the_failure_as_cause(monkeypatch):
     _wire_agentcore_profile(monkeypatch)
     boom = RuntimeError("profile write failed")
 
-    async def fail_write(owner_id, agent_row, *, container_row, inputs=None, soul_md_override=None):
+    async def fail_write(owner_id, agent_row, *, inputs=None, soul_md_override=None):
         raise boom
 
     monkeypatch.setattr(svc, "write_profile_for_agent", fail_write)
@@ -875,7 +867,7 @@ async def test_failure_does_not_burn_the_company_slot(monkeypatch):
     _install(monkeypatch, h, plan=_simple_plan())
 
     # The profile write is the step that can fail per agent now (it was the pairing RPC).
-    async def fail_write_profile(owner_id, agent, *, container_row, inputs):
+    async def fail_write_profile(owner_id, agent, *, inputs):
         raise RuntimeError("profile write failed")
 
     monkeypatch.setattr(svc, "resolve_profile_inputs", AsyncMock(return_value=object()))

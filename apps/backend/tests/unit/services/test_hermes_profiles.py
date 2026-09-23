@@ -5,7 +5,7 @@ from core.services import hermes_profiles
 
 
 def cfg(**kw):
-    base = dict(agent_role="engineering", provider_choice="chatgpt_oauth", aip_arns=None)
+    base = dict(agent_role="engineering", provider_choice="chatgpt_oauth")
     return hermes_profiles.build_profile_config(**(base | kw))
 
 
@@ -24,13 +24,13 @@ def test_managed_openrouter_refuses_to_render_without_server_model_and_gate(monk
     monkeypatch.setattr(hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "", raising=False)
     monkeypatch.setattr(hermes_profiles.settings, "OPENROUTER_GATE_URL", "", raising=False)
     with pytest.raises(ValueError, match="managed OpenRouter route"):
-        cfg(provider_choice="openrouter_managed", aip_arns={})
+        cfg(provider_choice="openrouter_managed")
 
 
 def test_managed_openrouter_primary_and_all_auxiliary_tasks_use_only_the_gate(monkeypatch):
     monkeypatch.setattr(hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model", raising=False)
     monkeypatch.setattr(hermes_profiles.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1", raising=False)
-    config = cfg(provider_choice="openrouter_managed", aip_arns={})
+    config = cfg(provider_choice="openrouter_managed")
     assert config["model"] == {
         "default": "candidate/model",
         "provider": "custom",
@@ -136,7 +136,7 @@ def test_no_secret_ever_lands_in_config_yaml():
 
 
 def test_byo_key_selects_the_direct_provider_and_its_model_ids():
-    c = cfg(provider_choice="byo_key", byo_provider="anthropic", aip_arns=None)
+    c = cfg(provider_choice="byo_key", byo_provider="anthropic")
     assert c["model"] == {"default": "claude-sonnet-5", "provider": "anthropic"}
     assert "bedrock" not in c
 
@@ -149,13 +149,13 @@ def test_byo_key_premium_and_cheap_tiers_come_from_the_shared_catalog_not_a_loca
     this module holds no second copy of its own."""
     monkeypatch.setattr(hermes_profiles, "premium_model_ref", lambda *a, **k: "anthropic/PATCHED-PREMIUM")
     monkeypatch.setattr(hermes_profiles, "cheap_model_ref", lambda *a, **k: "anthropic/PATCHED-CHEAP")
-    c = cfg(provider_choice="byo_key", byo_provider="anthropic", aip_arns=None, agent_role="ceo", is_ceo=True)
+    c = cfg(provider_choice="byo_key", byo_provider="anthropic", agent_role="ceo", is_ceo=True)
     assert c["model"]["default"] == "PATCHED-PREMIUM"
     assert c["auxiliary"]["compression"]["model"] == "PATCHED-CHEAP"
 
 
 def test_chatgpt_oauth_selects_the_codex_provider_with_no_tier_split():
-    c = cfg(provider_choice="chatgpt_oauth", aip_arns=None, is_ceo=True)
+    c = cfg(provider_choice="chatgpt_oauth", is_ceo=True)
     assert c["model"]["provider"] == "openai-codex"
 
 
@@ -169,7 +169,7 @@ def test_chatgpt_oauth_pins_every_aux_task_to_the_codex_provider_not_auto():
     is the supported, intended usage — not a guess). Pinned to the SAME model the primary uses
     (gpt-5.6-sol): chatgpt_oauth is flat-rate with no cheaper tier to route aux work to, the same
     reasoning the main model block already uses."""
-    c = cfg(provider_choice="chatgpt_oauth", aip_arns=None, is_ceo=True)
+    c = cfg(provider_choice="chatgpt_oauth", is_ceo=True)
     for task in hermes_profiles.AUXILIARY_TASKS:
         assert c["auxiliary"][task]["provider"] == "openai-codex", task
         assert c["auxiliary"][task]["model"] == "gpt-5.6-sol", task
@@ -373,7 +373,6 @@ def test_dotenv_carries_the_paperclip_identity_a_chat_turn_needs(monkeypatch):
         "org_1",
         {"id": "agent-1", "name": "Friday", "role": "ceo", "companyId": "company-1"},
         provider_choice="chatgpt_oauth",
-        aip_arns=None,
         paperclip_api_key="pcp_x",
         integrations={},
         env_vars={},
@@ -391,7 +390,6 @@ def test_dotenv_omits_an_unknown_company_rather_than_writing_it_empty(monkeypatc
         "org_1",
         {"id": "agent-1", "name": "Friday", "role": "ceo"},
         provider_choice="chatgpt_oauth",
-        aip_arns=None,
         paperclip_api_key="pcp_x",
         integrations={},
         env_vars={},

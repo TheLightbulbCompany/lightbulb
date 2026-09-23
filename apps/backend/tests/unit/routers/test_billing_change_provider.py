@@ -22,8 +22,6 @@ def _managed_route_available(monkeypatch):
     """Switching INTO openrouter_managed checks its route first; make it available."""
     from core.config import settings
 
-    monkeypatch.setattr(settings, "OPENROUTER_MANAGED_ENABLED", True, raising=False)
-    monkeypatch.setattr(settings, "OPENROUTER_PAID_CREDITS_ENABLED", True, raising=False)
     monkeypatch.setattr(settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model", raising=False)
     monkeypatch.setattr("core.billing.openrouter_gate_url.gate_url", lambda: "https://gate.example/v1")
     monkeypatch.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", AsyncMock())

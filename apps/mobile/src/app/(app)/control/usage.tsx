@@ -49,21 +49,6 @@ interface UsageSummary {
   by_member: UsageMember[];
 }
 
-// Mirrors apps/frontend/src/hooks/useSpend.ts verbatim (SpendResponse wire
-// shape from GET /billing/spend).
-interface SpendByModel {
-  model: string;
-  tier: string;
-  cents: number;
-}
-
-interface SpendResponse {
-  mode: "bedrock" | "tokens_only";
-  billed_month_to_date_cents: number | null;
-  by_model: SpendByModel[] | null;
-  period_start: string | null;
-}
-
 type UsageState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
@@ -71,7 +56,7 @@ type UsageState =
   | { kind: "none" }
   /** 403 or client-side org gate — admin-only surface. */
   | { kind: "restricted" }
-  | { kind: "ready"; usage: UsageSummary; spend: SpendResponse };
+  | { kind: "ready"; usage: UsageSummary };
 
 // ---------------------------------------------------------------------------
 // Data hook — getTokenRef pattern (settings.tsx): pin Clerk's churning
@@ -102,16 +87,9 @@ function useUsageData(orgRestricted: boolean) {
     }
     setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
     try {
-      // Spend failures must not fail the whole screen — a provider-detail
-      // fetch is enhancement, not load-bearing; fall back to tokens_only.
-      const [usage, spend] = await Promise.all([
-        api.get("/billing/usage") as Promise<UsageSummary>,
-        (api.get("/billing/spend") as Promise<SpendResponse>).catch(
-          () => ({ mode: "tokens_only" }) as SpendResponse,
-        ),
-      ]);
+      const usage = (await api.get("/billing/usage")) as UsageSummary;
       if (loadSeq.current !== seq) return;
-      setState({ kind: "ready", usage, spend });
+      setState({ kind: "ready", usage });
     } catch (err) {
       if (loadSeq.current !== seq) return;
       if (err instanceof ApiError && err.status === 404) {
@@ -166,31 +144,6 @@ function Tile({ label, value }: { label: string; value: string }) {
         {value}
       </Text>
     </View>
-  );
-}
-
-// Mode blocks (contract §6 provider-aware spend): rendered above the token
-// tile grid when the billing account has a dollar/quota story to tell.
-// tokens_only (BYOK, trial, degraded upstream) renders neither.
-
-function BedrockSpendCard({ spend }: { spend: SpendResponse }) {
-  const cents = spend.billed_month_to_date_cents ?? 0;
-  return (
-    <Card>
-      <Text style={styles.overline}>Billed this month</Text>
-      <Text style={styles.spendValue}>${(cents / 100).toFixed(2)}</Text>
-      {(spend.by_model ?? []).map((row, i) => (
-        <View
-          key={`${row.model}-${i}`}
-          style={[styles.memberRow, i > 0 && styles.memberRowBorder]}
-        >
-          <Text style={styles.memberName} numberOfLines={1}>
-            {row.model}
-          </Text>
-          <Text style={styles.memberTokens}>${(row.cents / 100).toFixed(2)}</Text>
-        </View>
-      ))}
-    </Card>
   );
 }
 
@@ -274,14 +227,11 @@ export default function UsagePanel() {
     );
   } else {
     const u = state.usage;
-    const s = state.spend;
     body = (
       <>
         {u.period !== "" && (
           <Text style={styles.periodText}>{u.period}</Text>
         )}
-
-        {s.mode === "bedrock" && <BedrockSpendCard spend={s} />}
 
         <View style={styles.grid}>
           <Tile label="INPUT" value={formatTokens(u.total_input_tokens)} />
@@ -363,12 +313,6 @@ const styles = StyleSheet.create({
     lineHeight: 14,
     letterSpacing: 0.6,
     color: colors.mute,
-  },
-  spendValue: {
-    fontFamily: fonts.sansSemiBold,
-    fontSize: 26,
-    lineHeight: 32,
-    color: colors.ink,
   },
   // Token tile grid.
   grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },

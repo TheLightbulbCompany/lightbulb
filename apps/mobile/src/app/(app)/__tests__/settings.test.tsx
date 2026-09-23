@@ -201,7 +201,7 @@ describe("deleting an Apple-billed account", () => {
       subscription_status: "active",
       subscription_source: "apple_iap",
       trial_end: null,
-      provider_choice: "bedrock_claude",
+      provider_choice: "openrouter_managed",
       byo_provider: null,
     };
     await render(<Settings />);
@@ -226,7 +226,7 @@ describe("deleting an Apple-billed account", () => {
       subscription_status: "active",
       subscription_source: "stripe",
       trial_end: null,
-      provider_choice: "bedrock_claude",
+      provider_choice: "openrouter_managed",
       byo_provider: null,
     };
     await render(<Settings />);

@@ -176,7 +176,7 @@ async def test_write_profiles_and_build_and_upload_agent_profile_source_identica
     monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     container = {"bedrock_aip_arns": {"sonnet": "arn:aip:sonnet"}}
 
-    expected = await hermes_provisioning.resolve_profile_inputs("org_a", container_row=container)
+    expected = await hermes_provisioning.resolve_profile_inputs("org_a")
 
     written = {}
 
@@ -192,6 +192,5 @@ async def test_write_profiles_and_build_and_upload_agent_profile_source_identica
     assert written["kwargs"]["provider_choice"] == expected.provider_choice
     assert written["kwargs"]["byo_provider"] == expected.byo_provider
     assert written["kwargs"]["byo_api_key"] == expected.byo_api_key
-    assert written["kwargs"]["aip_arns"] == expected.aip_arns
     assert written["kwargs"]["integrations"] == expected.integrations
     assert written["kwargs"]["env_vars"] == expected.env_vars

@@ -76,7 +76,7 @@ RESERVED_KEY_PREFIX = "__"
 async def scan_all(*, consistent: bool = False) -> list[dict]:
     """Return every OWNER row. Paginates via DDB LastEvaluatedKey.
 
-    Used by fleet-wide ops tools (the operator console's fleet grid, the break-glass and
+    Used by fleet-wide ops tools (the operator console's fleet grid and the
     runtime-roll scripts). Not for hot paths -- DDB Scan is expensive at scale.
 
     Filters out every RESERVED-KEY row (``RESERVED_KEY_PREFIX``: pass admission, the

@@ -129,7 +129,7 @@ async def write_boot_secret(
     hook_token: str,
     gateway_token: str,
     bedrock_bearer: str,
-    provider_choice: str = "bedrock_claude",
+    provider_choice: str,
 ) -> bool:
     """Converge the owner's boot secret (named ``boot_secret_name(owner_id)``, the value a
     runtime's ``BOOT_SECRET_ENV_VAR`` carries). Plaintext lives in exactly one place: this secret.

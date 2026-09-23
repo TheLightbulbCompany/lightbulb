@@ -450,7 +450,6 @@ export interface AdminProvisioning {
     retryable?: boolean | null;
     provision_generation?: string | null;
     onboarded_at?: string | null;
-    bedrock_revoked?: boolean | null;
     stop_reason?: string | null;
     agentcore_runtime_arn?: string | null;
     created_at?: string | null;

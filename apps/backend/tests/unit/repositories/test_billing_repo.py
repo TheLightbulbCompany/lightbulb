@@ -236,17 +236,6 @@ async def test_set_metronome_ids_requires_existing_row(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_get_trial_daily_spend_defaults_to_zero(dynamodb_table):
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("user_z", "cus_meta3")
-    # row exists but no spend recorded yet for this date
-    assert await billing_repo.get_trial_daily_spend("user_z", "2026-07-10") == 0
-    # no billing row at all for this owner
-    assert await billing_repo.get_trial_daily_spend("ghost_owner", "2026-07-10") == 0
-
-
-@pytest.mark.asyncio
 async def test_set_stripe_customer_id_backfills_existing_trial_local_row(dynamodb_table):
     """The card-less trial_local row (create_trial_local_if_absent) writes no
     stripe_* fields. set_stripe_customer_id must be able to backfill one onto

@@ -25,8 +25,6 @@ def test_metronome_settings_present_with_defaults():
     assert not hasattr(settings, "LEDGER_BACKEND")
     assert not hasattr(settings, "CREDITS_TABLE")
     assert not hasattr(settings, "CREDIT_TRANSACTIONS_TABLE")
-    # Metronome is the only ledger, so enforcement defaults ARMED: a
-    # depleted balance revokes the owner's Bedrock IAM grant.
-    assert settings.BEDROCK_ENFORCEMENT_LIVE is True
+    assert not hasattr(settings, "BEDROCK_ENFORCEMENT_LIVE")
     # The gate's lazy-refresh window (see core/services/metronome_gate.py).
     assert settings.METRONOME_GATE_STALENESS_S == 60

@@ -293,17 +293,15 @@ class TestContainerRecover:
     async def test_recover_refuses_a_capped_owners_zombie_running_row(
         self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
     ):
-        """A capped owner's row still reads "running" -- the backstop kill DENIES the gate bearer
-        rather than stopping anything. If its runtime is unhealthy, the escalation below
-        reprovisions, and a reprovision RE-MINTS that bearer: this endpoint would be the one door
-        a capped owner could reprovision their way back through the cap.
+        """A capped owner's row still reads "running" -- the cap blocks at the gate rather than
+        stopping anything. If its runtime is unhealthy, the escalation below reprovisions, and a
+        reprovision RE-MINTS the gate bearer: this endpoint would be the one door a capped owner
+        could reprovision their way back through the cap.
 
         The gate used to be reached via the running/no-IP branch (a live task IP that Cloud Map
         could fail to resolve); there is no task IP to miss now, so the check sits on the
         escalation itself."""
-        mock_container_repo.get_by_owner_id = AsyncMock(
-            return_value={"owner_id": "user_test_123", "status": "running", "bedrock_revoked": True}
-        )
+        mock_container_repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123", "status": "running"})
 
         with patch(
             "core.services.trial_cap.trial_block_reason",

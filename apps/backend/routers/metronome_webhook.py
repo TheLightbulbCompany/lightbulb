@@ -2,10 +2,8 @@
 
 Metronome's balance is async (no low-latency SLA), so the synchronous chat
 gate reads the local fast-gate flag instead. This webhook sets that flag on
-the low-balance alert event types and — when enforcement is armed
-(settings.BEDROCK_ENFORCEMENT_LIVE) — fires the Bedrock kill-switch via
-enforce_on_low_balance. There is no backend deplete; between webhook fires
-the flag simply holds its last value, with the kill-switch as the backstop.
+the low-balance alert event types. There is no backend deplete; between
+webhook fires the flag simply holds its last value.
 
 Signature: Metronome-Webhook-Signature = hex HMAC_SHA256(secret, Date + "\n" +
 raw_body). Deduped by event id via the shared webhook_dedup helper.
@@ -33,7 +31,6 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.services import webhook_dedup
-from core.services.bedrock_enforcement import enforce_on_low_balance
 from core.services.webhook_dedup import WebhookDedupResult
 
 logger = logging.getLogger(__name__)
@@ -283,7 +280,4 @@ async def _process_event(event: dict, event_id: str) -> Response:
         "metronome.webhook",
         dimensions={"result": "fast_gate_set", "blocked": str(remaining_microcents <= 0)},
     )
-    # Flag first, kill second: even if the kill path errors out (it swallows
-    # internally, but belt-and-braces), the gate already blocks new sends.
-    await enforce_on_low_balance(owner_id, remaining_microcents)
     return Response(status_code=200)

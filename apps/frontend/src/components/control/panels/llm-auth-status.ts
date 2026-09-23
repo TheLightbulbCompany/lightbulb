@@ -46,11 +46,6 @@ function candidateIds(
   choice: string,
   byoProvider: ByoProvider | null,
 ): string[] {
-  // The container writes ``models.providers.amazon-bedrock`` and reports that
-  // id back through models.authStatus (upstream normalizeProviderId only
-  // lowercases — it does NOT map ``amazon-bedrock`` → ``bedrock``), so the
-  // real reported id is ``amazon-bedrock``; ``bedrock`` is a tolerant fallback.
-  if (choice === "bedrock_claude") return ["amazon-bedrock", "bedrock"];
   if (choice === "openrouter_managed") return ["custom"];
   if (choice === "chatgpt_oauth") return ["openai-codex"];
   // byo_key
@@ -62,12 +57,11 @@ function candidateIds(
 // Exact ids reserved by EVERY provider choice. Used to keep one choice's prefix
 // match from swallowing another choice's exact id: the BYO ``openai`` candidate
 // must not prefix-match ``openai-codex`` (chatgpt_oauth's distinct provider),
-// and ``amazon-bedrock``/``bedrock``/``anthropic``/``openai`` must not be
-// claimed by an unrelated prefix either. Built from the full candidate union so
-// adding a future provider choice keeps the exclusion correct automatically.
+// and ``anthropic``/``openai`` must not be claimed by an unrelated prefix
+// either. Built from the full candidate union so adding a future provider
+// choice keeps the exclusion correct automatically.
 function allReservedExactIds(): Set<string> {
   return new Set([
-    ...candidateIds("bedrock_claude", null),
     ...candidateIds("openrouter_managed", null),
     ...candidateIds("chatgpt_oauth", null),
     ...candidateIds("byo_key", "anthropic"),
@@ -84,10 +78,9 @@ export function resolveProviderStatus(
   const wanted = candidateIds(choice, byoProvider ?? null);
   if (wanted.length === 0) return undefined;
 
-  // Pass 1 — EXACT match in candidate-priority order. An exact hit on a
-  // higher-priority candidate (e.g. ``amazon-bedrock``) always beats a prefix
-  // hit on a lower one, and an exact hit on our own id always beats a prefix
-  // hit that could collide with another choice's reserved id.
+  // Pass 1 — EXACT match in candidate-priority order. An exact hit on our own
+  // id always beats a prefix hit that could collide with another choice's
+  // reserved id.
   for (const w of wanted) {
     const match = list.find((p) => normalizeId(p.provider) === w);
     if (match) return match.status;

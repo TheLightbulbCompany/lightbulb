@@ -46,26 +46,20 @@ const usageFixture = {
   ],
 };
 
-function mockEndpoints(spend: unknown) {
+function mockEndpoints() {
   mockGet.mockImplementation((endpoint: string) => {
     if (endpoint === "/billing/usage") return Promise.resolve(usageFixture);
-    if (endpoint === "/billing/spend") return Promise.resolve(spend);
     return Promise.reject(new Error(`unexpected endpoint ${endpoint}`));
   });
 }
 
-describe("UsagePanel provider-aware spend", () => {
+describe("UsagePanel usage display", () => {
   beforeEach(() => {
     mockGet.mockReset();
   });
 
-  it("tokens_only: renders token tiles + request count, no dollar sign anywhere", async () => {
-    mockEndpoints({
-      mode: "tokens_only",
-      billed_month_to_date_cents: null,
-      by_model: null,
-      period_start: null,
-    });
+  it("renders token tiles + request count, no dollar sign anywhere", async () => {
+    mockEndpoints();
 
     await render(<UsagePanel />);
 
@@ -74,28 +68,8 @@ describe("UsagePanel provider-aware spend", () => {
     expect(JSON.stringify(screen.toJSON())).not.toContain("$");
   });
 
-  it("bedrock: renders Billed this month, dollar total, and per-model row", async () => {
-    mockEndpoints({
-      mode: "bedrock",
-      billed_month_to_date_cents: 1234,
-      by_model: [{ model: "Claude Opus", tier: "opus", cents: 900 }],
-      period_start: "2026-07-01",
-    });
-
-    await render(<UsagePanel />);
-
-    expect(await screen.findByText("Billed this month")).toBeTruthy();
-    expect(screen.getByText("$12.34")).toBeTruthy();
-    expect(screen.getByText("Claude Opus")).toBeTruthy();
-  });
-
   it("member rows: show name + request count, never a member dollar value", async () => {
-    mockEndpoints({
-      mode: "tokens_only",
-      billed_month_to_date_cents: null,
-      by_model: null,
-      period_start: null,
-    });
+    mockEndpoints();
 
     await render(<UsagePanel />);
 

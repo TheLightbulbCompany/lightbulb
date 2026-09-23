@@ -32,11 +32,11 @@ import { isFreeTierExpired } from "@/lib/planLabel";
 
 type UserData = {
   // Plain string, not `ProviderChoice`: this is the owner's STORED choice,
-  // which can carry a legacy value (e.g. a retired `bedrock_claude` row) no
-  // longer offered by the picker. Every render branch below matches it by
-  // string comparison, so a legacy value still renders its existing block
-  // (bedrock_claude keeps the ManagedBlock/Claude-branded card) instead of
-  // throwing on a type it no longer recognizes as pickable.
+  // which can carry a legacy value (e.g. a retired `bedrock_claude` row, of
+  // which there are none left) no longer offered by the picker. Every render
+  // branch below matches it by string comparison, so an unrecognized legacy
+  // value simply matches no block instead of throwing on a type it no longer
+  // recognizes as pickable.
   provider_choice?: string | null;
   byo_provider?: ByoProvider | null;
 };
@@ -298,21 +298,19 @@ function ByoKeyBlock({
 function ManagedBlock({
   onChangeProvider,
   dotColor,
-  openrouter = false,
   creditsUnavailable = false,
 }: {
   onChangeProvider: () => void;
   dotColor: DotColor;
-  openrouter?: boolean;
   /** An explicit openrouter_managed row while prepaid credits can't be bought: every turn fails. */
   creditsUnavailable?: boolean;
 }) {
   return (
     <>
       <HeroCard
-        icon={openrouter ? <span className="text-xl font-semibold">✦</span> : <AnthropicIcon size={32} />}
-        title={openrouter ? "Lightbulb-managed models" : "Powered by Claude"}
-        subtitle={openrouter ? "Inference uses your Lightbulb workspace credits" : "Anthropic Claude via AWS Bedrock"}
+        icon={<span className="text-xl font-semibold">✦</span>}
+        title="Lightbulb-managed models"
+        subtitle="Inference uses your Lightbulb workspace credits"
         status={creditsUnavailable ? "Unavailable" : "Active"}
         dotColor={creditsUnavailable ? "red" : dotColor}
       />
@@ -507,7 +505,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   // Held while the runtime is unknown (`undefined`), which on AgentCore is the
   // difference between a settings read and a microVM start. Provider IDS are not
   // branched: the Hermes bridge reports the same names `llm-auth-status.ts`
-  // already matches (`bedrock`, `anthropic`, `openai-api`, `openai-codex`).
+  // already matches (`custom`, `anthropic`, `openai-api`, `openai-codex`).
   const statusLoaded = useStatusLoaded();
   const {
     data: authStatus,
@@ -612,12 +610,11 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
         </div>
       )}
 
-      {(user.provider_choice === "bedrock_claude" || user.provider_choice === "openrouter_managed") && (
+      {user.provider_choice === "openrouter_managed" && (
         <ManagedBlock
           onChangeProvider={openModal}
           dotColor={dotColor}
-          openrouter={user.provider_choice === "openrouter_managed"}
-          creditsUnavailable={user.provider_choice === "openrouter_managed" && !managedAvailable}
+          creditsUnavailable={!managedAvailable}
         />
       )}
 
@@ -628,8 +625,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
       {/* Credits live inline for managed owners — the former Credits panel.
           BYO providers bill through their own account, so nothing
           renders for them. */}
-      {(user.provider_choice === "bedrock_claude" ||
-        (user.provider_choice === "openrouter_managed" && managedAvailable)) && <CreditsSection />}
+      {user.provider_choice === "openrouter_managed" && managedAvailable && <CreditsSection />}
 
       <ChangeProviderModal
         open={modalOpen && !billingLoading}

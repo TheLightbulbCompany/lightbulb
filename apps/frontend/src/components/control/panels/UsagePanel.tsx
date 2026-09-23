@@ -2,12 +2,10 @@
 
 import { useCallback, useState } from "react";
 import useSWR from "swr";
-import Link from "next/link";
 import { Loader2, RefreshCw, AlertCircle } from "lucide-react";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { useBilling } from "@/hooks/useBilling";
 import type { UsageSummary } from "@/hooks/useBilling";
-import { useSpend } from "@/hooks/useSpend";
 import { Button } from "@/components/ui/button";
 import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
 
@@ -21,10 +19,6 @@ function formatTokens(n: number): string {
   return n.toLocaleString();
 }
 
-function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
-
 // =============================================================================
 // Component
 // =============================================================================
@@ -36,8 +30,10 @@ export interface UsagePanelProps {
    *  is identical in both hosts.
    *
    *  Money no longer embeds it: its Agent spend section
-   *  (`teams/panels/money/AgentSpendSection.tsx`) renders the billed figure and
-   *  the run count only, and this panel stays the full breakdown at
+   *  (`teams/panels/money/AgentSpendSection.tsx`) renders a plan-derived
+   *  headline sentence and the run count only (there is no billed-dollar
+   *  figure left to show — GET /billing/spend was retired with backend
+   *  Bedrock billing), and this panel stays the full token breakdown at
    *  `?panel=usage`. The prop remains for any other host that embeds it. */
   embedded?: boolean;
 }
@@ -45,7 +41,6 @@ export interface UsagePanelProps {
 export function UsagePanel({ embedded = false }: UsagePanelProps = {}) {
   const { account, isLoading: accountLoading, fetchUsage, refresh } = useBilling();
   const isOrgAdmin = useIsWorkspaceAdmin();
-  const { spend } = useSpend();
   // Captured once (not read directly in render — Date.now() is impure) so
   // this is stable across re-renders. Docked next to WorkspaceSidebar's
   // footer badge in the same dockable shell (WorkspaceShell.tsx), so it must
@@ -128,32 +123,6 @@ export function UsagePanel({ embedded = false }: UsagePanelProps = {}) {
               Period: <span className="font-medium text-[var(--midnight)]">{usage.period}</span>
             </span>
           )}
-        </div>
-      )}
-
-      {spend?.mode === "bedrock" && (
-        <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium">Billed this month</h3>
-            <span className="font-mono text-title">
-              {formatCents(spend.billed_month_to_date_cents ?? 0)}
-            </span>
-          </div>
-          {(spend.by_model ?? []).map((row) => (
-            <div key={row.tier} className="flex items-center justify-between text-xs text-[var(--midnight-muted)]">
-              <span>{row.model}</span>
-              <span className="font-mono">{formatCents(row.cents)}</span>
-            </div>
-          ))}
-          <p className="text-2xs text-midnight-muted">
-            From your credits invoice — matches what you&apos;re charged.
-          </p>
-          <Link
-            href="/chat?panel=llm"
-            className="inline-block text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)] underline underline-offset-2"
-          >
-            Manage credits
-          </Link>
         </div>
       )}
 

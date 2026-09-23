@@ -115,7 +115,7 @@ async def test_a_ddb_fault_refuses_rather_than_admitting_everyone(dynamodb_table
 @pytest.mark.asyncio
 async def test_a_lease_row_is_never_mistaken_for_a_workspace(dynamodb_table):
     """It rides the containers table on its own reserved key, so every fleet consumer -- the
-    operator console's grid, the break-glass script, the runtime rolls -- would otherwise hand
+    operator console's grid, the runtime rolls -- would otherwise hand
     a lease row around as somebody's workspace."""
     from core.repositories import container_repo
 

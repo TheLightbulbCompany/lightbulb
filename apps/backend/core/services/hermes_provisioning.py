@@ -25,7 +25,7 @@ concurrent runs for one owner converge on the same end state:
    name — covers a row write that itself never landed) skips creation and reuses it.
 
 What is reused verbatim: the IAM/naming scaffolding (``runtime_name_for``, ``ensure_agentcore_trust``),
-the owner's AIPs and Bedrock role, ``mint_gate_token``, the boot-secret writer, and the lifecycle
+the owner's IAM role, ``mint_gate_token``, the boot-secret writer, and the lifecycle
 constants. What is dropped: ``filesystemConfigurations`` (no EFS — profiles are S3), the OpenClaw env
 builder, the SFN watchdog and the long ``wait_for_running`` ECS-boot poll (``CreateAgentRuntime`` is
 one synchronous call; readiness is discovered at first invoke, not waited on).
@@ -114,8 +114,6 @@ def build_hermes_runtime_env(
     api_base: str,
     bucket: str,
     boot_secret_id: str,
-    gate_endpoint: str,
-    sonnet_aip_arn: str,
     browser_profile_id: str = "",
     managed_gate_url: str = "",
     managed_model_id: str = "",
@@ -125,14 +123,6 @@ def build_hermes_runtime_env(
     Secrets Manager boot secret ``boot_secret_id`` names; nothing here is a bearer, a hook token,
     or a gateway token. Mirrors the working dev-spike set minus the three plaintext values it
     hand-patched in before this boot secret existed.
-
-    I1: carries BOTH ``AWS_ENDPOINT_URL_BEDROCK_RUNTIME`` (the boto3-side var; operative for the
-    ``converse_stream`` provider) AND ``ANTHROPIC_BEDROCK_BASE_URL`` (the evaluation spec's own
-    documented ``AnthropicBedrock(region).base_url`` default for Hermes's Claude route) — the
-    spike set both and the two docs disagree about which path Hermes actually takes, so this
-    does not silently pick a side. Same value as the endpoint var: both must point at the gate,
-    never the real bedrock-runtime endpoint, or that route AccessDenies fleet-wide (the owner
-    role carries no ``bedrock:Invoke``).
 
     ``browser_profile_id`` adds the AgentCore Browser block, ALL SIX KEYS OR NONE. The last
     of them is the gate: Hermes advertises ``browser_*`` only when
@@ -144,11 +134,7 @@ def build_hermes_runtime_env(
     env = {
         "ISOL8_OWNER_ID": owner_id,
         "ISOL8_API_URL": api_base.rstrip("/"),
-        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": gate_endpoint,
-        "ANTHROPIC_BEDROCK_BASE_URL": gate_endpoint,
         "AWS_REGION": settings.AWS_REGION,
-        "AWS_BEDROCK_FORCE_HTTP1": "1",
-        "ANTHROPIC_MODEL": sonnet_aip_arn,
         "S3_BUCKET": bucket,
         # Owner FIRST: the per-owner S3 grant is <bucket>/<owner>/*
         # (bedrock_aip.build_owner_litestream_s3_policy). Any other order is outside every
@@ -574,9 +560,8 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
     string a missing row field falls back to.
 
     Also the credential half of ``reconcile_runtime``: it runs for a LIVE workspace too, and
-    converges everything billing decides -- the AIPs, the owner role, the gate token row with
-    its allowed AIPs, the OpenRouter key, the boot secret's provider marker and, on ChatGPT
-    OAuth, a staged grant. Returns whether a BOOT-time input changed (``write_boot_secret``),
+    converges everything billing decides -- the owner role, the gate token row, the OpenRouter
+    key, the boot secret's provider marker and, on ChatGPT OAuth, a staged grant. Returns whether a BOOT-time input changed (``write_boot_secret``),
     which a live runtime only picks up on its next cold start.
 
     IDEMPOTENT AT THE SOURCE, so two concurrent runs for one owner converge: the tokens are one
@@ -603,11 +588,10 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
     hook_token_reused = hook_token != hook_candidate
     gateway_token_reused = gateway_token != gateway_candidate
 
-    aip_arns = await reconcile_hermes_aips(owner_id)
-    role_arn = await ensure_owner_bedrock_role(owner_id, aip_arns)
+    role_arn = await ensure_owner_bedrock_role(owner_id)
     await ensure_agentcore_trust(owner_id, _owner_role_name(owner_id), role_arn.split(":")[4])
     bedrock_bearer = await mint_gate_token(
-        owner_id, aip_arns, row_id=row["id"], generation=int(row.get("gate_bearer_generation") or 0)
+        owner_id, row_id=row["id"], generation=int(row.get("gate_bearer_generation") or 0)
     )
     provider_choice, _ = await resolve_provider_choice(owner_id)
     if provider_choice == "openrouter_managed":
@@ -665,14 +649,13 @@ async def _ensure_codex_auth_staged(owner_id: str) -> None:
 def build_runtime_request_for_owner(
     owner_id: str,
     role_arn: str,
-    aip_arns: dict[str, str],
     *,
+    provider_choice: str,
     browser_profile_id: str = "",
-    provider_choice: str = "bedrock_claude",
 ) -> dict:
     """The CreateAgentRuntime/UpdateAgentRuntime spec for ``owner_id`` on the CURRENTLY configured
     image (N2/M4-R40's one spec-building path, lifted out of ``provision_hermes_runtime`` so
-    ``roll_runtime_image`` reuses it verbatim). Calls ``gate_url()`` -- a real (cached) SSM read.
+    ``roll_runtime_image`` reuses it verbatim).
 
     ``browser_profile_id`` is the workspace's AgentCore Browser profile (``""`` = no browser);
     both callers resolve it with ``browser_sessions.ensure_browser_profile`` just before
@@ -684,7 +667,6 @@ def build_runtime_request_for_owner(
     provider is what makes a switch into or out of ``openrouter_managed`` a pure profile
     rewrite instead of a runtime re-spec plus session restart. ``provider_choice`` is only the
     guard below."""
-    from core.billing.bedrock_gate_url import gate_url
     from core.billing.openrouter_gate_url import gate_url as openrouter_gate_url
 
     managed_model_id = settings.OPENROUTER_MANAGED_MODEL_ID
@@ -702,8 +684,6 @@ def build_runtime_request_for_owner(
             api_base=settings.PUBLIC_API_BASE,
             bucket=settings.OWNER_STATE_BUCKET,
             boot_secret_id=boot_secret_name(owner_id),
-            gate_endpoint=gate_url(),
-            sonnet_aip_arn=aip_arns["sonnet"],
             browser_profile_id=browser_profile_id,
             managed_gate_url=openrouter_gate_url() if managed_model_id else "",
             managed_model_id=managed_model_id,
@@ -788,6 +768,12 @@ _OPTIONAL_ENV_KEYS = frozenset(
         "AGENTCORE_PROFILE_ID",
         "AGENTCORE_SESSION_TIMEOUT",
         "AGENT_BROWSER_EXECUTABLE_PATH",
+        # Retired with Bedrock: never set any more, but still OWNED, so a runtime that carries
+        # them reads as drift and the next roll re-specs it clean.
+        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+        "ANTHROPIC_BEDROCK_BASE_URL",
+        "AWS_BEDROCK_FORCE_HTTP1",
+        "ANTHROPIC_MODEL",
     }
 )
 
@@ -842,9 +828,10 @@ async def roll_runtime_image(
         raise ValueError(f"roll_runtime_image: owner={owner_id} has no provisioned runtime")
     if not settings.AGENTCORE_HERMES_IMAGE:
         raise RuntimeError("AGENTCORE_HERMES_IMAGE is not configured for this environment")
-    role_arn, aip_arns = await _load_role_and_aips(owner_id)
+    from core.billing.bedrock_aip import ensure_owner_bedrock_role
     from core.services.container_provision import resolve_provider_choice
 
+    role_arn = await ensure_owner_bedrock_role(owner_id)
     provider_choice, _ = await resolve_provider_choice(owner_id)
     # The roll is how an ALREADY-provisioned workspace gets its first Browser profile: a
     # create-or-adopt, then the env block.
@@ -854,7 +841,7 @@ async def roll_runtime_image(
 
     await ensure_owner_memory_policy(owner_id)
     request = build_runtime_request_for_owner(
-        owner_id, role_arn, aip_arns, browser_profile_id=browser_profile_id, provider_choice=provider_choice
+        owner_id, role_arn, browser_profile_id=browser_profile_id, provider_choice=provider_choice
     )
     actual = await run_in_thread(_runtime_description, arn)
     current = _image_of(actual)
@@ -899,7 +886,7 @@ async def roll_runtime_image(
             # config.yaml is backend-owned (never saved back by the bridge), so nothing reverts this.
             # Either order leaves a gap where one turn sees a new/old env-profile pair and is refused
             # (sync.py); after the stop, that gap is a cold start that has no old env to fall back on.
-            await write_profiles(owner_id, aip_arns)
+            await write_profiles(owner_id)
     else:
         logger.warning(
             "roll_runtime_image: owner=%s updated but a turn was still running after %.0fs -- warm session "
@@ -932,8 +919,8 @@ async def reconcile_runtime(owner_id: str) -> str:
     concurrently (every step converges at its source), with no provider-specific logic of its
     own: the same steps provisioning runs, then the spec check.
 
-    1. ``prepare_hermes_workspace`` -- tokens, derived gate bearer, AIPs + owner role + gate
-       token row, OpenRouter key, ChatGPT grant, boot secret.
+    1. ``prepare_hermes_workspace`` -- tokens, derived gate bearer, owner role + gate token row,
+       OpenRouter key, ChatGPT grant, boot secret.
     2. ``write_profiles`` -- every roster profile from the billing provider (BYO key read back),
        each bumping ``.revision``, which the bridge re-reads on every turn. THAT is how a
        provider switch lands: no session stop, no idle wait.
@@ -956,7 +943,7 @@ async def reconcile_runtime(owner_id: str) -> str:
     on ``provision.reconcile.failed`` (paged). A caller retries by calling this again.
 
     A Metronome ensure failure also answers ``"failed"`` -- AFTER the runtime work, which it does
-    not block -- so a reconcile execution is retried by the machine (a bedrock_claude payer with
+    not block -- so a reconcile execution is retried by the machine (a credit-drawing payer with
     no ledger is blocked by the credits gate). The nightly CEO arm stays best-effort."""
     metronome_ok = await _reconcile_entitlements(owner_id)
     result = await _reconcile_runtime_to_billing(owner_id)
@@ -975,8 +962,7 @@ async def _reconcile_runtime_to_billing(owner_id: str) -> str:
         boot_changed = False
         for _ in range(2):
             boot_changed = await prepare_hermes_workspace(owner_id) or boot_changed
-            _role_arn, aip_arns = await _load_role_and_aips(owner_id)
-            await write_profiles(owner_id, aip_arns)
+            await write_profiles(owner_id)
             fresh = await _billing_inputs(owner_id)
             if fresh == inputs:
                 break
@@ -996,7 +982,7 @@ async def _reconcile_entitlements(owner_id: str) -> bool:
 
     * Metronome customer: ``ensure_metronome_customer`` owns eligibility (a ``trial_local`` or
       canceled owner gets nothing). Skipped only on a POSITIVE ChatGPT/BYO choice -- inference
-      we never bill -- never on absence: under-provisioning reopens uncredited Bedrock spend.
+      we never bill -- never on absence: under-provisioning reopens uncredited managed spend.
     * Nightly CEO: ``arm_nightly_ceo`` (paid or unexpired trial; cache-cheap once armed), so a
       re-subscribe whose runtime survived teardown is re-armed by this reconcile."""
     from core.billing.metronome_provisioning import ensure_metronome_customer
@@ -1017,41 +1003,6 @@ async def _reconcile_entitlements(owner_id: str) -> bool:
     except Exception:  # noqa: BLE001 -- arm_nightly_ceo already emitted nightly_ceo.arm{status=error}
         logger.exception("reconcile: nightly CEO arm failed for owner=%s", owner_id)
     return metronome_ok
-
-
-async def reconcile_hermes_aips(owner_id: str) -> dict[str, str]:
-    """Repair AIP classification and all bearer tier fences from billing truth.
-
-    Safe to repeat for existing runtimes: no bearer rotation, profile rewrite,
-    session stop, or resource deletion. Returns the allowed profile model map.
-    """
-    from core.billing.bedrock_aip import ensure_owner_aips
-    from core.billing.bedrock_gate_tokens import reconcile_gate_token_tiers
-    from core.repositories import billing_repo
-    from core.services.hermes_profiles import _BEDROCK_TRIAL_CHOICE as BEDROCK_TRIAL_CHOICE
-    from core.services.container_provision import provider_choice_from_row
-
-    # This read rewrites authorization and meter classification: a stale trial
-    # row after checkout would narrow a paying workspace back to Sonnet.
-    billing = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
-    provider, _ = provider_choice_from_row(billing)
-    aip_arns = await ensure_owner_aips(owner_id, tiers=["sonnet"] if provider == BEDROCK_TRIAL_CHOICE else None)
-    await reconcile_gate_token_tiers(owner_id, aip_arns)
-    return aip_arns
-
-
-async def _load_role_and_aips(owner_id: str) -> tuple[str, dict[str, str]]:
-    """Idempotently re-derive ``(role_arn, aip_arns)`` — both are stable and deterministic per
-    owner (``ensure_owner_aips``/``ensure_owner_bedrock_role`` only ever create-or-reuse), so
-    ``provision_hermes_runtime`` can call this independently of ``prepare_hermes_workspace``
-    without re-minting anything sensitive (the gate bearer / boot secret are NOT re-derived here —
-    only ``prepare_hermes_workspace`` mints those).
-    """
-    from core.billing.bedrock_aip import ensure_owner_bedrock_role
-
-    aip_arns = await reconcile_hermes_aips(owner_id)
-    role_arn = await ensure_owner_bedrock_role(owner_id, aip_arns)
-    return role_arn, aip_arns
 
 
 class HermesProfileError(RuntimeError):
@@ -1080,13 +1031,11 @@ class ProfileInputs:
     every caller of ``hermes_profiles.write_agent_profile`` (fix round 3,
     M6-R10). Before this, ``catalog_service._build_and_upload_agent_profile``
     hand-rolled its own version of this sourcing that diverged from
-    ``write_profiles``'s in three ways: it skipped
-    ``provider_choice_from_row``'s ``trial_local`` branch (a card-less trial
-    owner's marketplace deploy would land the full paid model ladder instead
-    of ``BEDROCK_TRIAL_CHOICE``), it returned ``None`` for an unset
-    ``byo_provider`` on a ``byo_key`` owner instead of the ``"anthropic"``
-    default this module reads, and it degraded a roster-read failure to a
-    manifest-derived stand-in agent row instead of hard-failing.
+    ``write_profiles``'s: it skipped ``provider_choice_from_row``'s
+    ``trial_local`` branch, it returned ``None`` for an unset ``byo_provider``
+    on a ``byo_key`` owner instead of the ``"anthropic"`` default this module
+    reads, and it degraded a roster-read failure to a manifest-derived
+    stand-in agent row instead of hard-failing.
 
     Per-agent inputs (the Paperclip API key mint, the agent row itself) are
     deliberately NOT here — both callers resolve those per agent, not per
@@ -1097,26 +1046,14 @@ class ProfileInputs:
     provider_choice: str
     byo_provider: str | None
     byo_api_key: str | None
-    aip_arns: dict[str, str]
     integrations: dict[str, dict]
     env_vars: dict[str, str]
 
 
-async def resolve_profile_inputs(owner_id: str, *, container_row: dict) -> ProfileInputs:
-    """The six owner-level Hermes profile writer inputs (fix round 3, M6-R10)
+async def resolve_profile_inputs(owner_id: str) -> ProfileInputs:
+    """The five owner-level Hermes profile writer inputs (fix round 3, M6-R10)
     — the ONE function every caller of ``write_agent_profile`` sources them
     through, so they can never diverge again.
-
-    ``container_row`` supplies ``aip_arns`` (the containers table's
-    ``bedrock_aip_arns`` field) — the same source ``catalog_service`` always
-    read directly. ``write_profiles``'s own caller
-    (``provision_hermes_runtime``) already has a real ``aip_arns`` value from
-    its own ``_load_role_and_aips`` call by the time it calls this (that
-    call's ``ensure_owner_aips`` is what persists ``bedrock_aip_arns`` onto
-    the row in the first place), so it passes a lightweight
-    ``{"bedrock_aip_arns": aip_arns}`` here rather than re-reading the row —
-    the row it read at its own entry was captured BEFORE that write landed,
-    so trusting it here would silently reintroduce a stale/empty AIP map.
 
     Raises ``HermesProfileError`` when ``provider_choice == "byo_key"`` and
     no readable key exists for ``byo_provider or "anthropic"`` — a profile
@@ -1138,7 +1075,6 @@ async def resolve_profile_inputs(owner_id: str, *, container_row: dict) -> Profi
         provider_choice=provider_choice,
         byo_provider=byo_provider,
         byo_api_key=byo_api_key,
-        aip_arns=container_row.get("bedrock_aip_arns") or {},
         integrations=integrations,
         env_vars=env_vars,
     )
@@ -1148,7 +1084,6 @@ async def write_profile_for_agent(
     owner_id: str,
     agent_row: dict,
     *,
-    container_row: dict,
     soul_md_override: str | None = None,
     inputs: ProfileInputs | None = None,
 ) -> None:
@@ -1199,7 +1134,7 @@ async def write_profile_for_agent(
 
     agent_id = agent_row["id"]
     if inputs is None:
-        inputs = await resolve_profile_inputs(owner_id, container_row=container_row)
+        inputs = await resolve_profile_inputs(owner_id)
     paperclip_api_key = await ensure_paperclip_api_key(
         owner_id=owner_id, paperclip_agent_id=agent_id, admin_client=shared_admin_client()
     )
@@ -1214,7 +1149,6 @@ async def write_profile_for_agent(
             owner_id,
             agent_row,
             provider_choice=inputs.provider_choice,
-            aip_arns=inputs.aip_arns,
             paperclip_api_key=paperclip_api_key,
             integrations=inputs.integrations,
             env_vars=inputs.env_vars,
@@ -1271,7 +1205,7 @@ async def refresh_agent_soul(owner_id: str, agent_id: str) -> None:
     await run_in_thread(hermes_profiles.upload_soul_md, owner_id, agent_id, soul_md)
 
 
-async def write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
+async def write_profiles(owner_id: str) -> None:
     """Step 1's profile fan-out: one Hermes profile (config.yaml + .env + SOUL.md) per starter
     agent, uploaded to S3.
 
@@ -1298,8 +1232,7 @@ async def write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
     from core.services import hermes_profiles
     from core.services.messaging import load_agent_roster
 
-    container_row = {"bedrock_aip_arns": aip_arns}
-    inputs = await resolve_profile_inputs(owner_id, container_row=container_row)
+    inputs = await resolve_profile_inputs(owner_id)
     roster = await load_agent_roster(owner_id)
     for agent in roster:
         # M6-R48 on the re-render path (PATCH /debug/provision, a provider switch): a SOUL.md
@@ -1311,9 +1244,7 @@ async def write_profiles(owner_id: str, aip_arns: dict[str, str]) -> None:
             else None
         )
         keep = current if current and not hermes_profiles.is_generated_soul(current) else None
-        await write_profile_for_agent(
-            owner_id, agent, container_row=container_row, soul_md_override=keep, inputs=inputs
-        )
+        await write_profile_for_agent(owner_id, agent, soul_md_override=keep, inputs=inputs)
 
 
 async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: ProfileInputs) -> None:
@@ -1385,9 +1316,10 @@ async def provision_hermes_runtime(owner_id: str) -> str:
     if arn and row.get("status") == "running":
         return arn
 
-    role_arn, aip_arns = await _load_role_and_aips(owner_id)
+    from core.billing.bedrock_aip import ensure_owner_bedrock_role
     from core.services.container_provision import resolve_provider_choice
 
+    role_arn = await ensure_owner_bedrock_role(owner_id)
     provider_choice, _ = await resolve_provider_choice(owner_id)
     # Create-or-adopt this workspace's AgentCore Browser profile and grant it, before the
     # request is built: its id is what turns the browser env block on. Never raises -- ""
@@ -1404,7 +1336,7 @@ async def provision_hermes_runtime(owner_id: str) -> str:
         # release-to-error path now produces routinely -- must skip straight to recovering the
         # runtime (poll READY / update on image drift / terminal write) instead of
         # re-running the fan-out and overwriting owner-edited profiles + bumping .revision.
-        await write_profiles(owner_id, aip_arns)
+        await write_profiles(owner_id)
 
     if not arn:
         # M4-R35: the row has no ARN yet -- but AgentCore itself might, if a prior attempt got
@@ -1419,10 +1351,10 @@ async def provision_hermes_runtime(owner_id: str) -> str:
         # -- so a reused runtime whose image drifted gets updated with the exact same
         # roleArn/network/env/lifecycle a fresh create would have gotten, never a hand-built
         # partial replace. Only called from the two branches that actually need it (create, or
-        # update-on-drift) -- gate_url() is a real (cached) SSM read, not free to call on every
-        # idempotent poll-and-reuse pass.
+        # update-on-drift) -- the managed gate URL is a real (cached) SSM read, not free to call
+        # on every idempotent poll-and-reuse pass.
         return build_runtime_request_for_owner(
-            owner_id, role_arn, aip_arns, browser_profile_id=browser_profile_id, provider_choice=provider_choice
+            owner_id, role_arn, browser_profile_id=browser_profile_id, provider_choice=provider_choice
         )
 
     if arn:

@@ -22,14 +22,8 @@ Read model:
   owner actually has a Metronome customer, the gate lazily refreshes from
   ``getNetBalance`` and rewrites the row. Metronome-down ⇒ the stale row is
   used as-is — the gate must never 500 (or block) on a vendor outage.
-- A refresh that comes back POSITIVE for an owner whose containers row says
-  ``bedrock_revoked`` un-revokes (``restore_owner_bedrock``) after ONE
-  confirming re-read. This is the pull-based re-arm: Metronome's
-  payment-gated top-up releases credits with NO webhook to us, so the next
-  gate read after a paid top-up is the event that restores Bedrock access.
-- A refresh that comes back NON-POSITIVE re-asserts the revoke
-  (``enforce_on_low_balance``): the low-balance webhook is one-shot and can
-  be lost, so every gate read doubles as the re-enforce loop.
+  Metronome's payment-gated top-up releases credits with NO webhook to us, so
+  the next refresh after a paid top-up is what unblocks the owner.
 """
 
 from __future__ import annotations
@@ -43,21 +37,16 @@ from core.billing.metronome_units import cents_to_microcents
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
-from core.services.bedrock_enforcement import enforce_on_low_balance
 
 logger = logging.getLogger(__name__)
 
 # The paid-balance floor: a balance at or below one request's reservation is
 # already unspendable, so every door that predicts admission blocks there.
-# Also the free-tier cap's reserve (``trial_cap`` imports it from here).
-# Lockstep with RESERVE_ESTIMATE_MICROCENTS in
-# apps/infra/lib/stacks/bedrock-gate-stack.ts — moving one alone desynchronizes
-# admission from every door that predicts it.
 RESERVE_ESTIMATE_MICROCENTS = 300_000
 
 
 async def is_owner_blocked(owner_id: str) -> bool:
-    """True when the owner is out of spendable Bedrock credits.
+    """True when the owner is out of spendable managed-inference credits.
 
     The single blocked-ness predicate for both the pre-chat gate and the
     provision gate. Never raises on Metronome/DDB trouble in the refresh
@@ -182,13 +171,10 @@ async def read_net_balance_microcents(owner_id: str) -> int | None:
 async def apply_fresh_balance(
     owner_id: str, remaining_microcents: int, *, gate: MetronomeFastGate | None = None
 ) -> None:
-    """The single "a fresh Metronome balance just arrived" hook.
+    """The single "a fresh Metronome balance just arrived" hook: rewrite the fast-gate row.
 
-    Shared by the gate's lazy refresh and the credits-balance endpoint
-    write-through, so the cache rewrite, the enforcement re-assert, and the
-    pull-based restore can never diverge between the two read paths.
-    Best-effort throughout — must never raise into a gate read or the
-    balance endpoint.
+    Shared by the gate's lazy refresh and the credits-balance endpoint write-through.
+    Best-effort — must never raise into a gate read or the balance endpoint.
     """
     if gate is None:
         gate = MetronomeFastGate()
@@ -199,31 +185,10 @@ async def apply_fresh_balance(
         # the cache for the next one.
         logger.warning("Fast-gate rewrite failed for owner %s after refresh", owner_id, exc_info=True)
 
-    if remaining_microcents > 0:
-        await _maybe_restore_bedrock(owner_id)
-        return
-
-    # Re-assert the revoke on every fresh non-positive read. The low-balance
-    # webhook is a ONE-SHOT signal that can be eaten (stale-skip racing a
-    # redelivery) or undone (a stale-positive refresh restoring a
-    # truly-drained owner), and a blocked owner emits no usage so no
-    # corrective webhook ever comes — the gate's own reads are the only
-    # recurring trigger left. enforce_on_low_balance is idempotent on the
-    # bedrock_revoked stamp, so the common already-revoked case costs one
-    # DDB read.
-    try:
-        await enforce_on_low_balance(owner_id, remaining_microcents)
-    except Exception:
-        put_metric("billing.bedrock_revoke.error")
-        logger.exception(
-            "Re-assert revoke failed for owner %s — the fast-gate row already blocks new sends",
-            owner_id,
-        )
-
 
 async def _refresh_from_metronome(owner_id: str, gate: MetronomeFastGate) -> int | None:
     """Pull ``getNetBalance`` and run the shared fresh-balance hook (cache
-    rewrite + enforcement re-assert + pull-based restore). Returns the
+    rewrite). Returns the
     refreshed remaining (microcents), or None when no refresh was possible.
     """
     try:
@@ -241,43 +206,3 @@ async def _refresh_from_metronome(owner_id: str, gate: MetronomeFastGate) -> int
 
     await apply_fresh_balance(owner_id, remaining_microcents, gate=gate)
     return remaining_microcents
-
-
-async def _maybe_restore_bedrock(owner_id: str) -> None:
-    """Pull-based re-arm: un-revoke a paid-up owner. Best-effort — a restore
-    failure must not block (or 500) the gate read; the owner stays revoked
-    until the next refresh re-attempts. Lazy imports keep the IAM/container
-    layer out of this module's import tree.
-    """
-    from core.repositories import container_repo
-
-    try:
-        container = await container_repo.get_by_owner_id(owner_id)
-        if not container or not container.get("bedrock_revoked"):
-            return
-        # Confirm with ONE fresh getNetBalance before un-revoking.
-        # getNetBalance is async with no SLA, so a single stale-positive
-        # read against a truly-drained owner would restore Bedrock AND
-        # permanently disarm the one-shot low-balance alert (it already
-        # fired for this crossing) — nothing would ever re-revoke. Only a
-        # fresh read that still says > 0 may restore.
-        confirmed = await read_net_balance_microcents(owner_id)
-        if confirmed is None or confirmed <= 0:
-            put_metric("billing.bedrock_restore.confirm_failed")
-            logger.warning(
-                "Bedrock restore for owner %s aborted — confirming balance re-read came back %s",
-                owner_id,
-                confirmed,
-            )
-            return
-        from core.billing.bedrock_aip import restore_owner_bedrock
-
-        put_metric("billing.bedrock_restore.fire", dimensions={"reason": "gate_refresh_positive"})
-        logger.warning("Owner %s paid up (balance > 0) — restoring Bedrock IAM grant", owner_id)
-        await restore_owner_bedrock(owner_id)
-    except Exception:
-        put_metric("billing.bedrock_restore.error")
-        logger.exception(
-            "Bedrock restore failed for owner %s — next gate refresh re-attempts",
-            owner_id,
-        )

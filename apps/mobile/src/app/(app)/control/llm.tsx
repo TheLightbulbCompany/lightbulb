@@ -87,8 +87,6 @@ function providerLabel(account: BillingAccount): {
         title: "Sign in with ChatGPT",
         detail: "Inference via your ChatGPT account",
       };
-    case "bedrock_claude":
-      return { title: "Anthropic Claude via AWS Bedrock", detail: null };
     case "openrouter_managed":
       return { title: "Lightbulb-managed models", detail: "Inference uses your workspace credits" };
     case "byo_key":
@@ -240,7 +238,7 @@ function useLlmBilling(orgRestricted: boolean) {
       // Credits are best-effort: failure never fails the card, and we only
       // need them for managed inference.
       const credits =
-        account.provider_choice === "bedrock_claude" || account.provider_choice === "openrouter_managed"
+        account.provider_choice === "openrouter_managed"
           ? ((await api
               .get("/billing/credits/balance")
               .then((body) => body as CreditsBalance)
@@ -437,7 +435,7 @@ export default function LlmPanel() {
   if (
     !restricted &&
     state.kind === "ready" &&
-    (state.account.provider_choice === "bedrock_claude" || state.account.provider_choice === "openrouter_managed")
+    state.account.provider_choice === "openrouter_managed"
   ) {
     const credits = state.credits;
     // Top-up itself is web-only (D1). Only offer it when the balance actually

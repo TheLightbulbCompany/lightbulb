@@ -74,12 +74,8 @@ jobs:
         run: uv run pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing
         working-directory: apps/backend
 
-      # The Bedrock meter Lambda is the free tier's counter and kill switch. Its
-      # tests need the backend venv (moto, plus the lockstep test that imports
-      # core.billing.bedrock_pricing), so they run here rather than in the infra
-      # job. The lockstep test is the ONLY thing keeping the three copies of the
-      # rate table — backend _RATES, containers/config.py cost blocks, and the
-      # Lambda's own — from silently drifting apart.
+      # The Bedrock meter Lambda's tests need the backend venv (moto), so they run
+      # here rather than in the infra job. They go with the meter stack.
       - name: Run Bedrock meter Lambda tests
         env:
           AWS_DEFAULT_REGION: us-east-1

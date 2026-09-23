@@ -235,66 +235,6 @@ def _team_billing_required_gate(owner_role: str) -> Gate:
     )
 
 
-async def maybe_restore_trial_bedrock(*, owner_id: str, container: Mapping[str, Any] | None) -> None:
-    """Give a capped-out trial owner their Bedrock access back once they're
-    eligible again — the daily counterpart to the meter Lambda's revoke.
-
-    IAM revocation does not expire on its own; the daily-spend counter does
-    (a new UTC day is a new map key), but nothing else gives the policy back.
-    Without this, "$3/day" is really "$3, once, ever." The owner comes to us
-    on the status/provision poll — no worker, no sweeper.
-
-    Fires only when ALL THREE hold:
-      1. ``container`` (already in hand on the caller's path — no extra read
-         for it) carries ``bedrock_revoked`` — otherwise this is a no-op with
-         ZERO reads, the overwhelmingly common case.
-      2. The owner is STILL ``trial_local``. A paid owner can also carry
-         ``bedrock_revoked`` (Metronome low-balance enforcement uses the same
-         flag) — that restore path is ``metronome_gate._maybe_restore_bedrock``,
-         gated on a CONFIRMED positive Metronome balance, and is untouched by
-         this function. Restoring a paid owner here would hand back Bedrock
-         with no balance check at all.
-      3. ``trial_cap.reason_for_account`` — the account-accepting twin of
-         ``trial_block_reason``, the SAME predicate every start path consults
-         before running a trial owner's workspace — is None for the row already
-         read in step 2 (no second
-         GetItem of the billing row just to re-derive the same answer). A
-         TRIAL_EXPIRED reason must NEVER restore: expiry is permanent, unlike
-         the daily cap, which self-clears on the next UTC day.
-
-    Mutates ``container["bedrock_revoked"]`` to False in place on a
-    successful restore so the rest of THIS request sees the up-to-date row
-    (``restore_owner_bedrock`` already persists the clear to DynamoDB).
-
-    Best-effort: a restore failure is logged and swallowed, never raised —
-    the status/provision poll must keep answering normally. The owner stays
-    revoked and the next poll simply retries.
-    """
-    if not container or not container.get("bedrock_revoked"):
-        return
-
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if not account or account.get("subscription_status") != "trial_local":
-        return
-
-    from core.services import trial_cap
-
-    if await trial_cap.reason_for_account(owner_id, account) is not None:
-        return
-
-    from core.billing.bedrock_aip import restore_owner_bedrock
-
-    try:
-        await restore_owner_bedrock(owner_id)
-    except Exception:
-        logger.exception(
-            "Trial Bedrock restore failed for owner %s — bedrock_revoked stays set; next poll retries",
-            owner_id,
-        )
-        return
-    container["bedrock_revoked"] = False
-
-
 async def _has_oauth_tokens(token_owner: str, owner_id: str) -> bool:
     """Whether ``token_owner`` has ChatGPT OAuth tokens bound to ``owner_id``.
 

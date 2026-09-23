@@ -106,12 +106,26 @@ def activity_date_allowed(day, today):
     return today - timedelta(days=30) <= day < today
 
 
-def activity_gap(activity_rows, settled_rows, *, key_hash, date):
+# ponytail: /activity `usage` is a float, so exact equality false-alarms; a real gap below
+# max($0.000001, 1e-6 x the bucket) goes unseen. Tighten if OpenRouter ever returns exact decimals.
+AUDIT_TOLERANCE = Decimal("0.000001")
+
+
+def _gap(actual, expected):
+    """actual - expected, or 0 when the difference is float noise."""
+    diff = actual - expected
+    return diff if abs(diff) > max(AUDIT_TOLERANCE, AUDIT_TOLERANCE * abs(expected)) else Decimal(0)
+
+
+def activity_total(activity_rows, date):
     # OpenRouter reports the day as "YYYY-MM-DD 00:00:00" (probed 2026-09-23).
-    activity = sum((Decimal(str(item["usage"])) for item in activity_rows if item["date"][:10] == date), Decimal(0))
+    return sum((Decimal(str(item["usage"])) for item in activity_rows if item["date"][:10] == date), Decimal(0))
+
+
+def activity_gap(activity_rows, settled_rows, *, key_hash, date):
     settled = sum((Decimal(str(item["total_cost"])) for item in settled_rows
                    if item["date"] == date and item["key_hash"] == key_hash), Decimal(0))
-    return activity - settled
+    return _gap(activity_total(activity_rows, date), settled)
 
 
 def _unmarshal(item):
@@ -584,13 +598,19 @@ def _audit(store, day, today):
     hashes.update(key["hash"] for key in keys
                   if (key.get("name") or key.get("label") or "").startswith(prefix))
     settled = [row for row in rows if row.get("state") == "settled"]
-    gaps = {}
+    gaps, known_total = {}, Decimal(0)
     for key_hash in hashes:
         url = "https://openrouter.ai/api/v1/activity?" + urllib.parse.urlencode({"date": day, "api_key_hash": key_hash, "workspace_id": workspace_id})
         activity = _http_json(url, management_key).get("data", [])
+        known_total += activity_total(activity, day)
         gap = activity_gap(activity, settled, key_hash=key_hash, date=day)
         if gap:
             gaps[key_hash] = str(gap)
+    # Spend on a key outside the known set shows only in the workspace total.
+    url = "https://openrouter.ai/api/v1/activity?" + urllib.parse.urlencode({"date": day, "workspace_id": workspace_id})
+    unattributed = _gap(activity_total(_http_json(url, management_key).get("data", []), day), known_total)
+    if unattributed > 0:
+        gaps["unattributed"] = str(unattributed)
     return gaps
 
 

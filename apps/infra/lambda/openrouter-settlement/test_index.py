@@ -177,12 +177,35 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(worker.activity_gap(
             [{"date": "2026-09-19", "usage": Decimal("0.012345679")}],
             [{"date": "2026-09-19", "key_hash": "old-hash", "total_cost": "0.012345678"}],
-            key_hash="old-hash", date="2026-09-19"), Decimal("0.000000001"))
+            key_hash="old-hash", date="2026-09-19"), Decimal(0))  # float noise is within tolerance
         # The live /activity shape carries a time on the date.
         self.assertEqual(worker.activity_gap(
             [{"date": "2026-09-19 00:00:00", "usage": Decimal("0.003")}],
             [{"date": "2026-09-19", "key_hash": "old-hash", "total_cost": "0.002"}],
             key_hash="old-hash", date="2026-09-19"), Decimal("0.001"))
+
+    def test_float_rounded_activity_is_not_a_gap_but_a_cent_is(self):
+        settled = [{"date": "2026-09-19", "key_hash": "k", "total_cost": "0.1"},
+                   {"date": "2026-09-19", "key_hash": "k", "total_cost": "0.2"}]
+        float_sum = [{"date": "2026-09-19 00:00:00", "usage": Decimal(str(0.1 + 0.2))}]
+        self.assertEqual(worker.activity_gap(float_sum, settled, key_hash="k", date="2026-09-19"), Decimal(0))
+        self.assertEqual(worker.activity_gap([{"date": "2026-09-19", "usage": Decimal("0.31")}], settled,
+                                             key_hash="k", date="2026-09-19"), Decimal("0.01"))
+
+    def test_audit_reports_workspace_spend_on_unknown_keys_as_unattributed(self):
+        class Store:
+            def all_requests(self):
+                return [{"key_hash": "known", "state": "settled", "date": "2026-09-19", "total_cost": "0.5"}]
+        def fetch(url, _key):
+            if "/keys?" in url:
+                return {"data": []}
+            usage = "0.5" if "api_key_hash=known" in url else "0.75"
+            return {"data": [{"date": "2026-09-19 00:00:00", "usage": Decimal(usage)}]}
+        env = {"OPENROUTER_MANAGEMENT_KEY_SECRET_ID": "m", "OPENROUTER_WORKSPACE_ID": "ws", "GATE_ENV": "dev"}
+        with patch.object(worker, "_secret", return_value="key"), patch.object(worker, "_http_json", side_effect=fetch), \
+                patch.object(worker, "list_workspace_keys", return_value=[]), patch.dict(os.environ, env):
+            gaps = worker._audit(Store(), "2026-09-19", "2026-09-20")
+        self.assertEqual(gaps, {"unattributed": "0.25"})
 
     def test_commit_claims_generation_and_settles_projection_atomically(self):
         calls = []

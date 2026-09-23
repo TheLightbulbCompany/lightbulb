@@ -410,9 +410,9 @@ def _status_response(contract: dict) -> dict:
         "chat_available": contract.get("chat_available"),
         "container_status": contract.get("container_status"),
         "container_substatus": contract.get("container_substatus"),
-        # Always "agentcore". Kept for one release so a client released against the
-        # migrated contract still finds the field; it goes with the column.
-        "runtime_host": contract.get("runtime_host"),
+        # Constant, and read by nothing current. Shipped mobile bundles (OTA from main) hold
+        # their runtime RPCs until this key is truthy, so it stays until those bundles age out.
+        "runtime_host": "agentcore",
         "parked": bool(contract.get("parked", False)),
         "generations": contract.get("generations"),
         "funnel": contract.get("funnel"),

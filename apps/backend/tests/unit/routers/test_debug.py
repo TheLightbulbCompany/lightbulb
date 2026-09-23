@@ -695,7 +695,6 @@ class TestAgentCoreDebugRoutes:
         assert res.status_code == 200, res.text
         body = res.json()
         assert body["status"] == "profiles_rewritten"
-        assert body["runtime_host"] == "agentcore"
         write_profiles.assert_awaited_once_with("org_test_456", row["bedrock_aip_arns"])
         stop_session.assert_called_once()
 

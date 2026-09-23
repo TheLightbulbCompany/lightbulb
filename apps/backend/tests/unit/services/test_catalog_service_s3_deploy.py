@@ -418,7 +418,6 @@ async def test_deploy_from_artifact_mints_profiles_then_content_for_a_fresh_agen
 
     assert call_order == ["create", "profile", "content"]
     assert result["agent_id"] == "minted_agent_1"
-    assert result["runtimeHost"] == "agentcore"
     delete_mock.assert_not_awaited()
 
 
@@ -448,7 +447,7 @@ async def test_deploy_from_artifact_reads_the_row_when_no_container_is_threaded(
             new_agent_id=None,
         )
 
-    assert result["runtimeHost"] == "agentcore"
+    assert result["agent_id"] == "minted_agent_1"
     read_row.assert_awaited_once_with("user_buyer")
 
 

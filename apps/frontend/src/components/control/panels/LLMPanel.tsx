@@ -9,7 +9,7 @@ import { externalLinkClick } from "@/lib/externalAuth";
 import { notifyApiError } from "@/lib/notify";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
 import { useBilling } from "@/hooks/useBilling";
-import { useRuntimeHost } from "@lightbulb/shared";
+import { useStatusLoaded } from "@lightbulb/shared";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { CreditsSection } from "./CreditsSection";
 import { OpenAIIcon, AnthropicIcon } from "@/components/chat/ProviderIcons";
@@ -508,7 +508,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   // difference between a settings read and a microVM start. Provider IDS are not
   // branched: the Hermes bridge reports the same names `llm-auth-status.ts`
   // already matches (`bedrock`, `anthropic`, `openai-api`, `openai-codex`).
-  const runtimeHost = useRuntimeHost();
+  const statusLoaded = useStatusLoaded();
   const {
     data: authStatus,
     error: authStatusError,
@@ -516,7 +516,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   } = useRuntimeRpc<{
     ts: number;
     providers: AuthStatusProvider[];
-  }>(runtimeHost ? "models.authStatus" : null);
+  }>(statusLoaded ? "models.authStatus" : null);
   const refreshAuthStatus = useRuntimeRpcMutation();
   const providerStatus = resolveProviderStatus(
     user?.provider_choice ?? null,

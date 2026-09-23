@@ -66,8 +66,8 @@ import { fetchJsonWithStatus, type ApiClientConfig } from "../api/client";
 import { ApiError } from "../api/error";
 import {
   classifyContainerStatus,
-  publishRuntimeHost,
-  setRuntimeHostScope,
+  publishStatusLoaded,
+  setStatusScope,
   type ClassifiedStatus,
 } from "./containerStatus";
 import { deriveUIPhase, type DerivedUIPhase, type StatusContract } from "./statusContract";
@@ -187,13 +187,13 @@ export function useOnboardingStatus(
   // The other three saw a ref frozen at 0, concluded the chain was stalled on
   // every tick, and called `mutate()` every 5 seconds forever.
   // One string naming the workspace this poll is for. Shared by the attempt clock (which is
-  // per SWR key) and the runtime-host store (which must go unknown the moment the workspace
-  // changes — see `setRuntimeHostScope`).
+  // per SWR key) and the status-loaded store (which must go false the moment the workspace
+  // changes — see `setStatusScope`).
   const statusScope = enabled ? (scope === undefined ? swrKey : `${swrKey}|${scope}`) : null;
   const lastAttemptRef = useSharedAttemptClock(statusScope);
-  // Render-phase, no notify: the host must stop answering for the OLD workspace in the same
+  // Render-phase, no notify: the signal must stop answering for the OLD workspace in the same
   // pass that `lastGoodRef` below drops the old body, not one commit later.
-  setRuntimeHostScope(statusScope);
+  setStatusScope(statusScope);
   // Start of the CURRENT unsettled streak, for the 60s fast->slow cadence
   // step. Reset on mount, on a ready->not-ready regression, and on refresh().
   const windowStartRef = useRef<number>(Date.now());
@@ -368,18 +368,18 @@ export function useOnboardingStatus(
 
   const classified = lastGood?.kind === "classified" ? lastGood.classified : null;
 
-  // This is the ONE reader of `/container/status`, so it is the one place that can hand the
-  // runtime capability signal to surfaces that never see the body (M6 task 10, row 0). In an
-  // effect, not during render — `publishRuntimeHost` notifies subscribers synchronously. It
-  // carries `statusScope`, so a body that lands after a workspace switch can never be read as
-  // the new workspace's answer.
+  // This is the ONE reader of `/container/status`, so it is the one place that can tell
+  // surfaces that never see the body that a status has landed. In an effect, not during
+  // render — `publishStatusLoaded` notifies subscribers synchronously. It carries
+  // `statusScope`, so a body that lands after a workspace switch can never be read as the
+  // new workspace's answer.
   // Defensive about the body exactly as `derivePhaseFromOutcome` is: an empty or malformed
   // 200 parses to `null` (fetchJsonWithStatus nulls out a JSON parse failure).
   const body = classified?.kind === "container" ? classified.body : undefined;
-  const runtimeHost = body && typeof body === "object" ? body.runtime_host : undefined;
+  const statusLoaded = Boolean(body && typeof body === "object");
   useEffect(() => {
-    if (statusScope && runtimeHost) publishRuntimeHost(statusScope, runtimeHost);
-  }, [statusScope, runtimeHost]);
+    if (statusScope && statusLoaded) publishStatusLoaded(statusScope);
+  }, [statusScope, statusLoaded]);
   // Both failure routes surface here, so a caller with NO last good to fall
   // back on still gets a real error rather than a silently stuck UI — the
   // contract `useProvisioningState` depends on for an unrecognized status.

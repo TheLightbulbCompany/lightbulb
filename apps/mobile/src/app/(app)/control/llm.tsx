@@ -19,7 +19,7 @@ import {
 import {
   ApiError,
   createApiClient,
-  useRuntimeHost,
+  useStatusLoaded,
   useRuntimeRpc,
 } from "@lightbulb/shared";
 
@@ -328,20 +328,20 @@ export default function LlmPanel() {
   // known for this workspace", and guessing costs a microVM start on AgentCore.
   // The dot needs no runtime branch: the Hermes bridge reports the same provider
   // ids `providerAuthStatus` already resolves (M6 task 10, row 22).
-  const runtimeHost = useRuntimeHost();
+  const statusLoaded = useStatusLoaded();
   // Provider auth dot — refreshed from canonical runtime invalidation events.
   const { data: authStatus } = useRuntimeRpc<AuthStatusResult>(
     live,
-    runtimeHost ? "models.authStatus" : null,
+    statusLoaded ? "models.authStatus" : null,
   );
   // Model catalog + owner default, from the runtime config snapshot.
   const { data: configSnapshot } = useRuntimeRpc<unknown>(
     live,
-    runtimeHost ? "config.get" : null,
+    statusLoaded ? "config.get" : null,
   );
   const { data: managedCatalog } = useRuntimeRpc<unknown>(
     live,
-    runtimeHost && state.kind === "ready" && state.account.provider_choice === "openrouter_managed"
+    statusLoaded && state.kind === "ready" && state.account.provider_choice === "openrouter_managed"
       ? "models.list"
       : null,
   );

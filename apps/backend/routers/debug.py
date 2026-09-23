@@ -141,7 +141,6 @@ async def redeploy_container(
         "status": "profiles_rewritten",
         "owner_id": owner_id,
         "owner_type": owner_type,
-        "runtime_host": "agentcore",
     }
 
 

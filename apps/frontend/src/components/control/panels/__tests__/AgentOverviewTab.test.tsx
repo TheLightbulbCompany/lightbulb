@@ -15,11 +15,11 @@ import { AgentOverviewTab } from "../AgentOverviewTab";
 const ARN_SONNET = "arn:aws:bedrock:us-east-1:1:application-inference-profile/son";
 const ARN_OPUS = "arn:aws:bedrock:us-east-1:1:application-inference-profile/opu";
 
-let runtimeHost: "agentcore" | undefined;
+let statusLoaded = false;
 const rpcCalls: { method: string | null }[] = [];
 const mockCallRpc = vi.fn();
 
-vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => runtimeHost }));
+vi.mock("@lightbulb/shared", () => ({ useStatusLoaded: () => statusLoaded }));
 vi.mock("@/hooks/useRuntimeRpc", () => ({
   useRuntimeRpc: (method: string | null) => {
     rpcCalls.push({ method });
@@ -55,7 +55,7 @@ describe("AgentOverviewTab", () => {
     rpcCalls.length = 0;
     mockCallRpc.mockReset();
     mockCallRpc.mockResolvedValue({ ok: true });
-    runtimeHost = "agentcore";
+    statusLoaded = true;
   });
 
   it("dials neither the stubbed identity RPC nor config.get", () => {
@@ -87,8 +87,8 @@ describe("AgentOverviewTab", () => {
     expect((screen.getByLabelText("Role") as HTMLSelectElement).value).toBe("engineer");
   });
 
-  it("holds every RPC while the host is unknown", () => {
-    runtimeHost = undefined;
+  it("holds every RPC until a status body has landed", () => {
+    statusLoaded = false;
     render(<AgentOverviewTab agentId="a1" agent={agent} />);
     expect(rpcCalls.every((call) => call.method === null)).toBe(true);
   });

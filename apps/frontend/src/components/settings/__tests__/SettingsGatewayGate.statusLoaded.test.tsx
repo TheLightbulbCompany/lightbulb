@@ -1,22 +1,21 @@
 // @vitest-environment jsdom
 /**
- * Review C1. `useRuntimeHost()` only ever resolves if something mounted `useOnboardingStatus`
- * — it is the one caller of `setRuntimeHostScope`/`publishRuntimeHost`. Web had exactly two
+ * Review C1. `useStatusLoaded()` only ever resolves if something mounted `useOnboardingStatus`
+ * — it is the one caller of `setStatusScope`/`publishStatusLoaded`. Web had exactly two
  * such mount points and both were under `/chat`, so a HARD load of `/settings?panel=skills`
- * left every panel that holds its RPC on a definite host spinning forever, on ECS as much as
- * AgentCore. A client-side nav in from `/chat` masked it, because that module state survives
+ * left every panel that holds its RPC on a loaded status spinning forever. A client-side nav in from `/chat` masked it, because that module state survives
  * the transition.
  *
  * This renders the real gate over the real hook chain (Clerk + fetch mocked, the way
- * `useProvisioningState.test.tsx` does it) and asserts the host actually arrives. The two
- * cases deliberately use different org ids: the published host is scoped, so a second org
+ * `useProvisioningState.test.tsx` does it) and asserts the signal actually arrives. The two
+ * cases deliberately use different org ids: the published signal is scoped, so a second org
  * cannot read the first one's answer, and no cross-test reset is needed.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import React from "react";
-import { useRuntimeHost } from "@lightbulb/shared";
+import { useStatusLoaded } from "@lightbulb/shared";
 
 import { SettingsGatewayGate } from "../SettingsGatewayGate";
 
@@ -44,12 +43,11 @@ vi.mock("@/hooks/useLiveEvents", () => ({
   LiveEventsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
-function HostProbe() {
-  const host = useRuntimeHost();
-  return <div data-testid="host">{host ?? "unknown"}</div>;
+function LoadedProbe() {
+  return <div data-testid="loaded">{useStatusLoaded() ? "loaded" : "unknown"}</div>;
 }
 
-function statusBody(runtimeHost: string) {
+function statusBody() {
   return new Response(
     JSON.stringify({
       container_status: "running",
@@ -58,37 +56,35 @@ function statusBody(runtimeHost: string) {
       runtime_phase: "ready",
       lifecycle: "ready",
       chat_available: true,
-      runtime_host: runtimeHost,
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
 }
 
-describe("a hard load of /settings resolves the runtime host", () => {
+describe("a hard load of /settings resolves the status signal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     auth.isSignedIn = true;
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("publishes the host with nothing from /chat mounted", async () => {
-    const host = "agentcore";
-    const orgId = "org_agentcore";
+  it("publishes the signal with nothing from /chat mounted", async () => {
+    const orgId = "org_loaded";
     auth.orgId = orgId;
     auth.uiOrgId = orgId;
     auth.getToken.mockResolvedValue(token(orgId));
-    global.fetch = vi.fn().mockResolvedValue(statusBody(host));
+    global.fetch = vi.fn().mockResolvedValue(statusBody());
 
     render(
       <SWRConfig value={{ provider: () => new Map() }}>
         <SettingsGatewayGate>
-          <HostProbe />
+          <LoadedProbe />
         </SettingsGatewayGate>
       </SWRConfig>,
     );
 
     // Before the fix this stayed "unknown" forever — no error, no retry, no timeout.
-    await waitFor(() => expect(screen.getByTestId("host")).toHaveTextContent(host));
+    await waitFor(() => expect(screen.getByTestId("loaded")).toHaveTextContent("loaded"));
   });
 
   /**
@@ -102,18 +98,18 @@ describe("a hard load of /settings resolves the runtime host", () => {
     auth.orgId = "org_nowake";
     auth.uiOrgId = "org_nowake";
     auth.getToken.mockResolvedValue(token("org_nowake"));
-    const fetchMock = vi.fn().mockResolvedValue(statusBody("agentcore"));
+    const fetchMock = vi.fn().mockResolvedValue(statusBody());
     global.fetch = fetchMock;
 
     render(
       <SWRConfig value={{ provider: () => new Map() }}>
         <SettingsGatewayGate>
-          <HostProbe />
+          <LoadedProbe />
         </SettingsGatewayGate>
       </SWRConfig>,
     );
 
-    await waitFor(() => expect(screen.getByTestId("host")).toHaveTextContent("agentcore"));
+    await waitFor(() => expect(screen.getByTestId("loaded")).toHaveTextContent("loaded"));
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
     expect(urls.length).toBeGreaterThan(0);
     expect(urls.every((url) => url.includes("wake=0"))).toBe(true);

@@ -5,18 +5,18 @@ import { useProvisioningState } from "@/hooks/useProvisioningState";
 
 /**
  * Reads `/container/status` for its SIDE EFFECT: that hook is the one publisher of the
- * runtime host (`useOnboardingStatus` → `setRuntimeHostScope`/`publishRuntimeHost`), and
- * `useRuntimeHost()` returns `undefined` for the whole life of a route that never mounts it.
+ * status-loaded signal (`useOnboardingStatus` → `setStatusScope`/`publishStatusLoaded`), and
+ * `useStatusLoaded()` returns `false` for the whole life of a route that never mounts it.
  *
  * Before this, web had exactly two mount points — `ChatLayout` and `WorkspaceShell`, both
  * under `/chat`. A hard load of `/settings?panel=skills` therefore left every panel that
- * holds its RPC on a definite host spinning forever, on ECS as much as AgentCore, with no
+ * holds its RPC on a loaded status spinning forever, with no
  * error and no retry (review C1). A client-side nav in from `/chat` masked it, because this
  * module state survives the transition — which is exactly why it read as "works on my
  * machine".
  *
  * Fixed at the source rather than by special-casing the panels: any future panel that reads
- * the host gets a real answer here, and the panels keep one rule ("hold until definite")
+ * the signal gets a real answer here, and the panels keep one rule ("hold until definite")
  * instead of one rule plus a per-route exception.
  *
  * **`wake: false` is load-bearing.** Before this publisher existed, `/settings` issued ZERO
@@ -28,12 +28,12 @@ import { useProvisioningState } from "@/hooks/useProvisioningState";
  * row is not `ready`. This reader wants to KNOW the runtime, not to be a reason to spend on
  * it. On a ready workspace `cadenceFor` returns 0, so it reads once and stops.
  */
-function RuntimeHostPublisher() {
+function StatusPublisher() {
   // `wake: false` rather than a bare `useOnboardingStatus` call (the reviewer's suggestion):
   // that hook needs the workspace-token plumbing this one already owns — a forced-fresh mint
   // whose `o.id` is verified against the active org before a single fetch. Re-deriving it here
-  // would duplicate ~60 lines whose failure mode is publishing another workspace's host, and
-  // the scope is the whole safety property of `useRuntimeHost`. One option, no duplication.
+  // would duplicate ~60 lines whose failure mode is publishing another workspace's status, and
+  // the scope is the whole safety property of `useStatusLoaded`. One option, no duplication.
   useProvisioningState({ wake: false });
   return null;
 }
@@ -48,7 +48,7 @@ export function SettingsGatewayGate({
 }) {
   return (
     <LiveEventsProvider>
-      <RuntimeHostPublisher />
+      <StatusPublisher />
       {children}
     </LiveEventsProvider>
   );

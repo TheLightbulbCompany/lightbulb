@@ -27,11 +27,10 @@ export type {
 } from "./hooks/agents";
 export { useChatGPTOAuth } from "./hooks/useChatGPTOAuth";
 export type { ChatGPTOAuthOptions, OAuthState } from "./hooks/useChatGPTOAuth";
-export { useRuntimeHost } from "./hooks/containerStatus";
+export { useStatusLoaded } from "./hooks/containerStatus";
 export type {
   ClassifiedStatus,
   ContainerStatusBody,
-  RuntimeHost,
 } from "./hooks/containerStatus";
 export { deriveUIPhase } from "./hooks/statusContract";
 export type { StatusContract, UIPhase } from "./hooks/statusContract";

@@ -77,9 +77,9 @@ let mockAuthStatusError: Error | undefined;
 // The read is held until the runtime is DEFINITE, so these tests declare one.
 // The panel does NOT branch on it beyond that: the Hermes bridge reports the same
 // provider ids llm-auth-status.ts already resolves (M6 task 10, row 22).
-let runtimeHost: "agentcore" | undefined = "agentcore";
+let statusLoaded: boolean = true;
 const authStatusMethods: (string | null)[] = [];
-vi.mock("@lightbulb/shared", () => ({ useRuntimeHost: () => runtimeHost }));
+vi.mock("@lightbulb/shared", () => ({ useStatusLoaded: () => statusLoaded }));
 vi.mock("@/hooks/useRuntimeRpc", () => ({
   useRuntimeRpc: (method: string | null) => {
     authStatusMethods.push(method);
@@ -416,7 +416,7 @@ describe("LLMPanel", () => {
   });
 
   it("holds models.authStatus while the runtime is unknown, and a neutral dot with it", () => {
-    runtimeHost = undefined;
+    statusLoaded = false;
     authStatusMethods.length = 0;
     mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
     mockAuthStatusData.mockReturnValue({
@@ -431,7 +431,7 @@ describe("LLMPanel", () => {
   });
 
   it("resolves a BYO-key dot from the Hermes provider id (openai-api)", () => {
-    runtimeHost = "agentcore";
+    statusLoaded = true;
     mockSWRData.mockReturnValue({ provider_choice: "byo_key", byo_provider: "openai" });
     // What the bridge reports for a BYO-OpenAI profile — `llm-auth-status.ts` matches it
     // through its `openai-` prefix rule with no AgentCore branch of its own.

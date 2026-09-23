@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 
-import { useRuntimeHost } from "@lightbulb/shared";
+import { useStatusLoaded } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import {
   Loader2,
@@ -186,10 +186,10 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
   // `undefined` is "not known for this workspace yet", never "this is ECS": firing
   // on a guess costs a microVM start on AgentCore, so the RPC waits for a definite
   // answer (same hold as AgentToolsTab).
-  const runtimeHost = useRuntimeHost();
+  const statusLoaded = useStatusLoaded();
   const params = agentId ? { agentId } : {};
   const { data: raw, error, isLoading, mutate } = useRuntimeRpc<SkillStatusReport | SkillStatusEntry[]>(
-    runtimeHost ? "skills.status" : null,
+    statusLoaded ? "skills.status" : null,
     params,
   );
   const callRpc = useRuntimeRpcMutation();
@@ -256,7 +256,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
     });
   };
 
-  if (isLoading || !runtimeHost) {
+  if (isLoading || !statusLoaded) {
     return (
       <div className="flex-1 flex items-center justify-center py-20">
         <Loader2 size={20} className="animate-spin text-[var(--midnight-muted)]" />

@@ -137,6 +137,28 @@ async def test_a_member_of_a_paid_workspace_can_set_an_agents_listening(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_a_vendor_side_member_cannot_change_the_customers_agents_mode(monkeypatch):
+    upsert = _upsert_fixture(monkeypatch, room_kind="channel", role="member", existing=IN_ROOM)
+    monkeypatch.setattr(
+        messaging,
+        "require_room_member",
+        AsyncMock(
+            return_value=(
+                {"kind": "channel", "roomId": ROOM, "ownerId": OWNER, "shared": True},
+                {"kind": "human", "id": USER, "role": "member", "homeOwnerId": "org_lightbulb"},
+            )
+        ),
+    )
+    _billing(monkeypatch, PAID)
+
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await messaging.upsert_member(AuthContext(user_id=USER, org_id="org_lightbulb"), ROOM, _member("active"))
+
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_member_on_the_free_tier_cannot_change_a_mode(monkeypatch):
     upsert = _upsert_fixture(monkeypatch, room_kind="channel", role="member", existing=IN_ROOM)
     _billing(monkeypatch, TRIAL)

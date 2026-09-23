@@ -87,6 +87,10 @@ CLI_CREDENTIAL_PREFIXES = (
     f"{PROFILE_HOME}/.xurl",
     f"{PROFILE_HOME}/quickbooks/",
     "skills/instagram/",
+    # ponytail: the pull unlinks local files S3 lacks, so token.sh's local token-cache.json is
+    # dropped on each revision bump and the next call re-mints (one extra grant). Harmless; move
+    # the cache outside skills/shopify/ if the grant rate ever matters.
+    "skills/shopify/",
     CLI_ENV_FILE,
 )
 

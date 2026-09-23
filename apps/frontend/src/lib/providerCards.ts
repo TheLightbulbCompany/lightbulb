@@ -94,12 +94,37 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     cta: "Get started",
     href: "/sign-up?provider=byo_key",
   },
+  {
+    id: "openrouter_managed",
+    title: "Lightbulb-managed",
+    subtitle: "Included with every plan — no account or key",
+    trialNote: "On by default — nothing to set up",
+    bullets: [
+      "Free trial and Base: DeepSeek within a daily allowance",
+      "More models with prepaid credits — coming soon",
+      "All channels",
+    ],
+    cta: "Get started",
+    // No ?provider= — this IS the default a fresh sign-up lands on, so the
+    // stepper's `?provider=` step (chatgpt_oauth | byo_key only) never fires.
+    href: "/sign-up",
+  },
 ];
 
+/**
+ * Pre-entitlement comparison (`ProviderPicker`). Deliberately built from only
+ * the first two PROVIDER_CARDS entries, not all of them: the static
+ * Lightbulb-managed card above is landing/marketing copy, and this surface's
+ * own managed card (below, gated on `managedAvailable`) carries different,
+ * post-entitlement-accurate copy (prepaid credits) — spreading PROVIDER_CARDS
+ * wholesale would show both at once. Mirrors the pre-2026-09-22 pattern from
+ * when a third PROVIDER_CARDS entry (bedrock_claude) last existed here.
+ */
 export function providerComparisonCards(managedAvailable: boolean): ProviderCard[] {
+  const base = PROVIDER_CARDS.slice(0, 2);
   return managedAvailable
     ? [
-        ...PROVIDER_CARDS,
+        ...base,
         {
           id: "openrouter_managed",
           title: "Lightbulb-managed models",
@@ -110,5 +135,5 @@ export function providerComparisonCards(managedAvailable: boolean): ProviderCard
           href: "/chat?panel=llm",
         },
       ]
-    : PROVIDER_CARDS;
+    : base;
 }

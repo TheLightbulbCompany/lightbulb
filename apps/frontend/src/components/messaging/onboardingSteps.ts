@@ -126,7 +126,7 @@ export function buildSetupSteps({ participants, connections, agentNames, workspa
       ? [{
           id: "starter-model" as const,
           label: "You're on the starter model",
-          detail: "Pick ChatGPT or your own key",
+          detail: "Pick Lightbulb-managed, ChatGPT, or your own key",
           doneDetail: "Provider chosen",
           done: false,
           repeatable: false,

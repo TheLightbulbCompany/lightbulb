@@ -270,7 +270,7 @@ async def _running_count_gauge_loop():
 
     instance = os.getenv("HOSTNAME") or "local"
     balance_check_interval_s = 900
-    last_balance_check = 0.0
+    last_balance_check = time.monotonic()  # first check after 15 min of uptime, never at boot (tests boot the app)
     while True:
         try:
             rows = await container_repo.get_by_status("running")

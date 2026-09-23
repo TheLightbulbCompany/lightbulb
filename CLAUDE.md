@@ -1029,8 +1029,16 @@ traffic wakes only `active` members as a `room_event`, and the source agent is
 always skipped. Only those targets get `WORK#` rows — everyone else just sees the
 message as history on their next turn. A fresh workspace is seeded with a
 `#general` channel holding the whole starter roster plus one welcome message
-from the CEO: on a PAID workspace the CEO is `active` and the specialists
-`mentions`; on the free trial every agent is `mentions`. **Listening (`active`)
+from the CEO: on a PAID workspace **every** starter agent is `active` (owner
+ruling 2026-09-23, #2960); on the free trial every agent is `mentions`, but a
+human message in the starter `#general` that targets no agent at all goes to
+the CEO as a `user_request`, so nobody talks into silence. Entering paid
+promotes every `mentions` agent member to `active` in the owner's non-DM rooms
+(`promote_listening`), skipping `observe` and admin-set modes. With several
+`active` members, **Jev** (`core/services/jev.py`) picks at most ONE responder
+per plain message (or none for chatter); if Jev is down it falls back to one
+deterministic agent (CEO, else lowest id), and a rate-limited decision retries
+with backoff before falling back. **Listening (`active`)
 is a paid feature** — `listening_available` (the `has_always_on_entitlement`
 predicate) gates the seed, `create_room`/`upsert_member` on non-DM rooms (403
 `PLAN_REQUIRED`), and the work consumer, which drops a `room_event` for a
@@ -1120,8 +1128,8 @@ Key invariants:
 - **The Paperclip binding is on the Paperclip side, not in the profile** — each seeded agent's `hermes_gateway` `adapterConfig` points at `/api/v1/internal/paperclip/hermes/{owner}` with the owner's hook token as `apiKey`. That token is a **snapshot** (Paperclip persists it as a managed company secret), so rotating an owner's `hook_token` requires `repoint_agent_adapter`. An EMPTY hook token raises at WIRING time rather than minting a config, because the adapter would otherwise 401 on every run and Paperclip reports that per-run, not as a broken agent.
 - **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success.
 - **Fresh-provision Paperclip seeding is single-flight inside the executor** (`provision_runner.py` step 0) — deliberately, to kill the duplicate-company race a poll-thread seed allowed.
-- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with the CEO in `active` mode (paid workspaces only — a free trial seeds every agent on `mentions`) and the five specialists in `mentions` mode. Reconciliation never restores a removed member or resets a user's choice. Room owners/admins can set each agent's per-room mode to `active` (paid plans only), `mentions`, or `observe`; ordinary members see the mode but cannot change it.
-- **The first normal human message remains a normal dispatch.** Stored room modes choose its targets; a post-send capture then uses that first message once to create the initial goal/project and stage `BRIEF.md`. It does not force the CEO as the sole responder.
+- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with every starter agent in `active` mode on a paid workspace (a free trial seeds every agent on `mentions`; see "Listen modes"). Reconciliation never restores a removed member or resets a user's choice. Room owners/admins can set each agent's per-room mode to `active` (paid plans only), `mentions`, or `observe`; ordinary members see the mode but cannot change it.
+- **The first normal human message remains a normal dispatch.** Stored room modes choose its targets; a post-send capture then uses that first message once to create the initial goal/project and stage `BRIEF.md`. On a paid workspace Jev picks its responder; on a free trial an unaddressed first message goes to the CEO.
 
 ### Owners missing Paperclip state
 

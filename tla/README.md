@@ -152,3 +152,71 @@ distinct risk), the no-gateway-key "disabled" fallback mode (a secondary path
 built on the same `finalize_decision` primitive), and staleness timing itself
 (a liveness concern — this spec checks that consumers never disagree, not
 that one is never left waiting forever).
+
+## ProvisioningClaimLease
+
+The last of the original three-item backlog's siblings, and the fourth spec
+overall: the token-fenced stale-claim-steal pattern that guards Paperclip
+company creation against a double-create when multiple backend instances
+race to provision the same org. One shared claim row: absent, or held by
+some (holder identity, per-attempt token). A holder can be stolen once its
+claim looks stale; the SAME admin identity re-polls with the SAME holder
+value, so a release fenced on holder alone is a classic ABA hazard — a
+resurrected straggler from a superseded attempt can still match `holder` and
+delete a second, live attempt's claim. Both real claims this spec abstracts
+(`try_acquire_org_create_claim`, `try_acquire_seed_claim`) use a per-attempt
+TOKEN instead, specifically to close this.
+
+| Constant | Committed value | Meaning |
+|---|---|---|
+| `TokenFenced` | `TRUE` | release/steal fenced on the per-attempt token — the code today |
+
+| Invariant | Holds at `TokenFenced = TRUE` | What it says |
+|---|---|---|
+| `NoStaleReleaseCorruption` | yes | a release never deletes a different, still-live attempt's claim (the ABA property) |
+| `AtMostOneEverSucceeded` | **no — see below** | not checked in the committed config |
+
+`TokenFenced = FALSE` models the historical, holder-only design
+`release_org_create_claim`'s own docstring narrates as the pre-fix shape
+("an OLD worker still runs the pre-token `release_org_create_claim` whose
+condition is `holder = :h`"). Verified: `NoStaleReleaseCorruption` breaks
+under it — the token fence is genuinely load-bearing, not decorative.
+
+**A real gap, found and reported, not fixed here** (TRAIN HYGIENE): `AtMostOneEverSucceeded`
+fails even under `TokenFenced = TRUE`, independent of the ABA fix entirely.
+The staleness check a steal relies on only measures a timestamp's age — it
+has no way to distinguish "the original holder crashed hard" from "the
+original holder is still alive and about to legitimately finish, just
+slower than the ~135 s the code's own docstring assumes as a ceiling." TLC
+finds a reachable trace where attempt `t1` claims, the row goes stale while
+`t1` is still genuinely working, `t2` steals and also succeeds — both
+`everSucceeded[t1]` and `everSucceeded[t2]` end up `TRUE`. This matters most
+for the **poll-thread reconcile path** (`_reconcile_owner_seed`), which
+passes the POLLING ADMIN's own identity as `owner_user_id` — unlike the
+fresh-provision executor's step 0, which always resolves the org's fixed
+Clerk creator regardless of which execution triggered it. Because
+`provision_org`'s own inner seed claim (`try_acquire_seed_claim`) is keyed
+on that SAME `owner_user_id`, two different admins of one org polling
+concurrently, with one attempt legitimately slow past the staleness
+threshold, hit two DIFFERENT inner-claim keys too — so the inner claim does
+not backstop this race for the reconcile path the way it structurally does
+for a fresh provision. Verified via a scratch run (not committed, matching
+this track's convention): the violation is reachable in 6 steps regardless
+of `TokenFenced`.
+
+## A precedence bug found auditing this track's own specs
+
+While writing this spec, TLC reported "Successor state is not completely
+specified" for an action that assigns every primed variable in every branch
+— a symptom of `X' = Y \/ Z` parsing as `(X' = Y) \/ Z`, not `X' = (Y \/ Z)`:
+`=` binds tighter than `\/` in TLA+. `OpenRouterGateReservation.tla` (merged
+in `#3022`/`#3030`) had this exact bug in both places it set
+`admittedWhileExhausted'`. Fixed here, in the same PR, alongside this new
+spec. The substantive conclusion did not change — `Reserve` and `BedrockHold`'s
+OWN admission guards already imply `remaining > 0` whenever they fire, so
+the buggy expression's "unconstrained" branch was structurally unreachable
+and `NoAdmissionWhileExhausted` held for the right underlying reason even
+while the ghost variable meant to double-check it was silently a no-op.
+Re-verified after the fix: same result, now for a meaningful reason instead
+of an accidental one. `MessagingDeliveryKey.tla` and `JevDecisionConvergence.tla`
+were audited too and don't use this pattern.

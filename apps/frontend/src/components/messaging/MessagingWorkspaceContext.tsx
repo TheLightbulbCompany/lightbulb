@@ -678,6 +678,8 @@ export function MessagingWorkspaceProvider({
     resourceSource: subscribeToRoom ? rooms.resourceSource : undefined,
     // A brand-new web user has no device and no session, so the tab would be
     // empty plumbing. The desktop app is itself a paired device.
+    // ponytail: live sessions only -- a paired-but-idle device alone doesn't
+    // show the tab on web; gate on a paired-devices list once one is cheap.
     showResourcesTab: workspaceSessions.sessions.length > 0 || isDesktopApp(),
     participants,
     messages: rooms.messages,

@@ -698,7 +698,9 @@ export function MessagingWorkspaceProvider({
   // them on a room change, and RoomPanel splits main-timeline from thread.
   const pending = rooms.optimisticMessages;
   const viewerRole = rooms.activeRoom?.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "";
-  const canManageResponses = ["owner", "admin"].includes(viewerRole);
+  // On a paid workspace any member may change an agent's response (owner ruling 2026-09-23).
+  // `=== true`, not `listeningAvailable`: that one assumes paid while billing loads.
+  const canManageResponses = ["owner", "admin"].includes(viewerRole) || billingAccount?.is_subscribed === true;
 
   const directoryProps: RoomDirectoryProps = {
     ownerScopeId: scope,

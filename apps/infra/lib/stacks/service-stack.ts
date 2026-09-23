@@ -2116,6 +2116,7 @@ export class ServiceStack extends cdk.Stack {
       targets: [new events_targets.ApiDestination(statusEventsDestination)],
     });
 
+    // Provisioning failures page. This is the signup path — a failed or timed
     // out execution means a new user never gets a container.
     //
     // The topic is imported from a CONSTRUCTED ARN string rather than a

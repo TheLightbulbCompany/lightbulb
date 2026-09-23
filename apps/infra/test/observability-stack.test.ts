@@ -201,6 +201,8 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "nightly_ceo.run": [["outcome"]],
   // core/services/messaging.py count_first_turn_failure; P29 binds the bare rollup.
   "messaging.run.first_turn_failed": [[]],
+  // apps/infra/lambda/openrouter-settlement/index.py Store.commit (EMF, own service); W81.
+  "openrouter.settlement.overshoot_microcents": [[]],
   // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---
   // core/services/messaging.py — create_human_message / create_agent_message.
   "messaging.message.created": [["author_kind", "has_targets", "room_kind"]],
@@ -281,6 +283,7 @@ const ROLLUP_DIMENSIONS = [
  */
 const EMITTING_SERVICE: Record<string, string> = {
   "messaging.projector.push": "messaging-projector",
+  "openrouter.settlement.overshoot_microcents": "openrouter-settlement",
 };
 const DEFAULT_EMITTING_SERVICE = "lightbulb-backend";
 
@@ -1046,6 +1049,18 @@ describe("ObservabilityStack — prod-only paths", () => {
       Dimensions: [{ Name: "FunctionName", Value: `lightbulb-${env}-openrouter-settlement` }],
       Threshold: 3,
       ComparisonOperator: "GreaterThanOrEqualToThreshold",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
+    });
+  });
+
+  test.each(["dev", "prod"] as const)("%s warns when OpenRouter settlement overshoots its reservation", (env) => {
+    buildTemplate(env).hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: `lightbulb-${env}-W81-openrouter-settlement-overshoot`,
+      Namespace: "LightbulbAI",
+      MetricName: "openrouter.settlement.overshoot_microcents",
+      Dimensions: Match.arrayWith([{ Name: "service", Value: "openrouter-settlement" }]),
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
     });
   });

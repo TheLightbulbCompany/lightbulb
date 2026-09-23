@@ -2741,6 +2741,20 @@ def handler(event, context):
       severity: "warn",
     });
 
+    // W81: OpenRouter settlement debited more than the gate reserved. The real debit is
+    // kept (Metronome bills it), so the fast-gate pool can go negative; admission reads
+    // that as exhausted. EMF line from the settlement Lambda, service=openrouter-settlement.
+    this.createAlarm({
+      id: "W81",
+      name: "openrouter-settlement-overshoot",
+      description: "OpenRouter settlement debit exceeded its gate reservation",
+      metricName: "openrouter.settlement.overshoot_microcents",
+      dimensions: { service: "openrouter-settlement" },
+      periodMinutes: 30,
+      threshold: 0,
+      severity: "warn",
+    });
+
     // NOTE: AWS Cost Anomaly Detection is intentionally NOT managed here.
     // A Cost Anomaly Detection monitor is an ACCOUNT-GLOBAL resource; a
     // per-environment stack (dev + prod both deploy this stack) cannot own

@@ -36,3 +36,14 @@ test('definite upstream denial releases its own hold with outbox state atomicall
   assert.equal(calls[0].TransactItems[0].Update.UpdateExpression.includes('openrouter_reserved_microcents'), true);
   assert.equal(calls[0].TransactItems[1].Update.Key.request_id.S, 'req-1');
 });
+test('a negative pool (settlement overshoot) is exhausted: no reservation is written', async () => {
+  for (const remaining of ['-1', '-900000000000000000000']) {
+    let writes = 0;
+    const ddb = {
+      async getItem() { return { Item: { remaining_microcents: { N: remaining }, reserved_microcents: { N: '0' }, openrouter_reserved_microcents: { N: '0' } } }; },
+      async transactWriteItems() { writes++; },
+    };
+    assert.equal(await reserve(ddb, { FAST_GATE_TABLE: 'fast', REQUESTS_TABLE: 'requests' }, 'owner-1', 1, { request_id: { S: 'req-1' } }), false);
+    assert.equal(writes, 0);
+  }
+});

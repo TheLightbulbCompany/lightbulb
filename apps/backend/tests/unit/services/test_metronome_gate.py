@@ -304,6 +304,10 @@ async def test_row_blocked_at_reserve_estimate():
     assert _row_blocked({"remaining_microcents": RESERVE_ESTIMATE_MICROCENTS}) is True
     assert _row_blocked({"remaining_microcents": RESERVE_ESTIMATE_MICROCENTS - 1}) is True
     assert _row_blocked({"remaining_microcents": RESERVE_ESTIMATE_MICROCENTS + 1}) is False
+    # A settlement overshoot can leave the pool negative (boto3 hands back Decimal).
+    from decimal import Decimal
+
+    assert _row_blocked({"remaining_microcents": Decimal("-5000000000")}) is True
 
 
 @pytest.mark.asyncio

@@ -86,3 +86,6 @@ graphify-out/
 # apps/infra/hermes/skills-overlay. Never commit it -- a checked-in copy is exactly the
 # 6.4k-line duplicate this replaced.
 apps/infra/hermes/skills/
+
+# TLC scratch (tla/check.sh passes -cleanup, this covers a crashed run)
+tla/states/

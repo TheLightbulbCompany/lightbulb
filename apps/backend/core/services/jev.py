@@ -32,7 +32,9 @@ logger = logging.getLogger(__name__)
 MODEL = "typesafe-ai/jev"
 _URL = "https://ai-gateway.vercel.sh/v1/evaluate"
 _TIMEOUT_S = 3.0
-_KEY_RETRY_S = 300
+#: A failed key read retries quickly: one key-less task in a fleet splits routing decisions.
+_KEY_RETRY_S = 30
+_key_lock = asyncio.Lock()
 _KEY_TTL_S = 3600
 _CARD_TTL_S = 600
 _QUIET_S = 600
@@ -100,16 +102,19 @@ async def _gateway_key() -> str | None:
     """The gateway key, re-read hourly (rotation needs no restart); a failed/missing read is
     retried after 5 min."""
     global _key, _key_checked_at
-    if _key_checked_at and time.monotonic() - _key_checked_at < (_KEY_TTL_S if _key else _KEY_RETRY_S):
+    # One read at a time: without the lock a second concurrent caller saw the timestamp the
+    # first had just stamped, no key yet, and reported Jev "disabled" (dev 2026-09-23).
+    async with _key_lock:
+        if _key_checked_at and time.monotonic() - _key_checked_at < (_KEY_TTL_S if _key else _KEY_RETRY_S):
+            return _key
+        name = f"lightbulb/{settings.ENVIRONMENT or 'dev'}/vercel-ai-gateway"
+        try:
+            _key = await _off(_read_secret, name)
+        except Exception as exc:  # noqa: BLE001 -- missing secret == feature off
+            logger.warning("Jev key unreadable: %s (%s)", name, type(exc).__name__)
+            _key = None
+        _key_checked_at = time.monotonic()
         return _key
-    _key_checked_at = time.monotonic()
-    name = f"lightbulb/{settings.ENVIRONMENT or 'dev'}/vercel-ai-gateway"
-    try:
-        _key = await _off(_read_secret, name)
-    except Exception as exc:  # noqa: BLE001 -- missing secret == feature off
-        logger.info("Jev disabled: %s unreadable (%s)", name, type(exc).__name__)
-        _key = None
-    return _key
 
 
 async def decide(state: dict, questions: dict) -> dict | None:
@@ -399,23 +404,33 @@ async def route(
     """The final decision for this message, computed once across every candidate's consumer.
     ``None`` means fall back (Jev disabled, down, or the winner never finished). Never raises."""
     try:
-        # Disabled means NO work: no cards, no S3/Paperclip reads, no DECISION row.
-        if not await _gateway_key():
-            put_metric("messaging.jev.decision", dimensions={"outcome": "disabled"})
-            return None
         room_id, message_id = meta["roomId"], message["messageId"]
-        if await messaging_repo.claim_decision(room_id, message_id):
+        if not await _gateway_key():
+            # No key on THIS task: do no Jev/card work, but never act alone -- another backend
+            # task may hold a key and route this message (dev 2026-09-23: a key-less task fell
+            # back while another routed, so two agents answered). Follow a decision already
+            # made, wait on one in flight, else store one shared fallback everyone follows.
+            put_metric("messaging.jev.decision", dimensions={"outcome": "disabled"})
+            stored = await messaging_repo.get_decision(room_id, message_id)
+            if stored is None:
+                # Only into an ABSENT row: never overwrite a keyed task's live claim.
+                stored = await messaging_repo.finalize_decision(
+                    room_id, message_id, {"fallback": True, "reason": "disabled"}, only_if_absent=True
+                )
+            if not stored.get("pending"):
+                return stored
+        elif await messaging_repo.claim_decision(room_id, message_id):
             try:
                 decision = await asyncio.wait_for(
                     _decide_for_message(meta, message, latest, members, history), _DECIDE_BUDGET_S
                 )
             except Exception:
-                # Store a fallback so the losers stop waiting now, not at their 8 s ceiling.
+                # A stored fallback lets the losers stop waiting now, not at their ceiling.
                 logger.warning("Jev decision failed", exc_info=True)
-                await messaging_repo.put_decision(room_id, message_id, {"fallback": True, "reason": "error"})
-                return None
-            await messaging_repo.put_decision(room_id, message_id, decision)
-            return decision
+                decision = {"fallback": True, "reason": "error"}
+            # First final write wins: if a loser already timed out and stored a fallback,
+            # follow it, so both sides dispatch the same single agent.
+            return await messaging_repo.finalize_decision(room_id, message_id, decision)
         # Another candidate's consumer holds the claim: never call Jev twice for one message.
         deadline = time.monotonic() + _LOSER_WAIT_S
         while True:
@@ -423,7 +438,9 @@ async def route(
             if decision and not decision.get("pending"):
                 return decision
             if time.monotonic() >= deadline:
-                return None
+                return await messaging_repo.finalize_decision(
+                    room_id, message_id, {"fallback": True, "reason": "loser_timeout"}
+                )
             await asyncio.sleep(_LOSER_POLL_S)
     except Exception:  # noqa: BLE001 -- routing must never break dispatch
         logger.warning("Jev routing failed", exc_info=True)

@@ -49,6 +49,22 @@ _MAX_CONCURRENT_GROUPS = 8
 _DESERIALIZER = TypeDeserializer()
 
 
+async def _fallback_ceo_id(owner_id: str) -> str | None:
+    """The #general CEO's stable id (same resolution as messaging.ensure_default_room /
+    promote_listening), for the deterministic single-responder Jev fallback below."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
+    return (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
+
+
+async def _fallback_single(owner_id: str, candidates: list[str]) -> str:
+    """Jev down/undecided with >=2 room_event candidates (spec #2942): pick one deterministically
+    instead of dispatching all of them -- the CEO if it is a candidate, else the lowest id."""
+    ceo_id = await _fallback_ceo_id(owner_id)
+    return ceo_id if ceo_id in candidates else min(candidates)
+
+
 class WorkRetry(RuntimeError):
     def __init__(self, message: str = "", *, visibility: int | None = None) -> None:
         super().__init__(message)
@@ -469,9 +485,30 @@ class OpenClawWorkWorker:
                 members=room_members,
                 history=body.get("recentHistory") or [],
             )
+            candidates = [
+                item["agentId"]
+                for item in (message.get("dispatchTargets") or [])
+                if item.get("eventKind") == "room_event"
+            ]
+            if decision is None and len(candidates) >= 2:
+                # route() returns None only when routing itself errored, so this consumer can't
+                # see what the others decided: guessing could run beside Jev's real pick, and
+                # skipping could silence the agent Jev chose. Retry: the next delivery re-reads
+                # the shared decision (the queue's own backoff is the wait).
+                put_metric("messaging.jev.route", dimensions={"outcome": "error_retry"})
+                raise WorkRetry("Jev routing errored; retrying to read the shared decision")
             if decision is None or decision.get("fallback"):
-                # Jev down or undecided: every Listening candidate runs and the bridge gate decides.
-                put_metric("messaging.jev.route", dimensions={"outcome": "fallback"})
+                if len(candidates) >= 2:
+                    # Jev down or undecided with more than one candidate: dispatch exactly one
+                    # deterministic responder instead of every candidate independently (#2942).
+                    chosen = await _fallback_single(owner_id, candidates)
+                    if member["id"] != chosen:
+                        put_metric("messaging.jev.route", dimensions={"outcome": "skipped"})
+                        return
+                    put_metric("messaging.jev.route", dimensions={"outcome": "fallback_single"})
+                else:
+                    # Jev down or undecided, and only one candidate: it runs, the bridge gate decides.
+                    put_metric("messaging.jev.route", dimensions={"outcome": "fallback"})
             elif (
                 decision.get("who") == member["id"]
                 and float((decision.get("whoP") or {}).get(member["id"], 0)) >= JEV_MIN_P

@@ -64,15 +64,13 @@ async def test_a_free_tier_workspace_seeds_every_agent_on_mentions(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_paid_workspace_seeds_the_ceo_listening(monkeypatch):
+async def test_a_paid_workspace_seeds_every_agent_listening(monkeypatch):
     starter_ids, create_room = _seed_fixture(monkeypatch)
     _billing(monkeypatch, PAID)
 
     assert await messaging.ensure_default_room(OWNER, USER) is not None
 
-    modes = _seeded_modes(create_room, starter_ids)
-    assert modes["ceo"] == "active"
-    assert {mode for key, mode in modes.items() if key != "ceo"} == {"mentions"}
+    assert set(_seeded_modes(create_room, starter_ids).values()) == {"active"}
 
 
 def _upsert_fixture(monkeypatch, *, room_kind: str) -> AsyncMock:
@@ -243,85 +241,154 @@ async def test_a_free_tier_welcome_tells_the_user_to_mention_the_ceo_by_its_real
     assert f"@{handle} " in text
 
 
-def _promote_fixture(monkeypatch, member: dict | None, *, company=True):
-    starter_ids = {key: str(uuid.UUID(int=index + 20)) for index, key in enumerate(messaging._STARTER_KEYS)}
-    repo = MagicMock()
-    repo.resolve_owner_row = AsyncMock(
-        return_value=MagicMock(status="active", starter_agent_ids=starter_ids) if company else None
+ROOM_A = str(uuid.UUID(int=30))
+ROOM_B = str(uuid.UUID(int=31))
+AGENT_2 = str(uuid.UUID(int=2))
+
+
+def _room_meta(room_id: str, *, kind: str = "channel", owner: str = OWNER) -> dict:
+    return {"roomId": room_id, "ownerId": owner, "kind": kind, "revision": 1}
+
+
+def _agent_member(agent_id: str, mode: str | None, *, mode_set_by: str | None = None) -> dict:
+    member = {"kind": "agent", "id": agent_id, "role": "member", "listenMode": mode, "displayName": agent_id}
+    if mode_set_by is not None:
+        member["modeSetBy"] = mode_set_by
+    return member
+
+
+def _promote_listening_fixture(monkeypatch, *, room_ids: list[str], rooms: dict, members: dict):
+    monkeypatch.setattr(messaging.messaging_repo, "list_owner_room_ids", AsyncMock(return_value=room_ids))
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(side_effect=lambda rid: rooms.get(rid)))
+    monkeypatch.setattr(
+        messaging.messaging_repo, "list_members", AsyncMock(side_effect=lambda rid: members.get(rid, []))
     )
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", MagicMock(return_value=repo))
-    get_member = AsyncMock(return_value=member)
-    monkeypatch.setattr(messaging.messaging_repo, "get_member", get_member)
-    upsert = AsyncMock(return_value={"roomId": ROOM, "revision": 2})
+    # Each upsert returns a distinct, identifiable meta so a test can prove publish used the
+    # LAST flip in a room, not an earlier one -- i.e. publish really happened once per room.
+    upsert = AsyncMock(side_effect=lambda **kw: {"roomId": kw["room_id"], "lastFlipped": kw["member"]["id"]})
     monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert)
     publish = AsyncMock()
     monkeypatch.setattr(messaging, "_publish_room_metadata", publish)
-    return starter_ids, get_member, upsert, publish
+    return upsert, publish
 
 
-def _ceo_row(mode: str | None) -> dict:
-    return {
-        "kind": "agent",
-        "id": str(uuid.UUID(int=20)),
-        "role": "member",
-        "listenMode": mode,
-        "displayName": "CEO",
-        "mentionHandle": "ceo",
+@pytest.mark.asyncio
+async def test_promote_listening_flips_every_mentions_agent_across_every_room(monkeypatch):
+    rooms = {ROOM_A: _room_meta(ROOM_A), ROOM_B: _room_meta(ROOM_B)}
+    members = {
+        ROOM_A: [_agent_member(AGENT, "mentions"), _agent_member(AGENT_2, "mentions")],
+        ROOM_B: [_agent_member(AGENT, "mentions")],
     }
+    upsert, publish = _promote_listening_fixture(monkeypatch, room_ids=[ROOM_A, ROOM_B], rooms=rooms, members=members)
+
+    await messaging.promote_listening(OWNER)
+
+    flipped = {
+        (c.kwargs["room_id"], c.kwargs["member"]["id"], c.kwargs["member"]["listenMode"]) for c in upsert.call_args_list
+    }
+    assert flipped == {(ROOM_A, AGENT, "active"), (ROOM_A, AGENT_2, "active"), (ROOM_B, AGENT, "active")}
+    # One publish per CHANGED room, not one per flipped agent -- ROOM_A flips two agents but
+    # publishes once, carrying the meta from the last upsert in that room.
+    published = {call.args[0]["roomId"]: call.args[0]["lastFlipped"] for call in publish.call_args_list}
+    assert published == {ROOM_A: AGENT_2, ROOM_B: AGENT}
 
 
 @pytest.mark.asyncio
-async def test_upgrading_promotes_a_mentions_ceo_to_listening(monkeypatch):
-    starter_ids, get_member, upsert, publish = _promote_fixture(monkeypatch, _ceo_row("mentions"))
+async def test_promote_listening_skips_a_dm(monkeypatch):
+    rooms = {ROOM_A: _room_meta(ROOM_A, kind="dm")}
+    members = {ROOM_A: [_agent_member(AGENT, "mentions")]}
+    upsert, publish = _promote_listening_fixture(monkeypatch, room_ids=[ROOM_A], rooms=rooms, members=members)
 
-    await messaging.promote_default_room_ceo(OWNER)
-
-    get_member.assert_awaited_once_with(messaging.default_room_id(OWNER), "agent", starter_ids["ceo"])
-    kwargs = upsert.call_args.kwargs
-    assert kwargs["room_id"] == messaging.default_room_id(OWNER)
-    assert kwargs["owner_id"] == OWNER
-    assert kwargs["member"] == {**_ceo_row("mentions"), "listenMode": "active"}
-    publish.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["observe", "active", None])
-async def test_upgrading_never_overrides_any_other_ceo_mode(monkeypatch, mode):
-    _, _, upsert, publish = _promote_fixture(monkeypatch, _ceo_row(mode))
-
-    await messaging.promote_default_room_ceo(OWNER)
+    await messaging.promote_listening(OWNER)
 
     upsert.assert_not_awaited()
     publish.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_upgrading_is_a_noop_without_the_ceo_member(monkeypatch):
-    _, _, upsert, _ = _promote_fixture(monkeypatch, None)
+async def test_promote_listening_skips_a_room_owned_by_another_workspace(monkeypatch):
+    """A shared room can appear in this owner's room list without this owner's policy applying
+    to it -- its META still belongs to the workspace that created it."""
+    rooms = {ROOM_A: _room_meta(ROOM_A, owner="org_other")}
+    members = {ROOM_A: [_agent_member(AGENT, "mentions")]}
+    upsert, publish = _promote_listening_fixture(monkeypatch, room_ids=[ROOM_A], rooms=rooms, members=members)
 
-    await messaging.promote_default_room_ceo(OWNER)
-
-    upsert.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_upgrading_is_a_noop_without_a_paperclip_company(monkeypatch):
-    _, get_member, upsert, _ = _promote_fixture(monkeypatch, _ceo_row("mentions"), company=False)
-
-    await messaging.promote_default_room_ceo(OWNER)
-
-    get_member.assert_not_awaited()
-    upsert.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_upgrading_never_overrides_a_mentions_an_admin_chose(monkeypatch):
-    _, _, upsert, publish = _promote_fixture(monkeypatch, {**_ceo_row("mentions"), "modeSetBy": "user"})
-
-    await messaging.promote_default_room_ceo(OWNER)
+    await messaging.promote_listening(OWNER)
 
     upsert.assert_not_awaited()
     publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_promote_listening_skips_the_vendor_room(monkeypatch):
+    """The vendor room's own META is owned by THIS owner (#2644), so the base ownerId check
+    alone would not catch it -- it needs the explicit vendor-room check."""
+    monkeypatch.setattr(messaging.settings, "VENDOR_ORG_ID", "org_vendor")
+    vendor_room = messaging.messaging_repo.vendor_room_id(OWNER)
+    rooms = {vendor_room: _room_meta(vendor_room)}
+    members = {vendor_room: [_agent_member(AGENT, "mentions")]}
+    upsert, publish = _promote_listening_fixture(monkeypatch, room_ids=[vendor_room], rooms=rooms, members=members)
+
+    await messaging.promote_listening(OWNER)
+
+    upsert.assert_not_awaited()
+    publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_promote_listening_skips_a_room_with_a_foreign_member(monkeypatch):
+    rooms = {ROOM_A: _room_meta(ROOM_A)}
+    members = {
+        ROOM_A: [
+            _agent_member(AGENT, "mentions"),
+            {"kind": "human", "id": "user_2", "role": "member", "homeOwnerId": "org_other"},
+        ]
+    }
+    upsert, publish = _promote_listening_fixture(monkeypatch, room_ids=[ROOM_A], rooms=rooms, members=members)
+
+    await messaging.promote_listening(OWNER)
+
+    upsert.assert_not_awaited()
+    publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_promote_listening_never_overrides_observe_active_or_a_users_choice(monkeypatch):
+    rooms = {ROOM_A: _room_meta(ROOM_A)}
+    members = {
+        ROOM_A: [
+            _agent_member(AGENT, "observe"),
+            _agent_member(AGENT_2, "active"),
+            _agent_member(str(uuid.UUID(int=3)), "mentions", mode_set_by="user"),
+        ]
+    }
+    upsert, publish = _promote_listening_fixture(monkeypatch, room_ids=[ROOM_A], rooms=rooms, members=members)
+
+    await messaging.promote_listening(OWNER)
+
+    upsert.assert_not_awaited()
+    publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_promote_listening_is_best_effort_per_room(monkeypatch, caplog):
+    """A room that fails to promote is logged; the rest of the owner's rooms still promote."""
+    rooms = {ROOM_A: _room_meta(ROOM_A), ROOM_B: _room_meta(ROOM_B)}
+    members = {ROOM_A: [_agent_member(AGENT, "mentions")], ROOM_B: [_agent_member(AGENT, "mentions")]}
+    upsert, publish = _promote_listening_fixture(monkeypatch, room_ids=[ROOM_A, ROOM_B], rooms=rooms, members=members)
+
+    async def failing_get_room(room_id):
+        if room_id == ROOM_A:
+            raise RuntimeError("ddb down")
+        return rooms[room_id]
+
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(side_effect=failing_get_room))
+
+    await messaging.promote_listening(OWNER)
+
+    upsert.assert_awaited_once()
+    assert upsert.call_args.kwargs["room_id"] == ROOM_B
+    assert "listening promotion failed" in caplog.text
 
 
 @pytest.mark.asyncio

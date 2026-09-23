@@ -56,14 +56,17 @@ def store(monkeypatch):
         rows[(room_id, message_id)] = {"pending": True, "claimedAt": 0}
         return True
 
-    async def put(room_id, message_id, decision):
-        rows[(room_id, message_id)] = decision
+    async def finalize(room_id, message_id, decision, *, only_if_absent=False):
+        current = rows.get((room_id, message_id))
+        if current is None or (current.get("pending") and not only_if_absent):
+            rows[(room_id, message_id)] = decision
+        return rows[(room_id, message_id)]
 
     async def get(room_id, message_id):
         return rows.get((room_id, message_id))
 
     monkeypatch.setattr(jev.messaging_repo, "claim_decision", claim)
-    monkeypatch.setattr(jev.messaging_repo, "put_decision", put)
+    monkeypatch.setattr(jev.messaging_repo, "finalize_decision", finalize)
     monkeypatch.setattr(jev.messaging_repo, "get_decision", get)
     monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value="k"))
     monkeypatch.setattr(jev, "agent_card", AsyncMock(side_effect=lambda o, a, name, rec="": f"{name} card. {rec}"))
@@ -167,28 +170,56 @@ async def test_claim_loser_waits_for_the_winner_and_follows_it(monkeypatch, stor
 
 
 @pytest.mark.asyncio
-async def test_claim_loser_times_out_to_none(monkeypatch, store, metrics):
+async def test_claim_loser_times_out_to_a_stored_fallback(monkeypatch, store, metrics):
     monkeypatch.setattr(jev, "decide", AsyncMock(return_value=ANSWERS))
     monkeypatch.setattr(jev, "_LOSER_POLL_S", 0.01)
     monkeypatch.setattr(jev, "_LOSER_WAIT_S", 0.05)
     store[(ROOM, "m1")] = {"pending": True, "claimedAt": 0}
-    assert await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[]) is None
+    result = await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    assert result == {"fallback": True, "reason": "loser_timeout"} == store[(ROOM, "m1")]
     jev.decide.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_missing_key_disables_before_any_io(monkeypatch, store, metrics):
+async def test_missing_key_does_no_jev_work_and_stores_one_shared_fallback(monkeypatch, store, metrics):
+    # Seen on dev 2026-09-23: ONE backend task had no key (a failed read) and fell back to
+    # dispatch-all while another task routed -> two responders. A key-less consumer now joins
+    # the shared decision row instead of acting alone.
     monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value=None))
     claim = AsyncMock()
     monkeypatch.setattr(jev.messaging_repo, "claim_decision", claim)
     decide = AsyncMock()
     monkeypatch.setattr(jev, "decide", decide)
-    assert await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[]) is None
+    result = await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    assert result == {"fallback": True, "reason": "disabled"} == store[(ROOM, "m1")]
     claim.assert_not_awaited()
     decide.assert_not_awaited()
     jev.agent_card.assert_not_awaited()
-    assert store == {}
     assert ("messaging.jev.decision", {"dimensions": {"outcome": "disabled"}}) in metrics
+
+
+@pytest.mark.asyncio
+async def test_missing_key_follows_a_decision_another_task_already_made(monkeypatch, store, metrics):
+    monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value=None))
+    routed = {"who": "a1", "whoP": {"a1": 0.97}, "placement": "thread"}
+    store[(ROOM, "m1")] = routed
+    assert await jev.route(META, "a2", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[]) == routed
+
+
+@pytest.mark.asyncio
+async def test_missing_key_waits_for_a_pending_decision_like_a_loser(monkeypatch, store, metrics):
+    monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value=None))
+    monkeypatch.setattr(jev, "_LOSER_POLL_S", 0.01)
+    store[(ROOM, "m1")] = {"pending": True, "claimedAt": 0}
+
+    async def winner_finishes():
+        await asyncio.sleep(0.03)
+        store[(ROOM, "m1")] = {"who": "a1", "whoP": {"a1": 0.9}, "placement": "main"}
+
+    task = asyncio.create_task(winner_finishes())
+    result = await jev.route(META, "a2", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    await task
+    assert result["who"] == "a1"
 
 
 @pytest.mark.asyncio
@@ -218,8 +249,8 @@ async def test_jev_unavailable_stores_fallback(monkeypatch, store, metrics):
 @pytest.mark.asyncio
 async def test_winner_failure_stores_a_fallback_so_losers_stop_waiting(monkeypatch, store, metrics):
     monkeypatch.setattr(jev, "decide", AsyncMock(side_effect=RuntimeError("boom")))
-    assert await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[]) is None
-    assert store[(ROOM, "m1")]["fallback"] is True
+    result = await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    assert result["fallback"] is True and store[(ROOM, "m1")]["fallback"] is True
 
 
 @pytest.mark.asyncio
@@ -330,15 +361,52 @@ async def test_below_threshold_invokes_nobody(monkeypatch):
     assert posted == [] and created == [] and dims == [{"outcome": "skipped"}]
 
 
+ONE = {**MESSAGE, "dispatchTargets": [{"agentId": "a1", "eventKind": "room_event"}]}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("decision", [None, {"fallback": True}])
-async def test_fallback_dispatches_every_candidate_without_routing(monkeypatch, decision):
+async def test_fallback_with_one_candidate_still_dispatches_it(monkeypatch, decision):
+    """Jev down/undecided with exactly one Listening candidate: unchanged, it just runs."""
+    posted, created, dims = await _dispatch(
+        monkeypatch, "room_event", agent="a1", message=ONE, route=AsyncMock(return_value=decision)
+    )
+    assert len(posted) == 1 and len(created) == 1 and dims == [{"outcome": "fallback"}]
+    assert "routing" not in posted[0] and "replyThreadRootId" not in posted[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", [{"fallback": True}])
+async def test_fallback_with_two_candidates_dispatches_exactly_one(monkeypatch, decision):
+    """Jev down/undecided with >=2 Listening candidates (spec #2942): dispatch exactly one
+    deterministic responder -- the CEO if it's a candidate, else the lowest agent id -- instead
+    of every candidate running independently."""
+    monkeypatch.setattr(work, "_fallback_ceo_id", AsyncMock(return_value=None))
+    outcomes = {}
     for agent in ("a1", "a2"):
-        posted, created, dims = await _dispatch(
+        outcomes[agent] = await _dispatch(
             monkeypatch, "room_event", agent=agent, route=AsyncMock(return_value=decision)
         )
-        assert len(posted) == 1 and len(created) == 1 and dims == [{"outcome": "fallback"}]
-        assert "routing" not in posted[0] and "replyThreadRootId" not in posted[0]
+    posted_a1, created_a1, dims_a1 = outcomes["a1"]
+    assert len(posted_a1) == 1 and len(created_a1) == 1 and dims_a1 == [{"outcome": "fallback_single"}]
+    assert "routing" not in posted_a1[0] and "replyThreadRootId" not in posted_a1[0]
+    posted_a2, created_a2, dims_a2 = outcomes["a2"]
+    assert posted_a2 == [] and created_a2 == [] and dims_a2 == [{"outcome": "skipped"}]
+
+
+@pytest.mark.asyncio
+async def test_fallback_dispatches_the_ceo_when_it_is_a_candidate(monkeypatch):
+    monkeypatch.setattr(work, "_fallback_ceo_id", AsyncMock(return_value="a2"))
+    outcomes = {}
+    for agent in ("a1", "a2", "a3"):
+        outcomes[agent] = await _dispatch(
+            monkeypatch, "room_event", agent=agent, message=THREE, route=AsyncMock(return_value={"fallback": True})
+        )
+    posted_a2, created_a2, dims_a2 = outcomes["a2"]
+    assert len(posted_a2) == 1 and len(created_a2) == 1 and dims_a2 == [{"outcome": "fallback_single"}]
+    for other in ("a1", "a3"):
+        posted, created, dims = outcomes[other]
+        assert posted == [] and created == [] and dims == [{"outcome": "skipped"}]
 
 
 @pytest.mark.asyncio
@@ -346,7 +414,7 @@ async def test_real_route_failing_still_dispatches(monkeypatch):
     monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value="k"))
     monkeypatch.setattr(jev.messaging_repo, "claim_decision", AsyncMock(side_effect=RuntimeError("ddb down")))
     monkeypatch.setattr(jev, "put_metric", lambda *a, **k: None)
-    posted, created, dims = await _dispatch(monkeypatch, "room_event")
+    posted, created, dims = await _dispatch(monkeypatch, "room_event", message=ONE)
     assert len(posted) == 1 and len(created) == 1 and dims == [{"outcome": "fallback"}]
 
 
@@ -448,3 +516,51 @@ async def test_ingress_history_skips_the_thread_read_when_the_root_is_in_the_win
     )
     list_thread.assert_not_awaited()
     assert [m["messageSeq"] for m in body["recentHistory"]] == list(range(1, 10))
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_loser_and_a_late_winner_agree_on_one_decision(monkeypatch, store, metrics):
+    """Split-brain guard: the loser gives up and finalizes a fallback; the winner's real decision
+    arrives later, loses the conditional write, and follows the stored fallback too. So both
+    dispatch the SAME deterministic fallback agent, never two different ones."""
+    monkeypatch.setattr(jev, "_LOSER_WAIT_S", 0.0)
+    store[(META["roomId"], MESSAGE["messageId"])] = {"pending": True, "claimedAt": 0}
+    loser = await jev.route(META, "a2", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    assert loser.get("fallback") is True and store[(META["roomId"], MESSAGE["messageId"])]["fallback"] is True
+    final = await jev.messaging_repo.finalize_decision(META["roomId"], MESSAGE["messageId"], {"who": "a1"})
+    assert final.get("fallback") is True
+
+
+@pytest.mark.asyncio
+async def test_a_routing_error_with_several_candidates_retries_instead_of_guessing(monkeypatch):
+    """route() returns None only when routing itself errored (e.g. DynamoDB), so this consumer
+    cannot see the shared decision: guessing could run beside Jev's pick, skipping could
+    silence the chosen agent. It retries the delivery, which re-reads the decision."""
+    monkeypatch.setattr(work, "_fallback_ceo_id", AsyncMock(return_value="a2"))
+    for agent in ("a1", "a2", "a3"):
+        with pytest.raises(work.WorkRetry):
+            await _dispatch(monkeypatch, "room_event", agent=agent, message=THREE, route=AsyncMock(return_value=None))
+
+
+@pytest.mark.asyncio
+async def test_a_keyless_task_never_overwrites_a_live_claim(monkeypatch, store, metrics):
+    """Review finding: the key-less task read no row, a keyed task then claimed it, and the
+    key-less fallback overwrote the live claim (Jev silently off). It now writes only into an
+    ABSENT row, else waits for the claimant like any loser."""
+    monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value=None))
+    monkeypatch.setattr(jev, "_LOSER_POLL_S", 0.01)
+    real_get = jev.messaging_repo.get_decision
+    calls = {"n": 0}
+
+    async def get_then_claimed(room_id, message_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            store[(room_id, message_id)] = {"pending": True, "claimedAt": 0}  # keyed task claims now
+            return None
+        if calls["n"] == 3:
+            store[(room_id, message_id)] = {"who": "a1", "whoP": {"a1": 0.9}, "placement": "thread"}
+        return await real_get(room_id, message_id)
+
+    monkeypatch.setattr(jev.messaging_repo, "get_decision", get_then_claimed)
+    result = await jev.route(META, "a2", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    assert result["who"] == "a1"

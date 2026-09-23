@@ -2003,15 +2003,41 @@ async def claim_decision(room_id: str, message_id: str) -> bool:
         raise
 
 
-async def put_decision(room_id: str, message_id: str, decision: dict) -> None:
-    """The claim winner overwrites its own placeholder with the result."""
-    item = {
-        "pk": room_pk(room_id),
-        "sk": decision_sk(message_id),
-        "decision": _ddb_safe(decision),
-        "expiresAt": _expires_at(),
-    }
-    await run_in_thread(_table().put_item, Item=item)
+async def finalize_decision(room_id: str, message_id: str, decision: dict, *, only_if_absent: bool = False) -> dict:
+    """Write the final decision only while the row is still pending (or gone), and return
+    whatever final decision is stored. First final write wins, so a late claim winner and a
+    loser that timed out and fell back always act on the SAME decision -- never two responders."""
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={
+                "pk": room_pk(room_id),
+                "sk": decision_sk(message_id),
+                "decision": _ddb_safe(decision),
+                "expiresAt": _expires_at(),
+            },
+            # only_if_absent: a caller that never claimed (no key) must not overwrite a live claim.
+            **(
+                {"ConditionExpression": "attribute_not_exists(sk)"}
+                if only_if_absent
+                else {
+                    "ConditionExpression": "attribute_not_exists(sk) OR #d.#p = :t",
+                    "ExpressionAttributeNames": {"#d": "decision", "#p": "pending"},
+                    "ExpressionAttributeValues": {":t": True},
+                }
+            ),
+        )
+        return decision
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    stored = await get_decision(room_id, message_id)
+    if stored is None:
+        # Unreachable unless something deletes DECISION rows (a consistent read follows the
+        # failed conditional write); loud, because returning our own value could split-brain.
+        logger.warning("finalize_decision: row vanished after a conditional failure room=%s", room_id)
+        return decision
+    return stored
 
 
 async def get_decision(room_id: str, message_id: str) -> dict | None:

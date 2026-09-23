@@ -254,77 +254,30 @@ def _grace_period_expiry(data) -> int | None:
     return int(expires)
 
 
-async def _convert_trial_if_needed(owner_id: str, *, was_trial: bool, subscription: AppleSubscription) -> None:
-    """Finish the job a purchase actually started, for an owner coming off the
-    free tier.
+async def _reconcile_active_subscription(owner_id: str, *, subscription: AppleSubscription) -> None:
+    """An active Apple subscription: make the workspace match it, on EVERY such notification.
 
-    Recording the Apple subscription is NOT the whole transition, and stopping
-    there left the customer paid-up and still blocked:
+    Keyed on the state, never on the trial_local->paid edge: ``set_apple_subscription`` has
+    already flipped the row to active, so a redelivery (after a failed dispatch below) sees no
+    edge -- and it must still dispatch. The reconcile is idempotent, so a renewal costs one
+    converging execution.
 
-    1. A ``trial_local`` row deliberately carries no ``provider_choice`` — the
-       free tier resolves its provider as a config-path mode at provision time.
-       The moment the derived status leaves ``trial_local``, provision_gate's
-       trial short-circuit stops applying and the very next check is
-       ``provider_choice is None`` → ``provider_required``. Mobile renders that
-       as an outbound "manage on the web" handoff, so the paywall's own success
-       path hands the buyer a dead end seconds after taking their money.
-    2. The RUNNING container is still the locked-down trial box. Without the
-       cold reprovision, a paying customer keeps the trial's config and its
-       single capped inference profile.
+    The provider write is still needed: a ``trial_local`` row deliberately carries no
+    ``provider_choice``, and once the status leaves ``trial_local`` the provision gate answers
+    ``provider_required`` for a None provider (mobile renders that as a dead-end web handoff).
+    Bedrock is what the trial ran on and asks the buyer for nothing; it is changeable in-app.
+    Decided on a strongly consistent re-read, never overwriting a provider already chosen.
 
-    Bedrock is the provider chosen here because it is the one the trial was
-    already running on, and because it needs nothing from the customer — the
-    App Store sheet has no provider picker and adding one would put a second
-    decision in front of a purchase. It is changeable in-app afterwards.
-
-    The provider half is keyed on the MISSING STATE (an active subscription
-    with no provider) rather than on the trial_local→paid EDGE. An edge fires
-    once: the first version keyed on it, so a transient failure writing the
-    provider was permanent — the row had already left trial_local, every later
-    link and notification saw "active", skipped the conversion, and left the
-    customer stuck behind provider_required forever. Keyed on the state, any
-    subsequent link or renewal notification retries it until it sticks.
-
-    The REPROVISION half additionally fires on ``was_trial`` even when a
-    provider is already stored, because the two can genuinely diverge:
-    ``/trial-checkout`` persists ``provider_choice`` synchronously BEFORE the
-    Stripe session is created, so every owner who started a web checkout and
-    abandoned it is a trial_local row WITH a provider. Skipping them left a
-    paying customer active on the locked-down trial container — and nothing
-    self-heals it, since the idle reaper only scales down trial_local rows, so
-    the box never wakes through the config-rewriting branch again.
-
-    The provider decision is made against a strongly consistent re-read, not
-    the caller's snapshot. The notification path's row comes from an eventually
-    consistent GSI, and a stale miss there must not overwrite a provider the
-    owner picked moments ago with the Bedrock default. ``was_trial`` stays with
-    the caller because it is an observation of the PRE-write row — after
-    ``set_apple_subscription`` the status has already left trial_local.
-    """
+    Raises when the provider write or the dispatch fails: ``apply_notification`` rolls back its
+    dedup claim and the route 500s, so Apple redelivers and this runs again."""
     if subscription.status != "active":
         return
-
     row = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     if not row:
         return
-    needs_provider = not row.get("provider_choice")
-    if not (needs_provider or was_trial):
-        return
+    if not row.get("provider_choice"):
+        await billing_repo.set_provider_choice(owner_id, provider_choice="bedrock_claude", byo_provider=None)
 
-    if needs_provider:
-        try:
-            await billing_repo.set_provider_choice(owner_id, provider_choice="bedrock_claude", byo_provider=None)
-        except Exception:
-            # Do NOT dispatch the reprovision without a provider — it would roll
-            # the container to a shape that still cannot resolve one. Returning
-            # leaves provider_choice unset, which is exactly the condition this
-            # function keys on, so the next link or notification tries again.
-            logger.exception("apple_iap.trial_conversion_provider_failed owner_id=%s", owner_id)
-            return
-
-    # Durable and idempotent: a link call and a SUBSCRIBED notification for the same purchase
-    # may both land here, and the second reconcile converges on the first. A dispatch that
-    # could not start raises, so the notification 500s and Apple redelivers it.
     from core.services.provision_dispatch import dispatch_reconcile
 
     if not await dispatch_reconcile(owner_id):
@@ -742,15 +695,8 @@ async def _apply_verified_notification(
         )
         return None
     if subscription.status == "active":
-        # The SUBSCRIBED notification can beat the client's link call (or the
-        # app can die before making it), so the conversion has to be reachable
-        # from here too. The reconcile it dispatches is idempotent, so whichever
-        # path arrives first converts and the other converges on it.
-        await _convert_trial_if_needed(
-            owner_id,
-            was_trial=row.get("subscription_status") == "trial_local",
-            subscription=subscription,
-        )
+        # Every active notification reconciles, redeliveries included (see the helper).
+        await _reconcile_active_subscription(owner_id, subscription=subscription)
 
     if subscription.status != "canceled":
         # Apple says this subscription is live again — a resubscribe reuses the

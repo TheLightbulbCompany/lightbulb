@@ -69,9 +69,9 @@ export default async function ActionsPage({
       <Card title="Danger zone">
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">
-            Permanently deletes every resource for this owner — container,
-            EFS, Paperclip, Bedrock credits, billing, and the Clerk user.
-            Cannot be undone.
+            Permanently deletes every resource for this owner — runtime and
+            S3 profiles, Paperclip, Bedrock credits, billing, and the Clerk
+            user. Cannot be undone.
           </p>
           <WipeAccountDialog userId={id} email={email} />
         </div>

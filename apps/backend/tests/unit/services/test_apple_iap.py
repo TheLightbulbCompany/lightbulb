@@ -57,7 +57,7 @@ def _no_trial_conversion(monkeypatch):
     notification converts an owner off the free tier) and may dispatch a
     container reprovision. Both are stubbed by default so the mapping tests stay
     hermetic; the conversion tests say the interesting thing explicitly."""
-    # No row -> before_status is None -> _convert_trial_if_needed returns
+    # No row -> _reconcile_active_subscription returns
     # immediately. The function itself is deliberately NOT replaced: stubbing it
     # would mean the conversion tests below could only ever assert against a
     # mock of the thing they exist to exercise.
@@ -1033,10 +1033,9 @@ async def test_buying_off_the_free_tier_persists_a_provider_and_reprovisions(mon
 
 
 @pytest.mark.asyncio
-async def test_an_owner_who_already_had_a_plan_is_not_reconverted(monkeypatch):
-    """Only the free-tier transition converts. Re-running it for an existing
-    paid owner would overwrite a provider they chose and cold-roll a container
-    that is already correct."""
+async def test_an_owner_who_already_had_a_plan_keeps_it_and_still_reconciles(monkeypatch):
+    """A provider the owner chose is never overwritten; the reconcile still runs on every active
+    notification (idempotent -- a runtime already on the paid shape reconciles to "current")."""
     monkeypatch.setattr(
         apple_iap.billing_repo,
         "get_by_owner_id",
@@ -1046,6 +1045,8 @@ async def test_an_owner_who_already_had_a_plan_is_not_reconverted(monkeypatch):
     )
     provider = AsyncMock()
     monkeypatch.setattr(apple_iap.billing_repo, "set_provider_choice", provider)
+    dispatch = AsyncMock(return_value=True)
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_reconcile", dispatch)
 
     verifier = SimpleNamespace(
         verify_and_decode_notification=lambda _: _notification(notificationType="SUBSCRIBED"),
@@ -1063,6 +1064,7 @@ async def test_an_owner_who_already_had_a_plan_is_not_reconverted(monkeypatch):
         await apple_iap.apply_notification("signed")
 
     provider.assert_not_awaited()
+    dispatch.assert_awaited_once_with("user_1")
 
 
 @pytest.mark.asyncio
@@ -1108,10 +1110,8 @@ async def test_the_subscribed_notification_can_convert_when_it_beats_the_link(mo
 
 @pytest.mark.asyncio
 async def test_a_failed_provider_write_is_retried_by_the_next_notification(monkeypatch):
-    """Keyed on the missing STATE, not the trial→paid EDGE. An edge fires once:
-    a transient failure writing the provider used to be permanent, because the
-    row had already left trial_local and every later call saw "active", skipped
-    the conversion, and left the customer stuck behind provider_required."""
+    """Keyed on the missing STATE, not the trial→paid EDGE: the row has already left
+    trial_local, so only a state-keyed check retries a failed provider write."""
     attempts: list[str] = []
 
     async def _flaky(owner_id, **kwargs):
@@ -1150,8 +1150,9 @@ async def test_a_failed_provider_write_is_retried_by_the_next_notification(monke
         ),
         patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
     ):
-        # First notification: the provider write fails.
-        await apple_iap.apply_notification("signed")
+        # First notification: the provider write fails, which raises so Apple redelivers.
+        with pytest.raises(RuntimeError, match="throttled"):
+            await apple_iap.apply_notification("signed")
         assert started == [], "reprovision dispatched without a provider to resolve"
 
         # Second: it succeeds, and the conversion completes.
@@ -1200,8 +1201,6 @@ async def test_a_trial_owner_with_a_pre_picked_provider_still_gets_reprovisioned
         patch.object(
             apple_iap.billing_repo,
             "get_by_apple_original_transaction_id",
-            # `was_trial` on the notification path is read off THIS row, and it
-            # is what carries the reprovision when a provider is already stored.
             AsyncMock(return_value={"owner_id": "user_1", "subscription_status": "trial_local"}),
         ),
         patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
@@ -1215,16 +1214,40 @@ async def test_a_trial_owner_with_a_pre_picked_provider_still_gets_reprovisioned
 
 
 @pytest.mark.asyncio
-async def test_a_conversion_dispatch_that_cannot_start_raises_so_apple_redelivers(monkeypatch):
-    monkeypatch.setattr(
-        apple_iap.billing_repo,
-        "get_by_owner_id",
-        AsyncMock(
-            return_value={"owner_id": "org_1", "subscription_status": "active", "provider_choice": "bedrock_claude"}
-        ),
-    )
-    monkeypatch.setattr("core.services.provision_dispatch.dispatch_reconcile", AsyncMock(return_value=False))
-    subscription = SimpleNamespace(status="active", original_transaction_id="2000000000000001")
+async def test_a_redelivery_after_a_failed_dispatch_dispatches_again(monkeypatch):
+    """The REAL redelivery path. Attempt 1 flips the row to active, persists the provider, then
+    its dispatch cannot start and it raises. The redelivery sees a row that is already active
+    WITH a provider -- no trial edge left -- and must still dispatch."""
+    row = {"owner_id": "org_1", "subscription_status": "trial_local"}
 
-    with pytest.raises(RuntimeError, match="reconcile dispatch failed"):
-        await apple_iap._convert_trial_if_needed("org_1", was_trial=True, subscription=subscription)
+    async def _set_apple(owner_id, **kwargs):
+        row["subscription_status"] = "active"
+        return dict(row)
+
+    async def _set_provider(owner_id, **kwargs):
+        row["provider_choice"] = kwargs["provider_choice"]
+
+    monkeypatch.setattr(apple_iap.billing_repo, "get_by_owner_id", AsyncMock(side_effect=lambda *_a, **_k: dict(row)))
+    monkeypatch.setattr(apple_iap.billing_repo, "set_provider_choice", _set_provider)
+    monkeypatch.setattr(
+        apple_iap.billing_repo, "get_by_apple_original_transaction_id", AsyncMock(side_effect=lambda _t: dict(row))
+    )
+    monkeypatch.setattr(apple_iap.billing_repo, "set_apple_subscription", _set_apple)
+    dispatch = AsyncMock(side_effect=[False, True])
+    monkeypatch.setattr("core.services.provision_dispatch.dispatch_reconcile", dispatch)
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    notification = _notification(notificationType="SUBSCRIBED")
+
+    with patch.object(apple_iap, "_verifier", return_value=verifier):
+        with pytest.raises(RuntimeError, match="reconcile dispatch failed"):
+            await apple_iap._apply_verified_notification(
+                notification=notification, notification_type="SUBSCRIBED", signed_date=1_700_000_000_000
+            )
+        assert row == {"owner_id": "org_1", "subscription_status": "active", "provider_choice": "bedrock_claude"}
+
+        result = await apple_iap._apply_verified_notification(
+            notification=notification, notification_type="SUBSCRIBED", signed_date=1_700_000_000_000
+        )
+
+    assert result == ("org_1", "active")
+    assert dispatch.await_count == 2

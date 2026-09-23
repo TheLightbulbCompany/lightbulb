@@ -307,3 +307,24 @@ def test_a_loser_outwaits_the_winners_whole_budget_plus_its_write():
     # Equal timeouts let a slow winner's decision write land after the loser gave up and fell
     # back to dispatch-all: two responders for one message.
     assert jev._LOSER_WAIT_S >= jev._DECIDE_BUDGET_S + 3
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_key_reads_all_get_the_key_from_one_read(monkeypatch):
+    # Dev 2026-09-23: two consumers on one task asked at once; the second saw the timestamp the
+    # first had already stamped, no key yet, and reported Jev "disabled" 170 ms later.
+    import asyncio as _asyncio
+
+    reads = []
+
+    def slow_read(name):
+        reads.append(name)
+        import time as _t
+
+        _t.sleep(0.05)
+        return KEY
+
+    monkeypatch.setattr(jev, "_read_secret", slow_read)
+    keys = await _asyncio.gather(*(jev._gateway_key() for _ in range(5)))
+    assert keys == [KEY] * 5
+    assert len(reads) == 1

@@ -34,6 +34,7 @@ _URL = "https://ai-gateway.vercel.sh/v1/evaluate"
 _TIMEOUT_S = 3.0
 #: A failed key read retries quickly: one key-less task in a fleet splits routing decisions.
 _KEY_RETRY_S = 30
+_key_lock = asyncio.Lock()
 _KEY_TTL_S = 3600
 _CARD_TTL_S = 600
 _QUIET_S = 600
@@ -101,16 +102,19 @@ async def _gateway_key() -> str | None:
     """The gateway key, re-read hourly (rotation needs no restart); a failed/missing read is
     retried after 5 min."""
     global _key, _key_checked_at
-    if _key_checked_at and time.monotonic() - _key_checked_at < (_KEY_TTL_S if _key else _KEY_RETRY_S):
+    # One read at a time: without the lock a second concurrent caller saw the timestamp the
+    # first had just stamped, no key yet, and reported Jev "disabled" (dev 2026-09-23).
+    async with _key_lock:
+        if _key_checked_at and time.monotonic() - _key_checked_at < (_KEY_TTL_S if _key else _KEY_RETRY_S):
+            return _key
+        name = f"lightbulb/{settings.ENVIRONMENT or 'dev'}/vercel-ai-gateway"
+        try:
+            _key = await _off(_read_secret, name)
+        except Exception as exc:  # noqa: BLE001 -- missing secret == feature off
+            logger.warning("Jev key unreadable: %s (%s)", name, type(exc).__name__)
+            _key = None
+        _key_checked_at = time.monotonic()
         return _key
-    _key_checked_at = time.monotonic()
-    name = f"lightbulb/{settings.ENVIRONMENT or 'dev'}/vercel-ai-gateway"
-    try:
-        _key = await _off(_read_secret, name)
-    except Exception as exc:  # noqa: BLE001 -- missing secret == feature off
-        logger.warning("Jev key unreadable: %s (%s)", name, type(exc).__name__)
-        _key = None
-    return _key
 
 
 async def decide(state: dict, questions: dict) -> dict | None:

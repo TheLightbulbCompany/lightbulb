@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useMemo, useState, useSyncExternalStore, type ReactElement } from "react";
-import { Check, Cpu, Users, Pencil, Plus, X } from "lucide-react";
+import { Check, Cpu, FileText, Users, Pencil, Plus, X } from "lucide-react";
+import useSWR from "swr";
 import { useOrganization } from "@clerk/nextjs";
 import Link from "next/link";
 
@@ -14,6 +15,8 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { buildSetupSteps, isBandComplete, type SetupStep, type SetupStepId } from "@lightbulb/shared";
 import { openPanel } from "@/components/workspace/workspaceController";
 import { ConnectorIcon } from "./ConnectorIcons";
@@ -22,6 +25,12 @@ import type { JoinLinkStatus } from "@/components/settings/WorkspaceMembersSecti
 
 /** `POST /orgs/{id}/join-link` — the freshly minted link. */
 type CreatedJoinLink = { join_url: string };
+
+/** `GET /company/context` — whether the CEO's Hermes memory holds pasted context. */
+type ContextStatus = { imported: boolean };
+
+/** Mirrors the backend's `MAX_CONTEXT_CHARS`; longer pastes are refused, not truncated. */
+const MAX_CONTEXT_CHARS = 200_000;
 
 // =============================================================================
 // The onboarding setup band — Slack's "Get started by setting up the channel
@@ -94,6 +103,14 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   const storedDismissal = useSyncExternalStore(subscribe, readScoped, () => false);
   const [dismissedNow, setDismissedNow] = useState(false);
 
+  // Derived from the CEO's profile (a marker the paste writes), not stored per
+  // viewer. Keyed by workspace so switching orgs re-reads it.
+  const { data: context, error: contextError, isLoading: contextLoading, mutate: setContext } = useSWR(
+    ownerId ? ["company-context", ownerId] : null,
+    () => api.get("/company/context") as Promise<ContextStatus>,
+  );
+  const [sharing, setSharing] = useState(false);
+
   const [naming, setNaming] = useState(false);
   const [invite, setInvite] = useState<InviteState>("idle");
   const [connecting, setConnecting] = useState<SetupStepId | null>(null);
@@ -105,8 +122,12 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   );
   const workspaceMembers = organization?.membersCount ?? 0;
   const steps = useMemo(
-    () => buildSetupSteps({ participants, connections, agentNames, workspaceMembers, billing }),
-    [participants, connections, agentNames, workspaceMembers, billing],
+    () => buildSetupSteps({
+      participants, connections, agentNames, workspaceMembers, billing,
+      // A failed read drops the card rather than showing one that lies.
+      contextImported: contextError ? null : context?.imported,
+    }),
+    [participants, connections, agentNames, workspaceMembers, billing, context, contextError],
   );
 
   const isAdmin = membership?.role === "org:admin";
@@ -135,6 +156,7 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   const onStep = useCallback((step: SetupStep) => {
     if (step.id === "invite") return void copyJoinLink();
     if (step.id === "name-agents") return setNaming((open) => !open);
+    if (step.id === "context") return setSharing(true);
     if (step.id === "starter-model") return navigateShell(PROVIDER_PICKER);
     // startOAuth rethrows on purpose (403, a failed browser open), and on
     // desktop it stays pending until the grant lands — so the card shows both.
@@ -151,12 +173,13 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   // the whole band on every cold load and then have it vanish.
   // A failed catalog read would derive every connector as outstanding.
   // Billing only has to settle, not succeed: a failed read just omits its card.
-  if (connectionsLoading || connectionsError || rosterLoading || billingLoading || !ownerId) return null;
+  if (connectionsLoading || connectionsError || rosterLoading || billingLoading || contextLoading || !ownerId) return null;
   if (storedDismissal || dismissedNow || isBandComplete(steps)) return null;
 
   const starter = steps.find((step) => step.id === "starter-model");
-  const connectors = steps.filter((step) => step.id !== "invite" && step.id !== "name-agents" && step !== starter);
-  const actions = steps.filter((step) => step.id === "invite" || step.id === "name-agents");
+  const isAction = (step: SetupStep) => step.id === "invite" || step.id === "name-agents" || step.id === "context";
+  const connectors = steps.filter((step) => !isAction(step) && step !== starter);
+  const actions = steps.filter(isAction);
 
   return (
     <section className="onboarding-band" aria-label="Set up your workspace">
@@ -220,7 +243,7 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
             step={step}
             isAdmin={isAdmin}
             wide
-            icon={step.id === "invite" ? <Users size={16} aria-hidden="true" /> : <Pencil size={16} aria-hidden="true" />}
+            icon={ACTION_ICONS[step.id]}
             status={step.id === "invite" ? inviteStatus(invite) : undefined}
             onSelect={onStep}
           />
@@ -234,6 +257,16 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
         </p>
       )}
 
+      <ContextDialog
+        open={sharing}
+        // Flip the card only once the dialog closes: marking it done while the
+        // success state is on screen could retire the whole band under it.
+        onClose={(saved) => {
+          setSharing(false);
+          if (saved) void setContext({ imported: true }, { revalidate: false });
+        }}
+      />
+
       {naming && (
         <AgentNames
           participants={participants}
@@ -245,6 +278,12 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
     </section>
   );
 }
+
+const ACTION_ICONS: Partial<Record<SetupStepId, ReactElement>> = {
+  invite: <Users size={16} aria-hidden="true" />,
+  "name-agents": <Pencil size={16} aria-hidden="true" />,
+  context: <FileText size={16} aria-hidden="true" />,
+};
 
 type InviteState = "idle" | "working" | "copied" | "failed" | "legacy";
 
@@ -368,5 +407,89 @@ function AgentNames({ participants, agentNames, onRefresh, onDone }: {
         {saving ? "Saving…" : "Save names"}
       </Button>
     </div>
+  );
+}
+
+/**
+ * Paste (or load a .md/.txt) once; `POST /company/context` merges it into the
+ * CEO's Hermes `memories/USER.md`. The file never uploads — it only fills the
+ * textarea, so what is saved is exactly what the owner can see.
+ */
+function ContextDialog({ open, onClose }: { open: boolean; onClose: (saved: boolean) => void }): ReactElement {
+  const api = useApi();
+  const [text, setText] = useState("");
+  const [state, setState] = useState<"idle" | "saving" | "saved">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const close = () => {
+    onClose(state === "saved");
+    setText("");
+    setState("idle");
+    setError(null);
+  };
+
+  const loadFile = async (file: File | undefined) => {
+    if (!file) return;
+    const body = await file.text();
+    if (body.length > MAX_CONTEXT_CHARS) return setError("That file is too long. Paste the parts that matter most.");
+    setError(null);
+    setText(body);
+  };
+
+  const save = async () => {
+    setState("saving");
+    setError(null);
+    try {
+      await api.post("/company/context", { text });
+      setState("saved");
+    } catch {
+      setState("idle");
+      setError("Couldn’t save that. Try again.");
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!next) close(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Share your context</DialogTitle>
+          <DialogDescription>
+            {state === "saved"
+              ? "Your CEO has it — it’ll use this from now on."
+              : "Paste what you’ve already told Claude or ChatGPT about your business. It goes to your CEO’s memory, which you can edit later in Files."}
+          </DialogDescription>
+        </DialogHeader>
+        {state !== "saved" && (
+          <>
+            <Textarea
+              aria-label="Your context"
+              placeholder="Paste what you’ve already told Claude or ChatGPT about your business"
+              value={text}
+              maxLength={MAX_CONTEXT_CHARS}
+              rows={10}
+              onChange={(event) => setText(event.target.value)}
+            />
+            <label className="onboarding-context-file">
+              Or load a file
+              <input
+                type="file"
+                accept=".md,.txt,text/markdown,text/plain"
+                onChange={(event) => void loadFile(event.target.files?.[0])}
+              />
+            </label>
+            {error && <p className="onboarding-names-error" role="alert">{error}</p>}
+          </>
+        )}
+        <DialogFooter>
+          {state === "saved" ? (
+            <Button type="button" onClick={close}>Done</Button>
+          ) : (
+            <Button type="button" onClick={() => void save()} disabled={state === "saving" || !text.trim()}>
+              {state === "saving" ? "Saving…" : "Save"}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

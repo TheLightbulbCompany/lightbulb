@@ -23,7 +23,7 @@ SLUG = "-Users-me-repo"
 CID = f"Users-me-repo-{hashlib.sha256(SLUG.encode()).hexdigest()[:10]}"
 
 CLAUDE_HOME = {
-    ".claude/CLAUDE.md": b"# me\n",
+    ".claude/CLAUDE.md": b"# me\n\n- prefers tabs\n",
     f".claude/projects/{SLUG}/memory/MEMORY.md": b"- [a](a.md)\n",
     f".claude/projects/{SLUG}/memory/fact.md": b"a fact\n",
     ".claude/skills/graphify/SKILL.md": b"---\nname: graphify\n---\n",
@@ -141,21 +141,9 @@ def test_apply_copies_and_appends(tmp_path: Path):
     results = cci.apply_to_workspace(_staged(tmp_path), ws, None, None)
     assert (ws / "memory/imports/claude-code/projA-1234567890/fact.md").read_text() == "fact\n"
     assert (ws / "skills/graphify/SKILL.md").exists()
-    user = (ws / "USER.md").read_text()
-    assert "claude-code-import:begin" in user and "global memory" in user
+    # CLAUDE.md is the caller's to merge (context_import); nothing here writes USER.md.
+    assert not (ws / "USER.md").exists()
     assert {r["status"] for r in results} == {"applied"}
-
-
-def test_apply_user_memory_idempotent(tmp_path: Path):
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    (ws / "USER.md").write_text("existing prefs\n")
-    staging = _staged(tmp_path)
-    cci.apply_to_workspace(staging, ws, [], [])  # user memory always applies when staged
-    cci.apply_to_workspace(staging, ws, [], [])
-    user = (ws / "USER.md").read_text()
-    assert user.startswith("existing prefs")
-    assert user.count("claude-code-import:begin") == 1
 
 
 def test_apply_memory_reimport_overwrites(tmp_path: Path):
@@ -184,4 +172,4 @@ def test_apply_selection_filters(tmp_path: Path):
     results = cci.apply_to_workspace(_staged(tmp_path), ws, [], [])
     assert not (ws / "memory").exists()
     assert not (ws / "skills").exists()
-    assert any(r["item"] == "user-memory" for r in results)
+    assert results == []

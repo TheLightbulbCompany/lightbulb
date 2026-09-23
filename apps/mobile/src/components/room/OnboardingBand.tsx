@@ -52,6 +52,8 @@ const STEP_SYMBOL: Record<SetupStepId, SFSymbol> = {
   notion: "link",
   invite: "person.2",
   "name-agents": "pencil",
+  // Never rendered: mobile passes no `contextImported`, so buildSetupSteps omits the step.
+  context: "doc.text",
 };
 
 export function OnboardingBand({ participants }: { participants: readonly SetupParticipant[] }): ReactElement | null {

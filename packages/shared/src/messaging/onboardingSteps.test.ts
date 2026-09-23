@@ -170,3 +170,23 @@ describe("starter-model step", () => {
     expect(ids(withBilling(paid("standard")).slice(1))).toEqual(ids(build(CATALOG)));
   });
 });
+
+describe("context step", () => {
+  const withContext = (contextImported?: boolean | null) =>
+    buildSetupSteps({ participants: SOLO, connections: CATALOG, agentNames: new Map(), workspaceMembers: 1, contextImported });
+
+  it("is offered after the two action cards, admin-only and repeatable", () => {
+    const steps = withContext(false);
+    expect(steps.map((s) => s.id)).toEqual(["stripe", "github", "notion", "invite", "name-agents", "context"]);
+    expect(steps.at(-1)).toMatchObject({ label: "Share your context", done: false, adminOnly: true, repeatable: true });
+  });
+
+  it("is done once the CEO holds imported context", () => {
+    expect(withContext(true).find((s) => s.id === "context")?.done).toBe(true);
+  });
+
+  it("is absent when the caller does not supply the signal, which keeps mobile unchanged", () => {
+    expect(withContext(undefined).some((s) => s.id === "context")).toBe(false);
+    expect(withContext(null).some((s) => s.id === "context")).toBe(false);
+  });
+});

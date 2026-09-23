@@ -378,10 +378,12 @@
 .onboarding-band-dismiss { flex: none; color: var(--muted-foreground); }
 
 .onboarding-band-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-.onboarding-band-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+/* One equal column per card: the starter row holds one, the action row two or three. */
+.onboarding-band-actions { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
 /* One column under ~640px — four cards at phone width are unreadable. */
 @media (max-width: 640px) {
   .onboarding-band-grid, .onboarding-band-actions { grid-template-columns: minmax(0, 1fr); }
+  .onboarding-band-actions { grid-auto-flow: row; }
 }
 
 .onboarding-card {
@@ -420,3 +422,4 @@
 .onboarding-names label { color: var(--muted-foreground); font-size: 0.75rem; }
 .onboarding-names-error { color: var(--err); font-size: 0.8125rem; }
 @media (max-width: 640px) { .onboarding-names ul { grid-template-columns: minmax(0, 1fr); } }
+.onboarding-context-file { display: grid; gap: 4px; color: var(--muted-foreground); font-size: 0.8125rem; }

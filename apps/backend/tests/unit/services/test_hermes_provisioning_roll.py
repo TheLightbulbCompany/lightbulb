@@ -140,7 +140,9 @@ async def test_roll_refuses_an_ecs_row(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_respec_moves_a_current_runtime_and_rewrites_profiles_after_the_stop(monkeypatch):
+async def test_respec_on_a_matching_spec_rewrites_profiles_after_the_stop_without_an_update(monkeypatch):
+    # The env diff already catches a model flip (roll_runtime_image re-specs on it); --respec adds the
+    # profile rewrite, after the stop, and forces the idle stop even when nothing drifted.
     calls = _wire(monkeypatch, current_image=IMAGE)
 
     async def _write(owner_id, aip_arns):
@@ -148,4 +150,4 @@ async def test_respec_moves_a_current_runtime_and_rewrites_profiles_after_the_st
 
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _write)
     assert await hermes_provisioning.roll_runtime_image("org_a", respec=True) == "updated"
-    assert [c[0] for c in calls] == ["update", "ready", "health", "stop", "profiles"]
+    assert [c[0] for c in calls] == ["health", "stop", "profiles"]

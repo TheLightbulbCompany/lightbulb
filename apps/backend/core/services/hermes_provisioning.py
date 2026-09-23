@@ -804,7 +804,9 @@ async def _browser_profile_id(owner_id: str, row: dict) -> str:
     return await browser_sessions.ensure_browser_profile(owner_id) or row.get("browser_profile_id") or ""
 
 
-async def roll_runtime_image(owner_id: str, *, dry_run: bool = False, restart_session: bool = False, respec: bool = False) -> str:
+async def roll_runtime_image(
+    owner_id: str, *, dry_run: bool = False, restart_session: bool = False, respec: bool = False
+) -> str:
     """Bring an AgentCore owner's runtime onto its DESIRED spec -- the currently configured
     image AND the env block ``build_runtime_request_for_owner`` derives from billing -- then
     stop the idle warm session so the NEXT invoke boots it. After a ``hermes-version.json`` tag

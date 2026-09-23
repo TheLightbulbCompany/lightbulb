@@ -107,7 +107,7 @@ const NO_TASK_IDS: readonly string[] = [];
 const DEFAULT_QUICK_REACTIONS = ["👍", "✅", "🎉", "👀"];
 
 const workLabel: Record<WorkState, string> = {
-  ready: "Ready", queued: "Queued", working: "Working", paused: "Paused",
+  ready: "Ready", queued: "Queued", working: "Working", paused: "Paused", stopped: "Stopped",
   "needs-approval": "Needs approval", completed: "Completed", failed: "Failed", offline: "Offline", unknown: "Unknown",
 };
 function AgentResponse({ participant, selectId, onChange, listeningAvailable }: {
@@ -582,7 +582,7 @@ function RoomContent({
         {run.tools.length > 0 && <div className="room-run-trace"><ToolActivityTrace calls={run.tools} /></div>}
       </div>;
     }
-    const workState = run.state === "running" ? "working" : run.state === "aborted" ? "paused" : run.state;
+    const workState = run.state === "running" ? "working" : run.state === "aborted" ? "stopped" : run.state;
     return <article key={`${run.roomId}:${run.agentId}:${run.runId}`} className="room-message room-live-run" aria-label={`Live run from ${agentName}`}>
       <Identity name={agentName} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{agentName}</span><WorkStatus state={workState} /></div>
         {run.thinking && <QuietDisclosure label="Thinking" className="mb-1"><p className="room-wrap text-muted-foreground">{run.thinking}</p></QuietDisclosure>}

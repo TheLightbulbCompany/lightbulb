@@ -6,7 +6,7 @@ import type {
   RoomSummary,
 } from "@lightbulb/shared";
 
-export type WorkState = "ready" | "queued" | "working" | "paused" | "needs-approval" | "completed" | "failed" | "offline" | "unknown";
+export type WorkState = "ready" | "queued" | "working" | "paused" | "stopped" | "needs-approval" | "completed" | "failed" | "offline" | "unknown";
 export type RoomState = "loading" | "ready" | "reconnecting" | "unavailable" | "access-removed";
 
 export const roomKindLabel = {

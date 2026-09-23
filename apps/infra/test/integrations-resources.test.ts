@@ -143,7 +143,7 @@ describe("ServiceStack — integration secret + DDB IAM (dev)", () => {
   const template = SERVICE_TEMPLATE_DEV;
 
   test("task role has an IntegrationSecretsRW statement scoped to isol8/dev/integrations/*", () => {
-    template.hasResourceProperties("AWS::IAM::Policy", {
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       PolicyDocument: {
         Statement: Match.arrayWith([
           Match.objectLike({
@@ -200,7 +200,7 @@ describe("ServiceStack — integration secret + DDB IAM (prod)", () => {
   const template = buildServiceStack("prod");
 
   test("task role IntegrationSecretsRW statement is scoped to isol8/prod/integrations/*", () => {
-    template.hasResourceProperties("AWS::IAM::Policy", {
+    template.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       PolicyDocument: {
         Statement: Match.arrayWith([
           Match.objectLike({

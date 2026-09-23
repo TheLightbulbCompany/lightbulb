@@ -598,7 +598,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
   });
 
   test("backend role can read the dash-named paperclip-db-credentials secret (GetSecretValue scoped, not the slash-named wildcard)", () => {
-    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
@@ -613,7 +613,7 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
   });
 
   test("backend role can list secrets (metadata-only, resource '*' — the paginated ARN discovery)", () => {
-    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
@@ -1232,7 +1232,7 @@ describe("ServiceStack — messaging environment and least privilege", () => {
   });
 
   test("backend role can manage per-workspace AgentCore runtimes, scoped to this account", () => {
-    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
@@ -1288,5 +1288,20 @@ describe("ServiceStack — peer task forwarding (node invoke, M2 task 27)", () =
       ToPort: 8000,
       Description: "Peer backend task forwarding (node invoke)",
     });
+  });
+});
+
+describe("ServiceStack — task role inline policy size", () => {
+  // IAM caps a role's INLINE policies at 10,240 bytes in aggregate, measured on the RESOLVED
+  // document -- which runs longer than the template (cross-stack ARNs), and CDK's own overflow
+  // split misjudges it. #2929's dev deploy failed on this (ServiceLimitExceeded). Keep the
+  // template-measured default policy well below the cap; new grants go in a ManagedPolicy.
+  test.each(["dev", "prod"] as const)("%s default policy stays under 9,000 template bytes", (env) => {
+    const policies = buildServiceStack(env).findResources("AWS::IAM::Policy");
+    const inline = Object.entries(policies)
+      .filter(([, r]) => JSON.stringify(r.Properties.Roles ?? []).includes("TaskRole"))
+      .map(([, r]) => JSON.stringify(r.Properties.PolicyDocument).length);
+    expect(inline.length).toBeGreaterThan(0);
+    expect(inline.reduce((a, b) => a + b, 0)).toBeLessThan(9000);
   });
 });

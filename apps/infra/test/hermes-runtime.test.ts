@@ -266,7 +266,7 @@ describe("hermes runtime wiring", () => {
   });
 
   it("grants the backend task role browser profile, session and live-view management, and nothing more", () => {
-    dev.serviceTemplate.hasResourceProperties("AWS::IAM::Policy", {
+    dev.serviceTemplate.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
@@ -321,7 +321,7 @@ describe("hermes runtime wiring", () => {
 
     // Native SaveBrowserSessionProfile is deliberately absent: v2 persists via the released
     // agent-browser state save/load path instead.
-    const doc = JSON.stringify(dev.serviceTemplate.findResources("AWS::IAM::Policy"));
+    const doc = JSON.stringify([dev.serviceTemplate.findResources("AWS::IAM::Policy"), dev.serviceTemplate.findResources("AWS::IAM::ManagedPolicy")]);
     expect(doc).not.toContain("bedrock-agentcore:SaveBrowserSessionProfile");
   });
 
@@ -368,7 +368,7 @@ describe("hermes runtime wiring", () => {
   });
 
   it("grants the backend task role only the memory wipe, and stamps the memory id into its env", () => {
-    dev.serviceTemplate.hasResourceProperties("AWS::IAM::Policy", {
+    dev.serviceTemplate.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
@@ -386,7 +386,7 @@ describe("hermes runtime wiring", () => {
     });
     const env = backendContainerEnv(dev.serviceTemplate, "dev") as Record<string, unknown>;
     expect(env.AGENTCORE_MEMORY_ID).toBeDefined();
-    expect(JSON.stringify(dev.serviceTemplate.findResources("AWS::IAM::Policy"))).not.toContain(
+    expect(JSON.stringify([dev.serviceTemplate.findResources("AWS::IAM::Policy"), dev.serviceTemplate.findResources("AWS::IAM::ManagedPolicy")])).not.toContain(
       "bedrock-agentcore:RetrieveMemoryRecords",
     );
   });

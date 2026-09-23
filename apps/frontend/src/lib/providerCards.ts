@@ -97,7 +97,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
   {
     id: "openrouter_managed",
     title: "Lightbulb-managed",
-    subtitle: "Included with every plan — no account or key",
+    subtitle: "Included with every plan — DeepSeek within a daily allowance",
     trialNote: "On by default — nothing to set up",
     bullets: [
       "Free trial and Base: DeepSeek within a daily allowance",
@@ -121,7 +121,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
  * when a third PROVIDER_CARDS entry (bedrock_claude) last existed here.
  */
 export function providerComparisonCards(managedAvailable: boolean): ProviderCard[] {
-  const base = PROVIDER_CARDS.slice(0, 2);
+  const base = PROVIDER_CARDS.filter((card) => card.id !== "openrouter_managed");
   return managedAvailable
     ? [
         ...base,

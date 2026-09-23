@@ -89,17 +89,6 @@ DEFAULT_ROOM_WELCOME = (
     "another assistant about your business.\n\n"
     "Or try: “Research our top three competitors and tell me where we’re weakest.”"
 )
-# Free tier: every agent is Mentions-only, so an unaddressed reply to the
-# welcome above meets silence. Same copy, but it hands over the CEO's typeable
-# handle — ``{handle}`` is computed at seed time because names are editable.
-DEFAULT_ROOM_WELCOME_FREE = (
-    "I’m the CEO here — @{handle} me with what you want to happen and I’ll put the right people "
-    "on it.\n\n"
-    "Start by connecting your tools in the setup cards, or paste what you’ve already told "
-    "another assistant about your business in a message to @{handle}.\n\n"
-    "Or try: “@{handle} research our top three competitors and tell me where we’re weakest.”"
-)
-
 API_ERROR_STATUS = {
     "LOCAL_SESSION_FORBIDDEN": 403,
     "LOCAL_SESSION_NOT_FOUND": 404,
@@ -1500,15 +1489,14 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
         # members[0] is the owner themselves — the creator is not "added".
         _emit_room_created(owner_id, owner_user_id, "channel", members[1:], by="system")
     ceo_id = starter_ids["ceo"]
-    welcome = DEFAULT_ROOM_WELCOME if ceo_mode == "active" else DEFAULT_ROOM_WELCOME_FREE.format(handle=handles[ceo_id])
     await messaging_repo.create_message(
         room_id=room_id,
         owner_id=owner_id,
         idemp_pk=messaging_repo.room_pk(room_id),
         idemp_sk=messaging_repo.human_idemp_sk("__system__", f"{client_room_id}:welcome"),
-        req_hash=messaging_repo.request_hash(welcome, ceo_id),
+        req_hash=messaging_repo.request_hash(DEFAULT_ROOM_WELCOME, ceo_id),
         author={"kind": "agent", "id": ceo_id, "displayName": agents[ceo_id]["name"]},
-        text=welcome,
+        text=DEFAULT_ROOM_WELCOME,
         mentions=[],
         reply_to_message_id=None,
         thread_root_message_id=None,

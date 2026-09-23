@@ -9,7 +9,7 @@
 // masthead, no sub-tab. The token/cache grid and the per-member table are
 // deliberately left on the control Usage panel (`?panel=usage`, Settings) —
 // see spec §4 rule 4. This section renders only the billed figure, the run
-// count, and the by-model / plan-window rows.
+// count, and the by-model rows.
 //
 // ── WHICH FIGURES ARE REAL ────────────────────────────────────────────────
 // This panel shows no number it cannot source. An owner makes a spending
@@ -30,11 +30,11 @@
 //            anything. No number derived from it is ever printed.
 //  PARTIAL   `tokens_only` is ambiguous by construction:
 //            spend_service.get_spend_summary returns it BOTH for owners with
-//            no platform-billed inference (BYOK, free tier) AND as the
-//            degraded fallback when the invoice/quota read fails. The two are
-//            told apart here by the owner's stored `provider_choice`, and a
-//            degraded read is labelled "Unavailable" rather than rendered as
-//            a confident $0.
+//            no platform-billed inference (BYOK, ChatGPT OAuth, free tier)
+//            AND as the degraded fallback when a bedrock_claude owner's
+//            invoice read fails. The two are told apart here by the owner's
+//            stored `provider_choice`, and a degraded bedrock read is
+//            labelled "Unavailable" rather than rendered as a confident $0.
 //
 // NO TREND, DELIBERATELY. The only owner-day time series in the product is
 // P0c's rollup table, which has no HTTP read route at all and whose writers
@@ -81,16 +81,6 @@ export function spendHeadline(
     };
   }
 
-  if (spend.mode === "oauth_quota") {
-    return {
-      figure: "Included",
-      money: false,
-      caption:
-        "Your agents run on your ChatGPT plan, so we are not billed for their inference. The plan windows below are the meter.",
-      partial: false,
-    };
-  }
-
   // Everything past here is `tokens_only`, which carries no dollars at all.
   if (subscriptionStatus === "trial_local") {
     return {
@@ -109,7 +99,16 @@ export function spendHeadline(
       partial: false,
     };
   }
-  if (providerChoice === "bedrock_claude" || providerChoice === "chatgpt_oauth") {
+  if (providerChoice === "chatgpt_oauth") {
+    return {
+      figure: "Not billed by us",
+      money: false,
+      caption:
+        "Your agents run on your ChatGPT plan, so we are not billed for their inference. The volume below is what we measured.",
+      partial: false,
+    };
+  }
+  if (providerChoice === "bedrock_claude") {
     return {
       figure: "Unavailable",
       money: false,
@@ -212,15 +211,6 @@ export function AgentSpendSection() {
               ))}
             </dl>
           )}
-          {spend?.mode === "oauth_quota" && (spend.windows ?? []).map((w) => (
-            <div key={w.label} className="space-y-1">
-              <div className="flex items-center justify-between text-xs">
-                <span>{w.label} limit</span>
-                <span className="text-[var(--midnight-muted)]">{w.used_percent > 0 && w.used_percent < 1 ? "<1" : Math.round(w.used_percent)}% used{w.resets_at_ms ? ` · resets ${new Date(w.resets_at_ms).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}` : ""}</span>
-              </div>
-              <div className="h-1.5 rounded-sm bg-[var(--edge)]"><div className="h-1.5 rounded-sm bg-[var(--midnight)]" style={{ width: `${Math.min(100, Math.max(0, w.used_percent))}%` }} /></div>
-            </div>
-          ))}
         </div>
       )}
     </MoneySection>

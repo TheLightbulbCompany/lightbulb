@@ -1,21 +1,24 @@
 """Provider-aware spend summary for the user-facing usage surface.
 
-Three modes, one per provider path (see the 2026-07-12 design spec):
+Two modes, one per provider path (see the 2026-07-12 design spec):
 
 - ``bedrock``      — month-to-date BILLED spend from the Metronome draft
                      usage invoice (the number Metronome finalizes), with a
                      per-model split from the ``tier`` pricing group.
-- ``oauth_quota``  — ChatGPT plan-quota windows proxied from the container's
-                     ``models.authStatus`` gateway RPC.
-- ``tokens_only``  — BYOK / trial / any degraded case. The panel renders the
-                     token grid it already has; this module adds nothing.
+- ``tokens_only``  — everything else (ChatGPT OAuth / BYOK / trial / any
+                     degraded case). The panel renders the token grid it
+                     already has; this module adds nothing. ChatGPT OAuth used
+                     to proxy plan-quota windows from the container's
+                     ``models.authStatus`` gateway RPC, but the Hermes bridge
+                     never returns a ``usage`` block, so that read was always
+                     None while still costing an InvokeAgentRuntime wake on
+                     every spend read (deleted 2026-09-23, ponytail audit #14).
 
 Display-only. The provision/chat gates never read this module; a failure
 here must never block anything — every branch degrades, never raises.
 """
 
 import logging
-import re
 import time
 from dataclasses import dataclass
 
@@ -24,8 +27,6 @@ import httpx
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
-from core.services import container_rpc
-from core.services.messaging import ApiProblem
 
 logger = logging.getLogger(__name__)
 
@@ -44,65 +45,6 @@ TIER_DISPLAY_NAMES = {
     "sonnet": "Claude Sonnet",
     "haiku": "Claude Haiku",
 }
-
-# provider ids that identify the ChatGPT-OAuth entry in models.authStatus.
-# The deployed 7.1 fork reports "openai", but containers keep their
-# provision-time image until reprovision, and older images (plus the
-# frontend's own llm-auth-status mapping) still emit the retired
-# "openai-codex" id. Accept either.
-_OAUTH_PROVIDER_IDS = frozenset({"openai", "openai-codex"})
-
-# Plan ids (lowercased) -> display name for the quota card's plan badge.
-# Fallback for anything not in this map is a title-cased version of the
-# raw value (e.g. "team_plus" -> "Team Plus").
-_PLAN_DISPLAY_NAMES = {
-    "free": "Free",
-    "plus": "Plus",
-    "pro": "Pro",
-    "prolite": "Pro Lite",
-    "business": "Business",
-    "team": "Team",
-    "enterprise": "Enterprise",
-}
-
-_HOURS_LABEL_RE = re.compile(r"^(\d+)h$")
-
-# Literal window labels seen from OpenClaw's models.authStatus quota probe
-# that don't fit the "Nh" shorthand.
-_LITERAL_WINDOW_LABELS = {
-    "Week": "Weekly",
-    "Day": "Daily",
-}
-
-
-def _normalize_window_label(label: str) -> str:
-    """Normalize a raw quota-window label into display copy.
-
-    Window labels come from OpenClaw's (unofficial) upstream quota probe and
-    vary by container image version -- some emit "168h"/"24h"/"5h" shorthand,
-    others emit literal "Week"/"Day". Anything unrecognized passes through
-    unchanged rather than risk hiding real data behind a guess.
-    """
-    if label in _LITERAL_WINDOW_LABELS:
-        return _LITERAL_WINDOW_LABELS[label]
-    match = _HOURS_LABEL_RE.match(label)
-    if match:
-        hours = int(match.group(1))
-        if hours >= 168:
-            return "Weekly"
-        if hours >= 24:
-            return "Daily"
-        return f"{hours}-hour"
-    return label
-
-
-def _display_plan(plan: str | None) -> str | None:
-    if not plan:
-        return plan
-    mapped = _PLAN_DISPLAY_NAMES.get(plan.lower())
-    if mapped:
-        return mapped
-    return plan.replace("_", " ").title()
 
 
 @dataclass
@@ -199,49 +141,6 @@ async def get_billed_month_spend(owner_id: str) -> BilledSpend | None:
     return billed
 
 
-async def _oauth_quota_payload(owner_id: str) -> dict | None:
-    """ChatGPT plan-quota windows via the container's models.authStatus RPC.
-
-    None on ANY failure (container down, RPC error, usage block absent —
-    the upstream quota endpoint is unofficial and may vanish); the caller
-    falls back to tokens_only. OpenClaw caches upstream 60s; no cache here.
-    """
-    try:
-        result = await container_rpc.call(owner_id, "models.authStatus", {}, timeout_s=5.0)
-        for provider in (result or {}).get("providers") or []:
-            if provider.get("provider") not in _OAUTH_PROVIDER_IDS:
-                continue
-            usage = provider.get("usage") or {}
-            windows = [
-                {
-                    "label": _normalize_window_label(w.get("label", "")),
-                    "used_percent": w.get("usedPercent"),
-                    "resets_at_ms": w.get("resetAt"),
-                }
-                for w in usage.get("windows") or []
-                # A window whose usedPercent isn't a real number carries no
-                # honest signal -- never fabricate a 0% bar for it. bool is
-                # a subclass of int, so it's excluded explicitly.
-                if isinstance(w.get("usedPercent"), (int, float)) and not isinstance(w.get("usedPercent"), bool)
-            ]
-            if not windows:
-                # Keep scanning: a later matching entry (e.g. a second
-                # provider id alias) may carry the actual usage windows.
-                continue
-            return {
-                "mode": "oauth_quota",
-                "plan": _display_plan(usage.get("plan")),
-                "windows": windows,
-            }
-        return None
-    except ApiProblem:
-        return None  # parked/unreachable container — silent, not an error
-    except Exception:
-        put_metric("billing.spend.authstatus_error")
-        logger.warning("spend: models.authStatus quota read failed for %s", owner_id, exc_info=True)
-        return None
-
-
 async def get_spend_summary(owner_id: str, provider_choice: str | None) -> dict:
     """The /billing/spend payload. Never raises — degraded == tokens_only."""
     if provider_choice == "bedrock_claude":
@@ -254,6 +153,6 @@ async def get_spend_summary(owner_id: str, provider_choice: str | None) -> dict:
             "by_model": billed.by_model,
             "period_start": billed.period_start,
         }
-    if provider_choice == "chatgpt_oauth":
-        return await _oauth_quota_payload(owner_id) or {"mode": "tokens_only"}
+    # chatgpt_oauth, byo_key, trial, None, and anything else all render the
+    # panel's existing token grid — see the module docstring.
     return {"mode": "tokens_only"}

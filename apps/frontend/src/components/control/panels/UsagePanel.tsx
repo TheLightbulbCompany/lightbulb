@@ -156,37 +156,6 @@ export function UsagePanel({ embedded = false }: UsagePanelProps = {}) {
           </Link>
         </div>
       )}
-      {spend?.mode === "oauth_quota" && (
-        <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium">ChatGPT plan limits</h3>
-            {spend.plan && <span className="text-xs text-[var(--midnight-muted)]">{spend.plan}</span>}
-          </div>
-          {(spend.windows ?? []).map((w) => (
-            <div key={w.label} className="space-y-1">
-              <div className="flex items-center justify-between text-xs">
-                <span>{w.label} limit</span>
-                <span className="text-[var(--midnight-muted)]">
-                  {w.used_percent > 0 && w.used_percent < 1 ? "<1" : Math.round(w.used_percent)}% used
-                  {w.resets_at_ms
-                    ? ` · resets ${new Date(w.resets_at_ms).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`
-                    : ""}
-                </span>
-              </div>
-              <div className="h-1.5 rounded-sm bg-[var(--edge)]">
-                <div
-                  className="h-1.5 rounded-sm bg-[var(--midnight)]"
-                  style={{ width: `${Math.min(100, Math.max(0, w.used_percent))}%` }}
-                />
-              </div>
-            </div>
-          ))}
-          <p className="text-2xs text-midnight-muted">Included in your ChatGPT plan.</p>
-          <p className="text-2xs text-midnight-muted">
-            Rolling plan windows — separate from the monthly token totals below.
-          </p>
-        </div>
-      )}
 
       {usage && (
         <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3">

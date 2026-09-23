@@ -220,9 +220,9 @@ async def get_my_usage(
     summary="Provider-aware spend summary",
     description=(
         "Bedrock owners: month-to-date BILLED spend from Metronome with a "
-        "per-model split. ChatGPT-OAuth owners: plan-quota windows. BYOK/"
-        "trial/degraded: tokens_only (the panel keeps its token grid). "
-        "Display-only; never errors on upstream failure."
+        "per-model split. ChatGPT-OAuth/BYOK/trial/degraded: tokens_only "
+        "(the panel keeps its token grid). Display-only; never errors on "
+        "upstream failure."
     ),
     operation_id="get_spend",
 )

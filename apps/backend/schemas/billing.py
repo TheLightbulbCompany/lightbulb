@@ -98,19 +98,16 @@ class SpendByModel(BaseModel):
     cents: int
 
 
-class SpendQuotaWindow(BaseModel):
-    label: str
-    used_percent: float
-    resets_at_ms: int | None = None
-
-
 class SpendResponse(BaseModel):
     """Provider-aware spend summary. `mode` picks the render variant:
-    bedrock -> billed fields; oauth_quota -> plan/windows; tokens_only -> neither."""
+    bedrock -> billed fields; tokens_only -> neither (the panel keeps its
+    token grid). ChatGPT-OAuth used to have its own "oauth_quota" mode with
+    plan-quota windows read from the container's models.authStatus RPC, but
+    the Hermes bridge never returns a usage block, so that read was always
+    None while still costing an InvokeAgentRuntime wake per read -- removed
+    2026-09-23 (ponytail audit #14)."""
 
-    mode: Literal["bedrock", "oauth_quota", "tokens_only"]
+    mode: Literal["bedrock", "tokens_only"]
     billed_month_to_date_cents: int | None = None
     by_model: list[SpendByModel] | None = None
     period_start: str | None = None
-    plan: str | None = None
-    windows: list[SpendQuotaWindow] | None = None

@@ -412,3 +412,28 @@ export function clearLayout(scopeId: string): void {
     // best effort
   }
 }
+
+// Where the rail opens Tasks: "split" beside the conversation (default) or a
+// full "tab" in the Messages group. Per viewer, not per workspace — it is a
+// reading preference. Same null-safe read / swallow-on-failure write posture
+// as the layout blob: a blocked store just means the default every time.
+export type TasksPlacement = "split" | "tab";
+export const TASKS_PLACEMENT_KEY = "lightbulb.workspace.tasksPlacement.v1";
+
+export function readTasksPlacement(): TasksPlacement {
+  if (typeof window === "undefined") return "split";
+  try {
+    return window.localStorage.getItem(TASKS_PLACEMENT_KEY) === "tab" ? "tab" : "split";
+  } catch {
+    return "split";
+  }
+}
+
+export function writeTasksPlacement(placement: TasksPlacement): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(TASKS_PLACEMENT_KEY, placement);
+  } catch {
+    // quota / privacy mode — the choice just isn't remembered
+  }
+}

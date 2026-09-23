@@ -28,6 +28,10 @@ export class OpenRouterGateStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: OpenRouterGateStackProps) {
     super(scope, id, props);
     const env = props.environment;
+    // The Metronome OpenRouter product carrying the 1.2x rate on this env's rate card. It is
+    // the money proof: settlement ingests metered rows only where it is set. Dev: applied by
+    // setup_metronome_openrouter_pricing.py (#2961). Prod: not applied yet.
+    const rateCardProof = env === "dev" ? "4c39b72e-a9bc-4272-a3b3-eddd2b5e5001" : "";
     const source = path.join(__dirname, "..", "..", "lambda", "openrouter-gate");
     const code = lambda.Code.fromAsset(source, {
       bundling: {
@@ -146,8 +150,8 @@ export class OpenRouterGateStack extends cdk.Stack {
           ? (process.env.OPENROUTER_WORKSPACE_ID_DEV ?? "")
           : (process.env.OPENROUTER_WORKSPACE_ID_PROD ?? ""),
         OPENROUTER_MARKUP,
-        OPENROUTER_MONEY_CONTRACT_VERIFIED: "false",
-        OPENROUTER_RATE_CARD_PROOF_ID: "",
+        OPENROUTER_MONEY_CONTRACT_VERIFIED: rateCardProof ? "true" : "false",
+        OPENROUTER_RATE_CARD_PROOF_ID: rateCardProof,
       },
       logGroup: new logs.LogGroup(this, "SettlementLogs", {
         logGroupName: logGroupPath(env, "openrouter-settlement"),
@@ -181,16 +185,17 @@ export class OpenRouterGateStack extends cdk.Stack {
       retentionPeriod: cdk.Duration.days(14),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
     });
-    // Settles free/capped rows and retires keys. Metered rows stay pending: settle_one
-    // refuses them until OPENROUTER_MONEY_CONTRACT_VERIFIED + a rate-card proof land.
+    // Settles free/capped rows and retires keys. Metered rows stay pending in an env
+    // without a rate-card proof: settle_one refuses them.
     const schedule = new events.Rule(this, "SettlementSchedule", {
       schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
     });
     schedule.addTarget(new targets.LambdaFunction(settlement, { deadLetterQueue: dlq, retryAttempts: 2 }));
-    // Stays off: the handler refuses an audit without the money-contract proof.
+    // Read-only reconciliation of OpenRouter's per-key activity against settled rows; a gap
+    // fails the run (openrouter-settlement-errors alarm). The handler refuses it without the proof.
     const audit = new events.Rule(this, "DailyActivityAudit", {
       schedule: events.Schedule.cron({ minute: "15", hour: "1" }),
-      enabled: false,
+      enabled: Boolean(rateCardProof),
     });
     audit.addTarget(new targets.LambdaFunction(settlement, {
       event: events.RuleTargetInput.fromObject({ audit_previous_day: true }),

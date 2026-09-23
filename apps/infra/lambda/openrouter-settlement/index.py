@@ -107,7 +107,8 @@ def activity_date_allowed(day, today):
 
 
 def activity_gap(activity_rows, settled_rows, *, key_hash, date):
-    activity = sum((Decimal(str(item["usage"])) for item in activity_rows if item["date"] == date), Decimal(0))
+    # OpenRouter reports the day as "YYYY-MM-DD 00:00:00" (probed 2026-09-23).
+    activity = sum((Decimal(str(item["usage"])) for item in activity_rows if item["date"][:10] == date), Decimal(0))
     settled = sum((Decimal(str(item["total_cost"])) for item in settled_rows
                    if item["date"] == date and item["key_hash"] == key_hash), Decimal(0))
     return activity - settled

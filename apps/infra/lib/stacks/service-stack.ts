@@ -1563,6 +1563,9 @@ export class ServiceStack extends cdk.Stack {
         env === "prod"
           ? (process.env.OPENROUTER_MANAGED_ENABLED_PROD || "false")
           : (process.env.OPENROUTER_MANAGED_ENABLED_DEV || "false"),
+      // Prepaid OpenRouter credits: on only where the settlement Lambda has its rate-card
+      // proof (openrouter-gate-stack.ts rateCardProof). Prod stays off.
+      OPENROUTER_PAID_CREDITS_ENABLED: env === "dev" ? "true" : "false",
       // Per-env rate card the per-customer contract references at
       // provision. Dev = sandbox rate card (2026-06-10); prod =
       // isol8-bedrock-prod (2026-06-12). Both price AWS us. CRIS x 1.03

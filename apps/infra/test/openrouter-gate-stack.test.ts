@@ -82,7 +82,7 @@ test("empty rollout flag stays disabled", () => {
   }
 });
 
-test("settlement runs every 5 minutes but cannot ingest money before contract proof", () => {
+test("dev settlement carries the rate-card proof and runs the daily audit", () => {
   const app = new cdk.App();
   const stack = new OpenRouterGateStack(app, "OpenRouterGate", {
     env: { account: "877352799272", region: "us-east-1" },
@@ -97,8 +97,8 @@ test("settlement runs every 5 minutes but cannot ingest money before contract pr
       FAST_GATE_TABLE: "lightbulb-dev-metronome-fast-gate",
       OPENROUTER_MARKUP: "1.2",
       USAGE_COUNTERS_TABLE: "lightbulb-dev-usage-counters",
-      OPENROUTER_MONEY_CONTRACT_VERIFIED: "false",
-      OPENROUTER_RATE_CARD_PROOF_ID: "",
+      OPENROUTER_MONEY_CONTRACT_VERIFIED: "true",
+      OPENROUTER_RATE_CARD_PROOF_ID: "4c39b72e-a9bc-4272-a3b3-eddd2b5e5001",
       OPENROUTER_WORKSPACE_ID: "",
     }) },
   });
@@ -106,18 +106,25 @@ test("settlement runs every 5 minutes but cannot ingest money before contract pr
   template.hasResourceProperties("AWS::Lambda::EventInvokeConfig", { MaximumRetryAttempts: 0 });
   template.hasResourceProperties("AWS::Events::Rule", {
     ScheduleExpression: "cron(15 1 * * ? *)",
-    State: "DISABLED",
+    State: "ENABLED",
     Targets: Match.arrayWith([Match.objectLike({ Input: '{"audit_previous_day":true}' })]),
   });
   template.resourceCountIs("AWS::SQS::Queue", 1);
 });
 
-test("prod settlement is scheduled too; the daily audit stays off without the money proof", () => {
+test("prod settlement is scheduled but cannot ingest money: no proof, audit off", () => {
   const app = new cdk.App();
   const template = Template.fromStack(new OpenRouterGateStack(app, "OpenRouterGateProd", {
     env: { account: "877352799272", region: "us-east-1" },
     environment: "prod",
   }));
+  template.hasResourceProperties("AWS::Lambda::Function", {
+    FunctionName: "lightbulb-prod-openrouter-settlement",
+    Environment: { Variables: Match.objectLike({
+      OPENROUTER_MONEY_CONTRACT_VERIFIED: "false",
+      OPENROUTER_RATE_CARD_PROOF_ID: "",
+    }) },
+  });
   template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(5 minutes)", State: "ENABLED" });
   template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "cron(15 1 * * ? *)", State: "DISABLED" });
 });

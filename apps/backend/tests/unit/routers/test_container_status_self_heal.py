@@ -48,7 +48,6 @@ def _patches(row: dict, *, trial_reason=None, dispatch=None):
     return [
         patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
         patch("routers.container.maybe_restore_trial_bedrock", new=AsyncMock()),
-        patch("routers.container.maybe_resume_stuck_conversion", new=AsyncMock(return_value=False)),
         patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=trial_reason)),
         patch("routers.container._assert_provision_allowed", new=AsyncMock()),
         patch("routers.container.dispatch_provision", new=dispatch),
@@ -71,7 +70,7 @@ async def _call(patches):
         body = await container_status(auth=_auth())
         while pending:
             await pending.pop(0)
-        return body, entered[5]
+        return body, entered[4]
 
 
 class TestAutoRetry:

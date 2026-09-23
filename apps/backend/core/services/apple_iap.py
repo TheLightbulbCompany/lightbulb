@@ -322,12 +322,11 @@ async def _convert_trial_if_needed(owner_id: str, *, was_trial: bool, subscripti
             logger.exception("apple_iap.trial_conversion_provider_failed owner_id=%s", owner_id)
             return
 
-    try:
-        from core.services.stripe_webhook_handlers import start_trial_conversion
+    # Durable and idempotent: a link call and a SUBSCRIBED notification for the same purchase
+    # may both land here, and the second reconcile converges on the first. Never raises.
+    from core.services.provision_dispatch import dispatch_reconcile
 
-        await start_trial_conversion(owner_id, subscription.original_transaction_id)
-    except Exception:
-        logger.exception("apple_iap.trial_conversion_dispatch_failed owner_id=%s", owner_id)
+    await dispatch_reconcile(owner_id)
 
 
 def _revoked_key(original_transaction_id: str) -> str:
@@ -743,8 +742,8 @@ async def _apply_verified_notification(
     if subscription.status == "active":
         # The SUBSCRIBED notification can beat the client's link call (or the
         # app can die before making it), so the conversion has to be reachable
-        # from here too. start_trial_conversion single-flights on the
-        # transaction id, so whichever path arrives first runs it exactly once.
+        # from here too. The reconcile it dispatches is idempotent, so whichever
+        # path arrives first converts and the other converges on it.
         await _convert_trial_if_needed(
             owner_id,
             was_trial=row.get("subscription_status") == "trial_local",

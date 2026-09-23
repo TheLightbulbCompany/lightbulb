@@ -490,11 +490,10 @@ def test_aws_sts_requires_aws_sts_block():
         )  # no aws_sts block
 
 
-# Materializers a provider block already declares but whose implementation is
-# not registered yet. Such names are exempt from the materializer consistency
-# guard below until their implementation ships. Empty today: every declared
-# materializer (including `aws_cli`) is now registered.
-_PENDING_MATERIALIZERS: set[str] = set()
+# Materializer names a provider block declares with no implementation behind
+# them. `mcp_oauth` is a rail marker: remote MCP grants ride the broker/native
+# MCP rails, `hermes_cli.OWNED_PATHS` never lists it, so nothing dispatches it.
+_PENDING_MATERIALIZERS: set[str] = {"mcp_oauth"}
 
 
 def test_registry_materializers_and_oauth_are_self_consistent():

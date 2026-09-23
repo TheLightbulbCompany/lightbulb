@@ -61,7 +61,7 @@ def _locked_update(path: Path, mutate) -> None:
     owner's own in-container ``xurl`` invocations rewrite it (xurl persists
     refreshed tokens there). An unlocked read-then-overwrite lets a racing
     writer's apps vanish — so this uses the same ``fcntl.lockf``
-    read-modify-write as ``mcporter_vault._locked_update``.
+    read-modify-write the retired ``mcporter_vault`` used.
 
     ``mutate`` receives the parsed store and returns the store to persist, or
     ``None`` to delete the file. The write is in place rather than via

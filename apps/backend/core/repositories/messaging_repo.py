@@ -703,9 +703,14 @@ async def create_message(
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
-    outbox row per dispatch target. Retries the sequence race; a durable
-    replay returns the original message; a changed body raises
-    ``IdempotencyConflict``.
+    outbox row per dispatch target. The transaction also carries a
+    ``ConditionCheck`` on the author's own ``MEMBER`` row — a caller who
+    passed its membership pre-check (``require_room_member`` /
+    ``get_member``) can still be removed before this transaction commits;
+    without this the message would land anyway. Retries the sequence race;
+    a durable replay returns the original message; a changed body raises
+    ``IdempotencyConflict``; losing the author-membership race raises
+    ``MessageForbidden`` (not retried — the author is gone, not racing).
 
     Returns ``(message, replayed)``. ``replayed`` is True when a durable
     receipt already existed and NOTHING was written — the agent path is built
@@ -757,6 +762,13 @@ async def create_message(
                     "ExpressionAttributeValues": {":seq": seq, ":expected": expected, ":now": now},
                 }
             },
+            {
+                "ConditionCheck": {
+                    "TableName": table_name,
+                    "Key": {"pk": room_pk(room_id), "sk": member_sk(author["kind"], author["id"])},
+                    "ConditionExpression": "attribute_exists(sk)",
+                }
+            },
             {"Put": {"TableName": table_name, "Item": message, "ConditionExpression": "attribute_not_exists(sk)"}},
             {
                 "Put": {
@@ -781,6 +793,10 @@ async def create_message(
         except ClientError as exc:
             if not _is_cancelled(exc):
                 raise
+            reasons = exc.response.get("CancellationReasons", [])
+            if len(reasons) > 1 and reasons[1].get("Code") == "ConditionalCheckFailed":
+                # The author's own MEMBER row is gone: not a sequence race, don't retry.
+                raise MessageForbidden("Only a current room member can send this message.") from exc
         prior = await _get(idemp_pk, idemp_sk)
         if prior is not None:
             return await _replay_or_conflict(prior, req_hash), True

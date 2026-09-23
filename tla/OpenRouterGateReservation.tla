@@ -106,7 +106,9 @@ BedrockHold ==
   /\ bedrockReserved < BedrockCap
   /\ remaining - bedrockReserved - orReserved - 1 > 0
   /\ bedrockReserved' = bedrockReserved + 1
-  /\ admittedWhileExhausted' = admittedWhileExhausted \/ (remaining <= 0)
+  /\ admittedWhileExhausted' = (admittedWhileExhausted \/ (remaining <= 0))  \* parens load-bearing;
+                                                                             \* see Release's comment
+                                                                             \* in ProvisioningClaimLease.tla
   /\ UNCHANGED <<remaining, orReserved, state, settleCount>>
 
 BedrockRelease ==
@@ -129,7 +131,9 @@ Reserve(r) ==
   /\ remaining - bedrockReserved - orReserved - ReserveAmt > 0
   /\ orReserved' = orReserved + ReserveAmt
   /\ state' = [state EXCEPT ![r] = "reserved"]
-  /\ admittedWhileExhausted' = admittedWhileExhausted \/ (remaining <= 0)
+  /\ admittedWhileExhausted' = (admittedWhileExhausted \/ (remaining <= 0))  \* parens load-bearing;
+                                                                             \* see Release's comment
+                                                                             \* in ProvisioningClaimLease.tla
   /\ UNCHANGED <<remaining, bedrockReserved, settleCount>>
 
 (* release(): the gate's own path when upstream failed before any content   *)

@@ -38,6 +38,13 @@ export interface MessagingWorkspaceValue {
   /** Not gated on the active dock panel: a split dock keeps the focused session on screen. */
   sessionSource: RoomResourceSource;
   scope: string;
+  /** Latched at the room list's first load per workspace; null until then. */
+  freshLanding: boolean | null;
+}
+
+/** Nothing but #general and the vendor shared room: a new workspace, whose home is #general. */
+export function isFreshWorkspace(rooms: readonly RoomSummary[]): boolean {
+  return rooms.every((room) => room.isDefault || room.shared);
 }
 
 const MessagingWorkspaceContext = createContext<MessagingWorkspaceValue | null>(null);
@@ -120,11 +127,14 @@ const getServerSideColumn = () => false;
 export function MessagingWorkspaceProvider({
   children,
   initialAgentId,
+  defaultAgentId,
   subscribeToRoom = true,
   observeRuns = false,
 }: {
   children: ReactNode;
   initialAgentId?: string | null;
+  /** Opened only when nothing explicit was asked for and the workspace is not fresh. */
+  defaultAgentId?: string | null;
   subscribeToRoom?: boolean;
   observeRuns?: boolean;
 }) {
@@ -140,7 +150,19 @@ export function MessagingWorkspaceProvider({
   const roomVisible = subscribeToRoom && (!sessionFocus || (!sessionFocus.own && sideColumn));
   // Browser watches run frames even when the room is hidden; visibility still
   // controls read receipts and notification suppression.
-  const rooms = useRooms(initialAgentId, subscribeToRoom || observeRuns, roomVisible);
+  // Fresh or returning is decided once, at the first successful room-list load:
+  // a DM created later must not turn a new workspace "returning" and pull the
+  // viewer into the default agent's DM mid-onboarding.
+  const [landing, setLanding] = useState<{ scope: string; fresh: boolean } | null>(null);
+  const freshLanding = landing?.scope === scope ? landing.fresh : null;
+  const rooms = useRooms(
+    defaultAgentId && freshLanding === false ? initialAgentId ?? defaultAgentId : initialAgentId,
+    subscribeToRoom || observeRuns,
+    roomVisible,
+  );
+  if (freshLanding === null && !rooms.roomsLoading && !rooms.roomsError) {
+    setLanding({ scope, fresh: isFreshWorkspace(rooms.rooms) });
+  }
   const setRoomTyping = rooms.setTyping;
   const sendRoomMessage = rooms.sendMessage;
   const teams = useTeamsApi();
@@ -210,7 +232,7 @@ export function MessagingWorkspaceProvider({
   useEffect(() => {
     if (autoOpenedScope.current === scope || explicitChoiceScope.current === scope) return;
     const general = autoOpenRooms.find((room) => room.isDefault);
-    if (!general || !autoOpenRooms.every((room) => room.isDefault || room.shared)) return;
+    if (!general || !isFreshWorkspace(autoOpenRooms)) return;
     autoOpenedScope.current = scope;
     if (autoOpenActive !== general.roomId) hookSelectRoom(general.roomId);
   }, [scope, autoOpenActive, autoOpenRooms, hookSelectRoom]);
@@ -788,6 +810,7 @@ export function MessagingWorkspaceProvider({
     closeSession,
     sessionSource: rooms.resourceSource,
     scope,
+    freshLanding,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible}
     onOpen={openNotificationTarget} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal} />{children}
     {selectRoomError && <div role="alert" className="px-4 py-2 text-sm text-err">{selectRoomError}{" "}

@@ -2331,7 +2331,9 @@ RUN_FAILURE_OUTCOMES = frozenset({"error"})
 async def count_first_turn_failure(owner_id: str, error_kind: str | None) -> None:
     """A failed run for a free-tier workspace that has NEVER had an agent reply is a new user's
     first impression dying (the 09-22 gate-413 bug failed every one, silently). Counted for the
-    P29 page; ``first_agent_response_at`` is stamped by the trial first-response capture. The
+    P29 page; ``first_agent_response_at`` is stamped by the trial first-response capture, which
+    runs only while ``POSTHOG_PROJECT_WRITE_KEY`` is set -- blank that key and every trial reads as
+    "first turn" forever, so P29 pages on any trial failure. The
     bridge-supplied error kind goes to the log, never a dimension (unbounded). Never raises."""
     try:
         from core.repositories import billing_repo

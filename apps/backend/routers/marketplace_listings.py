@@ -385,10 +385,10 @@ async def recommend(
     issue, which still changes nothing until a human approves it in Teams.
 
     Owner is in the PATH and authorized by the per-container ``hook_token``,
-    matching ``agent_builder``. Naming another owner does
+    like the other internal hook-token routes. Naming another owner does
     not grant access to them: the token compare is against THAT owner's row.
     """
-    from routers.agent_builder import _require_hook_token
+    from core.services.container_auth import _require_hook_token
 
     await _require_hook_token(owner_id, request)
 

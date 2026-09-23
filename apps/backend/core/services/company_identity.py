@@ -116,8 +116,7 @@ def slugify(value: str) -> str:
     Non-ASCII is decomposed and stripped rather than transliterated — the
     result has to be a legal email local part, not a faithful rendering. That
     requirement is why this is not shared with ``agent_export._slugify`` (a
-    frozen legacy-compat derivation) or ``routers.agent_builder._slugify``
-    (different cap, empty-name fallback); see the latter's docstring.
+    frozen legacy-compat derivation).
     """
     decomposed = unicodedata.normalize("NFKD", value)
     ascii_only = decomposed.encode("ascii", "ignore").decode("ascii")

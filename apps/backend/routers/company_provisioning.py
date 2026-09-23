@@ -32,7 +32,7 @@ from core.services import stripe_provisioning as api
 from core.services.owner_facts import write_owner_facts
 from core.services.provisioning_workflow import WorkflowRefused, is_offerable, is_transient
 from core.services.stripe_provisioning import ProvisioningError
-from routers.agent_builder import _require_hook_token
+from core.services.container_auth import _require_hook_token
 from routers.company_board import file_card
 from routers.company_money import day_after, day_range
 from routers.teams._guards import require_always_on_entitlement

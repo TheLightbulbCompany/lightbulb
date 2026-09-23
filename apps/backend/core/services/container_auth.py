@@ -13,12 +13,35 @@ a cold container and let a disconnect report success while the agents kept using
 account (task-14 row 3).
 """
 
+import hmac
 import logging
 
+from fastapi import HTTPException, Request
+
 from core.dynamodb import run_in_thread
+from core.repositories import container_repo
 from core.services.hermes_profiles import stage_codex_auth, unstage_codex_auth
 
 logger = logging.getLogger(__name__)
+
+
+async def _require_hook_token(owner_id: str, request: Request) -> dict:
+    """Authorize an in-runtime caller via the owner's per-container ``hook_token`` (timing-safe).
+
+    Returns the ``containers`` row so the caller can reuse it. Shared by the hook-token-authed
+    routers (company_provisioning, company_stripe, connections, marketplace_listings, runtime_rpc).
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    presented = auth[len("Bearer ") :]
+    container = await container_repo.get_by_owner_id(owner_id)
+    expected = (container or {}).get("hook_token") or ""
+    # Compare bytes, not str: hmac.compare_digest raises TypeError on non-ASCII
+    # str, turning a garbage header into a 500 at the trust boundary.
+    if not expected or not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="invalid hook token")
+    return container
 
 
 async def revoke_provider_auth_in_container(owner_id: str, *, provider: str = "openai") -> bool:

@@ -81,7 +81,7 @@ test("empty rollout flag stays disabled", () => {
   }
 });
 
-test("dev settlement worker is scheduled but cannot ingest money before contract proof", () => {
+test("settlement runs every 5 minutes but cannot ingest money before contract proof", () => {
   const app = new cdk.App();
   const stack = new OpenRouterGateStack(app, "OpenRouterGate", {
     env: { account: "877352799272", region: "us-east-1" },
@@ -99,13 +99,24 @@ test("dev settlement worker is scheduled but cannot ingest money before contract
       OPENROUTER_WORKSPACE_ID: "",
     }) },
   });
-  template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(5 minutes)", State: "DISABLED" });
+  template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(5 minutes)", State: "ENABLED" });
+  template.hasResourceProperties("AWS::Lambda::EventInvokeConfig", { MaximumRetryAttempts: 0 });
   template.hasResourceProperties("AWS::Events::Rule", {
     ScheduleExpression: "cron(15 1 * * ? *)",
     State: "DISABLED",
     Targets: Match.arrayWith([Match.objectLike({ Input: '{"audit_previous_day":true}' })]),
   });
   template.resourceCountIs("AWS::SQS::Queue", 1);
+});
+
+test("prod settlement is scheduled too; the daily audit stays off without the money proof", () => {
+  const app = new cdk.App();
+  const template = Template.fromStack(new OpenRouterGateStack(app, "OpenRouterGateProd", {
+    env: { account: "877352799272", region: "us-east-1" },
+    environment: "prod",
+  }));
+  template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(5 minutes)", State: "ENABLED" });
+  template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "cron(15 1 * * ? *)", State: "DISABLED" });
 });
 
 test("the gate deploys in prod too: a runtime resolved to openrouter_managed needs its URL", () => {

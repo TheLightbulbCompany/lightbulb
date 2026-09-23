@@ -440,8 +440,9 @@ async def test_conversion_reconcile_is_dispatched_after_billing_commits(mock_rep
     mock_repo.set_plan = AsyncMock(side_effect=lambda *_a, **_k: order.append("plan"))
     reconcile_dispatch.side_effect = lambda *_a: order.append("reconcile") or True
 
+    # chatgpt_oauth: only chatgpt_oauth / byo_key metadata persist a provider since #3048.
     await _run_state(
-        mock_repo, "trial_local", "active", metadata={"owner_id": "org_x", "provider_choice": "bedrock_claude"}
+        mock_repo, "trial_local", "active", metadata={"owner_id": "org_x", "provider_choice": "chatgpt_oauth"}
     )
 
     assert order == ["status", "provider", "plan", "reconcile"]

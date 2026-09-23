@@ -1305,3 +1305,26 @@ describe("ServiceStack — task role inline policy size", () => {
     expect(inline.reduce((a, b) => a + b, 0)).toBeLessThan(9000);
   });
 });
+
+describe("ServiceStack — provision status events", () => {
+  test("every provision execution status change reaches the internal publish route", () => {
+    const t = SERVICE_TEMPLATE_DEV;
+    t.hasResourceProperties("AWS::Events::Rule", {
+      EventPattern: Match.objectLike({
+        source: ["aws.states"],
+        "detail-type": ["Step Functions Execution Status Change"],
+        detail: { stateMachineArn: [Match.anyValue()] },
+      }),
+    });
+    t.hasResourceProperties("AWS::Events::ApiDestination", {
+      HttpMethod: "POST",
+      InvocationEndpoint: "https://api-dev.flickmeon.ai/api/v1/internal/provisioning/execution-events",
+    });
+    t.hasResourceProperties("AWS::Events::Connection", {
+      AuthorizationType: "API_KEY",
+      AuthParameters: Match.objectLike({
+        ApiKeyAuthParameters: Match.objectLike({ ApiKeyName: "x-lightbulb-ws-internal" }),
+      }),
+    });
+  });
+});

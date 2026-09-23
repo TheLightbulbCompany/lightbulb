@@ -62,7 +62,7 @@
  * itself.
  */
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import useSWR from "swr";
+import useSWR, { mutate } from "swr";
 
 import { fetchJsonWithStatus, type ApiClientConfig } from "../api/client";
 import { ApiError } from "../api/error";
@@ -402,4 +402,10 @@ export function useOnboardingStatus(
     isLoading,
     refresh,
   };
+}
+
+/** Refetch the UNSCOPED status key now (mobile's). A ``runtime.resource.invalidated``
+ *  nudge calls it so the stepper advances on the event instead of the next poll tick. */
+export function refreshOnboardingStatus(swrKey = "/container/status"): void {
+  void mutate(swrKey);
 }

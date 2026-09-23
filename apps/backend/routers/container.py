@@ -537,6 +537,37 @@ async def browser_agent_release(owner_id: str, body: BrowserRunRelease, request:
     return await _browser_result(browser_control.release_agent(owner_id, body.runId, body.generation))
 
 
+provision_events_router = APIRouter()
+
+
+@provision_events_router.post("/execution-events", status_code=204)
+async def provision_execution_event(request: Request) -> Response:
+    """EventBridge API destination: a provision state-machine execution changed status.
+
+    The machine's own row writes (MarkFailed*) and the provisioner Lambda's never reach
+    the backend's write-site publisher, so this is how their outcome reaches the owner's
+    open clients -- a refetch nudge, never state. Authenticated by the WS internal shared
+    secret, which the EventBridge connection sends as ``x-lightbulb-ws-internal``; checked
+    unconditionally (not behind WS_ENFORCE_INTERNAL_SECRET)."""
+    import hmac
+    import json
+
+    from core.services.status_events import publish_status_changed_now
+
+    secret = settings.WS_INTERNAL_SECRET
+    presented = request.headers.get("x-lightbulb-ws-internal", "")
+    if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    try:
+        detail = (await request.json()).get("detail") or {}
+        owner_id = json.loads(detail.get("input") or "{}").get("owner_id")
+    except (ValueError, AttributeError):
+        owner_id = None
+    if isinstance(owner_id, str) and owner_id:
+        await publish_status_changed_now(owner_id)
+    return Response(status_code=204)
+
+
 @router.post(
     "/provision",
     summary="Provision a container for the current owner",

@@ -3,6 +3,7 @@ import {
   createApiClient,
   createMessagingClient,
   createRuntimeClient,
+  refreshOnboardingStatus,
   useLiveEvents as useSharedLiveEvents,
   type ChatIncomingMessage,
   type LiveConfig,
@@ -118,6 +119,11 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const dispatchEvent = useCallback((event: LiveEvent) => {
+    // The web twin's rule (hooks/useLiveEvents.tsx): a status nudge refetches the one
+    // /container/status key useOnboardingStatus reads, instead of waiting for its poll.
+    if (event.type === "runtime.resource.invalidated" && (event.payload.resource === "onboarding" || event.payload.resource === "health")) {
+      refreshOnboardingStatus();
+    }
     for (const handler of eventHandlers.current) handler(event);
   }, []);
   const dispatchChat = useCallback(

@@ -7,6 +7,8 @@ import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { DockerImageAsset, Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
+import * as events from "aws-cdk-lib/aws-events";
+import * as events_targets from "aws-cdk-lib/aws-events-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
@@ -2084,7 +2086,36 @@ export class ServiceStack extends cdk.Stack {
       ],
     });
 
-    // Provisioning failures page. This is the signup path — a failed or timed
+    // Status changes -> the owner's open clients. The machine's own row writes
+    // (MarkFailed*) and the provisioner Lambda's never reach the backend's
+    // write-site publisher, so EventBridge carries every execution status change
+    // to an internal route that publishes the runtime.resource.invalidated nudge
+    // (routers/container.py provision_execution_event). A nudge, never state:
+    // a lost event costs one refetch, and the poll still backstops until Phase 3
+    // retires it. The connection sends the WS internal shared secret as a header;
+    // rotating that secret needs a redeploy of this stack.
+    const statusEventsConnection = new events.Connection(this, "ProvisionStatusEventsConnection", {
+      authorization: events.Authorization.apiKey(
+        "x-lightbulb-ws-internal",
+        cdk.SecretValue.secretsManager(props.secretNames.wsInternalSecret),
+      ),
+    });
+    const statusEventsDestination = new events.ApiDestination(this, "ProvisionStatusEventsDestination", {
+      connection: statusEventsConnection,
+      endpoint: `${
+        env === "prod" ? `https://api.${rootDomain}` : `https://api-${env}.${rootDomain}`
+      }/api/v1/internal/provisioning/execution-events`,
+      httpMethod: events.HttpMethod.POST,
+    });
+    new events.Rule(this, "ProvisionStatusEventsRule", {
+      eventPattern: {
+        source: ["aws.states"],
+        detailType: ["Step Functions Execution Status Change"],
+        detail: { stateMachineArn: [provisionStateMachine.stateMachineArn] },
+      },
+      targets: [new events_targets.ApiDestination(statusEventsDestination)],
+    });
+
     // out execution means a new user never gets a container.
     //
     // The topic is imported from a CONSTRUCTED ARN string rather than a

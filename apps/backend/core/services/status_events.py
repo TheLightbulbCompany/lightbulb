@@ -10,6 +10,18 @@ logger = logging.getLogger(__name__)
 STATUS_CHANGED_EVENT = "runtime.resource.invalidated"
 
 
+async def publish_status_changed_now(owner_id: str) -> None:
+    """Publish the nudge and wait for it. Never raises: a live nudge never breaks its caller."""
+    try:
+        from core.services.live_events import publish_owner_users
+        from core.services.messaging import make_live_event
+
+        event = make_live_event(STATUS_CHANGED_EVENT, {"resource": "onboarding"})
+        await publish_owner_users(owner_id, event)
+    except Exception:  # noqa: BLE001 — a live nudge never breaks its durable write
+        logger.info("status event publish failed for owner %s", owner_id, exc_info=True)
+
+
 def publish_status_changed(owner_id: str | None) -> None:
     """Tell every active owner member to refetch onboarding/container status.
 
@@ -18,19 +30,8 @@ def publish_status_changed(owner_id: str | None) -> None:
     """
     if not owner_id:
         return
-
-    async def _publish() -> None:
-        try:
-            from core.services.live_events import publish_owner_users
-            from core.services.messaging import make_live_event
-
-            event = make_live_event(STATUS_CHANGED_EVENT, {"resource": "onboarding"})
-            await publish_owner_users(owner_id, event)
-        except Exception:  # noqa: BLE001 — a live nudge never breaks its durable write
-            logger.info("status event publish failed for owner %s", owner_id, exc_info=True)
-
     try:
-        asyncio.get_running_loop().create_task(_publish())
+        asyncio.get_running_loop().create_task(publish_status_changed_now(owner_id))
     except RuntimeError:
         # Synchronous scripts/tests have no live subscribers to notify.
         return

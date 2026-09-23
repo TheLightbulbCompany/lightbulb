@@ -22,8 +22,7 @@ def test_parallel_openclaw_paths_provider_shape():
         "tools.web.search.provider": "literal:parallel-free",
         "tools.web.search.parallel.apiKey": "input.token",
     }
-    # No validate endpoint (key checked at first search); public + ungated.
-    assert p.validation is None
+    # The validate spec is pinned by test_registry_validate_parallel.py.
 
 
 def test_direct_oauth_provider_shape():

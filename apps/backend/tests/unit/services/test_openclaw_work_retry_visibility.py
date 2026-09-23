@@ -253,6 +253,7 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
     run_id = repo.run_id_for("a1", "m1")
     assert ended == [("owner-1", run_id, {"outcome": "not_admitted"})]
     assert [(name, kwargs["dimensions"]) for name, kwargs in metrics] == [
+        ("messaging.jev.route", {"outcome": "fallback"}),  # Jev is unconfigured in tests
         ("messaging.run.dispatched", {"outcome": "new", "event_kind": "room_event"}),
         ("messaging.ingress.post", {"status_class": "409", "event_kind": "room_event"}),
         ("messaging.ingress.latency", {"event_kind": "room_event"}),
@@ -261,7 +262,7 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ingress_history_reads_only_the_twenty_messages_openclaw_renders(monkeypatch):
+async def test_ingress_history_reads_the_last_fifty_messages(monkeypatch):
     seen_limits = []
 
     async def fake_history(_room_id, _before_seq, limit):
@@ -290,7 +291,7 @@ async def test_ingress_history_reads_only_the_twenty_messages_openclaw_renders(m
         members=[],
     )
 
-    assert seen_limits == [20]
+    assert seen_limits == [50]
 
 
 @pytest.mark.asyncio

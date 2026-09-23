@@ -1,4 +1,7 @@
+import json
 import uuid
+
+from bridge import turn
 
 ROOM = "11111111-1111-4111-8111-111111111111"
 
@@ -33,3 +36,13 @@ def ingress(**over):
     }
     base.update(over)
     return base
+
+
+def split_turn_input(user_message):
+    """Split a `turn._turn_input()`-produced user message -- a plain string, or the
+    `_message_content` list form when a native image rides along -- into (turn context dict,
+    user text). The header is the JSON line after `TURN_CONTEXT_PREFIX`; the user text is
+    everything after the first newline."""
+    text = user_message[0]["text"] if isinstance(user_message, list) else user_message
+    header, _, rest = text.partition("\n")
+    return json.loads(header.removeprefix(turn.TURN_CONTEXT_PREFIX)), rest

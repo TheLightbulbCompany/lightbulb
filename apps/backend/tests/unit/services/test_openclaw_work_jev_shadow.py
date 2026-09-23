@@ -1,4 +1,7 @@
-"""Slice-1 SHADOW routing: Jev's pick is recorded once per message and metered, dispatch is unchanged."""
+"""Jev routing for Listening traffic: decided once per message, enforced at dispatch (slice 2)."""
+
+import asyncio
+import json
 
 import pytest
 from unittest.mock import AsyncMock
@@ -74,20 +77,35 @@ def metrics(monkeypatch):
     return out
 
 
-def _shadow_dims(metrics):
-    return [kw["dimensions"] for name, kw in metrics if name == "messaging.jev.shadow"]
+def _route_dims(metrics):
+    return [kw["dimensions"] for name, kw in metrics if name == "messaging.jev.route"]
+
+
+def _msg(i, *, author="u1", thread=None, text=None, seq=None):
+    return {
+        "messageId": f"h{i}",
+        "messageSeq": seq if seq is not None else i,
+        "author": {"kind": "human", "id": author, "displayName": "Aden"},
+        "text": text if text is not None else f"t{i}",
+        "threadRootMessageId": thread,
+        "createdAt": "2026-09-22T11:00:00+00:00",
+    }
 
 
 @pytest.mark.asyncio
-async def test_decision_computed_once_across_two_candidates(monkeypatch, store, metrics):
+async def test_decision_computed_once_and_returned_to_every_candidate(monkeypatch, store, metrics):
     decide = AsyncMock(return_value=ANSWERS)
     monkeypatch.setattr(jev, "decide", decide)
-    for agent in ("a1", "a2"):
-        await jev.shadow(META, agent, MESSAGE, latest=MESSAGE, members=MEMBERS, history=HISTORY)
+    got = [
+        await jev.route(META, agent, MESSAGE, latest=MESSAGE, members=MEMBERS, history=HISTORY)
+        for agent in ("a1", "a2")
+    ]
     assert decide.await_count == 1
+    assert got[0] == got[1] and got[0]["who"] == "a1"
     state, questions = decide.await_args.args
     assert state["room"] == {"kind": "channel", "name": "general"}
     assert state["recent"] == [{"author": "Growth (agent)", "text": "x" * 1000}]
+    assert "thread" not in state
     assert state["latest"]["author"] == "Aden (human)"
     who = questions["who"]
     assert who["instructions"].startswith("Which AI teammate, if any, should act on the latest message?")
@@ -97,28 +115,65 @@ async def test_decision_computed_once_across_two_candidates(monkeypatch, store, 
     row = store[(ROOM, "m1")]
     assert row["who"] == "a1" and row["placement"] == "thread" and row["whoP"]["a1"] == 0.9
     assert row["candidates"] == ["a1", "a2"] and row["model"] == "typesafe-ai/jev" and row["quietChannel"] is True
-    assert _shadow_dims(metrics) == [{"picked": "self", "quiet": "true"}, {"picked": "other", "quiet": "true"}]
 
 
 @pytest.mark.asyncio
-async def test_claim_loser_never_calls_jev_and_meters_pending(monkeypatch, store, metrics):
+async def test_state_carries_thirty_recent_with_the_thread_first(monkeypatch, store, metrics):
     decide = AsyncMock(return_value=ANSWERS)
     monkeypatch.setattr(jev, "decide", decide)
+    root = _msg(1, text="the root")
+    history = [root, *(_msg(i) for i in range(2, 40)), _msg(40, thread="h1", text="in thread")]
+    latest = {**MESSAGE, "threadRootMessageId": "h1", "messageSeq": 41}
+    await jev.route(META, "a1", latest, latest=latest, members=MEMBERS, history=history)
+    state = decide.await_args.args[0]
+    assert [line["text"] for line in state["thread"]] == ["the root", "in thread"]
+    assert len(state["recent"]) == 29  # the last 30, less the thread reply already shown
+    assert state["recent"][-1]["text"] == "t39"
+    assert list(state) == ["room", "thread", "recent", "latest"]
+
+
+@pytest.mark.asyncio
+async def test_state_trims_oldest_recent_first_to_the_char_budget(monkeypatch, store, metrics):
+    decide = AsyncMock(return_value=ANSWERS)
+    monkeypatch.setattr(jev, "decide", decide)
+    history = [_msg(1, text="r" * 5000), *(_msg(i, text="y" * 5000) for i in range(2, 40))]
+    history.append(_msg(40, thread="h1", text="z" * 5000))
+    latest = {**MESSAGE, "threadRootMessageId": "h1", "messageSeq": 41}
+    await jev.route(META, "a1", latest, latest=latest, members=MEMBERS, history=history)
+    state = decide.await_args.args[0]
+    assert len(json.dumps(state, ensure_ascii=False)) <= jev._STATE_MAX_CHARS
+    assert len(state["thread"]) == 2  # the thread survives; general history is trimmed first
+    assert 0 < len(state["recent"]) < 29
+    assert state["recent"][-1]["text"] == "y" * 1000  # newest kept, capped at 1,000
+
+
+@pytest.mark.asyncio
+async def test_claim_loser_waits_for_the_winner_and_follows_it(monkeypatch, store, metrics):
+    decide = AsyncMock(return_value=ANSWERS)
+    monkeypatch.setattr(jev, "decide", decide)
+    monkeypatch.setattr(jev, "_LOSER_POLL_S", 0.01)
     store[(ROOM, "m1")] = {"pending": True, "claimedAt": 0}  # another consumer is mid-decision
-    await jev.shadow(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+
+    async def winner_finishes():
+        await asyncio.sleep(0.03)
+        store[(ROOM, "m1")] = {"who": "a2", "whoP": {"a2": 0.9}, "placement": "main"}
+
+    finisher = asyncio.create_task(winner_finishes())
+    got = await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    await finisher
     decide.assert_not_awaited()
     jev.agent_card.assert_not_awaited()
-    assert _shadow_dims(metrics) == [{"picked": "pending", "quiet": "unknown"}]
+    assert got["who"] == "a2"
 
 
 @pytest.mark.asyncio
-async def test_claim_loser_meters_against_a_completed_row(monkeypatch, store, metrics):
-    decide = AsyncMock(return_value=ANSWERS)
-    monkeypatch.setattr(jev, "decide", decide)
-    store[(ROOM, "m1")] = {"who": "none", "quietChannel": False}
-    await jev.shadow(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
-    decide.assert_not_awaited()
-    assert _shadow_dims(metrics) == [{"picked": "none", "quiet": "false"}]
+async def test_claim_loser_times_out_to_none(monkeypatch, store, metrics):
+    monkeypatch.setattr(jev, "decide", AsyncMock(return_value=ANSWERS))
+    monkeypatch.setattr(jev, "_LOSER_POLL_S", 0.01)
+    monkeypatch.setattr(jev, "_LOSER_WAIT_S", 0.05)
+    store[(ROOM, "m1")] = {"pending": True, "claimedAt": 0}
+    assert await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[]) is None
+    jev.decide.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -128,13 +183,12 @@ async def test_missing_key_disables_before_any_io(monkeypatch, store, metrics):
     monkeypatch.setattr(jev.messaging_repo, "claim_decision", claim)
     decide = AsyncMock()
     monkeypatch.setattr(jev, "decide", decide)
-    await jev.shadow(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    assert await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[]) is None
     claim.assert_not_awaited()
     decide.assert_not_awaited()
     jev.agent_card.assert_not_awaited()
     assert store == {}
     assert ("messaging.jev.decision", {"dimensions": {"outcome": "disabled"}}) in metrics
-    assert _shadow_dims(metrics) == []
 
 
 @pytest.mark.asyncio
@@ -147,49 +201,65 @@ async def test_missing_key_disables_before_any_io(monkeypatch, store, metrics):
 )
 async def test_invalid_choice_is_stored_as_fallback(monkeypatch, store, metrics, answers):
     monkeypatch.setattr(jev, "decide", AsyncMock(return_value=answers))
-    await jev.shadow(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+    got = await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
     row = store[(ROOM, "m1")]
     assert row["fallback"] is True and row["reason"] == "invalid_choice" and "who" not in row
-    assert _shadow_dims(metrics)[0]["picked"] == "fallback"
+    assert got == row
 
 
 @pytest.mark.asyncio
 async def test_jev_unavailable_stores_fallback(monkeypatch, store, metrics):
     monkeypatch.setattr(jev, "decide", AsyncMock(return_value=None))
     recent = [{"author": {"kind": "human", "id": "u1"}, "text": "hi", "createdAt": "2026-09-22T11:55:00+00:00"}]
-    await jev.shadow(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=recent)
-    assert store[(ROOM, "m1")]["fallback"] is True and store[(ROOM, "m1")]["quietChannel"] is False
-    assert _shadow_dims(metrics) == [{"picked": "fallback", "quiet": "false"}]
+    got = await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=recent)
+    assert got["fallback"] is True and store[(ROOM, "m1")]["quietChannel"] is False
 
 
 @pytest.mark.asyncio
-async def test_shadow_errors_are_swallowed(monkeypatch, metrics):
+async def test_winner_failure_stores_a_fallback_so_losers_stop_waiting(monkeypatch, store, metrics):
+    monkeypatch.setattr(jev, "decide", AsyncMock(side_effect=RuntimeError("boom")))
+    assert await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[]) is None
+    assert store[(ROOM, "m1")]["fallback"] is True
+
+
+@pytest.mark.asyncio
+async def test_route_errors_are_swallowed(monkeypatch, metrics):
     monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value="k"))
     monkeypatch.setattr(jev.messaging_repo, "claim_decision", AsyncMock(side_effect=RuntimeError("ddb down")))
-    await jev.shadow(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
-    assert _shadow_dims(metrics) == [{"picked": "error", "quiet": "unknown"}]
+    assert await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[]) is None
 
 
-# --------------------------------------------------------------------------- the hook in _dispatch_message
+# --------------------------------------------------------------------------- enforcement in _dispatch_message
+
+THREE = {
+    **MESSAGE,
+    "dispatchTargets": [{"agentId": a, "eventKind": "room_event"} for a in ("a1", "a2", "a3")],
+}
+MEMBERS3 = [*MEMBERS, {"kind": "agent", "id": "a3", "displayName": "Analytics", "listenMode": "active"}]
 
 
-async def _dispatch(monkeypatch, event_kind, *, listening=True, shadow=None, follow_up=None):
+async def _dispatch(
+    monkeypatch, event_kind, *, agent="a1", message=MESSAGE, listening=True, route=None, follow_up=None
+):
     posted: list = []
     created: list = []
-    monkeypatch.setattr(work, "put_metric", lambda *a, **k: None)
+    metrics: list = []
+    monkeypatch.setattr(work, "put_metric", lambda name, **kw: metrics.append((name, kw.get("dimensions"))))
     monkeypatch.setattr(
         work.container_repo,
         "get_by_owner_id",
         AsyncMock(return_value={"gateway_token": "gw", "agentcore_runtime_arn": "arn:r1"}),
     )
     monkeypatch.setattr(work, "listening_available", AsyncMock(return_value=listening))
-    monkeypatch.setattr(work.messaging_repo, "get_member", AsyncMock(return_value={"kind": "agent", "id": "a1"}))
-    monkeypatch.setattr(work.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS))
+    monkeypatch.setattr(work.messaging_repo, "get_member", AsyncMock(return_value={"kind": "agent", "id": agent}))
+    monkeypatch.setattr(work.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS3))
     monkeypatch.setattr(work, "human_emails", AsyncMock(return_value={}))
     monkeypatch.setattr(work, "with_human_handles", lambda members, _emails: members)
     monkeypatch.setattr(work.messaging_repo, "workspace_id_for_meta", AsyncMock(return_value="ws"))
     monkeypatch.setattr(
-        work, "build_ingress_body", AsyncMock(return_value={"version": 1, "message": MESSAGE, "recentHistory": HISTORY})
+        work,
+        "build_ingress_body",
+        AsyncMock(side_effect=lambda **kw: {"version": 1, "message": message, "recentHistory": HISTORY}),
     )
 
     async def create_run(owner, run_id, **fields):
@@ -201,8 +271,8 @@ async def _dispatch(monkeypatch, event_kind, *, listening=True, shadow=None, fol
 
     monkeypatch.setattr(local_sessions, "live_sessions_for_room", AsyncMock(return_value=[]))
     monkeypatch.setattr(local_session_grants, "mint", lambda *a: None)
-    shadow = shadow or AsyncMock()
-    monkeypatch.setattr(jev, "shadow", shadow)
+    if route is not None:
+        monkeypatch.setattr(jev, "route", route)
 
     class Answer:
         status_code = 202
@@ -218,46 +288,163 @@ async def _dispatch(monkeypatch, event_kind, *, listening=True, shadow=None, fol
         return Answer()
 
     monkeypatch.setattr(worker, "_post", post)
-    await worker._dispatch_message(META, {"kind": "agent", "id": "a1"}, MESSAGE, event_kind, follow_up=follow_up)
-    return shadow, posted, created
+    await worker._dispatch_message(META, {"kind": "agent", "id": agent}, message, event_kind, follow_up=follow_up)
+    return posted, created, [dims for name, dims in metrics if name == "messaging.jev.route"]
+
+
+def _decision(who, p=0.9, placement="thread"):
+    return {"who": who, "whoP": {who: p}, "placement": placement}
 
 
 @pytest.mark.asyncio
-async def test_hook_runs_for_room_event_and_dispatch_is_unchanged(monkeypatch):
-    shadow, posted, created = await _dispatch(monkeypatch, "room_event")
-    shadow.assert_awaited_once()
-    assert shadow.await_args.args[1] == "a1"
-    assert shadow.await_args.kwargs["history"] == HISTORY
-    assert len(posted) == 1 and len(created) == 1
+async def test_winner_routes_and_the_other_candidates_skip(monkeypatch, store):
+    decide = AsyncMock(return_value={**ANSWERS, "who": {"choice": "a2", "probabilities": {"a2": 0.8}}})
+    monkeypatch.setattr(jev, "decide", decide)
+    monkeypatch.setattr(jev, "put_metric", lambda *a, **k: None)
+    posts, runs, outcomes = [], [], []
+    for agent in ("a1", "a2", "a3"):
+        posted, created, dims = await _dispatch(monkeypatch, "room_event", agent=agent, message=THREE)
+        posts += posted
+        runs += created
+        outcomes += dims
+    assert decide.await_count == 1
+    assert len(posts) == 1 and len(runs) == 1
+    assert posts[0]["routing"] == {"decidedBy": "jev", "placement": "thread"}
+    assert outcomes == [{"outcome": "skipped"}, {"outcome": "routed"}, {"outcome": "skipped"}]
 
 
 @pytest.mark.asyncio
-async def test_hook_never_runs_for_user_request(monkeypatch):
-    shadow, posted, _ = await _dispatch(monkeypatch, "user_request")
-    shadow.assert_not_awaited()
-    assert len(posted) == 1
+async def test_none_invokes_nobody(monkeypatch):
+    for agent in ("a1", "a2"):
+        posted, created, dims = await _dispatch(
+            monkeypatch, "room_event", agent=agent, route=AsyncMock(return_value=_decision("none"))
+        )
+        assert posted == [] and created == [] and dims == [{"outcome": "skipped"}]
 
 
 @pytest.mark.asyncio
-async def test_hook_never_runs_for_a_follow_up(monkeypatch):
-    # A follow-up is the agent's own delegation result: deterministic, never routed.
-    follow_up = {"id": "11111111-1111-1111-1111-111111111111", "reason": "delegation_completed", "text": "done"}
-    shadow, posted, _ = await _dispatch(monkeypatch, "room_event", follow_up=follow_up)
-    shadow.assert_not_awaited()
-    assert len(posted) == 1
+async def test_below_threshold_invokes_nobody(monkeypatch):
+    posted, created, dims = await _dispatch(
+        monkeypatch, "room_event", route=AsyncMock(return_value=_decision("a1", 0.49))
+    )
+    assert posted == [] and created == [] and dims == [{"outcome": "skipped"}]
 
 
 @pytest.mark.asyncio
-async def test_hook_never_runs_when_plan_gate_drops(monkeypatch):
-    shadow, posted, _ = await _dispatch(monkeypatch, "room_event", listening=False)
-    shadow.assert_not_awaited()
-    assert posted == []
+@pytest.mark.parametrize("decision", [None, {"fallback": True}])
+async def test_fallback_dispatches_every_candidate_without_routing(monkeypatch, decision):
+    for agent in ("a1", "a2"):
+        posted, created, dims = await _dispatch(
+            monkeypatch, "room_event", agent=agent, route=AsyncMock(return_value=decision)
+        )
+        assert len(posted) == 1 and len(created) == 1 and dims == [{"outcome": "fallback"}]
+        assert "routing" not in posted[0] and "replyThreadRootId" not in posted[0]
 
 
 @pytest.mark.asyncio
-async def test_real_shadow_failing_still_dispatches(monkeypatch):
+async def test_real_route_failing_still_dispatches(monkeypatch):
     monkeypatch.setattr(jev, "_gateway_key", AsyncMock(return_value="k"))
     monkeypatch.setattr(jev.messaging_repo, "claim_decision", AsyncMock(side_effect=RuntimeError("ddb down")))
     monkeypatch.setattr(jev, "put_metric", lambda *a, **k: None)
-    _, posted, created = await _dispatch(monkeypatch, "room_event", shadow=jev.shadow)
-    assert len(posted) == 1 and len(created) == 1
+    posted, created, dims = await _dispatch(monkeypatch, "room_event")
+    assert len(posted) == 1 and len(created) == 1 and dims == [{"outcome": "fallback"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("placement", "thread_root", "expected"),
+    [
+        ("main", None, None),
+        ("thread", None, "m1"),
+        ("main", "root-1", "root-1"),  # already inside a thread: it stays there
+        ("thread", "root-1", "root-1"),
+    ],
+)
+async def test_placement_maps_to_reply_thread_root(monkeypatch, placement, thread_root, expected):
+    message = {**MESSAGE, "threadRootMessageId": thread_root}
+    posted, _, _ = await _dispatch(
+        monkeypatch, "room_event", message=message, route=AsyncMock(return_value=_decision("a1", placement=placement))
+    )
+    assert posted[0]["routing"] == {"decidedBy": "jev", "placement": placement}
+    assert "replyThreadRootId" in posted[0] and posted[0]["replyThreadRootId"] == expected
+
+
+@pytest.mark.asyncio
+async def test_route_never_runs_for_user_request(monkeypatch):
+    route = AsyncMock()
+    posted, _, dims = await _dispatch(monkeypatch, "user_request", route=route)
+    route.assert_not_awaited()
+    assert len(posted) == 1 and "routing" not in posted[0] and dims == []
+
+
+@pytest.mark.asyncio
+async def test_route_never_runs_for_a_follow_up(monkeypatch):
+    # A follow-up is the agent's own delegation result: deterministic, never routed.
+    follow_up = {"id": "11111111-1111-1111-1111-111111111111", "reason": "delegation_completed", "text": "done"}
+    route = AsyncMock()
+    posted, _, _ = await _dispatch(monkeypatch, "room_event", route=route, follow_up=follow_up)
+    route.assert_not_awaited()
+    assert len(posted) == 1 and "routing" not in posted[0]
+
+
+@pytest.mark.asyncio
+async def test_route_never_runs_when_plan_gate_drops(monkeypatch):
+    route = AsyncMock()
+    posted, _, _ = await _dispatch(monkeypatch, "room_event", listening=False, route=route)
+    route.assert_not_awaited()
+    assert posted == []
+
+
+# --------------------------------------------------------------------------- the agent's history window
+
+
+def _row(seq, *, thread=None, mid=None):
+    return {
+        "messageId": mid or f"00000000-0000-4000-8000-{seq:012d}",
+        "roomId": ROOM,
+        "messageSeq": seq,
+        "roomRevision": 1,
+        "author": {"kind": "human", "id": "u1", "displayName": "U"},
+        "text": f"t{seq}",
+        "mentions": [],
+        "replyToMessageId": None,
+        "threadRootMessageId": thread,
+        "createdAt": "2026-09-22T00:00:00Z",
+        "runId": None,
+        "attachments": [],
+    }
+
+
+ROOT = "00000000-0000-4000-8000-000000000003"
+
+
+@pytest.mark.asyncio
+async def test_ingress_history_merges_a_thread_older_than_the_window(monkeypatch):
+    window = [_row(s) for s in range(60, 100)] + [_row(100, thread=ROOT)]
+    thread = [_row(3, mid=ROOT), _row(10, thread=ROOT), _row(100, thread=ROOT)]
+    before = AsyncMock(return_value=window)
+    list_thread = AsyncMock(return_value=thread)
+    monkeypatch.setattr(work.messaging_repo, "list_messages_before", before)
+    monkeypatch.setattr(work.messaging_repo, "list_thread", list_thread)
+    trigger = _row(101, thread=ROOT)
+    body = await work.build_ingress_body(
+        meta={**META, "revision": 1}, target_agent_id="a1", event_kind="room_event", message=trigger, members=[]
+    )
+    before.assert_awaited_once_with(ROOM, 101, 50)
+    list_thread.assert_awaited_once_with(ROOM, ROOT, 101)
+    seqs = [m["messageSeq"] for m in body["recentHistory"]]
+    assert seqs == [3, 10, *range(60, 101)]  # deduped, strictly increasing, below the trigger
+
+
+@pytest.mark.asyncio
+async def test_ingress_history_skips_the_thread_read_when_the_root_is_in_the_window(monkeypatch):
+    window = [_row(s) for s in range(1, 10)]
+    monkeypatch.setattr(work.messaging_repo, "list_messages_before", AsyncMock(return_value=window))
+    list_thread = AsyncMock()
+    monkeypatch.setattr(work.messaging_repo, "list_thread", list_thread)
+    trigger = _row(10, thread=ROOT)
+    body = await work.build_ingress_body(
+        meta={**META, "revision": 1}, target_agent_id="a1", event_kind="room_event", message=trigger, members=[]
+    )
+    list_thread.assert_not_awaited()
+    assert [m["messageSeq"] for m in body["recentHistory"]] == list(range(1, 10))

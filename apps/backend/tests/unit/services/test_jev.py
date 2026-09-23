@@ -301,3 +301,9 @@ async def test_card_sources_failing_degrade_to_display_name(monkeypatch):
     monkeypatch.setattr(jev, "_read", boom)
     monkeypatch.setattr(jev, "_paperclip_agent", AsyncMock(side_effect=RuntimeError("paperclip down")))
     assert await jev.agent_card("org_1", "a1", "Finance") == "Finance. Tools: none."
+
+
+def test_a_loser_outwaits_the_winners_whole_budget_plus_its_write():
+    # Equal timeouts let a slow winner's put_decision land after the loser gave up and fell
+    # back to dispatch-all: two responders for one message.
+    assert jev._LOSER_WAIT_S >= jev._DECIDE_BUDGET_S + 3

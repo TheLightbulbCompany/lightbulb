@@ -1,7 +1,6 @@
 """Task 25, bridge half only. The backend GET /internal/messaging/attachments/{...} route
 is lane D's; per lane-A-brief.md we stub sync._get_backend_bytes exactly as the brief shows."""
 import base64
-import json
 import sys
 import types
 from pathlib import Path
@@ -94,8 +93,10 @@ def test_room_context_and_system_prompt_carry_the_media_list():
     # Bug fix: the model picked a stale historical attachment via vision_analyze even though the
     # current message's own image already rode along natively -- this sentence tells it not to.
     assert "use vision_analyze only for files not shown" in prompt
-    block = prompt.split("```json", 1)[1].split("```", 1)[0]
-    assert json.loads(block)["media"] == ["/mnt/a1.png"]
+    # The media list itself is per-turn now, so it rides the turn-context header, not the
+    # (byte-stable, cached) system prompt.
+    ctx, _ = f.split_turn_input(turn._turn_input(f.ingress(), media=["/mnt/a1.png"]))
+    assert ctx["media"] == ["/mnt/a1.png"]
 
 
 def test__run_hermes_materializes_attachments_before_building_the_system_prompt(home, monkeypatch):
@@ -106,12 +107,12 @@ def test__run_hermes_materializes_attachments_before_building_the_system_prompt(
         session_cache_read_tokens = session_cache_write_tokens = 0
 
         def run_conversation(self, **kw):
-            seen["system_message"] = kw["system_message"]
+            seen["user_message"] = kw["user_message"]
             return {"api_calls": 1, "final_response": "ok"}
 
     monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: _FakeAgent())
     # A PDF, deliberately -- it is in `media` but never native `_message_image_paths` content,
-    # so this test does not also need the native-vision stub just to reach the system prompt.
+    # so this test does not also need the native-vision stub just to reach the turn header.
     attachment = {"id": "a1", "fileName": "a1.pdf", "contentType": "application/pdf", "size": 5}
     body = f.ingress(message=f.message(attachments=[attachment]))
     expected_path = str(sync.attachment_path(f.ROOM, attachment))
@@ -119,8 +120,8 @@ def test__run_hermes_materializes_attachments_before_building_the_system_prompt(
 
     turn._run_hermes("ceo", body, None)
 
-    block = seen["system_message"].split("```json", 1)[1].split("```", 1)[0]
-    assert json.loads(block)["media"] == [expected_path]
+    ctx, _ = f.split_turn_input(seen["user_message"])
+    assert ctx["media"] == [expected_path]
 
 
 # ---- fix round: the model answered about the WRONG image -----------------------------------
@@ -143,8 +144,8 @@ def test__run_hermes_lists_only_the_current_messages_media_not_history(home, mon
 
     turn._run_hermes("ceo", body, None)
 
-    block = seen["system_message"].split("```json", 1)[1].split("```", 1)[0]
-    media = json.loads(block)["media"]
+    ctx, _ = f.split_turn_input(seen["user_message"])
+    media = ctx["media"]
     assert len(media) == 1
     assert media[0].endswith("current-image.png")
 
@@ -160,7 +161,9 @@ def test__run_hermes_sends_a_current_image_as_native_user_content(home, monkeypa
     turn._run_hermes("ceo", body, None)
 
     content = seen["user_message"]
-    assert content[0] == {"type": "text", "text": "Prez: ship it"}
+    assert content[0]["type"] == "text"
+    _, text = f.split_turn_input(content)
+    assert text == "Prez: ship it"
     assert content[1]["type"] == "image_url"
     header, encoded = content[1]["image_url"]["url"].split(",", 1)
     assert header == "data:image/png;base64"
@@ -196,7 +199,9 @@ def test__run_hermes_keeps_current_and_historical_images_on_their_messages(home,
     assert historical[0] == {"type": "text", "text": "Prez: past"}
     assert base64.b64decode(historical[1]["image_url"]["url"].split(",", 1)[1]) == _BLUE_PNG
     current_content = seen["user_message"]
-    assert current_content[0] == {"type": "text", "text": "Prez: now"}
+    assert current_content[0]["type"] == "text"
+    _, text = f.split_turn_input(current_content)
+    assert text == "Prez: now"
     assert base64.b64decode(current_content[1]["image_url"]["url"].split(",", 1)[1]) == _RED_PNG
 
 
@@ -233,7 +238,9 @@ def test__run_hermes_does_not_turn_a_pdf_into_image_content(home, monkeypatch):
 
     turn._run_hermes("ceo", body, None)
 
-    assert seen["user_message"] == "Prez: ship it"
+    assert isinstance(seen["user_message"], str)  # no image content list for a PDF
+    _, text = f.split_turn_input(seen["user_message"])
+    assert text == "Prez: ship it"
 
 
 def test_native_image_content_uses_the_resized_bytes_and_cleans_up(home, monkeypatch):
@@ -274,7 +281,9 @@ def test_image_budget_keeps_current_then_newest_history_without_dropping_text(ho
     for seq, row in enumerate(history[2:], 3):
         assert row["content"][0] == {"type": "text", "text": f"Prez: text {seq}"}
         assert len(row["content"][1:]) == 4
-    assert seen["user_message"][0] == {"type": "text", "text": "Prez: text 7"}
+    assert seen["user_message"][0]["type"] == "text"
+    _, text = f.split_turn_input(seen["user_message"])
+    assert text == "Prez: text 7"
     assert len(seen["user_message"][1:]) == 4
     rows = [*history, {"content": seen["user_message"]}]
     assert sum(part["type"] == "image_url" for row in rows if isinstance(row["content"], list)

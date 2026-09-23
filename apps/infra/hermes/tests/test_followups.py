@@ -86,7 +86,8 @@ def test_a_follow_up_turn_feeds_the_follow_up_text_and_replies_in_the_original_t
     monkeypatch.setattr(turn, "gate_ambient", lambda *a, **k: pytest.fail("a follow-up never gates"))
     body = _follow_up_body(eventKind="room_event")
     turn.run_turn("ceo", body)
-    assert seen["user_message"] == "subagent says: done"
+    _, text = f.split_turn_input(seen["user_message"])
+    assert text == "subagent says: done"
     reply = next(b for p, b in posted if p == "agent-messages/org_test")
     assert reply["threadRootMessageId"] == ROOT
     assert reply["replyToMessageId"] == TRIGGER

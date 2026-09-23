@@ -7,7 +7,7 @@ import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
 import { SUPPORT_EMAIL } from "@/lib/domain";
-import { planLabel } from "@/lib/planLabel";
+import { freeTierDaysLeft, planLabel } from "@/lib/planLabel";
 import { useAuth, useUser, UserButton, useOrganization, useClerk } from "@clerk/nextjs";
 import { useApi, ApiError } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
@@ -350,6 +350,36 @@ function BaseUpgradeRow({
   );
 }
 
+// The free-tier window at the top of an unsubscribed workspace's Billing page.
+// trial_end null (a row the backend has not stamped) reads plain "Free trial".
+// ponytail: no "today's allowance used" line; nothing exposes the managed key's
+// daily usage yet (see the PR for the backend field it needs).
+function TrialStatusCard({
+  expired,
+  daysLeft,
+  endLabel,
+}: {
+  expired: boolean;
+  daysLeft: number | null;
+  endLabel: string | null;
+}) {
+  const title = expired
+    ? "Your free trial has ended"
+    : daysLeft == null
+      ? "Free trial"
+      : `Free trial — ${daysLeft} day${daysLeft === 1 ? "" : "s"} left`;
+  return (
+    <div className="settings-card" data-testid="trial-status">
+      <div className="settings-card-title">{title}</div>
+      <div className="settings-card-desc">
+        {expired
+          ? "Pick a plan to keep your agents running."
+          : `Your agents run on Lightbulb-managed DeepSeek within a daily allowance that resets at midnight UTC.${endLabel ? ` Trial ends ${endLabel}.` : ""}`}
+      </div>
+    </div>
+  );
+}
+
 function BillingPanel() {
   // Settings is a direct Checkout success target, so it owns the existing
   // webhook-refresh/URL-cleanup seam as well as the chat shell does.
@@ -469,6 +499,13 @@ function BillingPanel() {
           </div>
         )}
 
+        {isTrialLocal && (
+          <TrialStatusCard
+            expired={isTrialExpired}
+            daysLeft={freeTierDaysLeft(subscriptionStatus, account?.trial_end, nowMs)}
+            endLabel={trialEndLabel}
+          />
+        )}
         <TeamBillingCard
             workspacePriceUsd={account?.workspace_price_usd}
           ownerRole={orgRole}

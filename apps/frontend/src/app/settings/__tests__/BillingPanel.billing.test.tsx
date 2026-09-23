@@ -278,4 +278,15 @@ describe("BillingPanel — org trial_local conversion", () => {
     expect(screen.queryByText(/managed Claude inference/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Create or select a workspace/i)).not.toBeInTheDocument();
   });
+
+  it.each([
+    [null, "Free trial"],
+    [Math.floor(Date.now() / 1000) + 2.5 * 86_400, "Free trial — 3 days left"],
+    [Math.floor(Date.now() / 1000) - 60, "Your free trial has ended"],
+  ])("shows the free-trial window (trial_end %s)", (trialEnd, title) => {
+    billing.isSubscribed = false;
+    billing.account = { subscription_status: "trial_local", trial_end: trialEnd, workspace_price_usd: 50 };
+    render(<SettingsPage />);
+    expect(screen.getByTestId("trial-status")).toHaveTextContent(title);
+  });
 });

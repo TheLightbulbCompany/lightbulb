@@ -234,7 +234,9 @@ async def test_plugin_refusal_is_counted_for_both_event_kinds(monkeypatch, event
 
     await _dispatch(monkeypatch, answer=_Answer(409), event_kind=event_kind, metrics=metrics, ledger=ledger, posted={})
 
-    assert [(name, kwargs.get("dimensions")) for name, kwargs in metrics] == [
+    # Jev is unconfigured in tests, so Listening traffic records a fallback first.
+    routed = [("messaging.jev.route", {"outcome": "fallback"})] if event_kind == "room_event" else []
+    assert [(name, kwargs.get("dimensions")) for name, kwargs in metrics] == routed + [
         ("messaging.run.dispatched", {"outcome": "new", "event_kind": event_kind}),
         ("messaging.ingress.post", {"status_class": "409", "event_kind": event_kind}),
         ("messaging.ingress.latency", {"event_kind": event_kind}),

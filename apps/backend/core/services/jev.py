@@ -1,15 +1,14 @@
-"""Jev (TypeSafe AI's decision model) over the Vercel AI Gateway, and the SHADOW routing decision.
+"""Jev (TypeSafe AI's decision model) over the Vercel AI Gateway, and the Listening routing decision.
 
-Spec: docs/superpowers/specs/2026-09-22-jev-routing-proactive.md §3a/§5/§5a. Slice 1 only records
-what Jev WOULD do for Listening (``room_event``) traffic; dispatch is unchanged. No flag: a missing
-``lightbulb/{env}/vercel-ai-gateway`` secret disables it.
+Spec: docs/superpowers/specs/2026-09-22-jev-routing-proactive.md §3a/§5/§5a. Jev picks at most one
+Listening (``room_event``) responder per message and where it replies; ``openclaw_work`` enforces it.
+No flag: a missing ``lightbulb/{env}/vercel-ai-gateway`` secret disables it (dispatch falls back).
 """
 
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import functools
 import json
 import logging
 import re
@@ -37,8 +36,17 @@ _KEY_RETRY_S = 300
 _KEY_TTL_S = 3600
 _CARD_TTL_S = 600
 _QUIET_S = 600
-#: Whole shadow budget: cards (S3 + Paperclip) plus the 3 s Jev call, so it can never stall dispatch.
-_SHADOW_BUDGET_S = 8.0
+#: Whole decision budget: cards (S3 + Paperclip) plus the 3 s Jev call, so it can never stall dispatch.
+_DECIDE_BUDGET_S = 8.0
+#: A claim loser polls for the winner's row this often, for at most this long, then falls back.
+#: ponytail: a DynamoDB poll, <=32 strongly consistent reads per loser per message; a push
+#: (stream/notify) only if Listening fan-out grows past a handful of candidates.
+_LOSER_POLL_S = 0.25
+_LOSER_WAIT_S = 8.0
+#: What Jev sees: the last 30 room messages (1,000 chars each), trimmed oldest-first until the
+#: whole state fits ~24k chars -- generous headroom under Jev's 32k-token state limit.
+_RECENT_LIMIT = 30
+_STATE_MAX_CHARS = 24_000
 
 #: Its own small pool and short, no-retry clients: ``wait_for`` cancels the await, not the thread,
 #: so a slow S3/Secrets Manager read must never pin the default executor DynamoDB shares.
@@ -65,7 +73,7 @@ _ROLE_DESCRIPTIONS = {
 
 
 async def _off(fn, *args):
-    return await asyncio.get_running_loop().run_in_executor(_EXECUTOR, functools.partial(fn, *args))
+    return await asyncio.get_running_loop().run_in_executor(_EXECUTOR, fn, *args)
 
 
 def _read_secret(name: str) -> str | None:
@@ -220,34 +228,25 @@ def _tool_names(config: dict, facts: dict) -> list[str]:
     return sorted(names)
 
 
+async def _soft(label: str, awaitable, parse=lambda raw: raw) -> Any:
+    """One optional card source: ``parse(await awaitable)``, or ``None`` on absence or ANY failure."""
+    try:
+        raw = await awaitable
+        return parse(raw) if raw else None
+    except Exception as exc:  # noqa: BLE001 -- a card degrades, never raises
+        logger.info("Jev card: %s unavailable (%s)", label, type(exc).__name__)
+        return None
+
+
 async def _card_parts(owner_id: str, agent_id: str, display_name: str) -> tuple[str, str, str]:
     """``(head, soul text, tools)`` -- every source optional; a failure degrades, never raises."""
     prefix = hermes_profiles.profile_prefix(owner_id, agent_id)
-    agent: dict = {}
-    persona = what = ""
-    config: dict = {}
-    facts: dict = {}
-    try:
-        agent = await _paperclip_agent(agent_id) or {}
-    except Exception as exc:  # noqa: BLE001
-        logger.info("Jev card: paperclip agent unavailable (%s)", type(exc).__name__)
-    try:
-        raw = await _off(_read, f"{prefix}SOUL.md")
-        if raw:
-            persona, what = _soul_parts(raw.decode())
-    except Exception as exc:  # noqa: BLE001
-        logger.info("Jev card: SOUL.md unavailable (%s)", type(exc).__name__)
-    try:
-        # config.yaml only -- read_profile_config never opens .env (the secrets file).
-        raw = await _off(_read, f"{prefix}config.yaml")
-        config = (yaml.safe_load(raw) if raw else None) or {}
-    except Exception as exc:  # noqa: BLE001
-        logger.info("Jev card: config.yaml unavailable (%s)", type(exc).__name__)
-    try:
-        raw = await _off(_read, f"{prefix}{hermes_profiles.FACTS_FILENAME}")
-        facts = json.loads(raw) if raw else {}
-    except Exception as exc:  # noqa: BLE001
-        logger.info("Jev card: facts unavailable (%s)", type(exc).__name__)
+    agent = await _soft("paperclip agent", _paperclip_agent(agent_id)) or {}
+    soul = _off(_read, f"{prefix}SOUL.md")
+    persona, what = await _soft("SOUL.md", soul, lambda raw: _soul_parts(raw.decode())) or ("", "")
+    # config.yaml only -- read_profile_config never opens .env (the secrets file).
+    config = await _soft("config.yaml", _off(_read, f"{prefix}config.yaml"), yaml.safe_load) or {}
+    facts = await _soft("facts", _off(_read, f"{prefix}{hermes_profiles.FACTS_FILENAME}"), json.loads) or {}
     role = agent.get("role")
     head = f"{agent.get('name') or display_name} (role: {role})." if role else f"{agent.get('name') or display_name}."
     # The role-code line only stands in when SOUL.md has no "What you do" section.
@@ -269,12 +268,8 @@ def _assemble(parts: tuple[str, str, str], recency: str = "") -> str:
 async def agent_card(owner_id: str, agent_id: str, display_name: str, recency: str = "") -> str:
     """Cached per (owner, agent), keyed on the profile's ``.revision`` (a SOUL edit, a new
     connection or a facts write bumps it), with a 10-minute backstop for Paperclip-only edits."""
-    revision = None
-    try:
-        raw = await _off(_read, f"{hermes_profiles.profile_prefix(owner_id, agent_id)}.revision")
-        revision = raw.decode() if raw else None
-    except Exception as exc:  # noqa: BLE001
-        logger.info("Jev card: .revision unavailable (%s)", type(exc).__name__)
+    revision_key = f"{hermes_profiles.profile_prefix(owner_id, agent_id)}.revision"
+    revision = await _soft(".revision", _off(_read, revision_key), bytes.decode)
     cached = _cards.get((owner_id, agent_id))
     if cached and revision is not None and cached[0] == revision and time.monotonic() - cached[1] < _CARD_TTL_S:
         return _assemble(cached[2], recency)
@@ -283,7 +278,7 @@ async def agent_card(owner_id: str, agent_id: str, display_name: str, recency: s
     return _assemble(parts, recency)
 
 
-# --------------------------------------------------------------------------- shadow decision
+# --------------------------------------------------------------------------- routing decision
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -320,7 +315,6 @@ async def _decide_for_message(
         if target.get("eventKind") == "room_event" and target.get("agentId")
     ]
     names = {m["id"]: m.get("displayName") or m["id"] for m in members if m.get("kind") == "agent"}
-    recent = history[-10:]
     now = _parse_ts(latest.get("createdAt")) or datetime.now(timezone.utc)
     last_times = [_parse_ts(m.get("createdAt")) for m in history[-5:]]
     quiet = not any(t is not None and abs((now - t).total_seconds()) <= _QUIET_S for t in last_times)
@@ -335,11 +329,7 @@ async def _decide_for_message(
         "Nobody: chatter, acknowledgement, addressed to a specific human, "
         "or would prolong agent-to-agent back-and-forth"
     )
-    state = {
-        "room": {"kind": meta.get("kind"), "name": meta.get("name")},
-        "recent": [_line(m) for m in recent],
-        "latest": _line(latest),
-    }
+    state = _state(meta, latest, history)
     questions = {
         "who": {
             "type": "choice",
@@ -383,44 +373,56 @@ async def _decide_for_message(
     }
 
 
-async def shadow(
+def _state(meta: dict, latest: dict, history: list[dict]) -> dict:
+    """Room, the trigger's thread (root + replies) ahead of the last 30 messages, and the trigger.
+    Over budget, the oldest general message goes first and the thread only once that is empty."""
+    root = latest.get("threadRootMessageId")
+    thread = [m for m in history if root and root in (m.get("messageId"), m.get("threadRootMessageId"))]
+    in_thread = {id(m) for m in thread}
+    recent = [_line(m) for m in history[-_RECENT_LIMIT:] if id(m) not in in_thread]
+    thread_lines = [_line(m) for m in thread]
+    state: dict = {"room": {"kind": meta.get("kind"), "name": meta.get("name")}}
+    if thread_lines:
+        state["thread"] = thread_lines
+    state["recent"] = recent
+    state["latest"] = _line(latest)
+    while len(json.dumps(state, ensure_ascii=False)) > _STATE_MAX_CHARS and (recent or thread_lines):
+        (recent or thread_lines).pop(0)
+    return state
+
+
+async def route(
     meta: dict, agent_id: str, message: dict, *, latest: dict, members: list[dict], history: list[dict]
-) -> None:
-    """Record (once per message) and meter what Jev would pick. Never raises: shadow only.
-    Latency is inline by design (shadow); a retried delivery re-meters, which is accepted."""
+) -> dict | None:
+    """The final decision for this message, computed once across every candidate's consumer.
+    ``None`` means fall back (Jev disabled, down, or the winner never finished). Never raises."""
     try:
         # Disabled means NO work: no cards, no S3/Paperclip reads, no DECISION row.
         if not await _gateway_key():
             put_metric("messaging.jev.decision", dimensions={"outcome": "disabled"})
-            return
+            return None
         room_id, message_id = meta["roomId"], message["messageId"]
         if await messaging_repo.claim_decision(room_id, message_id):
-            decision = await asyncio.wait_for(
-                _decide_for_message(meta, message, latest, members, history), _SHADOW_BUDGET_S
-            )
+            try:
+                decision = await asyncio.wait_for(
+                    _decide_for_message(meta, message, latest, members, history), _DECIDE_BUDGET_S
+                )
+            except Exception:
+                # Store a fallback so the losers stop waiting now, not at their 8 s ceiling.
+                logger.warning("Jev decision failed", exc_info=True)
+                await messaging_repo.put_decision(room_id, message_id, {"fallback": True, "reason": "error"})
+                return None
             await messaging_repo.put_decision(room_id, message_id, decision)
-        else:
-            # Another candidate's consumer holds the claim: never call Jev twice for one message.
-            decision = await messaging_repo.get_decision(room_id, message_id) or {"pending": True}
-        who = decision.get("who")
-        picked = (
-            "pending"
-            if decision.get("pending")
-            else "fallback"
-            if decision.get("fallback")
-            else "none"
-            if who == "none"
-            else "self"
-            if who == agent_id
-            else "other"
-        )
-        put_metric(
-            "messaging.jev.shadow",
-            dimensions={
-                "picked": picked,
-                "quiet": "unknown" if picked == "pending" else "true" if decision.get("quietChannel") else "false",
-            },
-        )
-    except Exception:  # noqa: BLE001 -- shadow must never affect dispatch
-        logger.warning("Jev shadow decision failed", exc_info=True)
-        put_metric("messaging.jev.shadow", dimensions={"picked": "error", "quiet": "unknown"})
+            return decision
+        # Another candidate's consumer holds the claim: never call Jev twice for one message.
+        deadline = time.monotonic() + _LOSER_WAIT_S
+        while True:
+            decision = await messaging_repo.get_decision(room_id, message_id)
+            if decision and not decision.get("pending"):
+                return decision
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(_LOSER_POLL_S)
+    except Exception:  # noqa: BLE001 -- routing must never break dispatch
+        logger.warning("Jev routing failed", exc_info=True)
+        return None

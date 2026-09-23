@@ -35,7 +35,9 @@ from core.services.messaging import (
 logger = logging.getLogger(__name__)
 
 _INGRESS_MAX_BYTES = 1_048_576
-_HISTORY_LIMIT = 20
+_HISTORY_LIMIT = 50
+#: Jev's pick must be at least this confident to be the one Listening responder.
+JEV_MIN_P = 0.5
 _VISIBILITY_SECONDS = 60
 _RETRY_VISIBILITY_SECONDS = 10
 #: 30 receives x 60s = 30 min, comfortably past a switch's 10-min idle wait.
@@ -156,6 +158,13 @@ async def build_ingress_body(
     # turn sees the request itself and the agent's own "I'll report back" reply after it.
     before = int(message["messageSeq"]) if history_through_seq is None else history_through_seq + 1
     history = await messaging_repo.list_messages_before(meta["roomId"], before, _HISTORY_LIMIT)
+    root = message.get("threadRootMessageId")
+    if root and not any(row.get("messageId") == root for row in history):
+        # The whole thread, even when it began before the window. A root inside the contiguous
+        # window already carries every later reply, so only then is the read skipped.
+        merged = {int(row["messageSeq"]): row for row in await messaging_repo.list_thread(meta["roomId"], root, before)}
+        merged.update((int(row["messageSeq"]), row) for row in history)
+        history = [merged[seq] for seq in sorted(merged)]
     body = {
         "version": 1,
         "eventId": message["messageId"],
@@ -450,11 +459,11 @@ class OpenClawWorkWorker:
             history_through_seq=int(meta.get("lastSeq") or message["messageSeq"]) if follow_up is not None else None,
         )
         if event_kind == "room_event" and follow_up is None:
-            # Slice-1 SHADOW: record what Jev would route; never raises, dispatch is unchanged.
-            # A follow-up is deterministic (the agent asked for that result): never routed.
+            # Jev picks at most one Listening responder per message (spec §3a/§5a). A follow-up is
+            # deterministic (the agent asked for that result): never routed.
             from core.services import jev
 
-            await jev.shadow(
+            decision = await jev.route(
                 meta,
                 member["id"],
                 message,
@@ -462,6 +471,25 @@ class OpenClawWorkWorker:
                 members=room_members,
                 history=body.get("recentHistory") or [],
             )
+            if decision is None or decision.get("fallback"):
+                # Jev down or undecided: every Listening candidate runs and the bridge gate decides.
+                put_metric("messaging.jev.route", dimensions={"outcome": "fallback"})
+            elif (
+                decision.get("who") == member["id"]
+                and float((decision.get("whoP") or {}).get(member["id"], 0)) >= JEV_MIN_P
+            ):
+                put_metric("messaging.jev.route", dimensions={"outcome": "routed"})
+                placement = decision.get("placement")
+                body["routing"] = {"decidedBy": "jev", "placement": placement}
+                # A trigger already inside a thread stays there, whatever Jev said.
+                body["replyThreadRootId"] = message.get("threadRootMessageId") or (
+                    message["messageId"] if placement == "thread" else None
+                )
+            else:
+                # Another agent, "none", or not confident enough: no invoke, no run. Returning
+                # lets _room_dispatch advance this agent's cursor as for an untargeted message.
+                put_metric("messaging.jev.route", dimensions={"outcome": "skipped"})
+                return
         # The earlier read chose the work; this one is deliberately adjacent to
         # the side effect so queued work cannot outlive membership revocation.
         if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:

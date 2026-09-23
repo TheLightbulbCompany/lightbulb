@@ -501,6 +501,14 @@ def extract_media(reply: str, root: Path) -> tuple[str, list[dict]]:
     return "\n".join(lines).strip(), kept
 
 
+def _is_uuid(value: str) -> bool:
+    try:
+        _uuid.UUID(value)
+        return True
+    except ValueError:
+        return False
+
+
 def parse_ingress(body: dict) -> dict:
     """All-or-nothing validation of the version-1 ingress body (spec §5, report 03 §1)."""
     _check(isinstance(body, dict) and body.get("version") == 1, "body.version must be 1")
@@ -527,6 +535,15 @@ def parse_ingress(body: dict) -> dict:
         text = follow_up.get("text")
         _check(isinstance(text, str) and len(text.encode()) <= MAX_FOLLOWUP_TEXT_BYTES,
                "followUp.text must be a string of at most 32768 bytes")
+    routing = body.get("routing")
+    if routing is not None:
+        # Jev slice 2: the backend already picked this agent and where it replies.
+        _check(isinstance(routing, dict) and routing.get("decidedBy") == "jev"
+               and routing.get("placement") in ("main", "thread"), "routing is malformed")
+    if "replyThreadRootId" in body:
+        root = body["replyThreadRootId"]
+        _check(root is None or (isinstance(root, str) and _is_uuid(root)),
+               "replyThreadRootId must be a UUID or null")
     _check(body.get("sender") == msg.get("author"), "sender must equal message.author")
     _check(body.get("mentions") == msg.get("mentions"), "mentions must equal message.mentions")
     participants = body.get("participants") or []
@@ -968,6 +985,15 @@ def reply_thread_root(room_kind: str, message: dict) -> str | None:
     if room_kind == "dm":
         return None
     return message.get("threadRootMessageId") or message.get("messageId")
+
+
+def turn_thread_root(body: dict) -> str | None:
+    """The backend's placement when it sent one (a string is that thread, null is top level);
+    otherwise, from an older backend, ``reply_thread_root``. DMs stay linear regardless."""
+    kind = (body.get("room") or {}).get("kind", "channel")
+    if "replyThreadRootId" in body and kind != "dm":
+        return body["replyThreadRootId"]
+    return reply_thread_root(kind, body.get("message") or {})
 
 
 # ---- per-turn context handoff for the lightbulb plugin (Task 11) ----------------------------
@@ -1888,7 +1914,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
     room = body.get("room") or {}
     msg = body.get("message") or {}
     session_key = _resolve_session_key(agent_id, body)
-    thread_root = reply_thread_root(room.get("kind", "channel"), msg)
+    thread_root = turn_thread_root(body)
     frames = FramePublisher(run.get("frameEndpoint", ""), run.get("frameChannel", ""),
                             room.get("id"), agent_id, run_id, thread_root)
     if has_run:
@@ -1946,8 +1972,10 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                     outcome, error_kind, reply, usage = "aborted", None, "", ZERO_USAGE
                 else:
                     me = next((p for p in body.get("participants", []) if p.get("id") == agent_id), {})
-                    # A follow-up is the agent's own delegation reporting back: never gated.
-                    verdict = "dispatch" if body.get("followUp") else gate_ambient(
+                    # A follow-up is the agent's own delegation reporting back, and a routed turn
+                    # was already picked by the backend (Jev): neither is gated. Without
+                    # `routing` (an older backend dispatching every Listener) the gate stays.
+                    verdict = "dispatch" if body.get("followUp") or body.get("routing") else gate_ambient(
                         body, me.get("displayName") or "agent", me.get("role") or "")
                     if verdict != "dispatch":
                         outcome, error_kind, reply, usage = ("ignored" if verdict == "ignore" else "gate_error"), None, "", ZERO_USAGE

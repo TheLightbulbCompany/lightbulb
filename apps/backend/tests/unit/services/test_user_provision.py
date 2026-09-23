@@ -2298,3 +2298,20 @@ async def test_a_gated_workspace_still_seats_the_member_in_the_default_room():
     ):
         await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
     join.assert_awaited_once_with("org_o", "user_m")
+
+
+@pytest.mark.asyncio
+async def test_a_gated_workspace_still_reconciles_the_vendor_room():
+    """Same bug as the #general join: the vendor shared channel sat after the gate's early
+    return, so a trial or unpaid workspace's members never got the support channel -- the
+    workspaces most likely to need it. ensure_vendor_room guards itself (active company,
+    full Clerk rosters), so the gate adds nothing."""
+    gate = SimpleNamespace(code="credits_required")
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=gate)),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.messaging.join_default_room", new=AsyncMock()),
+        patch("core.services.messaging.ensure_vendor_room", new=AsyncMock()) as vendor_room,
+    ):
+        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
+    vendor_room.assert_awaited_once_with("org_o")

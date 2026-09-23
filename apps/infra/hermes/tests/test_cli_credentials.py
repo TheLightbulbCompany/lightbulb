@@ -318,3 +318,22 @@ def test_a_quickbooks_rotation_in_any_agents_copy_propagates(home, monkeypatch):
     for agent in ("ceo", "engineering"):
         sync._pull_cli_credentials(agent)  # a re-pull brings the winner, never the old token
         assert (home / "profiles" / agent / rel).read_bytes() == b"REFRESH=eng-rotated"
+
+
+def test_an_instagram_token_renewal_is_written_back_and_not_resurrected(home, monkeypatch):
+    """token.sh extends the 60-day Instagram token in place; without the write-back every pull
+    restored the original, which then expired on schedule."""
+    rel = "skills/instagram/credentials.json"
+    key = lambda agent: f"{sync.S3_PREFIX}/{agent}/{rel}"
+    roster = ("ceo", "growth")
+    s3 = _RotatingS3({key(a): (b'{"access_token":"old"}', f'"etag-{a}"') for a in roster})
+    monkeypatch.setattr(sync, "_s3", lambda: s3)
+    monkeypatch.setattr(sync, "S3_BUCKET", "owner-state")
+    sync._pull_cli_credentials("ceo")
+    (home / "profiles" / "ceo" / rel).write_bytes(b'{"access_token":"renewed"}')
+
+    sync.save_rotated_cli_credentials()
+
+    assert all(s3.objects[key(a)][0] == b'{"access_token":"renewed"}' for a in roster)
+    sync._pull_cli_credentials("ceo")
+    assert (home / "profiles" / "ceo" / rel).read_bytes() == b'{"access_token":"renewed"}'

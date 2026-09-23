@@ -95,10 +95,16 @@ CLI_CREDENTIAL_PREFIXES = (
 #: the moment it does, so letting the next pull restore the S3 copy hands the CLI a spent token
 #: (xurl then fails as NoAuthMethod ~2 h after every connect). save_rotated_cli_credentials
 #: writes these -- and only these -- back. Providers: ``x`` (xurl's ``~/.xurl``) and
-#: ``quickbooks`` (the Intuit MCP server's QUICKBOOKS_TOKEN_STORE_PATH). An explicit list because
-#: providers.yaml is not in the image, and gog/instagram tokens do not rotate single-use.
-#: Add a path here when an actor-refresh provider rotates single-use tokens.
-ROTATING_CLI_CREDENTIALS = (f"{PROFILE_HOME}/.xurl", f"{PROFILE_HOME}/quickbooks/.env")
+#: ``quickbooks`` (the Intuit MCP server's QUICKBOOKS_TOKEN_STORE_PATH), plus ``instagram``, whose
+#: 60-day token is not single-use but IS extended in place by its skill's ``token.sh`` -- without
+#: the write-back every pull restores the original, which then expires on its first schedule.
+#: An explicit list because providers.yaml is not in the image; gog's refresh token never changes.
+#: Add a path here when an actor-refresh CLI rewrites its credential file in place.
+ROTATING_CLI_CREDENTIALS = (
+    f"{PROFILE_HOME}/.xurl",
+    f"{PROFILE_HOME}/quickbooks/.env",
+    "skills/instagram/credentials.json",
+)
 
 #: agent -> rel -> (S3 ETag, sha256) of the ROTATING_CLI_CREDENTIALS copy last pulled or written
 #: back. The ETag is what lets a re-pull tell "our own copy" from a backend connect/disconnect.

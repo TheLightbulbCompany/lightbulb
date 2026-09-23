@@ -463,6 +463,32 @@ class TestReapOwnerBedrockResources:
         reaper.role.assert_awaited_once_with("org_abc")
 
     @pytest.mark.asyncio
+    async def test_a_rowless_rerun_still_reaps_a_leftover_role(self, reaper, monkeypatch):
+        """A re-run after a partial teardown arrives with NO row image: the row went
+        with the first run. The role's name is deterministic, so one IAM read finds
+        what the failed first reap left, instead of skipping it forever."""
+        import core.billing.bedrock_aip as mod
+
+        exists = AsyncMock(return_value=True)
+        monkeypatch.setattr(mod, "_owner_role_exists", exists)
+
+        detail = await _reap(None)
+
+        exists.assert_awaited_once_with("org_abc")
+        reaper.role.assert_awaited_once_with("org_abc")
+        assert "IAM role" in detail
+
+    @pytest.mark.asyncio
+    async def test_a_rowless_call_with_no_role_makes_no_deletes(self, reaper, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        monkeypatch.setattr(mod, "_owner_role_exists", AsyncMock(return_value=False))
+
+        assert "no Bedrock footprint" in await _reap(None)
+        reaper.role.assert_not_awaited()
+        reaper.container_get.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_non_dict_row_is_treated_as_no_footprint(self, reaper):
         """Teardown reaches this from webhook handlers, where raising means a
         5xx and a provider retry. An unexpected row shape must degrade."""

@@ -15,7 +15,7 @@ from core.services.messaging import ApiProblem
 from core.services import runtime_rpc as rpc
 
 
-def _rejects(method: str, _params: dict | None = None) -> ApiProblem:
+def _rejects(method: str) -> ApiProblem:
     with pytest.raises(ApiProblem) as exc_info:
         rpc._guard_method(method)
     return exc_info.value
@@ -38,7 +38,7 @@ def _rejects(method: str, _params: dict | None = None) -> ApiProblem:
     ],
 )
 def test_run_dispatching_method_is_refused(method, expected_use):
-    err = _rejects(method, {"agentId": "luna", "message": "hi"})
+    err = _rejects(method)
     assert err.error.code == "INVALID_REQUEST"
     assert err.error.details["method"] == method
     assert err.error.details["use"] == expected_use
@@ -55,7 +55,7 @@ def test_run_adjacent_methods_are_denied_by_the_allowlist(method):
     """Not run-dispatching, and also not on the proxy allowlist -- refused,
     but without the run-dispatch ``use`` pointer (no client sends these; aborts
     ride the typed agent_abort message)."""
-    err = _rejects(method, {"runId": "r1"})
+    err = _rejects(method)
     assert err.error.code == "INVALID_REQUEST"
     assert err.error.details["method"] == method
     assert "use" not in err.error.details

@@ -542,14 +542,16 @@ async def test_acting_admin_member_is_refused(ws_mocks):
 
 
 @pytest.mark.asyncio
-async def test_openrouter_active_key_is_retired_and_flagged_for_rerun(ws_mocks):
+async def test_openrouter_active_key_is_retired_and_left_to_the_worker(ws_mocks):
+    """Retiring is terminal for the wipe: the gate refuses non-active keys, so the row and
+    secret are left for the settlement worker instead of failing the wipe."""
     ws_mocks.openrouter_get.return_value = {"owner_id": ORG_ID, "state": "active", "secret_name": "s"}
     _, report = await _preview_then_wipe()
     ws_mocks.openrouter_retire.assert_awaited_once_with(ORG_ID)
     ws_mocks.openrouter_delete.assert_not_awaited()
     step = _step(report, "openrouter_key")
-    assert step.status == "failed"
-    assert "re-run" in step.error
+    assert step.status == "ok"
+    assert "retiring" in step.detail
 
 
 @pytest.mark.asyncio

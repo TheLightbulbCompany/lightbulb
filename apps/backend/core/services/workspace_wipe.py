@@ -775,10 +775,10 @@ async def _openrouter_run(snap: WorkspaceSnapshot) -> str:
         # The same retirement entitlement_teardown uses. The settlement worker
         # drains pending generations with the key's secret, then disables it
         # upstream — deleting row + secret now would strand a LIVE upstream key.
+        # Retiring is terminal for the wipe: the gate refuses a non-active key and no runtime
+        # ever holds it, so nothing can spend it. The worker's own cleanup finishes it.
         await openrouter_key_repo.mark_retiring(snap.org_id)
-        raise RuntimeError(
-            f"OpenRouter key {row.get('state')} -> retiring; re-run the wipe once the settlement worker disables it"
-        )
+        return f"OpenRouter key {row.get('state')} -> retiring; the settlement worker disables and cleans it up"
     await _delete_openrouter_key(snap.org_id)
     return "disabled OpenRouter key row + secrets deleted"
 

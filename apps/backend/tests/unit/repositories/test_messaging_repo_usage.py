@@ -43,10 +43,18 @@ async def test_decision_claim_is_put_if_absent_or_stale_and_result_overwrites():
         assert await messaging_repo.claim_decision("room-1", "m1") is False
 
         run.side_effect = None
-        await messaging_repo.put_decision("room-1", "m1", {"who": "a1", "whoP": {"a1": 0.9}})
+        final = await messaging_repo.finalize_decision("room-1", "m1", {"who": "a1", "whoP": {"a1": 0.9}})
         kwargs = run.await_args.kwargs
-        assert "ConditionExpression" not in kwargs  # the winner overwrites its own claim
+        # First final write wins: only a still-pending (or absent) row may be finalized, so a late
+        # winner and a timed-out loser can never act on two different decisions.
+        assert kwargs["ConditionExpression"] == "attribute_not_exists(sk) OR #d.#p = :t"
         assert str(kwargs["Item"]["decision"]["whoP"]["a1"]) == "0.9"  # float -> Decimal for DynamoDB
+        assert final == {"who": "a1", "whoP": {"a1": 0.9}}
+        # Lost the race: return what is stored, and the caller follows it.
+        calls = iter([_conditional_failure, lambda *a, **k: {"Item": {"decision": {"fallback": True}}}])
+        run.side_effect = lambda *a, **k: next(calls)(*a, **k)
+        assert await messaging_repo.finalize_decision("room-1", "m1", {"who": "a2"}) == {"fallback": True}
+        run.side_effect = None
 
         run.return_value = {"Item": {"pk": "ROOM#room-1", "sk": "DECISION#m1", "decision": {"who": "a1"}}}
         assert await messaging_repo.get_decision("room-1", "m1") == {"who": "a1"}

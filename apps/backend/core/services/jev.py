@@ -410,12 +410,12 @@ async def route(
                     _decide_for_message(meta, message, latest, members, history), _DECIDE_BUDGET_S
                 )
             except Exception:
-                # Store a fallback so the losers stop waiting now, not at their 8 s ceiling.
+                # A stored fallback lets the losers stop waiting now, not at their ceiling.
                 logger.warning("Jev decision failed", exc_info=True)
-                await messaging_repo.put_decision(room_id, message_id, {"fallback": True, "reason": "error"})
-                return None
-            await messaging_repo.put_decision(room_id, message_id, decision)
-            return decision
+                decision = {"fallback": True, "reason": "error"}
+            # First final write wins: if a loser already timed out and stored a fallback,
+            # follow it, so both sides dispatch the same single agent.
+            return await messaging_repo.finalize_decision(room_id, message_id, decision)
         # Another candidate's consumer holds the claim: never call Jev twice for one message.
         deadline = time.monotonic() + _LOSER_WAIT_S
         while True:
@@ -423,7 +423,9 @@ async def route(
             if decision and not decision.get("pending"):
                 return decision
             if time.monotonic() >= deadline:
-                return None
+                return await messaging_repo.finalize_decision(
+                    room_id, message_id, {"fallback": True, "reason": "loser_timeout"}
+                )
             await asyncio.sleep(_LOSER_POLL_S)
     except Exception:  # noqa: BLE001 -- routing must never break dispatch
         logger.warning("Jev routing failed", exc_info=True)

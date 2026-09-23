@@ -85,7 +85,7 @@ def test_prefetch_with_no_records_is_empty(mod):
     assert not provider(mod, FakeClient()).prefetch("codename?")
 
 
-def test_client_has_short_timeouts_and_no_retries(mod, monkeypatch):
+def test_client_has_short_timeouts_and_one_retry(mod, monkeypatch):
     seen = {}
     fake_boto3 = types.SimpleNamespace(client=lambda service, **kw: seen.update(service=service, **kw) or FakeClient())
     monkeypatch.setitem(sys.modules, "boto3", fake_boto3)

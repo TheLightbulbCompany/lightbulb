@@ -2347,6 +2347,13 @@ async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error
             f"I couldn't finish that ({label}). {reason} "
             "Try again, or check Settings → Model & Credits if this keeps happening."
         )
+        # A capped or expired owner's run fails at the gate; say that instead of a
+        # generic model error (the bridge reports every failed turn as model_unavailable).
+        from core.services.chat_gate import BUDGET_BLOCK_MESSAGES
+        from core.services.trial_cap import trial_block_reason
+
+        if error_kind in (None, "model_unavailable"):  # the sweeper's own kinds are real infra failures
+            text = BUDGET_BLOCK_MESSAGES.get(await trial_block_reason(owner_id) or "", text)
         trigger = (
             await messaging_repo.get_message_by_id(room_id, row["triggerMessageId"])
             if row.get("triggerMessageId")

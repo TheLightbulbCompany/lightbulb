@@ -243,6 +243,12 @@ async def test_post_processing_failure_never_5xxes_an_applied_ended_callback(met
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _not_capped():
+    with patch("core.services.trial_cap.trial_block_reason", AsyncMock(return_value=None)) as reason:
+        yield reason
+
+
 def _failure_patches(create, trigger=None):
     return (
         patch.object(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=trigger)),
@@ -330,3 +336,32 @@ async def test_failure_message_write_error_never_5xxes_the_callback(metrics):
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
             result = await messaging.handle_run_event("o", _event(type="run.ended", outcome="error", usage=USAGE))
     assert result.status == "applied"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["trial_daily_cap", "included_daily_cap", "trial_expired"])
+async def test_failed_run_of_a_blocked_owner_says_why(metrics, _not_capped, reason):
+    from core.services.chat_gate import BUDGET_BLOCK_MESSAGES
+
+    _not_capped.return_value = reason
+    create = AsyncMock(return_value=({"messageId": "x"}, False))
+    patches = _failure_patches(create)
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": "error"})):
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            await messaging.handle_run_event(
+                "o", _event(type="run.ended", outcome="error", error_kind="model_unavailable", usage=USAGE)
+            )
+    assert create.await_args.kwargs["text"] == BUDGET_BLOCK_MESSAGES[reason]
+
+
+@pytest.mark.asyncio
+async def test_a_capped_owners_infra_failure_keeps_its_own_reason(metrics, _not_capped):
+    _not_capped.return_value = "trial_daily_cap"
+    create = AsyncMock(return_value=({"messageId": "x"}, False))
+    patches = _failure_patches(create)
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": "error"})):
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            await messaging.handle_run_event(
+                "o", _event(type="run.ended", outcome="error", error_kind="agent_did_not_start", usage=USAGE)
+            )
+    assert "The agent did not start this run." in create.await_args.kwargs["text"]

@@ -178,6 +178,11 @@ class SettlementTests(unittest.TestCase):
             [{"date": "2026-09-19", "usage": Decimal("0.012345679")}],
             [{"date": "2026-09-19", "key_hash": "old-hash", "total_cost": "0.012345678"}],
             key_hash="old-hash", date="2026-09-19"), Decimal("0.000000001"))
+        # The live /activity shape carries a time on the date.
+        self.assertEqual(worker.activity_gap(
+            [{"date": "2026-09-19 00:00:00", "usage": Decimal("0.003")}],
+            [{"date": "2026-09-19", "key_hash": "old-hash", "total_cost": "0.002"}],
+            key_hash="old-hash", date="2026-09-19"), Decimal("0.001"))
 
     def test_commit_claims_generation_and_settles_projection_atomically(self):
         calls = []

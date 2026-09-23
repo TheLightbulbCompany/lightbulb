@@ -163,6 +163,19 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     }
   });
 
+  test("paid OpenRouter credits are on in dev only", () => {
+    for (const [env, value] of [["dev", "true"], ["prod", "false"]] as const) {
+      (env === "dev" ? template : buildServiceStack("prod")).hasResourceProperties("AWS::ECS::TaskDefinition", {
+        ContainerDefinitions: Match.arrayWith([Match.objectLike({
+          Name: "backend",
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "OPENROUTER_PAID_CREDITS_ENABLED", Value: value }),
+          ]),
+        })]),
+      });
+    }
+  });
+
   test("backend can write only per-owner OpenRouter secrets", () => {
     const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap(
       (type) => Object.values(template.findResources(type)).flatMap(

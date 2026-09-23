@@ -447,6 +447,10 @@ class ScheduledRunTests(unittest.TestCase):
         def commit(self, *_):
             raise AssertionError("metered row reached the Metronome commit")
 
+        def release_unknown(self, row, now):
+            self.rows[row["request_id"]]["state"] = "released"
+            return "released_no_generation"
+
         def retirement_candidates(self):
             return [dict(key) for key in self.keys.values() if key["state"] in ("retiring", "retirement_processing")]
 
@@ -507,6 +511,31 @@ class ScheduledRunTests(unittest.TestCase):
         result = self.run_tick(store)
         self.assertEqual((store.rows["last"]["state"], store.keys["owner-1"]["state"], self.patched), ("settled", "disabled", ["hash-1"]))
         self.assertEqual(result["retirement"]["disabled"], 1)
+
+    def test_unmetered_row_without_generation_is_released_after_an_hour_metered_is_not(self):
+        old = int(time.time()) - 3601
+        rows = [{**self.row(name, "owner-1", mode), "created_at": created} for name, mode, created in
+                [("stale", "capped", old), ("fresh", "free", int(time.time()) - 600), ("paid", "paid", old)]]
+        for row in rows:
+            del row["generation_id"]
+        self.costs = []
+        store = self.Store(rows)
+        with self.assertRaisesRegex(RuntimeError, "unknown_generation") as raised:
+            self.run_tick(store)
+        self.assertIn("released_no_generation", str(raised.exception))
+        self.assertEqual({key: row["state"] for key, row in store.rows.items()}, {"stale": "released", "fresh": "pending", "paid": "pending"})
+        store.rows["fresh"]["created_at"] = old
+        del store.rows["paid"]
+        self.assertEqual(self.run_tick(store)["settlement"], {"released_no_generation": 1})
+
+    def test_release_unknown_is_conditional_on_no_generation_and_unmetered(self):
+        seen = {}
+        class Ddb:
+            def update_item(self, **kwargs): seen.update(kwargs)
+        row = {"request_id": "req-1", "billing_mode": "capped"}
+        self.assertEqual(worker.Store(Ddb(), requests_table="requests", fast_table="fast").release_unknown(row, 5), "released_no_generation")
+        self.assertIn("attribute_not_exists(generation_id)", seen["ConditionExpression"])
+        self.assertIn("billing_mode IN (:free, :capped)", seen["ConditionExpression"])
 
     def test_backlog_defers_near_the_timeout_and_still_retires(self):
         row = self.row("late", "owner-2", "capped")

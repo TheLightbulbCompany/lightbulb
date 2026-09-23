@@ -57,7 +57,7 @@ def event_for(row, generation):
     }
 
 
-def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_free=None):
+def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_free=None, release_unknown=None):
     mode = row.get("billing_mode")
     # free and capped rows never touch Metronome: a capped owner's valve is the
     # OpenRouter per-key daily limit, so its cost is recorded, not debited.
@@ -67,6 +67,11 @@ def settle_one(row, *, get_generation, ingest, commit, verified, now, commit_fre
     if row.get("state") != "pending":
         return "already_processed"
     if not row.get("generation_id"):
+        # The gate writes the row before calling upstream, so a gate crash before the
+        # first chunk leaves a row that can never settle. Unmetered rows hold nothing;
+        # release them after an hour. Metered rows keep their hold for a human.
+        if unmetered and release_unknown and now - int(row["created_at"]) >= 3600:
+            return release_unknown(row, now)
         return "unknown_generation"
     if now - int(row["created_at"]) >= 30 * 24 * 3600:
         return "expired_gap"  # outside OpenRouter's 30 completed-day activity window
@@ -349,6 +354,18 @@ class Store:
                 return "settled"
             raise
 
+    def release_unknown(self, row, now):
+        """Release an unmetered row that never got a generation ID. No money moves."""
+        self.ddb.update_item(
+            TableName=self.requests_table, Key={"request_id": {"S": row["request_id"]}},
+            UpdateExpression="SET #state = :released, released_at = :now",
+            ConditionExpression="#state = :pending AND attribute_not_exists(generation_id) AND billing_mode IN (:free, :capped)",
+            ExpressionAttributeNames={"#state": "state"},
+            ExpressionAttributeValues={":released": {"S": "released"}, ":pending": {"S": "pending"}, ":now": {"N": str(now)},
+                                       ":free": {"S": "free"}, ":capped": {"S": "capped"}},
+        )
+        return "released_no_generation"
+
     def _mark_duplicate(self, row, now):
         updates = [{"Update": {
             "TableName": self.requests_table,
@@ -548,6 +565,10 @@ def _audit(store, day, today):
     return gaps
 
 
+# Anything else (unknown_generation, expired_gap, an exception name, a new outcome) fails the run.
+RESOLVED = {"settled", "metadata_pending", "already_processed", "duplicate_generation", "deferred", "released_no_generation"}
+
+
 def handler(event, context):
     """Scheduled settlement, or {audit_date: YYYY-MM-DD} for a daily key-usage audit."""
     event = event or {}
@@ -576,23 +597,22 @@ def handler(event, context):
     outcomes = {}
     # Settle before retiring, so a wiped owner's last rows settle and its key retires in
     # the same run. Each row is isolated: one that raises stays pending for the next tick.
-    for row in store.pending():
+    rows = store.pending()
+    for index, row in enumerate(rows):
         if context and context.get_remaining_time_in_millis() < 60_000:
-            outcomes["deferred"] = outcomes.get("deferred", 0) + 1
-            continue  # a backlog must not time out the run before retirement
+            outcomes["deferred"] = len(rows) - index  # a backlog must not time out the run before retirement
+            break
         if now - int(row["created_at"]) < 300:
             continue  # a stream may still be running
         try:
             outcome = settle_one(row, get_generation=_get_generation, ingest=_ingest,
                                  commit=store.commit, commit_free=store.commit_free,
-                                 verified=verified, now=now)
+                                 release_unknown=store.release_unknown, verified=verified, now=now)
             outcomes[outcome] = outcomes.get(outcome, 0) + 1
         except Exception as exc:
             # No prompts, keys, or customer IDs in logs. The row stays pending.
             outcomes[exc.__class__.__name__] = outcomes.get(exc.__class__.__name__, 0) + 1
     retirement = _retire_scheduled(store, now) if store.keys_table else None
-    if outcomes.get("unknown_generation") or outcomes.get("expired_gap") or outcomes.get("PendingSettlement") or outcomes.get("MoneyContractUnverified") or any(
-        name.endswith("Error") or name.endswith("Exception") for name in outcomes
-    ) or (retirement or {}).get("failed"):
+    if set(outcomes) - RESOLVED or (retirement or {}).get("failed"):
         raise RuntimeError(f"OpenRouter settlement has unresolved rows: {outcomes} retirement: {retirement}")
     return {"settlement": outcomes, "retirement": retirement}

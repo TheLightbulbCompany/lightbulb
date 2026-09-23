@@ -96,9 +96,9 @@ async def test_row_without_plan_key_defaults_to_standard(dynamodb_table):
     assert (row.get("plan") or "standard") == "standard"
 
 
-def test_billing_account_response_defaults_plan_to_standard():
-    """BillingAccountResponse.plan defaults to "standard" when unset, so an
-    old billing row with no plan key surfaces cleanly."""
+def test_billing_account_response_plan_defaults_to_none():
+    """BillingAccountResponse.plan is None when unset: a trial or a missing row has
+    no plan. The router, not the schema, maps a plan-less PAID row to "standard"."""
     from schemas.billing import BillingAccountResponse
 
     resp = BillingAccountResponse(
@@ -108,4 +108,4 @@ def test_billing_account_response_defaults_plan_to_standard():
         workspace_price_usd=50,
         ultra_price_usd=150,
     )
-    assert resp.plan == "standard"
+    assert resp.plan is None

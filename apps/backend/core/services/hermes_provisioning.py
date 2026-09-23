@@ -846,6 +846,12 @@ async def roll_runtime_image(
     from core.services.container_provision import resolve_provider_choice
 
     provider_choice, _ = await resolve_provider_choice(owner_id)
+    if provider_choice == "openrouter_managed" and not dry_run:
+        # A runtime pointed at the gate with no owner key 503s every turn; this is the only
+        # mint outside prepare_hermes_workspace and change_provider. Idempotent for a live key.
+        from core.services.openrouter_keys import ensure_owner_key_for_settings
+
+        await ensure_owner_key_for_settings(owner_id)
     # The roll is how an ALREADY-provisioned workspace gets its first Browser profile: a
     # create-or-adopt, then the env block.
     browser_profile_id = await _browser_profile_id(owner_id, row)

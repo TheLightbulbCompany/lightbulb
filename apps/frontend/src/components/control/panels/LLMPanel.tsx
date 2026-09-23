@@ -28,6 +28,7 @@ import {
 } from "./llm-auth-status";
 
 import { PROVIDER_SWITCH_CARDS } from "@/lib/providerCards";
+import { isFreeTierExpired } from "@/lib/planLabel";
 
 type UserData = {
   // Plain string, not `ProviderChoice`: this is the owner's STORED choice,
@@ -386,30 +387,43 @@ function ProviderChoiceCards({
 }
 
 /**
- * No provider_choice: the workspace already runs on Lightbulb-managed DeepSeek
- * within its daily allowance (backend `trial_cap.is_managed_capped` — trial,
- * Base, or a paid plan with no choice). Nothing to pick; the credential paths
- * are alternatives.
+ * No provider_choice: the workspace runs on Lightbulb-managed DeepSeek within its
+ * daily allowance while `trial_cap.is_managed_capped` holds (a live trial, or an
+ * active/trialing plan). `blocked` names why it doesn't (expired trial, lapsed
+ * subscription); then nothing runs and every switch 409s, so both point at Billing.
+ * The credential paths are alternatives only on a paid, live plan.
  */
 function ManagedAllowanceBlock({
   onPick,
   trial,
+  blocked,
   prepaidSoon,
 }: {
   onPick: (choice: CredentialProviderChoice) => void;
   trial: boolean;
+  blocked: string | null;
   prepaidSoon: boolean;
 }) {
+  const plansLink = (
+    <Link href="/settings?panel=billing" className="underline">
+      See plans
+    </Link>
+  );
   return (
     <>
       <HeroCard
         icon={<span className="text-xl font-semibold">✦</span>}
         title="Lightbulb-managed models"
         subtitle="DeepSeek within a daily allowance"
-        status="Active"
-        dotColor="green"
+        status={blocked ? "Paused" : "Active"}
+        dotColor={blocked ? "red" : "green"}
       />
-      {prepaidSoon && (
+      {blocked && (
+        <p className="text-sm text-err">
+          {blocked} {plansLink}
+        </p>
+      )}
+      {prepaidSoon && !blocked && (
         <p className="text-xs text-[var(--midnight-muted)]">
           More models with prepaid credits are coming soon.
         </p>
@@ -417,16 +431,9 @@ function ManagedAllowanceBlock({
       <div className="space-y-3">
         <p className="text-sm text-[var(--midnight)]">
           Or use your own provider
-          {trial && (
-            <>
-              {" "}on a paid plan.{" "}
-              <Link href="/settings?panel=billing" className="underline">
-                See plans
-              </Link>
-            </>
-          )}
+          {trial && !blocked && <> on a paid plan. {plansLink}</>}
         </p>
-        <ProviderChoiceCards onPick={onPick} disabled={trial} />
+        <ProviderChoiceCards onPick={onPick} disabled={trial || blocked !== null} />
       </div>
     </>
   );
@@ -448,7 +455,17 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   const api = useApi();
   const { account, isLoading: billingLoading } = useBilling();
   const managedAvailable = account?.managed_inference_available === true;
-  const trial = account?.subscription_status === "trial_local";
+  const status = account?.subscription_status ?? null;
+  const trial = status === "trial_local";
+  // Mount snapshot: render must stay pure, and day granularity makes it fresh enough.
+  const [nowMs] = useState(() => Date.now());
+  // Mirrors backend is_managed_capped + TRIAL_EXPIRED for a row with no provider.
+  // A null trial_end is NOT expired (it is stamped at first ready).
+  const blocked = isFreeTierExpired(status, account?.trial_end, nowMs)
+    ? "Your free trial has ended."
+    : trial || status === "active" || status === "trialing"
+      ? null
+      : "No active subscription.";
   // A trial row reads plan "standard" (the backend's default), so exclude it explicitly.
   const prepaidSoon =
     !managedAvailable && !trial && (account?.plan === "standard" || account?.plan === "ultra_pro");
@@ -605,7 +622,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
       )}
 
       {!user.provider_choice && (
-        <ManagedAllowanceBlock onPick={handlePick} trial={trial} prepaidSoon={prepaidSoon} />
+        <ManagedAllowanceBlock onPick={handlePick} trial={trial} blocked={blocked} prepaidSoon={prepaidSoon} />
       )}
 
       {/* Credits live inline for managed owners — the former Credits panel.

@@ -135,7 +135,7 @@ describe("LLMPanel", () => {
   beforeEach(() => {
     managedAvailable = false;
     billingLoading = false;
-    accountFields = {};
+    accountFields = { subscription_status: "active", plan: "standard" };
     mockSWRData.mockReset();
     mockMutate.mockReset();
     mockApiPut.mockReset();
@@ -291,6 +291,29 @@ describe("LLMPanel", () => {
     expect(screen.getByRole("button", { name: /Sign in with ChatGPT/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Bring your own API key/ })).toBeDisabled();
     expect(screen.queryByText(/coming soon/i)).toBeNull();
+  });
+
+  it.each([
+    [{ subscription_status: "trial_local", trial_end: Math.floor(Date.now() / 1000) - 60 }, /free trial has ended/i],
+    [{ subscription_status: "canceled", plan: "standard" }, /No active subscription/],
+    [{ subscription_status: "past_due", plan: "base" }, /No active subscription/],
+    [{}, /No active subscription/],
+  ])("shows managed as paused, not active, when the backend refuses it (%o)", (fields, reason) => {
+    accountFields = fields;
+    mockSWRData.mockReturnValue({ provider_choice: null });
+    render(<LLMPanel />);
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(screen.queryByText("Active")).toBeNull();
+    expect(screen.getByText(reason)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/settings?panel=billing");
+    expect(screen.getByRole("button", { name: /Sign in with ChatGPT/ })).toBeDisabled();
+  });
+
+  it("treats a trial with no trial_end yet as live", () => {
+    accountFields = { subscription_status: "trial_local", trial_end: null };
+    mockSWRData.mockReturnValue({ provider_choice: null });
+    render(<LLMPanel />);
+    expect(screen.getByText("Active")).toBeInTheDocument();
   });
 
   it("waits for billing before rendering a first provider choice", () => {

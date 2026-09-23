@@ -1839,17 +1839,22 @@ async def patch_room_me(auth: AuthContext, room_id: str, request: MemberPrefsReq
 
 
 async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemberRequest) -> RoomDetail:
-    meta, actor = await require_room_admin(resolve_owner_id(auth), auth.user_id, room_id)
+    meta, actor = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     _deny_vendor_human_change(meta, request.kind)
     existing = await messaging_repo.get_member(room_id, request.kind, request.id)
+    # On a paid workspace any member may change an agent's listen mode (owner ruling
+    # 2026-09-23); adding members, roles and everything on a free trial stay owner/admin.
+    mode_change = request.kind == "agent" and existing is not None and existing.get("role") == request.role
+    if actor.get("role") not in {"owner", "admin"} and not (mode_change and await listening_available(owner_id)):
+        raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
     if existing and existing.get("role") == "owner":
         raise ApiProblem("INVALID_REQUEST", "The room owner role cannot be changed.")
     await _require_listening(owner_id, meta.get("kind"), [request])
     roster = await load_agent_roster(owner_id) if request.kind == "agent" else []
     member = await _resolved_member(owner_id, request, roster)
     if request.kind == "agent":
-        # An admin's choice of mode; promote_listening never overrides it.
+        # A person's choice of mode; promote_listening never overrides it.
         member = {**member, "modeSetBy": "user"}
     if request.kind == "human":
         await messaging_repo.ensure_user_stream(owner_id, request.id)

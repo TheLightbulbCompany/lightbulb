@@ -723,7 +723,7 @@ function RoomContent({
             <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>
             {canManageMembers && onRemoveMember && participant.role !== "owner" && !(visibleRoom?.shared && participant.kind === "human") && <Button type="button" variant="ghost" size="sm" disabled={!actionable}
               aria-label={`Remove ${participant.displayName}`} onClick={(event) => openManagement({ kind: participant.kind, id: participant.id }, event.currentTarget)}>Remove</Button>}
-            {participant.kind === "agent" && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={isRoomAdmin ? onListenModeChange : undefined} listeningAvailable={listeningAvailable} />}
+            {participant.kind === "agent" && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={isRoomAdmin || listeningAvailable ? onListenModeChange : undefined} listeningAvailable={listeningAvailable} />}
           </li>)}</ul>
           {isRoomAdmin && onListenModeChange && !listeningAvailable && <p className="text-sm text-muted-foreground">
             Listening lets an agent reply without being mentioned. It is part of the paid plan. <NextLink href="/settings?panel=billing">See plans</NextLink></p>}

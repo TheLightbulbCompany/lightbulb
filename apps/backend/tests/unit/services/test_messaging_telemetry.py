@@ -547,7 +547,7 @@ async def test_adding_a_member_reports_the_adders_role(monkeypatch, telemetry):
     _, capture = telemetry
     monkeypatch.setattr(
         messaging,
-        "require_room_admin",
+        "require_room_member",
         AsyncMock(return_value=({"kind": "channel", "ownerId": OWNER}, _human_member(role="admin"))),
     )
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))

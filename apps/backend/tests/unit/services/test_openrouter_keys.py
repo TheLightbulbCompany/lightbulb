@@ -5,6 +5,7 @@ from moto import mock_aws
 
 from core.repositories import openrouter_key_repo
 from core.services.openrouter_keys import (
+    KeyClaimConflict,
     create_completion_key,
     ensure_owner_key,
     ensure_owner_key_for_settings,
@@ -197,6 +198,35 @@ async def test_stale_claim_disables_orphan_before_creating_replacement(monkeypat
             ("PATCH", "/api/v1/keys/orphan-hash"),
             ("POST", "/api/v1/keys"),
         ]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_claim_loses_race_and_raises_claim_conflict(monkeypatch):
+    """Two attempts race for the same owner's claim; the winner's row is already
+    pending when the loser retries its own claim, too recently to be stale
+    (ttl 300s). The loser must raise the specific transient-classified
+    KeyClaimConflict, not a bare RuntimeError, and never call OpenRouter."""
+    with mock_aws():
+        table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="lightbulb-dev-openrouter-keys",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setattr(openrouter_key_repo, "get_table", lambda _: table)
+        assert await openrouter_key_repo.claim_new("owner-123", "winner-claim", now_sec=1000)
+        sm = boto3.client("secretsmanager", region_name="us-east-1")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: pytest.fail("upstream called"))) as http:
+            with pytest.raises(KeyClaimConflict, match="already in progress"):
+                await ensure_owner_key(
+                    "owner-123",
+                    http=http,
+                    sm=sm,
+                    environment="dev",
+                    workspace_id="workspace-uuid",
+                    limit_usd=2.5,
+                    now_sec=1000,
+                )
 
 
 @pytest.mark.asyncio

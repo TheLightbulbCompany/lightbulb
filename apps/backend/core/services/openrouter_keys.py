@@ -21,6 +21,17 @@ logger = logging.getLogger(__name__)
 _SAFE_OWNER_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
+class KeyClaimConflict(RuntimeError):
+    """Another in-flight attempt already holds this owner's OpenRouter key claim.
+
+    Healthy contention, not a failure: the claim row has a 300s TTL
+    (``openrouter_key_repo.reclaim_stale``), so even a crashed holder is
+    eventually reclaimable, and the normal case is the winner activating the
+    key within a couple of seconds. ``provision_runner`` matches this type to
+    retry without writing a provision-error row.
+    """
+
+
 async def create_completion_key(
     http: httpx.AsyncClient,
     *,
@@ -128,7 +139,7 @@ async def ensure_owner_key(owner_id, *, http, sm, environment, workspace_id, lim
     else:
         claimed = await openrouter_key_repo.claim_new(owner_id, claim_id, now_sec=now_sec)
     if not claimed:
-        raise RuntimeError("OpenRouter key provisioning is already in progress")
+        raise KeyClaimConflict("OpenRouter key provisioning is already in progress")
     created = None
     management_key = None
     needs_reconciliation = recovering

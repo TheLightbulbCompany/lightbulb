@@ -302,10 +302,8 @@ async def test_default_room_uses_complete_renamed_starter_map_once_without_recon
         *(("agent", agent_id) for agent_id in starter_ids.values()),
     }
     modes = {row["id"]: row["listenMode"] for row in members if row["kind"] == "agent"}
-    assert modes == {
-        starter_ids["ceo"]: "active",
-        **{agent_id: "mentions" for agent_id in list(starter_ids.values())[1:]},
-    }
+    # Paid workspace (listening_available=True): every starter agent Listens; Jev picks (#2960).
+    assert modes == {agent_id: "active" for agent_id in starter_ids.values()}
     messages, _ = await repo.list_messages(room_id, 0, 100)
     assert [(row["author"], row["text"]) for row in messages] == [
         (

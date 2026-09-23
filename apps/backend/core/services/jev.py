@@ -42,7 +42,9 @@ _DECIDE_BUDGET_S = 8.0
 #: ponytail: a DynamoDB poll, <=32 strongly consistent reads per loser per message; a push
 #: (stream/notify) only if Listening fan-out grows past a handful of candidates.
 _LOSER_POLL_S = 0.25
-_LOSER_WAIT_S = 8.0
+#: Longer than the winner can take (its budget plus the un-timed decision write), so a slow
+#: winner never lets a loser fall back to dispatch-all beside the winner: two responders.
+_LOSER_WAIT_S = _DECIDE_BUDGET_S + 3.0
 #: What Jev sees: the last 30 room messages (1,000 chars each), trimmed oldest-first until the
 #: whole state fits ~24k chars -- generous headroom under Jev's 32k-token state limit.
 _RECENT_LIMIT = 30

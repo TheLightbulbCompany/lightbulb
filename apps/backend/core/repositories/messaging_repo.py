@@ -472,16 +472,25 @@ async def list_messages_before(room_id: str, before_seq: int, limit: int) -> lis
     return list(reversed(rows))
 
 
+_THREAD_SCAN_LIMIT = 500
+
+
 async def list_thread(room_id: str, root_message_id: str, before_seq: int) -> list[dict]:
     """A thread's root and replies with ``seq < before_seq``, oldest→newest.
 
-    ponytail: partition scan like ``get_message_by_id``; add a thread index once a
-    measured room makes it material.
+    ponytail: reads only the newest ``_THREAD_SCAN_LIMIT`` messages before ``before_seq`` (it runs
+    once per candidate agent), so thread messages older than that are left out; add a thread index
+    once a measured room makes it material.
     """
     if before_seq <= 1:
         return []
-    rows = await _query(room_pk(room_id), between=(msg_sk(1), msg_sk(before_seq - 1)))
-    return [r for r in rows if root_message_id in (r.get("messageId"), r.get("threadRootMessageId"))]
+    rows = await _query(
+        room_pk(room_id),
+        between=(msg_sk(1), msg_sk(before_seq - 1)),
+        ascending=False,
+        limit=_THREAD_SCAN_LIMIT,
+    )
+    return [r for r in reversed(rows) if root_message_id in (r.get("messageId"), r.get("threadRootMessageId"))]
 
 
 async def list_messages_before_page(room_id: str, before_seq: int, limit: int) -> tuple[list[dict], int | None]:

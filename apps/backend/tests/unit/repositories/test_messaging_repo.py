@@ -369,6 +369,15 @@ async def test_list_thread_returns_root_and_replies_before_seq_in_order(table):
     assert await repo.list_thread(room_id, root["messageId"], 1) == []
 
 
+async def test_list_thread_reads_a_bounded_window_newest_first(table, monkeypatch):
+    # Bounded: a room's whole history must never be scanned once per candidate agent.
+    room_id, _ = await _room()
+    root = await _post(room_id, text="root", client_id="b-0")
+    await _post(room_id, text="r1", client_id="b-1", thread_root=root["messageId"])
+    monkeypatch.setattr(repo, "_THREAD_SCAN_LIMIT", 1)
+    assert [m["text"] for m in await repo.list_thread(room_id, root["messageId"], 3)] == ["r1"]
+
+
 @pytest.mark.asyncio
 async def test_newest_page_and_older_cursor_are_exclusive(table):
     room_id, _ = await _room()

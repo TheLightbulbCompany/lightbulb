@@ -23,8 +23,7 @@ Three things, in their words:
 
 ## 2. ⚠️ This contradicts a prior design. Read before deciding.
 
-`docs/superpowers/specs/2026-07-12-onboarding-aha-first-run-design.md` is still
-**Draft for review** — never approved, never shipped — but it argues the
+A prior onboarding design (never approved, never shipped) argues the
 opposite of item 2, and the argument deserves a hearing rather than a silent
 overwrite. Its position, drawn from Polsia:
 

@@ -11,11 +11,6 @@ readiness inputs into one ``StatusContract``:
                                            fields, so this is ONE physical
                                            read, not two)
 
-See ``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md``
-§2 ("Readiness composition") and §4 (INV-1), and the ``COMPOSER`` session in
-``docs/superpowers/plans/2026-07-24-onboarding-implementation-prompts.md``
-(spec PR-5).
-
 No other module may COMPOSE two or more of the inputs above to derive
 a phase / status / onboarding-progress verdict -- that is what INV-1
 forbids, and what

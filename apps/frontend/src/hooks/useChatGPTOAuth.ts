@@ -7,13 +7,12 @@ import {
   type OAuthState,
 } from "@lightbulb/shared";
 
-// The hook body lives in @lightbulb/shared (extracted for the mobile app — see
-// docs/superpowers/plans/2026-07-05-mobile-app-expo-ios.md). This module is
-// the web platform wrapper: it supplies the real useApi() client and
-// preserves the historical no-arg call signature + OAuthState export so
-// every existing web consumer (ChatGPTOAuthStep, LLMPanel, ChangeProviderModal)
-// keeps working unchanged. The opts param serves the coding-harness card
-// (second grant, explicit start).
+// The hook body lives in @lightbulb/shared (extracted so the mobile app could
+// share it). This module is the web platform wrapper: it supplies the real
+// useApi() client and preserves the historical no-arg call signature +
+// OAuthState export so every existing web consumer (ChatGPTOAuthStep,
+// LLMPanel, ChangeProviderModal) keeps working unchanged. The opts param
+// serves the coding-harness card (second grant, explicit start).
 export type { OAuthState };
 
 export function useChatGPTOAuth(opts?: ChatGPTOAuthOptions) {

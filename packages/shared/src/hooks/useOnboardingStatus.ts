@@ -6,13 +6,11 @@
  * `mutate("/container/status")` call sites; mobile: its own hand-rolled
  * `useState` + raw `setInterval` + `AppState` loop) into a single SWR key
  * fetched through ONE fetcher, with ONE bounded backstop loop belt-and-
- * suspenders behind SWR's own scheduling. See
- * docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md §3/§9
- * and docs/superpowers/research/2026-07-24-onboarding-current-state.md §7.
+ * suspenders behind SWR's own scheduling.
  *
- * Two independent fixes, per the research's root-cause finding that the
- * real kill vector for a throttled-but-visible tab is a HUNG FETCHER or a
- * REJECTED revalidate — not a dropped SWR tick:
+ * Two independent fixes, per the root-cause finding that the real kill
+ * vector for a throttled-but-visible tab is a HUNG FETCHER or a REJECTED
+ * revalidate — not a dropped SWR tick:
  *
  *   1. **Root fix** — the fetcher below is timeout-bounded (AbortController,
  *      `FETCH_TIMEOUT_MS`) and REJECTION-SAFE: it never throws. Every

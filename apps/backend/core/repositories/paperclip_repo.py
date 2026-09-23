@@ -74,10 +74,9 @@ class FunnelClaimResult(str, Enum):
     """What ``claim_funnel_submission`` decided, for the caller to act on.
 
     Replaces the old ``OnboardingClaimResult`` (the ``__onboarded__``
-    sentinel's claim/steal vocabulary — see
-    ``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md``
-    §2). The funnel claim is now a real, generation-fenced attribute
-    transition on the owner row (``funnel_state: not_started -> submitted``)
+    sentinel's claim/steal vocabulary). The funnel claim is now a real,
+    generation-fenced attribute transition on the owner row
+    (``funnel_state: not_started -> submitted``)
     instead of a separate synthetic-key claim item, so there is no
     stale-steal timing to reason about: DynamoDB's own conditional write
     serializes concurrent submitters, and a losing caller is deterministic —
@@ -486,9 +485,7 @@ class PaperclipRepo:
         (this row's PK — the org creator for an org owner, not necessarily
         ``owner_id``). This lets ``core.services.readiness_state.compute_status``
         and the pending-brief reconciler share one physical Paperclip read
-        where possible. See
-        docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md
-        §2 ("one read, not two").
+        where possible (one read, not two).
 
         ``owner_id`` is the CONTAINER owner (org_id for an org, else the
         user_id) -- NOT necessarily a row key. This table's PK is a Clerk

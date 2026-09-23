@@ -133,7 +133,7 @@
  *     --brass  5.18:1 on midnight, 4.23:1 on --card — rules and labels, not copy.
  */
 /*
- * Chat theme system — see docs/superpowers/specs/2026-09-13-chat-theme-system-design.md
+ * Chat theme system
  *
  * Color splits into three layers that vary independently:
  *   ladder    rail / sidebar / pane / raised / edge   — varies with theme

@@ -736,8 +736,7 @@ async def test_provision_org_cross_org_row_does_not_reconcile(repo):
 # ----------------------------------------------------------------------
 # Onboarding: G2 mint + writer safety (spec PR-4 / ONBOARD-TABLE)
 #
-# See docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md
-# §2's "load-bearing safety requirement": onboarding_generation is minted
+# The load-bearing safety requirement: onboarding_generation is minted
 # EXACTLY ONCE at G2 (fresh company only, INV-3), and every later whole-item
 # put on the same row (notably the reconcile-adopt retry path) must carry
 # those fields forward untouched (INV-4) or co-location reintroduces the

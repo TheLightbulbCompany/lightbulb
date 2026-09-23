@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Guards the three-layer split described in
- * docs/superpowers/specs/2026-09-13-chat-theme-system-design.md.
+ * Guards the three-layer chat theme split (ladder / hue / semantic — see
+ * globals.css and useChatTheme.ts).
  *
  * The architecture is only worth anything if it holds: the moment a semantic
  * colour starts varying with focus, "focus mode cannot change what a badge

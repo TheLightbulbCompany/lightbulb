@@ -9,11 +9,11 @@ import {
 } from "@lightbulb/shared";
 import { recordRequestId } from "./requestIdLog";
 
-// The client implementation lives in @lightbulb/shared (extracted for the mobile
-// app — see docs/superpowers/plans/2026-07-05-mobile-app-expo-ios.md). This
-// module is the web platform wrapper: it binds the Next.js env source, the
-// Clerk hook, and the request-id ring buffer, and preserves the historical
-// export surface so feature code never imports the shared package directly.
+// The client implementation lives in @lightbulb/shared (extracted so the mobile
+// app could share it). This module is the web platform wrapper: it binds the
+// Next.js env source, the Clerk hook, and the request-id ring buffer, and
+// preserves the historical export surface so feature code never imports the
+// shared package directly.
 
 // Use environment variable for production, fallback to localhost for development
 export const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";

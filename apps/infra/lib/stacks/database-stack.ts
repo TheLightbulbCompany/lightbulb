@@ -486,7 +486,7 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "handle", type: dynamodb.AttributeType.STRING },
     });
 
-    // Launch Competition (docs/superpowers/specs/2026-08-28-launch-competition-design.md).
+    // Launch Competition waitlist.
     // Waitlist rows are keyed by lowercased email — the join to an account is
     // users.email (written by the Clerk user.created webhook). The counter row
     // (email = "__counter__") hands out positions atomically.

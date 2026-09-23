@@ -70,33 +70,48 @@ estimate with the real cost, asynchronously, once OpenRouter reports it. Free
 and capped requests never touch this row at all (`ledger.recordFree` only
 writes the outbox row) and are out of scope; so is everything the retry
 budget and the "unmetered rows only" auto-release after an hour cover. This
-spec checks safety, not liveness — the pool never goes negative, not that a
-stuck hold eventually clears.
+spec checks safety, not liveness.
+
+**History.** The first version of this spec found a real gap: `commit()`
+conditions the release of the held estimate but never conditions the real
+debit it applies to `remaining_microcents` on anything, so an under-estimated
+price ceiling could drive the shared pool negative with no code-level
+defense. Reported to the coordinator, not fixed inline (this track's TRAIN
+HYGIENE rule). The fix landed as **PR #3028**, and this section models that
+design: **it does not clamp the real debit** — clamping would undercharge the
+owner relative to what Metronome actually bills, the wrong direction for a
+money path. What changed instead: the overshoot is now surfaced (an EMF
+metric plus a warn alarm, `W81`), and the backend's own exhaustion checks
+(`metronome_gate._row_blocked`, `billing._is_exhausted`) already treat any
+`remaining <= RESERVE_ESTIMATE_MICROCENTS` — negative included, no floor — as
+exhausted, so a negative pool blocks every further admission on the row.
 
 | Constant | Committed value | Meaning |
 |---|---|---|
-| `MaxOvershoot` | `0` | how far a settlement's real debit may exceed the reservation it replaces |
+| `MaxOvershoot` | `2` (nonzero — overshoot is now an accepted, bounded, alarmed outcome, not a bug to assume away) | how far a single settlement's real debit may exceed the reservation it replaces |
 
-| Invariant | Holds at `MaxOvershoot = 0` | What it says |
+| Invariant | Holds at `MaxOvershoot = 2` | What it says |
 |---|---|---|
-| `AdmissionRespectsPool` | yes | outstanding holds (Bedrock's + OpenRouter's, on the SAME row) never exceed what the pool has left, however the two independently interleave |
-| `PoolNeverNegative` | yes | the shared budget never goes below zero |
-| `SettledAtMostOnce` | yes | a request's real cost is debited at most once, however many times settlement is re-driven |
+| `NoAdmissionWhileExhausted` | yes | no admission (OpenRouter's `Reserve` or Bedrock's own hold, on the SAME row) is ever granted while the pool is already exhausted — this is the precise meaning of "no admission while remaining ≤ 0," and it's what stops one overshoot from compounding into another |
+| `OvershootBounded` | yes | however far negative the pool goes, it's bounded by the number of requests that were ever outstanding times `MaxOvershoot`, not unbounded |
+| `SettledAtMostOnce` | yes | unchanged from before — a request's real cost is debited at most once, however many times settlement is re-driven |
 
-**A real gap, found and reported, not fixed here** (this track's TRAIN HYGIENE
-rule holds runtime changes as open PRs until the coordinator announces the
-prod dispatch): `commit()`'s transaction conditions the release of the HELD
-ESTIMATE (`openrouter_reserved_microcents >= reservation_microcents`) but
-never conditions the REAL DEBIT it applies to `remaining_microcents` on
-anything — `debit_microcents(actual_nanodollars)` is computed from
-OpenRouter's reported cost alone, uncapped by what was reserved. Safety rests
-entirely on an assumption made outside this code: that the reservation's
-price-ceiling estimate always dominates what OpenRouter actually charges.
-Verified: `MaxOvershoot = 2` (a settlement allowed to exceed its own
-reservation) breaks `PoolNeverNegative` in 343 states — a scratch run, not
-committed, matching how this track documents a demonstrated-but-not-shipped
-counterexample. Nothing in the code catches a mispriced or underestimated
-ceiling; there's no code-level clamp, only an assumption.
+**`AdmissionRespectsPool`** (`bedrockReserved + orReserved <= remaining`,
+checked at every reachable state) was the original spec's admission-safety
+check, and it no longer belongs in the committed config — not because
+admission is unsafe, but because it's now a category error. Verified by a
+scratch run (not committed): two Bedrock holds admitted while the pool was
+healthy, followed by one OpenRouter settlement overshooting, legitimately
+breaks it (`bedrockReserved=2, orReserved=0, remaining=1`) with the ghost
+`admittedWhileExhausted` flag staying `FALSE` throughout the same trace —
+every admission that ran was sound when it ran; the pool simply moved
+underneath already-approved holds afterward, exactly as designed.
+`NoAdmissionWhileExhausted` is the correctly-scoped (admission-time, not
+always) successor to what `AdmissionRespectsPool` was trying to check.
+
+The header comment notes this section models PR #3028 as of its own branch
+commit, not yet merged to `main` — re-sync it once that PR lands, the same
+way `MessagingDeliveryKey`'s config was re-synced after PR #2965.
 
 ## JevDecisionConvergence
 

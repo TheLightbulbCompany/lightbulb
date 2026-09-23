@@ -1256,6 +1256,17 @@ async def test_write_profiles_resolves_owner_level_inputs_exactly_once_for_a_six
 
 
 @pytest.mark.asyncio
+async def test_write_profiles_refuses_an_empty_roster(monkeypatch):
+    """An empty roster wrote nothing and returned success, so reconcile reported 'updated' on a
+    workspace whose profiles never moved (prod, 2026-09-23). Empty means broken: raise."""
+    _patch_write_profiles_collaborators(monkeypatch)
+    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=[]))
+
+    with pytest.raises(hermes_provisioning.HermesProfileError, match="roster is empty"):
+        await hermes_provisioning.write_profiles("org_a")
+
+
+@pytest.mark.asyncio
 async def test_two_concurrent_write_profiles_calls_produce_byte_identical_config_and_env(monkeypatch):
     """#12: provision_hermes_runtime's whole path -- including write_profiles -- must converge
     for two concurrent provision runs of the same owner, not just the runtime-create step.

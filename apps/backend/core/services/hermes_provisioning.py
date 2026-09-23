@@ -1234,6 +1234,13 @@ async def write_profiles(owner_id: str) -> None:
 
     inputs = await resolve_profile_inputs(owner_id)
     roster = await load_agent_roster(owner_id)
+    if not roster:
+        # An empty roster used to write nothing and return success, so a reconcile reported
+        # 'updated' on a workspace whose profiles never moved (prod org_3JKLW…, 2026-09-23: no
+        # Paperclip company, agents stuck on a retired provider). Every workspace is seeded
+        # before its profiles are written, so empty means broken -- fail loudly (reconcile
+        # returns 'failed' and pages provision.reconcile.failed).
+        raise HermesProfileError(f"hermes profile for owner={owner_id}: agent roster is empty")
     for agent in roster:
         # M6-R48 on the re-render path (PATCH /debug/provision, a provider switch): a SOUL.md
         # without the generated marker is the owner's, so carry it through verbatim -- the same

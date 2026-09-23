@@ -915,6 +915,8 @@ async def put_byo_app(
     p = _get_provider_or_404(provider, owner_id)
     if not p.byo_required:
         raise HTTPException(status_code=400, detail=f"{provider} does not support a bring-your-own app")
+    if "•" in body.client_id or "•" in body.client_secret:  # the form's masked display value
+        raise HTTPException(status_code=400, detail="paste the real secret, not the masked value")
     await oauth_app_store.put(
         owner_id,
         provider,

@@ -215,3 +215,106 @@ def test_pull_by_name_failure_does_not_raise(home, monkeypatch):
     monkeypatch.setattr(sync, "_s3", _boom)
     monkeypatch.setattr(sync, "S3_BUCKET", "owner-state")
     sync._pull_cli_credentials("ceo")  # must not raise -- a blip must not tear down a warm profile
+
+
+class _RotatingS3:
+    """Keys -> (bytes, etag); PutObject honours IfMatch the way S3 does (412 on a mismatch)."""
+
+    def __init__(self, objects, fail_put=()):
+        self.objects = objects
+        self.fail_put = set(fail_put)
+        self.puts = []
+        self._n = 0
+
+    def get_paginator(self, _):
+        def paginate(Bucket, Prefix, Delimiter=None):
+            keys = [k for k in self.objects if k.startswith(Prefix)]
+            if Delimiter:
+                subs = sorted({Prefix + k[len(Prefix):].split(Delimiter)[0] + Delimiter for k in keys})
+                return [{"CommonPrefixes": [{"Prefix": s} for s in subs]}]
+            return [{"Contents": [{"Key": k, "ETag": self.objects[k][1]} for k in keys]}]
+        return SimpleNamespace(paginate=paginate)
+
+    def download_file(self, bucket, key, dest):
+        Path(dest).write_bytes(self.objects[key][0])
+
+    def get_object(self, Bucket, Key):
+        body, etag = self.objects[Key]
+        return {"Body": SimpleNamespace(read=lambda: body), "ETag": etag}
+
+    def put_object(self, *, Bucket, Key, Body, IfMatch):
+        self.puts.append((Key, IfMatch))
+        if Key in self.fail_put or self.objects[Key][1] != IfMatch:
+            raise RuntimeError("PreconditionFailed")
+        self._n += 1
+        self.objects[Key] = (Body, f'"new-{self._n}"')
+        return {"ETag": self.objects[Key][1]}
+
+
+def test_a_rotated_xurl_is_written_back_to_every_roster_profile(home, monkeypatch):
+    """X refresh tokens are single-use: xurl rewrites ~/.xurl on refresh, and a pull that
+    restores the pre-refresh copy hands it a spent token (NoAuthMethod ~2 h after connect)."""
+    key = lambda agent: f"{sync.S3_PREFIX}/{agent}/home/.xurl"
+    roster = ("ceo", "engineering", "growth", "finance")
+    s3 = _RotatingS3({key(a): (b"old-token", f'"etag-{a}"') for a in roster}, fail_put={key("growth")})
+    monkeypatch.setattr(sync, "_s3", lambda: s3)
+    monkeypatch.setattr(sync, "S3_BUCKET", "owner-state")
+
+    sync._pull_cli_credentials("ceo")  # finance/growth/engineering are never restored locally
+    xurl = home / "profiles" / "ceo" / "home" / ".xurl"
+    xurl.write_bytes(b"rotated-token")  # the in-microVM refresh
+
+    sync.save_rotated_cli_credentials()  # growth's 412 is skipped, not raised
+
+    for agent in ("ceo", "engineering", "finance"):
+        assert s3.objects[key(agent)][0] == b"rotated-token"
+        assert (key(agent), f'"etag-{agent}"') in s3.puts  # conditional on the ETag it replaced
+    assert s3.objects[key("growth")][0] == b"old-token"
+
+    sync._pull_cli_credentials("ceo")  # a later .revision bump must not resurrect the spent token
+    assert xurl.read_bytes() == b"rotated-token"
+
+    s3.objects[key("ceo")] = (b"reconnected", '"backend"')  # an owner reconnect still wins
+    sync._pull_cli_credentials("ceo")
+    assert xurl.read_bytes() == b"reconnected"
+
+
+def test_a_backend_write_mid_turn_is_never_overwritten(home, monkeypatch):
+    key = f"{sync.S3_PREFIX}/ceo/home/.xurl"
+    s3 = _RotatingS3({key: (b"old-token", '"etag-1"')})
+    monkeypatch.setattr(sync, "_s3", lambda: s3)
+    monkeypatch.setattr(sync, "S3_BUCKET", "owner-state")
+    sync._pull_cli_credentials("ceo")
+    (home / "profiles" / "ceo" / "home" / ".xurl").write_bytes(b"rotated-token")
+    s3.objects[key] = (b"reconnected", '"etag-2"')
+
+    sync.save_rotated_cli_credentials()
+
+    assert s3.objects[key][0] == b"reconnected" and not s3.puts
+
+
+def test_a_quickbooks_rotation_in_any_agents_copy_propagates(home, monkeypatch):
+    """Intuit rotates on every refresh, and each agent's MCP server writes its OWN profile's
+    home/quickbooks/.env -- so every profile is scanned, and the newest rotation wins."""
+    import os
+
+    rel = "home/quickbooks/.env"
+    key = lambda agent: f"{sync.S3_PREFIX}/{agent}/{rel}"
+    roster = ("ceo", "engineering", "finance")
+    s3 = _RotatingS3({key(a): (b"REFRESH=old", f'"etag-{a}"') for a in roster})
+    monkeypatch.setattr(sync, "_s3", lambda: s3)
+    monkeypatch.setattr(sync, "S3_BUCKET", "owner-state")
+    for agent in ("ceo", "engineering"):
+        sync._pull_cli_credentials(agent)
+    older = home / "profiles" / "ceo" / rel
+    newer = home / "profiles" / "engineering" / rel
+    older.write_bytes(b"REFRESH=ceo-rotated")
+    newer.write_bytes(b"REFRESH=eng-rotated")
+    os.utime(older, (1, 1))
+
+    sync.save_rotated_cli_credentials()
+
+    assert all(s3.objects[key(a)][0] == b"REFRESH=eng-rotated" for a in roster)
+    for agent in ("ceo", "engineering"):
+        sync._pull_cli_credentials(agent)  # a re-pull brings the winner, never the old token
+        assert (home / "profiles" / agent / rel).read_bytes() == b"REFRESH=eng-rotated"

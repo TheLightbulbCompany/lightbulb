@@ -1626,6 +1626,18 @@ class TestByoApp:
         assert "acknowledged_at" not in put_call.kwargs
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["client_id", "client_secret"])
+    @patch("routers.connections.oauth_app_store.put", new_callable=AsyncMock)
+    async def test_put_byo_app_rejects_the_masked_placeholder(self, mock_put, async_client, field):
+        # The form shows a stored secret as bullets; pasting that back stored "••••••…" as the
+        # founder's X client_secret and every token refresh failed.
+        body = {"client_id": "cid", "client_secret": "csec", field: "••••••abcd"}
+        resp = await async_client.put("/api/v1/connections/google/byo-app", json=body)
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "paste the real secret, not the masked value"
+        mock_put.assert_not_awaited()
+
+    @pytest.mark.asyncio
     @patch("routers.connections.oauth_app_store.put", new_callable=AsyncMock)
     async def test_put_byo_app_rejected_for_non_byo_provider(self, mock_put, async_client):
         # stripe is not byo_required -> a BYO PUT is rejected (400) and nothing stored.

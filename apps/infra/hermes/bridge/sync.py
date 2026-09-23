@@ -77,9 +77,8 @@ CLI_ENV_FILE = "cli-env.json"
 #: The profile paths the backend's CLI-connector projection owns -- mirrors
 #: ``core/services/credentials/hermes_cli.py``'s ``profile_paths()`` + its ``cli-env.json``.
 #: They are BACKEND-OWNED: pulled by name on every revision bump (_pull_cli_credentials) and
-#: never uploaded (see EXCLUDE_GLOBS below). An in-microVM rotation of one of these therefore
-#: lives only as long as the warm profile; the backend's copy is authoritative on the next cold
-#: restore, which is what keeps an agent from writing a credential every later turn inherits.
+#: never uploaded by the bulk save (see EXCLUDE_GLOBS below), which is what keeps an agent from
+#: writing a credential every later turn inherits. The one exception is ROTATING_CLI_CREDENTIALS.
 CLI_CREDENTIAL_PREFIXES = (
     f"{PROFILE_HOME}/.aws/",
     f"{PROFILE_HOME}/.config/gh/",
@@ -90,6 +89,21 @@ CLI_CREDENTIAL_PREFIXES = (
     "skills/instagram/",
     CLI_ENV_FILE,
 )
+
+#: CLI credential FILES whose refresh token is SINGLE-USE and rotates on every refresh
+#: (``refresh_owner: actor``): the CLI rewrites the file in place, the old refresh token is dead
+#: the moment it does, so letting the next pull restore the S3 copy hands the CLI a spent token
+#: (xurl then fails as NoAuthMethod ~2 h after every connect). save_rotated_cli_credentials
+#: writes these -- and only these -- back. Providers: ``x`` (xurl's ``~/.xurl``) and
+#: ``quickbooks`` (the Intuit MCP server's QUICKBOOKS_TOKEN_STORE_PATH). An explicit list because
+#: providers.yaml is not in the image, and gog/instagram tokens do not rotate single-use.
+#: Add a path here when an actor-refresh provider rotates single-use tokens.
+ROTATING_CLI_CREDENTIALS = (f"{PROFILE_HOME}/.xurl", f"{PROFILE_HOME}/quickbooks/.env")
+
+#: agent -> rel -> (S3 ETag, sha256) of the ROTATING_CLI_CREDENTIALS copy last pulled or written
+#: back. The ETag is what lets a re-pull tell "our own copy" from a backend connect/disconnect.
+_CLI_PULLED: dict[str, dict[str, tuple[str, str]]] = {}
+_rotate_lock = threading.Lock()
 
 #: Hazard of putting ``$HOME`` inside the profile: every tool's dotfiles and caches now sit in
 #: the dir ``save_profile`` walks, so an `npm install` or a `git clone` would start uploading
@@ -358,6 +372,7 @@ def restore_profile(agent_id: str) -> float:
         if modified is not None:
             synced[rel] = modified
         mtimes[rel] = _change_stamp(target)
+        _remember_cli_credential(agent_id, rel, obj, target)
 
     _fan_out(_download, wanted)
     n = len(wanted)
@@ -433,7 +448,11 @@ def save_profile(agent_id: str) -> float:
         n = len(changed)
         took = time.time() - t0
         log.info("saved profile %s: %d changed objects in %.1fs", agent_id, n, took)
-        return took
+    try:
+        save_rotated_cli_credentials()
+    except Exception:  # a listing blip retries on the next save
+        log.warning("rotated CLI credential write-back failed", exc_info=True)
+    return took
 
 
 # --- lane B: config RPC helpers (Task 17) -------------------------------------------------------
@@ -648,8 +667,10 @@ def _pull_cli_credentials(agent_id: str) -> None:
     (or disconnecting AWS) mid-session would never reach an already-warm microVM, exactly the
     hole ``_pull_new_mcp_token_files`` exists to close for MCP tokens.
 
-    Overwrites rather than seeding once: the backend is the sole writer of these paths (an
-    agent's own edits are never uploaded), so its object is by construction the newer one.
+    Overwrites rather than seeding once: the backend is the writer of these paths (an agent's
+    own edits are never uploaded), so its object is by construction the newer one -- except a
+    ROTATING_CLI_CREDENTIALS file whose S3 ETag is still the one we pulled or wrote back, which
+    is skipped so a re-pull cannot resurrect a spent refresh token over the live rotated copy.
     A local file the backend has since DELETED is removed too.
 
     Scope of that last claim: the prune is PER AGENT, on that agent's next turn. A disconnect
@@ -676,8 +697,12 @@ def _pull_cli_credentials(agent_id: str) -> None:
                         continue
                     remote.add(rel)
                     target = dest / rel
+                    held = _CLI_PULLED.get(agent_id, {}).get(rel)
+                    if held and held[0] == obj.get("ETag") and target.is_file():
+                        continue  # our own copy, or a rotation not yet written back
                     target.parent.mkdir(parents=True, exist_ok=True)
                     s3.download_file(S3_BUCKET, obj["Key"], str(target))
+                    _remember_cli_credential(agent_id, rel, obj, target)
             local_root = dest / prefix.rstrip("/")
             locals_ = (
                 [p for p in local_root.rglob("*") if p.is_file()]
@@ -685,10 +710,70 @@ def _pull_cli_credentials(agent_id: str) -> None:
                 else ([local_root] if local_root.is_file() else [])
             )
             for path in locals_:
-                if path.relative_to(dest).as_posix() not in remote:
+                if (rel := path.relative_to(dest).as_posix()) not in remote:
                     path.unlink(missing_ok=True)
+                    _CLI_PULLED.get(agent_id, {}).pop(rel, None)
     except Exception:  # noqa: BLE001 -- a listing/download blip must not abort ensure_profile
         log.warning("ensure_profile: CLI credential re-pull failed for %s", agent_id)
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _remember_cli_credential(agent_id: str, rel: str, obj: dict, target: Path) -> None:
+    if rel in ROTATING_CLI_CREDENTIALS and obj.get("ETag"):
+        _CLI_PULLED.setdefault(agent_id, {})[rel] = (obj["ETag"], _sha(target.read_bytes()))
+
+
+def save_rotated_cli_credentials() -> None:
+    """Write a CLI's in-place token rotation back to S3, for EVERY roster profile.
+
+    Every profile holds an identical copy of the owner-level grant (backend ``hermes_cli``), but
+    WHICH local copy rotates differs: xurl rides ``$HOME``, frozen at the first profile to run a
+    shell, while the QuickBooks MCP server writes the running agent's own profile. So every
+    local copy is scanned, and the rotation goes to every profile's key. Each profile is
+    replaced only while S3 still holds the exact bytes we rotated FROM, and the PUT is
+    ``IfMatch`` on the ETag that check read: a backend connect/disconnect that landed first (or
+    lands in between, 412) wins and is skipped, never overwritten. Best-effort per profile."""
+    if not S3_BUCKET:
+        return
+    with _rotate_lock:
+        for rel in ROTATING_CLI_CREDENTIALS:
+            rotated = []
+            for agent_id, held in list(_CLI_PULLED.items()):
+                path = _profile_dir(agent_id) / rel
+                if rel in held and path.is_file() and _sha(new := path.read_bytes()) != held[rel][1]:
+                    rotated.append((path.stat().st_mtime_ns, agent_id, new, held[rel][1]))
+            if rotated:
+                # ponytail: two agents rotating in one process -> newest mtime wins; the loser's
+                # token is dropped (Intuit tolerates its reuse briefly, nothing relies on that).
+                _, agent_id, new, old_sha = max(rotated)
+                _write_back_rotation(agent_id, rel, new, old_sha)
+
+
+def _write_back_rotation(source: str, rel: str, new: bytes, old_sha: str) -> None:
+    s3 = _s3()
+    pages = s3.get_paginator("list_objects_v2").paginate(
+        Bucket=S3_BUCKET, Prefix=f"{S3_PREFIX}/", Delimiter="/")
+    roster = [p["Prefix"][len(S3_PREFIX) + 1:].strip("/") for page in pages for p in page.get("CommonPrefixes", [])]
+    for agent_id in roster:
+        key = f"{S3_PREFIX}/{agent_id}/{rel}"
+        try:
+            current = s3.get_object(Bucket=S3_BUCKET, Key=key)
+            if _sha(current["Body"].read()) != old_sha:
+                continue  # the backend wrote a newer grant (or we already did): it wins
+            etag = s3.put_object(Bucket=S3_BUCKET, Key=key, Body=new, IfMatch=current["ETag"])["ETag"]
+        except Exception as exc:  # noqa: BLE001 -- 412/absent/blip: skip this profile, keep the rest
+            log.info("rotated %s not written back for %s: %s", rel, agent_id, exc)
+            continue
+        held = _CLI_PULLED.get(agent_id, {}).get(rel)
+        local = _profile_dir(agent_id) / rel
+        if agent_id == source or (held and local.is_file() and _sha(local.read_bytes()) == held[1]):
+            # an untouched warm copy gets the new token now: its own MCP server reads that file
+            if agent_id != source:
+                local.write_bytes(new)
+            _CLI_PULLED[agent_id][rel] = (etag, _sha(new))
 
 
 def ensure_profile(agent_id: str) -> None:

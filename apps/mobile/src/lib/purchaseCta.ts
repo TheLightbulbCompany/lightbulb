@@ -90,6 +90,12 @@ const PURCHASE_GATE_COPY: Record<string, { title: string; body: string }> = {
     title: "Today's included usage is used up",
     body: "You've used today's included usage. It resets at 00:00 UTC.",
   },
+  // Teams routines specifically (`/teams/routines*`), not a provision_gate.py
+  // code — same "no CTA on iOS" rule applies to its 402 body.
+  routines_require_subscription: {
+    title: "Not available on this plan",
+    body: "Routines aren't available on this plan.",
+  },
 };
 
 export function isPurchaseGate(code: string | null | undefined): boolean {
@@ -105,4 +111,27 @@ export function purchaseGateCopy(
 ): { title: string; body: string } | null {
   if (code == null) return null;
   return PURCHASE_GATE_COPY[code] ?? null;
+}
+
+/**
+ * Safe display text for a caught `ApiError`, for surfaces (native Alerts,
+ * inline error Text) that show a server error message verbatim.
+ *
+ * The shared api client promotes a structured 402 `{blocked, code, message}`
+ * detail onto `ApiError.message` (see `packages/shared/src/api/client.ts`
+ * `extractDetailMessage`) so every OTHER error keeps its normal server copy —
+ * but for a purchase-gate `code`, that promoted message IS the call-to-action
+ * this module exists to strip. Route any error from a `/teams/*`-style gated
+ * endpoint through this instead of reading `err.message` directly.
+ */
+export function purchaseSafeMessage(err: unknown, fallback: string): string {
+  const code =
+    err && typeof err === "object" && "body" in err
+      ? (err as { body?: { detail?: { code?: unknown } } }).body?.detail?.code
+      : undefined;
+  if (typeof code === "string") {
+    const copy = purchaseGateCopy(code);
+    if (copy) return copy.body;
+  }
+  return err instanceof Error ? err.message : fallback;
 }

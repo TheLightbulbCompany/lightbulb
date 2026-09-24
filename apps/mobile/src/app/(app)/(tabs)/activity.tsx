@@ -16,14 +16,17 @@ import { PickerSheet, type PickerOption } from "../../../components/teams/Picker
 import { ReasonSheet } from "../../../components/teams/ReasonSheet";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { activityHrefs, itemTarget, useMobileActivity } from "../../../lib/activity";
+import { purchaseSafeMessage } from "../../../lib/purchaseCta";
 import { relativeTime } from "../../../lib/relativeTime";
 import { fetchAgents, fetchMembers, useTeamsConfig } from "../../../lib/teamsData";
 
 const ACTION_FAILED = "That didn’t go through. Try again.";
 
-/** The server's own words when it sent some; never a bare "API 500". */
+/** The server's own words when it sent some; never a bare "API 500". Some
+ *  activity items proxy to Paperclip (approvals), so a purchase-gate 402's
+ *  code gets swapped for local neutral copy like every other Teams action. */
 function failure(error: unknown): string {
-  const message = error instanceof Error ? error.message : "";
+  const message = purchaseSafeMessage(error, "");
   return message && !/^API \d+$/.test(message) ? message : ACTION_FAILED;
 }
 

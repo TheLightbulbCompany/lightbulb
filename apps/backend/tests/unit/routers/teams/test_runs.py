@@ -41,6 +41,7 @@ def test_get_run_detail(client, monkeypatch):
     admin.get_heartbeat_run = AsyncMock(
         return_value={
             "id": "run_1",
+            "companyId": "co_abc",
             "agentId": "agt_1",
             "status": "failed",
             "startedAt": "2026-05-04T01:00:00Z",
@@ -69,6 +70,7 @@ def test_get_run_log_defaults(client, monkeypatch):
     """`GET /teams/heartbeat-runs/{id}/log` proxies the upstream log slice
     with the default 64 KiB tail when no params are supplied."""
     admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(return_value={"id": "run_1", "companyId": "co_abc"})
     admin.get_run_log = AsyncMock(
         return_value={
             "runId": "run_1",
@@ -101,6 +103,7 @@ def test_get_run_log_defaults(client, monkeypatch):
 def test_get_run_log_passes_offset_and_limit(client, monkeypatch):
     """The route forwards `offset` and the `limitBytes` alias verbatim."""
     admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(return_value={"id": "run_1", "companyId": "co_abc"})
     admin.get_run_log = AsyncMock(return_value={"runId": "run_1", "content": ""})
     from routers.teams import agents as agents_mod
 
@@ -122,6 +125,7 @@ def test_get_run_log_passes_offset_and_limit(client, monkeypatch):
 def test_get_run_log_rejects_oversized_limit(client, monkeypatch):
     """`limitBytes` above the route ceiling is rejected by validation."""
     admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(return_value={"id": "run_1", "companyId": "co_abc"})
     admin.get_run_log = AsyncMock(return_value={})
     from routers.teams import agents as agents_mod
 
@@ -139,6 +143,7 @@ def test_get_run_events_defaults(client, monkeypatch):
     """`GET /teams/heartbeat-runs/{id}/events` wraps upstream's raw event
     array in the standard list envelope, with afterSeq=0 / limit=200."""
     admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(return_value={"id": "run_1", "companyId": "co_abc"})
     admin.get_run_events = AsyncMock(
         return_value=[
             {
@@ -173,6 +178,7 @@ def test_get_run_events_defaults(client, monkeypatch):
 def test_get_run_events_passes_after_seq_and_limit(client, monkeypatch):
     """The route forwards `afterSeq` and `limit` and clamps limit to 1000."""
     admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(return_value={"id": "run_1", "companyId": "co_abc"})
     admin.get_run_events = AsyncMock(return_value=[])
     from routers.teams import agents as agents_mod
 
@@ -201,6 +207,7 @@ def test_cancel_run(client, monkeypatch):
     """`POST /teams/heartbeat-runs/{id}/cancel` proxies upstream cancel and
     returns the cancelled run row verbatim."""
     admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(return_value={"id": "run_1", "companyId": "co_abc"})
     admin.cancel_heartbeat_run = AsyncMock(return_value={"id": "run_1", "status": "cancelled"})
     from routers.teams import agents as agents_mod
 
@@ -221,6 +228,7 @@ def test_cancel_run(client, monkeypatch):
 def test_record_watchdog_decision(client, monkeypatch):
     """Forwards the camelCase decision body verbatim; returns the row."""
     admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(return_value={"id": "run_1", "companyId": "co_abc"})
     admin.record_watchdog_decision = AsyncMock(return_value={"id": "wd_1", "decision": "snooze"})
     from routers.teams import agents as agents_mod
 
@@ -251,7 +259,9 @@ def test_record_watchdog_decision(client, monkeypatch):
 def test_watchdog_decision_rejects_bad_decision(client, monkeypatch):
     from routers.teams import agents as agents_mod
 
-    monkeypatch.setattr(agents_mod, "_admin", lambda: MagicMock())
+    admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(return_value={"id": "run_1", "companyId": "co_abc"})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
     r = client.post(
         "/api/v1/teams/heartbeat-runs/run_1/watchdog-decisions",
         json={"decision": "explode"},

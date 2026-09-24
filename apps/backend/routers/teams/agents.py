@@ -760,9 +760,8 @@ async def get_run(run_id: SafeId, ctx: TeamsContext = Depends(_ctx)):
 
     The frontend's RunDetailPanel still reads this path as a fallback next to
     ``/heartbeat-runs/{id}``; upstream never had ``GET /api/runs/{id}``, so
-    this proxies the heartbeat-run route instead of 404ing.
+    this proxies the heartbeat-run route instead of 404ing (fenced the same way).
     """
-    return await _admin().get_heartbeat_run(
-        run_id=run_id,
-        session_cookie=ctx.session_cookie,
-    )
+    from .runs import _require_company_run
+
+    return await _require_company_run(run_id, ctx)

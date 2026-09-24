@@ -114,6 +114,8 @@ API_ERROR_STATUS = {
     "ROOM_FORBIDDEN": 403,
     "PLAN_REQUIRED": 403,
     "ROOM_NOT_FOUND": 404,
+    "ACTIVITY_NOT_FOUND": 404,
+    "ACTION_UNAVAILABLE": 409,
     "MEMBER_NOT_FOUND": 404,
     "MESSAGE_NOT_FOUND": 404,
     "RUN_NOT_FOUND": 404,
@@ -2221,6 +2223,12 @@ _MENTION_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_-])@([A-Za-z0-9_-]+)(?![A-Za-z0-
 _CODE_SPAN_RE = re.compile(r"```.*?```|`[^`]*`", re.DOTALL)
 
 
+def _root_seq(links: dict[str, dict], thread_root_message_id: Any) -> int | None:
+    """The validated thread root's seq, so the reply can name its root by key."""
+    row = links.get(str(thread_root_message_id)) if thread_root_message_id else None
+    return int(row["messageSeq"]) if row else None
+
+
 def _room_kind(meta: dict) -> str:
     """Room kind as a bounded metric dimension."""
     kind = meta.get("kind")
@@ -2349,7 +2357,7 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     meta, sender = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     mentions = await _validate_mentions(room_id, request.mentions)
-    await _validate_message_links(
+    links = await _validate_message_links(
         room_id,
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
@@ -2406,6 +2414,7 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
             source_agent_id=None,
             client_message_id=str(request.client_message_id),
             attachments=attachments,
+            thread_root_seq=_root_seq(links, request.thread_root_message_id),
         )
     except messaging_repo.RoomArchived as exc:
         raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE) from exc
@@ -2592,6 +2601,8 @@ async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error
             dispatch_targets=[],
             source_agent_id=agent_id,
             client_message_id=None,
+            # The trigger is a reply in the same thread, so it already names the root's seq.
+            thread_root_seq=(trigger or {}).get("threadRootSeq") if thread_root else None,
         )
         put_metric("messaging.run.failure_message", dimensions={"outcome": outcome})
     except Exception:
@@ -2857,6 +2868,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             source_agent_id=agent_id,
             client_message_id=None,
             attachments=attachments,
+            thread_root_seq=_root_seq(links, request.thread_root_message_id),
         )
     except messaging_repo.RoomArchived as exc:
         # Deliberate: a reply to a turn that began before the archive is refused too, so an

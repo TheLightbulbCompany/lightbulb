@@ -667,6 +667,16 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
       );
     expect(JSON.stringify(publishResources)).toContain("channelNamespace/ws");
     expect(JSON.stringify(publishResources)).not.toContain("channelNamespace/rooms");
+    // Its one row-creating write is the Activity pointer, fenced to ACTIVITY# partitions.
+    const puts = statements.filter((statement) => actions(statement).includes("dynamodb:PutItem"));
+    expect(puts).toHaveLength(1);
+    expect(actions(puts[0])).toEqual(["dynamodb:PutItem"]);
+    expect(puts[0].Condition).toEqual({
+      "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ACTIVITY#*"] },
+    });
+    for (const forbidden of ["dynamodb:DeleteItem", "dynamodb:BatchWriteItem", "dynamodb:TransactWriteItems"]) {
+      expect(granted.has(forbidden)).toBe(false);
+    }
   });
 
   test("Pipe state monitor polls the one Pipe every minute", () => {

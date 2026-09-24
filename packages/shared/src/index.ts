@@ -162,6 +162,17 @@ export type {
   RoomSummary,
   RunStatusResponse,
   UpsertRoomMemberRequest,
+  ActivityAction,
+  ActivityActionInput,
+  ActivityActionRequest,
+  ActivityActor,
+  ActivityItem,
+  ActivityKind,
+  ActivityLinkKind,
+  ActivityPage,
+  ActivitySeenResponse,
+  ActivitySubtype,
+  ActivitySummary,
 } from "./messaging/types";
 export {
   MESSAGE_ATTACHMENT_ACCEPT,

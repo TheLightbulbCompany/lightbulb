@@ -666,6 +666,19 @@ export class ApiStack extends cdk.Stack {
     // stamp on a legacy META row (attribute_not_exists guarded, so this can
     // never clobber a concurrent writer) — see _workspace_id_for_meta.
     messagingTable.grant(projectorFn, "dynamodb:UpdateItem");
+    // Activity feed pointer rows (ACTIVITY#<home>#<user>), written by this stream
+    // consumer after the message commits -- not inside the message transaction.
+    // Conditional put (idempotent on replay), and fenced to that partition prefix
+    // so the projector can never create a canonical row.
+    projectorFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:PutItem"],
+        resources: [messagingTable.tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ACTIVITY#*"] },
+        },
+      }),
+    );
     // Expo push tokens live on the users table, owned by DatabaseStack. Imported
     // by name so the projector needs no cross-stack prop (read-only: token
     // pruning would need a writer).

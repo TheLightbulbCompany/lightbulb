@@ -390,3 +390,91 @@ export type LocalSessionCommandReceipt = {
   providerMessageId: string | null;
 } & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }
   | { actorUserId?: never; actor: { kind: "agent"; id: string }; invocationExpiresAt: number });
+
+// ---------------------------------------------------------------------------
+// Activity feed (GET /messaging/activity). Everything a client shows is
+// server-rendered: render `summary` and `actions` generically, never compose
+// text per kind. New kinds (reaction, agent_run) arrive without a shape change.
+// ---------------------------------------------------------------------------
+
+export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "agent_run" | "paperclip";
+export type ActivitySubtype = "approval" | "assigned_issue";
+export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval";
+
+export interface ActivityActor {
+  kind: "human" | "agent" | "system";
+  id: string;
+  name: string;
+}
+
+export interface ActivitySummary {
+  /** One human sentence, <=120 chars. */
+  title: string;
+  requester: ActivityActor;
+  reason: string | null;
+  preview: {
+    /** Plain text, <=600 chars. */
+    text: string | null;
+    destination: string | null;
+    /** <=8 redacted key/values. */
+    fields: { label: string; value: string }[];
+  } | null;
+  links: { kind: ActivityLinkKind; id: string; label: string }[];
+}
+
+export interface ActivityActionInput {
+  kind: "text" | "select" | "person";
+  label: string;
+  required: boolean;
+  /** `select` only. A `person` input lists the workspace roster client-side; the server validates the id. */
+  options: { value: string; label: string }[] | null;
+}
+
+export interface ActivityAction {
+  id: string;
+  label: string;
+  style: "primary" | "destructive" | null;
+  /** Ask before running. */
+  confirm: string | null;
+  input: ActivityActionInput | null;
+  /** Client-side only: never POSTed. */
+  navigate: { kind: ActivityLinkKind; id: string; roomId: string | null } | null;
+}
+
+export interface ActivityItem {
+  id: string;
+  kind: ActivityKind;
+  subtype: ActivitySubtype | null;
+  roomId: string | null;
+  messageId: string | null;
+  threadRootMessageId: string | null;
+  actor: ActivityActor;
+  createdAt: string;
+  state: "open" | "done" | "resolved";
+  resolvedBy: ActivityActor | null;
+  resolvedAt: string | null;
+  read: boolean;
+  summary: ActivitySummary;
+  /** Computed for the viewer; empty once resolved. */
+  actions: ActivityAction[];
+}
+
+export interface ActivityPage {
+  items: ActivityItem[];
+  /** Opaque; pass back as `cursor`. Null on the last page. */
+  next: string | null;
+  /** First page only (null after it): the Activity badge, capped at 99. */
+  unseenCount: number | null;
+  sources: { paperclip: "ok" | "unavailable" };
+}
+
+export interface ActivitySeenResponse {
+  seenUpTo: string | null;
+}
+
+export interface ActivityActionRequest {
+  /** Approve/reject/request-changes note. */
+  note?: string;
+  /** Reply text, a `select` value, or a `person` id. */
+  value?: string;
+}

@@ -7,7 +7,8 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     ROOM#<room>     META                               owner, fields, revision, lastSeq, deliveryKey, lastMessage (top-level preview),
                                                        topCount (top-level ordinals, see unread_count)
     ROOM#<room>     MEMBER#<kind>#<id>                 role, listenMode, mentionHandle, joinedSeq, joinedTopOrdinal, homeOwnerId (foreign members of a shared room; memberKey is keyed on it)
-    ROOM#<room>     MSG#<20-digit seq>                 original request + public edit overlay + dispatchTargets + topOrdinal
+    ROOM#<room>     MSG#<20-digit seq>                 original request + public edit overlay + dispatchTargets + topOrdinal;
+                                                       a reply carries threadRootSeq, a root threadParticipants (human ids)
     ROOM#<room>     MENTION#<user>#<20-digit seq>      one per @mentioned human (not the author); counted for mentionCount
     ROOM#<room>     IDEMP#EDIT#<user>#<operationId>     durable edit/delete retry receipt
     ROOM#<room>     IDEMP#human#<user>#<clientMessageId>  durable human retry receipt
@@ -28,6 +29,9 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     ROOM#<room>     WORK#FOLLOWUP#<agent>#<followUpId>  one-shot outbox for that follow-up turn
     ROOM#<room>     DECISION#<messageId>                Jev routing decision, claim-first (NOT WORK#:
                                                        the Pipe must never see it; the projector skips it)
+    ACTIVITY#<home>#<user>  <createdAt>#<messageId>    Activity feed pointer (no text), written by the
+                                                       messaging projector after the message commits; 90-day TTL
+    ACTIVITY#<home>#<user>  SEEN                       the reader's Activity ``seenUpTo`` (monotonic)
 
 ``WORK#``, ``LIVE#``, ``RUN#``, ``USAGE#``, ``FOLLOWUP#`` and ``DECISION#`` rows carry ``expiresAt`` (7 days). Every read
 here is ``ConsistentRead=True``; the GSIs are queried by ``list_rooms_for_member``
@@ -837,6 +841,7 @@ async def create_message(
     source_agent_id: str | None,
     client_message_id: str | None,
     attachments: list[dict] | None = None,
+    thread_root_seq: int | None = None,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -897,6 +902,9 @@ async def create_message(
             "attachments": attachments or [],
             "topOrdinal": ordinal,
         }
+        if thread_root_message_id and thread_root_seq:
+            # The projector reads the root by this key instead of scanning the room.
+            message["threadRootSeq"] = int(thread_root_seq)
         meta_values: dict[str, Any] = {":seq": seq, ":expected": expected, ":now": now, ":top": ordinal}
         meta_set = "SET lastSeq = :seq, lastMessageAt = :now, updatedAt = :now, topCount = :top"
         if top:
@@ -945,13 +953,28 @@ async def create_message(
             del items[1]  # the author MEMBER check
         items.extend(_work_message_item(table_name, owner_id, room_id, message_id, seq, a) for a in target_ids)
         # One tiny row per @mentioned human (members only, so <= MAX_ROOM_MEMBERS);
-        # with the agent targets that is <= 32 + 4 fixed + 1 READ, well under 100.
+        # with the agent targets that is <= 32 + 4 fixed + 1 READ + 1 thread root, well under 100.
         mentioned = {m["id"] for m in mentions if m.get("kind") == "human"}
         mentioned.discard(author["id"] if author["kind"] == "human" else None)
         items.extend(
             {"Put": {"TableName": table_name, "Item": {"pk": room_pk(room_id), "sk": mention_sk(uid, seq)}}}
             for uid in sorted(mentioned)
         )
+        participants = mentioned | ({author["id"]} if author["kind"] == "human" else set())
+        if thread_root_message_id and thread_root_seq and participants:
+            # The thread's humans (Activity ``thread_reply`` + notify recipients), kept on
+            # the root: one small ADD instead of the projector scanning the room per reply.
+            items.append(
+                {
+                    "Update": {
+                        "TableName": table_name,
+                        "Key": {"pk": room_pk(room_id), "sk": msg_sk(int(thread_root_seq))},
+                        "UpdateExpression": "ADD threadParticipants :p",
+                        "ConditionExpression": "messageId = :root",
+                        "ExpressionAttributeValues": {":p": participants, ":root": thread_root_message_id},
+                    }
+                }
+            )
         if top and author["kind"] == "human":
             # Posting marks the room read for its author (Slack's rule). Unconditional
             # and still monotonic: nothing can point past the seq this commit creates.
@@ -1644,6 +1667,117 @@ async def mark_unread(room_id: str, user_id: str, *, joined_seq: int, from_seq: 
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
     return await get_read_cursor(room_id, user_id)
+
+
+# ---------------------------------------------------------------------------
+# Activity feed (rooms F5). Pointer rows are written ONLY by the messaging
+# projector (the stream consumer), never inside the message transaction; this
+# side reads them, stamps ``doneAt`` and keeps the per-reader seen cursor.
+# ---------------------------------------------------------------------------
+
+ACTIVITY_SEEN_SK = "SEEN"
+# Every pointer sk starts with an ISO timestamp ("2026-..."), so it sorts below
+# this bound and ``SEEN`` sorts above it.
+_ACTIVITY_SK_CEILING = "A"
+
+
+def activity_pk(home_owner_id: str, user_id: str) -> str:
+    return f"ACTIVITY#{home_owner_id}#{user_id}"
+
+
+def activity_sk(created_at: str, message_id: str) -> str:
+    return f"{created_at}#{message_id}"
+
+
+async def list_activity(home_owner_id: str, user_id: str, *, before_sk: str | None, limit: int) -> list[dict]:
+    """Newest-first pointer rows strictly below ``before_sk`` (the opaque cursor)."""
+    from boto3.dynamodb.conditions import Key
+
+    upper = before_sk if before_sk is not None else _ACTIVITY_SK_CEILING
+    return await _paginate(
+        KeyConditionExpression=Key("pk").eq(activity_pk(home_owner_id, user_id)) & Key("sk").lt(upper),
+        ConsistentRead=True,
+        ScanIndexForward=False,
+        Limit=limit,
+    )
+
+
+async def list_activity_since(home_owner_id: str, user_id: str, after: str | None, limit: int) -> list[dict]:
+    """Up to ``limit`` pointer rows created after ``after`` (all, if None) -- the unseen badge."""
+    from boto3.dynamodb.conditions import Key
+
+    lower = f"{after}~" if after else "0"  # "~" sorts after the "#<id>" of a row AT ``after``
+    return await _paginate(
+        KeyConditionExpression=Key("pk").eq(activity_pk(home_owner_id, user_id))
+        & Key("sk").between(lower, _ACTIVITY_SK_CEILING),
+        ConsistentRead=True,
+        ScanIndexForward=False,
+        Limit=limit,
+    )
+
+
+async def get_activity_row(home_owner_id: str, user_id: str, sk: str) -> dict | None:
+    return await _get(activity_pk(home_owner_id, user_id), sk)
+
+
+async def mark_activity_done(home_owner_id: str, user_id: str, sk: str) -> dict | None:
+    """Stamp ``doneAt`` once (a repeat keeps the first stamp). ``None`` if the row is gone."""
+    try:
+        response = await run_in_thread(
+            _table().update_item,
+            Key={"pk": activity_pk(home_owner_id, user_id), "sk": sk},
+            UpdateExpression="SET doneAt = if_not_exists(doneAt, :now)",
+            ConditionExpression="attribute_exists(pk)",
+            ExpressionAttributeValues={":now": utc_now_iso()},
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return None
+        raise
+    return _plain(response["Attributes"])
+
+
+async def get_activity_seen(home_owner_id: str, user_id: str) -> str | None:
+    row = await _get(activity_pk(home_owner_id, user_id), ACTIVITY_SEEN_SK)
+    return row.get("seenUpTo") if row else None
+
+
+async def set_activity_seen(home_owner_id: str, user_id: str, up_to: str) -> str:
+    """Monotonic: an older ``up_to`` never moves the cursor back. Returns the stored value."""
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={"pk": activity_pk(home_owner_id, user_id), "sk": ACTIVITY_SEEN_SK, "seenUpTo": up_to},
+            ConditionExpression="attribute_not_exists(seenUpTo) OR seenUpTo < :v",
+            ExpressionAttributeValues={":v": up_to},
+        )
+        return up_to
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    return await get_activity_seen(home_owner_id, user_id) or up_to
+
+
+async def batch_get(keys: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
+    """Strongly read many ``(pk, sk)`` rows, 100 per request; missing rows are absent."""
+    table = _table()
+    client = table.meta.client
+    unique = list(dict.fromkeys(keys))
+    found: dict[tuple[str, str], dict] = {}
+    for start in range(0, len(unique), 100):
+        request = {
+            table.name: {
+                "Keys": [{"pk": pk, "sk": sk} for pk, sk in unique[start : start + 100]],
+                "ConsistentRead": True,
+            }
+        }
+        while request:
+            response = await run_in_thread(client.batch_get_item, RequestItems=request)
+            for item in _plain(response.get("Responses", {}).get(table.name, [])):
+                found[(item["pk"], item["sk"])] = item
+            request = response.get("UnprocessedKeys") or None
+    return found
 
 
 # ---------------------------------------------------------------------------

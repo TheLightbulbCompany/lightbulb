@@ -15,7 +15,7 @@ from uuid import UUID, uuid5
 
 import boto3
 import botocore.session
-from boto3.dynamodb.types import TypeDeserializer
+from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 from botocore.exceptions import ClientError
@@ -105,6 +105,7 @@ LIVE_EVENT_TYPES = frozenset(
 )
 
 _deserializer = TypeDeserializer()
+_serializer = TypeSerializer()
 _ddb_client = None
 
 
@@ -520,11 +521,11 @@ def _send_push(
         _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "send_error"})
 
 
-def _member_streams(room_id: str, owner_id: str, after_seq: int | None = None):
-    """``(user_id, member, channel)`` for every CURRENT human member with an
-    active private stream. Membership is strong-read here, at publish time, never
-    taken from a cached list: a member removed before this read gets nothing.
-    ``after_seq`` also skips members who joined at or after that message."""
+def _current_members(room_id: str, owner_id: str, after_seq: int | None = None):
+    """``(user_id, member)`` for every CURRENT human member. Membership is
+    strong-read here, at write/publish time, never taken from a cached list: a
+    member removed before this read gets nothing. ``after_seq`` also skips
+    members who joined at or after that message."""
     for candidate in _query_rows(f"ROOM#{room_id}", "MEMBER#human#"):
         user_id = candidate["id"]
         # Recheck membership after discovery, including remove/rejoin history floor.
@@ -533,47 +534,132 @@ def _member_streams(room_id: str, owner_id: str, after_seq: int | None = None):
             continue
         if after_seq is not None and after_seq <= member.get("joinedSeq", 0):
             continue
-        home = member.get("homeOwnerId") or owner_id
-        mapping = _get_item(f"OWNER#{home}", f"USERSTREAM#{user_id}")
-        if not mapping or mapping.get("active") is not True:
-            continue
-        key = _require_uuid(mapping.get("channelKey"), "channelKey")
-        reverse = _get_item(f"STREAM#{key}", "META")
-        if not reverse or reverse.get("active") is not True or reverse.get("ownerId") != home or reverse.get("userId") != user_id:
-            continue
-        workspace_id = _workspace_id_for_meta(f"STREAM#{key}", "META", reverse)
-        if workspace_id is None:
-            continue  # this reader's private hint is unresolvable; everyone else still gets theirs
-        yield user_id, member, f"/ws/{workspace_id}/users/{key}"
+        yield user_id, member
 
 
-def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[tuple[str, bool]]:
+def _stream_channel(user_id: str, member: dict[str, Any], owner_id: str) -> str | None:
+    """The member's private user channel, or ``None`` without an active stream."""
+    home = member.get("homeOwnerId") or owner_id
+    mapping = _get_item(f"OWNER#{home}", f"USERSTREAM#{user_id}")
+    if not mapping or mapping.get("active") is not True:
+        return None
+    key = _require_uuid(mapping.get("channelKey"), "channelKey")
+    reverse = _get_item(f"STREAM#{key}", "META")
+    if not reverse or reverse.get("active") is not True or reverse.get("ownerId") != home or reverse.get("userId") != user_id:
+        return None
+    workspace_id = _workspace_id_for_meta(f"STREAM#{key}", "META", reverse)
+    if workspace_id is None:
+        return None  # this reader's private hint is unresolvable; everyone else still gets theirs
+    return f"/ws/{workspace_id}/users/{key}"
+
+
+def _member_streams(room_id: str, owner_id: str, after_seq: int | None = None):
+    """``(user_id, member, channel)`` for every current human member with an
+    active private stream."""
+    for user_id, member in _current_members(room_id, owner_id, after_seq):
+        channel = _stream_channel(user_id, member, owner_id)
+        if channel is not None:
+            yield user_id, member, channel
+
+
+ACTIVITY_TTL_S = 90 * 24 * 3600
+
+
+def _thread_participants(room_id: str, root_id: str, root_seq: Any) -> set[str]:
+    """Humans who started the thread, replied in it (``threadParticipants``,
+    ADDed to the root MSG by each reply's own transaction) or were mentioned in
+    its root. One strong read of the root by key -- the reply carries
+    ``threadRootSeq`` -- replacing the old scan of the room's whole MSG# partition.
+    A reply without the seq (written before it existed) has no participants."""
+    if isinstance(root_seq, bool) or not isinstance(root_seq, int) or root_seq < 1:
+        return set()
+    root = _get_item(f"ROOM#{room_id}", f"MSG#{root_seq:020d}")
+    if not root or root.get("messageId") != root_id:
+        return set()
+    people = set(root.get("threadParticipants") or ())
+    author = root.get("author") or {}
+    if author.get("kind") == "human" and isinstance(author.get("id"), str):
+        people.add(author["id"])
+    people.update(
+        ref["id"] for ref in root.get("mentions") or ()
+        if isinstance(ref, dict) and ref.get("kind") == "human" and isinstance(ref.get("id"), str)
+    )
+    return people
+
+
+def _activity_kind(
+    user_id: str, room_kind: str | None, mentioned: set[str], participants: set[str]
+) -> str | None:
+    """One row per (user, message); precedence dm > mention > thread_reply."""
+    if room_kind in {"dm", "group-dm"}:
+        return "dm"
+    if user_id in mentioned:
+        return "mention"
+    if user_id in participants:
+        return "thread_reply"
+    return None
+
+
+def _write_activity(user_id: str, member: dict[str, Any], owner_id: str, kind: str, message: dict[str, Any],
+                    mentioned: bool) -> None:
+    """A pointer row in the reader's own Activity partition: no text, no names,
+    so leaving a room leaves nothing to purge (the read path re-gates membership
+    and renders from the current message). Idempotent on the message: a stream
+    replay hits the conditional put and writes nothing."""
+    home = member.get("homeOwnerId") or owner_id
+    created = message["createdAt"]
+    author = message["author"]
+    item = {
+        "pk": f"ACTIVITY#{home}#{user_id}",
+        "sk": f"{created}#{message['messageId']}",
+        "kind": kind,
+        "roomId": message["roomId"],
+        "seq": message["messageSeq"],
+        "messageId": message["messageId"],
+        "threadRootMessageId": message["threadRootMessageId"],
+        "actor": {"kind": author["kind"], "id": author["id"]},
+        "mentioned": mentioned,
+        "createdAt": created,
+        "expiresAt": int(_parse_rfc3339(created).timestamp()) + ACTIVITY_TTL_S,
+    }
+    try:
+        _ddb().put_item(
+            TableName=MESSAGING_TABLE,
+            Item={key: _serializer.serialize(value) for key, value in item.items()},
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+def _notify_members(
+    message: dict[str, Any], meta: dict[str, Any], thread_root_seq: Any = None
+) -> list[tuple[str, bool]]:
     room_id, seq = message["roomId"], message["messageSeq"]
     owner_id = meta["ownerId"]
     root = message["threadRootMessageId"]
-    participants = set()
-    if root:
-        # ponytail: thread replies scan founder-sized rooms; add a thread index
-        # when measured room history makes this query expensive.
-        participants = {
-            row["author"]["id"] for row in _query_rows(f"ROOM#{room_id}", "MSG#")
-            if row.get("author", {}).get("kind") == "human"
-            and (row.get("messageId") == root or row.get("threadRootMessageId") == root)
-        }
+    participants = _thread_participants(room_id, root, thread_root_seq) if root else set()
     mentioned = {ref["id"] for ref in message["mentions"] if ref["kind"] == "human"}
-    if message["author"]["kind"] == "human":
-        mentioned.discard(message["author"]["id"])  # a self-mention is not a mention (nor a MENTION# row)
+    author = message["author"]
+    if author["kind"] == "human":
+        mentioned.discard(author["id"])  # a self-mention is not a mention (nor a MENTION# row)
     last_message = _last_message(message)
     mentioned_ids = sorted(mentioned)[:MAX_MENTIONED_USERS]
     # (token, was this token's owner @mentioned) — the push title is per reader.
     recipients: list[tuple[str, bool]] = []
-    for user_id, member, channel in _member_streams(room_id, owner_id, after_seq=seq):
+    for user_id, member in _current_members(room_id, owner_id, after_seq=seq):
+        own = author["kind"] == "human" and author["id"] == user_id
+        # Your own message is never Activity (nor a notify); you still get the hint's preview.
+        kind = None if own else _activity_kind(user_id, meta.get("kind"), mentioned, participants)
+        if kind is not None:
+            # Written before the hint below, so the refetch a notify triggers already sees it.
+            _write_activity(user_id, member, owner_id, kind, message, user_id in mentioned)
+        channel = _stream_channel(user_id, member, owner_id)
+        if channel is None:
+            continue
         read = _get_item(f"ROOM#{room_id}", f"READ#human#{user_id}") or {}
-        notify = (
-            not (message["author"]["kind"] == "human" and message["author"]["id"] == user_id)
-            and seq > read.get("lastReadSeq", 0)
-            and (meta.get("kind") in {"dm", "group-dm"} or user_id in mentioned or user_id in participants)
-        )
+        notify = seq > read.get("lastReadSeq", 0) and kind is not None
         # Mute is client-side everywhere else; push is server-side by nature,
         # so it is the one surface that has to honour it here.
         payload = {"roomId": room_id, "messageId": message["messageId"],
@@ -589,7 +675,7 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[tuple
                 payload["push"] = _render_push(message, meta, at_me)
         # A <=140-char plain preview (and, when it notifies, the phone's banner) may
         # ride the private user channel, to members current at publish time only
-        # (_member_streams strong-reads each one). The full message stays behind the
+        # (_current_members strong-reads each one). The full message stays behind the
         # authenticated HTTP read and the room channel, whose deliveryKey rotation
         # remains the revocation boundary.
         _publish(channel, {
@@ -720,7 +806,7 @@ def _project_message(item: dict[str, Any]) -> None:
         "roomRevision": message["roomRevision"],
         "payload": message,
     }
-    recipients = _notify_members(message, meta)
+    recipients = _notify_members(message, meta, item.get("threadRootSeq"))
     _publish(f"/ws/{workspace_id}/rooms/{message['roomId']}/{delivery_key}", event)
     try:
         _emit_metric(

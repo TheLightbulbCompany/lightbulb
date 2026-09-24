@@ -13,7 +13,7 @@ from urllib.parse import quote
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, Request, Response, UploadFile
 
 from core.observability.metrics import put_metric
 from core.dynamodb import run_in_thread
@@ -21,7 +21,7 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.repositories import container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import chat_gate
+from core.services import activity, chat_gate
 from core.services import messaging as service
 from core.services import local_sessions
 from core.services import local_session_grants
@@ -263,6 +263,45 @@ async def live_config(auth: AuthContext = Depends(get_current_user)):
 @router.get("/messaging/rooms", response_model=RoomListResponse)
 async def list_rooms(auth: AuthContext = Depends(get_current_user)):
     return await service.list_rooms(auth)
+
+
+@router.get("/messaging/activity", response_model=activity.ActivityPage)
+async def list_activity(
+    request: Request,
+    response: Response,
+    cursor: Annotated[str | None, Query(max_length=512)] = None,
+    limit: Annotated[int, Query(ge=1, le=activity.MAX_LIMIT)] = activity.DEFAULT_LIMIT,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """The viewer's Activity feed: mentions, DMs, thread replies, and (page 1 only)
+    the Paperclip decisions and issues waiting on them."""
+    return await activity.list_activity(
+        auth, cursor=cursor, limit=limit, teams_ctx=lambda: activity.teams_context(auth, request, response)
+    )
+
+
+@router.post("/messaging/activity/seen", response_model=activity.ActivitySeenResponse)
+async def mark_activity_seen(body: activity.ActivitySeenRequest, auth: AuthContext = Depends(get_current_user)):
+    return await activity.mark_seen(auth, body)
+
+
+@router.post("/messaging/activity/{item_id}/actions/{action_id}", response_model=activity.ActivityItem)
+async def run_activity_action(
+    item_id: Annotated[str, Path(max_length=300)],
+    action_id: Annotated[str, Path(pattern=r"^[a-z_]{1,40}$")],
+    request: Request,
+    response: Response,
+    body: activity.ActivityActionRequest | None = None,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """One door for every Activity action; the backend maps it to the real call."""
+    return await activity.run_action(
+        auth,
+        item_id,
+        action_id,
+        body or activity.ActivityActionRequest(),
+        teams_ctx=lambda: activity.teams_context(auth, request, response),
+    )
 
 
 @router.put("/messaging/me/sections", response_model=RoomListResponse)

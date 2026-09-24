@@ -1,0 +1,475 @@
+"""Activity feed v1 (rooms F5): mention / dm / thread_reply pointer rows written by
+the REAL messaging projector, read back through ``core.services.activity``, plus
+the Paperclip approval / assigned-issue items merged into the first page.
+
+The projector module is loaded from ``apps/infra/lambda/messaging-projector`` and
+pointed at the same moto table, so these tests prove the writer and the reader
+agree on the row shape end to end.
+"""
+
+# ruff: noqa: F811 -- `table` is the repo suite's moto fixture, imported and then requested by name.
+
+import importlib.util
+import json
+import re
+import sys
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import boto3
+import pytest
+
+from core.auth import AuthContext
+from core.services import activity, messaging
+from routers.teams.deps import TeamsContext
+from tests.unit.repositories.test_messaging_repo import (  # noqa: F401
+    FRIDAY,
+    OWNER,
+    USER_A,
+    USER_B,
+    _member,
+    repo,
+    table,
+)
+
+USER_C = "user_C"
+ANN = {"kind": "human", "id": USER_A, "displayName": "Ann"}
+BOB = {"kind": "human", "id": USER_B, "displayName": "Bob"}
+CAROL = {"kind": "human", "id": USER_C, "displayName": "Carol"}
+AGENT = {"kind": "agent", "id": FRIDAY, "displayName": "Friday"}
+
+_INDEX = Path(__file__).resolve().parents[4] / "infra" / "lambda" / "messaging-projector" / "index.py"
+_spec = importlib.util.spec_from_file_location("messaging_projector_index", _INDEX)
+projector = importlib.util.module_from_spec(_spec)
+sys.modules.setdefault("messaging_projector_index", projector)
+_spec.loader.exec_module(projector)
+
+
+def auth(user_id=USER_B):
+    return AuthContext(user_id=user_id, org_id=OWNER)
+
+
+def ctx_for(user_id=USER_B, pc_user="pc-bob"):
+    return TeamsContext(
+        user_id=user_id,
+        org_id=OWNER,
+        owner_id=OWNER,
+        company_id="co-1",
+        paperclip_user_id=pc_user,
+        session_cookie="cookie",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_user_lookups(monkeypatch):
+    monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(side_effect=lambda uid: uid))
+
+
+@pytest.fixture
+def world(table):
+    """The moto table with the real projector wired to it (AppSync publish stubbed)."""
+    projector.MESSAGING_TABLE = "test-messaging"
+    projector.USERS_TABLE = ""
+    projector._ddb_client = boto3.client("dynamodb", region_name="us-east-1")
+    with patch.object(projector, "_publish"):
+        yield table
+    projector._ddb_client = None
+
+
+async def _room(kind="channel", members=(USER_A, USER_B, USER_C), name="general", client_room_id="c-1"):
+    rows = [_member("human", uid, "owner" if uid == USER_A else "member") for uid in members]
+    rows.append(_member("agent", FRIDAY, handle="friday"))
+    room_id = repo.deterministic_room_id(OWNER, USER_A, client_room_id)
+    await repo.create_room(
+        owner_id=OWNER,
+        room_id=room_id,
+        client_room_id=client_room_id,
+        creator_user_id=USER_A,
+        name=None if kind == "dm" else name,
+        kind=kind,
+        members=rows,
+        req_hash=repo.request_hash(client_room_id),
+    )
+    await repo.ensure_workspace_id(OWNER)
+    return room_id
+
+
+_ids = iter(range(10**6))
+
+
+async def say(room_id, author, text="hi", *, mentions=(), thread_root=None):
+    """Write through the canonical writer, then run the projector on the new row."""
+    root_seq = None
+    if thread_root:
+        root_seq = int((await repo.get_message_by_id(room_id, thread_root))["messageSeq"])
+    message, _ = await repo.create_message(
+        room_id=room_id,
+        owner_id=OWNER,
+        idemp_pk=repo.room_pk(room_id),
+        idemp_sk=repo.human_idemp_sk(author["id"], f"c-{next(_ids)}"),
+        req_hash=repo.request_hash(text, next(_ids)),
+        author=author,
+        text=text,
+        mentions=[{"kind": "human", "id": uid} for uid in mentions],
+        reply_to_message_id=None,
+        thread_root_message_id=thread_root,
+        thread_root_seq=root_seq,
+        run_id=None,
+        dispatch_targets=[],
+        source_agent_id=None,
+        client_message_id=None,
+    )
+    stored = await repo.get_message(room_id, message["messageSeq"])
+    projector._project_message(stored)
+    return message
+
+
+def no_paperclip():
+    return AsyncMock(side_effect=RuntimeError("no paperclip here"))
+
+
+async def feed(user_id=USER_B, cursor=None, limit=30, teams_ctx=None):
+    page = await activity.list_activity(
+        auth(user_id), cursor=cursor, limit=limit, teams_ctx=teams_ctx or no_paperclip()
+    )
+    return page.model_dump(mode="json", by_alias=True)
+
+
+# ---------------------------------------------------------------------------
+# the message transaction's thread-participant set
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_thread_reply_records_repliers_and_mentions_on_the_root(world):
+    room_id = await _room()
+    root = await say(room_id, AGENT, "root")
+    await say(room_id, ANN, "reply @carol", mentions=[USER_C], thread_root=root["messageId"])
+    await say(room_id, AGENT, "agent reply, no humans", thread_root=root["messageId"])
+    stored_root = await repo.get_message(room_id, root["messageSeq"])
+    assert set(stored_root["threadParticipants"]) == {USER_A, USER_C}
+    reply = await repo.get_message(room_id, 2)
+    assert reply["threadRootSeq"] == root["messageSeq"]
+
+
+# ---------------------------------------------------------------------------
+# message kinds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mention_is_self_explaining_and_read_follows_the_room_cursor(world):
+    room_id = await _room()
+    message = await say(room_id, ANN, "**Ship** it @bob", mentions=[USER_B])
+    page = await feed()
+    [item] = page["items"]
+    assert item["id"] == f"mention:{message['messageId']}:{room_id}:1"
+    assert item["kind"] == "mention" and item["roomId"] == room_id and item["messageId"] == message["messageId"]
+    assert item["actor"] == {"kind": "human", "id": USER_A, "name": "Ann"}
+    assert item["summary"]["title"] == "Ann mentioned you in #general"
+    assert item["summary"]["requester"] == item["actor"]
+    assert item["summary"]["preview"]["text"] == "Ship it @bob"
+    assert item["state"] == "open" and item["read"] is False
+    assert [a["id"] for a in item["actions"]] == ["reply", "mark_done", "open"]
+    reply = item["actions"][0]
+    assert reply["input"] == {"kind": "text", "label": "Reply to Ann", "required": True, "options": None}
+    assert item["actions"][2]["navigate"]["kind"] in {"thread", "room"}
+    assert page["unseenCount"] == 1 and page["sources"] == {"paperclip": "unavailable"}
+    # Reading the room clears it.
+    await repo.set_read_cursor(room_id, USER_B, 1)
+    assert (await feed())["items"][0]["read"] is True
+    # The author and an unmentioned member see nothing.
+    assert (await feed(USER_A))["items"] == []
+    assert (await feed(USER_C))["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_dm_to_me_is_an_item_but_never_for_its_author(world):
+    room_id = await _room("dm", (USER_A, USER_B), client_room_id="dm-1")
+    await say(room_id, ANN, "hey")
+    [item] = (await feed())["items"]
+    assert item["kind"] == "dm"
+    assert item["summary"]["title"] == "Ann sent you a direct message"
+    assert [a["id"] for a in item["actions"]] == ["reply", "open"]
+    assert (await feed(USER_A))["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_thread_reply_reaches_the_starter_repliers_and_the_mentioned(world):
+    room_id = await _room()
+    root = await say(room_id, BOB, "root by bob")
+    await say(room_id, ANN, "first reply @carol", mentions=[USER_C], thread_root=root["messageId"])
+    await say(room_id, AGENT, "friday replies", thread_root=root["messageId"])
+    bob = [i["kind"] for i in (await feed(USER_B))["items"]]
+    carol = [i["kind"] for i in (await feed(USER_C))["items"]]
+    ann = [i["kind"] for i in (await feed(USER_A))["items"]]
+    assert bob == ["thread_reply", "thread_reply"]  # started it
+    assert carol == ["thread_reply", "mention"]  # mentioned in it
+    assert ann == ["thread_reply"]  # replied in it (not her own reply)
+    item = (await feed(USER_B))["items"][0]
+    assert item["threadRootMessageId"] == root["messageId"]
+    assert item["summary"]["title"] == "Friday replied in a thread in #general"
+
+
+# ---------------------------------------------------------------------------
+# pagination, membership, deletes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pagination_is_newest_first_with_an_opaque_cursor(world):
+    room_id = await _room()
+    sent = [await say(room_id, ANN, f"@bob {n}", mentions=[USER_B]) for n in range(5)]
+    seen_ids = []
+    cursor = None
+    pages = 0
+    while True:
+        page = await feed(cursor=cursor, limit=2)
+        pages += 1
+        seen_ids += [i["messageId"] for i in page["items"]]
+        cursor = page["next"]
+        if pages > 1:
+            assert page["unseenCount"] is None  # the badge rides the first page only
+        if cursor is None:
+            break
+    assert seen_ids == [m["messageId"] for m in reversed(sent)]
+    with pytest.raises(messaging.ApiProblem) as bad:
+        await feed(cursor="not-a-cursor!!")
+    assert bad.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_leaving_a_room_hides_its_items_immediately(world):
+    room_id = await _room()
+    other = await _room(client_room_id="c-2", name="random")
+    await say(room_id, ANN, "@bob one", mentions=[USER_B])
+    await say(other, ANN, "@bob two", mentions=[USER_B])
+    assert len((await feed())["items"]) == 2
+    world.delete_item(Key={"pk": repo.room_pk(room_id), "sk": repo.member_sk("human", USER_B)})
+    items = (await feed())["items"]
+    assert [i["roomId"] for i in items] == [other]
+    assert (await feed())["unseenCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_deleted_messages_drop_and_edits_show_the_current_text(world):
+    room_id = await _room()
+    first = await say(room_id, ANN, "@bob secret plan", mentions=[USER_B])
+    await say(room_id, ANN, "@bob typo", mentions=[USER_B])
+    await repo.update_message(OWNER, room_id, 1, USER_A, "del", 0, None)
+    await repo.update_message(OWNER, room_id, 2, USER_A, "fix", 0, "@bob fixed")
+    page = await feed()
+    assert [i["summary"]["preview"]["text"] for i in page["items"]] == ["@bob fixed"]
+    assert first["messageId"] not in json.dumps(page)
+    assert "secret plan" not in json.dumps(page)
+
+
+# ---------------------------------------------------------------------------
+# seen
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_seen_cursor_is_monotonic_and_marks_thread_replies_read(world):
+    room_id = await _room()
+    root = await say(room_id, BOB, "root")
+    reply = await say(room_id, ANN, "reply", thread_root=root["messageId"])
+    page = await feed()
+    assert page["unseenCount"] == 1 and page["items"][0]["read"] is False
+    seen = await activity.mark_seen(auth(), activity.ActivitySeenRequest(up_to=reply["createdAt"]))
+    assert seen.seen_up_to is not None
+    page = await feed()
+    assert page["unseenCount"] == 0 and page["items"][0]["read"] is True
+    # An older upTo never moves the cursor back.
+    await activity.mark_seen(auth(), activity.ActivitySeenRequest(up_to="2000-01-01T00:00:00+00:00"))
+    assert (await feed())["unseenCount"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Paperclip items
+# ---------------------------------------------------------------------------
+
+RAW_TYPE_KEY = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*[._][a-z0-9]+(?:[._-][a-z0-9]+)*$")
+
+
+def approval(approval_id, type_, payload, *, status="pending", agent="agent-growth", created="2026-09-24T10:00:00Z"):
+    return {
+        "id": approval_id,
+        "companyId": "co-1",
+        "type": type_,
+        "status": status,
+        "requestedByAgentId": agent,
+        "requestedByUserId": None,
+        "payload": payload,
+        "decidedByUserId": None,
+        "decidedAt": None,
+        "createdAt": created,
+        "updatedAt": created,
+    }
+
+
+APPROVALS = [
+    approval(
+        "ap-hire",
+        "hire_agent",
+        {
+            "name": "Designer",
+            "role": "designer",
+            "capabilities": "Brand work",
+            "adapterConfig": {"authToken": "sekret"},
+        },
+    ),
+    approval(
+        "ap-board",
+        "request_board_approval",
+        {"title": "Approve hosting spend", "summary": "About $42/month", "recommendedAction": "Approve provider X"},
+    ),
+    approval(
+        "ap-post",
+        "request_board_approval",
+        {
+            "title": "distribution.public-post",
+            "ruleKey": "distribution.public-post",
+            "platform": "LinkedIn",
+            "account": "Lightbulb company page",
+            "text": "We just shipped **v2 pricing**.",
+            "reason": "Launch announcement for the v2 pricing page",
+        },
+    ),
+    approval(
+        "ap-odd",
+        "vendor.custom_flow",
+        {"budget_code": "ops.spend_cap", "apiKey": "sk-live-123", "vendor": "Acme", "access_token": "tok"},
+    ),
+]
+
+
+def fake_admin(approvals=APPROVALS, issues=()):
+    admin = AsyncMock()
+    admin.list_agents.return_value = [{"id": "agent-growth", "name": "Growth"}, {"id": FRIDAY, "name": "Friday"}]
+    admin.list_attention.return_value = {
+        "items": [
+            {"id": f"att-{a['id']}", "sourceKind": "approval", "subject": {"kind": "approval", "id": a["id"]}}
+            for a in approvals
+        ]
+        + [{"id": "att-x", "sourceKind": "issue_thread_interaction", "subject": {"kind": "interaction", "id": "i1"}}]
+    }
+    admin.list_approvals.return_value = list(approvals)
+    admin.list_issues.return_value = list(issues)
+    return admin
+
+
+def teams(ctx=None):
+    return AsyncMock(return_value=ctx or ctx_for())
+
+
+@pytest.mark.asyncio
+async def test_paperclip_items_merge_into_the_first_page_only(world, monkeypatch):
+    admin = fake_admin(approvals=APPROVALS[:1])
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: admin)
+    room_id = await _room()
+    for n in range(3):
+        await say(room_id, ANN, f"@bob {n}", mentions=[USER_B])
+    page = await feed(limit=2, teams_ctx=teams())
+    kinds = [i["kind"] for i in page["items"]]
+    assert kinds.count("paperclip") == 1 and page["sources"] == {"paperclip": "ok"}
+    [pc] = [i for i in page["items"] if i["kind"] == "paperclip"]
+    assert pc["id"] == "paperclip:approval:ap-hire" and pc["subtype"] == "approval" and pc["read"] is False
+    assert admin.list_attention.await_args.kwargs["params"] == {"limit": "20"}
+    page2 = await feed(cursor=page["next"], limit=2, teams_ctx=teams())
+    assert [i["kind"] for i in page2["items"]] == ["mention"]
+    assert page2["sources"] == {"paperclip": "ok"}  # not re-pulled, not failed
+
+
+@pytest.mark.asyncio
+async def test_paperclip_failure_never_fails_the_feed(world, monkeypatch):
+    admin = fake_admin()
+    admin.list_attention.side_effect = RuntimeError("paperclip down")
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: admin)
+    room_id = await _room()
+    await say(room_id, ANN, "@bob", mentions=[USER_B])
+    page = await feed(teams_ctx=teams())
+    assert [i["kind"] for i in page["items"]] == ["mention"]
+    assert page["sources"] == {"paperclip": "unavailable"}
+
+
+@pytest.mark.asyncio
+async def test_no_raw_paperclip_type_key_reaches_the_client(world, monkeypatch):
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: fake_admin())
+    await _room()
+    page = await feed(teams_ctx=teams())
+    body = json.dumps(page)
+    for raw in (
+        "hire_agent",
+        "request_board_approval",
+        "distribution.public-post",
+        "vendor.custom_flow",
+        "ops.spend_cap",
+    ):
+        assert raw not in body, raw
+    assert "sekret" not in body and "sk-live-123" not in body and '"tok"' not in body
+
+    def strings(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key not in {"id", "kind", "subtype", "state", "style", "roomId", "messageId", "value"}:
+                    yield from strings(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from strings(child)
+        elif isinstance(value, str):
+            yield value
+
+    for item in page["items"]:
+        for text in strings({k: item[k] for k in ("summary", "actions")}):
+            assert not RAW_TYPE_KEY.match(text), text
+
+
+@pytest.mark.asyncio
+async def test_per_type_renderers_and_the_unknown_type_fallback(world, monkeypatch):
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: fake_admin())
+    await _room()
+    items = {i["id"]: i for i in (await feed(teams_ctx=teams()))["items"]}
+    hire = items["paperclip:approval:ap-hire"]["summary"]
+    assert hire["title"] == "Growth wants to hire Designer"
+    assert {"label": "Role", "value": "designer"} in hire["preview"]["fields"]
+    board = items["paperclip:approval:ap-board"]["summary"]
+    assert board["title"] == "Growth: Approve hosting spend" and board["reason"] == "About $42/month"
+    post = items["paperclip:approval:ap-post"]["summary"]
+    assert post["title"] == "Growth wants to publish a post on LinkedIn"
+    assert post["preview"]["text"] == "We just shipped v2 pricing."
+    assert post["preview"]["destination"] == "LinkedIn · Lightbulb company page"
+    assert post["reason"] == "Launch announcement for the v2 pricing page"
+    odd = items["paperclip:approval:ap-odd"]["summary"]
+    assert odd["title"] == "Approval requested by Growth"
+    assert odd["preview"]["fields"] == [{"label": "Vendor", "value": "Acme"}]
+    actions = items["paperclip:approval:ap-post"]["actions"]
+    assert [a["id"] for a in actions] == ["approve", "reject", "request_revision", "open"]
+    assert actions[1]["confirm"] and actions[2]["input"]["required"] is True
+
+
+@pytest.mark.asyncio
+async def test_assigned_issues_come_from_the_human_assignee_filter(world, monkeypatch):
+    issue = {
+        "id": "iss-1",
+        "companyId": "co-1",
+        "identifier": "LB-12",
+        "title": "Fix onboarding",
+        "status": "in_progress",
+        "description": "Steps **here**",
+        "createdByAgentId": "agent-growth",
+        "assigneeUserId": "pc-bob",
+        "createdAt": "2026-09-24T09:00:00Z",
+        "updatedAt": "2026-09-24T09:30:00Z",
+    }
+    admin = fake_admin(approvals=[], issues=[issue])
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: admin)
+    await _room()
+    [item] = (await feed(teams_ctx=teams()))["items"]
+    assert admin.list_issues.await_args.kwargs["params"]["assigneeUserId"] == "me"
+    assert item["id"] == "paperclip:assigned_issue:iss-1" and item["subtype"] == "assigned_issue"
+    assert item["summary"]["title"] == "LB-12 is assigned to you: Fix onboarding"
+    assert [a["id"] for a in item["actions"]] == ["open", "change_status", "reassign"]
+    assert item["actions"][1]["input"]["kind"] == "select"
+    assert item["actions"][2]["input"]["kind"] == "person"

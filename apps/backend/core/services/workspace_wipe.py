@@ -172,6 +172,14 @@ class AmbiguousWorkspaceError(WorkspaceWipeError):
     confirmation disambiguated it."""
 
 
+class OtherMembersRemainError(WorkspaceWipeError):
+    """Self-serve: other Clerk members remain, so the caller leaves and the workspace stays."""
+
+
+class SelfServeBlockedError(WorkspaceWipeError):
+    """Self-serve refusal a retry cannot clear; the message is shown to the user."""
+
+
 class BillingPreservedError(WorkspaceWipeError):
     """Billing-layer delete attempted without the explicit override."""
 
@@ -279,6 +287,7 @@ async def _read_members(org_id: str, repo: PaperclipRepo, joined: set[str]) -> l
                 "emails": emails,
                 "paperclip_user_id": identity.paperclip_user_id if identity else "",
                 "other_orgs": [o["id"] for o in orgs if o.get("id") and o["id"] != org_id],
+                "in_clerk": uid in clerk,
             }
         )
     return members
@@ -854,6 +863,12 @@ _MEMBER_KEYED_SYSTEMS = frozenset(
 )
 
 
+# A failed money step (subscription/usage billing may still be live) holds
+# back every later step that would destroy the handle a re-run needs.
+_MONEY_STEPS = frozenset({"stripe", "metronome"})
+_HELD_BY_MONEY = frozenset({"billing_row", "clerk_user", "clerk_org"})
+
+
 WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
     WorkspaceStepDef("paperclip_company", "delete_company", LAYER_PAPERCLIP, _company_preview, _company_run),
     WorkspaceStepDef(
@@ -1094,8 +1109,12 @@ async def wipe_workspace(
     confirm_billing: str | None = None,
     expected_fingerprint: str | None = None,
     delete_shared_members: bool = False,
+    self_serve: bool = False,
 ) -> WorkspaceWipeReport:
     """Execute the workspace teardown for the selected layers.
+
+    ``self_serve``: the actor is deleting their own account, so instead of
+    refusing a member actor it REQUIRES the actor to be the only member.
 
     Guards, in order, before anything is deleted: org shape, ``confirm_org``
     match (the typed workspace id must name THIS workspace), billing override
@@ -1127,7 +1146,10 @@ async def wipe_workspace(
     )
     if expected_fingerprint != snap.fingerprint:
         raise StaleWorkspacePreviewError(expected_fingerprint, snap.fingerprint)
-    if actor_admin_id in member_user_ids(snap):
+    if self_serve:
+        if set(member_user_ids(snap)) != {actor_admin_id}:
+            raise WorkspaceWipeError(f"{actor_admin_id} is not the sole member of {org_id}; refusing to wipe it.")
+    elif actor_admin_id in member_user_ids(snap):
         raise WorkspaceWipeError(f"acting admin {actor_admin_id} is a member of {org_id}; refusing to wipe it.")
 
     # Bootstrap guard up front, before any teardown: any member carrying a
@@ -1166,7 +1188,22 @@ async def wipe_workspace(
                 snap.unfinished |= {
                     f"step:{s.system}" for s in steps if s.status == "failed" and s.system in _MEMBER_KEYED_SYSTEMS
                 }
+            unpaid = sorted(u for u in snap.unfinished if u in _MONEY_STEPS)
+            if unpaid and defn.system in _HELD_BY_MONEY:
+                # A subscription may still be live: keep the billing row and the
+                # Clerk identities a re-run needs to find and cancel it.
+                steps.append(
+                    WipeStep(
+                        defn.system,
+                        defn.action,
+                        "failed",
+                        error=f"held back: {', '.join(unpaid)} failed (subscription may still be live); re-run to finish",
+                    )
+                )
+                continue
             await _step(steps, system=defn.system, action=defn.action, fn=_bind(defn, snap))
+            if defn.system in _MONEY_STEPS and steps[-1].status == "failed":
+                snap.unfinished.add(defn.system)
     logger.warning(
         "workspace_wipe.wipe_workspace: billing %s for org=%s",
         "ARMED (money will move)" if billing_armed else "preserved by default",
@@ -1189,6 +1226,46 @@ async def wipe_workspace(
         layers=list(selected_layers),
         billing_preserved=not billing_armed,
         members=member_plan(snap),
+    )
+
+
+async def wipe_own_workspace(org_id: str, *, user_id: str) -> WorkspaceWipeReport:
+    """Self-serve account deletion by a workspace's SOLE member (App Store 5.1.1(v)).
+
+    The snapshot is the one member source: ``OtherMembersRemainError`` when
+    another Clerk member remains (the caller leaves instead), and
+    ``SelfServeBlockedError`` when only a leftover row names someone else (a
+    retry cannot clear that). Both raise before anything is deleted.
+
+    Then the join link goes FIRST, so nobody can join between the snapshot
+    and the teardown, and the full wipe runs: every layer, billing armed
+    (``delete_stripe_customer`` cancels the subscription before deleting the
+    customer), the caller's account deleted even if they are in other orgs.
+    Every ``wipe_workspace`` guard still applies (bootstrap, vendor org,
+    fingerprint); the org row names exactly one company, which is the only
+    one the wipe deletes (#3097).
+    """
+    _refuse_org(org_id)
+    options = {"layers": ALL_LAYERS, "include_billing": True, "delete_shared_members": True}
+    snap = await _read_workspace_snapshot(org_id, **options)
+    others = [m for m in snap.members if m["user_id"] != user_id]
+    if any(m["in_clerk"] for m in others):
+        raise OtherMembersRemainError(f"{org_id} has other members")
+    if others:
+        raise SelfServeBlockedError(
+            "This workspace still has records for people who are no longer members, so it can't be "
+            f"deleted in-app. Retrying won't fix this — contact {settings.EMAIL_SUPPORT_ADDRESS}."
+        )
+    await workspace_join_repo.delete_link(org_id)
+    preview = await preview_workspace_wipe(org_id, **options)
+    return await wipe_workspace(
+        org_id,
+        actor_admin_id=user_id,
+        confirm_org=org_id,
+        confirm_billing=BILLING_CONFIRM_PHRASE,
+        expected_fingerprint=preview.fingerprint,
+        self_serve=True,
+        **options,
     )
 
 

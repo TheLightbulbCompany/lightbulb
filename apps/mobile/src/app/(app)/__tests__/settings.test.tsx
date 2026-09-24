@@ -65,10 +65,52 @@ describe("Settings plan card", () => {
     await render(<Settings />);
     expect(await screen.findByText("Lightbulb Free plan")).toBeTruthy();
     expect(screen.getByText(/daily free usage allowance/i)).toBeTruthy();
-    // Provider card: free tier runs Claude Sonnet — not "No provider selected".
-    expect(screen.getByText("Claude Sonnet")).toBeTruthy();
-    expect(screen.getByText("Included with the free plan")).toBeTruthy();
+    // Provider card: free tier runs Lightbulb-managed DeepSeek — not "No
+    // provider selected" and not the retired Claude/Bedrock line.
+    expect(screen.getByText("Lightbulb-managed models")).toBeTruthy();
+    expect(screen.getByText("DeepSeek within a daily allowance")).toBeTruthy();
     expect(screen.queryByText(/trial_local/i)).toBeNull();
+    expect(screen.queryByText(/No provider selected/)).toBeNull();
+    expect(screen.queryByText(/Claude Sonnet/)).toBeNull();
+  });
+
+  it("shows days left on an active free trial, from trial_end alone", async () => {
+    mockAccountFixture = {
+      is_subscribed: true,
+      subscription_status: "trial_local",
+      trial_end: Math.floor(Date.now() / 1000) + 5 * 86_400,
+      provider_choice: null,
+      byo_provider: null,
+    };
+    await render(<Settings />);
+    expect(await screen.findByText(/Free trial · 5 days left/)).toBeTruthy();
+  });
+
+  it("shows the ended state once a free trial's trial_end has passed", async () => {
+    mockAccountFixture = {
+      is_subscribed: true,
+      subscription_status: "trial_local",
+      trial_end: Math.floor(Date.now() / 1000) - 86_400,
+      provider_choice: null,
+      byo_provider: null,
+    };
+    await render(<Settings />);
+    expect(await screen.findByText("Free trial ended")).toBeTruthy();
+    expect(screen.getByText("Your free trial has ended.")).toBeTruthy();
+  });
+
+  it("labels a paid owner who never picked a provider as managed, not unset", async () => {
+    mockAccountFixture = {
+      is_subscribed: true,
+      subscription_status: "active",
+      trial_end: null,
+      provider_choice: null,
+      byo_provider: null,
+      plan: "standard",
+    };
+    await render(<Settings />);
+    expect(await screen.findByText("Lightbulb-managed models")).toBeTruthy();
+    expect(screen.getByText("DeepSeek within a daily allowance")).toBeTruthy();
     expect(screen.queryByText(/No provider selected/)).toBeNull();
   });
 
@@ -180,7 +222,11 @@ describe("Settings plan card", () => {
       byo_provider: null,
     };
     await render(<Settings />);
-    await screen.findByText(/Lightbulb|No plan on this account/);
+    // getAllByText, not findByText: the managed-provider card's "Lightbulb-managed
+    // models" line also matches /Lightbulb/, and findByText throws on >1 match.
+    await waitFor(() =>
+      expect(screen.getAllByText(/Lightbulb|No plan on this account/).length).toBeGreaterThan(0),
+    );
 
     expect(screen.queryByText(/upgrade/i)).toBeNull();
     expect(screen.queryByText(/manage billing/i)).toBeNull();

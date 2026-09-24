@@ -1,23 +1,28 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Bot, ScrollText, Wrench, CalendarClock } from "lucide-react";
+import { Bot, ScrollText, Wrench, CalendarClock, LayoutDashboard, History } from "lucide-react";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentInstructionsTab } from "./AgentInstructionsTab";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
+import { AgentDashboardTab } from "@/components/teams/agents/AgentDashboardTab";
+import { AgentRunsTab } from "@/components/teams/agents/AgentRunsTab";
 import { useAgents } from "@/hooks/useAgents";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import type { AgentEntry } from "./agents-types";
 
-type InspectorTab = "overview" | "instructions" | "tools" | "schedule";
+type InspectorTab = "overview" | "dashboard" | "runs" | "instructions" | "tools" | "schedule";
 
 // Module-level tab metadata (no inline component literals).
 const TABS: { id: InspectorTab; icon: typeof Bot; label: string }[] = [
   { id: "overview", icon: Bot, label: "Overview" },
+  // Ported stock Paperclip agent Dashboard + Runs (components/teams/agents).
+  { id: "dashboard", icon: LayoutDashboard, label: "Dashboard" },
+  { id: "runs", icon: History, label: "Runs" },
   { id: "instructions", icon: ScrollText, label: "Instructions" },
   { id: "tools", icon: Wrench, label: "Tools" },
   { id: "schedule", icon: CalendarClock, label: "Schedule" },
@@ -154,6 +159,18 @@ export function AgentInspectorPanel({
             ) : null}
           </>
         ) : null}
+        {activeTab === "dashboard" ? (
+          // Needs the Paperclip roster row (role/title/reports-to); same
+          // graceful degrade as the org section when it isn't there.
+          orgAgent ? (
+            <AgentDashboardTab agent={orgAgent} agents={rosterAgents} />
+          ) : (
+            <p className="py-4 text-sm text-[var(--midnight-muted)]">
+              Dashboard unavailable for this agent.
+            </p>
+          )
+        ) : null}
+        {activeTab === "runs" ? <AgentRunsTab agentId={agentId} /> : null}
         {activeTab === "instructions" ? (
           <AgentInstructionsTab agentId={agentId} />
         ) : null}

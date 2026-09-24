@@ -1017,8 +1017,9 @@ class PaperclipAdminClient:
         company_id: str,
         status: Optional[str] = None,
         limit: Optional[int] = None,
+        agent_id: Optional[str] = None,
     ) -> dict:
-        """List heartbeat runs for the company.
+        """List heartbeat runs for the company (optionally one agent's, ``agentId``).
 
         Maps to ``GET /api/companies/{companyId}/heartbeat-runs``. The
         ``status`` filter (e.g. "failed") is forwarded as a query param
@@ -1029,6 +1030,8 @@ class PaperclipAdminClient:
             params["status"] = status
         if limit is not None:
             params["limit"] = str(limit)
+        if agent_id is not None:
+            params["agentId"] = agent_id
         return await self._get(
             f"/api/companies/{company_id}/heartbeat-runs",
             session_cookie=session_cookie,

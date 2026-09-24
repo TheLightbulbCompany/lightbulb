@@ -9,7 +9,9 @@ Teams BFF.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from . import agents as _agents
 from .deps import TeamsContext, envelope_list
@@ -24,6 +26,36 @@ _ctx = _agents._ctx
 # param well below that so a card poll can never pull a megabyte.
 RUN_LOG_DEFAULT_LIMIT_BYTES = 65_536
 RUN_LOG_MAX_LIMIT_BYTES = 262_144
+
+# Interpolated into a fixed upstream path, so it may not carry "/", "." or "?".
+AgentId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
+
+
+@router.get("/agents/{agent_id}/runs")
+async def list_agent_runs(
+    agent_id: AgentId,
+    limit: int = Query(200, ge=1, le=1000),
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """One agent's heartbeat runs, newest first — the ported stock agent
+    Dashboard/Runs tabs' ``heartbeatsApi.list(companyId, agentId)``.
+
+    The BFF builds upstream ``GET /api/companies/{own}/heartbeat-runs?agentId=``
+    itself: the company is always the caller's workspace, and the agent must be
+    in it (404 otherwise) — a Paperclip user can belong to several companies, so
+    the member session alone does not pin the agent to THIS workspace. Stock
+    sends no limit (unbounded); ours defaults to upstream's own 200.
+    """
+    agent = await _agents._admin().get_agent(agent_id=agent_id, session_cookie=ctx.session_cookie)
+    if not isinstance(agent, dict) or agent.get("companyId") != ctx.company_id or not agent.get("id"):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    rows = await _agents._admin().list_company_heartbeat_runs(
+        session_cookie=ctx.session_cookie,
+        company_id=ctx.company_id,
+        agent_id=agent["id"],
+        limit=limit,
+    )
+    return envelope_list(rows, "runs")
 
 
 @router.get("/heartbeat-runs/{run_id}")

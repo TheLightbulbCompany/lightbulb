@@ -87,13 +87,6 @@ handed to another owner) and the ``agent-email-addresses`` table (once
 ``AGENT_EMAIL_DOMAIN`` is live, a wiped account leaves its address row
 pointing at a deleted owner, so inbound mail to that address has nowhere
 valid to route). No collaborator exists yet for either.
-
-The paperclip-companies table's OTHER prefixed key,
-``__org_create_claim__:{org_id}`` (``kind="org_create_claim"``), is out of
-reach by construction rather than by omission: it is keyed by Clerk org id and
-only ever written on the org branch of ``ensure_user_ready``, so a v1
-personal-owner wipe can never have created one. It becomes this orchestrator's
-problem on the same day org wipe does.
 """
 
 from __future__ import annotations

@@ -305,8 +305,10 @@ class PaperclipProvisioning:
         the winner signs up, and a loser waits briefly for the winner's active
         workspace and adopts it, or raises the 409-shaped in-flight error the
         caller already tolerates (``_await_concurrent_seed``). Company creation
-        itself is serialized by the org-create claim the caller holds
-        (``user_provision._ensure_paperclip_for_org``).
+        is idempotent at the source: ``create_company`` sends the per-org
+        ``Idempotency-Key`` ``lightbulb-company-create:{org}``, which the fork
+        scopes to the creating principal (always the one bootstrap admin), so
+        concurrent or retried creates for one org replay the same company.
 
         A non-active workspace row that already carries a ``company_id`` (a
         partial roster) is RECONCILED — we adopt that company and retry the
@@ -339,8 +341,7 @@ class PaperclipProvisioning:
 
         # A non-active workspace row carrying a real company_id is a prior
         # attempt that CREATED the company but whose roster didn't land: adopt
-        # it instead of reminting (Paperclip ignores our Idempotency-Key, so a
-        # re-create mints a new orphan company on every retry).
+        # it (the create below would replay it anyway under the per-org key).
         reconciling_company = ws is not None and bool(ws.company_id)
         # Never a second company for an org that already has one on record (a
         # pre-migration per-member row, during the deploy → migration-script
@@ -420,12 +421,16 @@ class PaperclipProvisioning:
                     )
                     company_name = owner_email
 
+                # One key per org: the fork scopes it to the creating principal
+                # (the bootstrap admin), so every caller for this org replays
+                # the same company instead of minting a second.
+                company_create_key = f"lightbulb-company-create:{owner_id}"
                 try:
                     company = await self._admin.create_company(
                         name=company_name,
                         description="Lightbulb Teams workspace",
                         session_cookie=admin_cookie,
-                        idempotency_key=owner_user_id,
+                        idempotency_key=company_create_key,
                     )
                 except PaperclipApiError as e:
                     if e.status_code == 401:
@@ -436,7 +441,7 @@ class PaperclipProvisioning:
                             name=company_name,
                             description="Lightbulb Teams workspace",
                             session_cookie=admin_cookie,
-                            idempotency_key=owner_user_id,
+                            idempotency_key=company_create_key,
                         )
                     else:
                         raise
@@ -851,22 +856,6 @@ class PaperclipProvisioning:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    async def try_acquire_org_create_claim(self, owner_id: str, *, holder: str) -> Optional[str]:
-        """Delegate to the repo's strongly-consistent per-org create claim.
-
-        Used by ``ensure_user_ready`` to serialize company creation across
-        backend instances. Returns a per-attempt fencing token iff this caller
-        may proceed to create the company (None otherwise); pass it back to
-        ``release_org_create_claim``.
-        """
-        return await self._repo.try_acquire_org_create_claim(owner_id, holder=holder)
-
-    async def release_org_create_claim(self, owner_id: str, *, token: str) -> None:
-        """Delegate to the repo: release the per-org create claim on failure,
-        fenced on the per-attempt token so a stale straggler can't delete a
-        newer attempt's claim (ABA)."""
-        await self._repo.release_org_create_claim(owner_id, token=token)
 
     async def get_workspace(self, org_id: str) -> Optional[PaperclipWorkspace]:
         """Strongly-consistent read of the workspace row — never

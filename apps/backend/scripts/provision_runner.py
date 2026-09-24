@@ -48,10 +48,10 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
     WHY here: GET /container/status used to run provision_org (Better-Auth
     signup + company + starter roster) on the poll thread, where load-balanced
     poll fan-out double-ran it and double-created the company. This is now THE
-    owner-seed path; two concurrent executions are fenced by the seed's own
-    durable claims (``try_acquire_org_create_claim`` / the seed claim in
-    ``paperclip_provisioning``), which stay until Paperclip company create is
-    idempotent in prod.
+    owner-seed path; two concurrent executions converge at the source: company
+    create replays under the per-org Idempotency-Key, and the provisioner's
+    Better Auth sign-up is fenced by the seed claim in
+    ``paperclip_provisioning`` (Better Auth sign-up is not idempotent).
 
     Reuses the SAME service helper ensure_user_ready uses
     (``_ensure_paperclip_for_org``) — no seed logic is duplicated. It keeps

@@ -1093,8 +1093,7 @@ async def try_claim_nightly_arm(owner_id: str, company_id: str) -> bool:
     SET ``nightly_ceo_armed_company = company_id`` on the billing row IF the
     attribute is absent OR currently points at a DIFFERENT company. Returns
     True to exactly ONE concurrent caller — the winner seeds the routine; the
-    losers short-circuit. Mirrors ``try_acquire_org_create_claim``: it closes
-    the list-then-create race so two simultaneous ``/container/status`` polls
+    losers short-circuit. It closes the list-then-create race so two simultaneous ``/container/status`` polls
     can never create two firing nightly routines.
 
     The stored ``nightly_ceo_armed_company`` doubles as a cheap idempotency
@@ -1131,8 +1130,7 @@ async def release_nightly_arm(owner_id: str, company_id: str) -> None:
     Called when the seed itself failed after the claim was won, so the next
     poll retries. REMOVEs ``nightly_ceo_armed_company`` only when it still
     equals ``company_id`` (a concurrent successful arm for a newer company must
-    not be clobbered). Mirrors ``release_org_create_claim``; the no-match /
-    no-row cases are silent no-ops.
+    not be clobbered). The no-match / no-row cases are silent no-ops.
     """
     table = _get_table()
     try:

@@ -214,11 +214,16 @@ for a fresh provision. Verified via a scratch run (not committed, matching
 this track's convention): the violation is reachable in 6 steps regardless
 of `TokenFenced`.
 
-**Routed, not yet landed:** this closes as a side effect of Phase 3 slice 5
-(Paperclip Idempotency-Key replacing these claims), not a standalone fix.
-Re-check this section against that change once it merges — the same
-re-sync discipline `MessagingDeliveryKey` and `OpenRouterGateReservation`
-already went through.
+**Company half closed by Phase 3 slice 5 (partial):** the org-create claim
+(`try_acquire_org_create_claim`) and the per-org lock are deleted. Company
+create now sends the per-org `Idempotency-Key` `lightbulb-company-create:{org}`,
+which the Paperclip fork serializes on a transaction-scoped advisory lock and
+replays, so a slow-but-alive attempt and its stealer both land on ONE company
+— there is no lease to steal. **Still open:** the seed claim
+(`try_acquire_seed_claim`) stays, because Better Auth sign-up is not
+idempotent in the fork (no unique index on `user.email`), and it keeps this
+spec's staleness caveat for a same-user sign-up. It closes when a fork
+unique-email index lands and the seed claim is deleted.
 
 ## A precedence bug found auditing this track's own specs
 

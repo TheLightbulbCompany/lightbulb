@@ -606,7 +606,6 @@ async def test_execute_requires_a_fingerprint(ws_mocks):
 async def test_org_scoped_leftovers_are_deleted(ws_mocks):
     await _preview_then_wipe()
     ws_mocks.join_link_delete.assert_awaited_once_with(ORG_ID)
-    ws_mocks.paperclip_instance.delete.assert_any_await(f"__org_create_claim__:{ORG_ID}")
     # The org's own pending brief is attempted even though members exist.
     ws_mocks.paperclip_instance.delete_pending_brief.assert_any_await(ORG_ID)
 
@@ -775,10 +774,9 @@ async def test_workspace_company_and_row_are_deleted(ws_mocks):
     assert _step(report, "paperclip_company").status == "ok"
     ws_mocks.paperclip_company_delete.assert_awaited_once_with("company_ws")
     ws_mocks.paperclip_instance.get_workspace.assert_awaited_with(ORG_ID)
-    # The org row, both deletable members' identity rows and the org-create
-    # claim all go.
+    # The org row and both deletable members' identity rows go.
     deleted_keys = [c.args[0] for c in ws_mocks.paperclip_instance.delete.await_args_list]
-    assert deleted_keys == [ORG_ID, MEMBER_A, MEMBER_B, f"__org_create_claim__:{ORG_ID}"]
+    assert deleted_keys == [ORG_ID, MEMBER_A, MEMBER_B]
     assert _step(report, "paperclip_row").status == "ok"
     assert f"{ORG_ID}: workspace row" in _step(report, "paperclip_row").detail
 

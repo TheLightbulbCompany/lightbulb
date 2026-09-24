@@ -1,7 +1,7 @@
 """DynamoDB repository for the paperclip-companies table.
 
 PK attribute: ``user_id`` (S). Despite the attribute name, the table holds
-two kinds of row (plus the claim / pending-brief sentinels below):
+two kinds of row (plus the pending-brief sentinels below):
 
 * **Workspace row** — keyed by the Clerk ORG id itself (``org_…``). ONE per
   workspace: one workspace = one Paperclip company. Carries every COMPANY
@@ -34,7 +34,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal, Optional
-from uuid import uuid4
 
 from boto3.dynamodb.conditions import Key
 
@@ -78,23 +77,10 @@ PaperclipCompanyStatus = Literal["seeding", "provisioning", "active", "failed", 
 FunnelState = Literal["not_started", "submitted", "complete"]
 
 
-# Reserved user_id namespace for per-org "company create" claim sentinels.
-# These items DELIBERATELY omit org_id / status / scheduled_purge_at so they
-# never appear in the by-org-id or by-status-purge-at GSIs (DynamoDB only
-# indexes items that carry the index's key attributes). They are reached only
-# by direct get/put on this synthetic PK, which is strongly consistent, so it
-# can serialize company creation across backend instances.
-_ORG_CREATE_CLAIM_PREFIX = "__org_create_claim__:"
-
-
-def _org_create_claim_key(org_id: str) -> str:
-    return f"{_ORG_CREATE_CLAIM_PREFIX}{org_id}"
-
-
 # Reserved user_id namespace for per-OWNER "the user answered the funnel, but
-# their workspace wasn't ready to receive it yet" items. Same synthetic-PK
-# construction as the org-create claim above: reached only by direct get/put
-# and carrying none of the GSI key attributes. The drain runs through
+# their workspace wasn't ready to receive it yet" items. A synthetic PK:
+# reached only by direct get/put and carrying none of the GSI key attributes
+# (so it never appears in the by-org-id or by-status-purge-at indexes). The drain runs through
 # core/services/onboarding_brief.reconcile_pending_brief.
 _PENDING_BRIEF_PREFIX = "__pending_brief__:"
 
@@ -619,143 +605,6 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False
 
-    async def try_acquire_org_create_claim(
-        self,
-        org_id: str,
-        *,
-        holder: str,
-        stale_after_seconds: int = 600,
-    ) -> Optional[str]:
-        """Strongly-consistent "I am creating this org's company" claim.
-
-        Returns a fresh per-ATTEMPT fencing ``token`` iff THIS caller now holds
-        the claim — by winning a fresh claim, or by stealing one whose holder
-        went silent for longer than ``stale_after_seconds``. Returns None when
-        another caller holds a non-stale claim.
-
-        The token — NOT ``holder`` — is what ``release_org_create_claim`` fences
-        on. ``holder`` is the caller's ``user_id``, and the SAME admin re-polls
-        ``/container/status`` with the SAME user_id, so a holder-only release
-        fence is subject to ABA: after a hard-crashed holder's claim is stolen
-        by that same admin's later poll (a fresh attempt), a resurrected
-        straggler from the FIRST attempt would still match ``holder`` and delete
-        the live claim — reopening the create window that mints a duplicate
-        org / split workspace (the incident this claim exists to prevent).
-        A per-attempt token makes the straggler's release a clean no-op.
-
-        Steal threshold rationale (why this is liveness evidence, not naive
-        wall-time): the only operation a holder performs while holding the
-        claim is ``provision_org``, a fixed sequence of ~9 awaited Paperclip
-        HTTP calls. Each call is bounded by the provisioning client's 15s
-        timeout (``build_paperclip_provisioning``), and any call that hits its
-        timeout RAISES — which propagates to ``ensure_user_ready`` and
-        RELEASES the claim. So a live create cannot stay held beyond roughly
-        ~135s (9 × 15s) without releasing. The default 600s is comfortably
-        past that ceiling, so a claim older than it cannot belong to a
-        still-running create — it can only be a holder that crashed hard
-        (SIGKILL, e.g. an ECS task replaced mid-deploy) before its except/
-        release ran. Stealing then is safe. (If the client timeout is ever
-        raised substantially, raise this in step.)
-
-        This is a PK conditional write, so it is strongly consistent and
-        cross-instance-safe — it closes the double-create window between two
-        callers that both read "no active workspace". Callers MUST ``release_org_create_claim`` on create
-        FAILURE so a retry can proceed; on success the claim is left in place
-        as a permanent "org bootstrapped" marker (by then ``find_org_owner``
-        returns the real company and this path is not re-entered).
-        """
-        key = _org_create_claim_key(org_id)
-        now = datetime.now(timezone.utc)
-        token = uuid4().hex
-        # NOTE: the identity is stored under ``claimed_by``, NOT ``holder``.
-        # During a rolling deploy an OLD worker still runs the pre-token
-        # ``release_org_create_claim`` whose condition is ``holder = :h`` — and
-        # since the SAME admin re-polls with the same user_id, that stale release
-        # would delete THIS attempt's token-fenced claim (an ABA delete across
-        # versions). Omitting the ``holder`` attribute makes that old condition
-        # ``attribute_not_exists`` → false, so the cross-version stale release
-        # can no longer delete a token-fenced claim. ``claimed_by`` is kept only
-        # for observability; nothing conditions on it.
-        item = {
-            "user_id": key,
-            "kind": "org_create_claim",
-            "claimed_by": holder,
-            "claim_token": token,
-            "claimed_at": now.isoformat(),
-        }
-        table = self._table()
-
-        # 1. Fresh claim — wins iff no sentinel exists yet.
-        try:
-            await run_in_thread(
-                table.put_item,
-                Item=item,
-                ConditionExpression="attribute_not_exists(user_id)",
-            )
-            return token
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            pass
-
-        # 2. A sentinel exists — strongly-consistent read, then steal only if
-        #    its holder has gone stale.
-        resp = await run_in_thread(table.get_item, Key={"user_id": key}, ConsistentRead=True)
-        existing = resp.get("Item")
-        if existing is None:
-            # Released (deleted) between our put and get — try one fresh claim.
-            try:
-                await run_in_thread(
-                    table.put_item,
-                    Item=item,
-                    ConditionExpression="attribute_not_exists(user_id)",
-                )
-                return token
-            except table.meta.client.exceptions.ConditionalCheckFailedException:
-                return None
-
-        prev_claimed_at = existing.get("claimed_at", "")
-        try:
-            age = (now - datetime.fromisoformat(prev_claimed_at)).total_seconds()
-        except (ValueError, TypeError):
-            age = float("inf")  # unparseable timestamp → treat as stale
-        if age < stale_after_seconds:
-            return None
-
-        # Steal — overwrite only if claimed_at is unchanged since our read, so
-        # two concurrent stealers can't both win. The put rewrites claim_token
-        # to THIS attempt's fresh token, invalidating any prior holder's release.
-        try:
-            await run_in_thread(
-                table.put_item,
-                Item=item,
-                ConditionExpression="claimed_at = :prev",
-                ExpressionAttributeValues={":prev": prev_claimed_at},
-            )
-            return token
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            return None
-
-    async def release_org_create_claim(self, org_id: str, *, token: str) -> None:
-        """Delete the per-org create claim iff ``token`` still holds it.
-
-        Called on create FAILURE so the next poll can re-acquire and retry.
-        Fenced on the per-ATTEMPT ``claim_token`` (returned by
-        ``try_acquire_org_create_claim``), NOT on ``holder``: the same admin
-        re-polls with the same user_id, so a holder-only fence let one
-        identity's stale straggler delete a newer attempt's live claim (ABA).
-        Best-effort: a lost fence is a no-op.
-        """
-        key = _org_create_claim_key(org_id)
-        table = self._table()
-        try:
-            await run_in_thread(
-                table.delete_item,
-                Key={"user_id": key},
-                ConditionExpression="claim_token = :t",
-                ExpressionAttributeValues={":t": token},
-            )
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            pass
-
     async def try_acquire_seed_claim(
         self,
         user_id: str,
@@ -779,8 +628,8 @@ class PaperclipRepo:
         backend instances could both read "no row" and both run the full
         Paperclip seed (Better-Auth sign-up, company create, starter roster),
         minting duplicate same-email users + duplicate companies (observed
-        live on dev 2026-07-24, twice, 102ms and 358ms apart). Like
-        ``try_acquire_org_create_claim`` this is a PK conditional write, so
+        live on dev 2026-07-24, twice, 102ms and 358ms apart). This is a PK
+        conditional write, so
         it is strongly consistent and cross-instance-safe, and it lives on the
         identity row so the loser can simply poll it.
 
@@ -790,7 +639,7 @@ class PaperclipRepo:
         it is identity only, so it never enters the by-org-id or
         by-company-id indexes.
 
-        Steal threshold rationale (mirrors ``try_acquire_org_create_claim``):
+        Steal threshold rationale:
         a live ``provision_org`` chain is ~9 awaited Paperclip HTTP calls,
         each bounded by the provisioning client's 15s timeout, and any
         timeout RAISES — which downgrades the row via ``_mark_failed``. So a

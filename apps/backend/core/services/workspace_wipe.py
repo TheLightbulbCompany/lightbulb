@@ -25,8 +25,8 @@ This module snapshots by ORG id instead:
 Layers (each independently selectable): ``runtime`` (gate tokens, AgentCore
 runtime + S3 profiles + containers row, provisioning workflows,
 usage counters), ``paperclip`` (company, per-member Aurora users, the
-workspace row + deleted members' identity rows + pending briefs + org-create
-claim, agent-key secrets), ``messaging``
+workspace row + deleted members' identity rows + pending briefs, agent-key
+secrets), ``messaging``
 (room partitions + owner partition), ``secrets`` (owner secrets, OpenRouter
 key, integrations, OAuth tokens, agent email, slack installs), ``identity``
 (per-member users rows, slug, join link, per-member Clerk users, Clerk org —
@@ -104,7 +104,7 @@ from core.repositories import (
     user_repo,
     workspace_join_repo,
 )
-from core.repositories.paperclip_repo import PaperclipRepo, _org_create_claim_key
+from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import clerk_admin, company_stripe
 from core.services.account_wipe import (
     WipeReport,
@@ -608,11 +608,10 @@ async def _messaging_run(snap: WorkspaceSnapshot) -> str:
 
 
 def _paperclip_rows_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
-    # The workspace row, pending briefs + the org-create claim are always
-    # attempted (idempotent).
+    # The workspace row and pending briefs are always attempted (idempotent).
     return True, (
         f"workspace row + {len(deletable_member_ids(snap))} member identity row(s) + org and member "
-        "pending_brief items + org-create claim (always attempted)"
+        "pending_brief items (always attempted)"
     )
 
 
@@ -635,11 +634,10 @@ async def _paperclip_rows_run(snap: WorkspaceSnapshot) -> str:
     for owner in [snap.org_id, *deletable_member_ids(snap)]:
         if await repo.delete_pending_brief(owner):
             deleted.append(f"{owner}: pending_brief")
-    await repo.delete(_org_create_claim_key(snap.org_id))
     detail = ("deleted " + "; ".join(deleted)) if deleted else "no paperclip-companies or pending_brief rows"
     if kept:
         detail += f"; kept row(s) for re-run (Better Auth delete failed): {', '.join(kept)}"
-    return detail + "; org-create claim cleared"
+    return detail
 
 
 async def _billing_row_run(snap: WorkspaceSnapshot) -> str:

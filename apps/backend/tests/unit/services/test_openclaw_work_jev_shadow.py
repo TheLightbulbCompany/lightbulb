@@ -124,7 +124,8 @@ async def test_decision_computed_once_and_returned_to_every_candidate(monkeypatc
     assert set(questions["placement"]["criteria"]) == {"main", "thread"}
     row = store[(ROOM, "m1")]
     assert row["who"] == "a1" and row["placement"] == "thread" and row["whoP"]["a1"] == 0.9
-    assert row["candidates"] == ["a1", "a2"] and row["model"] == "typesafe-ai/jev" and row["quietChannel"] is True
+    # Only what dispatch reads is stored (ponytail audit #30).
+    assert set(row) == {"who", "whoP", "placement"}
 
 
 @pytest.mark.asyncio
@@ -250,7 +251,7 @@ async def test_jev_unavailable_stores_fallback(monkeypatch, store, metrics):
     monkeypatch.setattr(jev, "decide", AsyncMock(return_value=None))
     recent = [{"author": {"kind": "human", "id": "u1"}, "text": "hi", "createdAt": "2026-09-22T11:55:00+00:00"}]
     got = await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=recent)
-    assert got["fallback"] is True and store[(ROOM, "m1")]["quietChannel"] is False
+    assert got["fallback"] is True and store[(ROOM, "m1")] == {"fallback": True}
 
 
 @pytest.mark.asyncio

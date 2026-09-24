@@ -37,7 +37,6 @@ _KEY_RETRY_S = 30
 _key_lock = asyncio.Lock()
 _KEY_TTL_S = 3600
 _CARD_TTL_S = 600
-_QUIET_S = 600
 #: Whole decision budget: cards (S3 + Paperclip) plus the 3 s Jev call, so it can never stall dispatch.
 _DECIDE_BUDGET_S = 8.0
 #: A claim loser polls for the winner's row this often, for at most this long, then falls back.
@@ -335,8 +334,6 @@ async def _decide_for_message(
     ]
     names = {m["id"]: m.get("displayName") or m["id"] for m in members if m.get("kind") == "agent"}
     now = _parse_ts(latest.get("createdAt")) or datetime.now(timezone.utc)
-    last_times = [_parse_ts(m.get("createdAt")) for m in history[-5:]]
-    quiet = not any(t is not None and abs((now - t).total_seconds()) <= _QUIET_S for t in last_times)
 
     def recency(agent_id: str) -> str:
         spoke = [_parse_ts(m.get("createdAt")) for m in history if (m.get("author") or {}).get("id") == agent_id]
@@ -367,31 +364,16 @@ async def _decide_for_message(
             },
         },
     }
+    # Store only what dispatch reads: who, its probability, and placement.
     answers = await decide(state, questions)
-    decided_at = datetime.now(timezone.utc).isoformat()
     if answers == RATE_LIMITED:
-        return {"rateLimited": True, "quietChannel": quiet, "candidates": candidates, "decidedAt": decided_at}
+        return {"rateLimited": True}
     who, placement = (answers or {}).get("who") or {}, (answers or {}).get("placement") or {}
     if answers is None:
-        return {"fallback": True, "quietChannel": quiet, "candidates": candidates, "decidedAt": decided_at}
+        return {"fallback": True}
     if who.get("choice") not in (*candidates, "none") or placement.get("choice") not in ("main", "thread"):
-        return {
-            "fallback": True,
-            "reason": "invalid_choice",
-            "quietChannel": quiet,
-            "candidates": candidates,
-            "decidedAt": decided_at,
-        }
-    return {
-        "who": who["choice"],
-        "whoP": who.get("probabilities") or {},
-        "placement": placement["choice"],
-        "placementP": placement.get("probabilities") or {},
-        "candidates": candidates,
-        "quietChannel": quiet,
-        "model": MODEL,
-        "decidedAt": decided_at,
-    }
+        return {"fallback": True, "reason": "invalid_choice"}
+    return {"who": who["choice"], "whoP": who.get("probabilities") or {}, "placement": placement["choice"]}
 
 
 def _state(meta: dict, latest: dict, history: list[dict]) -> dict:
@@ -457,7 +439,7 @@ async def route(
                 sent = _parse_ts(message.get("createdAt"))
                 fresh = sent is not None and (datetime.now(timezone.utc) - sent).total_seconds() < _RATE_LIMIT_WINDOW_S
                 decision = (
-                    {"fallback": True, "reason": "rate_limited", "candidates": decision["candidates"]}
+                    {"fallback": True, "reason": "rate_limited"}
                     if attempts >= RATE_LIMIT_RETRIES or not fresh
                     else {
                         "retry": True,

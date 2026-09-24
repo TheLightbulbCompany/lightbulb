@@ -84,14 +84,14 @@ def test_verdicts_forward_camel_body_with_session(client, admin):
     )
 
 
-def test_verdicts_trial_gated_before_fence(client, admin, monkeypatch):
+def test_verdicts_trial_gated_before_forwarding(client, admin, monkeypatch):
     monkeypatch.setattr(trial_cap, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
     r = client.post(VERDICTS, json=GOOD_VERDICTS, headers=H)
     assert r.status_code == 402
-    admin.get_issue.assert_not_awaited()
     admin.submit_interaction_verdicts.assert_not_awaited()
 
 
+@pytest.mark.real_fences
 @pytest.mark.parametrize("url,body", [(SKIP, {}), (VERDICTS, GOOD_VERDICTS)])
 def test_foreign_company_issue_404s_without_forwarding(client, admin, url, body):
     admin.get_issue = AsyncMock(return_value={"id": "iss_1", "companyId": "co_other"})

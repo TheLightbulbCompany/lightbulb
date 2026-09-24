@@ -29,9 +29,8 @@ from fastapi import APIRouter, Depends, Path
 
 from . import agents as _agents
 from ._guards import require_trial_runway
-from .issues import CompanyIssueId
 from .deps import TeamsContext, envelope_list
-from .issues import IssueId, _require_company_issue
+from .issues import CompanyIssueId
 from .schemas import (
     AcceptInteractionBody,
     CancelInteractionBody,
@@ -239,7 +238,7 @@ async def cancel_interaction(
 
 @router.post("/issues/{issue_id}/interactions/{interaction_id}/skip")
 async def skip_interaction(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     interaction_id: InteractionId,
     body: SkipInteractionBody,
     ctx: TeamsContext = Depends(_ctx),
@@ -250,7 +249,6 @@ async def skip_interaction(
     continuation ("a subsequent ordinary message uses the existing comment
     steering path"), so no trial gate. Fenced to this workspace's company.
     """
-    await _require_company_issue(issue_id, ctx)
     return await _agents._admin().skip_interaction(
         issue_id=issue_id,
         interaction_id=interaction_id,
@@ -261,7 +259,7 @@ async def skip_interaction(
 
 @router.post("/issues/{issue_id}/interactions/{interaction_id}/verdicts")
 async def submit_interaction_verdicts(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     interaction_id: InteractionId,
     body: SubmitInteractionVerdictsBody,
     ctx: TeamsContext = Depends(_ctx),
@@ -269,11 +267,11 @@ async def submit_interaction_verdicts(
     """Submit per-item verdicts on a ``request_item_verdicts`` interaction.
 
     A spend door: upstream calls ``queueResolvedInteractionContinuationWakeup``
-    whenever an item newly resolves, so the trial gate runs before the fence
-    and the proxy call, like accept/reject/respond/cancel.
+    whenever an item newly resolves, so the trial gate runs before the proxy
+    call, like accept/reject/respond/cancel. The company fence is the
+    ``CompanyIssueId`` dependency, which runs first.
     """
     await require_trial_runway(ctx.owner_id)
-    await _require_company_issue(issue_id, ctx)
     return await _agents._admin().submit_interaction_verdicts(
         issue_id=issue_id,
         interaction_id=interaction_id,

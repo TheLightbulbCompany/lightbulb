@@ -193,6 +193,7 @@ function canonicalPanelTitle(
     }
     case "file-viewer":
     case "browser":
+    case "activity":
       key = component;
       break;
     default:

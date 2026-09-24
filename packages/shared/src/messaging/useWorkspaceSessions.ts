@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { LocalSession } from "./types";
-import type { RoomResourceSource } from "./useRoomResources";
+import type { SessionSource } from "./useLocalSessionHistory";
 
 /**
  * Every live session in the workspace, for the sidebar, the glyph and the
@@ -9,12 +9,13 @@ import type { RoomResourceSource } from "./useRoomResources";
  * the private user channel is what makes a new session show within a second.
  */
 export function useWorkspaceSessions(
-  { client, onEvent, connectionRevision }: RoomResourceSource,
+  { client, onEvent, connectionRevision }: SessionSource,
   { enabled = true }: { enabled?: boolean } = {},
 ) {
   const [sessions, setSessions] = useState<LocalSession[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hintRevision, setHintRevision] = useState(0);
   const request = useRef(0);
   const refreshing = useRef(false);
   const queued = useRef(false);
@@ -43,8 +44,13 @@ export function useWorkspaceSessions(
   useEffect(() => {
     if (!enabled) return;
     void refresh();
-    // A transcript batch only changes an open session's content, not the list.
-    const unsubscribe = onEvent(event => { if (event.type === "workspace.sessions.changed" && !event.payload.transcript) void refresh(); });
+    // Every hint bumps hintRevision so an open session view pulls newer events; a transcript
+    // batch only changes that content, not the list.
+    const unsubscribe = onEvent(event => {
+      if (event.type !== "workspace.sessions.changed") return;
+      setHintRevision(v => v + 1);
+      if (!event.payload.transcript) void refresh();
+    });
     const timer = setInterval(() => void refresh(), 30000);
     return () => { unsubscribe(); clearInterval(timer); request.current += 1; refreshing.current = false; queued.current = false; };
   }, [enabled, onEvent, refresh]);
@@ -53,5 +59,5 @@ export function useWorkspaceSessions(
     if (enabled && previousConnection.current !== connectionRevision) void refresh();
     previousConnection.current = connectionRevision;
   }, [enabled, connectionRevision, refresh]);
-  return { sessions, error, loading, refresh };
+  return { sessions, error, loading, refresh, hintRevision };
 }

@@ -53,12 +53,12 @@ beforeEach(() => {
 describe("ChatPanel", () => {
   it("consumes session intents including explicit repeats without falling into agent selection", () => {
     const props = makeProps();
-    props.params = { roomId: "r1", sessionId: "s1", sessionIntent: "1" };
+    props.params = { sessionId: "s1", sessionIntent: "1" };
     const view = render(<ChatPanel {...props} />);
-    expect(openSession).toHaveBeenLastCalledWith("s1", { from: "link", roomId: "r1" });
+    expect(openSession).toHaveBeenLastCalledWith("s1", { from: "link" });
     view.rerender(<ChatPanel {...props} />);
     expect(openSession).toHaveBeenCalledTimes(1);
-    act(() => props.api.updateParameters({ roomId: "r1", sessionId: "s1", sessionIntent: "2" }));
+    act(() => props.api.updateParameters({ sessionId: "s1", sessionIntent: "2" }));
     expect(openSession).toHaveBeenCalledTimes(2);
     expect(selectAgentDm).not.toHaveBeenCalled();
     expect(openMessage).not.toHaveBeenCalled();

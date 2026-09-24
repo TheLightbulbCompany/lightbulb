@@ -62,38 +62,6 @@ it.each(["dm", "group-dm", "channel"] as const)("does not expose management with
   expect(screen.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
 });
 
-it("reveals and focuses same-room message navigation from a narrow resources pane", async () => {
-  narrowViewport();
-  const targetedWhileHidden: boolean[] = [];
-  const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(function (this: HTMLElement) {
-    if (this.dataset.messageId === "message") targetedWhileHidden.push(!!this.closest(".room-conversation[hidden]"));
-  });
-  const source = { client: { listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })), listWorkspaceSessions: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 };
-  function ControlledRoom({ target }: { target: string | null }) {
-    const [thread, setThread] = useState<string | null>(null);
-    return <RoomPanel {...props} resourceSource={source} selectedThreadId={thread} onSelectThread={setThread} targetMessageId={target} />;
-  }
-  try {
-    const view = render(<ControlledRoom target={null} />);
-    const history = screen.getByRole("region", { name: "Messages" });
-    const resourceTrigger = screen.getByRole("button", { name: "Devices & sessions" });
-    await userEvent.click(resourceTrigger);
-    expect(await screen.findByText(/No paired devices or shared sessions/)).toBeVisible();
-    expect(history).not.toBeVisible();
-    view.rerender(<ControlledRoom target="message" />);
-    expect(history).toBeVisible();
-    const target = screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]");
-    await waitFor(() => expect(target).toHaveFocus());
-    expect(targetedWhileHidden).toEqual([false]);
-    expect(resourceTrigger).not.toHaveFocus();
-    // The target remains in the provider briefly; it is an intent, not a lock
-    // that prevents opening the resource pane again after navigation finished.
-    await userEvent.click(resourceTrigger);
-    expect(await screen.findByText(/No paired devices or shared sessions/)).toBeVisible();
-    expect(history).not.toBeVisible();
-  } finally { scroll.mockRestore(); }
-});
-
 it("navigates search results into controlled threads and focuses main results", async () => {
   const scroll = vi.fn();
   HTMLElement.prototype.scrollIntoView = scroll;
@@ -578,13 +546,11 @@ it.each(["dm", "group-dm"] as const)("does not offer member adds in a %s", async
   expect(screen.queryByRole("button", { name: "Add members" })).not.toBeInTheDocument();
 });
 
-it.each(["thread", "resources"] as const)("replaces the narrow conversation only while selected %s is open", async (kind) => {
+it("replaces the narrow conversation only while a selected thread is open", async () => {
   const user = userEvent.setup();
   const onLinkToWork = vi.fn();
   narrowViewport();
-  render(<RoomPanel {...props} onLinkToWork={onLinkToWork}
-    resourceSource={{ client: { listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })), listWorkspaceSessions: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 }}
-    />);
+  render(<RoomPanel {...props} onLinkToWork={onLinkToWork} />);
   const history = screen.getByRole("region", { name: "Messages" });
   expect(history).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -593,10 +559,10 @@ it.each(["thread", "resources"] as const)("replaces the narrow conversation only
   expect(onLinkToWork).toHaveBeenCalledOnce();
   await user.click(screen.getByRole("button", { name: "Back to conversation" }));
   expect(history).toBeVisible();
-  const trigger = screen.getByRole("button", { name: kind === "thread" ? "Reply in thread" : "Devices & sessions" });
+  const trigger = screen.getByRole("button", { name: "Reply in thread" });
   await user.click(trigger);
   expect(history).not.toBeVisible();
-  expect(screen.getByRole("heading", { name: kind === "thread" ? "Thread" : "Devices & sessions" })).toHaveFocus();
+  expect(screen.getByRole("heading", { name: "Thread" })).toHaveFocus();
   await user.click(screen.getByRole("button", { name: "Back to conversation" }));
   expect(history).toBeVisible();
   expect(trigger).toHaveFocus();

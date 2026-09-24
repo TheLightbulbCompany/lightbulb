@@ -285,8 +285,10 @@ describe("panelRegistry", () => {
 
   it("describePanel('session', …) retargets the Messages (chat) panel — there is no docked session panel", () => {
     expect(describePanel("session", { room: "r1", session: "s1" })).toEqual(
-      describePanel("chat", { room: "r1", session: "s1" }),
+      describePanel("chat", { session: "s1" }),
     );
+    // Sessions are workspace-scoped: a room riding along is ignored.
+    expect(describePanel("chat", { room: "r1", session: "s1" })?.params).toEqual({ sessionId: "s1" });
     expect(describePanel("session", { room: "r1" })).toBeNull();
     expect(durableParamsFor(MESSAGES_PANEL_ID)).toContain("session");
   });

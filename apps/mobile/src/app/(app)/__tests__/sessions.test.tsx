@@ -23,11 +23,8 @@ jest.mock("../../../lib/teamsData", () => ({
   fetchMembers: (...args: unknown[]) => mockFetchMembers(...args),
 }));
 
-// A minimal, controllable double of useMobileRooms: enough for the screen's
-// resourceSource/rooms/activeRoomId/selectDm/selectRoomError reads, with a
-// REAL useState behind selectRoomError so a rejected selectDm's error shows
-// up the same way the real useRooms hook would (it flips selectRoomError on
-// failure, which is what the screen renders).
+// A minimal double of useMobileRooms: the screen reads only its
+// resourceSource (for the workspace session list) and rooms (for names).
 const mockListWorkspaceSessions = jest.fn(async () => ({ sessions: [] as LocalSession[] }));
 const mockResourceSource = {
   client: { listWorkspaceSessions: mockListWorkspaceSessions },
@@ -35,31 +32,9 @@ const mockResourceSource = {
   connectionRevision: 1,
 };
 const mockRoomsList = [{ roomId: "room-1", members: [{ kind: "human", id: "bob", displayName: "Bob" }] }];
-const mockSelectDm = jest.fn(async (_participant: { kind: string; id: string }, _options?: { activate?: boolean }) => "dm-1");
-jest.mock("../../../lib/rooms", () => {
-  const { useState } = require("react");
-  return {
-    useMobileRooms: () => {
-      const [selectRoomError, setSelectRoomError] = useState(null as string | null);
-      return {
-        rooms: mockRoomsList,
-        activeRoomId: null,
-        resourceSource: mockResourceSource,
-        selectDm: async (participant: { kind: string; id: string }, options: { activate?: boolean }) => {
-          try {
-            const roomId = await mockSelectDm(participant, options);
-            setSelectRoomError(null);
-            return roomId;
-          } catch {
-            setSelectRoomError("this conversation could not be opened");
-            throw new Error("this conversation could not be opened");
-          }
-        },
-        selectRoomError,
-      };
-    },
-  };
-});
+jest.mock("../../../lib/rooms", () => ({
+  useMobileRooms: () => ({ rooms: mockRoomsList, resourceSource: mockResourceSource }),
+}));
 
 import SharedSessionsScreen from "../sessions";
 
@@ -74,8 +49,6 @@ describe("shared sessions screen", () => {
     mockPush.mockClear();
     mockListWorkspaceSessions.mockReset();
     mockListWorkspaceSessions.mockResolvedValue({ sessions: [] });
-    mockSelectDm.mockReset();
-    mockSelectDm.mockResolvedValue("dm-1");
     mockFetchMembers.mockReset();
     mockFetchMembers.mockResolvedValue([]);
   });
@@ -85,26 +58,12 @@ describe("shared sessions screen", () => {
     await waitFor(() => expect(screen.getByText("No one is sharing a terminal right now.")).toBeTruthy());
   });
 
-  it("shows a failed DM resolve without navigating", async () => {
+  it("opens a session on its roomless screen", async () => {
     mockListWorkspaceSessions.mockResolvedValue({ sessions: [bobSession] });
-    mockSelectDm.mockRejectedValue(new Error("nope"));
     await render(<SharedSessionsScreen />);
     await waitFor(() => expect(screen.getByText("Claude · Fix bug")).toBeTruthy());
     await fireEvent.press(screen.getByLabelText("Open Claude · Fix bug"));
-    await waitFor(() => expect(screen.getByText("this conversation could not be opened")).toBeTruthy());
-    expect(mockPush).not.toHaveBeenCalled();
-  });
-
-  it("blocks a second row's open while the first is still resolving", async () => {
-    const carolSession: LocalSession = { ...bobSession, sessionId: "sess-carol", humanUserId: "carol", title: "Fix bug 2" };
-    mockListWorkspaceSessions.mockResolvedValue({ sessions: [bobSession, carolSession] });
-    // Never resolves within the test — the first open is still pending when the second row is tapped.
-    mockSelectDm.mockReturnValue(new Promise(() => {}));
-    await render(<SharedSessionsScreen />);
-    await waitFor(() => expect(screen.getByText("Claude · Fix bug")).toBeTruthy());
-    await fireEvent.press(screen.getByLabelText("Open Claude · Fix bug"));
-    await fireEvent.press(screen.getByLabelText("Open Claude · Fix bug 2"));
-    expect(mockSelectDm).toHaveBeenCalledTimes(1);
+    expect(mockPush).toHaveBeenCalledWith("/(app)/session/sess-bob");
   });
 
   it("names a session's owner from the workspace roster even when the viewer shares no room with them", async () => {

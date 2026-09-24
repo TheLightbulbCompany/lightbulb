@@ -62,7 +62,7 @@ const room: RoomDetail = {
   ],
 };
 const state = {
-  resourceSource: { client: { listResources: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), listWorkspaceSessions: vi.fn(async () => ({ sessions: [] as never[] })) }, onEvent: () => () => {}, connectionRevision: 1 },
+  resourceSource: { client: { listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), listWorkspaceSessions: vi.fn(async () => ({ sessions: [] as never[] })) }, onEvent: () => () => {}, connectionRevision: 1 },
   rooms: [room], roomsError: undefined as Error | undefined, roomsLoading: false,
   directoryError: undefined as Error | undefined, directoryLoading: false,
   activeRoomId: room.roomId as string | null, activeRoom: room,
@@ -138,36 +138,6 @@ it("opens the room a failed-run toast names", () => {
   act(() => { window.dispatchEvent(new CustomEvent("openRoom", { detail: { roomId: "room-9", threadId: null } })); });
   expect(state.selectRoom).toHaveBeenCalledWith("room-9");
   view.unmount();
-});
-
-it("hands a session intent to the current room and cancels it on message navigation", () => {
-  compose();
-  act(() => void workspaceValue.openSession("session-1", { from: "room", roomId: "room-1" }));
-  expect(panel.targetSession?.sessionId).toBe("session-1");
-  const nonce = panel.targetSession?.nonce;
-  act(() => void workspaceValue.openSession("session-1", { from: "room", roomId: "room-1" }));
-  expect(panel.targetSession?.nonce).not.toBe(nonce);
-  expect(panel.targetMessageId).toBeNull();
-  act(() => workspaceValue.openMessage("room-1", "message-1"));
-  expect(panel.targetSession).toBeNull();
-  expect(panel.targetMessageId).toBe("message-1");
-  expect(state.sendMessage).not.toHaveBeenCalled();
-});
-
-it("disables the resource pane transport while its workspace is hidden", () => {
-  const view = render(<MessagingWorkspaceProvider subscribeToRoom><MessagingConversation /></MessagingWorkspaceProvider>);
-  expect(panel.resourceSource).toBe(state.resourceSource);
-  view.rerender(<MessagingWorkspaceProvider subscribeToRoom={false}><MessagingConversation /></MessagingWorkspaceProvider>);
-  expect(panel.resourceSource).toBeUndefined();
-});
-
-it("offers the Devices & sessions tab only once the workspace has a session", async () => {
-  compose();
-  expect(panel.showResourcesTab).toBe(false);
-  cleanup();
-  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never] });
-  compose();
-  await waitFor(() => expect(panel.showResourcesTab).toBe(true));
 });
 
 it("routes message authors through the existing participant DM action", async () => {
@@ -740,46 +710,24 @@ it("closes the shortcut sheet on a second Cmd+/, even though it is itself an ope
   expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).not.toBeInTheDocument();
 });
 
-it("opens someone else's session from the sidebar in focus with their DM, and clears it when a conversation is picked", async () => {
+it("opens someone else's session from the sidebar in focus on its own, and clears it when a conversation is picked", async () => {
   state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never] });
-  // The create-a-DM path: the room only exists once the resolve settles.
-  state.selectDm = vi.fn(async () => "dm-colleague");
   mocks.rooms.mockReturnValue(state);
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
   await waitFor(() => expect(directory.sessions).toHaveLength(1));
-  await act(async () => { await directory.onSelectSession!("s1"); });
-  // Resolved without activating; the DM is selected with the focus, in one render.
-  expect(state.selectDm).toHaveBeenCalledWith({ kind: "human", id: "colleague" }, { activate: false });
-  expect(state.selectRoom).toHaveBeenCalledWith("dm-colleague");
-  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", ownerUserId: "colleague", ownerName: "Colleague", roomId: "dm-colleague", own: false });
+  act(() => directory.onSelectSession!("s1"));
+  // Sessions are workspace-scoped: no DM is opened and no room is chosen for them.
+  expect(state.selectDm).not.toHaveBeenCalled();
+  expect(state.selectRoom).not.toHaveBeenCalled();
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1" });
   act(() => directory.onSelectRoom("room-1"));
   expect(workspaceValue.sessionFocus).toBeNull();
 });
 
-it("stays out of focus when the sharer's DM resolve was superseded by a later pick, or failed", async () => {
-  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never] });
-  mocks.rooms.mockReturnValue(state);
-  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
-  await waitFor(() => expect(directory.sessions).toHaveLength(1));
-  // useRooms answers null when a room was picked while the DM was resolving.
-  await act(async () => { await directory.onSelectSession!("s1"); });
-  expect(workspaceValue.sessionFocus).toBeNull();
-  // A failure is already on screen as selectRoomError; it must not escape as an unhandled rejection.
-  state.selectDm.mockRejectedValueOnce(new Error("offline"));
-  await act(async () => { await directory.onSelectSession!("s1"); });
-  expect(workspaceValue.sessionFocus).toBeNull();
-});
-
-it("opens your own session with the current room as context and no DM", async () => {
-  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "mine", humanUserId: "owner", status: "busy" } as never] });
-  state.selectDm = vi.fn();
-  mocks.rooms.mockReturnValue(state);
-  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
-  await waitFor(() => expect(directory.sessions).toHaveLength(1));
-  await act(async () => { await directory.onSelectSession!("mine"); });
-  expect(state.selectDm).not.toHaveBeenCalled();
-  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "mine", ownerUserId: "owner", ownerName: "You", roomId: "room-1", own: true });
-});
+/** A session complete enough for the focused panel to render. */
+const liveSession = (sessionId: string, humanUserId: string) => ({ sessionId, humanUserId, deviceId: "mac", provider: "claude", generation: "g", status: "busy",
+  providerVersion: "test", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true,
+  controlUnavailableReason: null, latestEventSeq: 0 }) as never;
 
 /** Holds the provider's workspace-session fetch open (a cold load) until the test lands it. */
 function holdSessionList() {
@@ -788,103 +736,62 @@ function holdSessionList() {
   return (sessions: never[]) => act(async () => { land({ sessions }); });
 }
 
-it("holds a permalink until the workspace session list lands, then opens a live one in focus with the sharer's DM", async () => {
+it("holds a permalink until the workspace session list lands, then opens it in focus", async () => {
   const landList = holdSessionList();
-  state.selectDm = vi.fn(async () => "dm-colleague");
   mocks.rooms.mockReturnValue(state);
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingConversation /></MessagingWorkspaceProvider>);
-  await act(async () => { await workspaceValue.openSession("s1", { from: "link", roomId: "room-1" }); });
+  act(() => workspaceValue.openSession("s1", { from: "link" }));
   expect(workspaceValue.sessionFocus).toBeNull();
-  expect(panel.targetSession).toBeNull();
-  await landList([{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never]);
-  expect(state.selectDm).toHaveBeenCalledWith({ kind: "human", id: "colleague" }, { activate: false });
-  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", ownerUserId: "colleague", ownerName: "Colleague", roomId: "dm-colleague", own: false });
+  await landList([liveSession("s1", "colleague")]);
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1" });
   expect(screen.getByRole("region", { name: "Shared session" })).toBeInTheDocument();
-  expect(panel.targetSession).toBeNull();
 });
 
-it("falls back to the room placement for a link whose session list settles without it", async () => {
+it("says a linked session that the settled list lacks is no longer shared", async () => {
   const landList = holdSessionList();
   mocks.rooms.mockReturnValue(state);
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingConversation /></MessagingWorkspaceProvider>);
-  await act(async () => { await workspaceValue.openSession("old", { from: "link", roomId: "room-1" }); });
-  expect(panel.targetSession).toBeNull();
+  act(() => workspaceValue.openSession("old", { from: "link" }));
   await landList([]);
-  expect(workspaceValue.sessionFocus).toBeNull();
-  expect(panel.targetSession).toMatchObject({ roomId: "room-1", sessionId: "old" });
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "old" });
+  expect(screen.getByText("This session is no longer shared.")).toBeInTheDocument();
 });
 
 it("drops a held permalink when a conversation is picked before the session list lands", async () => {
   const landList = holdSessionList();
-  state.selectDm = vi.fn(async () => "dm-colleague");
   mocks.rooms.mockReturnValue(state);
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>);
-  await act(async () => { await workspaceValue.openSession("s1", { from: "link", roomId: "room-1" }); });
+  act(() => workspaceValue.openSession("s1", { from: "link" }));
   act(() => directory.onSelectRoom("room-1"));
   await landList([{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never]);
-  expect(state.selectDm).not.toHaveBeenCalled();
   expect(workspaceValue.sessionFocus).toBeNull();
 });
 
-/** The real useRooms' selection: selectRoom, and selectDm for a DM that already
- *  exists, set the active room synchronously, inside the caller's click. */
-function selectRoomsSynchronously() {
+it("clears focus when the active room moves off by any path", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never] });
+  state.rooms = [room, { ...room, roomId: "room-2" }];
   mocks.rooms.mockImplementation(function useRoomsWithRealSelection() {
     const [activeRoomId, setActiveRoomId] = useState<string | null>(room.roomId);
-    return {
-      ...state,
-      activeRoomId,
-      activeRoom: activeRoomId ? { ...room, roomId: activeRoomId } : null,
-      selectRoom: (roomId: string) => { state.selectRoom(roomId); setActiveRoomId(roomId); },
-      selectDm: (participant: unknown, options: { activate?: boolean } = {}) => {
-        state.selectDm(participant, options);
-        if (options.activate !== false) setActiveRoomId("dm-colleague");
-        return Promise.resolve("dm-colleague");
-      },
-    };
+    return { ...state, activeRoomId, activeRoom: activeRoomId ? { ...room, roomId: activeRoomId } : null,
+      selectRoom: (roomId: string) => { state.selectRoom(roomId); setActiveRoomId(roomId); } };
   });
-}
-
-it("lands in focus on the sharer's existing DM, and clears it when the active room moves off by any path", async () => {
-  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never] });
-  state.rooms = [room, { ...room, roomId: "dm-colleague" }, { ...room, roomId: "room-2" }];
-  selectRoomsSynchronously();
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
   await waitFor(() => expect(directory.sessions).toHaveLength(1));
-  // The sync act flushes the render and effects as soon as the open's
-  // synchronous part returns, before its await resumes: what React does for a
-  // real click. An open that activated the DM there lost focus to the
-  // room-change effect and needed a second click.
-  let opening!: Promise<void>;
-  act(() => { opening = workspaceValue.openSession("s1", { from: "sidebar" }); });
-  await act(async () => { await opening; });
-  expect(workspaceValue.activeRoomId).toBe("dm-colleague");
-  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1", ownerUserId: "colleague", ownerName: "Colleague", roomId: "dm-colleague", own: false });
+  act(() => workspaceValue.openSession("s1", { from: "sidebar" }));
+  expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1" });
   // ⌥↓ (like a notification click) moves the active room without the directory.
   fireEvent.keyDown(window, { key: "ArrowDown", altKey: true });
   expect(workspaceValue.activeRoomId).toBe("room-2");
   expect(workspaceValue.sessionFocus).toBeNull();
 });
 
-it("falls back to the link's room placement when the sharer's DM cannot be opened", async () => {
-  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never] });
-  state.selectDm.mockRejectedValueOnce(new Error("offline"));
-  mocks.rooms.mockReturnValue(state);
-  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>);
-  await waitFor(() => expect(directory.sessions).toHaveLength(1));
-  await act(async () => { await workspaceValue.openSession("s1", { from: "link", roomId: "room-1" }); });
-  expect(workspaceValue.sessionFocus).toBeNull();
-  expect(state.selectRoom).toHaveBeenCalledWith("room-1");
-  expect(panel.targetSession).toMatchObject({ roomId: "room-1", sessionId: "s1" });
-});
-
-it("treats the room as hidden while your own session covers it", async () => {
-  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "mine", humanUserId: "owner", status: "busy" } as never] });
+it("treats the room as hidden while a session covers it", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "busy" } as never] });
   mocks.rooms.mockReturnValue(state);
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
   await waitFor(() => expect(directory.sessions).toHaveLength(1));
   expect(notifications.roomVisible).toBe(true);
-  await act(async () => { await directory.onSelectSession!("mine"); });
+  act(() => directory.onSelectSession!("s1"));
   // Neither auto-read nor notification suppression: nothing of the room is on screen.
   expect(notifications.roomVisible).toBe(false);
   expect(mocks.rooms).toHaveBeenLastCalledWith(undefined, true, false);
@@ -892,95 +799,25 @@ it("treats the room as hidden while your own session covers it", async () => {
   expect(notifications.roomVisible).toBe(true);
   expect(mocks.rooms).toHaveBeenLastCalledWith(undefined, true, true);
   // A notification for the covered room, clicked: "View" has to show the room.
-  await act(async () => { await directory.onSelectSession!("mine"); });
+  act(() => directory.onSelectSession!("s1"));
   act(() => notifications.onOpen("room-1", null));
   expect(workspaceValue.sessionFocus).toBeNull();
   expect(notifications.roomVisible).toBe(true);
 });
 
-it("shows the room beside someone else's session only where the side column fits", async () => {
-  const wide = vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
-    matches: query === "(min-width: 1180px)", media: query, onchange: null,
-    addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
-  }) as unknown as MediaQueryList);
-  try {
-    state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never] });
-    state.selectDm = vi.fn(async () => "dm-colleague");
-    mocks.rooms.mockReturnValue(state);
-    const tree = () => <MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>;
-    const view = render(tree());
-    await waitFor(() => expect(directory.sessions).toHaveLength(1));
-    await act(async () => { await directory.onSelectSession!("s1"); });
-    expect(workspaceValue.sessionFocus).toMatchObject({ sessionId: "s1" });
-    expect(notifications.roomVisible).toBe(true);
-    expect(mocks.rooms).toHaveBeenLastCalledWith(undefined, true, true);
-    // Below 1180px the side column is display:none (messaging.css).
-    wide.mockRestore();
-    view.rerender(tree());
-    expect(notifications.roomVisible).toBe(false);
-    expect(mocks.rooms).toHaveBeenLastCalledWith(undefined, true, false);
-  } finally {
-    wide.mockRestore();
-  }
-});
-
 it("keeps the focused session mounted while Messages is not the active dock panel", async () => {
-  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "mine", humanUserId: "owner", status: "busy" } as never] });
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [liveSession("mine", "owner")] });
   mocks.rooms.mockReturnValue(state);
   const tree = (subscribeToRoom: boolean) => <MessagingWorkspaceProvider subscribeToRoom={subscribeToRoom}>
     <CaptureContext /><MessagingDirectory /><MessagingConversation />
   </MessagingWorkspaceProvider>;
   const view = render(tree(true));
   await waitFor(() => expect(directory.sessions).toHaveLength(1));
-  await act(async () => { await directory.onSelectSession!("mine"); });
+  act(() => directory.onSelectSession!("mine"));
   const focused = screen.getByRole("region", { name: "Shared session" });
   // A split dock: Messages is on screen but another panel is active.
   view.rerender(tree(false));
   expect(screen.getByRole("region", { name: "Shared session" })).toBe(focused);
-});
-
-it("keeps the newest focus request when a colleague's slow DM resolve settles after your own session was opened", async () => {
-  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [
-    { sessionId: "s-colleague", humanUserId: "colleague", status: "idle" } as never,
-    { sessionId: "s-own", humanUserId: "owner", status: "busy" } as never,
-  ] });
-  let resolveDm!: (roomId: string) => void;
-  state.selectDm = vi.fn(() => new Promise<string>((resolve) => { resolveDm = resolve; }));
-  mocks.rooms.mockReturnValue(state);
-  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
-  await waitFor(() => expect(directory.sessions).toHaveLength(2));
-
-  let colleagueOpen!: Promise<void>;
-  act(() => { colleagueOpen = workspaceValue.openSession("s-colleague", { from: "sidebar" }); });
-  act(() => { void workspaceValue.openSession("s-own", { from: "sidebar" }); });
-  expect(workspaceValue.sessionFocus).toMatchObject({ sessionId: "s-own", ownerName: "You" });
-
-  // The colleague's DM resolve was still in flight when the own-session open
-  // (synchronous, no DM to resolve) already won. Its late arrival must not
-  // overwrite that newer focus.
-  await act(async () => { resolveDm("dm-colleague"); await colleagueOpen; });
-
-  expect(workspaceValue.sessionFocus).toMatchObject({ sessionId: "s-own", ownerName: "You" });
-});
-
-it("stays out of focus when closeSession runs before a slow colleague DM resolve settles", async () => {
-  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [
-    { sessionId: "s-colleague", humanUserId: "colleague", status: "idle" } as never,
-  ] });
-  let resolveDm!: (roomId: string) => void;
-  state.selectDm = vi.fn(() => new Promise<string>((resolve) => { resolveDm = resolve; }));
-  mocks.rooms.mockReturnValue(state);
-  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
-  await waitFor(() => expect(directory.sessions).toHaveLength(1));
-
-  let opening!: Promise<void>;
-  act(() => { opening = workspaceValue.openSession("s-colleague", { from: "sidebar" }); });
-  act(() => { workspaceValue.closeSession(); });
-  expect(workspaceValue.sessionFocus).toBeNull();
-
-  await act(async () => { resolveDm("dm-colleague"); await opening; });
-
-  expect(workspaceValue.sessionFocus).toBeNull();
 });
 
 it("consumes room links once, ahead of the default agent, and honors a new message target", () => {

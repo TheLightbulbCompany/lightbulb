@@ -112,12 +112,12 @@ describe("workspaceController", () => {
   it("retargets the Messages panel for a session, bumping sessionIntent on repeat opens, and never duplicates it", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => "friday-id");
-    openSessionPanel("r1", "s1");
+    openSessionPanel("s1");
     expect(api.addPanel).toHaveBeenCalledTimes(1);
-    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({ roomId: "r1", sessionId: "s1", sessionIntent: "1" });
-    openSessionPanel("r1", "s1");
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({ sessionId: "s1", sessionIntent: "1" });
+    openSessionPanel("s1");
     expect(api.addPanel).toHaveBeenCalledTimes(1); // focused, not a second panel
-    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({ roomId: "r1", sessionId: "s1", sessionIntent: "2" });
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({ sessionId: "s1", sessionIntent: "2" });
   });
   it("openPanel adds when missing, focuses when present, never duplicates", () => {
     const api = makeFakeApi();

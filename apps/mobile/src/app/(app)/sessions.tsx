@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
-import { sessionLabel, sessionStatus, useWorkspaceSessions, workspaceSections, type LocalSession } from "@lightbulb/shared";
+import { sessionLabel, sessionStatus, useWorkspaceSessions, workspaceSections } from "@lightbulb/shared";
 import { router, Stack, useIsFocused } from "expo-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AppState, Pressable, SectionList, StyleSheet, Text, View } from "react-native";
 
 import { SessionStatusDot } from "../../components/session/SessionStatusDot";
@@ -14,8 +14,7 @@ import { fetchMembers, useTeamsConfig, type CompanyMember } from "../../lib/team
 /**
  * Every live shared session in the workspace, grouped by person (yours
  * first) — the phone's twin of the web sidebar's session list. Tapping a
- * session resolves the same room web does (your own active/first room, or
- * the sharer's DM) and pushes the existing session screen.
+ * session pushes its workspace-scoped session screen; no room is involved.
  */
 export default function SharedSessionsScreen() {
   const { userId } = useAuth();
@@ -56,29 +55,6 @@ export default function SharedSessionsScreen() {
     }),
     [sessions, userId, members, roster],
   );
-  const [opening, setOpening] = useState<string | null>(null);
-  // Guards against a second row's tap starting a second open while the first
-  // is still resolving — a ref (not state) so the check is synchronous even
-  // mid-await, and both completions' `finally` clear only their own attempt.
-  const openingRef = useRef(false);
-  const open = async (session: LocalSession) => {
-    if (openingRef.current) return;
-    openingRef.current = true;
-    setOpening(session.sessionId);
-    try {
-      const roomId = session.humanUserId === userId
-        ? rooms.activeRoomId ?? rooms.rooms[0]?.roomId ?? null
-        // A rejected resolve sets rooms.selectRoomError, rendered below (this
-        // screen — unlike web's global banner — is its own error surface);
-        // swallow the throw so the fire-and-forget onPress doesn't reject unhandled.
-        : await rooms.selectDm({ kind: "human", id: session.humanUserId }, { activate: false }).catch(() => null);
-      if (roomId) router.push(`/(app)/room/${roomId}/session/${session.sessionId}`);
-    } finally {
-      openingRef.current = false;
-      setOpening(null);
-    }
-  };
-
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ title: "Shared sessions" }} />
@@ -88,11 +64,6 @@ export default function SharedSessionsScreen() {
           <Pressable onPress={() => void refresh()} accessibilityRole="button" accessibilityLabel="Try again">
             <Text style={styles.link}>Try again</Text>
           </Pressable>
-        </View>
-      )}
-      {rooms.selectRoomError && (
-        <View style={styles.errorCard}>
-          <Text accessibilityRole="alert" style={styles.errorText}>{rooms.selectRoomError}</Text>
         </View>
       )}
       <SectionList
@@ -110,10 +81,8 @@ export default function SharedSessionsScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Open ${sessionLabel(item)}`}
-            accessibilityState={{ busy: opening === item.sessionId }}
-            disabled={opening !== null}
-            style={({ pressed }) => [styles.row, pressed && styles.rowPressed, opening === item.sessionId && styles.rowOpening]}
-            onPress={() => void open(item)}
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => router.push(`/(app)/session/${item.sessionId}`)}
           >
             <SessionStatusDot status={item.status} />
             <View style={styles.rowText}>
@@ -144,7 +113,6 @@ const styles = StyleSheet.create({
   sectionTitle: { fontFamily: fonts.sansSemiBold, fontSize: 15, lineHeight: 20, color: colors.ink, marginTop: spacing.lg, marginBottom: spacing.sm },
   row: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm, borderRadius: radii.sm },
   rowPressed: { backgroundColor: colors.rowPressed },
-  rowOpening: { opacity: 0.6 },
   rowText: { flex: 1 },
   rowLabel: { fontFamily: fonts.sansMedium, fontSize: 15, lineHeight: 20, color: colors.ink },
   rowMeta: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute },

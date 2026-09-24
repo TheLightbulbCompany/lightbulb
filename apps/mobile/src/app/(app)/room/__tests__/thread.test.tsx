@@ -99,7 +99,7 @@ const mockLive = {
     downloadAttachment: jest.fn(), uploadAttachment: jest.fn(), markUnread: mockMarkUnread,
     setTyping: mockSetTyping, abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
     updateRoom: jest.fn(), upsertMember: jest.fn(), removeMember: jest.fn(),
-    updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(), listResources: jest.fn(),
+    updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(),
   },
   claimActiveRoomSubscription: jest.fn(() => () => {}),
   onEvent: (handler: (event: LiveEvent) => void) => {

@@ -203,12 +203,10 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
       // Room permalinks (?panel=chat&room=…&message=…) carry roomId, not
       // agentId — openChatPanel no-ops on an undefined agentId, so route
       // those through openMessagePanel instead.
-      if (command.descriptor.params.roomId) {
-        if (command.descriptor.params.sessionId) {
-          openSessionPanel(command.descriptor.params.roomId, command.descriptor.params.sessionId);
-        } else {
-          openMessagePanel(command.descriptor.params.roomId, command.descriptor.params.messageId);
-        }
+      if (command.descriptor.params.sessionId) {
+        openSessionPanel(command.descriptor.params.sessionId);
+      } else if (command.descriptor.params.roomId) {
+        openMessagePanel(command.descriptor.params.roomId, command.descriptor.params.messageId);
       } else {
         openChatPanel(command.descriptor.params.agentId);
       }

@@ -4,15 +4,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LiveEvent } from "../live/types";
 import { useWorkspaceSessions } from "./useWorkspaceSessions";
-import type { RoomResourceSource } from "./useRoomResources";
+import type { SessionSource } from "./useLocalSessionHistory";
 
 const listWorkspaceSessions = vi.fn(async () => ({ sessions: [] }));
 let handler: ((event: LiveEvent) => void) | null = null;
 const source = {
-  client: { listWorkspaceSessions, listResources: vi.fn(), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() },
+  client: { listWorkspaceSessions, listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() },
   onEvent: (h: (event: LiveEvent) => void) => { handler = h; return () => { handler = null; }; },
   connectionRevision: 1,
-} as unknown as RoomResourceSource;
+} as unknown as SessionSource;
 
 afterEach(() => { cleanup(); vi.useRealTimers(); listWorkspaceSessions.mockClear(); handler = null; });
 
@@ -39,6 +39,17 @@ describe("useWorkspaceSessions", () => {
     // A streaming batch changes an open session's content, not the list.
     act(() => handler?.({ eventId: "e3", type: "workspace.sessions.changed", payload: { humanUserId: "alice", transcript: true } } as unknown as LiveEvent));
     expect(listWorkspaceSessions).toHaveBeenCalledTimes(2);
+  });
+
+  it("bumps hintRevision on every sessions hint, transcript ones included", async () => {
+    const { result } = renderHook(() => useWorkspaceSessions(source));
+    await waitFor(() => expect(listWorkspaceSessions).toHaveBeenCalledTimes(1));
+    expect(result.current.hintRevision).toBe(0);
+    act(() => handler?.({ eventId: "e1", type: "workspace.sessions.changed", payload: { humanUserId: "alice", transcript: true } } as unknown as LiveEvent));
+    act(() => handler?.({ eventId: "e2", type: "workspace.sessions.changed", payload: { humanUserId: "alice" } } as unknown as LiveEvent));
+    expect(result.current.hintRevision).toBe(2);
+    act(() => handler?.({ eventId: "e3", type: "room.metadata.changed", roomId: "r", payload: { roomId: "r" } } as unknown as LiveEvent));
+    expect(result.current.hintRevision).toBe(2);
   });
 
   it("keeps the last snapshot and reports an error when a refresh fails", async () => {

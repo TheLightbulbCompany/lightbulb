@@ -33,10 +33,10 @@ export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: Direct
 }
 
 export function MessagingConversation() {
-  const { roomProps, sessionFocus, closeSession, sessionSource, scope, directoryProps } = useMessagingWorkspace();
+  const { roomProps, sessionFocus, closeSession, sessionSource, workspaceSessions, scope, directoryProps } = useMessagingWorkspace();
   if (sessionFocus) {
-    return <SessionFocus key={scope} focus={sessionFocus} source={sessionSource} onClose={closeSession}
-      conversation={roomProps ? <RoomPanel {...roomProps} /> : null} scope={scope} />;
+    return <SessionFocus key={scope} focus={sessionFocus} entries={directoryProps.sessions ?? []} loading={workspaceSessions.loading}
+      hintRevision={workspaceSessions.hintRevision} client={sessionSource.client} onAccessLost={workspaceSessions.refresh} onClose={closeSession} />;
   }
   return roomProps
     ? <RoomPanel {...roomProps} />

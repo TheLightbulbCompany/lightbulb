@@ -1,8 +1,8 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  buildRows, sessionLabel, sessionStatus, sessionViewKey, unavailableReason, useLocalSessionHistory, useRoomResources, useSessionCommand,
-  type LocalSession, type RoomResourceSource, type TranscriptRow,
+  buildRows, sessionLabel, sessionStatus, sessionViewKey, unavailableReason, useLocalSessionHistory, useSessionCommand, useWorkspaceSessions,
+  type LocalSession, type SessionSource, type TranscriptRow,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
@@ -13,28 +13,27 @@ import {
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 
-import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleton";
-import { RoomBlockedState } from "../../../../../components/room/RoomBlockedState";
-import { SessionPromptRow } from "../../../../../components/session/SessionPromptRow";
-import { SessionStatusDot } from "../../../../../components/session/SessionStatusDot";
-import { TranscriptRowView, WorkingRow } from "../../../../../components/session/TranscriptRow";
-import { colors, fonts, spacing } from "../../../../../config/theme";
-import { memberName } from "../../../../../lib/localSessions";
-import { usePushedScreenKeyboardOffset } from "../../../../../lib/keyboardOffset";
-import { useMobileRooms } from "../../../../../lib/rooms";
+import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
+import { SessionPromptRow } from "../../../components/session/SessionPromptRow";
+import { SessionStatusDot } from "../../../components/session/SessionStatusDot";
+import { TranscriptRowView, WorkingRow } from "../../../components/session/TranscriptRow";
+import { colors, fonts, spacing } from "../../../config/theme";
+import { memberName } from "../../../lib/localSessions";
+import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
+import { useMobileRooms } from "../../../lib/rooms";
 
 /** Distance from the bottom, in px, still counted as "at the bottom" (the room screen's value). */
 const BOTTOM_SLACK = 80;
 
 /**
- * One shared Claude Code / Codex session, drawn in its TUI's grammar, with a
- * prompt row to send follow-ups. The session row itself always comes fresh
- * from the room's resources (status, generation, control availability); the
- * body remounts when the session restarts or the reader's access epoch changes,
- * exactly as the web pane does.
+ * One shared Claude Code / Codex session, drawn in its TUI's grammar. Sessions
+ * are workspace-scoped, not a room's: the session row always comes fresh from
+ * the workspace session list (status, generation, control availability), and
+ * only the sharer gets the prompt row. The body remounts when the session
+ * restarts, exactly as the web pane does.
  */
 export default function SessionScreen() {
-  const { roomId, sessionId } = useLocalSearchParams<{ roomId: string; sessionId: string }>();
+  const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
   const { userId } = useAuth();
   const focused = useIsFocused();
   // Only a backgrounded app stops tailing — "inactive" (app switcher, a system
@@ -45,15 +44,11 @@ export default function SessionScreen() {
     return () => subscription.remove();
   }, []);
   const live = focused && appActive;
-  const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: false });
-  const selectRoomRef = useRef(rooms.selectRoom);
-  selectRoomRef.current = rooms.selectRoom;
-  useEffect(() => {
-    if (roomId) selectRoomRef.current(roomId);
-  }, [roomId]);
-  const resources = useRoomResources(roomId ?? "", rooms.resourceSource, { enabled: live && !!roomId, includeEnded: true });
-  const session = resources.data?.sessions.find((s) => s.sessionId === sessionId);
-  const members = rooms.activeRoom?.members;
+  // visible: false — this screen belongs to no single room, so it marks nothing read.
+  const rooms = useMobileRooms({ subscribeToRoom: false, autoSelect: false, visible: false });
+  const workspace = useWorkspaceSessions(rooms.resourceSource, { enabled: live });
+  const session = workspace.sessions.find((s) => s.sessionId === sessionId);
+  const members = useMemo(() => rooms.rooms.flatMap((room) => room.members ?? []), [rooms.rooms]);
   const ownerName = session ? memberName(members, session.humanUserId) : "Room member";
   const own = session ? session.humanUserId === userId : false;
   const name = useCallback(
@@ -87,30 +82,19 @@ export default function SessionScreen() {
     ) : undefined,
   };
 
-  if (rooms.accessRemoved || rooms.roomError) {
-    return (
-      <View style={styles.container}>
-        <Stack.Screen options={headerOptions} />
-        <RoomBlockedState
-          state={rooms.accessRemoved ? "access-removed" : "unavailable"}
-          onRetry={rooms.accessRemoved ? undefined : rooms.refreshRoom}
-        />
-      </View>
-    );
-  }
   if (!session) {
     return (
       <View style={styles.container}>
         <Stack.Screen options={headerOptions} />
         <View style={styles.centered}>
-          {resources.error ? (
+          {workspace.error ? (
             <>
-              <Text accessibilityRole="alert" style={styles.errorText}>{resources.error}</Text>
-              <Pressable onPress={() => void resources.refresh()} accessibilityRole="button" accessibilityLabel="Try again">
+              <Text accessibilityRole="alert" style={styles.errorText}>{workspace.error}</Text>
+              <Pressable onPress={() => void workspace.refresh()} accessibilityRole="button" accessibilityLabel="Try again">
                 <Text style={styles.link}>Try again</Text>
               </Pressable>
             </>
-          ) : resources.loading || !resources.data ? (
+          ) : workspace.loading && workspace.sessions.length === 0 ? (
             <TimelineSkeleton />
           ) : (
             <Text style={styles.meta}>This session is no longer shared.</Text>
@@ -131,12 +115,11 @@ export default function SessionScreen() {
         </View>
       )}
       <SessionBody
-        key={sessionViewKey(session, resources.accessRevision)}
-        roomId={roomId ?? ""}
+        key={sessionViewKey(session, 0)}
         session={session}
         client={rooms.resourceSource.client}
-        revision={resources.revision}
-        onAccessLost={resources.revoke}
+        revision={workspace.hintRevision}
+        onAccessLost={workspace.refresh}
         ownerName={ownerName}
         own={own}
         name={name}
@@ -144,7 +127,7 @@ export default function SessionScreen() {
         // Backstop poll while this screen is live AND the session is producing
         // output (same 5s cadence as web): transcript hints are throttled
         // server-side with no trailing edge. Idle sessions stay on hints plus
-        // the resources safety poll. Stopped when the screen blurs or the app
+        // the sessions safety poll. Stopped when the screen blurs or the app
         // backgrounds.
         pollMs={live && session.status === "busy" ? 5000 : 0}
       />
@@ -152,10 +135,9 @@ export default function SessionScreen() {
   );
 }
 
-function SessionBody({ roomId, session, client, revision, onAccessLost, ownerName, own, name, keyboardOffset, pollMs }: {
-  roomId: string;
+function SessionBody({ session, client, revision, onAccessLost, ownerName, own, name, keyboardOffset, pollMs }: {
   session: LocalSession;
-  client: RoomResourceSource["client"];
+  client: SessionSource["client"];
   revision: number;
   onAccessLost: () => void;
   ownerName: string;
@@ -165,9 +147,9 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, ownerNam
   pollMs: number;
 }) {
   const busy = session.status === "busy";
-  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
+  const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
-  const command = useSessionCommand(client, roomId, session, { uuid: randomUUID, onAccessLost, onSent: () => setText("") });
+  const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText("") });
   const rows = useMemo(() => buildRows(history.events), [history.events]);
   const last = history.events.at(-1);
   const turnOpen = busy && !history.hasNewer && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
@@ -256,7 +238,8 @@ function SessionBody({ roomId, session, client, revision, onAccessLost, ownerNam
           <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={colors.white} />
         </Pressable>
       )}
-      <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} />
+      {own ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} />
+        : <Text style={[styles.meta, styles.readOnly]}>Only {ownerName} can send to this session.</Text>}
     </KeyboardAvoidingView>
   );
 }
@@ -280,6 +263,7 @@ const styles = StyleSheet.create({
   // Full horizontal padding -- unlike errorCard below, this sits directly on
   // the screen, not inside the transcript's already-padded list.
   banner: { padding: spacing.lg, gap: spacing.xs },
+  readOnly: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   errorCard: { paddingVertical: spacing.sm, gap: spacing.xs },
   errorText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.errorText },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, color: colors.forest, paddingVertical: spacing.xs },

@@ -37,7 +37,7 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
   // lands in #general (the provider opens it), and nothing is decided until
   // the room list's first load says which kind this is.
   const defaultRequest = params.agentId === DEFAULT_AGENT_SENTINEL;
-  const requested = params.roomId || params.agentSelection === "resolved" ? null
+  const requested = params.roomId || params.sessionId || params.agentSelection === "resolved" ? null
     : defaultRequest
       ? freshLanding === false ? defaultId ?? null : null
       : params.agentId ?? null;
@@ -64,7 +64,7 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
 
   const lastOpenedRoom = useRef<string | null>(null);
   useEffect(() => {
-    if (!params.roomId) {
+    if (!params.roomId && !params.sessionId) {
       lastOpenedRoom.current = null;
       return;
     }
@@ -72,8 +72,8 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
     if (lastOpenedRoom.current === key) return;
     lastOpenedRoom.current = key;
     ++navigationRequest.current; // A pending agent-DM focus must not supersede a room intent.
-    if (params.sessionId) void openSession(params.sessionId, { from: "link", roomId: params.roomId });
-    else openMessage(params.roomId, params.messageId ?? null);
+    if (params.sessionId) openSession(params.sessionId, { from: "link" });
+    else if (params.roomId) openMessage(params.roomId, params.messageId ?? null);
   }, [params.roomId, params.messageId, params.sessionId, params.sessionIntent, openMessage, openSession]);
 
   const roomId = roomProps?.roomId;

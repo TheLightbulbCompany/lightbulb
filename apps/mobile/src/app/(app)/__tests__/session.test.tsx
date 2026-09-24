@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import { ApiError, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEvent, type RoomDetail, type RoomResources } from "@lightbulb/shared";
+import { ApiError, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEvent, type RoomDetail } from "@lightbulb/shared";
 import type { ReactNode } from "react";
 
 jest.setTimeout(20000);
@@ -17,7 +17,7 @@ jest.mock("expo-router", () => {
     },
     useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(() => cb(), [cb]),
     useIsFocused: () => true,
-    useLocalSearchParams: () => ({ roomId: "room-1", sessionId: "sess-1" }),
+    useLocalSearchParams: () => ({ sessionId: "sess-1" }),
   };
 });
 let mockScope = 0;
@@ -60,9 +60,9 @@ const receipt = (request: LocalSessionCommand, state: LocalSessionCommandReceipt
   sessionId: "sess-1", roomId: "room-1", actorUserId: "user-a", commandSeq: 1, state,
   createdAt: 1, deliverBy: 31, held: false, providerMessageId: null,
 });
-const mockListResources = jest.fn(async (): Promise<RoomResources> => ({ devices: [], sessions: [mockSession], pairedNodes: [] }));
+const mockListSessions = jest.fn(async (): Promise<{ sessions: LocalSession[] }> => ({ sessions: [mockSession] }));
 const mockListEvents = jest.fn(async () => ({ events: mockEvents, nextAfterSeq: null }));
-const mockSubmit = jest.fn(async (_r: string, _s: string, request: LocalSessionCommand) => receipt(request));
+const mockSubmit = jest.fn(async (_s: string, request: LocalSessionCommand) => receipt(request));
 const mockGetCommand = jest.fn();
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null, liveChannels: ["/rooms/room-1/k"], connectionRevision: 1,
@@ -72,7 +72,7 @@ const mockLive = {
     listMessages: jest.fn(async () => ({ messages: [], nextAfterSeq: null })),
     markRead: jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 3 })),
     getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
-    listResources: mockListResources,
+    listWorkspaceSessions: mockListSessions,
     listLocalSessionEvents: mockListEvents,
     submitLocalSessionCommand: mockSubmit,
     getLocalSessionCommand: mockGetCommand,
@@ -86,28 +86,29 @@ const mockLive = {
   onChatMessage: () => () => {},
   runtime: {}, rpc: jest.fn(), getOperation: jest.fn(),
 };
-jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
+jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
 
 import { router } from "expo-router";
 
-import SessionScreen from "../[roomId]/session/[sessionId]";
+import SessionScreen from "../session/[sessionId]";
 
 describe("session screen", () => {
   beforeEach(() => {
     mockScope += 1;
     mockSession = base;
     mockEvents = events;
-    mockListResources.mockClear();
+    mockListSessions.mockClear();
+    mockListSessions.mockImplementation(async () => ({ sessions: [mockSession] }));
     mockListEvents.mockClear();
     mockSubmit.mockReset();
-    mockSubmit.mockImplementation(async (_r: string, _s: string, request: LocalSessionCommand) => receipt(request));
+    mockSubmit.mockImplementation(async (_s: string, request: LocalSessionCommand) => receipt(request));
     mockGetCommand.mockReset();
   });
 
   it("renders the transcript in the Claude grammar with the owner's attribution", async () => {
     await render(<SessionScreen />);
     await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
-    expect(mockListEvents).toHaveBeenCalledWith("room-1", "sess-1", 0, 50);
+    expect(mockListEvents).toHaveBeenCalledWith("sess-1", 0, 50);
     // The summary line and the prompt's attribution both start with the owner's name.
     expect(screen.getAllByText(/^Alice · /)).toHaveLength(2);
     expect(screen.getByText("Bash(git status)")).toBeTruthy();
@@ -132,7 +133,7 @@ describe("session screen", () => {
     const input = await screen.findByLabelText("Send a follow-up to Claude");
     await fireEvent.changeText(input, "  also run lint  ");
     await fireEvent.press(screen.getByLabelText("Send follow-up"));
-    await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("room-1", "sess-1", {
+    await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", {
       requestId: "33333333-3333-4333-8333-333333333333", expectedGeneration: "g1", kind: "send", text: "also run lint",
     }));
     await waitFor(() => expect(screen.getByText("Admitted to the native session — not completed work.")).toBeTruthy());
@@ -163,20 +164,17 @@ describe("session screen", () => {
   });
 
   it("says when the session is no longer shared", async () => {
-    mockListResources.mockResolvedValue({ devices: [], sessions: [], pairedNodes: [] });
+    mockListSessions.mockResolvedValue({ sessions: [] });
     await render(<SessionScreen />);
     await waitFor(() => expect(screen.getByText("This session is no longer shared.")).toBeTruthy());
   });
 
-  it("opens an ended session's transcript instead of reporting it unavailable", async () => {
-    mockSession = { ...base, status: "ended" };
-    // A prior test overrides listResources with a persistent mockResolvedValue
-    // (mockClear in beforeEach does not undo it) — restore the default impl.
-    mockListResources.mockImplementation(async () => ({ devices: [], sessions: [mockSession], pairedNodes: [] }));
+  it("shows someone else's session read-only: no prompt row, only who can send", async () => {
+    mockSession = { ...base, humanUserId: "user-b" };
     await render(<SessionScreen />);
     await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
-    expect(mockListResources).toHaveBeenCalledWith("room-1", { includeEnded: true });
-    expect(screen.queryByText("This session is no longer shared.")).toBeNull();
+    expect(screen.getByText("Only Bob can send to this session.")).toBeTruthy();
+    expect(screen.queryByLabelText("Send a follow-up to Claude")).toBeNull();
   });
 
   it("says 'your Mac' and 'your terminal', never \"You's\", for your own waiting session", async () => {

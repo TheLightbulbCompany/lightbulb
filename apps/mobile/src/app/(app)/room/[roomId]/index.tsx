@@ -4,7 +4,6 @@ import {
   buildTimeline,
   roomDisplayName,
   runView,
-  useRoomResources,
   type CanonicalRoomMessage,
   type MemberPrefsRequest,
   type TimelineItem,
@@ -33,7 +32,6 @@ import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
-import { liveSessionCount } from "../../../../lib/localSessions";
 import { usePushedScreenKeyboardOffset } from "../../../../lib/keyboardOffset";
 import { AnimatedPressable, usePressScale } from "../../../../lib/pressScale";
 import { useDraftKey } from "../../../../lib/composerDraft";
@@ -90,12 +88,6 @@ function Conversation() {
   const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused, boundedHistory: true });
   // The room's own timeline drafts separately from each of its threads.
   const composerDraftKey = useDraftKey(roomId, null);
-
-  // The header badge: shared sessions working right now. The same 5s cadence
-  // the web room tab pays; paused while a pushed screen (thread, devices,
-  // session) has focus, since each of those polls for itself.
-  const resources = useRoomResources(roomId ?? "", rooms.resourceSource, { enabled: focused && !!roomId });
-  const liveSessions = liveSessionCount(resources.data?.sessions);
 
   // selectRoom's identity changes with every message (it closes over
   // markVisibleRead), and each call bumps the hook's selection-cancellation
@@ -278,8 +270,6 @@ function Conversation() {
         starred={!!room?.starred}
         muted={!!room?.muted}
         disabled={!room}
-        liveSessions={liveSessions}
-        onOpenDevices={() => router.push(`/(app)/room/${roomId}/devices`)}
         onToggleStar={() => void savePrefs({ starred: !room?.starred }, STAR_FAILED)}
         onToggleMute={() => void savePrefs({ muted: !room?.muted }, MUTE_FAILED)}
       />

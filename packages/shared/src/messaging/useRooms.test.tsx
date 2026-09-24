@@ -40,7 +40,7 @@ const messaging = {
   markUnread: vi.fn(), sendMessage: vi.fn(), setTyping: vi.fn(), createRoom: vi.fn(),
   updateRoom: vi.fn(), upsertMember: vi.fn(), removeMember: vi.fn(), abortRun: vi.fn(),
   steerRun: vi.fn(), updateMessage: vi.fn(), setReaction: vi.fn(), downloadAttachment: vi.fn(),
-  getLiveConfig: vi.fn(), listResources: vi.fn(),
+  getLiveConfig: vi.fn(),
   setMemberPrefs: vi.fn(), putSections: vi.fn(), leaveRoom: vi.fn(), deleteRoom: vi.fn(), setPin: vi.fn(),
 };
 

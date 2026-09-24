@@ -322,6 +322,120 @@ describe("useRooms platform seams", () => {
     await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, { beforeSeq: 2, signal: expect.any(AbortSignal) }));
   });
 
+  describe("history cache shared across mounts", () => {
+    // Mobile remounts the room screen on every push, so a per-instance cache
+    // never survived a back-and-forth. One SWR cache (the app's) = one store.
+    const oneCache = () => {
+      const cache = new Map();
+      return ({ children }: { children: ReactNode }) =>
+        <SWRConfig value={{ provider: () => cache, dedupingInterval: 0 }}>{children}</SWRConfig>;
+    };
+    const cold = [room.roomId, 0, 100, { beforeSeq: 2, signal: expect.any(AbortSignal) }];
+    const delta = [room.roomId, 1, 100, { signal: expect.any(AbortSignal) }];
+
+    it("paints a remounted room from cache and asks only for the delta", async () => {
+      const shared = oneCache();
+      const first = renderHook(() => useRooms(platform()), { wrapper: shared });
+      await waitFor(() => expect(first.result.current.messages).toHaveLength(1));
+      first.unmount();
+
+      // Held open: whatever renders now came from the cache, not the network.
+      messaging.listMessages.mockClear();
+      messaging.listMessages.mockImplementation(() => new Promise(() => {}));
+      const second = renderHook(() => useRooms(platform()), { wrapper: shared });
+      await waitFor(() => expect(second.result.current.activeRoomId).toBe(room.roomId));
+      expect(second.result.current.messages.map((m) => m.messageId)).toEqual(["msg-1"]);
+      await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledWith(...delta));
+      expect(messaging.listMessages).not.toHaveBeenCalledWith(...cold);
+    });
+
+    it.each([
+      ["another user", { userId: "user-b" }],
+      ["another workspace", { orgId: "org-b" }],
+    ])("never shows %s the cached history, and drops it on the switch", async (_label, other) => {
+      const shared = oneCache();
+      const first = renderHook(() => useRooms(platform()), { wrapper: shared });
+      await waitFor(() => expect(first.result.current.messages).toHaveLength(1));
+      first.unmount();
+
+      messaging.listMessages.mockClear();
+      messaging.listMessages.mockImplementation(() => new Promise(() => {}));
+      const stranger = renderHook(() => useRooms(platform(other)), { wrapper: shared });
+      await waitFor(() => expect(stranger.result.current.activeRoomId).toBe(room.roomId));
+      expect(stranger.result.current.messages).toHaveLength(0);
+      await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledWith(...cold));
+      stranger.unmount();
+
+      // Back to the first scope: its cache went with the switch.
+      messaging.listMessages.mockClear();
+      const again = renderHook(() => useRooms(platform()), { wrapper: shared });
+      await waitFor(() => expect(again.result.current.activeRoomId).toBe(room.roomId));
+      expect(again.result.current.messages).toHaveLength(0);
+      await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledWith(...cold));
+    });
+
+    it("drops cached history on sign-out", async () => {
+      const shared = oneCache();
+      const { result, rerender } = renderHook(
+        ({ userId }: { userId: string | null }) => useRooms(platform({ userId })),
+        { wrapper: shared, initialProps: { userId: "user-a" as string | null } },
+      );
+      await waitFor(() => expect(result.current.messages).toHaveLength(1));
+      rerender({ userId: null });
+      expect(result.current.messages).toHaveLength(0);
+
+      messaging.listMessages.mockClear();
+      rerender({ userId: "user-a" });
+      await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledWith(...cold));
+    });
+  });
+
+  describe("several mounted copies share one room list", () => {
+    // Mobile keeps three copies mounted (tab badge, Home, DMs); each used to
+    // run its own coalescing timer and reconnect refetch.
+    const three = () => [
+      useRooms(platform(), { autoSelect: false }),
+      useRooms(platform(), { autoSelect: false }),
+      useRooms(platform(), { autoSelect: false }),
+    ];
+
+    it("refetches the list once per event burst", async () => {
+      const { result } = renderHook(three, { wrapper });
+      await waitFor(() => expect(result.current[2].rooms).toHaveLength(1));
+      vi.useFakeTimers();
+      try {
+        messaging.listRooms.mockClear();
+        act(() => {
+          for (const handler of handlers) handler({
+            schemaVersion: 1, eventId: "evt-member", type: "room.member.updated",
+            occurredAt: "2026-09-15T00:00:01Z", roomId: room.roomId, roomRevision: 1, payload: {} as never,
+          } as LiveEvent);
+        });
+        await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+        expect(messaging.listRooms).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("refetches the list once per reconnect", async () => {
+      const { result, rerender } = renderHook(three, { wrapper });
+      await waitFor(() => expect(result.current[2].rooms).toHaveLength(1));
+      messaging.listRooms.mockClear();
+      live.liveConnected = true;
+      live.connectionRevision = 2;
+      try {
+        rerender();
+        await waitFor(() => expect(messaging.listRooms).toHaveBeenCalled());
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(messaging.listRooms).toHaveBeenCalledTimes(1);
+      } finally {
+        live.liveConnected = false;
+        live.connectionRevision = 1;
+      }
+    });
+  });
+
   describe("optimistic send reconciled by a live event", () => {
     // Prod incident: the server stored + returned 201, the canonical copy
     // arrived over the live channel and rendered, but the browser's own fetch

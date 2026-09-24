@@ -6,7 +6,7 @@
  * through `RoomsPlatform`; there is no DOM global in here.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { ApiError } from "../api/error";
 import type { LiveEvent } from "../live/types";
 import type { MessagingClient, RoomAttachmentInput } from "./client";
@@ -96,6 +96,34 @@ const SELECT_FAILED = "this conversation could not be opened";
 const failureMessage = (error: unknown, fallback: string): string =>
   error instanceof Error && error.message ? error.message : fallback;
 
+/**
+ * What every `useRooms` under one SWR cache shares, for ONE scope at a time.
+ *
+ * Mobile remounts the room screen per push and keeps three list copies
+ * mounted, so per-instance state meant a refetch of the room's history on
+ * every open and three room-list reads per event. Keyed off SWR's own cache so
+ * the store lives exactly as long as (and as isolated as) the SWR data beside
+ * it. A different scope — another user, another workspace, or signed out —
+ * replaces the store outright: a lookup can never return another scope's
+ * messages, however briefly.
+ */
+interface RoomsStore {
+  scope: string | null;
+  history: Map<string, { messages: CanonicalRoomMessage[]; complete: boolean }>;
+  refresh: ReturnType<typeof setTimeout> | null;
+  refreshedRevision: number | null;
+  mounted: number;
+}
+const stores = new WeakMap<object, RoomsStore>();
+const storeFor = (cache: object, scope: string | null): RoomsStore => {
+  let store = stores.get(cache);
+  if (store?.scope !== scope) {
+    store = { scope, history: new Map(), refresh: null, refreshedRevision: null, mounted: 0 };
+    stores.set(cache, store);
+  }
+  return store;
+};
+
 export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {}) {
   const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, boundedHistory = false } = options;
   const { userId, orgId, live, isVisible, onVisibilityChange, uuid } = platform;
@@ -108,6 +136,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     httpReady,
   } = live;
   const scope = userId ? `${userId}:${orgId ?? userId}` : null;
+  const { cache } = useSWRConfig();
+  const store = useMemo(() => storeFor(cache, scope), [cache, scope]);
   const roomsResponse = useSWR(
     scope ? ["messaging-rooms", scope] : null,
     () => messaging.listRooms(),
@@ -115,9 +145,13 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   );
   const roomsData = roomsResponse.data;
   const mutateRooms = roomsResponse.mutate;
+  // Once per reconnect across every mounted copy, not once per copy.
   useEffect(() => {
-    if (liveConnected) void mutateRooms();
-  }, [connectionRevision, liveConnected, mutateRooms]);
+    if (!liveConnected) { store.refreshedRevision = null; return; }
+    if (store.refreshedRevision === connectionRevision) return;
+    store.refreshedRevision = connectionRevision;
+    void mutateRooms();
+  }, [connectionRevision, liveConnected, mutateRooms, store]);
   const rooms = roomsData?.rooms ?? NO_ROOMS;
   const sections = roomsData?.sections ?? NO_SECTIONS;
   /**
@@ -194,32 +228,23 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   const initialPending = useRef(false);
   const editDuringInitial = useRef(false);
   /**
-   * Messages already fetched, per room.
-   *
-   * Room history is not SWR-backed, so before this cache every room switch
-   * emptied the timeline and re-fetched from sequence 0 — including a switch
-   * back to a room left seconds earlier. Re-opening a cached room now paints
-   * its messages on the same frame as the click and reconciles only the delta
-   * behind them.
-   *
-   * Cleared wholesale when `scope` changes: a different user or workspace must
-   * never see another's messages, however briefly.
+   * Messages already fetched, per room, in the shared store (see
+   * `RoomsStore`): re-opening a cached room — including on a freshly mounted
+   * screen — paints its messages on the first frame and reconciles only the
+   * delta behind them. A scope change swaps the store, so a different user or
+   * workspace never sees another's messages.
    */
-  const historyCache = useRef(new Map<string, { messages: CanonicalRoomMessage[]; complete: boolean }>());
+  const historyCache = store.history;
   const cacheRoom = useCallback((roomId: string, next: CanonicalRoomMessage[], complete?: boolean) => {
-    const previous = historyCache.current.get(roomId);
-    historyCache.current.set(roomId, { messages: next, complete: complete ?? previous?.complete ?? false });
-  }, []);
+    const previous = historyCache.get(roomId);
+    historyCache.set(roomId, { messages: next, complete: complete ?? previous?.complete ?? false });
+  }, [historyCache]);
   /** The ref, the rendered state and the cache always move together. */
   const applyMessages = useCallback((roomId: string, next: CanonicalRoomMessage[], complete?: boolean) => {
     messagesRef.current = next;
     setMessages(next);
     cacheRoom(roomId, next, complete);
   }, [cacheRoom]);
-
-  useEffect(() => {
-    historyCache.current.clear();
-  }, [scope]);
 
   useEffect(() => {
     generation.current += 1;
@@ -229,7 +254,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     editDuringInitial.current = false;
     pageAbort.current?.abort();
     pageAbort.current = null;
-    const cached = activeRoomId ? historyCache.current.get(activeRoomId) : undefined;
+    const cached = activeRoomId ? historyCache.get(activeRoomId) : undefined;
     messagesRef.current = cached?.messages ?? [];
     setMessages(cached?.messages ?? []);
     setHistoryLoading(false);
@@ -270,7 +295,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     setHistoryComplete(false);
     setHistoryErrorMessage(null);
     setAccessRemoved(true);
-    if (activeRoomId) historyCache.current.delete(activeRoomId);
+    if (activeRoomId) historyCache.delete(activeRoomId);
     messagesRef.current = [];
     setMessages([]);
     setOptimistic([]);
@@ -306,17 +331,25 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
    * The list is not latency-critical (it backs unread counts and ordering), so
    * trailing-edge coalescing costs nothing a viewer can perceive.
    */
-  const roomsRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // One timer per store, shared by every mounted copy; the last copy to
+  // unmount cancels it (the copy that armed it may leave while others stay).
   const refreshRoomsSoon = useCallback(() => {
-    if (roomsRefresh.current) return;
-    roomsRefresh.current = setTimeout(() => {
-      roomsRefresh.current = null;
+    if (store.refresh) return;
+    store.refresh = setTimeout(() => {
+      store.refresh = null;
       void mutateRooms();
     }, 400);
-  }, [mutateRooms]);
-  useEffect(() => () => {
-    if (roomsRefresh.current) clearTimeout(roomsRefresh.current);
-  }, []);
+  }, [mutateRooms, store]);
+  useEffect(() => {
+    store.mounted += 1;
+    return () => {
+      store.mounted -= 1;
+      if (store.mounted === 0 && store.refresh) {
+        clearTimeout(store.refresh);
+        store.refresh = null;
+      }
+    };
+  }, [store]);
 
   /**
    * Clear any pending optimistic placeholder that a just-arrived canonical
@@ -530,7 +563,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   useEffect(() => {
     if (!activeRoomId || accessRemoved) return;
     if (initialStarted.current === activeRoomId) return;
-    const cached = historyCache.current.get(activeRoomId);
+    const cached = historyCache.get(activeRoomId);
     if (cached?.messages.length) {
       initialStarted.current = activeRoomId;
       void reconcile(lastSequence(cached.messages)).catch(() => {});

@@ -542,6 +542,27 @@ describe("conversation screen", () => {
   // Mirrors web's RoomPanel `room-blocked` guard (search `room-blocked`):
   // the whole panel is replaced, not banner-over-composer.
   describe("blocked states", () => {
+    it("paints the timeline and composer from the room list while the detail loads, and subscribes only with the detail's key", async () => {
+      let resolveDetail: (room: RoomDetail) => void = () => {};
+      mockLive.messaging.getRoom.mockImplementationOnce(
+        () => new Promise<RoomDetail>((resolve) => { resolveDetail = resolve; }),
+      );
+      mockLive.claimActiveRoomSubscription.mockClear();
+      await render(<Conversation />);
+      await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+      expect(screen.queryByText("Loading conversation…")).toBeNull();
+      expect(screen.getByPlaceholderText(/^Message/)).toBeTruthy();
+      // The list carries no deliveryKey: nothing may subscribe on a guess.
+      expect(mockLive.claimActiveRoomSubscription).not.toHaveBeenCalled();
+
+      await act(async () => resolveDetail({ ...mockRoom, deliveryKey: "detail-key" }));
+      await waitFor(() =>
+        expect(mockLive.claimActiveRoomSubscription).toHaveBeenCalledWith(
+          expect.objectContaining({ roomId: "room-1", deliveryKey: "detail-key" }),
+        ),
+      );
+    });
+
     it("shows the loading state with neither timeline nor composer while the room is loading", async () => {
       mockRoomId = "room-loading";
       mockLive.messaging.getRoom.mockImplementationOnce(() => new Promise(() => {}));

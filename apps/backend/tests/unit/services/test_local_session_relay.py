@@ -81,6 +81,9 @@ def transport(db):
     with (
         patch.object(management._client, "post_to_connection", side_effect=post),
         patch("core.services.live_events.LiveEventPublisher._post", publish_http),
+        # A fresh publisher per test: the singleton's signing lock binds to the first test's
+        # event loop, and every hint now fans out concurrently over the user streams.
+        patch("core.services.live_events._publisher", None),
         patch.object(messaging_repo.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.invalid/event"),
     ):
         yield connections, ConnectionService(table_name=connections.name), management, sent, hints
@@ -330,7 +333,7 @@ async def test_backend_local_admission_uses_canonical_mac_and_never_opens_gatewa
 
 
 @pytest.mark.asyncio
-async def test_ingestion_is_bounded_ordered_deduplicated_and_emits_only_room_hints(transport, db):
+async def test_ingestion_is_bounded_ordered_deduplicated_and_emits_only_workspace_hints(transport, db):
     sid = await start(transport)
     # Registration's own room + workspace hints are covered elsewhere; transcript
     # batches must emit room hints only.
@@ -366,15 +369,11 @@ async def test_ingestion_is_bounded_ordered_deduplicated_and_emits_only_room_hin
     assert transport[4]
     for hint in transport[4]:
         event = json.loads(hint["events"][0])
-        assert "/rooms/" in hint["channel"]
-        assert event["type"] == "room.resources.changed"
-        assert event["payload"] == {"roomId": event["roomId"]}
+        # One workspace hint on each member's own channel; no per-room fan-out (2026-09-24).
+        assert "/users/" in hint["channel"]
+        assert event["type"] == "workspace.sessions.changed"
+        assert event["payload"]["humanUserId"] == ALICE.user_id
         assert "private transcript" not in json.dumps(hint)
-    # Removing owner membership removes this room from eligible hint channels.
-    db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#human#{ALICE.user_id}"})
-    transport[4].clear()
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle"))
-    assert all(ROOM not in hint["channel"] for hint in transport[4])
 
 
 @pytest.mark.asyncio
@@ -575,6 +574,7 @@ async def test_text_rate_is_shared_and_lifecycle_flush_is_not_delayed(transport)
 
 @pytest.mark.asyncio
 async def test_event_ingestion_publishes_a_hint_at_most_once_per_second(transport):
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
     sid = await start(transport)
     transport[4].clear()
     body = {
@@ -588,13 +588,13 @@ async def test_event_ingestion_publishes_a_hint_at_most_once_per_second(transpor
     lifecycle = {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "turn_end"}
     with patch("time.time", return_value=2000000000.0):
         await relay(transport).handle_message("conn-1", body)
-        first = [h for h in transport[4] if ROOM in h["channel"]]
+        first = [h for h in transport[4] if "/users/" in h["channel"]]
         assert len(first) == 1
         await relay(transport).handle_message("conn-1", {**body, "batchId": "b2", "afterSeq": 1, "events": [lifecycle]})
-        assert len([h for h in transport[4] if ROOM in h["channel"]]) == 1
+        assert len([h for h in transport[4] if "/users/" in h["channel"]]) == 1
     with patch("time.time", return_value=2000000002.0):
         await relay(transport).handle_message("conn-1", {**body, "batchId": "b3", "afterSeq": 2, "events": [lifecycle]})
-    assert len([h for h in transport[4] if ROOM in h["channel"]]) == 2
+    assert len([h for h in transport[4] if "/users/" in h["channel"]]) == 2
 
 
 @pytest.mark.asyncio
@@ -839,7 +839,7 @@ async def test_session_title_registers_updates_on_heartbeat_and_survives_silent_
     assert transport[4] == []
     await relay(transport).handle_message("conn-1", heartbeat(sid, title="Renamed by the harness"))
     assert (await repo.get_session(OWNER, sid))["title"] == "Renamed by the harness"
-    assert any(ROOM in hint["channel"] for hint in transport[4])
+    assert any("/users/" in hint["channel"] for hint in transport[4])
 
 
 @pytest.mark.asyncio
@@ -1211,41 +1211,16 @@ async def test_register_publishes_a_workspace_hint_to_every_user_stream(transpor
     assert len(user_hints) == 2
     assert {e["type"] for e in user_hints} == {"workspace.sessions.changed"}
     assert all(e["payload"] == {"humanUserId": ALICE.user_id} for e in user_hints)
-    assert any("/rooms/" in h["channel"] for h in transport[4])
-
-
-@pytest.mark.asyncio
-async def test_register_workspace_hint_survives_a_failing_room_publish(transport, db):
-    import core.services.live_events as live_events
-
-    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
-    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
-    await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=True))
-    connect(transport)
-    transport[4].clear()
-    with (
-        # A fresh publisher: the module singleton's signing lock binds to the
-        # event loop of whichever test acquires it first, and pytest-asyncio
-        # gives every test its own loop -- reusing it here is a test-isolation
-        # hazard unrelated to the fix under test.
-        patch.object(live_events, "_publisher", None),
-        patch("core.services.live_events.LiveEventPublisher.publish_room", side_effect=RuntimeError("boom")),
-    ):
-        await relay(transport).handle_message("conn-1", registration())
-    user_hints = [json.loads(h["events"][0]) for h in transport[4] if "/users/" in h["channel"]]
-    assert len(user_hints) == 2
-    assert {e["type"] for e in user_hints} == {"workspace.sessions.changed"}
     assert not any("/rooms/" in h["channel"] for h in transport[4])
 
 
 @pytest.mark.asyncio
-async def test_event_batches_hint_the_room_but_not_every_user_stream(transport, db):
-    """A streaming teammate must not make every member refetch the workspace list
-    once a second; liveness changes (register, heartbeat, ended) still do."""
+async def test_event_batches_send_a_transcript_workspace_hint(transport, db):
+    """A streaming batch reaches open panes as a transcript-marked workspace hint, which the
+    sidebar list ignores; there is no per-room hint any more."""
     await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
     await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
     sid = await start(transport)
-    assert any("/users/" in h["channel"] for h in transport[4])
     transport[4].clear()
     await relay(transport).handle_message(
         "conn-1",
@@ -1258,5 +1233,30 @@ async def test_event_batches_hint_the_room_but_not_every_user_stream(transport, 
             "events": [{"kind": "text", "role": "assistant", "text": "one"}],
         },
     )
-    assert any("/rooms/" in h["channel"] for h in transport[4])
-    assert not any("/users/" in h["channel"] for h in transport[4])
+    hints = [json.loads(h["events"][0]) for h in transport[4] if "/users/" in h["channel"]]
+    assert len(hints) == 2
+    assert all(e["payload"] == {"humanUserId": ALICE.user_id, "transcript": True} for e in hints)
+    assert not any("/rooms/" in h["channel"] for h in transport[4])
+
+
+@pytest.mark.asyncio
+async def test_device_heartbeat_hints_once_per_frame(transport, monkeypatch):
+    """Two lapsed mirrors in one frame each need a hint; the frame sends one, not one per session."""
+    from unittest.mock import AsyncMock
+
+    from core.services import local_session_relay as module
+
+    with patch("time.time", return_value=10000):
+        first = await start(transport)
+        second = (await relay(transport).handle_message("conn-1", registration(nativeConversationId="thread-2")))[
+            "sessionId"
+        ]
+    lapsed = (await repo.get_session(OWNER, first))["onlineUntil"] + 1
+    frame = heartbeat(first, status="idle")
+    frame["sessions"].append({**heartbeat(second, status="idle")["sessions"][0]})
+    hints = AsyncMock()
+    monkeypatch.setattr(module, "publish_resources_changed", hints)
+    with patch("time.time", return_value=lapsed):
+        response = await relay(transport).handle_message("conn-1", frame)
+    assert response["rejected"] == []
+    assert hints.await_count == 1

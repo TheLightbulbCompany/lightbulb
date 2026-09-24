@@ -49,7 +49,7 @@ describe("useRoomResources enabled gate", () => {
     await waitFor(() => expect(source.client.listResources).toHaveBeenCalledWith("room-1", { includeEnded: true }));
   });
 
-  it("a room.resources.changed push refreshes resources and bumps revision with no timer advance, feeding a session history load(\"newer\")", async () => {
+  it("a workspace.sessions.changed push refreshes resources and bumps revision with no timer advance, feeding a session history load(\"newer\")", async () => {
     vi.useFakeTimers();
     const handlers = new Set<(event: unknown) => void>();
     const pushListResources = vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] }));
@@ -77,7 +77,7 @@ describe("useRoomResources enabled gate", () => {
 
     // The push hint arrives; only microtasks are flushed below, never a timer interval.
     await act(async () => {
-      for (const handler of handlers) handler({ type: "room.resources.changed", payload: { roomId: "room-1" }, roomId: "room-1", schemaVersion: 1, eventId: "e1", occurredAt: "now" });
+      for (const handler of handlers) handler({ type: "workspace.sessions.changed", payload: { humanUserId: "user-1" }, schemaVersion: 1, eventId: "e1", occurredAt: "now" } as never);
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(pushListResources).toHaveBeenCalledTimes(2);
@@ -122,7 +122,7 @@ describe("useRoomResources enabled gate", () => {
 });
 
 /** A source whose `onEvent` handlers can be driven directly, to fire
- *  `room.resources.changed` hints for "room-1" on demand. */
+ *  `workspace.sessions.changed` hints on demand. */
 function hintSource() {
   const handlers = new Set<(event: unknown) => void>();
   const listResourcesHint = vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] }));
@@ -132,7 +132,7 @@ function hintSource() {
     connectionRevision: 1,
   } as unknown as RoomResourceSource;
   const fire = () => {
-    for (const handler of handlers) handler({ type: "room.resources.changed", payload: { roomId: "room-1" }, roomId: "room-1", schemaVersion: 1, eventId: "e", occurredAt: "now" });
+    for (const handler of handlers) handler({ type: "workspace.sessions.changed", payload: { humanUserId: "user-1" }, schemaVersion: 1, eventId: "e", occurredAt: "now" } as never);
   };
   return { source, listResourcesHint, fire };
 }
@@ -363,5 +363,26 @@ describe("useLocalSessionHistory tail stability", () => {
     rerender({ pollMs: 0 });
     await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
     expect(listLocalSessionEvents).toHaveBeenCalledTimes(2); // idle: hints plus the safety poll only
+  });
+});
+
+describe("useRoomResources transcript hints", () => {
+  it("refetches for a transcript hint only when its sharer has a session in this pane", async () => {
+    const handlers = new Set<(event: unknown) => void>();
+    const listResources = vi.fn(async () => ({ devices: [], sessions: [{ sessionId: "s1", humanUserId: "alice" }], pairedNodes: [] }));
+    const source = {
+      client: { listResources, listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() },
+      onEvent: (handler: (event: unknown) => void) => { handlers.add(handler); return () => handlers.delete(handler); },
+      connectionRevision: 1,
+    } as unknown as RoomResourceSource;
+    const fire = (humanUserId: string) => {
+      for (const handler of handlers) handler({ type: "workspace.sessions.changed", payload: { humanUserId, transcript: true }, schemaVersion: 1, eventId: humanUserId, occurredAt: "now" } as never);
+    };
+    renderHook(() => useRoomResources("room-1", source));
+    await waitFor(() => expect(listResources).toHaveBeenCalledTimes(1));
+    act(() => fire("bob")); // streaming in someone else's session: not this pane's business
+    expect(listResources).toHaveBeenCalledTimes(1);
+    act(() => fire("alice"));
+    await waitFor(() => expect(listResources).toHaveBeenCalledTimes(2));
   });
 });

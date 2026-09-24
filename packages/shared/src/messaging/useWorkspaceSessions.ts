@@ -43,7 +43,8 @@ export function useWorkspaceSessions(
   useEffect(() => {
     if (!enabled) return;
     void refresh();
-    const unsubscribe = onEvent(event => { if (event.type === "workspace.sessions.changed") void refresh(); });
+    // A transcript batch only changes an open session's content, not the list.
+    const unsubscribe = onEvent(event => { if (event.type === "workspace.sessions.changed" && !event.payload.transcript) void refresh(); });
     const timer = setInterval(() => void refresh(), 30000);
     return () => { unsubscribe(); clearInterval(timer); request.current += 1; refreshing.current = false; queued.current = false; };
   }, [enabled, onEvent, refresh]);

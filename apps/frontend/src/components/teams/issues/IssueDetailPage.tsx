@@ -408,6 +408,12 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           onCancelInteraction={async (interaction) => {
             await interactionMutations.cancel(issueId, interaction.id);
           }}
+          onSkipInteraction={async (interaction) => {
+            await interactionMutations.skip(issueId, interaction.id);
+          }}
+          onSubmitInteractionVerdicts={async (interaction, verdicts) => {
+            await interactionMutations.submitVerdicts(issueId, interaction.id, { verdicts });
+          }}
           feedbackVotes={votesByTarget}
           onVote={async (commentId, vote, options) => {
             try {

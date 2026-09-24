@@ -10,7 +10,7 @@ The BFF synthesizes the adapter block server-side via
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
@@ -502,6 +502,42 @@ class CancelInteractionBody(_Strict):
     """
 
     reason: Optional[str] = Field(default=None, max_length=4000)
+
+
+class SkipInteractionBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/interactions/{iid}/skip``.
+
+    Mirrors upstream ``skipIssueThreadInteractionSchema``: ``reason`` is
+    optional (stock's composer Skip sends ``{}``).
+    """
+
+    reason: Optional[str] = Field(default=None, max_length=4000)
+
+
+class InteractionVerdict(_Strict):
+    """One entry of a verdicts body — upstream's ``{id, verdict, reason?}``."""
+
+    id: str = Field(min_length=1, max_length=120)
+    verdict: Literal["approve", "reject", "defer"]
+    reason: Optional[str] = Field(default=None, max_length=4000)
+
+
+class SubmitInteractionVerdictsBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/interactions/{iid}/verdicts``
+    (``request_item_verdicts`` only).
+
+    Mirrors upstream ``submitIssueThreadInteractionVerdictsSchema``: 1..200
+    verdicts (``REQUEST_ITEM_VERDICTS_ITEM_LIMIT``), item ids unique.
+    """
+
+    verdicts: list[InteractionVerdict] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _unique_ids(self):
+        ids = [v.id for v in self.verdicts]
+        if len(ids) != len(set(ids)):
+            raise ValueError("verdict item ids must be unique")
+        return self
 
 
 class PatchCompanySettingsBody(_Strict):

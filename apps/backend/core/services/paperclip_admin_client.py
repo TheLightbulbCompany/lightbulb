@@ -1916,6 +1916,45 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def skip_interaction(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        interaction_id: str,
+        body: dict,
+    ) -> dict:
+        """Skip a pending thread interaction (status ``cancelled``, outcome
+        ``skipped``). Unlike cancel, upstream enqueues NO continuation wake.
+
+        Maps to ``POST /api/issues/{issueId}/interactions/{interactionId}/skip``.
+        Board-only + company-scoped upstream (see class note).
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/interactions/{interaction_id}/skip",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def submit_interaction_verdicts(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        interaction_id: str,
+        body: dict,
+    ) -> dict:
+        """Submit per-item verdicts on a ``request_item_verdicts`` interaction.
+
+        Maps to ``POST /api/issues/{issueId}/interactions/{interactionId}/verdicts``.
+        Wakes the assignee when any item newly resolves.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/interactions/{interaction_id}/verdicts",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
     async def create_issue(
         self,
         *,

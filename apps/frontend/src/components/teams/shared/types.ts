@@ -1280,6 +1280,7 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "ask_user_questions",
   "request_confirmation",
   "request_checkbox_confirmation",
+  "request_item_verdicts",
 ] as const;
 export type IssueThreadInteractionKind =
   (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
@@ -1479,6 +1480,64 @@ export interface RequestCheckboxConfirmationResult
   selectedOptionIds?: string[];
 }
 
+// --- request_item_verdicts (upstream packages/shared validators/issue.ts @ v2026.916.1-isol8.2) ---
+
+export type RequestItemVerdictValue = "approve" | "reject" | "defer";
+
+export interface RequestItemVerdictsItem {
+  id: string;
+  label: string;
+  description?: string | null;
+  previewMarkdown?: string | null;
+  href?: string | null;
+  attachmentId?: string | null;
+}
+
+export interface RequestItemVerdictsPayload {
+  version: 1;
+  prompt: string;
+  detailsMarkdown?: string | null;
+  items: RequestItemVerdictsItem[];
+  /** Upstream defaults to ["approve", "reject"]. */
+  verdicts?: RequestItemVerdictValue[];
+  /** Upstream defaults to ["reject"]. */
+  requireReasonOn?: RequestItemVerdictValue[];
+  reasonLabel?: string | null;
+  allowBulkApprove?: boolean;
+  supersedeOnUserComment?: boolean;
+  target?: RequestConfirmationTarget | null;
+}
+
+export interface RequestItemVerdictsResultItem {
+  id: string;
+  verdict: RequestItemVerdictValue;
+  reason?: string | null;
+  resolvedByUserId?: string | null;
+  resolvedByAgentId?: string | null;
+  resolvedAt: Date | string;
+}
+
+export interface RequestItemVerdictsResult {
+  version: 1;
+  outcome:
+    | "resolved"
+    | "superseded_by_comment"
+    | "stale_target"
+    | "cancelled"
+    | "skipped"
+    | "withdrawn"
+    | "issue_closed"
+    | "addressee_deleted";
+  reason?: string | null;
+  complete: boolean;
+  items: RequestItemVerdictsResultItem[];
+}
+
+/** Body of POST /teams/issues/{id}/interactions/{iid}/verdicts. */
+export interface SubmitIssueThreadInteractionVerdicts {
+  verdicts: Array<{ id: string; verdict: RequestItemVerdictValue; reason?: string }>;
+}
+
 // --- the discriminated union ---
 
 export interface IssueThreadInteractionBase
@@ -1526,23 +1585,33 @@ export interface RequestCheckboxConfirmationInteraction
   result?: RequestCheckboxConfirmationResult | null;
 }
 
+export interface RequestItemVerdictsInteraction
+  extends IssueThreadInteractionBase {
+  kind: "request_item_verdicts";
+  payload: RequestItemVerdictsPayload;
+  result?: RequestItemVerdictsResult | null;
+}
+
 export type IssueThreadInteraction =
   | SuggestTasksInteraction
   | AskUserQuestionsInteraction
   | RequestConfirmationInteraction
-  | RequestCheckboxConfirmationInteraction;
+  | RequestCheckboxConfirmationInteraction
+  | RequestItemVerdictsInteraction;
 
 export type IssueThreadInteractionPayload =
   | SuggestTasksPayload
   | AskUserQuestionsPayload
   | RequestConfirmationPayload
-  | RequestCheckboxConfirmationPayload;
+  | RequestCheckboxConfirmationPayload
+  | RequestItemVerdictsPayload;
 
 export type IssueThreadInteractionResult =
   | SuggestTasksResult
   | AskUserQuestionsResult
   | RequestConfirmationResult
-  | RequestCheckboxConfirmationResult;
+  | RequestCheckboxConfirmationResult
+  | RequestItemVerdictsResult;
 
 // ---------------------------------------------------------------------------
 // Company search (cross-entity ranked search)

@@ -354,14 +354,35 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     expect(screen.queryByText("Fire URL")).not.toBeInTheDocument();
   });
 
-  it("renders revisions and restores one via POST", async () => {
+  it("restores a historical revision from the History tab via POST", async () => {
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);
-    expect(screen.getByText("Updated routine")).toBeInTheDocument();
-    const restoreButtons = screen.getAllByRole("button", { name: /restore revision/i });
-    await user.click(restoreButtons[0]);
+    await user.click(screen.getByRole("tab", { name: "History" }));
+    await user.click(await screen.findByTestId("revision-row-1"));
+    await user.click(screen.getByRole("button", { name: /restore as new revision/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: /restore as revision 3/i }));
     await waitFor(() =>
-      expect(post).toHaveBeenCalledWith("/routines/r1/revisions/rev_2/restore", {}),
+      expect(post).toHaveBeenCalledWith("/routines/r1/revisions/rev_1/restore", {}),
+    );
+  });
+
+  it("Run opens the ported run dialog for a routine with variables and posts the run", async () => {
+    const user = userEvent.setup();
+    render(<RoutineDetailPanel routineId="r1" />);
+    await user.click(screen.getByRole("button", { name: /run automation now/i }));
+    const dialog = await screen.findByRole("dialog");
+    const runBtn = within(dialog).getByRole("button", { name: /^Run routine$/ });
+    // `asOf` is required and has no default.
+    expect(runBtn).toBeDisabled();
+    fireEvent.change(within(dialog).getByLabelText(/asOf/), { target: { value: "2026-09-01" } });
+    await user.click(runBtn);
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/routines/r1/run", {
+        source: "manual",
+        variables: { asOf: "2026-09-01" },
+        assigneeAgentId: "ag_1",
+      }),
     );
   });
 

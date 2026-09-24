@@ -38,12 +38,19 @@ import {
   REPLAY_WINDOW_SIGNING_MODES,
   DEFAULT_REPLAY_WINDOW_SEC,
 } from "@/components/teams/shared/webhookSigning";
+import {
+  RoutineRunVariablesDialog,
+  type RoutineRunDialogSubmitData,
+} from "@/components/teams/routines/RoutineRunVariablesDialog";
 import type {
   CompanyAgent,
+  IssueProject,
   RoutineTriggerSecretMaterial,
   RoutineVariable,
-  RoutineVariableValue,
 } from "@/components/teams/shared/types";
+
+// Stable empty list so the run dialog's reset-on-open effect doesn't refire.
+const EMPTY_VARIABLES: RoutineVariable[] = [];
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 // The /routines BFF is a pure passthrough of upstream Paperclip's
@@ -76,8 +83,10 @@ interface Routine {
   triggers?: RoutineTriggerLite[];
   // Variable definitions the routine declares (upstream RoutineListItem carries
   // `variables[]`). When non-empty, "Run now" must collect a value per variable
-  // before firing — see RunRoutineDialog. Empty/absent → one-click run.
+  // before firing — see RoutineRunVariablesDialog. Empty/absent → one-click run.
   variables?: RoutineVariable[];
+  // Default project for runs (prefills the run dialog).
+  projectId?: string | null;
   // Legacy flat cron (no triggers[] array). Upstream rows carry cron on each
   // trigger; this is read only as a fallback.
   cron?: string | null;
@@ -272,6 +281,8 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
   // When a routine that DEFINES variables is run, hold it here so the variables
   // editor opens; the one-click path (no variables) never sets this.
   const [runVars, setRunVars] = useState<Routine | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+  const { data: projectsData } = read<{ projects: IssueProject[] }>("/projects");
   const [search, setSearch] = useState("");
   // Standalone-only agent filter (hidden when the intrinsic `agentId` prop
   // scopes the panel — see filtering note below).
@@ -333,18 +344,16 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
   // upstream `runRoutineSchema` accepts `variables: record<string, value>` and
   // forwards it verbatim; omitting the key entirely keeps the one-click body
   // unchanged for variable-less routines.
-  async function fireRun(
-    routine: Routine,
-    variables?: Record<string, RoutineVariableValue>,
-  ) {
+  async function fireRun(routine: Routine, data?: RoutineRunDialogSubmitData) {
     setBusy(routine.id);
     try {
       // `source`'s enum ("manual" | "api") distinguishes UI-fired runs from
       // cron/event-fired runs in upstream run history.
-      const body: { source: string; variables?: Record<string, RoutineVariableValue> } = {
-        source: "manual",
-      };
+      const body: Record<string, unknown> = { source: "manual" };
+      const variables = data?.variables;
       if (variables && Object.keys(variables).length > 0) body.variables = variables;
+      if (data?.assigneeAgentId) body.assigneeAgentId = data.assigneeAgentId;
+      if (data?.projectId) body.projectId = data.projectId;
       await post(`/routines/${routine.id}/run`, body);
       mutate();
       // The run is dispatched server-side and nothing on this row changes when
@@ -375,7 +384,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
       return;
     }
     // The one-click path has no dialog to render a failure into (the variables
-    // path keeps its inline error — see RunRoutineDialog.submit), so it reports
+    // path keeps its inline error — see RoutineRunVariablesDialog's onSubmit), so it reports
     // through the toast surface instead of failing silently.
     void fireRun(routine).catch((e) => {
       if (notifyConversionGate(e) === null) {
@@ -592,211 +601,37 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
         />
       )}
 
-      {runVars && (
-        <RunRoutineDialog
-          routine={runVars}
-          submitting={busy === runVars.id}
-          onClose={() => setRunVars(null)}
-          onRun={async (variables) => {
-            await fireRun(runVars, variables);
+      <RoutineRunVariablesDialog
+        open={runVars !== null}
+        onOpenChange={(next) => {
+          if (!next) {
             setRunVars(null);
-          }}
-        />
-      )}
+            setRunError(null);
+          }
+        }}
+        routineName={runVars ? routineName(runVars) : null}
+        agents={agents}
+        projects={projectsData?.projects ?? []}
+        defaultProjectId={runVars?.projectId ?? null}
+        defaultAssigneeAgentId={runVars ? routineAgentId(runVars) : null}
+        variables={runVars?.variables ?? EMPTY_VARIABLES}
+        isPending={runVars !== null && busy === runVars.id}
+        error={runError}
+        onSubmit={async (data) => {
+          if (!runVars) return;
+          setRunError(null);
+          try {
+            await fireRun(runVars, data);
+            setRunVars(null);
+          } catch (e) {
+            // A trial-gate 402 renders the upgrade toast instead of dialog text.
+            if (notifyConversionGate(e) === null) {
+              setRunError(e instanceof Error ? e.message : String(e));
+            }
+          }
+        }}
+      />
     </div>
-  );
-}
-
-/* ── run-now variables editor ────────────────────────────────────────────── */
-
-// The default value to seed a variable input with, coerced to the string the
-// controlled inputs hold. Booleans use a "true"/"false" select, numbers reuse
-// the text input (validated on submit), so everything is editable as a string
-// and converted back to its declared type only at run time.
-function initialVarString(v: RoutineVariable): string {
-  if (v.defaultValue == null) return v.type === "boolean" ? "false" : "";
-  return String(v.defaultValue);
-}
-
-// Convert a collected string back to the variable's declared type for the run
-// body. Upstream `routineVariableValueSchema` is string | number | boolean.
-function coerceVarValue(
-  v: RoutineVariable,
-  raw: string,
-): RoutineVariableValue {
-  if (v.type === "boolean") return raw === "true";
-  if (v.type === "number") {
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : raw;
-  }
-  return raw;
-}
-
-function variableLabel(v: RoutineVariable): string {
-  return v.label?.trim() || v.name;
-}
-
-// Collects a value per defined variable, then fires the run. Required text /
-// number / select fields must be non-empty; booleans always have a value.
-function RunRoutineDialog({
-  routine,
-  submitting,
-  onClose,
-  onRun,
-}: {
-  routine: Routine;
-  submitting: boolean;
-  onClose: () => void;
-  onRun: (variables: Record<string, RoutineVariableValue>) => void | Promise<void>;
-}) {
-  const vars = routine.variables ?? [];
-  const [values, setValues] = useState<Record<string, string>>(() =>
-    Object.fromEntries(vars.map((v) => [v.name, initialVarString(v)])),
-  );
-  const [err, setErr] = useState<string | null>(null);
-
-  function setVar(name: string, next: string) {
-    setValues((prev) => ({ ...prev, [name]: next }));
-  }
-
-  // A required variable is "missing" when its trimmed string is empty. Booleans
-  // are never missing (they always hold "true"/"false").
-  const missing = vars.filter(
-    (v) =>
-      v.required !== false &&
-      v.type !== "boolean" &&
-      (values[v.name] ?? "").trim() === "",
-  );
-  const canRun = missing.length === 0;
-
-  async function submit() {
-    if (!canRun) return;
-    const collected: Record<string, RoutineVariableValue> = {};
-    for (const v of vars) {
-      const raw = values[v.name] ?? "";
-      // Omit a blank optional variable rather than coercing "" → 0 (number) or
-      // "" (text). Required vars can't be blank here — canRun gates them.
-      if (v.required === false && v.type !== "boolean" && raw.trim() === "") {
-        continue;
-      }
-      collected[v.name] = coerceVarValue(v, raw);
-    }
-    setErr(null);
-    try {
-      await onRun(collected);
-    } catch (e) {
-      // Surface the failure in the dialog rather than leaving the user with a
-      // button that just flips back to "Run" — mirrors CreateRoutineDialog.
-      // A trial-gate 402 renders the upgrade toast instead of dialog text.
-      if (notifyConversionGate(e) === null) {
-        setErr(e instanceof Error ? e.message : String(e));
-      }
-    }
-  }
-
-  return (
-    <EditorialDialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      title={`Run ${routineName(routine)}`}
-      description="Provide values for this automation's variables, then run it now."
-      footer={
-        <>
-          <EditorialButton variant="secondary" size="sm" onClick={onClose}>
-            Cancel
-          </EditorialButton>
-          <EditorialButton
-            variant="primary"
-            size="sm"
-            onClick={submit}
-            disabled={submitting || !canRun}
-          >
-            {submitting ? "Running…" : "Run"}
-          </EditorialButton>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-3">
-        {err && (
-          <div
-            className="text-[var(--err)] text-sm rounded-sm px-3 py-2"
-            style={{
-              border:
-                "1px solid var(--err)",
-              background: "var(--cream)",
-            }}
-          >
-            {err}
-          </div>
-        )}
-        {vars.map((v) => {
-          const required = v.required !== false;
-          const label = `${variableLabel(v)}${required ? " *" : ""}`;
-          if (v.type === "select") {
-            return (
-              <label key={v.name} className="block">
-                <span className="text-sm text-[var(--midnight-soft)]">{label}</span>
-                <div className="mt-1">
-                  <EditorialSelect
-                    options={(v.options ?? []).map((o) => ({
-                      value: o,
-                      label: o,
-                    }))}
-                    value={values[v.name] || undefined}
-                    onValueChange={(next) => setVar(v.name, next)}
-                    placeholder="Select…"
-                  />
-                </div>
-              </label>
-            );
-          }
-          if (v.type === "boolean") {
-            return (
-              <label key={v.name} className="block">
-                <span className="text-sm text-[var(--midnight-soft)]">
-                  {variableLabel(v)}
-                </span>
-                <div className="mt-1">
-                  <EditorialSelect
-                    options={[
-                      { value: "true", label: "True" },
-                      { value: "false", label: "False" },
-                    ]}
-                    value={values[v.name] || "false"}
-                    onValueChange={(next) => setVar(v.name, next)}
-                  />
-                </div>
-              </label>
-            );
-          }
-          if (v.type === "textarea") {
-            return (
-              <label key={v.name} className="block">
-                <span className="text-sm text-[var(--midnight-soft)]">{label}</span>
-                <textarea
-                  value={values[v.name] ?? ""}
-                  onChange={(e) => setVar(v.name, e.target.value)}
-                  rows={3}
-                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
-                />
-              </label>
-            );
-          }
-          // text + number share the text input; number is coerced on submit.
-          return (
-            <label key={v.name} className="block">
-              <span className="text-sm text-[var(--midnight-soft)]">{label}</span>
-              <input
-                type={v.type === "number" ? "number" : "text"}
-                value={values[v.name] ?? ""}
-                onChange={(e) => setVar(v.name, e.target.value)}
-                className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
-              />
-            </label>
-          );
-        })}
-      </div>
-    </EditorialDialog>
   );
 }
 

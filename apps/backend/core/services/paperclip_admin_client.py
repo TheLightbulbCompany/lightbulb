@@ -2828,19 +2828,28 @@ class PaperclipAdminClient:
         session_cookie: str,
         company_id: str,
         limit: Optional[int] = None,
+        entity_type: Optional[str] = None,
+        entity_id: Optional[str] = None,
     ) -> dict:
-        """List company activity events.
+        """List company activity events (optionally one entity's).
 
         Maps to ``GET /api/companies/{companyId}/activity``. ``limit`` is
         forwarded to upstream's ``normalizeActivityLimit`` (default 100,
         max 500); without it the feed silently caps at 100 instead of the
-        200 the UI asks for.
+        200 the UI asks for. ``entity_type``/``entity_id`` become upstream's
+        ``entityType``/``entityId`` filters.
         """
-        params = {"limit": str(limit)} if limit is not None else None
+        params: dict[str, str] = {}
+        if limit is not None:
+            params["limit"] = str(limit)
+        if entity_type is not None:
+            params["entityType"] = entity_type
+        if entity_id is not None:
+            params["entityId"] = entity_id
         return await self._get(
             f"/api/companies/{company_id}/activity",
             session_cookie=session_cookie,
-            params=params,
+            params=params or None,
         )
 
     async def get_dashboard(

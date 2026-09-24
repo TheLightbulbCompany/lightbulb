@@ -6,16 +6,15 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
 import { isDesktopApp, nativeNotify, notificationPermission } from "@/lib/desktopNotify";
 import { notifySuccess } from "@/lib/notify";
-import { plainPreview } from "@/lib/plainPreview";
 
 export function MessageNotifications(props: {
   activeRoomId: string | null;
   threadId: string | null;
   roomVisible: boolean;
-  onOpen: (roomId: string, threadId: string | null) => void;
+  onOpen: (roomId: string, threadId: string | null, messageId: string) => void;
 }): null {
-  const { userId, orgId } = useAuth();
-  const { onEvent, messaging } = useLiveEvents();
+  const { userId } = useAuth();
+  const { onEvent } = useLiveEvents();
   const current = useRef(props);
   useEffect(() => { current.current = props; });
 
@@ -60,40 +59,36 @@ export function MessageNotifications(props: {
     const seen = new Set<string>();
     let stopped = false;
     const unlisten = onEvent((event) => {
-      if (event.type !== "room.message.available" || !event.payload.notify) return;
-      const { roomId, messageId, messageSeq, threadRootMessageId } = event.payload;
+      // `push` is the projector's banner for this reader — the exact text the
+      // phone shows — present only when it notifies an unmuted reader.
+      // The event validator tolerates extra fields, so the banner's shape is checked here.
+      if (event.type !== "room.message.available") return;
+      const push = event.payload.push;
+      if (!push || typeof push.title !== "string" || typeof push.body !== "string") return;
+      const { roomId, messageId, threadRootMessageId } = event.payload;
+      const { title, subtitle, body, threadId, data } = push;
       if (seen.has(messageId)) return;
       seen.add(messageId);
       if (seen.size > 1000) seen.delete(seen.values().next().value!);
-      const watched = () => current.current.roomVisible && current.current.activeRoomId === roomId &&
+      const watched = current.current.roomVisible && current.current.activeRoomId === roomId &&
         (!threadRootMessageId || current.current.threadId === threadRootMessageId) &&
         document.visibilityState === "visible" && document.hasFocus();
-      if (watched()) return;
-      // The private event contains no message content. HTTP checks current
-      // membership again before we display anything from the conversation.
-      void Promise.all([messaging.getRoom(roomId), messaging.listMessages(roomId, messageSeq - 1, 1)])
-        .then(async ([room, page]) => {
-          if (stopped || watched() || room.muted || messageSeq <= room.lastReadSeq) return;
-          const message = page.messages.find((item) => item.messageId === messageId);
-          if (!message || (message.author.kind === "human" && message.author.id === userId)) return;
-          const title = room.kind === "channel"
-            ? `${message.author.displayName} in #${room.name ?? "channel"}`
-            : message.author.displayName;
-          const body = plainPreview(message.text).slice(0, 180) || "Sent an image";
-          capture("notification_shown", { channel: "web", room_kind: room.kind });
-          const onClick = () => {
-            capture("notification_clicked", { channel: "web", room_kind: room.kind });
-            current.current.onOpen(roomId, threadRootMessageId);
-          };
-          // Native (desktop app, or web with permission) replaces the toast.
-          if (await nativeNotify(title, body, { onClick, tag: messageId })) return;
-          notifySuccess(`${title}: ${body}`, {
-            dedupeKey: `message:${messageId}`,
-            action: { label: "View", onClick },
-          });
-        }).catch(() => {});
+      if (watched) return;
+      capture("notification_shown", { channel: "web", room_kind: data.roomKind });
+      const onClick = () => {
+        capture("notification_clicked", { channel: "web", room_kind: data.roomKind });
+        current.current.onOpen(roomId, threadRootMessageId, messageId);
+      };
+      // Native (desktop app, or web with permission) replaces the toast.
+      void nativeNotify(title, body, { onClick, tag: messageId, subtitle, threadId }).then((shown) => {
+        if (shown || stopped) return;
+        notifySuccess(`${title} · ${subtitle}: ${body}`, {
+          dedupeKey: `message:${messageId}`,
+          action: { label: "View", onClick },
+        });
+      });
     });
     return () => { stopped = true; unlisten(); };
-  }, [onEvent, messaging, userId, orgId]);
+  }, [onEvent]);
   return null;
 }

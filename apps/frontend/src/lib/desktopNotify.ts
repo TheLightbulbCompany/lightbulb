@@ -73,7 +73,7 @@ export async function notificationPermission(request = false): Promise<Notificat
 export async function nativeNotify(
   title: string,
   body?: string,
-  opts?: { onClick?: () => void; tag?: string },
+  opts?: { onClick?: () => void; tag?: string; subtitle?: string; threadId?: string },
 ): Promise<boolean> {
   const tauri = getTauri();
   if (tauri) {
@@ -83,14 +83,16 @@ export async function nativeNotify(
       routeClicks(tauri);
     }
     try {
-      return (await tauri.invoke("native_notify", { title, body, tag: opts?.tag })) === true;
+      return (await tauri.invoke("native_notify", { title, body, tag: opts?.tag, subtitle: opts?.subtitle, threadId: opts?.threadId })) === true;
     } catch {
       return false;
     }
   }
   try {
     if (!("Notification" in window) || window.Notification.permission !== "granted") return false;
-    const browserNotification = new window.Notification(title, { body, tag: opts?.tag });
+    // The Notification API has no subtitle line; it leads the body instead.
+    const browserBody = opts?.subtitle ? (body ? `${opts.subtitle}\n${body}` : opts.subtitle) : body;
+    const browserNotification = new window.Notification(title, { body: browserBody, tag: opts?.tag });
     browserNotification.onclick = () => {
       window.focus();
       opts?.onClick?.();

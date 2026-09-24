@@ -24,7 +24,8 @@ export function listenModeOptions(listeningAvailable: boolean): { value: ListenM
  * flashes an enabled control while billing loads. Given the room, a DM is
  * excluded (the mode is inert there) and so is the vendor-shared room's
  * any-member path (a Lightbulb-side member would spend the customer's
- * inference; the backend refuses it too). Web passes no room.
+ * inference). That is a client-side tightening: the backend lets the room
+ * owner's own members change it. Web passes no room.
  */
 export function canChangeListenMode(
   viewerRole: string | null | undefined,

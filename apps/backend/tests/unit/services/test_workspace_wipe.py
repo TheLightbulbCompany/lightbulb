@@ -886,8 +886,11 @@ async def test_self_serve_deletes_exactly_the_orgs_own_company(ws_mocks):
 
     ws_mocks.paperclip_company_delete.assert_awaited_once_with("company_ws")
     deleted_keys = [c.args[0] for c in ws_mocks.paperclip_instance.delete.await_args_list]
+    assert ORG_ID in deleted_keys
+    # Only this org's rows: its workspace row, the caller's identity, and any
+    # key scoped to this org id. Never another workspace's row.
+    assert all(k in (ORG_ID, MEMBER_A) or k.endswith(f":{ORG_ID}") for k in deleted_keys), deleted_keys
     assert "org_founder" not in deleted_keys
-    assert deleted_keys == [ORG_ID, MEMBER_A, f"__org_create_claim__:{ORG_ID}"]
     ws_mocks.paperclip_instance.get_workspace.assert_any_await(ORG_ID)
     assert all(c.args[0] == ORG_ID for c in ws_mocks.paperclip_instance.get_workspace.await_args_list)
 

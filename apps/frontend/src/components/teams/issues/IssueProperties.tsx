@@ -607,6 +607,9 @@ export function IssueProperties({
   onCheckNow,
   className,
 }: IssuePropertiesProps) {
+  // Assignees and stage participants are Paperclip principals, so humans are
+  // keyed by their Paperclip user id, not the Clerk id `/members` leads with.
+  const people = assignableMembers(members);
   // Merge denormalized issue.project into the projects list so the trigger
   // shows the right name even before the /teams/projects fetch resolves.
   const projectsWithDenorm = (() => {
@@ -673,7 +676,7 @@ export function IssueProperties({
           agents={agents}
           selectedAgentId={issue.assigneeAgentId ?? null}
           onChange={onAssigneeChange}
-          members={assignableMembers(members)}
+          members={people}
           selectedUserId={issue.assigneeUserId ?? null}
           onUserChange={onAssigneeUserChange}
         />
@@ -729,7 +732,7 @@ export function IssueProperties({
         noun="reviewer"
         values={stageParticipantValues(issue.executionPolicy, "review")}
         agents={agents}
-        members={members}
+        members={people}
         onChange={onReviewersChange}
       />
       <StageRow
@@ -737,7 +740,7 @@ export function IssueProperties({
         noun="approver"
         values={stageParticipantValues(issue.executionPolicy, "approval")}
         agents={agents}
-        members={members}
+        members={people}
         onChange={onApproversChange}
       />
       <MonitorRow

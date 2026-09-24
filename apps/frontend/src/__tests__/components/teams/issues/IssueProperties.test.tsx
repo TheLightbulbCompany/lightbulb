@@ -488,4 +488,46 @@ describe("IssueProperties", () => {
     // prop), proving stageParticipantValues reads the review stage correctly.
     expect(screen.getByText("Reviewer Bot")).toBeInTheDocument();
   });
+
+  // Stage participants become Paperclip principals (a user participant is
+  // handed the task as assigneeUserId), so humans go by their Paperclip id.
+  const stageMembers = [
+    { userId: "user_7", name: "Ada Lovelace", paperclipUserId: "pcu_7" },
+    { userId: "user_8", name: "Leo Newcomer", paperclipUserId: null },
+  ];
+
+  test("picking a human approver sends their Paperclip user id", async () => {
+    const user = userEvent.setup();
+    const onApproversChange = vi.fn<(values: string[]) => void>();
+    render(
+      <IssueProperties
+        issue={baseIssue}
+        agents={reviewAgents}
+        members={stageMembers}
+        {...requiredHandlers()}
+        onApproversChange={onApproversChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Add approver/i }));
+    expect(screen.queryByText("Leo Newcomer")).not.toBeInTheDocument();
+    await user.click(await screen.findByText("Ada Lovelace"));
+    expect(onApproversChange).toHaveBeenCalledWith(["user:pcu_7"]);
+  });
+
+  test("a human reviewer (Paperclip id) reads by name", () => {
+    const issue: Issue = {
+      ...baseIssue,
+      executionPolicy: {
+        stages: [
+          {
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [{ type: "user", userId: "pcu_7", agentId: null }],
+          },
+        ],
+      },
+    };
+    render(<IssueProperties issue={issue} members={stageMembers} {...requiredHandlers()} />);
+    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+  });
 });

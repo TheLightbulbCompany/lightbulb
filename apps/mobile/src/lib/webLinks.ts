@@ -29,19 +29,6 @@ export const teamsPanelUrl = (listKey: string): string =>
   `${WEB_ORIGIN}/chat?panel=teams-${listKey}`;
 
 /**
- * A Teams detail panel. Falls back to `fallbackListKey` when the id is
- * missing, because a detail panel without a detailId resolves to null.
- */
-export const teamsDetailUrl = (
-  kind: string,
-  detailId: string | undefined,
-  fallbackListKey: string,
-): string =>
-  detailId
-    ? `${WEB_ORIGIN}/chat?panel=teams-${kind}-detail&detailId=${encodeURIComponent(detailId)}`
-    : teamsPanelUrl(fallbackListKey);
-
-/**
  * A workspace permalink to one message — the web's own `messagePermalink` keys
  * (`panel=chat&room=…&message=…`), which `resolvePanel` reads to open the
  * Messages panel on that room and scroll to that message.

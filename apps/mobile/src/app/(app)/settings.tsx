@@ -19,7 +19,7 @@ import { GroupedList, NavigationRow } from "../../components/ui/GroupedList";
 import { WEB_ORIGIN } from "../../config/domain";
 import { colors, spacing } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
-import { isAppleManaged, openSubscriptionManagement } from "../../lib/manageSubscription";
+import { isAppleManaged } from "../../lib/manageSubscription";
 import { unregisterDevice } from "../../lib/pushDevice";
 
 // Billing is READ-ONLY here. This screen used to carry "Upgrade on flickmeon.ai"
@@ -362,11 +362,7 @@ export default function Settings() {
           { text: "Not now", style: "cancel" },
           {
             text: "Open iOS Settings",
-            onPress: () => void openSubscriptionManagement({
-              source,
-              portalUrl: null,
-              openAppleSubscriptions: deepLinkToSubscriptions,
-            }).catch(() => {}),
+            onPress: () => void deepLinkToSubscriptions().catch(() => {}),
           },
           { text: "Delete anyway", style: "destructive", onPress: () => promptDeleteAccount() },
         ],
@@ -385,11 +381,7 @@ export default function Settings() {
    * never called with anything but an Apple-billed subscription.
    */
   const onManageSubscription = useCallback(async () => {
-    await openSubscriptionManagement({
-      source: "apple_iap",
-      portalUrl: null,
-      openAppleSubscriptions: deepLinkToSubscriptions,
-    });
+    await deepLinkToSubscriptions();
   }, []);
 
   const confirmSignOut = useCallback(() => {

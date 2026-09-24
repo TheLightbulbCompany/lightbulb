@@ -10,9 +10,3 @@ import { ROOT_DOMAIN, WEB_ORIGIN } from "./domain";
 export const API_URL =
   process.env.EXPO_PUBLIC_API_URL ?? `https://api-dev.${ROOT_DOMAIN}/api/v1`;
 
-/**
- * Web billing panel — the outbound target for every billing/upgrade CTA.
- * Billing, checkout, and OAuth never happen in-app (D1); always prod web,
- * regardless of which API this build points at.
- */
-export const WEB_BILLING_URL = `${WEB_ORIGIN}/settings?panel=billing`;

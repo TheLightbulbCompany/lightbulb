@@ -1,6 +1,6 @@
 import {
-  GLYPH, lifecycleLabel, toolHeader, toolRowView,
-  type LocalSessionProvider, type ToolTranscriptRow, type TranscriptRow,
+  GLYPH, PREVIEW_LINES, lifecycleLabel, thinkingLabel, toolHeader, toolRowView,
+  type LocalSessionProvider, type ThinkingTranscriptRow, type ToolTranscriptRow, type TranscriptItem,
 } from "@lightbulb/shared";
 import { memo, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -15,21 +15,25 @@ function time(ts?: string): string | null {
 }
 
 /**
- * One row of a shared session in its TUI's grammar — the phone twin of the
+ * One item of a shared session in its TUI's grammar — the phone twin of the
  * web NativeSessionTranscript. `name` resolves a prompt's author: null is the
- * session owner, otherwise a room member's id.
+ * session owner, otherwise a room member's id. `live` marks the last row of a
+ * still-running turn (a live thinking block reads "Thinking…").
  */
-export const TranscriptRowView = memo(function TranscriptRowView({ provider, row, name }: {
+export const TranscriptRowView = memo(function TranscriptRowView({ provider, row, name, live = false }: {
   provider: LocalSessionProvider;
-  row: TranscriptRow;
+  row: TranscriptItem;
   name: (who: string | null) => string;
+  live?: boolean;
 }) {
   const g = GLYPH[provider];
   switch (row.kind) {
+    case "tools":
+      return <ToolGroup provider={provider} rows={row.rows} summary={row.summary} />;
     case "prompt": {
       const at = time(row.ts);
       return (
-        <View style={styles.row} accessibilityLabel={`Native event ${row.seq}`}>
+        <View style={[styles.row, styles.promptRow]} accessibilityLabel={`Native event ${row.seq}`}>
           <View style={styles.promptBand}>
             <Text style={styles.glyph}>{g.prompt}</Text>
             <Text style={styles.promptText}>{row.text}</Text>
@@ -51,18 +55,7 @@ export const TranscriptRowView = memo(function TranscriptRowView({ provider, row
       );
     }
     case "thinking":
-      return (
-        <View style={styles.row} accessibilityLabel={`Native event ${row.seq}`}>
-          <View style={styles.line}>
-            <Text style={[styles.glyph, styles.thinkingGlyph]}>{g.thinking}</Text>
-            {row.text ? (
-              <View style={[styles.prose, styles.thinking]}><MessageMarkdown text={row.text} /></View>
-            ) : (
-              <Text style={styles.metaInline}>Thinking…</Text>
-            )}
-          </View>
-        </View>
-      );
+      return <ThinkingRow provider={provider} row={row} live={live} />;
     case "tool":
       return <ToolRow provider={provider} row={row} />;
     case "notice":
@@ -74,6 +67,50 @@ export const TranscriptRowView = memo(function TranscriptRowView({ provider, row
   }
 });
 
+/** One line to tap to open or close — the shared shape of a folded group and collapsed thinking. */
+function Toggle({ glyph, label, open, onPress }: { glyph: string; label: string; open: boolean; onPress: () => void }) {
+  return (
+    <Pressable style={styles.line} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ expanded: open }} hitSlop={8}>
+      <Text style={[styles.glyph, styles.thinkingGlyph]}>{glyph}</Text>
+      <Text style={styles.toggle}>{`${label} ${open ? "⌄" : "›"}`}</Text>
+    </Pressable>
+  );
+}
+
+function ThinkingRow({ provider, row, live }: { provider: LocalSessionProvider; row: ThinkingTranscriptRow; live: boolean }) {
+  const [open, setOpen] = useState(false);
+  const g = GLYPH[provider];
+  const label = thinkingLabel(row, live);
+  return (
+    <View style={styles.row} accessibilityLabel={`Native event ${row.seq}`}>
+      {row.text ? (
+        <Toggle glyph={g.thinking} label={label} open={open} onPress={() => setOpen((o) => !o)} />
+      ) : (
+        <View style={styles.line}>
+          <Text style={[styles.glyph, styles.thinkingGlyph]}>{g.thinking}</Text>
+          <Text style={styles.metaInline}>{label}</Text>
+        </View>
+      )}
+      {open && row.text ? <View style={[styles.nested, styles.thinking]}><MessageMarkdown text={row.text} /></View> : null}
+    </View>
+  );
+}
+
+/** A folded run of tool calls: one summary line that opens onto the individual rows. */
+function ToolGroup({ provider, rows, summary }: { provider: LocalSessionProvider; rows: (ToolTranscriptRow | ThinkingTranscriptRow)[]; summary: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={styles.row}>
+      <Toggle glyph={GLYPH[provider].bullet} label={summary} open={open} onPress={() => setOpen((o) => !o)} />
+      {open && (
+        <View style={[styles.nested, styles.groupRows]}>
+          {rows.map((r) => (r.kind === "tool" ? <ToolRow key={r.seq} provider={provider} row={r} /> : <ThinkingRow key={r.seq} provider={provider} row={r} live={false} />))}
+        </View>
+      )}
+    </View>
+  );
+}
+
 function ToolRow({ provider, row }: { provider: LocalSessionProvider; row: ToolTranscriptRow }) {
   const [open, setOpen] = useState(false);
   const g = GLYPH[provider];
@@ -81,6 +118,7 @@ function ToolRow({ provider, row }: { provider: LocalSessionProvider; row: ToolT
   const isDiff = diff.length > 0;
   const shown = open ? full || preview : preview;
   const body = truncated && shown ? `${shown}\n(truncated)` : shown;
+  const hidden = isDiff ? Math.max(0, diff.length - PREVIEW_LINES) : more;
   return (
     <View style={styles.row} accessibilityLabel={`Native event ${row.seq}`}>
       <View style={styles.line}>
@@ -93,7 +131,7 @@ function ToolRow({ provider, row }: { provider: LocalSessionProvider; row: ToolT
       {status === "error" && <Text style={[styles.output, styles.errorText]}>{`${g.output} Error`}</Text>}
       {isDiff && (
         <View style={styles.outputBlock}>
-          {diff.map((line, i) => (
+          {(open ? diff : diff.slice(0, PREVIEW_LINES)).map((line, i) => (
             <Text key={i} style={[styles.output, line.startsWith("+") ? styles.diffAdd : line.startsWith("-") ? styles.diffDel : styles.diffCtx]}>
               {line}
             </Text>
@@ -106,9 +144,9 @@ function ToolRow({ provider, row }: { provider: LocalSessionProvider; row: ToolT
           <Text style={styles.output}>{`${g.output} ${body}`}</Text>
         </View>
       ) : null}
-      {!isDiff && (more > 0 || showOutput) && (
+      {(hidden > 0 || (!isDiff && showOutput)) && (
         <Pressable onPress={() => setOpen((o) => !o)} accessibilityRole="button" accessibilityState={{ expanded: open }} hitSlop={8}>
-          <Text style={styles.more}>{open ? "collapse" : more > 0 ? `… +${more} lines` : "show output"}</Text>
+          <Text style={styles.more}>{open ? "collapse" : hidden > 0 ? `… +${hidden} lines` : "show output"}</Text>
         </Pressable>
       )}
     </View>
@@ -137,23 +175,27 @@ export function WorkingRow({ provider, since }: { provider: LocalSessionProvider
 const GLYPH_WIDTH = 18;
 
 const styles = StyleSheet.create({
-  row: { marginBottom: spacing.sm },
+  row: { marginBottom: spacing.md },
   line: { flexDirection: "row", alignItems: "flex-start" },
   glyph: { width: GLYPH_WIDTH, fontFamily: fonts.mono, fontSize: 14, lineHeight: 20, color: colors.inkSoft },
   glyphSpace: { width: GLYPH_WIDTH },
   thinkingGlyph: { color: colors.mute },
   workingGlyph: { color: colors.green },
+  promptRow: { marginTop: spacing.md },
   promptBand: {
     flexDirection: "row",
     alignItems: "flex-start",
     backgroundColor: colors.codeBg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.border,
     borderRadius: radii.sm,
     paddingVertical: spacing.xs,
     paddingHorizontal: spacing.sm,
   },
-  promptText: { flex: 1, fontFamily: fonts.mono, fontSize: 14, lineHeight: 20, color: colors.ink },
+  promptText: { flex: 1, fontFamily: fonts.sans, fontSize: 15, lineHeight: 21, color: colors.ink },
+  toggle: { flex: 1, fontFamily: fonts.sans, fontSize: 13, lineHeight: 20, color: colors.mute },
+  nested: { marginLeft: GLYPH_WIDTH, marginTop: spacing.xs },
+  groupRows: { paddingLeft: spacing.sm, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border },
   prose: { flex: 1 },
   thinking: { opacity: 0.7 },
   codexLabel: { fontFamily: fonts.sansSemiBold, fontSize: 11, lineHeight: 14, color: colors.mute, marginBottom: 2 },
@@ -176,5 +218,5 @@ const styles = StyleSheet.create({
   more: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 17, color: colors.forest, marginLeft: GLYPH_WIDTH, marginTop: 2 },
   meta: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute, marginTop: 2, marginLeft: GLYPH_WIDTH },
   metaInline: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 20, color: colors.mute },
-  working: { fontFamily: fonts.mono, fontSize: 14, lineHeight: 20, color: colors.ink },
+  working: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.ink },
 });

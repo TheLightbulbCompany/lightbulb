@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react-native";
-import { buildRows, type LocalSessionEvent } from "@lightbulb/shared";
+import { buildRows, groupRows, type LocalSessionEvent } from "@lightbulb/shared";
 
 import { TranscriptRowView, WorkingRow } from "../TranscriptRow";
 
@@ -18,8 +18,30 @@ describe("TranscriptRowView", () => {
     expect(screen.getByText(">")).toBeTruthy();
     expect(screen.getByText("run it")).toBeTruthy();
     expect(screen.getByText(/^Friday · /)).toBeTruthy();
-    expect(screen.getByText("Thinking…")).toBeTruthy();
+    expect(screen.getByText("Thought")).toBeTruthy(); // closed by the answer
     expect(screen.getByText("All green.")).toBeTruthy();
+  });
+
+  it("collapses thinking to one line and folds a run of tools into a summary that expands", async () => {
+    const rows = groupRows(buildRows([
+      ev(1, { kind: "thinking", role: "assistant", text: "SECRET_PLAN", ts: "2026-09-24T10:00:00.000Z" }),
+      ev(2, { kind: "tool", role: "assistant", text: "a.ts", itemId: "a", ts: "2026-09-24T10:00:05.000Z", tool: { name: "Edit", status: "done", input: {} } }),
+      ev(3, { kind: "tool", role: "assistant", text: "npm test", itemId: "b", tool: { name: "Bash", status: "done", input: {} } }),
+    ]), false);
+    await render(<>{rows.map((row) => <TranscriptRowView key={row.seq} provider="claude" row={row} name={name} />)}</>);
+    expect(screen.queryByText(/SECRET_PLAN/)).toBeNull();
+    await fireEvent.press(screen.getByLabelText("Thought for 5s"));
+    expect(screen.getByText(/SECRET_PLAN/)).toBeTruthy();
+    const group = screen.getByLabelText("Ran 2 tools · 1 edit");
+    expect(group.props.accessibilityState).toEqual({ expanded: false });
+    expect(screen.queryByText("Bash(npm test)")).toBeNull();
+    await fireEvent.press(group);
+    expect(screen.getByText("Bash(npm test)")).toBeTruthy();
+  });
+
+  it("says Thinking… for a live thinking row", async () => {
+    await render(<TranscriptRowView provider="claude" row={{ kind: "thinking", seq: 1, text: "x" }} name={name} live />);
+    expect(screen.getByLabelText("Thinking…")).toBeTruthy();
   });
 
   it("collapses tool output to the preview and expands the rest on tap", async () => {

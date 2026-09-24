@@ -9,11 +9,19 @@ export type LocalSessionProvider = "claude" | "codex";
 export type TranscriptRow =
   | { kind: "prompt"; seq: number; text: string; who: string | null; ts?: string }
   | { kind: "prose"; seq: number; text: string; final: boolean }
-  | { kind: "thinking"; seq: number; text: string }
+  /** `ts` is when thinking began; `ms` is how long it ran, once a later event with a timestamp closes it. */
+  | { kind: "thinking"; seq: number; text: string; ts?: string; ms?: number }
   | { kind: "tool"; seq: number; call: LocalSessionEvent; result?: LocalSessionEvent }
   | { kind: "notice"; seq: number; text: string }
   | { kind: "lifecycle"; seq: number; lifecycle: NonNullable<LocalSessionEvent["lifecycle"]>; text: string };
 export type ToolTranscriptRow = Extract<TranscriptRow, { kind: "tool" }>;
+export type ThinkingTranscriptRow = Extract<TranscriptRow, { kind: "thinking" }>;
+/** A folded run of tool calls (and the thinking between them), drawn as one summary line. */
+export type ToolGroupItem = { kind: "tools"; seq: number; rows: (ToolTranscriptRow | ThinkingTranscriptRow)[]; summary: string };
+export type TranscriptItem = TranscriptRow | ToolGroupItem;
+
+/** Tool output and diffs show this many lines until the reader expands them. */
+export const PREVIEW_LINES = 3;
 
 /** Each TUI's own glyphs; renderers draw exactly these. */
 export const GLYPH = {
@@ -34,6 +42,11 @@ export function buildRows(events: readonly LocalSessionEvent[]): TranscriptRow[]
   let proseItem: string | undefined;
   for (const e of events) {
     const last = rows.at(-1);
+    // The next timestamped event closes a thinking block — that gap is how long it thought.
+    if (last?.kind === "thinking" && e.kind !== "thinking" && last.ts && e.ts) {
+      const ms = Date.parse(e.ts) - Date.parse(last.ts);
+      if (Number.isFinite(ms) && ms >= 0) last.ms = ms;
+    }
     if (e.kind === "text" && e.role === "system") {
       // Platform notices (an event the desktop could not mirror) read as meta, not prose.
       rows.push({ kind: "notice", seq: e.seq, text: e.text });
@@ -49,7 +62,7 @@ export function buildRows(events: readonly LocalSessionEvent[]): TranscriptRow[]
       else { rows.push({ kind: "prose", seq: e.seq, text: e.text, final: false }); proseItem = e.itemId; }
     } else if (e.kind === "thinking") {
       if (last?.kind === "thinking") last.text = [last.text, e.text].filter(Boolean).join("\n");
-      else rows.push({ kind: "thinking", seq: e.seq, text: e.text });
+      else rows.push({ kind: "thinking", seq: e.seq, text: e.text, ts: e.ts });
       proseItem = undefined;
     } else if (e.kind === "tool" && e.role === "tool") {
       const call = [...rows].reverse().find((r): r is Extract<TranscriptRow, { kind: "tool" }> => r.kind === "tool" && !!e.parentId && r.call.itemId === e.parentId);
@@ -68,6 +81,51 @@ export function buildRows(events: readonly LocalSessionEvent[]): TranscriptRow[]
     }
   }
   return rows;
+}
+
+const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", "FileChange"]);
+
+/** "Ran 7 tools · 2 edits · 1 failed" — the one line a folded run collapses to. */
+export function toolGroupSummary(rows: readonly TranscriptRow[]): string {
+  const tools = rows.filter((r): r is ToolTranscriptRow => r.kind === "tool");
+  const edits = tools.filter(r => EDIT_TOOLS.has(r.call.tool?.name ?? "")).length;
+  const failed = tools.filter(r => (r.result?.tool?.status ?? r.call.tool?.status) === "error").length;
+  const n = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+  return [`Ran ${n(tools.length, "tool")}`, edits ? n(edits, "edit") : "", failed ? `${failed} failed` : ""].filter(Boolean).join(" · ");
+}
+
+/**
+ * Folds each run of two or more consecutive tool calls into one summary item,
+ * so a turn reads as prompt → "Ran 7 tools" → answer. Thinking that sits
+ * between two tools of a run folds with it; thinking before the first or after
+ * the last stays outside. Prompts, prose, notices and lifecycle lines are
+ * never folded. While `live` (the turn is still running), a tool that is the
+ * last row stays unfolded so its progress stays visible.
+ */
+export function groupRows(rows: readonly TranscriptRow[], live: boolean): TranscriptItem[] {
+  const out: TranscriptItem[] = [];
+  const liveTool = live && rows.at(-1)?.kind === "tool" ? rows.length - 1 : -1;
+  let i = 0;
+  while (i < rows.length) {
+    if (rows[i].kind !== "tool" || i === liveTool) { out.push(rows[i]); i++; continue; }
+    // Extend over tools and thinking, then trim back to the last tool.
+    let end = i;
+    for (let j = i; j < rows.length && j !== liveTool && (rows[j].kind === "tool" || rows[j].kind === "thinking"); j++) {
+      if (rows[j].kind === "tool") end = j;
+    }
+    const run = rows.slice(i, end + 1) as (ToolTranscriptRow | ThinkingTranscriptRow)[];
+    if (run.filter(r => r.kind === "tool").length < 2) out.push(...run);
+    else out.push({ kind: "tools", seq: run[0].seq, rows: run, summary: toolGroupSummary(run) });
+    i = end + 1;
+  }
+  return out;
+}
+
+/** The one collapsed line a thinking block shows: live, timed, or neither. */
+export function thinkingLabel(row: ThinkingTranscriptRow, live: boolean): string {
+  if (live) return "Thinking…";
+  const took = row.ms != null ? formatMs(String(row.ms)) : "";
+  return took && took !== "0s" ? `Thought for ${took}` : "Thought";
 }
 
 export function toolHeader(provider: LocalSessionProvider, call: LocalSessionEvent): string {
@@ -152,10 +210,14 @@ export function toolRowView(row: ToolTranscriptRow): ToolRowView {
   // tool_result rows and Codex CommandExecution); it's absent when `text` is
   // a label (McpToolCall, FileChange, SubAgentActivity, ...) — so a label
   // never gets shown as if it were output.
-  const preview = stripAnsi(row.result?.text ?? (row.call.tool?.lines != null ? row.call.text : ""));
-  const full = stripAnsi(fullOutput(resultPayload));
-  const shownLines = preview ? preview.split("\n").length : 0;
-  const total = row.result?.tool?.lines ?? row.call.tool?.lines;
+  const rawPreview = stripAnsi(row.result?.text ?? (row.call.tool?.lines != null ? row.call.text : ""));
+  // Clamp the preview; a clamped preview with no richer output expands into itself.
+  const rawLines = rawPreview ? rawPreview.split("\n") : [];
+  const clamped = rawLines.length > PREVIEW_LINES;
+  const preview = rawLines.slice(0, PREVIEW_LINES).join("\n");
+  const full = stripAnsi(fullOutput(resultPayload)) || (clamped ? rawPreview : "");
+  const shownLines = preview ? Math.min(rawLines.length, PREVIEW_LINES) : 0;
+  const total = row.result?.tool?.lines ?? row.call.tool?.lines ?? (clamped ? rawLines.length : undefined);
   const more = full && total != null ? Math.max(0, total - shownLines) : 0;
   const showOutput = more === 0 && full.length > preview.length;
   const truncated = (row.result ?? row.call).truncated;

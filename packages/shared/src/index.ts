@@ -120,18 +120,25 @@ export {
 export type { ActivityClient, ActivityPlatform, UseActivityOptions, UseActivityResult } from "./messaging/useActivity";
 export {
   GLYPH,
+  PREVIEW_LINES,
   buildRows,
   diffLines,
   fullOutput,
   lifecycleLabel,
   stripAnsi,
+  groupRows,
+  thinkingLabel,
+  toolGroupSummary,
   toolHeader,
   toolRowView,
 } from "./messaging/localSessionTranscript";
 export type {
   LocalSessionProvider,
+  ThinkingTranscriptRow,
+  ToolGroupItem,
   ToolRowView,
   ToolTranscriptRow,
+  TranscriptItem,
   TranscriptRow,
 } from "./messaging/localSessionTranscript";
 export { accessLost, useLocalSessionHistory } from "./messaging/useLocalSessionHistory";

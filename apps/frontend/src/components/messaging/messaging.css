@@ -130,20 +130,32 @@
 .local-session-composer { max-height: 45%; overflow: auto; }
 .local-session-composer label { overflow-wrap: anywhere; }
 .local-session-composer textarea { flex-shrink: 0; }
-.native-session { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .875rem; line-height: 1.45; padding: 4px 0 12px; }
-.native-session-row { padding: 4px 0; overflow-wrap: anywhere; }
+/* Prose reads in the UI sans; mono is only for glyphs, tool headers, output and diffs. */
+.native-session { font-size: .9375rem; line-height: 1.55; padding: 4px 0 12px; }
+.native-session-row { padding: 6px 0; overflow-wrap: anywhere; }
 .native-session-line { display: flex; gap: 8px; align-items: flex-start; }
-.native-session-glyph { flex: 0 0 1ch; color: var(--muted-foreground); }
+.native-session-glyph { flex: 0 0 1ch; color: var(--muted-foreground); font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; }
+.native-session-tool { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .8125rem; }
 .native-session-row[data-status="done"] > .native-session-line > .native-session-glyph { color: var(--ok); }
 .native-session-row[data-status="error"] > .native-session-line > .native-session-glyph, .native-session-error { color: var(--err); }
-.native-session-prompt { background: var(--accent); border-radius: 4px; padding: 6px 8px; margin: 8px 0 4px; }
+.native-session-prose > * + * { margin-top: .6em; }
+.native-session-prompt { background: var(--muted); border-left: 2px solid var(--border); border-radius: 0 4px 4px 0; padding: 8px 10px; margin: 20px 0 6px; }
+.native-session-prompt:first-child { margin-top: 0; }
 .native-session-prompt-text { white-space: pre-wrap; }
 .native-session-meta { padding-left: calc(1ch + 8px); font-size: .75rem; color: var(--muted-foreground); }
-.native-session-output { margin: 2px 0 0 calc(1ch + 8px); padding: 0; white-space: pre-wrap; color: var(--muted-foreground); font: inherit; max-height: 60vh; overflow: auto; }
-.native-session-more { margin-left: calc(2ch + 16px); font: inherit; font-size: .75rem; color: var(--muted-foreground); cursor: pointer; text-decoration: underline dotted; }
+.native-session-output { margin: 2px 0 0 calc(1ch + 8px); padding: 0; white-space: pre-wrap; color: var(--muted-foreground); font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .8125rem; line-height: 1.45; max-height: 20rem; overflow: auto; }
+.native-session-more { margin-left: calc(1ch + 8px); font-size: .75rem; color: var(--muted-foreground); cursor: pointer; text-decoration: underline dotted; }
+.native-session-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0; font-size: .8125rem; color: var(--muted-foreground); cursor: pointer; text-align: left; }
+.native-session-toggle:hover { color: var(--foreground); }
+.native-session-chevron { display: inline-block; transition: transform .15s ease; }
+.native-session-toggle[aria-expanded="true"] .native-session-chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .native-session-chevron { transition: none; } }
+.native-session-group { padding: 6px 0; }
+.native-session-group-rows { margin: 4px 0 0 calc(1ch + 8px); padding-left: 8px; border-left: 1px solid var(--border); }
 .native-session-diff span[data-diff="add"] { color: var(--ok); }
 .native-session-diff span[data-diff="del"] { color: var(--err); }
-.native-session-thinking, .native-session-thought { color: var(--muted-foreground); font-style: italic; }
+.native-session-thinking, .native-session-thought { color: var(--muted-foreground); }
+.native-session-thought { margin: 4px 0 0 calc(1ch + 8px); font-style: italic; }
 .native-session-codex-label { font-weight: 600; margin-top: 8px; }
 .native-session-working { color: var(--muted-foreground); }
 .native-session-muted { color: var(--muted-foreground); }

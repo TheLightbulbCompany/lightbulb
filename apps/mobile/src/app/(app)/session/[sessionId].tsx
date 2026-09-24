@@ -1,8 +1,8 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, sessionLabel, sessionStatus, sessionViewKey, unavailableReason, useLocalSessionHistory, useSessionCommand, useWorkspaceSessions,
-  type LocalSession, type SessionSource, type TranscriptRow,
+  ApiError, buildRows, groupRows, sessionLabel, sessionStatus, sessionViewKey, unavailableReason, useLocalSessionHistory, useSessionCommand, useWorkspaceSessions,
+  type LocalSession, type SessionSource, type TranscriptItem,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
@@ -182,11 +182,11 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
   const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
   const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText("") });
-  const rows = useMemo(() => buildRows(history.events), [history.events]);
   const last = history.events.at(-1);
   const turnOpen = busy && !history.hasNewer && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
+  const rows = useMemo(() => groupRows(buildRows(history.events), turnOpen), [history.events, turnOpen]);
 
-  const listRef = useRef<FlatList<TranscriptRow>>(null);
+  const listRef = useRef<FlatList<TranscriptItem>>(null);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
   const onScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -258,7 +258,7 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
             )}
           </View>
         }
-        renderItem={({ item }) => <TranscriptRowView provider={session.provider} row={item} name={name} />}
+        renderItem={({ item, index }) => <TranscriptRowView provider={session.provider} row={item} name={name} live={turnOpen && index === rows.length - 1} />}
       />
       {!atBottom && !history.hasNewer && (
         <Pressable

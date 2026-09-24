@@ -136,3 +136,24 @@ test('withholds a partial SSE prefix until its generation ID is durable', async 
     onGenerationId: async () => { order.push('persist'); }, write: () => { order.push('write'); return true; }, end: () => {} });
   assert.deepEqual(order, ['persist', 'write', 'write']);
 });
+
+test('a non-200 upstream body reaches end() (bounded) while the client still gets the generic error', async () => {
+  const live = '{"error":{"message":"Key limit exceeded (daily limit).","code":403}}';
+  const written = [];
+  let ended;
+  const requestImpl = (_url, _options, onResponse) => {
+    const req = new EventEmitter();
+    req.end = () => {
+      const upstream = new EventEmitter();
+      upstream.statusCode = 403;
+      upstream.headers = { 'content-type': 'application/json' };
+      onResponse(upstream);
+      queueMicrotask(() => { upstream.emit('data', Buffer.from(live)); upstream.emit('end'); });
+    };
+    return req;
+  };
+  const result = await forward({ body: {}, key: 'sk-or-secret', requestImpl, writeHead: () => {}, write: chunk => written.push(chunk), end: body => { ended = body; } });
+  assert.equal(ended, live);
+  assert.equal(JSON.parse(Buffer.concat(written).toString()).error.message, 'Upstream returned 403');
+  assert.equal(result.preGeneration, true);
+});

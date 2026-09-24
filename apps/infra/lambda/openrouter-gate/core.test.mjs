@@ -116,6 +116,19 @@ test('an upstream 402 for a capped owner stamps the capped day and returns the d
   assert.equal(capHit.tier, 'base');
   assert.ok(f.calls.updates.some(u => u.TableName === 'requests' && u.ExpressionAttributeValues[':released']));
 });
+test('OpenRouter\'s live per-key limit shape (403 "Key limit exceeded") is the daily cap', async () => {
+  const live = '{"error":{"message":"Key limit exceeded (daily limit). Manage it using https://openrouter.ai/settings/keys","code":403}}';
+  const f = await runDs(cappedOwners.trial, dsBody(), f => { f.deps.forwardImpl = async p => { p.writeHead(403, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":{"message":"Upstream returned 403"}}')); p.end(live); return { status: 403, preGeneration: true }; }; });
+  assert.equal(f.calls.head.status, 429);
+  assert.equal(JSON.parse(Buffer.concat(f.calls.chunks).toString()).error.code, 'trial_daily_cap');
+  assert.equal(f.calls.updates.find(u => u.TableName === 'billing').ExpressionAttributeValues[':day'].S, today());
+});
+test('any other capped 403 (e.g. a disabled key) passes through unstamped', async () => {
+  const f = await runDs(cappedOwners.trial, dsBody(), f => { f.deps.forwardImpl = async p => { p.writeHead(403, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":{"message":"Upstream returned 403"}}')); p.end('{"error":{"message":"Key is disabled","code":403}}'); return { status: 403, preGeneration: true }; }; });
+  assert.equal(f.calls.head.status, 403);
+  assert.equal(JSON.parse(Buffer.concat(f.calls.chunks).toString()).error.message, 'Upstream returned 403');
+  assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
+});
 test('a capped owner already stamped today is refused before upstream', async () => {
   const f = await runDs({ ...cappedOwners.trial, cappedDay: today() });
   assert.equal(f.calls.errors[0].status, 429);

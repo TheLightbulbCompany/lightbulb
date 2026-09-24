@@ -302,9 +302,14 @@ def _filter_request_headers(req: Request) -> dict[str, str]:
 # fork's create/hire handlers call assertKnownAdapterType, which only checks the
 # adapter is *registered* (`process` is) — NOT that it is allowlisted. (The
 # invite/join paths DO enforce openclaw_gateway upstream; we still filter them
-# defensively.) Follow-ups this PR does NOT cover, tracked in the audit doc:
-# the openclaw_gateway URL SSRF (§3.1, needs host-network egress rules) and the
-# §4 adapter-plugin-store pre-disable.
+# defensively.) The audit doc's §3.1 SSRF (a browser-supplied adapterConfig.url
+# reaching Paperclip's outbound gateway connect, regardless of adapterType) is
+# now closed below: no legitimate browser write ever needs to carry
+# adapterConfig at all, since the backend mints it server-side, pinned to our
+# own facade, via a direct Paperclip admin-API call that never touches this
+# proxy — so it is rejected outright rather than URL-validated. Still open:
+# §4 adapter-plugin-store pre-disable, and §3.2-3.5's other routes (issue
+# patches, project workspace commands) — out of scope for this fix.
 # ---------------------------------------------------------------------------
 
 # Only the deployed remote runtime adapter is exposed; local/process/HTTP
@@ -388,6 +393,24 @@ def _str_or_none(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _contains_adapter_config(obj: object) -> bool:
+    """True iff ``adapterConfig`` appears as a key ANYWHERE in ``obj``, at any
+    nesting depth -- not just at the top level.
+
+    Recursive for the same reason ``core.services.agent_redaction.strip_agent_secrets``
+    is: a bare top-level check misses ``runtimeConfig.modelProfiles.<name>.adapterConfig``,
+    a shape the audit doc's own route table (§2, ``POST .../agents`` /
+    ``.../agent-hires`` / ``PATCH /api/agents/:id``) documents Paperclip actually
+    accepts on exactly the routes this filter guards. A single-level ``"adapterConfig"
+    in data`` check would let that nested form straight through.
+    """
+    if isinstance(obj, dict):
+        return "adapterConfig" in obj or any(_contains_adapter_config(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_contains_adapter_config(item) for item in obj)
+    return False
+
+
 def _assert_paperclip_request_allowed(
     method: str,
     path: str,
@@ -468,6 +491,25 @@ def _assert_paperclip_request_allowed(
     # Any write naming a non-allowlisted type at the top level.
     if adapter_type is not None and adapter_type not in _ALLOWED_ADAPTER_TYPES:
         raise HTTPException(status_code=403, detail="Adapter not permitted")
+
+    # SSRF gap (audit doc §3.1): checking adapterType is "hermes_gateway" says
+    # nothing about adapterConfig.apiBaseUrl -- the field Paperclip's gateway
+    # adapter actually connects out to. A browser-supplied adapterConfig on an
+    # otherwise-allowed agent is how an arbitrary outbound URL (or a header
+    # blob riding along on it, §3.2) gets planted -- including on a PATCH that
+    # edits ONLY adapterConfig and never re-sends adapterType, so this check
+    # cannot be conditioned on adapter_type being present in THIS request. No
+    # legitimate write through THIS proxy ever needs to carry adapterConfig at
+    # all: the backend mints it server-side (build_hermes_gateway_adapter_config,
+    # always pinned to our own /api/v1/internal/paperclip/hermes/{owner} facade)
+    # via a direct Paperclip admin-API call, never through here. Reject the
+    # whole key outright on every write rather than trying to validate a URL
+    # shape or scope this to specific routes -- and check for it RECURSIVELY
+    # (_contains_adapter_config), not just at the top level: the audit doc's
+    # own route table for these exact endpoints documents Paperclip also
+    # accepting it nested, at runtimeConfig.modelProfiles.<name>.adapterConfig.
+    if data and _contains_adapter_config(data):
+        raise HTTPException(status_code=403, detail="adapterConfig not permitted")
 
     if data is None:
         return

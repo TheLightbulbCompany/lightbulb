@@ -73,6 +73,70 @@ def test_direct_agent_hire_with_gateway_adapter_is_blocked():
     assert _blocked("POST", "api/companies/c1/agent-hires", body)
 
 
+# ---------------------------------------------------------------
+# The SSRF — a browser-supplied adapterConfig on an otherwise-allowed
+# hermes_gateway agent (audit doc §3.1)
+# ---------------------------------------------------------------
+
+
+def test_gateway_create_with_browser_adapter_config_is_blocked():
+    """adapterType alone being allowlisted is not enough: adapterConfig.apiBaseUrl
+    is what Paperclip's gateway adapter actually connects out to. NOTE: create/
+    agent-hires are ALSO wholesale-blocked already (_BLOCKED_ROUTES, Isol8 owns
+    agent-create) -- this test would pass even with the adapterConfig check
+    deleted. It stays as a smoke test for the create path specifically; the
+    PATCH tests below are what actually exercise the new check, since PATCH
+    /api/agents/:id is not in _BLOCKED_ROUTES."""
+    body = json.dumps(
+        {"name": "x", "adapterType": "hermes_gateway", "adapterConfig": {"apiBaseUrl": "http://169.254.169.254/"}}
+    ).encode()
+    assert _blocked("POST", "api/companies/c1/agents", body)
+
+
+def test_gateway_hire_with_browser_adapter_config_is_blocked():
+    # Same caveat as above: agent-hires is wholesale-blocked regardless.
+    body = json.dumps(
+        {"adapterType": "hermes_gateway", "adapterConfig": {"apiBaseUrl": "https://attacker.example/"}}
+    ).encode()
+    assert _blocked("POST", "api/companies/c1/agent-hires", body)
+
+
+def test_patch_with_only_adapter_config_is_blocked():
+    # No adapterType in THIS request -- the agent's stored type carries over.
+    # The check must not be conditioned on adapterType also being present.
+    body = json.dumps({"adapterConfig": {"apiBaseUrl": "https://attacker.example/", "headers": {"x": "y"}}}).encode()
+    assert _blocked("PATCH", "api/agents/a1", body)
+
+
+def test_patch_with_nested_adapter_config_is_blocked():
+    # The exact shape the audit doc's own route table (§2) documents Paperclip
+    # accepting on this route: adapterConfig nested under runtimeConfig.model
+    # Profiles.<name>, not at the top level. A single-level "adapterConfig in
+    # data" check misses this entirely -- this is the real regression-catcher.
+    body = json.dumps(
+        {
+            "runtimeConfig": {
+                "modelProfiles": {
+                    "cheap": {
+                        "adapterConfig": {
+                            "apiBaseUrl": "http://169.254.169.254/latest/meta-data/",
+                            "headers": {"x": "y"},
+                        }
+                    }
+                }
+            }
+        }
+    ).encode()
+    assert _blocked("PATCH", "api/agents/a1", body)
+
+
+def test_legitimate_agent_edit_without_adapter_config_passes():
+    """The stock UI's normal edits (name, instructions, model, ...) never
+    touch adapterConfig and must keep working."""
+    body = json.dumps({"name": "Support Bot", "instructions": "Be helpful.", "model": "sonnet"}).encode()
+    assert not _blocked("PATCH", "api/agents/a1", body)
+
+
 def test_present_but_non_gateway_adapter_blocked_on_any_write_route():
     # An update route that never appears in the create list is still caught by
     # the "present ⇒ must be allowlisted" rule.

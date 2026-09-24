@@ -173,7 +173,31 @@ def paperclip_run_aborted(run_id: str) -> bool:
         return bool((RUNS.get(run_id) or {}).get("aborted"))
 
 
+#: Cap on the output a durable record carries (the in-memory entry is uncapped). Far above any
+#: real final reply; it only stops a runaway reply turning one record into a large object.
+RUN_RECORD_OUTPUT_CAP = 256 * 1024
+
+
 def finish_paperclip_run(run_id: str, outcome: str, *, output: str, error: str | None, usage: dict) -> None:
+    """Record the terminal result durably FIRST, then flip the in-memory entry. In that order,
+    any poll that has seen ``ended`` can be answered by a later process too: the microVM can be
+    stopped the instant the turn ends (a roll, an idle park), before the end-of-turn save."""
+    with _RUNS_LOCK:
+        entry = RUNS.get(run_id)
+        identity = dict((entry or {}).get("identity") or {})
+    if identity:
+        try:
+            sync.put_paperclip_run_record(identity["agentId"], run_id, {
+                "identity": identity,
+                "outcome": outcome,
+                "output": output[:RUN_RECORD_OUTPUT_CAP],
+                "error": error,
+                "usage": dict(usage),
+                "finishedAt": now(),
+            })
+        except Exception:  # noqa: BLE001 -- the turn's own result must not depend on it
+            log.error("paperclip run record write FAILED run=%s: a poll after this process "
+                      "dies will report runtime_lost", run_id, exc_info=True)
     with _RUNS_LOCK:
         entry = RUNS.get(run_id)
         if entry is not None:
@@ -191,9 +215,15 @@ def finish_paperclip_run(run_id: str, outcome: str, *, output: str, error: str |
 def paperclip_run_status(run_id: str, identity: dict) -> dict | None:
     with _RUNS_LOCK:
         entry = RUNS.get(run_id)
-        if entry is None or not _paperclip_identity_matches(entry, identity):
+        snapshot = dict(entry) if entry is not None else None
+    if snapshot is None:
+        # A fresh process: the run may have finished on one that is gone (finish_paperclip_run).
+        record = sync.get_paperclip_run_record(identity["agentId"], run_id)
+        if record is None:
             return None
-        snapshot = dict(entry)
+        snapshot = {**record, "kind": "paperclip", "state": "ended"}
+    if not _paperclip_identity_matches(snapshot, identity):
+        return None
     status = snapshot["state"]
     if status == "ended":
         outcome = snapshot.get("outcome")

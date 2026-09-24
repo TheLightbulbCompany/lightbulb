@@ -209,7 +209,7 @@ describe("PaperclipStack — Fargate service shape", () => {
           User: "1000:1000",
           Command: [
             Match.stringLikeRegexp(
-              'set -eu && : "\\$\\{PAPERCLIP_SECRETS_MASTER_KEY:\\?.*\\}" && PGPASSWORD_ENC=\\$\\(node -e .*encodeURIComponent\\(process\\.env\\.PGPASSWORD\\).*\\) && export DATABASE_URL="postgres://\\$\\{PGUSER\\}:\\$\\{PGPASSWORD_ENC\\}@\\$\\{PGHOST\\}:\\$\\{PGPORT\\}/\\$\\{PGDATABASE\\}".*exec node ',
+              'set -eu && : "\\$\\{PAPERCLIP_SECRETS_MASTER_KEY:\\?.*\\}" && : "\\$\\{PAPERCLIP_DECISION_SIGNING_SECRET:\\?.*\\}" && PGPASSWORD_ENC=\\$\\(node -e .*encodeURIComponent\\(process\\.env\\.PGPASSWORD\\).*\\) && export DATABASE_URL="postgres://\\$\\{PGUSER\\}:\\$\\{PGPASSWORD_ENC\\}@\\$\\{PGHOST\\}:\\$\\{PGPORT\\}/\\$\\{PGDATABASE\\}".*exec node ',
             ),
           ],
         }),
@@ -366,6 +366,24 @@ describe("PaperclipStack — Fargate service shape", () => {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Secrets: Match.arrayWith([Match.objectLike({ Name: "PAPERCLIP_SECRETS_MASTER_KEY" })]),
+        }),
+      ]),
+    });
+  });
+
+  test("server gets a stable decision-signing secret and no local DB backups", () => {
+    // Unset, Paperclip generates the decision-spec HMAC key on the ephemeral disk, so every
+    // task replacement invalidates every pending decision's signature.
+    template.hasResource("AWS::SecretsManager::Secret", {
+      DeletionPolicy: "Retain",
+      Properties: Match.objectLike({ Name: "lightbulb/dev/paperclip_decision_signing_secret" }),
+    });
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "lightbulb-dev-paperclip-server",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Secrets: Match.arrayWith([Match.objectLike({ Name: "PAPERCLIP_DECISION_SIGNING_SECRET" })]),
+          Environment: Match.arrayWith([{ Name: "PAPERCLIP_DB_BACKUP_ENABLED", Value: "false" }]),
         }),
       ]),
     });

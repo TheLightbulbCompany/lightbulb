@@ -550,3 +550,15 @@ async def test_run_completed_metric_deduped_on_owner_run_id():
                 await task
     run_completed = [c for c in metric.call_args_list if c.args and c.args[0] == "run.completed"]
     assert len(run_completed) == 1
+
+
+async def test_failed_timer_lookup_keeps_the_paperclip_other_category():
+    admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(side_effect=RuntimeError("paperclip down"))
+    with patch.multiple(
+        run_analytics,
+        PaperclipAdminClient=MagicMock(return_value=admin),
+        get_admin_session_cookie=AsyncMock(return_value="pc.sid=abc"),
+    ):
+        props = (await _emit(_RUN_PARSED, payload=_payload(run_id="hb-fail")))["properties"]
+    assert (props["run_source"], props["enrichment_failed"]) == ("paperclip_other", False)

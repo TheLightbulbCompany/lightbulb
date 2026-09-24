@@ -152,10 +152,10 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
         summary = await disarm_owner_nightly_automation(owner_id)
         put_metric("nightly_ceo.disarm", dimensions={"trigger": trigger, "outcome": "ran"})
         logger.info(
-            "entitlement.teardown nightly disarm owner=%s trigger=%s heartbeats_disabled=%d issues_cancelled=%d",
+            "entitlement.teardown nightly disarm owner=%s trigger=%s heartbeats_checked=%d issues_cancelled=%d",
             owner_id,
             trigger,
-            summary["heartbeats_disabled"],
+            summary["heartbeats_checked"],
             summary["issues_cancelled"],
         )
     except Exception:

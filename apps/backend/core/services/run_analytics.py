@@ -173,7 +173,7 @@ def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase:
         props["run_source"] = "paperclip_other"
         # An issue-less Paperclip run is keyed ``run:<paperclip run id>`` -- a timer
         # heartbeat wake is one; the join reads the run's invocationSource.
-        needs_enrichment = bool(run_id and parsed.get("run_id"))
+        needs_enrichment = bool(parsed.get("run_id"))
     else:
         props["run_source"] = "unknown"
 
@@ -193,13 +193,17 @@ async def _enrich_and_capture(*, owner_id: str, props: dict, needs_enrichment: b
                 props.update(await asyncio.wait_for(enrich, timeout=_ENRICH_TIMEOUT_S))
             except Exception:
                 logger.warning(
-                    "run_analytics: paperclip enrichment failed for owner %s issue %s — emitting degraded",
+                    "run_analytics: paperclip enrichment failed for owner %s issue %s run %s",
                     owner_id,
                     props.get("issue_id"),
+                    props.get("run_id"),
                     exc_info=True,
                 )
-                props["run_source"] = "unknown"
-                props["enrichment_failed"] = True
+                # An issue-less run keeps its paperclip_other category; only the
+                # issue join degrades the event.
+                if props.get("issue_id"):
+                    props["run_source"] = "unknown"
+                    props["enrichment_failed"] = True
         if props.get("is_nightly_ceo"):
             # The only per-run signal that the retention loop actually fired and how it ended.
             put_metric("nightly_ceo.run", dimensions={"outcome": props["outcome"]})

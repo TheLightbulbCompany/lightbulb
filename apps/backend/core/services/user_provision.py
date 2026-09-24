@@ -238,8 +238,9 @@ async def arm_nightly_ceo(owner_id: str) -> str:
     that runs even on an empty inbox, and re-applies ``SPECIALIST_HEARTBEAT`` to
     the starter specialists (teardown's disarm turns theirs off too). No
     ``maxDailyRuns``: Paperclip counts every run against it, assignment wakes
-    included, so it would silence chat-driven work. An owner opt-out
-    (``nightly_ceo_opted_out``) leaves the CEO alone.
+    included, so it would silence chat-driven work. It converges both ways: a
+    not-entitled owner gets every starter heartbeat turned off, and an owner
+    opt-out (``nightly_ceo_opted_out``) turns the CEO's off.
 
     Idempotent without a claim: each agent is a read-modify-write that PATCHes
     only when the heartbeat differs. Returns the outcome and emits it as the
@@ -251,35 +252,43 @@ async def arm_nightly_ceo(owner_id: str) -> str:
     try:
         # Consistent: a reconcile runs right after the billing write it follows.
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
-        if not should_arm_nightly_ceo(account):
-            return _arm_status("not_entitled")
+        entitled = should_arm_nightly_ceo(account)
 
         provisioning = await build_paperclip_provisioning()
         try:
-            # Confirm a COMMITTED active company before arming: we only ever arm
-            # a company provision_org actually finished (status="active").
+            # Confirm a COMMITTED active company before touching it: we only ever
+            # arm a company provision_org actually finished (status="active").
             row = await provisioning._repo.resolve_owner_row(owner_id)
-            # ``row.org_id != owner_id``: never arm a company that belongs to a
+            # ``row.org_id != owner_id``: never touch a company that belongs to a
             # different workspace under this workspace's billing account.
             if row is None or row.status != "active" or row.org_id != owner_id:
-                return _arm_status("company_not_active")
+                return _arm_status("company_not_active" if entitled else "not_entitled")
             starters = row.starter_agent_ids or {}
             ceo_id = starters.get("ceo") or (row.seeded_agent_ids or [None])[0]
             if not ceo_id:
-                return _arm_status("friday_not_seeded")
+                return _arm_status("friday_not_seeded" if entitled else "not_entitled")
+            specialists = [agent_id for key, agent_id in starters.items() if key != "ceo" and agent_id]
             admin = provisioning._admin
             admin_cookie = await get_admin_session_cookie(admin._http)
-            for key, agent_id in starters.items():
-                if key != "ceo" and agent_id:
-                    await admin.set_agent_heartbeat(
-                        session_cookie=admin_cookie, agent_id=agent_id, heartbeat=SPECIALIST_HEARTBEAT
-                    )
-            if account.get("nightly_ceo_opted_out"):
+
+            async def put(agent_id: str, heartbeat: dict) -> None:
+                await admin.set_agent_heartbeat(session_cookie=admin_cookie, agent_id=agent_id, heartbeat=heartbeat)
+
+            # Converge, never only enable: a de-entitled owner (expired trial,
+            # past_due, canceled) must stop waking, or every timer cold-starts a
+            # microVM the gate then refuses.
+            if not entitled:
+                for agent_id in (ceo_id, *specialists):
+                    await put(agent_id, {"enabled": False})
+                return _arm_status("not_entitled")
+            for agent_id in specialists:
+                await put(agent_id, SPECIALIST_HEARTBEAT)
+            if (account or {}).get("nightly_ceo_opted_out"):
+                await put(ceo_id, {"enabled": False})
                 return _arm_status("opted_out")
-            await admin.set_agent_heartbeat(
-                session_cookie=admin_cookie,
-                agent_id=ceo_id,
-                heartbeat={
+            await put(
+                ceo_id,
+                {
                     "enabled": True,
                     "intervalSec": ceo_heartbeat_interval_sec(account),
                     "wakeOnDemand": True,

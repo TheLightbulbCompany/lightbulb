@@ -169,7 +169,7 @@ async def disarm_owner_nightly_automation(owner_id: str) -> dict[str, int]:
     ws = await repo.resolve_owner_row(owner_id)
     company_id = (ws.company_id or None) if ws is not None else None
     if company_id is None:
-        return {"heartbeats_disabled": 0, "issues_cancelled": 0}
+        return {"heartbeats_checked": 0, "issues_cancelled": 0}
     agent_ids = [a for a in (ws.starter_agent_ids or {}).values() if a] or list(ws.seeded_agent_ids or [])[:1]
 
     http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
@@ -216,13 +216,13 @@ async def disarm_owner_nightly_automation(owner_id: str) -> dict[str, int]:
             issues_cancelled += 1
 
         logger.info(
-            "paperclip nightly disarm owner=%s company=%s heartbeats_disabled=%d issues_cancelled=%d",
+            "paperclip nightly disarm owner=%s company=%s heartbeats_checked=%d issues_cancelled=%d",
             owner_id,
             company_id,
             len(agent_ids),
             issues_cancelled,
         )
-        return {"heartbeats_disabled": len(agent_ids), "issues_cancelled": issues_cancelled}
+        return {"heartbeats_checked": len(agent_ids), "issues_cancelled": issues_cancelled}
     finally:
         await http.aclose()
 

@@ -59,7 +59,7 @@ async def test_disables_every_starter_heartbeat_and_cancels_in_progress_issues()
     admin = _admin(issue_pages=[[{"id": "exec-issue", "status": "in_progress"}, {"id": "w", "status": "in_progress"}]])
     result = await _disarm(admin)
 
-    assert result == {"heartbeats_disabled": 2, "issues_cancelled": 2}
+    assert result == {"heartbeats_checked": 2, "issues_cancelled": 2}
     assert [(c.kwargs["agent_id"], c.kwargs["heartbeat"]) for c in admin.set_agent_heartbeat.await_args_list] == [
         ("ceo1", {"enabled": False}),
         ("eng1", {"enabled": False}),
@@ -72,7 +72,7 @@ async def test_disables_every_starter_heartbeat_and_cancels_in_progress_issues()
 async def test_legacy_roster_disables_the_first_seeded_agent():
     admin = _admin(issue_pages=[[]])
     result = await _disarm(admin, _ws(seeded_agent_ids=["friday1", "atlas1"]))
-    assert result == {"heartbeats_disabled": 1, "issues_cancelled": 0}
+    assert result == {"heartbeats_checked": 1, "issues_cancelled": 0}
     admin.set_agent_heartbeat.assert_awaited_once_with(
         session_cookie="cookie", agent_id="friday1", heartbeat={"enabled": False}
     )
@@ -101,7 +101,7 @@ async def test_no_company_is_a_no_op():
     repo.resolve_owner_row = AsyncMock(return_value=None)
     with patch.object(lifecycle, "PaperclipRepo", return_value=repo):
         result = await lifecycle.disarm_owner_nightly_automation("owner")
-    assert result == {"heartbeats_disabled": 0, "issues_cancelled": 0}
+    assert result == {"heartbeats_checked": 0, "issues_cancelled": 0}
 
 
 @pytest.mark.asyncio

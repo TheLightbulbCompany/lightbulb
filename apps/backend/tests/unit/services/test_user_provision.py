@@ -1189,28 +1189,46 @@ async def test_rearm_follows_the_new_billing_no_cache():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "account",
-    [None, {"owner_id": "org_p", "subscription_status": "trial_local", "trial_end": int(time.time()) - 86400}],
+    [
+        None,
+        {"owner_id": "org_p", "subscription_status": "trial_local", "trial_end": int(time.time()) - 86400},
+        {"owner_id": "org_p", "subscription_status": "past_due"},
+        {"owner_id": "org_p", "subscription_status": "canceled"},
+    ],
 )
-async def test_arm_not_entitled_never_touches_paperclip(account):
-    build = AsyncMock()
-    with (
-        patch("core.services.user_provision.billing_repo.get_by_owner_id", AsyncMock(return_value=account)),
-        patch("core.services.user_provision.build_paperclip_provisioning", build),
-        patch("core.services.user_provision.put_metric") as metric,
-    ):
-        assert await arm_nightly_ceo("org_p") == "not_entitled"
-    build.assert_not_awaited()
+async def test_arm_not_entitled_turns_every_starter_heartbeat_off(account):
+    """Converge, not only enable: an expired trial / past_due / canceled / no-row owner
+    stops waking (each timer would cold-start a microVM the gate then refuses)."""
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1", **_SPECIALISTS}))
+    with patch("core.services.user_provision.put_metric") as metric:
+        assert await _arm(provisioning, account) == "not_entitled"
+    assert _heartbeats(provisioning) == {a: {"enabled": False} for a in ("ceo1", "eng1", "fin1")}
     metric.assert_called_once_with("nightly_ceo.arm", dimensions={"status": "not_entitled"})
     assert should_arm_nightly_ceo(account) is False
 
 
 @pytest.mark.asyncio
-async def test_arm_opt_out_leaves_the_ceo_alone():
-    """The owner's durable opt-out keeps the CEO untouched; specialists are
+async def test_arm_not_entitled_without_a_company_touches_nothing():
+    provisioning = _arm_provisioning(None)
+    assert await _arm(provisioning, None) == "not_entitled"
+    provisioning._admin.set_agent_heartbeat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_arm_opt_out_after_arming_turns_the_ceo_off():
+    """The owner's durable opt-out disables the CEO's timer; specialists are
     still re-armed (teardown disarms them too)."""
+    from core.services.paperclip_provisioning import SPECIALIST_HEARTBEAT
+
     provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1", **_SPECIALISTS}))
+    assert await _arm(provisioning, _paid_account()) == "armed"
+    provisioning._admin.set_agent_heartbeat.reset_mock()
     assert await _arm(provisioning, _paid_account(nightly_ceo_opted_out=True)) == "opted_out"
-    assert set(_heartbeats(provisioning)) == {"eng1", "fin1"}
+    assert _heartbeats(provisioning) == {
+        "ceo1": {"enabled": False},
+        "eng1": SPECIALIST_HEARTBEAT,
+        "fin1": SPECIALIST_HEARTBEAT,
+    }
 
 
 @pytest.mark.asyncio

@@ -387,6 +387,17 @@ class ProjectorTests(unittest.TestCase):
         })
 
     @patch("index._publish")
+    def test_message_hint_preview_flags_attachments(self, publish):
+        # An attachment-only message still has a preview that says so.
+        self._one_member_room()
+        message = message_item()
+        message["text"] = ""
+        message["attachments"] = [{"id": "att-1", "fileName": "report.pdf", "contentType": "application/pdf", "size": 10}]
+        index._project_message(message)
+        _channel, event = publish.call_args_list[0].args
+        self.assertTrue(event["payload"]["lastMessage"]["hasAttachments"])
+
+    @patch("index._publish")
     def test_member_removed_before_publish_receives_nothing(self, publish):
         # Discovery (the MEMBER# query) still lists Bob, but his MEMBER row is gone
         # by the strong per-member read at publish time: no preview reaches him.

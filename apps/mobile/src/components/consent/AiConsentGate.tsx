@@ -107,73 +107,77 @@ export function AiConsentGate({ children }: { children: ReactNode }) {
   if (granted) return <>{children}</>;
 
   return (
-    <ScrollView
-      style={styles.page}
-      // This screen mounts above the navigator, so no header pushes it below
-      // the status bar / Dynamic Island — it has to honour the inset itself.
-      contentContainerStyle={[styles.content, { paddingTop: spacing.xl + insets.top }]}
-      testID="ai-consent-gate"
-    >
-      <Text style={styles.title}>Before you start</Text>
-      <Text style={styles.lede}>
-        Lightbulb runs your agents on AI models operated by other companies. To do
-        that, it has to send them what you and your agents are working on.
-      </Text>
-
-      <View style={styles.card}>
-        <Text style={styles.overline}>WHAT IS SENT</Text>
-        {DATA_SENT.map((item) => (
-          <Text key={item} style={styles.item}>
-            •  {item}
-          </Text>
-        ))}
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.overline}>WHO IT IS SENT TO</Text>
-        {RECIPIENTS.map((item) => (
-          <Text key={item} style={styles.item}>
-            •  {item}
-          </Text>
-        ))}
-        <Text style={styles.caption}>
-          {"These providers process your content only to generate a response. OpenRouter routes your requests only to model providers that don't store your content or use it for training, and Lightbulb never sells your data or trains on it."}
+    // This screen mounts above the navigator, so no header pushes it below the
+    // status bar / Dynamic Island — it has to honour the inset itself. The
+    // inset goes on a wrapper, not the scroll content: content padding scrolls
+    // away with the text, which then slides under the clock and battery.
+    <View style={[styles.page, { paddingTop: insets.top }]}>
+      <ScrollView
+        style={styles.page}
+        contentContainerStyle={styles.content}
+        testID="ai-consent-gate"
+      >
+        <Text style={styles.title}>Before you start</Text>
+        <Text style={styles.lede}>
+          Lightbulb runs your agents on AI models operated by other companies. To do
+          that, it has to send them what you and your agents are working on.
         </Text>
-      </View>
 
-      <Pressable
-        onPress={() => void Linking.openURL(PRIVACY_URL)}
-        accessibilityRole="link"
-        style={({ pressed }) => [styles.linkRow, pressed && styles.pressed]}
-      >
-        <Text style={styles.linkText}>Read the full Privacy Policy</Text>
-      </Pressable>
+        <View style={styles.card}>
+          <Text style={styles.overline}>WHAT IS SENT</Text>
+          {DATA_SENT.map((item) => (
+            <Text key={item} style={styles.item}>
+              •  {item}
+            </Text>
+          ))}
+        </View>
 
-      <Pressable
-        onPress={() => void onAgree()}
-        disabled={saving}
-        accessibilityRole="button"
-        style={({ pressed }) => [
-          styles.primary,
-          (pressed || saving) && styles.pressed,
-        ]}
-      >
-        {saving ? (
-          <ActivityIndicator color={colors.white} />
-        ) : (
-          <Text style={styles.primaryText}>Agree and continue</Text>
-        )}
-      </Pressable>
+        <View style={styles.card}>
+          <Text style={styles.overline}>WHO IT IS SENT TO</Text>
+          {RECIPIENTS.map((item) => (
+            <Text key={item} style={styles.item}>
+              •  {item}
+            </Text>
+          ))}
+          <Text style={styles.caption}>
+            {"These providers process your content only to generate a response. OpenRouter routes your requests only to model providers that don't store your content or use it for training, and Lightbulb never sells your data or trains on it."}
+          </Text>
+        </View>
 
-      <Pressable
-        onPress={() => void signOut()}
-        disabled={saving}
-        accessibilityRole="button"
-        style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}
-      >
-        <Text style={styles.secondaryText}>Don’t agree — sign out</Text>
-      </Pressable>
-    </ScrollView>
+        <Pressable
+          onPress={() => void Linking.openURL(PRIVACY_URL)}
+          accessibilityRole="link"
+          style={({ pressed }) => [styles.linkRow, pressed && styles.pressed]}
+        >
+          <Text style={styles.linkText}>Read the full Privacy Policy</Text>
+        </Pressable>
+
+        <Pressable
+          onPress={() => void onAgree()}
+          disabled={saving}
+          accessibilityRole="button"
+          style={({ pressed }) => [
+            styles.primary,
+            (pressed || saving) && styles.pressed,
+          ]}
+        >
+          {saving ? (
+            <ActivityIndicator color={colors.white} />
+          ) : (
+            <Text style={styles.primaryText}>Agree and continue</Text>
+          )}
+        </Pressable>
+
+        <Pressable
+          onPress={() => void signOut()}
+          disabled={saving}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}
+        >
+          <Text style={styles.secondaryText}>Don’t agree — sign out</Text>
+        </Pressable>
+      </ScrollView>
+    </View>
   );
 }
 

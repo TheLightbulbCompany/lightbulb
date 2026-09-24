@@ -475,6 +475,46 @@ async def add_issue_comment(
     )
 
 
+@router.delete("/issues/{issue_id}/comments/{comment_id}")
+async def delete_issue_comment(
+    issue_id: str,
+    comment_id: str = Path(..., pattern=_UUID_RE),
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Delete (tombstone) the caller's own comment — the ported task chat's bubble
+    action. Maps to upstream ``DELETE /api/issues/{id}/comments/{commentId}``;
+    Paperclip itself 403s a non-author. ``?mode=cancel`` is deliberately not
+    forwarded (queued-comment cancel is a separate, unported surface)."""
+    await _require_company_issue(issue_id, ctx)
+    return await _agents._admin().delete_issue_comment(
+        issue_id=issue_id,
+        comment_id=comment_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.get("/issues/{issue_id}/live-runs")
+async def list_issue_live_runs(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Queued/running runs on an issue — the ported task chat's live tail source.
+    Maps to upstream ``GET /api/issues/{id}/live-runs`` (a bare array)."""
+    await _require_company_issue(issue_id, ctx)
+    return await _agents._admin().list_issue_live_runs(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.get("/issues/{issue_id}/active-run")
+async def get_issue_active_run(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """The issue's active run (or ``null``). Maps to upstream
+    ``GET /api/issues/{id}/active-run``."""
+    await _require_company_issue(issue_id, ctx)
+    return await _agents._admin().get_issue_active_run(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
 @router.get("/issues/{issue_id}/children")
 async def list_issue_children(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
     """List an issue's descendants (the Sub-issues section).

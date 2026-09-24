@@ -55,7 +55,9 @@ describe("AiConsentGate", () => {
     // All three recipients, not just the currently-selected provider — a
     // later provider switch on the web must not widen the agreement.
     expect(screen.getByText(/Amazon Web Services/)).toBeTruthy();
-    expect(screen.getByText(/Anthropic — the maker of Claude/)).toBeTruthy();
+    expect(screen.getByText(/Anthropic — only if you connect your own Anthropic key/)).toBeTruthy();
+    expect(screen.getByText(/workspace memory using AWS-managed AI models/)).toBeTruthy();
+    expect(screen.queryByText(/Bedrock/)).toBeNull();
     expect(screen.getByText(/OpenAI — only if you connect/)).toBeTruthy();
     // v2 (2026-09-23): every company content can reach, and the no-training promise.
     expect(screen.getByText(/OpenRouter — routes your requests/)).toBeTruthy();
@@ -84,7 +86,7 @@ describe("AiConsentGate", () => {
     await u.press(screen.getByRole("button", { name: "Agree and continue" }));
 
     expect(setItem).toHaveBeenCalledWith(
-      "lightbulb.aiConsent.v2.user_1",
+      "lightbulb.aiConsent.v3.user_1",
       "granted",
       expect.objectContaining({ keychainAccessible: "afterFirstUnlock" }),
     );
@@ -100,7 +102,7 @@ describe("AiConsentGate", () => {
     await renderGate();
     await screen.findByText("Before you start");
 
-    expect(getItem).toHaveBeenCalledWith("lightbulb.aiConsent.v2.user_2");
+    expect(getItem).toHaveBeenCalledWith("lightbulb.aiConsent.v3.user_2");
   });
 
   // Inverted from every other keychain reader here (tokenCache holds its last

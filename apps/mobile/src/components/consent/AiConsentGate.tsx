@@ -19,9 +19,10 @@
  * real exit, and the account (and its web access) is untouched by it.
  *
  * The recipient list is deliberately the FULL set an owner can be switched to
- * — OpenRouter and the model hosts it routes to, AWS Bedrock/Anthropic for some
- * background work, OpenAI once ChatGPT sign-in or an OpenAI key is chosen, and
- * Vercel/TypeSafe for Listening routing — not just the provider active now.
+ * — OpenRouter and the model hosts it routes to, AWS (hosting, plus workspace
+ * memory processed by AWS-managed models), Anthropic or OpenAI once the owner
+ * connects their own key or ChatGPT sign-in, and Vercel/TypeSafe for Listening
+ * routing — not just the provider active now.
  * A provider swap made later on the web must not silently widen an agreement
  * that named fewer companies (settings.tsx `providerLabel` is where the live
  * choice is surfaced).
@@ -57,8 +58,8 @@ const DATA_SENT = [
 const RECIPIENTS = [
   "OpenRouter — routes your requests to the AI model that runs your agents",
   "The AI model providers OpenRouter routes to — companies such as DeepInfra that run open models like DeepSeek",
-  "Amazon Web Services — runs Anthropic's Claude models on AWS Bedrock for some background tasks",
-  "Anthropic — the maker of Claude",
+  "Amazon Web Services — hosts our infrastructure and stores and processes workspace memory using AWS-managed AI models",
+  "Anthropic — only if you connect your own Anthropic key",
   "OpenAI — only if you connect a ChatGPT account or your own OpenAI key",
   "Vercel and TypeSafe AI — decide which agent answers in channels with Listening on; zero data retention on every request",
 ];

@@ -28,6 +28,7 @@ import { WEB_ORIGIN } from "../../../config/domain";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { makeAdapter } from "../../../lib/adapter";
 import { listCatalogModels } from "../../../lib/agentCatalog";
+import { isManagedNoChoiceAccount, MANAGED_NO_CHOICE_LABEL } from "../../../lib/managedProvider";
 import {
   resolveProviderStatus,
   statusToDotColor,
@@ -53,6 +54,9 @@ interface BillingAccount {
   byo_provider: ByoProvider | null;
   /** The managed model's daily limit tripped today (UTC); clears at the rollover. */
   capped_today?: boolean;
+  /** Needed only to resolve a null provider_choice — see managedProvider.ts. */
+  subscription_status?: string | null;
+  plan?: string | null;
 }
 
 interface CreditsBalance {
@@ -84,6 +88,13 @@ function providerLabel(account: BillingAccount): {
   title: string;
   detail: string | null;
 } {
+  // No stored provider_choice: a cardless free trial, and a paid Base/
+  // Workspace/Ultra row that never picked one, both run on the managed
+  // DeepSeek gate — "No provider selected" would wrongly tell either of
+  // them to go pick one. Shared with settings.tsx (managedProvider.ts).
+  if (isManagedNoChoiceAccount(account)) {
+    return { ...MANAGED_NO_CHOICE_LABEL };
+  }
   switch (account.provider_choice) {
     case "chatgpt_oauth":
       return {

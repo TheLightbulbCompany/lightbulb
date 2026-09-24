@@ -60,4 +60,40 @@ describe("LlmPanel workspace credits", () => {
     expect(await screen.findByText("Daily allowance used — resets at 00:00 UTC")).toBeTruthy();
     expect(screen.getByText("Upgrade")).toBeTruthy();
   });
+
+  it("labels a free-trial owner's null provider as managed, not unset", async () => {
+    mockAccountFixture = {
+      provider_choice: null,
+      byo_provider: null,
+      subscription_status: "trial_local",
+    };
+    await render(<LlmPanel />);
+
+    expect(await screen.findByText("Lightbulb-managed models")).toBeTruthy();
+    expect(screen.getByText("DeepSeek within a daily allowance")).toBeTruthy();
+    expect(screen.queryByText(/No provider selected/)).toBeNull();
+  });
+
+  it("labels a paid owner who never picked a provider as managed, not unset", async () => {
+    mockAccountFixture = { provider_choice: null, byo_provider: null, plan: "standard" };
+    await render(<LlmPanel />);
+
+    expect(await screen.findByText("Lightbulb-managed models")).toBeTruthy();
+    expect(screen.getByText("DeepSeek within a daily allowance")).toBeTruthy();
+    expect(screen.queryByText(/No provider selected/)).toBeNull();
+  });
+
+  it("keeps the capped-today allowance line alongside the managed label", async () => {
+    mockAccountFixture = {
+      provider_choice: null,
+      byo_provider: null,
+      subscription_status: "trial_local",
+      capped_today: true,
+    };
+    await render(<LlmPanel />);
+
+    expect(await screen.findByText("Lightbulb-managed models")).toBeTruthy();
+    expect(screen.getByText("Daily allowance used — resets at 00:00 UTC")).toBeTruthy();
+    expect(screen.getByText("Upgrade")).toBeTruthy();
+  });
 });

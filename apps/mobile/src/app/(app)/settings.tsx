@@ -20,6 +20,7 @@ import { WEB_ORIGIN } from "../../config/domain";
 import { colors, spacing } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
 import { isAppleManaged } from "../../lib/manageSubscription";
+import { isManagedNoChoiceAccount, MANAGED_NO_CHOICE_LABEL } from "../../lib/managedProvider";
 import { unregisterDevice } from "../../lib/pushDevice";
 
 // Billing is READ-ONLY here. This screen used to carry "Upgrade on flickmeon.ai"
@@ -219,20 +220,13 @@ export function providerLabel(
   chatgpt: ChatGPTStatus | null,
 ): { title: string; detail: string | null } {
   // No stored provider_choice: the managed-DeepSeek gate is a config-path
-  // fallback, never a `provider_choice` row value itself (see
-  // `provider_choice_from_row`, apps/backend/core/services/container_provision.py).
-  // A cardless free trial AND a paid Base/Workspace/Ultra row that never
-  // picked a provider both run there — "No provider selected" would wrongly
-  // tell either of them to go pick one. Matches the web's managed block
-  // (LLMPanel.tsx `ManagedAllowanceBlock`).
-  if (
-    account.provider_choice == null &&
-    (account.subscription_status === "trial_local" ||
-      account.plan === "base" ||
-      account.plan === "standard" ||
-      account.plan === "ultra_pro")
-  ) {
-    return { title: "Lightbulb-managed models", detail: "DeepSeek within a daily allowance" };
+  // fallback, never a `provider_choice` row value itself. A cardless free
+  // trial AND a paid Base/Workspace/Ultra row that never picked a provider
+  // both run there — "No provider selected" would wrongly tell either of
+  // them to go pick one. Shared with control/llm.tsx (managedProvider.ts)
+  // so the two provider cards can't drift apart.
+  if (isManagedNoChoiceAccount(account)) {
+    return { ...MANAGED_NO_CHOICE_LABEL };
   }
   switch (account.provider_choice) {
     case "chatgpt_oauth": {

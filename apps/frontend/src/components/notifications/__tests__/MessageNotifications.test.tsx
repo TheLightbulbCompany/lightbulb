@@ -46,11 +46,11 @@ it("shows the projector's banner verbatim, once, with a conversation action", as
   expect(opts).toMatchObject({ tag: "message", subtitle: "Direct message", threadId: "room" });
   expect(mocks.capture).toHaveBeenCalledWith("notification_shown", { channel: "web", room_kind: "dm" });
   mocks.notifySuccess.mock.calls[0][1].action.onClick();
-  expect(onOpen).toHaveBeenCalledWith("room", null);
+  expect(onOpen).toHaveBeenCalledWith("room", null, "message");
   expect(mocks.capture).toHaveBeenCalledWith("notification_clicked", { channel: "web", room_kind: "dm" });
   onOpen.mockClear();
   opts.onClick();
-  expect(onOpen).toHaveBeenCalledWith("room", null);
+  expect(onOpen).toHaveBeenCalledWith("room", null, "message");
 });
 
 it("shows only the native notification when one is available — no toast", async () => {

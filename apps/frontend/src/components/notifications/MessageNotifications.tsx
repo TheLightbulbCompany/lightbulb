@@ -11,7 +11,7 @@ export function MessageNotifications(props: {
   activeRoomId: string | null;
   threadId: string | null;
   roomVisible: boolean;
-  onOpen: (roomId: string, threadId: string | null) => void;
+  onOpen: (roomId: string, threadId: string | null, messageId: string) => void;
 }): null {
   const { userId } = useAuth();
   const { onEvent } = useLiveEvents();
@@ -77,7 +77,7 @@ export function MessageNotifications(props: {
       capture("notification_shown", { channel: "web", room_kind: data.roomKind });
       const onClick = () => {
         capture("notification_clicked", { channel: "web", room_kind: data.roomKind });
-        current.current.onOpen(roomId, threadRootMessageId);
+        current.current.onOpen(roomId, threadRootMessageId, messageId);
       };
       // Native (desktop app, or web with permission) replaces the toast.
       void nativeNotify(title, body, { onClick, tag: messageId, subtitle, threadId }).then((shown) => {

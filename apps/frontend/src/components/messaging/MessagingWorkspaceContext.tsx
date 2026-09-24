@@ -747,11 +747,13 @@ export function MessagingWorkspaceProvider({
   } : null;
 
   // Muted rooms never badge anywhere: not the sidebar, not the browser-tab title.
-  const openNotificationTarget = useCallback((roomId: string, targetThreadId: string | null) => {
+  const openNotificationTarget = useCallback((roomId: string, targetThreadId: string | null, messageId?: string) => {
     // The room may be the one focus covers; opening it has to uncover it.
     closeSession();
     selectRoom(roomId);
     setNotificationTarget({ roomId, threadId: targetThreadId });
+    // A room-level message is scrolled to, like a search hit; a thread reply is in the opened thread.
+    if (messageId && !targetThreadId) setTarget({ roomId, messageId });
     activateMessagesPanel();
   }, [closeSession, selectRoom]);
   // A failed-run toast (RunNotifications) opens the room the run ran in.

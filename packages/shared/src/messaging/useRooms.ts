@@ -688,18 +688,29 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       // double-counts unread; the trailing refresh reconciles with server
       // truth. Unread bumps only when the event says to notify AND the room
       // isn't the one on screen (markVisibleRead owns that case).
-      const { roomId, messageSeq, notify } = event.payload;
+      // A thread reply never moves the room or its preview (the server's order ignores
+      // replies too), and `previewOnly` -- an edit/delete of the current preview -- only
+      // swaps the preview.
+      const { roomId, messageSeq, notify, threadRootMessageId, lastMessage, previewOnly } = event.payload;
       void mutateRooms((current) => {
         if (!current) return current;
         let changed = false;
         const rooms = current.rooms.map((room) => {
-          if (room.roomId !== roomId || messageSeq <= room.lastMessageSeq) return room;
+          if (room.roomId !== roomId) return room;
+          if (previewOnly) {
+            changed = true;
+            return { ...room, lastMessage: lastMessage ?? null };
+          }
+          if (messageSeq <= room.lastMessageSeq) return room;
           changed = true;
           const bump = notify && !(roomId === activeRoomId && isVisible()) ? 1 : 0;
           return {
             ...room,
             lastMessageSeq: messageSeq,
-            lastMessageAt: event.occurredAt,
+            ...(threadRootMessageId ? {} : {
+              lastMessageAt: event.occurredAt,
+              ...(lastMessage !== undefined ? { lastMessage } : {}),
+            }),
             unreadCount: room.unreadCount + bump,
           };
         });

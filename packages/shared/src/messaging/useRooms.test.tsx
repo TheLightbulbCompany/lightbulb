@@ -731,6 +731,37 @@ describe("useRooms platform seams", () => {
       });
     });
 
+    it("never moves a room or its preview for a thread reply", async () => {
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+      const reply = available();
+      (reply.payload as { threadRootMessageId: string | null }).threadRootMessageId = "msg-root";
+
+      act(() => { for (const handler of handlers) handler(reply); });
+
+      expect(result.current.rooms.find((r) => r.roomId === older.roomId))
+        .toMatchObject({ lastMessageSeq: 2, lastMessageAt: older.lastMessageAt });
+    });
+
+    it("carries the preview on a top-level hint and swaps it on previewOnly", async () => {
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+      const preview = {
+        messageId: "msg-new", seq: 2, authorId: "user-1", authorKind: "human" as const, authorName: "Maya",
+        textPreview: "ship it", hasAttachments: false, createdAt: "2026-09-15T00:00:01Z", threadRootMessageId: null,
+      };
+      const hint = available();
+      (hint.payload as { lastMessage?: unknown }).lastMessage = preview;
+      act(() => { for (const handler of handlers) handler(hint); });
+      expect(result.current.rooms.find((r) => r.roomId === older.roomId)?.lastMessage).toEqual(preview);
+
+      const edited = available(2, false);
+      Object.assign(edited.payload as object, { previewOnly: true, lastMessage: { ...preview, textPreview: "shipped" } });
+      act(() => { for (const handler of handlers) handler(edited); });
+      expect(result.current.rooms.find((r) => r.roomId === older.roomId))
+        .toMatchObject({ lastMessageSeq: 2, unreadCount: 1, lastMessage: { textPreview: "shipped" } });
+    });
+
     it("ignores a stale or replayed hint without moving the room or double-counting", async () => {
       const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
       await waitFor(() => expect(result.current.rooms).toHaveLength(2));

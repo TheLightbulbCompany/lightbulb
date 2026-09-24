@@ -1234,21 +1234,25 @@ def provider_quota(exc, provider: str = "") -> dict | None:
 def _capture_api_errors(agent) -> None:
     """Hermes collapses a terminal provider error to a one-line summary in its failed result
     (type/code/resets_at are gone), but every terminal path summarizes the raw exception via
-    ``agent._summarize_api_error`` first -- remember that exception on the (per-turn) agent."""
+    ``agent._summarize_api_error`` first -- remember (exception, summary) on the (per-turn)
+    agent. Retries and side tasks summarize too, so _failed_kind trusts the capture only when
+    the result's ``error`` IS that summary."""
     summarize = getattr(agent, "_summarize_api_error", None)
     if summarize is None:  # a renamed Hermes method degrades to model_unavailable, never a crash
         return
 
     def capture(error):
-        agent._lb_api_error = error
-        return summarize(error)
+        summary = summarize(error)
+        agent._lb_api_error = (error, summary)
+        return summary
     agent._summarize_api_error = capture
 
 
-def _failed_kind(agent) -> str:
+def _failed_kind(agent, result: dict) -> str:
     """Kind for a Hermes ``failed`` result; parks the quota detail for this thread's run.ended."""
-    _post_turn.error_detail = provider_quota(getattr(agent, "_lb_api_error", None),
-                                             getattr(agent, "provider", ""))
+    exc, summary = getattr(agent, "_lb_api_error", None) or (None, None)
+    terminal = summary is not None and result.get("error") == summary
+    _post_turn.error_detail = provider_quota(exc, getattr(agent, "provider", "")) if terminal else None
     return "model_unavailable" if _post_turn.error_detail is None else QUOTA_EXHAUSTED
 
 
@@ -1853,7 +1857,7 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
              "cacheWriteTokens": int(getattr(agent, "session_cache_write_tokens", 0) or 0)}
     reply = result.get("final_response") or ""
     if result.get("failed") is True:
-        return "error", _failed_kind(agent), "", usage
+        return "error", _failed_kind(agent, result), "", usage
     if not result.get("api_calls"):  # Hermes answers a dead model with apologetic prose; never post it
         return "error", "model_unavailable", "", usage
     if not reply:
@@ -1913,7 +1917,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
         return "cancelled", None, "", usage
     reply = result.get("final_response") or ""
     if result.get("failed") is True:
-        return "failed", _failed_kind(agent), "", usage
+        return "failed", _failed_kind(agent, result), "", usage
     if not result.get("api_calls"):
         return "failed", "model_unavailable", "", usage
     if not reply:
@@ -2012,7 +2016,8 @@ def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) ->
             if paperclip_run_aborted(run_id):
                 outcome, error = "cancelled", None
             else:
-                outcome, error = "failed", QUOTA_EXHAUSTED if provider_quota(exc) is not None else type(exc).__name__
+                provider = getattr((RUNS.get(run_id) or {}).get("agent"), "provider", "")
+                outcome, error = "failed", QUOTA_EXHAUSTED if provider_quota(exc, provider) is not None else type(exc).__name__
                 log.error("native Paperclip turn %s failed\n%s", run_id, traceback.format_exc())
         finish_paperclip_run(run_id, outcome, output=output, error=error, usage=usage)
         report_usage(

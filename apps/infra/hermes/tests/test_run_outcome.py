@@ -142,9 +142,10 @@ def test_provider_quota_classification(exc, provider, expect):
 def test_quota_failed_result_reports_quota_kind_and_detail(monkeypatch):
     class Agent(_FakeAgent):
         provider = "openai-codex"
-        _lb_api_error = _ApiError(429, CHATGPT_PROLITE)
+        _lb_api_error = (_ApiError(429, CHATGPT_PROLITE), "HTTP 429")
 
-    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: Agent(1, "HTTP 429", failed=True))
+    monkeypatch.setattr(turn, "_construct_agent",
+                        lambda *a, **k: Agent(1, "HTTP 429", failed=True, error="HTTP 429"))
     monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: None)
     outcome, kind, reply, _usage = turn._run_hermes(
         "ceo", {"message": {"text": "hi"}, "room": {"id": "x"}, "participants": []}, None)
@@ -162,7 +163,23 @@ def test_capture_remembers_the_raw_error_hermes_summarizes():
 
     agent, err = Agent(), _ApiError(429, CHATGPT_PROLITE)
     turn._capture_api_errors(agent)
-    assert agent._summarize_api_error(err) == "HTTP 429" and agent._lb_api_error is err
+    assert agent._summarize_api_error(err) == "HTTP 429" and agent._lb_api_error == (err, "HTTP 429")
+
+
+def test_a_stale_capture_does_not_label_a_later_unrelated_failure(monkeypatch):
+    """An early attempt captured a quota wall, a retry succeeded, then the turn failed on a
+    path that never summarizes (e.g. turn_response_check): that failure is not a quota wall."""
+    class Agent(_FakeAgent):
+        provider = "openai-codex"
+        _lb_api_error = (_ApiError(429, CHATGPT_PROLITE), "HTTP 429")
+
+    monkeypatch.setattr(turn, "_construct_agent",
+                        lambda *a, **k: Agent(2, "", failed=True, error="Turn abandoned: shutting down"))
+    monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: None)
+    outcome, kind, _reply, _usage = turn._run_hermes(
+        "ceo", {"message": {"text": "hi"}, "room": {"id": "x"}, "participants": []}, None)
+    assert (outcome, kind) == ("error", "model_unavailable")
+    assert turn._post_turn.error_detail is None
 
 
 def test_error_detail_is_only_sent_with_the_quota_kind():

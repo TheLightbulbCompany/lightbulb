@@ -677,7 +677,7 @@ class PushTests(unittest.TestCase):
         self.assertTrue(all(m["threadId"] == ROOM_ID for m in messages))
         self.assertEqual(messages[0]["body"], "hello")
         self.assertEqual(messages[0]["data"], {
-            "roomId": ROOM_ID, "messageId": MESSAGE_ID, "messageSeq": 2, "threadRootMessageId": None,
+            "roomId": ROOM_ID, "messageId": MESSAGE_ID, "messageSeq": 2, "threadRootMessageId": None, "roomKind": "channel",
         })
         self.assertEqual(publish.call_count, 4)
         users_reads = [c for c in index._ddb_client.calls if c.get("TableName") == USERS_TABLE]

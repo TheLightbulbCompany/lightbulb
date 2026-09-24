@@ -605,7 +605,6 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
         hook_token=hook_token,
         gateway_token=gateway_token,
         bedrock_bearer=bedrock_bearer,
-        provider_choice=provider_choice,
     )
 
     # m2: the one step that mints three credentials and writes a secret was otherwise invisible

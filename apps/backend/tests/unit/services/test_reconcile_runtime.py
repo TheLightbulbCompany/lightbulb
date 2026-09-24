@@ -15,7 +15,6 @@ import yaml
 from moto import mock_aws
 
 from core.services import agentcore_runtime, container_rpc
-from core.services.container_provision import provider_choice_from_row
 from core.services import hermes_provisioning as hp
 
 IMAGE = "acct.dkr.ecr.us-east-1.amazonaws.com/lightbulb/hermes-agent-arm64:h-v1"
@@ -206,8 +205,7 @@ async def test_switch_matrix_rewrites_profiles_without_stopping_the_session(monk
 
     assert world.provider_of_profiles() == {EXPECTED_PROVIDER[to]}
     assert world.calls == []  # no UpdateAgentRuntime, no StopRuntimeSession on a pure switch
-    assert _boot(boot_secrets)["providerChoice"] == provider_choice_from_row(BILLING[to])[0]
-    assert "providerSwitchGeneration" not in _boot(boot_secrets)
+    assert set(_boot(boot_secrets)) == {"hookToken", "gatewayToken", "bedrockBearer"}
 
 
 @pytest.mark.asyncio
@@ -241,23 +239,23 @@ async def test_two_concurrent_reconciles_converge_on_one_secret_and_profile_set(
 
 
 @pytest.mark.asyncio
-async def test_a_stale_switch_generation_in_the_boot_secret_restarts_the_session_once(monkeypatch, boot_secrets):
-    """A pre-#8a secret carries the provider-switch generation a live bridge admits turns
-    against. Dropping it is a boot-time change, so the idle session is stopped -- once."""
+async def test_retired_switch_keys_in_the_boot_secret_are_dropped_without_a_restart(monkeypatch, boot_secrets):
+    """A pre-T8c secret still carries providerSwitchGeneration/providerSwitchFrozen/providerChoice.
+    No bridge reads them, so the reconcile rewrites the credentials-only shape and stops nothing."""
     world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     await hp.reconcile_runtime("org_a")
-    stale = {**_boot(boot_secrets), "providerSwitchGeneration": "gen-old", "providerSwitchFrozen": True}
+    stale = {
+        **_boot(boot_secrets),
+        "providerSwitchGeneration": "gen-old",
+        "providerSwitchFrozen": True,
+        "providerChoice": "openrouter_managed",
+    }
     boot_secrets.put_secret_value(SecretId=agentcore_runtime.boot_secret_name("org_a"), SecretString=json.dumps(stale))
     world.calls.clear()
 
     await hp.reconcile_runtime("org_a")
-    assert world.calls == [("stop", ARN)]
-    assert "providerSwitchGeneration" not in _boot(boot_secrets)
-    assert _boot(boot_secrets)["providerSwitchFrozen"] is False
-
-    world.calls.clear()
-    await hp.reconcile_runtime("org_a")
     assert world.calls == []
+    assert set(_boot(boot_secrets)) == {"hookToken", "gatewayToken", "bedrockBearer"}
 
 
 @pytest.mark.asyncio
@@ -317,7 +315,6 @@ async def test_a_first_provision_on_chatgpt_billing_writes_codex_profiles_with_n
     assert await hp.provision_hermes_runtime("org_a") == ARN
 
     assert world.provider_of_profiles() == {"openai-codex"}
-    assert _boot(boot_secrets)["providerChoice"] == "chatgpt_oauth"
     assert ("stop", ARN) not in world.calls
     assert writes[-1]["status"] == "running"
 

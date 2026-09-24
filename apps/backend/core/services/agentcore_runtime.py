@@ -129,20 +129,18 @@ async def write_boot_secret(
     hook_token: str,
     gateway_token: str,
     bedrock_bearer: str,
-    provider_choice: str,
 ) -> bool:
     """Converge the owner's boot secret (named ``boot_secret_name(owner_id)``, the value a
     runtime's ``BOOT_SECRET_ENV_VAR`` carries). Plaintext lives in exactly one place: this secret.
 
-    Returns whether a BOOT-TIME input changed -- anything but ``providerChoice``, which no
-    current bridge reads (it decides the route from the profile it pulls each turn) and which
-    is still written only for N-1 bridges. A warm session reads the rest once, at cold start,
-    so a True answer is the caller's cue to restart the idle session. Identical bytes are not
-    rewritten, so concurrent runs converge without churning secret versions.
+    Returns whether a BOOT-TIME input changed. A warm session reads the secret once, at cold
+    start, so a True answer is the caller's cue to restart the idle session. Identical bytes are
+    not rewritten, so concurrent runs converge without churning secret versions.
 
-    ``providerSwitchFrozen: False`` stays for the same N-1 bridges, which refuse every turn when
-    it is absent-and-truthy; ``providerSwitchGeneration`` is dropped -- those bridges admit a
-    turn only when its (now never sent) generation header matches it."""
+    Only the three credentials are compared: an older secret still carrying the retired
+    ``providerChoice``/``providerSwitchFrozen`` keys (no bridge reads either) is rewritten
+    without that reading as a boot change, so the first reconcile after this ships restarts
+    nothing."""
     import boto3
 
     from core.secrets_manager import create_or_update_secret
@@ -152,8 +150,6 @@ async def write_boot_secret(
         "hookToken": hook_token,
         "gatewayToken": gateway_token,
         "bedrockBearer": bedrock_bearer,
-        "providerChoice": provider_choice,
-        "providerSwitchFrozen": False,
     }
     sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
 
@@ -166,9 +162,6 @@ async def write_boot_secret(
             return False
         create_or_update_secret(sm, name, json.dumps(payload))
 
-        def boot_inputs(value):
-            return {k: v for k, v in (value or {}).items() if k != "providerChoice"}
-
-        return boot_inputs(prior) != boot_inputs(payload)
+        return {k: (prior or {}).get(k) for k in payload} != payload
 
     return await run_in_thread(_converge)

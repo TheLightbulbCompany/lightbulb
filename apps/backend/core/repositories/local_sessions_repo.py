@@ -158,6 +158,10 @@ async def put_session(row: dict, previous: dict | None, enrollment: dict, *, ext
 
 
 def room_conditions(owner: str, human: str, receipt: dict) -> list[dict]:
+    """Room fences for a room-scoped command; a roomless one (roomId "") has none -- its
+    authority is the session's own human, checked in authorize_session."""
+    if not receipt.get("roomId"):
+        return []
     table, room = store._table().name, receipt["roomId"]
     actor = ("agent", receipt["actor"]["id"]) if "actor" in receipt else ("human", receipt["actorUserId"])
     return [

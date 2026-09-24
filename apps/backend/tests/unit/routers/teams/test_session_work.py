@@ -90,7 +90,7 @@ def boundary(db, monkeypatch):
 
 
 def path(sid):
-    return f"/teams/rooms/{ROOM}/local-sessions/{sid}/work-link"
+    return f"/teams/local-sessions/{sid}/work-link"
 
 
 @pytest.mark.asyncio
@@ -234,24 +234,6 @@ async def test_input_cannot_choose_company_or_private_metadata(boundary, link):
 
 
 @pytest.mark.asyncio
-async def test_session_access_is_rechecked_after_upstream(boundary, db):
-    app, admin, _, _ = boundary
-    sid = await registered()
-
-    async def revoke(**kwargs):
-        db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#human#{BOB.user_id}"})
-        return {"id": ISSUE, "companyId": COMPANY, "title": "PRIVATE"}
-
-    admin.get_issue.side_effect = revoke
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
-        result = await client.patch(
-            path(sid), json={"link": {"kind": "issue", "issueId": ISSUE}, "expectedLinkRevision": None}
-        )
-        assert result.status_code == 403
-    assert "workLink" not in await repo.get_session(OWNER, sid)
-
-
-@pytest.mark.asyncio
 async def test_each_viewer_uses_own_cookie_and_invalid_link_cannot_leak_upstream_errors(boundary):
     app, admin, company, minted = boundary
     sid = await registered()
@@ -305,33 +287,6 @@ async def test_link_read_rechecks_revision_and_session_access_after_lookup(bound
             path(sid),
             json={"link": {"kind": "issue", "issueId": ISSUE}, "expectedLinkRevision": empty.json()["revision"]},
         )
-
-        async def revoke(**kwargs):
-            db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#human#{BOB.user_id}"})
-            return {"id": ISSUE, "companyId": COMPANY, "title": "REVOKED TITLE"}
-
-        admin.get_issue.side_effect = revoke
-        shown = await client.get(path(sid))
-        assert shown.status_code == 403 and "REVOKED" not in shown.text
-
-
-@pytest.mark.asyncio
-async def test_real_transaction_fences_membership_removed_after_last_authorization(boundary, db, monkeypatch):
-    app, _, _, _ = boundary
-    sid = await registered()
-    real = repo.put_session
-
-    async def race(row, previous, enrollment, **kwargs):
-        db[0].delete_item(Key={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#human#{BOB.user_id}"})
-        return await real(row, previous, enrollment, **kwargs)
-
-    monkeypatch.setattr(repo, "put_session", race)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
-        response = await client.patch(
-            path(sid), json={"link": {"kind": "issue", "issueId": ISSUE}, "expectedLinkRevision": None}
-        )
-        assert response.status_code == 403
-    assert "workLink" not in await repo.get_session(OWNER, sid)
 
 
 @pytest.mark.asyncio

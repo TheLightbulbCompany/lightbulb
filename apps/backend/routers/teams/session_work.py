@@ -7,7 +7,7 @@ from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import Field
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.auth import AuthContext, get_current_user
 from core.repositories import local_sessions_repo as repo, messaging_repo
 from core.services import local_sessions as sessions
 from core.services.messaging import ApiProblem, ContractModel
@@ -92,11 +92,11 @@ async def resolve_work(request, response, auth, link):
     raise HTTPException(status_code=404, detail="Linked work unavailable.")
 
 
-@router.get("/rooms/{room_id}/local-sessions/{session_id}/work-link")
+@router.get("/local-sessions/{session_id}/work-link")
 async def get_link(
-    room_id: str, session_id: str, request: Request, response: Response, auth: AuthContext = Depends(get_current_user)
+    session_id: str, request: Request, response: Response, auth: AuthContext = Depends(get_current_user)
 ):
-    row, _ = await sessions.authorize_session(auth, room_id, session_id)
+    row, _ = await sessions.authorize_session(auth, None, session_id)
     if not row.get("workLink"):
         return result(row)
     title, state = None, "linked"
@@ -104,43 +104,34 @@ async def get_link(
         _, title = await resolve_work(request, response, auth, row["workLink"])
     except HTTPException:
         state = "unavailable"
-    current, _ = await sessions.authorize_session(auth, room_id, session_id)
+    current, _ = await sessions.authorize_session(auth, None, session_id)
     if current.get("workLinkRevision") != row.get("workLinkRevision"):
         raise conflict()
     return result(current, state=state, title=title)
 
 
-@router.patch("/rooms/{room_id}/local-sessions/{session_id}/work-link")
+@router.patch("/local-sessions/{session_id}/work-link")
 async def update_link(
-    room_id: str,
     session_id: str,
     body: LinkUpdate,
     request: Request,
     response: Response,
     auth: AuthContext = Depends(get_current_user),
 ):
-    row, _ = await sessions.authorize_session(auth, room_id, session_id)
+    # Any workspace member may link work, as any room member could; only commands are owner-only.
+    row, _ = await sessions.authorize_session(auth, None, session_id)
     if row.get("workLinkRevision") != body.expected_link_revision:
         raise conflict()
     link = None
     if body.link is not None:
         link, _ = await resolve_work(request, response, auth, body.link.model_dump(by_alias=True))
     for _ in range(6):
-        row, enrollment = await sessions.authorize_session(auth, room_id, session_id)
+        row, enrollment = await sessions.authorize_session(auth, None, session_id)
         if row.get("workLinkRevision") != body.expected_link_revision:
             raise conflict()
         updated = {**row, "workLink": link, "workLinkRevision": str(uuid.uuid4()), "revision": str(uuid.uuid4())}
         try:
-            await repo.put_session(
-                updated,
-                row,
-                enrollment,
-                extra=repo.room_conditions(
-                    resolve_owner_id(auth),
-                    row["humanUserId"],
-                    {"roomId": room_id, "actorUserId": auth.user_id},
-                ),
-            )
+            await repo.put_session(updated, row, enrollment)
             return result(updated)
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc):

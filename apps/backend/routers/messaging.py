@@ -127,66 +127,54 @@ async def agent_local_session_receipt(
     return await local_sessions.get_command(auth, auth.room_id, session_id, request_id)
 
 
-@router.get("/messaging/rooms/{room_id}/resources", response_model=local_sessions.RoomResources)
-async def list_room_resources(
-    room_id: str,
-    include_ended: bool = Query(False, alias="includeEnded"),
-    auth: AuthContext = Depends(get_current_user),
-):
-    return await local_sessions.list_resources(auth, room_id, include_ended=include_ended)
-
-
 @router.get("/messaging/sessions", response_model=local_sessions.WorkspaceSessions)
 async def list_workspace_sessions(auth: AuthContext = Depends(get_current_user)):
     return await local_sessions.list_workspace_sessions(auth)
 
 
-@router.get(
-    "/messaging/rooms/{room_id}/local-sessions/{session_id}/events", response_model=local_sessions.LocalSessionEventPage
-)
+# Sessions are a workspace thing, not a room's (owner ruling 2026-09-24): any member reads,
+# only the session's own human commands. Agents keep their room-granted routes above.
+@router.get("/messaging/sessions/{session_id}/events", response_model=local_sessions.LocalSessionEventPage)
 async def list_local_session_events(
-    room_id: str,
     session_id: str,
     after_seq: Annotated[int, Query(alias="afterSeq", ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     auth: AuthContext = Depends(get_current_user),
 ):
-    return await local_sessions.list_events(auth, room_id, session_id, after_seq, limit)
+    return await local_sessions.list_events(auth, None, session_id, after_seq, limit)
 
 
 @router.post(
-    "/messaging/rooms/{room_id}/local-sessions/{session_id}/commands",
+    "/messaging/sessions/{session_id}/commands",
     response_model=local_sessions.CommandReceipt,
     status_code=202,
 )
 async def submit_local_session_command(
-    room_id: str,
     session_id: str,
     body: local_sessions.LocalSessionCommand,
     auth: AuthContext = Depends(get_current_user),
 ):
     from core.services.local_session_relay import get_local_session_relay
 
-    receipt = await local_sessions.submit_command(auth, room_id, session_id, body)
+    receipt = await local_sessions.submit_command(auth, None, session_id, body)
     try:
         await get_local_session_relay().dispatch_session(resolve_owner_id(auth), receipt.session_id)
     except Exception:
         # Admission is durable. Desktop heartbeat retries only proven-undelivered work.
         logger.warning("Local session dispatch deferred")
-    return await local_sessions.get_command(auth, room_id, receipt.session_id, body.request_id)
+    return await local_sessions.get_command(auth, None, receipt.session_id, body.request_id)
 
 
 @router.get(
-    "/messaging/rooms/{room_id}/local-sessions/{session_id}/commands/{request_id}",
+    "/messaging/sessions/{session_id}/commands/{request_id}",
     response_model=local_sessions.CommandReceipt,
 )
 async def get_local_session_command(
-    room_id: str,
     session_id: str,
     request_id: str,
     auth: AuthContext = Depends(get_current_user),
 ):
-    return await local_sessions.get_command(auth, room_id, session_id, request_id)
+    return await local_sessions.get_command(auth, None, session_id, request_id)
 
 
 _typing_last: dict[tuple[str, str], float] = {}

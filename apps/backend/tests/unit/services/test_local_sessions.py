@@ -670,16 +670,20 @@ async def test_http_routes_use_clerk_identity_and_validate_payloads(db):
         assert (await client.put(path, json={"deviceId": MAC, "enabled": True})).status_code in (401, 403)
         app.dependency_overrides[get_current_user] = lambda: BOB
         assert (await client.put(path, json={"deviceId": MAC, "enabled": True})).status_code == 403
-        base = f"/api/v1/messaging/rooms/{ROOM}"
-        assert (await client.get(f"{base}/resources")).status_code == 200
-        assert (await client.get(f"{base}/local-sessions/{sid}/events?afterSeq=0&limit=2")).status_code == 200
+        # Sessions are workspace-scoped (2026-09-24): a teammate reads, only the owner commands.
+        base = f"/api/v1/messaging/sessions/{sid}"
+        assert (await client.get("/api/v1/messaging/sessions")).status_code == 200
+        assert (await client.get(f"{base}/events?afterSeq=0&limit=2")).status_code == 200
         payload = command(service).model_dump(by_alias=True)
-        assert (
-            await client.post(f"{base}/local-sessions/{sid}/commands", json={**payload, "actorUserId": ALICE.user_id})
-        ).status_code == 422
-        response = await client.post(f"{base}/local-sessions/{sid}/commands", json=payload)
-        assert response.status_code == 202 and response.json()["actorUserId"] == BOB.user_id
-        assert (await client.get(f"{base}/local-sessions/{sid}/commands/request-1")).json() == response.json()
+        assert (await client.post(f"{base}/commands", json=payload)).status_code == 403
+        app.dependency_overrides[get_current_user] = lambda: ALICE
+        assert (await client.post(f"{base}/commands", json={**payload, "actorUserId": BOB.user_id})).status_code == 422
+        response = await client.post(f"{base}/commands", json=payload)
+        assert response.status_code == 202 and response.json()["actorUserId"] == ALICE.user_id
+        assert response.json()["roomId"] == ""
+        assert (await client.get(f"{base}/commands/request-1")).json() == response.json()
+        app.dependency_overrides[get_current_user] = lambda: BOB
+        assert (await client.get(f"{base}/commands/request-1")).status_code == 403
         app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=ALICE.user_id)
         assert (await client.put(path, json={"deviceId": MAC, "enabled": True})).status_code == 409
 

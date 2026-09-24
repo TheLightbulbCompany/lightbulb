@@ -134,7 +134,7 @@ async def _org_blocker(user_id: str, *, active_org_id: str | None, clerk_admin) 
     (that workspace is wiped with the account), refused for any other; the
     last admin with other members — refused; a plain member — fine.
     """
-    for org in await clerk_admin.list_user_organizations(user_id, strict=True):
+    for org in await clerk_admin.list_user_organizations(user_id, limit=100, strict=True):
         members = await clerk_admin.list_organization_members(org["id"], strict=True)
         others = [m for m in members if m.get("user_id") != user_id]
         name = org.get("name") or org["id"]

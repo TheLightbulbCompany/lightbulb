@@ -429,7 +429,7 @@ class TestDeleteMyAccount:
         assert response.json() == {"status": "deleted"}
         mock_ws_wipe.assert_awaited_once_with("org_test_456", user_id="user_test_123")
         mock_wipe.assert_not_awaited()
-        clerk_orgs[0].assert_awaited_once_with("user_test_123", strict=True)
+        clerk_orgs[0].assert_awaited_once_with("user_test_123", limit=100, strict=True)
 
     @pytest.mark.asyncio
     @patch("core.services.workspace_wipe.wipe_own_workspace", new_callable=AsyncMock)

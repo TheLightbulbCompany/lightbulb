@@ -18,7 +18,7 @@ import { ThemeToggles } from "@/components/chat/ThemeToggles";
 const DESTINATIONS = [
   { panel: MESSAGES_PANEL_ID, label: "Messages", Icon: MessageSquare },
   { panel: "teams-dashboard", label: "Home", Icon: Home },
-  { panel: "teams-inbox", label: "Activity", Icon: Bell },
+  { panel: "activity", label: "Activity", Icon: Bell },
   { panel: "teams-issues", label: "Tasks", Icon: ListTodo },
   { panel: "browser", label: "Browser", Icon: Chrome },
   { panel: "file-viewer", label: "Browse workspace files", Icon: FolderOpen },
@@ -47,7 +47,8 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
         // (Connections) opens as `control:connections`. Resolve through the
         // registry so the active marker follows the id the dock actually uses.
         const panelId = describePanel(panel, {})?.panelId ?? panel;
-        const showsActivity = panel === "teams-inbox" && activeTeamRunCount > 0;
+        // Team runs are team work, so their count rides on Tasks; Activity badges unseen items.
+        const showsActivity = panel === "teams-issues" && activeTeamRunCount > 0;
         const accessibleLabel = showsActivity
           ? `${label}, ${activeTeamRunCount} active team ${activeTeamRunCount === 1 ? "run" : "runs"}`
           : label;

@@ -30,6 +30,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from . import agents as _agents
+from .issues import CompanyIssueId
 from .deps import TeamsContext, envelope_list
 from .schemas import CreateTreeHoldBody, PreviewTreeControlBody, ReleaseTreeHoldBody
 
@@ -45,7 +46,7 @@ _UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-
 
 @router.post("/issues/{issue_id}/tree-control/preview")
 async def preview_tree_control(
-    issue_id: str,
+    issue_id: CompanyIssueId,
     body: PreviewTreeControlBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -64,7 +65,7 @@ async def preview_tree_control(
 
 @router.post("/issues/{issue_id}/tree-holds")
 async def create_tree_hold(
-    issue_id: str,
+    issue_id: CompanyIssueId,
     body: CreateTreeHoldBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -83,7 +84,7 @@ async def create_tree_hold(
 
 @router.get("/issues/{issue_id}/tree-holds")
 async def list_tree_holds(
-    issue_id: str,
+    issue_id: CompanyIssueId,
     ctx: TeamsContext = Depends(_ctx),
     status: Optional[str] = Query(default=None, pattern=r"^(active|released)$"),
     mode: Optional[str] = Query(default=None, pattern=r"^(pause|resume|cancel|restore)$"),
@@ -113,7 +114,7 @@ async def list_tree_holds(
 
 @router.get("/issues/{issue_id}/tree-holds/{hold_id}")
 async def get_tree_hold(
-    issue_id: str,
+    issue_id: CompanyIssueId,
     hold_id: str,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -132,7 +133,7 @@ async def get_tree_hold(
 
 @router.post("/issues/{issue_id}/tree-holds/{hold_id}/release")
 async def release_tree_hold(
-    issue_id: str,
+    issue_id: CompanyIssueId,
     hold_id: str,
     body: ReleaseTreeHoldBody,
     ctx: TeamsContext = Depends(_ctx),
@@ -153,7 +154,7 @@ async def release_tree_hold(
 
 @router.get("/issues/{issue_id}/tree-control/state")
 async def get_tree_control_state(
-    issue_id: str,
+    issue_id: CompanyIssueId,
     ctx: TeamsContext = Depends(_ctx),
 ):
     """Fetch the active-pause-hold gate for an issue.
@@ -171,7 +172,7 @@ async def get_tree_control_state(
 
 @router.get("/issues/{issue_id}/diagnostics/subtree")
 async def get_subtree_diagnostics(
-    issue_id: str,
+    issue_id: CompanyIssueId,
     ctx: TeamsContext = Depends(_ctx),
 ):
     """Read the subtree diagnostics for an issue.
@@ -187,7 +188,7 @@ async def get_subtree_diagnostics(
 
 @router.get("/issues/{issue_id}/diagnostics/blockers")
 async def get_blocker_diagnostics(
-    issue_id: str,
+    issue_id: CompanyIssueId,
     ctx: TeamsContext = Depends(_ctx),
 ):
     """Read the blocker diagnostics for an issue.

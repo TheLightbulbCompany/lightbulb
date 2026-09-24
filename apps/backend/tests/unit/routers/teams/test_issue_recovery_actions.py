@@ -68,6 +68,7 @@ def test_resolve_forwards_camelcase_body(admin):
     )
 
 
+@pytest.mark.real_fences
 @pytest.mark.parametrize("method", ["get", "resolve"])
 def test_another_companys_issue_is_404_and_never_forwarded(admin, method):
     admin.get_issue.return_value = {"id": ISSUE, "companyId": "co_OTHER"}

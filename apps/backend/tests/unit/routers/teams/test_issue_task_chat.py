@@ -76,6 +76,7 @@ def test_delete_comment_forwards_without_mode(admin):
     admin.delete_issue_comment.assert_awaited_once_with(issue_id=ISSUE, comment_id=COMMENT, session_cookie="cookie")
 
 
+@pytest.mark.real_fences
 @pytest.mark.parametrize("route", ["live-runs", "active-run", "delete"])
 def test_another_companys_issue_is_404_and_never_forwarded(admin, route):
     admin.get_issue.return_value = {"id": ISSUE, "companyId": "co_OTHER"}

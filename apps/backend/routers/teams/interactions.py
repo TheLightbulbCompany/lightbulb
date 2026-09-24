@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends
 
 from . import agents as _agents
 from ._guards import require_trial_runway
+from .issues import CompanyIssueId
 from .deps import TeamsContext, envelope_list
 from .schemas import (
     AcceptInteractionBody,
@@ -113,7 +114,7 @@ async def _enrich_interaction_actors(ctx: TeamsContext, rows: list) -> None:
 
 
 @router.get("/issues/{issue_id}/interactions")
-async def list_issue_interactions(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_interactions(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """List the thread interactions for an issue (the issue-detail thread),
     with human actor ids resolved to emails.
 
@@ -136,7 +137,7 @@ async def list_issue_interactions(issue_id: str, ctx: TeamsContext = Depends(_ct
 
 @router.post("/issues/{issue_id}/interactions/{interaction_id}/accept")
 async def accept_interaction(
-    issue_id: str,
+    issue_id: CompanyIssueId,
     interaction_id: str,
     body: AcceptInteractionBody,
     ctx: TeamsContext = Depends(_ctx),
@@ -163,7 +164,7 @@ async def accept_interaction(
 
 @router.post("/issues/{issue_id}/interactions/{interaction_id}/reject")
 async def reject_interaction(
-    issue_id: str,
+    issue_id: CompanyIssueId,
     interaction_id: str,
     body: RejectInteractionBody,
     ctx: TeamsContext = Depends(_ctx),
@@ -186,7 +187,7 @@ async def reject_interaction(
 
 @router.post("/issues/{issue_id}/interactions/{interaction_id}/respond")
 async def respond_interaction(
-    issue_id: str,
+    issue_id: CompanyIssueId,
     interaction_id: str,
     body: RespondInteractionBody,
     ctx: TeamsContext = Depends(_ctx),
@@ -209,7 +210,7 @@ async def respond_interaction(
 
 @router.post("/issues/{issue_id}/interactions/{interaction_id}/cancel")
 async def cancel_interaction(
-    issue_id: str,
+    issue_id: CompanyIssueId,
     interaction_id: str,
     body: CancelInteractionBody,
     ctx: TeamsContext = Depends(_ctx),

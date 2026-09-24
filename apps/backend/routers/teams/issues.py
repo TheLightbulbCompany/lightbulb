@@ -40,6 +40,19 @@ router = APIRouter()
 # upstream path (e.g. `<id>%3Fmode=cancel%26` smuggling a query string).
 IssueId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 _ctx = _agents._ctx
+
+
+async def _company_issue(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)) -> str:
+    """Route dependency: 404 unless ``issue_id`` is in the caller's workspace company.
+
+    See ``_require_company_issue``. Every ``{issue_id}`` route in the Teams BFF
+    takes ``CompanyIssueId``; ``test_teams_company_fences`` fails on one that doesn't.
+    """
+    await _require_company_issue(issue_id, ctx)
+    return issue_id
+
+
+CompanyIssueId = Annotated[str, Depends(_company_issue)]
 logger = logging.getLogger(__name__)
 
 # Hard cap on attachment uploads at the BFF boundary. Upstream Paperclip
@@ -192,7 +205,7 @@ async def create_label(body: CreateIssueLabelBody, ctx: TeamsContext = Depends(_
 # registered ABOVE this handler — FastAPI's matcher would otherwise treat
 # the static word as a value for {issue_id} and 404 with a misleading shape.
 @router.get("/issues/{issue_id}")
-async def get_issue(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def get_issue(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """Fetch a single issue by id."""
     return await _agents._admin().get_issue(
         issue_id=issue_id,
@@ -215,7 +228,7 @@ async def create_issue(
 
 @router.patch("/issues/{issue_id}")
 async def patch_issue(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     body: PatchIssueBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -246,7 +259,7 @@ async def patch_issue(
 
 
 @router.delete("/issues/{issue_id}")
-async def delete_issue(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def delete_issue(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """Delete an issue.
 
     Maps to upstream ``DELETE /api/issues/{id}``. The admin client's
@@ -260,7 +273,7 @@ async def delete_issue(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.post("/issues/{issue_id}/archive")
-async def archive_issue(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def archive_issue(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """Archive an issue from the inbox.
 
     Maps to upstream ``POST /api/issues/{id}/inbox-archive``. The Inbox
@@ -273,7 +286,7 @@ async def archive_issue(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.post("/issues/{issue_id}/unarchive")
-async def unarchive_issue(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def unarchive_issue(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """Restore an archived issue back to the inbox.
 
     Maps to upstream ``DELETE /api/issues/{id}/inbox-archive``. Drives the
@@ -286,7 +299,7 @@ async def unarchive_issue(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.post("/issues/{issue_id}/monitor/check-now")
-async def monitor_check_now(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def monitor_check_now(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """Trigger an immediate monitor re-check. Maps to upstream
     POST /api/issues/{id}/monitor/check-now.
 
@@ -314,7 +327,7 @@ async def _require_company_issue(issue_id: str, ctx: TeamsContext) -> None:
 
 
 @router.post("/issues/{issue_id}/scheduled-retry/retry-now")
-async def retry_scheduled_retry_now(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def retry_scheduled_retry_now(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """Pull the issue's scheduled retry forward (the ported IssueScheduledRetryCard's
     Retry now). Maps to upstream ``POST /api/issues/{id}/scheduled-retry/retry-now``.
 
@@ -322,7 +335,6 @@ async def retry_scheduled_retry_now(issue_id: str, ctx: TeamsContext = Depends(_
     front door: the free-tier cap is checked before the company fence and the call.
     """
     await require_trial_runway(ctx.owner_id)
-    await _require_company_issue(issue_id, ctx)
     return await _agents._admin().retry_scheduled_retry_now(
         issue_id=issue_id,
         session_cookie=ctx.session_cookie,
@@ -330,10 +342,9 @@ async def retry_scheduled_retry_now(issue_id: str, ctx: TeamsContext = Depends(_
 
 
 @router.get("/issues/{issue_id}/recovery-actions")
-async def list_issue_recovery_actions(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_recovery_actions(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """The issue's recovery action (``{active, actions}``), for the ported
     IssueRecoveryActionCard. Maps to upstream ``GET /api/issues/{id}/recovery-actions``."""
-    await _require_company_issue(issue_id, ctx)
     return await _agents._admin().list_issue_recovery_actions(
         issue_id=issue_id,
         session_cookie=ctx.session_cookie,
@@ -342,7 +353,7 @@ async def list_issue_recovery_actions(issue_id: IssueId, ctx: TeamsContext = Dep
 
 @router.post("/issues/{issue_id}/recovery-actions/resolve")
 async def resolve_issue_recovery_action(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     body: ResolveIssueRecoveryActionBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -351,7 +362,6 @@ async def resolve_issue_recovery_action(
     ``POST /api/issues/{id}/recovery-actions/resolve``; Paperclip's own 4xx reason
     (stale action, board-only outcome) reaches the caller via main.py's
     ``PaperclipApiError`` handler."""
-    await _require_company_issue(issue_id, ctx)
     return await _agents._admin().resolve_issue_recovery_action(
         issue_id=issue_id,
         body=body.model_dump(exclude_none=True, by_alias=True),
@@ -360,7 +370,7 @@ async def resolve_issue_recovery_action(
 
 
 @router.post("/issues/{issue_id}/mark-read")
-async def mark_issue_read(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def mark_issue_read(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """Mark an issue as read for the signed-in user.
 
     Maps to upstream ``POST /api/issues/{id}/read``.
@@ -372,7 +382,7 @@ async def mark_issue_read(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.post("/issues/{issue_id}/mark-unread")
-async def mark_issue_unread(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def mark_issue_unread(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """Mark an issue as unread for the signed-in user.
 
     Maps to upstream ``DELETE /api/issues/{id}/read``.
@@ -441,7 +451,7 @@ async def _enrich_comment_authors(ctx: TeamsContext, payload: Any) -> None:
 
 
 @router.get("/issues/{issue_id}/comments")
-async def list_issue_comments(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_comments(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """List comments on an issue, with human authors resolved to names.
 
     Maps to upstream ``GET /api/issues/{id}/comments``; rows pass through
@@ -461,7 +471,7 @@ async def list_issue_comments(issue_id: IssueId, ctx: TeamsContext = Depends(_ct
 
 @router.post("/issues/{issue_id}/comments")
 async def add_issue_comment(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     body: AddIssueCommentBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -483,7 +493,7 @@ async def add_issue_comment(
 
 @router.delete("/issues/{issue_id}/comments/{comment_id}")
 async def delete_issue_comment(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     comment_id: str = Path(..., pattern=_UUID_RE),
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -491,7 +501,6 @@ async def delete_issue_comment(
     action. Maps to upstream ``DELETE /api/issues/{id}/comments/{commentId}``;
     Paperclip itself 403s a non-author. ``?mode=cancel`` is deliberately not
     forwarded (queued-comment cancel is a separate, unported surface)."""
-    await _require_company_issue(issue_id, ctx)
     return await _agents._admin().delete_issue_comment(
         issue_id=issue_id,
         comment_id=comment_id,
@@ -500,10 +509,9 @@ async def delete_issue_comment(
 
 
 @router.get("/issues/{issue_id}/live-runs")
-async def list_issue_live_runs(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_live_runs(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """Queued/running runs on an issue — the ported task chat's live tail source.
     Maps to upstream ``GET /api/issues/{id}/live-runs`` (a bare array)."""
-    await _require_company_issue(issue_id, ctx)
     return await _agents._admin().list_issue_live_runs(
         issue_id=issue_id,
         session_cookie=ctx.session_cookie,
@@ -543,10 +551,9 @@ async def list_issue_activity(issue_id: IssueId, ctx: TeamsContext = Depends(_ct
 
 
 @router.get("/issues/{issue_id}/active-run")
-async def get_issue_active_run(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def get_issue_active_run(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """The issue's active run (or ``null``). Maps to upstream
     ``GET /api/issues/{id}/active-run``."""
-    await _require_company_issue(issue_id, ctx)
     return await _agents._admin().get_issue_active_run(
         issue_id=issue_id,
         session_cookie=ctx.session_cookie,
@@ -554,7 +561,7 @@ async def get_issue_active_run(issue_id: IssueId, ctx: TeamsContext = Depends(_c
 
 
 @router.get("/issues/{issue_id}/children")
-async def list_issue_children(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_children(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """List an issue's descendants (the Sub-issues section).
 
     Forwards upstream's ``descendantOf`` filter on the issues-list route —
@@ -571,7 +578,7 @@ async def list_issue_children(issue_id: IssueId, ctx: TeamsContext = Depends(_ct
 
 @router.post("/issues/{issue_id}/children")
 async def create_issue_child(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     body: CreateIssueBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -589,7 +596,7 @@ async def create_issue_child(
 
 
 @router.get("/issues/{issue_id}/approvals")
-async def list_issue_approvals(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_approvals(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """List the approvals linked to an issue (the issue-detail Approvals section)."""
     rows = await _agents._admin().list_issue_approvals(
         issue_id=issue_id,
@@ -599,7 +606,7 @@ async def list_issue_approvals(issue_id: IssueId, ctx: TeamsContext = Depends(_c
 
 
 @router.get("/issues/{issue_id}/runs")
-async def list_issue_runs(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_runs(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """List the agent runs for an issue (the issue-detail Runs section)."""
     rows = await _agents._admin().list_issue_runs(
         issue_id=issue_id,
@@ -609,7 +616,7 @@ async def list_issue_runs(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.get("/issues/{issue_id}/documents")
-async def list_issue_documents(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_documents(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """List the documents attached to an issue (the issue-detail Documents section)."""
     rows = await _agents._admin().list_issue_documents(
         session_cookie=ctx.session_cookie,
@@ -630,7 +637,7 @@ async def list_issue_documents(issue_id: IssueId, ctx: TeamsContext = Depends(_c
 
 
 @router.get("/issues/{issue_id}/work-products")
-async def list_issue_work_products(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_work_products(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """List the work-products produced for an issue (the issue-detail Output section).
 
     Maps to upstream ``GET /api/issues/{id}/work-products`` (issue-scoped;
@@ -647,7 +654,7 @@ async def list_issue_work_products(issue_id: IssueId, ctx: TeamsContext = Depend
 
 @router.post("/issues/{issue_id}/work-products")
 async def create_issue_work_product(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     body: CreateWorkProductBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -683,7 +690,7 @@ def _find_work_product(rows: Any, work_product_id: str) -> Optional[dict]:
 
 @router.patch("/issues/{issue_id}/work-products/{work_product_id}")
 async def patch_work_product(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     work_product_id: str,
     body: PatchWorkProductBody,
     ctx: TeamsContext = Depends(_ctx),
@@ -726,7 +733,7 @@ async def patch_work_product(
 
 @router.post("/issues/{issue_id}/work-products/{work_product_id}/review-document")
 async def ensure_work_product_review_document(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     work_product_id: IssueId,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -737,7 +744,6 @@ async def ensure_work_product_review_document(
     a fixed issue-scoped path. The company fence pins the issue to THIS workspace;
     upstream then 404s a work product that is not on that issue.
     """
-    await _require_company_issue(issue_id, ctx)
     return await _agents._admin().ensure_work_product_review_document(
         session_cookie=ctx.session_cookie,
         issue_id=issue_id,
@@ -820,7 +826,7 @@ async def list_company_artifacts(
 
 
 @router.get("/issues/{issue_id}/attachments")
-async def list_issue_attachments(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_attachments(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """List the binary attachments on an issue (the issue-detail Attachments section).
 
     Maps to upstream ``GET /api/issues/{id}/attachments`` (issue-scoped, the
@@ -836,7 +842,7 @@ async def list_issue_attachments(issue_id: IssueId, ctx: TeamsContext = Depends(
 
 @router.post("/issues/{issue_id}/attachments")
 async def upload_issue_attachment(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     request: Request,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -954,19 +960,23 @@ async def get_attachment_content(attachment_id: str, ctx: TeamsContext = Depends
 
 @router.delete("/issues/{issue_id}/attachments/{attachment_id}")
 async def delete_issue_attachment(
-    issue_id: IssueId,  # noqa: ARG001 — issue scoping is enforced upstream via the company cookie.
-    attachment_id: str,
+    issue_id: CompanyIssueId,
+    attachment_id: IssueId,
     ctx: TeamsContext = Depends(_ctx),
 ):
     """Delete an attachment.
 
-    Maps to upstream ``DELETE /api/attachments/{id}``. The ``issue_id`` is in
-    the path for a RESTful URL shape, but upstream scopes the delete to the
-    session cookie's company (``assertCompanyAccess`` on the resolved
-    attachment), so a cross-tenant attachment id is rejected upstream rather
-    than relying on a BFF-side issue↔attachment ownership check. 404 is treated
-    as already-gone (idempotent) by the admin client's ``_delete``.
+    Maps to upstream ``DELETE /api/attachments/{id}``, which is NOT issue-scoped:
+    upstream only checks the caller can access the attachment's company, and a
+    Paperclip user can belong to several. So the attachment must be on
+    ``issue_id`` (already fenced to this workspace) or it is a 404, never
+    forwarded. 404 upstream is treated as already-gone by the admin client.
     """
+    rows = await _agents._admin().list_issue_attachments(session_cookie=ctx.session_cookie, issue_id=issue_id)
+    if isinstance(rows, dict):
+        rows = rows.get("attachments")
+    if not any(isinstance(r, dict) and r.get("id") == attachment_id for r in rows or []):
+        raise HTTPException(status_code=404, detail="Attachment not found on this issue")
     return await _agents._admin().delete_attachment(
         session_cookie=ctx.session_cookie,
         attachment_id=attachment_id,
@@ -1032,7 +1042,7 @@ def _require_thread_id(thread_id: str) -> str:
 
 @router.put("/issues/{issue_id}/documents/{key}")
 async def upsert_issue_document(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     key: str,
     body: UpsertDocumentBody,
     ctx: TeamsContext = Depends(_ctx),
@@ -1057,7 +1067,7 @@ async def upsert_issue_document(
 
 @router.get("/issues/{issue_id}/documents/{key}")
 async def get_issue_document(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     key: str,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -1081,7 +1091,7 @@ async def get_issue_document(
 
 @router.delete("/issues/{issue_id}/documents/{key}")
 async def delete_issue_document(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     key: str,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -1105,7 +1115,7 @@ async def delete_issue_document(
 
 @router.get("/issues/{issue_id}/documents/{key}/revisions")
 async def list_issue_document_revisions(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     key: str,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -1126,7 +1136,7 @@ async def list_issue_document_revisions(
 
 @router.post("/issues/{issue_id}/documents/{key}/revisions/{revision_id}/restore")
 async def restore_issue_document_revision(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     key: str,
     revision_id: str,
     ctx: TeamsContext = Depends(_ctx),
@@ -1149,7 +1159,7 @@ async def restore_issue_document_revision(
 
 @router.get("/issues/{issue_id}/documents/{key}/annotations")
 async def list_document_annotations(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     key: str,
     ctx: TeamsContext = Depends(_ctx),
     status: Optional[str] = Query(default=None, pattern=r"^(open|resolved|all)$"),
@@ -1175,7 +1185,7 @@ async def list_document_annotations(
 
 @router.post("/issues/{issue_id}/documents/{key}/annotations")
 async def create_document_annotation(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     key: str,
     body: CreateDocumentAnnotationThreadBody,
     ctx: TeamsContext = Depends(_ctx),
@@ -1199,7 +1209,7 @@ async def create_document_annotation(
 
 @router.post("/issues/{issue_id}/documents/{key}/annotations/{thread_id}/comments")
 async def add_document_annotation_comment(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     key: str,
     thread_id: str,
     body: AddDocumentAnnotationCommentBody,
@@ -1225,7 +1235,7 @@ async def add_document_annotation_comment(
 
 @router.patch("/issues/{issue_id}/documents/{key}/annotations/{thread_id}")
 async def update_document_annotation_thread(
-    issue_id: IssueId,
+    issue_id: CompanyIssueId,
     key: str,
     thread_id: str,
     body: UpdateDocumentAnnotationThreadBody,

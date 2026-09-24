@@ -22,7 +22,7 @@ describe("NativeSessionTranscript", () => {
     expect(screen.queryByText("l30")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /\+28 lines/ }));
     expect(screen.getByText(/l30/)).toBeInTheDocument();
-    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+    expect(screen.getByText("Thought")).toBeInTheDocument(); // closed by the answer, so no longer "Thinking…"
     expect(screen.getByRole("status", { name: "Working" })).toBeInTheDocument();
     expect(screen.getAllByLabelText(/Native event \d+/).length).toBe(4);
   });
@@ -36,12 +36,20 @@ describe("NativeSessionTranscript", () => {
       ev(6, { kind: "lifecycle", role: "system", text: "", lifecycle: "turn_end" }),
     ]} />);
     expect(screen.getByText("Prasiddha")).toBeInTheDocument();
+    // The two tool calls fold into one summary line that expands to the rows.
+    const group = screen.getByRole("button", { name: "Ran 2 tools · 1 edit · 1 failed" });
+    expect(group).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Ran git status")).not.toBeInTheDocument();
+    fireEvent.click(group);
+    expect(group).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("Ran git status")).toBeInTheDocument();
     expect(screen.getByText("Edited a.ts")).toBeInTheDocument();
     expect(screen.getByText("+b")).toBeInTheDocument();
     expect(screen.getByText("codex")).toBeInTheDocument();
     expect(screen.queryByRole("status", { name: "Working" })).not.toBeInTheDocument();
-    // Fix round 1, small item (c): thinking text renders through markdown (Codex summaries are markdown).
+    // Thinking is collapsed to one line; expanded, it renders through markdown (Codex summaries are markdown).
+    expect(screen.queryByText("Planning")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Thought" }));
     expect(screen.getByText("Planning")).toBeInTheDocument();
     expect(screen.queryByText(/\*\*Planning\*\*/)).not.toBeInTheDocument();
   });
@@ -177,5 +185,33 @@ describe("small fixes", () => {
     ]} />);
     expect(screen.getByText("Output")).toBeInTheDocument();
     expect(screen.queryByText(/result\(/)).not.toBeInTheDocument();
+  });
+});
+
+describe("readability", () => {
+  it("times thinking, keeps prompt and answer visible, and leaves the live tool unfolded", () => {
+    render(<NativeSessionTranscript provider="claude" busy ownerName="Prasiddha" participants={people} events={[
+      ev(1, { kind: "text", role: "user", text: "fix it", ts: "2026-09-24T10:00:00.000Z" }),
+      ev(2, { kind: "thinking", role: "assistant", text: "look first", ts: "2026-09-24T10:00:01.000Z" }),
+      ev(3, { kind: "text", role: "assistant", text: "Checking.", ts: "2026-09-24T10:00:08.000Z" }),
+      ev(4, { kind: "tool", role: "assistant", text: "a", itemId: "a", tool: { name: "Read", status: "done", input: {} } }),
+      ev(5, { kind: "tool", role: "assistant", text: "b", itemId: "b", tool: { name: "Edit", status: "done", input: {} } }),
+      ev(6, { kind: "tool", role: "assistant", text: "npm test", itemId: "c", tool: { name: "Bash", status: "running", input: {} } }),
+    ]} />);
+    expect(screen.getByText("fix it")).toBeInTheDocument();
+    expect(screen.getByText("Checking.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Thought for 7s" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("look first")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ran 2 tools · 1 edit" })).toBeInTheDocument();
+    expect(screen.getByText("Bash(npm test)")).toBeInTheDocument();
+  });
+
+  it("clamps a diff to three lines until expanded", () => {
+    render(<NativeSessionTranscript provider="codex" busy={false} ownerName="Prasiddha" participants={people} events={[
+      ev(1, { kind: "tool", role: "assistant", text: "a.ts", itemId: "f1", tool: { name: "FileChange", status: "done", result: { "a.ts": { type: "update", diff: "-A\n+B\n C\n+D\n+E" } } } }),
+    ]} />);
+    expect(screen.queryByText("+E")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /\+2 lines/ }));
+    expect(screen.getByText("+E")).toBeInTheDocument();
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRows, lifecycleLabel, toolHeader, toolRowView, type TranscriptRow } from "./localSessionTranscript";
+import { buildRows, groupRows, lifecycleLabel, thinkingLabel, toolHeader, toolRowView, type TranscriptRow } from "./localSessionTranscript";
 import type { LocalSessionEvent } from "./types";
 
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
@@ -121,5 +121,67 @@ describe("lifecycleLabel", () => {
     expect(lifecycleLabel(row("approval_pending", "Tea or coffee? (Tea / Coffee)"))).toBe("Waiting for input: Tea or coffee? (Tea / Coffee)");
     expect(lifecycleLabel(row("approval_pending", "Wants to run Bash(git push)"))).toBe("Waiting for input: Wants to run Bash(git push)");
     expect(lifecycleLabel(row("turn_start", ""))).toBe("Turn started");
+  });
+});
+
+describe("toolRowView clamping", () => {
+  it("clamps a long preview to three lines and expands into the rest", () => {
+    const view = toolRowView(tool([
+      ev(1, { kind: "tool", role: "assistant", text: "P1\nP2\nP3\nP4\nP5", itemId: "c1", tool: { name: "CommandExecution", status: "done", input: { command: "ls" }, lines: 5 } }),
+    ]));
+    expect(view).toMatchObject({ preview: "P1\nP2\nP3", full: "P1\nP2\nP3\nP4\nP5", more: 2 });
+  });
+});
+
+describe("groupRows", () => {
+  const bash = (seq: number, id: string, status: "running" | "done" | "error" = "done", name = "Bash") =>
+    ev(seq, { kind: "tool", role: "assistant", text: id, itemId: id, tool: { name, status, input: {} } });
+  const kinds = (items: ReturnType<typeof groupRows>) => items.map(i => i.kind);
+
+  it("folds a run of tools (with the thinking between them) and keeps prompt and answer visible", () => {
+    const items = groupRows(buildRows([
+      ev(1, { kind: "text", role: "user", text: "go" }),
+      ev(2, { kind: "thinking", role: "assistant", text: "plan" }),
+      bash(3, "a"),
+      ev(4, { kind: "thinking", role: "assistant", text: "hmm" }),
+      bash(5, "b", "error"),
+      bash(6, "c", "done", "Edit"),
+      ev(7, { kind: "thinking", role: "assistant", text: "done" }),
+      ev(8, { kind: "text", role: "assistant", text: "Answer" }),
+    ]), false);
+    expect(kinds(items)).toEqual(["prompt", "thinking", "tools", "thinking", "prose"]);
+    const group = items[2];
+    expect(group.kind === "tools" && group.seq).toBe(3);
+    expect(group.kind === "tools" && group.rows.map(r => r.seq)).toEqual([3, 4, 5, 6]);
+    expect(group.kind === "tools" && group.summary).toBe("Ran 3 tools · 1 edit · 1 failed");
+  });
+
+  it("leaves a single tool alone, and splits runs at prose", () => {
+    const items = groupRows(buildRows([bash(1, "a"), ev(2, { kind: "text", role: "assistant", text: "x" }), bash(3, "b")]), false);
+    expect(kinds(items)).toEqual(["tool", "prose", "tool"]);
+  });
+
+  it("keeps the live last tool unfolded while the turn runs, and folds it once idle", () => {
+    const rows = buildRows([bash(1, "a"), bash(2, "b"), bash(3, "c", "running")]);
+    const live = groupRows(rows, true);
+    expect(kinds(live)).toEqual(["tools", "tool"]);
+    expect(live[0].kind === "tools" && live[0].summary).toBe("Ran 2 tools");
+    expect(kinds(groupRows(rows, false))).toEqual(["tools"]);
+    expect(kinds(groupRows(buildRows([bash(1, "a"), bash(2, "b", "running")]), true))).toEqual(["tool", "tool"]);
+  });
+});
+
+describe("thinkingLabel", () => {
+  it("times a closed thinking block from the next event and says Thinking… while live", () => {
+    const rows = buildRows([
+      ev(1, { kind: "thinking", role: "assistant", text: "a", ts: "2026-09-24T10:00:00.000Z" }),
+      ev(2, { kind: "thinking", role: "assistant", text: "b", ts: "2026-09-24T10:00:03.000Z" }),
+      ev(3, { kind: "text", role: "assistant", text: "x", ts: "2026-09-24T10:00:12.000Z" }),
+    ]);
+    const t = rows[0];
+    expect(t.kind === "thinking" && t.text).toBe("a\nb");
+    expect(t.kind === "thinking" && thinkingLabel(t, false)).toBe("Thought for 12s");
+    expect(t.kind === "thinking" && thinkingLabel(t, true)).toBe("Thinking…");
+    expect(thinkingLabel({ kind: "thinking", seq: 1, text: "" }, false)).toBe("Thought");
   });
 });

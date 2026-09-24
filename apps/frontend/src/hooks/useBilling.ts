@@ -41,6 +41,9 @@ export interface BillingAccount {
   capped_today?: boolean;
   // Capped owners only: OpenRouter's own daily usage on the owner's key. Absent on a read failure.
   allowance?: { used_usd: number; limit_usd: number; resets_at: number } | null;
+  // Why this owner's agents cannot run right now (backend chat_gate.budget_block_reason);
+  // drives the messaging shell's limit bar. Null/absent when they can.
+  block_reason?: "trial_expired" | "trial_daily_cap" | "included_daily_cap" | "out_of_credits" | null;
 }
 
 export interface MemberUsage {

@@ -791,6 +791,8 @@ async def create_message(
 
     table_name = _table().name
     target_ids = [t["agentId"] for t in dispatch_targets]
+    # A platform notice (author kind "system") has no MEMBER row to check.
+    system = author["kind"] == "system"
     for attempt in range(_SEQ_RETRY_ATTEMPTS):
         meta = await get_room(room_id)
         if meta is None or meta.get("deletedAt"):
@@ -866,6 +868,8 @@ async def create_message(
                 }
             },
         ]
+        if system:
+            del items[1]  # the author MEMBER check
         items.extend(_work_message_item(table_name, owner_id, room_id, message_id, seq, a) for a in target_ids)
         try:
             await _transact(items)
@@ -874,7 +878,7 @@ async def create_message(
             if not _is_cancelled(exc):
                 raise
             reasons = exc.response.get("CancellationReasons", [])
-            if len(reasons) > 1 and reasons[1].get("Code") == "ConditionalCheckFailed":
+            if not system and len(reasons) > 1 and reasons[1].get("Code") == "ConditionalCheckFailed":
                 # The author's own MEMBER row is gone: not a sequence race, don't retry.
                 raise MessageForbidden("Only a current room member can send this message.") from exc
         prior = await _get(idemp_pk, idemp_sk)

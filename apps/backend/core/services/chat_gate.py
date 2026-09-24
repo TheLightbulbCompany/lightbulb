@@ -17,6 +17,25 @@ BUDGET_BLOCK_MESSAGES = {
 }
 
 
+async def budget_block_reason(owner_id: str, account: dict | None) -> str | None:
+    """Why this owner's agents cannot run on our budget right now: a
+    ``BUDGET_BLOCK_MESSAGES`` key, or None.
+
+    ``gate_chat``'s Layers 2-3 as a plain answer (no subscription layer: a
+    canceled owner has its own surfaces). A capped owner is answered by the
+    trial/cap predicate ALONE and never reaches the credit check, exactly as
+    ``gate_chat`` returns before Layer 3 for them. Read by the failed-run notice
+    and ``/billing/account``'s ``block_reason``."""
+    from core.services import trial_cap
+    from core.services.metronome_gate import is_owner_blocked
+
+    if trial_cap.is_managed_capped(account):
+        return await trial_cap.reason_for_account(owner_id, account)
+    if account and account.get("provider_choice") == "openrouter_managed" and await is_owner_blocked(owner_id):
+        return "out_of_credits"
+    return None
+
+
 async def gate_chat(*, user_id: str, owner_id: str, session_key: str) -> dict:
     """Pre-chat hard-stop for credit-drawing (openrouter_managed) owners and the
     free-tier ``trial_local`` daily cost cap.

@@ -1130,3 +1130,14 @@ async def _first_then(reads, fallback, rid):
         return next(reads)
     except StopIteration:
         return await fallback(rid)
+
+
+@pytest.mark.asyncio
+async def test_a_system_notice_needs_no_member_row_but_a_removed_human_is_still_refused(table):
+    room_id, _ = await _room()
+    notice = await _post(
+        room_id, "Out of budget", [], "n-1", {"kind": "system", "id": "__system__", "displayName": "Lightbulb"}
+    )
+    assert notice["author"]["kind"] == "system" and notice["messageSeq"] == 1
+    with pytest.raises(repo.MessageForbidden):
+        await _post(room_id, "hi", [], "m-2", {"kind": "human", "id": "removed", "displayName": "Gone"})

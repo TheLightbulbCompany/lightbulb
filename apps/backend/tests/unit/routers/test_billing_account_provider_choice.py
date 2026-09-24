@@ -133,6 +133,8 @@ async def test_account_capped_today_only_for_todays_stamp(mock_repo, mock_get_su
         resp = await async_client.get("/api/v1/billing/account")
         assert resp.status_code == 200
         assert resp.json()["capped_today"] is expected
+        # The same stamp is the block reason the messaging shell's limit bar reads.
+        assert resp.json()["block_reason"] == ("trial_daily_cap" if expected else None)
 
 
 @pytest.mark.asyncio
@@ -157,3 +159,27 @@ async def test_account_allowance_only_for_capped_owners(mock_repo, mock_get_summ
     mock_allowance.reset_mock()
     assert (await async_client.get("/api/v1/billing/account")).json()["allowance"] is None
     mock_allowance.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("routers.billing.get_usage_summary")
+@patch("routers.billing.billing_repo")
+async def test_account_block_reason_for_an_expired_trial(mock_repo, mock_get_summary, async_client):
+    mock_get_summary.return_value = _summary_zero()
+    mock_repo.get_by_owner_id = AsyncMock(
+        return_value={"owner_id": "org_x", "subscription_status": "trial_local", "trial_end": 1}
+    )
+    assert (await async_client.get("/api/v1/billing/account")).json()["block_reason"] == "trial_expired"
+
+
+@pytest.mark.asyncio
+@patch("core.services.metronome_gate.is_owner_blocked", AsyncMock(side_effect=RuntimeError("ddb down")))
+@patch("routers.billing.get_usage_summary")
+@patch("routers.billing.billing_repo")
+async def test_account_survives_a_failed_credit_read(mock_repo, mock_get_summary, async_client):
+    mock_get_summary.return_value = _summary_zero()
+    mock_repo.get_by_owner_id = AsyncMock(
+        return_value={"owner_id": "org_m", "subscription_status": "active", "provider_choice": "openrouter_managed"}
+    )
+    resp = await async_client.get("/api/v1/billing/account")
+    assert resp.status_code == 200 and resp.json()["block_reason"] is None

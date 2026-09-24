@@ -70,6 +70,7 @@
 .room-typing { min-height: 20px; padding: 0 24px; overflow-wrap: anywhere; }
 .room-composer { position: relative; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; margin: 0 20px 16px; padding: 8px 10px; border: 1px solid var(--input); border-radius: 8px; background: var(--plane-raised); }
 .room-composer:focus-within { border-color: var(--ring); }
+.room-limit-bar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin: 0 20px 8px; padding: 8px 10px; border: 1px solid var(--err); border-radius: 8px; background: var(--plane-raised); }
 .room-composer[data-dropping] { border-color: var(--ring); border-style: dashed; }
 .room-drop-hint { padding: 0 4px; }
 .room-composer textarea { min-height: 24px; max-height: 200px; resize: none; overflow-y: auto; box-shadow: none; border: 0; padding: 2px 4px; border-radius: 0; background: transparent; font-size: .9375rem; line-height: 1.47; caret-color: var(--foreground); }
@@ -272,6 +273,7 @@
   .room-history { --room-gutter: 12px; padding: 8px var(--room-gutter); }
   .room-tabs { padding: 0 12px; }
   .room-composer { margin: 0 8px max(8px, env(safe-area-inset-bottom)); padding: 8px; }
+  .room-limit-bar { margin: 0 8px 8px; flex-wrap: wrap; }
   .room-context { border-left: 0; }
   .room-panel.room-has-context > .room-context { display: flex; width: 100%; }
   .room-panel button, .room-directory button { min-height: 44px; }

@@ -105,7 +105,7 @@ function describeIncludedCap(account: BillingAccount | null | undefined, message
   };
 }
 
-function describeError(
+export function describeError(
   code: string | undefined,
   message: string,
   account: BillingAccount | null | undefined,

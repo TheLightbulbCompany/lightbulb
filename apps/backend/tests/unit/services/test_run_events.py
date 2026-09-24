@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.services import messaging
+from core.services import chat_gate, messaging
 from core.services.messaging import ApiProblem, RunEventRequest, RunUsage
 
 RUN = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -242,24 +242,19 @@ async def test_post_processing_failure_never_5xxes_an_applied_ended_callback(met
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _not_capped():
-    with patch("core.services.trial_cap.trial_block_reason", AsyncMock(return_value=None)) as reason:
-        yield reason
+# The real helper, captured before the autouse fixture below replaces it.
+_real_budget_block_reason = chat_gate.budget_block_reason
 
 
 @pytest.fixture(autouse=True)
-def _not_credit_blocked():
-    """Default every test to NOT blocked on Bedrock/OpenRouter credits (Layer
-    3's shared predicate), the same way ``_not_capped`` defaults Layer 2's."""
+def _not_blocked():
+    """Default every test to an owner with budget; the helper itself is tested in
+    test_budget_block_reason below."""
     with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            AsyncMock(return_value={"provider_choice": "openrouter_managed"}),
-        ),
-        patch("core.services.metronome_gate.is_owner_blocked", AsyncMock(return_value=False)) as blocked,
+        patch("core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value={})),
+        patch("core.services.chat_gate.budget_block_reason", AsyncMock(return_value=None)) as reason,
     ):
-        yield blocked
+        yield reason
 
 
 def _failure_patches(create, trigger=None):
@@ -281,21 +276,21 @@ def _failure_patches(create, trigger=None):
             "error",
             "agent_stopped_responding",
             USAGE,
-            "I couldn't finish that (error: agent_stopped_responding). The agent stopped responding. "
+            "Run didn't finish (error: agent_stopped_responding). The agent stopped responding. "
             "Try again, or check Settings → Model & Credits if this keeps happening.",
         ),
         (
             "error",
             "https://x.example/key=sk-live-abc",
             USAGE,
-            "I couldn't finish that (error). Agent run failed. "
+            "Run didn't finish (error). Agent run failed. "
             "Try again, or check Settings → Model & Credits if this keeps happening.",
         ),
         (
             "error",
             None,
             USAGE,
-            "I couldn't finish that (error). Agent run failed. "
+            "Run didn't finish (error). Agent run failed. "
             "Try again, or check Settings → Model & Credits if this keeps happening.",
         ),
     ],
@@ -352,12 +347,15 @@ async def test_failure_message_write_error_never_5xxes_the_callback(metrics):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reason", ["trial_daily_cap", "included_daily_cap", "trial_expired"])
-async def test_failed_run_of_a_blocked_owner_says_why(metrics, _not_capped, reason):
+@pytest.mark.parametrize("reason", ["trial_daily_cap", "included_daily_cap", "trial_expired", "out_of_credits"])
+async def test_failed_run_of_a_blocked_owner_is_a_system_notice(metrics, _not_blocked, reason):
+    """Out of budget is the platform talking, not the agent: a system-authored
+    notice with the reason and its link, keyed on the run like the agent note."""
     from core.config import settings
+    from core.constants import SYSTEM_ACTOR_ID
     from core.services.chat_gate import BUDGET_BLOCK_MESSAGES
 
-    _not_capped.return_value = reason
+    _not_blocked.return_value = reason
     create = AsyncMock(return_value=({"messageId": "x"}, False))
     patches = _failure_patches(create)
     with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": "error"})):
@@ -366,13 +364,15 @@ async def test_failed_run_of_a_blocked_owner_says_why(metrics, _not_capped, reas
                 "o", _event(type="run.ended", outcome="error", error_kind="model_unavailable", usage=USAGE)
             )
     path, label = messaging.BUDGET_BLOCK_LINKS[reason]
-    expected = f"{BUDGET_BLOCK_MESSAGES[reason]} [{label}]({settings.FRONTEND_URL.rstrip('/')}{path})"
-    assert create.await_args.kwargs["text"] == expected
+    kw = create.await_args.kwargs
+    assert kw["text"] == f"{BUDGET_BLOCK_MESSAGES[reason]} [{label}]({settings.FRONTEND_URL.rstrip('/')}{path})"
+    assert kw["author"] == {"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"}
+    assert kw["idemp_sk"] == messaging.messaging_repo.agent_idemp_sk(f"run-failed:{RUN}")
 
 
 @pytest.mark.asyncio
-async def test_a_capped_owners_infra_failure_keeps_its_own_reason(metrics, _not_capped):
-    _not_capped.return_value = "trial_daily_cap"
+async def test_a_capped_owners_infra_failure_keeps_its_own_reason(metrics, _not_blocked):
+    _not_blocked.return_value = "trial_daily_cap"
     create = AsyncMock(return_value=({"messageId": "x"}, False))
     patches = _failure_patches(create)
     with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": "error"})):
@@ -381,24 +381,35 @@ async def test_a_capped_owners_infra_failure_keeps_its_own_reason(metrics, _not_
                 "o", _event(type="run.ended", outcome="error", error_kind="agent_did_not_start", usage=USAGE)
             )
     assert "The agent did not start this run." in create.await_args.kwargs["text"]
+    assert create.await_args.kwargs["author"]["kind"] == "agent"
 
 
 @pytest.mark.asyncio
-async def test_failed_run_of_a_credit_blocked_owner_says_so(metrics, _not_credit_blocked):
-    """A paid owner out of Bedrock/OpenRouter credits gets the out_of_credits
-    note instead of the generic model_unavailable text — same gate as
-    gate_chat/provision_gate Layer 3 (metronome_gate.is_owner_blocked)."""
-    from core.config import settings
-    from core.services.chat_gate import BUDGET_BLOCK_MESSAGES
-
-    _not_credit_blocked.return_value = True
-    create = AsyncMock(return_value=({"messageId": "x"}, False))
-    patches = _failure_patches(create)
-    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": "error"})):
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
-            await messaging.handle_run_event(
-                "o", _event(type="run.ended", outcome="error", error_kind="model_unavailable", usage=USAGE)
-            )
-    path, label = messaging.BUDGET_BLOCK_LINKS["out_of_credits"]
-    expected = f"{BUDGET_BLOCK_MESSAGES['out_of_credits']} [{label}]({settings.FRONTEND_URL.rstrip('/')}{path})"
-    assert create.await_args.kwargs["text"] == expected
+@pytest.mark.parametrize(
+    "account,cap_reason,credits_blocked,expected",
+    [
+        ({"subscription_status": "trial_local"}, "trial_expired", True, "trial_expired"),
+        # A capped owner never falls through to the credit check, even carrying openrouter_managed.
+        ({"subscription_status": "trial_local", "provider_choice": "openrouter_managed"}, None, True, None),
+        (
+            {"subscription_status": "active", "plan": "standard", "provider_choice": "openrouter_managed"},
+            None,
+            True,
+            "out_of_credits",
+        ),
+        (
+            {"subscription_status": "active", "plan": "standard", "provider_choice": "openrouter_managed"},
+            None,
+            False,
+            None,
+        ),
+        ({"subscription_status": "active", "plan": "standard", "provider_choice": "chatgpt_oauth"}, None, True, None),
+        (None, None, True, None),
+    ],
+)
+async def test_budget_block_reason(account, cap_reason, credits_blocked, expected):
+    with (
+        patch("core.services.trial_cap.reason_for_account", AsyncMock(return_value=cap_reason)),
+        patch("core.services.metronome_gate.is_owner_blocked", AsyncMock(return_value=credits_blocked)),
+    ):
+        assert await _real_budget_block_reason("o", account) == expected

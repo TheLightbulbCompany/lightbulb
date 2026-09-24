@@ -316,6 +316,12 @@ class ProjectorTests(unittest.TestCase):
             # Only the <=140-char preview rides the user channel, never the message body.
             self.assertEqual(event["payload"]["lastMessage"]["textPreview"], "hello")
             self.assertNotIn("text", event["payload"])
+            # The banner rides only for a reader it notifies.
+            push = event["payload"].get("push")
+            self.assertEqual(push is not None, expected)
+            if push:
+                self.assertEqual(push["body"], "hello")
+                self.assertEqual(push["data"]["messageId"], message["messageId"])
             self.assertNotIn("author", event["payload"])
             self.assertTrue(all(call["ConsistentRead"] for call in index._ddb_client.calls))
 
@@ -704,6 +710,12 @@ class PushTests(unittest.TestCase):
         self.assertEqual([m["to"] for m in messages], ["tok-carol"])
         self.assertEqual(messages[0]["title"], "Alice")
         self.assertEqual(messages[0]["subtitle"], "Direct message")
+        # Desktop gets the phone's exact banner; a muted reader gets none.
+        publish, _ = self.project(push_world(kind="dm", muted=(BOB_ID,)))
+        payloads = {c.args[0]: c.args[1]["payload"] for c in publish.call_args_list}
+        self.assertNotIn("push", payloads[f"/ws/{WORKSPACE_ID}/users/{BOB_KEY}"])
+        phone = {k: v for k, v in messages[0].items() if k not in ("to", "sound")}
+        self.assertEqual(payloads[f"/ws/{WORKSPACE_ID}/users/{CAROL_KEY}"]["push"], phone)
 
     def test_author_token_is_never_collected(self):
         # A DM notifies every non-author member, so the author clause is the

@@ -453,6 +453,28 @@ def _push_subtitle(meta: dict[str, Any]) -> str:
     return f"Group chat \u00b7 {name}" if name else "Group chat"
 
 
+def _render_push(message: dict[str, Any], meta: dict[str, Any], mentioned: bool) -> dict[str, Any]:
+    """The one banner text: Expo sends it to phones and the user channel carries
+    it to desktop/web, so every surface says the same thing."""
+    return {
+        "title": _push_title(message, meta, mentioned),
+        "subtitle": _push_subtitle(meta),
+        # A whitespace-only caption is an attachment, not a body.
+        "body": _plain_preview(message["text"])[:PUSH_BODY_CHARS] or "Sent an image",
+        # APNs thread-id: iOS stacks one conversation into one group instead of
+        # N unrelated banners. Deliberately NOT collapseId, which REPLACES the
+        # undelivered notification and would hide every message in a burst but
+        # the newest.
+        "threadId": message["roomId"],
+        "data": {
+            "roomId": message["roomId"],
+            "messageId": message["messageId"],
+            "messageSeq": message["messageSeq"],
+            "threadRootMessageId": message["threadRootMessageId"],
+        },
+    }
+
+
 def _send_push(
     recipients: list[tuple[str, bool]], message: dict[str, Any], meta: dict[str, Any]
 ) -> None:
@@ -474,29 +496,8 @@ def _send_push(
             )
             _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "capped"})
             recipients = recipients[:MAX_PUSH_TOKENS]
-        data = {
-            "roomId": message["roomId"],
-            "messageId": message["messageId"],
-            "messageSeq": message["messageSeq"],
-            "threadRootMessageId": message["threadRootMessageId"],
-        }
-        subtitle = _push_subtitle(meta)
-        # A whitespace-only caption is an attachment, not a body.
-        text = _plain_preview(message["text"])[:PUSH_BODY_CHARS] or "Sent an image"
         body = json.dumps([
-            {
-                "to": token,
-                "title": _push_title(message, meta, mentioned),
-                "subtitle": subtitle,
-                "body": text,
-                "data": data,
-                "sound": "default",
-                # APNs thread-id: iOS stacks one conversation into one group
-                # instead of N unrelated banners. Deliberately NOT collapseId,
-                # which REPLACES the undelivered notification and would hide
-                # every message in a burst but the newest.
-                "threadId": message["roomId"],
-            }
+            {"to": token, **_render_push(message, meta, mentioned), "sound": "default"}
             for token, mentioned in recipients
         ]).encode("utf-8")
         request = urllib.request.Request(
@@ -572,23 +573,27 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[tuple
         )
         # Mute is client-side everywhere else; push is server-side by nature,
         # so it is the one surface that has to honour it here.
+        payload = {"roomId": room_id, "messageId": message["messageId"],
+                   "messageSeq": seq, "threadRootMessageId": root, "notify": notify,
+                   "lastMessage": last_message, "mentionedUserIds": mentioned_ids}
         if notify:
             if member.get("muted") is True:
                 _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "muted"})
             else:
                 at_me = user_id in mentioned
                 recipients.extend((token, at_me) for token in _push_tokens(user_id))
-        # A <=140-char plain preview may ride the private user channel, to members
-        # current at publish time only (_member_streams strong-reads each one). The
-        # full message stays behind the authenticated HTTP read and the room
-        # channel, whose deliveryKey rotation remains the revocation boundary.
+                # The same banner the phone gets, for desktop/web to show verbatim.
+                payload["push"] = _render_push(message, meta, at_me)
+        # A <=140-char plain preview (and, when it notifies, the phone's banner) may
+        # ride the private user channel, to members current at publish time only
+        # (_member_streams strong-reads each one). The full message stays behind the
+        # authenticated HTTP read and the room channel, whose deliveryKey rotation
+        # remains the revocation boundary.
         _publish(channel, {
             "schemaVersion": 1, "eventId": str(uuid5(UUID(message["messageId"]), f"notify:{user_id}")),
             "type": "room.message.available", "occurredAt": message["createdAt"],
             "roomId": room_id, "messageSeq": seq,
-            "payload": {"roomId": room_id, "messageId": message["messageId"],
-                        "messageSeq": seq, "threadRootMessageId": root, "notify": notify,
-                        "lastMessage": last_message, "mentionedUserIds": mentioned_ids},
+            "payload": payload,
         })
     return recipients
 

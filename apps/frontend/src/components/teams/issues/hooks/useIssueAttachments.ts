@@ -4,7 +4,6 @@
 // so the section component stays declarative.
 
 import { useCallback } from "react";
-import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { IssueAttachment } from "@/components/teams/shared/types";
 
@@ -25,8 +24,7 @@ export interface UseIssueAttachmentsResult {
 }
 
 export function useIssueAttachments(issueId: string): UseIssueAttachmentsResult {
-  const { read, upload, download, del } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { read, upload, download, del, mutate } = useTeamsApi();
   const listPath = `/issues/${issueId}/attachments`;
   const { data, error, isLoading } = read<{ attachments: IssueAttachment[] }>(listPath);
 

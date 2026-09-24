@@ -2,7 +2,6 @@
 "use client";
 
 import { useCallback } from "react";
-import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 /**
@@ -21,8 +20,7 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
  * the comments list for the issue.
  */
 export function useInteractionMutations() {
-  const { post } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { post, mutate } = useTeamsApi();
 
   const revalidate = useCallback(
     (issueId: string) => {

@@ -6,7 +6,6 @@
 // Mirrors useIssueAttachments' shape so the Output section stays declarative.
 
 import { useCallback } from "react";
-import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type {
   IssueWorkProduct,
@@ -35,8 +34,7 @@ function wpTime(wp: IssueWorkProduct): number {
 }
 
 export function useIssueWorkProducts(issueId: string): UseIssueWorkProductsResult {
-  const { read, patch } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { read, patch, mutate } = useTeamsApi();
   const listPath = `/issues/${issueId}/work-products`;
   const { data, error, isLoading } = read<{ workProducts: IssueWorkProduct[] }>(listPath);
 

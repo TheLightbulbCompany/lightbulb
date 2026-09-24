@@ -245,13 +245,7 @@ export function TaskChatThread({
       >
         {composerAccessory}
         <TaskChatComposer
-          onAdd={async (body) => {
-            await onAdd(body);
-            // useIssueMutations.addComment revalidates with useSWRConfig's string
-            // key, which never matches useTeamsApi's scoped tuple key — so this
-            // is the one refetch that lands.
-            void refetchComments();
-          }}
+          onAdd={onAdd}
           onStop={cancelRun}
           agents={agents}
           assigneeName={assigneeName}

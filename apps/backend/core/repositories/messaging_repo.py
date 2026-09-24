@@ -5,7 +5,7 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
 
     OWNER#<owner>   ROOM#<room>                        room directory projection
     ROOM#<room>     META                               owner, fields, revision, lastSeq, deliveryKey, lastMessage (top-level preview),
-                                                       topCount/topBase (top-level ordinals, see unread_count)
+                                                       topCount (top-level ordinals, see unread_count)
     ROOM#<room>     MEMBER#<kind>#<id>                 role, listenMode, mentionHandle, joinedSeq, joinedTopOrdinal, homeOwnerId (foreign members of a shared room; memberKey is keyed on it)
     ROOM#<room>     MSG#<20-digit seq>                 original request + public edit overlay + dispatchTargets + topOrdinal
     ROOM#<room>     MENTION#<user>#<20-digit seq>      one per @mentioned human (not the author); counted for mentionCount
@@ -466,38 +466,26 @@ async def get_read_cursor(room_id: str, user_id: str) -> int:
 # needs no read the room list does not already make. Own messages drop out
 # because a human's top-level post moves their own cursor to it.
 #
-# Rows written before ordinals existed: ``META.topBase`` is the ``lastSeq`` at
-# which a room's first ordinal was minted (absent = the room has none yet, so
-# every seq is legacy), and a legacy seq IS its own ordinal. Legacy history
-# therefore counts the old way (replies and own messages included) until the
-# reader moves past it. A cursor or join point above ``topBase`` with no
-# ordinal (written by an old task during the deploy roll) falls back to the old
-# ``lastSeq - floor`` for that reader until their next read.
+# A missing ordinal reads as 0 and the count clamps at 0, so a room written
+# before ordinals existed shows 0 unread (never a crash or a negative) until
+# ``scripts/backfill_room_ordinals.py`` stamps it. No legacy read path.
 # ---------------------------------------------------------------------------
 
 COUNT_CAP = 99
 
 
 def _top_count(meta: dict) -> int:
-    return int(meta["topCount"]) if meta.get("topCount") is not None else int(meta["lastSeq"])
+    return int(meta.get("topCount") or 0)
 
 
-def _stamped_or_legacy(meta: dict, seq: int, stamped: Any) -> int | None:
-    if stamped is not None:
-        return int(stamped)
-    base = int(meta["topBase"]) if meta.get("topBase") is not None else int(meta["lastSeq"])
-    return seq if seq <= base else None
-
-
-async def _ordinal_at(meta: dict, seq: int) -> int | None:
+async def _ordinal_at(meta: dict, seq: int) -> int:
     """The top-level ordinal of the room position ``seq`` (0 = before everything)."""
     if seq == int(meta["lastSeq"]):
         return _top_count(meta)
-    legacy = _stamped_or_legacy(meta, seq, None)
-    if legacy is not None:
-        return legacy
+    if seq <= 0:
+        return 0
     row = await get_message(meta["roomId"], seq)
-    return _stamped_or_legacy(meta, seq, (row or {}).get("topOrdinal"))
+    return int((row or {}).get("topOrdinal") or 0)
 
 
 def read_floor(member: dict, read: dict | None) -> int:
@@ -506,21 +494,12 @@ def read_floor(member: dict, read: dict | None) -> int:
 
 def unread_count(meta: dict, member: dict, read: dict | None) -> int:
     """Top-level messages above the reader's floor, capped at ``COUNT_CAP``."""
-    read = read or {}
-    last_read, joined = int(read.get("lastReadSeq", 0)), int(member.get("joinedSeq", 0))
-    read_ord = _stamped_or_legacy(meta, last_read, read.get("topOrdinal"))
-    join_ord = _stamped_or_legacy(meta, joined, member.get("joinedTopOrdinal"))
-    if read_ord is None or join_ord is None:
-        unread = int(meta["lastSeq"]) - max(last_read, joined)
-    else:
-        unread = _top_count(meta) - max(read_ord, join_ord)
-    return min(COUNT_CAP, max(0, unread))
+    floor = max(int((read or {}).get("topOrdinal") or 0), int(member.get("joinedTopOrdinal") or 0))
+    return min(COUNT_CAP, max(0, _top_count(meta) - floor))
 
 
-async def mention_count(room_id: str, user_id: str, floor: int, last_seq: int) -> int:
-    """``MENTION#`` rows above ``floor``, capped. A read room costs nothing."""
-    if floor >= last_seq:
-        return 0
+async def mention_count(room_id: str, user_id: str, floor: int) -> int:
+    """``MENTION#`` rows above ``floor``, capped. Callers skip a read room."""
     from boto3.dynamodb.conditions import Key
 
     response = await run_in_thread(
@@ -695,7 +674,6 @@ async def create_room(
         # Present-and-null, not absent: the room-list preview (see last_message_preview).
         "lastMessage": None,
         "topCount": 0,
-        "topBase": 0,
         "deliveryKey": str(uuid.uuid4()),
         "workspaceId": workspace_id,
         "createdAt": now,
@@ -921,9 +899,6 @@ async def create_message(
         }
         meta_values: dict[str, Any] = {":seq": seq, ":expected": expected, ":now": now, ":top": ordinal}
         meta_set = "SET lastSeq = :seq, lastMessageAt = :now, updatedAt = :now, topCount = :top"
-        if meta.get("topCount") is None:
-            # The room's first ordinal: every seq up to here is legacy (see unread_count).
-            meta_set += ", topBase = :expected"
         if top:
             # The room-list preview follows top-level messages only; thread replies
             # change neither the preview nor the sidebar order.
@@ -1623,22 +1598,18 @@ async def advance_agent_delivery(room_id: str, agent_id: str, expected: int, thr
 
 
 async def _write_cursor(meta: dict, user_id: str, target: int, condition: str) -> None:
-    """Set ``lastReadSeq`` with the ordinal of that seq, so the pair never splits.
-    An unknown ordinal (a deploy-roll gap) is removed, not left stale."""
-    ordinal = await _ordinal_at(meta, target)
-    values: dict[str, Any] = {":n": target, ":u": user_id, ":now": utc_now_iso()}
-    update = "SET lastReadSeq = :n, userId = :u, updatedAt = :now"
-    if ordinal is None:
-        update += " REMOVE topOrdinal"
-    else:
-        update += ", topOrdinal = :o"
-        values[":o"] = ordinal
+    """Set ``lastReadSeq`` with the ordinal of that seq, so the pair never splits."""
     await run_in_thread(
         _table().update_item,
         Key={"pk": room_pk(meta["roomId"]), "sk": read_sk(user_id)},
-        UpdateExpression=update,
+        UpdateExpression="SET lastReadSeq = :n, topOrdinal = :o, userId = :u, updatedAt = :now",
         ConditionExpression=condition,
-        ExpressionAttributeValues=values,
+        ExpressionAttributeValues={
+            ":n": target,
+            ":o": await _ordinal_at(meta, target),
+            ":u": user_id,
+            ":now": utc_now_iso(),
+        },
     )
 
 

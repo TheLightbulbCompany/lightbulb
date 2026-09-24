@@ -143,35 +143,41 @@ async def test_a_member_joining_later_counts_only_what_came_after(table):
     assert await _counts(room_id, "user_C") == (1, 1)
 
 
-@pytest.mark.asyncio
-async def test_legacy_rows_without_ordinals_fall_back_to_the_seq_count_then_become_exact(table):
-    room_id = await _two_humans()
-    root = await _say(room_id, BOB, "1")
-    await _say(room_id, BOB, "2", thread_root=root["messageId"])
-    await _say(room_id, ANN, "3")
-    await _say(room_id, AGENT, "4")
-    # Strip everything this PR stamps, as on rows written before it deployed.
+def _strip_ordinals(table, room_id):
+    """Rows as written before this PR deployed: no topCount / topOrdinal / joinedTopOrdinal."""
     pk = repo.room_pk(room_id)
     for item in table.scan()["Items"]:
+        if item["pk"] != pk:
+            continue
         if item["sk"] == "META":
-            table.update_item(Key={"pk": pk, "sk": "META"}, UpdateExpression="REMOVE topCount, topBase")
+            table.update_item(Key={"pk": pk, "sk": "META"}, UpdateExpression="REMOVE topCount")
         elif item["sk"].startswith(("MSG#", "READ#", "MEMBER#")):
             table.update_item(Key={"pk": pk, "sk": item["sk"]}, UpdateExpression="REMOVE topOrdinal, joinedTopOrdinal")
-    # Legacy: lastSeq - floor (A's cursor is at 3 from posting).
-    assert (await _counts(room_id, USER_A))[0] == 1
-    assert (await _counts(room_id, USER_B))[0] == 3
-    # A new message stamps ordinals on top of the legacy space: legacy seqs stay
-    # their own ordinal, new top-level messages count exactly.
-    await _say(room_id, BOB, "5", thread_root=root["messageId"])
-    await _say(room_id, AGENT, "6")
-    assert (await _counts(room_id, USER_A))[0] == 2
-    assert (await _counts(room_id, USER_B))[0] == 4
-    await repo.set_read_cursor(room_id, USER_B, 4)
-    assert (await _counts(room_id, USER_B))[0] == 1
-    await repo.set_read_cursor(room_id, USER_B, 5)
-    assert (await _counts(room_id, USER_B))[0] == 1
-    await repo.set_read_cursor(room_id, USER_B, 6)
+
+
+@pytest.mark.asyncio
+async def test_an_unbackfilled_room_reads_as_zero_unread_never_negative(table):
+    room_id = await _two_humans()
+    await _say(room_id, BOB, "1")
+    await _say(room_id, AGENT, "2")
+    await repo.set_read_cursor(room_id, USER_A, 1)
+    _strip_ordinals(table, room_id)
+    assert (await _counts(room_id, USER_A))[0] == 0
     assert (await _counts(room_id, USER_B))[0] == 0
+    # A reader whose cursor carries an ordinal above a room's missing topCount clamps at 0.
+    meta = await repo.get_room(room_id)
+    assert repo.unread_count(meta, {"joinedSeq": 0}, {"lastReadSeq": 2, "topOrdinal": 5}) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_read_room_runs_no_mention_query(table, monkeypatch):
+    room_id = await _two_humans()
+    await _say(room_id, BOB, "hi", mentions=[USER_A])
+    await repo.set_read_cursor(room_id, USER_A, 1)
+    spy = AsyncMock(return_value=0)
+    monkeypatch.setattr(repo, "mention_count", spy)
+    assert await _counts(room_id, USER_A) == (0, 0)
+    spy.assert_not_awaited()
 
 
 @pytest.mark.asyncio

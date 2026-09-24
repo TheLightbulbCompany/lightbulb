@@ -561,6 +561,8 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[tuple
             and (row.get("messageId") == root or row.get("threadRootMessageId") == root)
         }
     mentioned = {ref["id"] for ref in message["mentions"] if ref["kind"] == "human"}
+    if message["author"]["kind"] == "human":
+        mentioned.discard(message["author"]["id"])  # a self-mention is not a mention (nor a MENTION# row)
     last_message = _last_message(message)
     mentioned_ids = sorted(mentioned)[:MAX_MENTIONED_USERS]
     # (token, was this token's owner @mentioned) — the push title is per reader.

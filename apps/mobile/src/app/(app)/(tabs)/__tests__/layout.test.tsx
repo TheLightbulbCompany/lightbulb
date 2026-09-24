@@ -38,7 +38,6 @@ jest.mock("expo-router/unstable-native-tabs", () => {
 });
 jest.mock("../../../../lib/rooms", () => ({ useMobileRooms: () => ({ rooms: [] }) }));
 jest.mock("../../../../lib/unreadBadge", () => ({
-  useChannelMentions: () => new Map<string, number>(),
   badgeCount: () => mockUnread,
 }));
 const mockSetBadgeCountAsync = jest.fn(async (_total: number) => true);

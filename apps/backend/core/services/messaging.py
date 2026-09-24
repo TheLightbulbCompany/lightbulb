@@ -1270,7 +1270,9 @@ def _room_member(item: dict[str, Any]) -> RoomMember:
 
 async def _mention_count(meta: dict, member: dict, read: dict | None, user_id: str) -> int:
     floor = messaging_repo.read_floor(member, read)
-    return await messaging_repo.mention_count(meta["roomId"], user_id, floor, int(meta["lastSeq"]))
+    if floor >= int(meta["lastSeq"]):
+        return 0  # a read room costs no query
+    return await messaging_repo.mention_count(meta["roomId"], user_id, floor)
 
 
 def _room_summary_fields(meta: dict, member: dict, read: dict | None, mention_count: int = 0) -> dict[str, Any]:
@@ -1310,10 +1312,10 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
         # even on a room shared with the vendor workspace.
         messaging_repo.list_open_runs_for_room(meta["ownerId"], meta["roomId"]),
     )
-    emails = await human_emails(members)
+    emails, mentions = await asyncio.gather(human_emails(members), _mention_count(meta, member, read, user_id))
     agent_ids = {row["id"] for row in members if row["kind"] == "agent"}
     return RoomDetail(
-        **_room_summary_fields(meta, member, read, await _mention_count(meta, member, read, user_id)),
+        **_room_summary_fields(meta, member, read, mentions),
         delivery_key=meta["deliveryKey"],
         members=[_room_member(row) for row in with_human_handles(members, emails)],
         created_at=meta["createdAt"],
@@ -1382,8 +1384,7 @@ async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
             )
             if member is None:
                 return None
-            emails = await human_emails(members)
-            mentions = await _mention_count(meta, member, read, user_id)
+            emails, mentions = await asyncio.gather(human_emails(members), _mention_count(meta, member, read, user_id))
         return RoomSummary(
             **_room_summary_fields(meta, member, read, mentions),
             members=[_room_member(item) for item in with_human_handles(members, emails)],

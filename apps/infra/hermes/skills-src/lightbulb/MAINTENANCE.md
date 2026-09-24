@@ -143,6 +143,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/routers/launch.py; core/services/launch_{phase,settings,service,referral,close,revenue}.py
   - Email ................... references/email.md
                               <- /app/skills/lightbulb/scripts/lightbulb-mail.sh + backend routers/agent_mail.py + core/services/agent_mail_send.py (one send door; policy table in its docstring)
+  - Post outside a turn ..... references/platform-primitives.md ("Post outside a room turn") + SKILL.md routing row
+                              <- /app/skills/lightbulb/scripts/lightbulb-post.sh + backend routers/messaging.py (post_agent_post,
+                                 /internal/messaging/agent-posts) + core/services/messaging.py (resolve_agent_post_room — the
+                                 room > user/handle > issue creator > #general order; then create_agent_message)
   - Hook-token calls ........ SKILL.md (the non-negotiable) + references/money.md (the status tables)
                               <- /app/skills/lightbulb/scripts/lightbulb-api.sh — every OPENCLAW_HOOK_TOKEN call goes through a script on disk;
                                  apps/infra/hermes/plugins/lightbulb/__init__.py (_register_redaction) masks that header including $VAR refs,

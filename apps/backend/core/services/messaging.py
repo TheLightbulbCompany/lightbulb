@@ -3095,3 +3095,169 @@ async def _publish_room_metadata(meta: dict) -> None:
 
 def json_body_size(value: dict[str, Any]) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+class AgentPostRequest(ContractModel):
+    """An agent posting OUTSIDE a room turn (a Paperclip run, heartbeat or routine).
+
+    Target, first that applies: ``roomId`` → that room (membership checked, never
+    auto-joined); ``userId``/``handle`` → that workspace member's DM with the agent;
+    ``issueId`` → the issue creator's DM; otherwise the workspace's #general."""
+
+    event_id: str
+    agent_id: uuid.UUID
+    text: str
+    room_id: uuid.UUID | None = None
+    user_id: str | None = Field(default=None, min_length=1, max_length=256)
+    handle: str | None = Field(default=None, min_length=1, max_length=64)
+    issue_id: str | None = Field(default=None, min_length=1, max_length=256, pattern=r"^[A-Za-z0-9-]+$")
+
+    @field_validator("event_id")
+    @classmethod
+    def validate_event_id(cls, value: str) -> str:
+        return validate_event_id(value)
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        return validate_message_text(value)
+
+    @model_validator(mode="after")
+    def one_target(self) -> "AgentPostRequest":
+        if sum(x is not None for x in (self.room_id, self.user_id, self.handle)) > 1:
+            raise ValueError("name at most one of roomId, userId, handle")
+        return self
+
+
+async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str) -> str:
+    """The human↔agent DM, created through the same ``create_room`` the web client's
+    ``selectDm`` calls (agent ``active``) when none exists. The client room id is derived
+    from the pair, so two racing posts converge on one room instead of two DMs."""
+    for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id):
+        meta = row["meta"]
+        if (
+            meta.get("kind") == "dm"
+            and not meta.get("deletedAt")
+            and await messaging_repo.get_member(meta["roomId"], "human", user_id) is not None
+            and await messaging_repo.get_member(meta["roomId"], "agent", agent_id) is not None
+        ):
+            return meta["roomId"]
+    detail = await create_room(
+        AuthContext(user_id=user_id, org_id=owner_id),
+        CreateRoomRequest(
+            client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-agent-dm|{owner_id}|{user_id}|{agent_id}"),
+            name=None,
+            kind="dm",
+            members=[CreateRoomMember(kind="agent", id=agent_id, role="member", listen_mode="active")],
+        ),
+    )
+    return str(detail.room_id)
+
+
+async def _user_for_handle(owner_id: str, handle: str) -> str:
+    """A workspace member by messaging handle, derived exactly as rooms derive it.
+
+    ponytail: handles are per-room derived (see ``with_human_handles``), so this uses the
+    workspace-wide derivation; two humans whose handles collide only in some room still
+    resolve here. Pass ``userId`` when a handle is ambiguous."""
+    from core.services.clerk_admin import list_organization_members
+
+    people = await list_organization_members(owner_id)
+    if not people:
+        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not read workspace members.", retryable=True, retry_after=3)
+    agents = [
+        {"kind": "agent", "mentionHandle": h} for h in mention_handles(await load_agent_roster(owner_id)).values()
+    ]
+    humans = [
+        {
+            "kind": "human",
+            "id": p["user_id"],
+            "displayName": " ".join(x for x in (p.get("first_name"), p.get("last_name")) if x) or p["user_id"],
+        }
+        for p in people
+    ]
+    emails = {p["user_id"]: p["email"] for p in people if p.get("email")}
+    wanted = handle.removeprefix("@").lower()
+    for row in with_human_handles(agents + humans, emails):
+        if row["kind"] == "human" and row["mentionHandle"] == wanted:
+            return row["id"]
+    raise ApiProblem("MEMBER_NOT_FOUND", "No workspace member has that handle.")
+
+
+async def _issue_creator(owner_id: str, issue_id: str) -> str | None:
+    """The Clerk user who created a Paperclip issue in this owner's company, or None when an
+    agent created it or the creator is no longer a member. Paperclip→Clerk goes through the
+    same workspace-member identity rows ``activity._people`` maps with."""
+    import httpx
+
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
+    from core.services.paperclip_admin_session import get_admin_session_cookie
+
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    company = await repo.resolve_owner_row(owner_id)
+    if company is None:
+        raise ApiProblem("ROOM_FORBIDDEN", "This workspace has no Paperclip company.")
+    admin = shared_admin_client()
+    try:
+        issue = await admin.get_issue(session_cookie=await get_admin_session_cookie(admin._http), issue_id=issue_id)
+    except PaperclipApiError as exc:
+        if exc.status_code in (403, 404):
+            raise ApiProblem("ROOM_FORBIDDEN", "That issue is not in this workspace.") from exc
+        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not read the issue.", retryable=True, retry_after=3) from exc
+    except httpx.HTTPError as exc:
+        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not read the issue.", retryable=True, retry_after=3) from exc
+    if (issue or {}).get("companyId") != company.company_id:
+        raise ApiProblem("ROOM_FORBIDDEN", "That issue is not in this workspace.")
+    creator = issue.get("createdByUserId")
+    if not creator:
+        return None
+    workspace = await repo.get_workspace(owner_id)
+    for uid in list(getattr(workspace, "member_user_ids", None) or []):
+        identity = await repo.get_identity(uid)
+        if identity is not None and identity.paperclip_user_id == creator:
+            try:
+                await _validate_human_in_owner(owner_id, uid)
+            except ApiProblem:
+                return None
+            return uid
+    return None
+
+
+async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> str:
+    agent_id = str(request.agent_id)
+    if request.room_id is not None:
+        return str(request.room_id)
+    user_id = request.user_id
+    if user_id is not None:
+        # _validate_human_in_owner waves the owner id itself through; an org id is never a human.
+        if not user_id.startswith("user_") or user_id == owner_id:
+            raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
+        await _validate_human_in_owner(owner_id, user_id)
+    elif request.handle is not None:
+        user_id = await _user_for_handle(owner_id, request.handle)
+    elif request.issue_id is not None:
+        user_id = await _issue_creator(owner_id, request.issue_id)
+    if user_id is not None:
+        return await _agent_dm_room_id(owner_id, user_id, agent_id)
+    room_id = default_room_id(owner_id)
+    meta = await messaging_repo.get_room(room_id)
+    if meta is None or meta.get("deletedAt"):
+        raise ApiProblem("ACTION_UNAVAILABLE", "This workspace has no #general; name a room, user or issue.")
+    return room_id
+
+
+async def post_agent_message(owner_id: str, request: AgentPostRequest) -> AgentMessageReceiptResponse:
+    """Resolve the target, then write through THE canonical agent writer."""
+    room_id = await resolve_agent_post_room(owner_id, request)
+    return await create_agent_message(
+        owner_id,
+        AgentMessageRequest(
+            event_id=request.event_id,
+            room_id=room_id,
+            agent_id=request.agent_id,
+            text=request.text,
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+        ),
+    )

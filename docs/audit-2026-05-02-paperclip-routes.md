@@ -244,7 +244,24 @@ These routers contain only read-only endpoints or per-company CRUD that doesn't 
 
 Even with every FILTER_REQUEST/BLOCK above wired correctly, a tenant who can speak `openclaw_gateway` retains the following capabilities. None are show-stoppers but the proxy author should know about them.
 
-### 3.1 SSRF via `openclaw_gateway` test/execute URLs
+### 3.1 SSRF via `openclaw_gateway` test/execute URLs — RESOLVED (Option 1, 2026-09-23)
+
+`_assert_paperclip_request_allowed` in `apps/backend/routers/paperclip_proxy.py` now
+rejects any write (POST/PUT/PATCH) whose body carries an `adapterConfig` key
+ANYWHERE — checked recursively (`_contains_adapter_config`), not just at the top
+level, specifically because the route table above (§2) documents Paperclip
+accepting it nested too, at `runtimeConfig.modelProfiles.<name>.adapterConfig`, on
+the very three routes this filter guards. This is option 1 below, taken to its
+logical conclusion: rather than validating `adapterConfig.url`/`.headers` against
+an allowlist, the proxy refuses the field outright, since no legitimate
+browser-driven write ever needs to send it at all — the backend mints the real
+`hermes_gateway` config server-side, pinned to its own internal facade, via a
+direct Paperclip admin-API call that never touches this proxy. Option 2
+(network-level egress restriction) is not done and stays valid defense-in-depth
+if anyone finds another route into `adapterConfig`. The rest of
+this section (the original openclaw_gateway-era analysis) is kept for the
+historical threat model; the adapter is now `hermes_gateway` (see CLAUDE.md's
+rebrand section on `packages/adapters/openclaw-gateway` naming residue).
 
 `packages/adapters/openclaw-gateway/src/server/test.ts:212-247` and `execute.ts` both connect to **whatever `adapterConfig.url` says**, with no host allowlist. The schema only checks: (a) URL is parseable, (b) protocol is `ws://` or `wss://`. There is a `level: "warn"` check for plaintext-ws-to-non-loopback (line 239), but it does not refuse — it still opens the socket.
 

@@ -4,7 +4,10 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { CreditsSection } from "../CreditsSection";
 
 const mockUseCredits = vi.fn();
-vi.mock("@/hooks/useCredits", () => ({ useCredits: () => mockUseCredits() }));
+vi.mock("@/hooks/useCredits", async () => ({
+  ...(await vi.importActual<typeof import("@/hooks/useCredits")>("@/hooks/useCredits")),
+  useCredits: () => mockUseCredits(),
+}));
 
 describe("CreditsSection", () => {
   beforeEach(() => {
@@ -17,6 +20,27 @@ describe("CreditsSection", () => {
       canManageCredits: true,
       pendingTopUp: null,
     });
+  });
+
+  it("marks a balance below $5 as running low", () => {
+    mockUseCredits.mockReturnValue({ ...mockUseCredits(), balance: { balance_microcents: 4_905_211, balance_dollars: "4.91", is_exhausted: false } });
+    render(<CreditsSection />);
+    expect(screen.getByText("$4.91")).toHaveClass("text-warn");
+    expect(screen.getByText(/running low/i)).toBeInTheDocument();
+    expect(screen.queryByText(/out of credits/i)).toBeNull();
+  });
+
+  it("marks an unspendable balance as out of credits, not low", () => {
+    mockUseCredits.mockReturnValue({ ...mockUseCredits(), balance: { balance_microcents: 0, balance_dollars: "0.00", is_exhausted: true } });
+    render(<CreditsSection />);
+    expect(screen.getByText("$0.00")).toHaveClass("text-err");
+    expect(screen.getByText(/out of credits/i)).toBeInTheDocument();
+    expect(screen.queryByText(/running low/i)).toBeNull();
+  });
+
+  it("shows no balance warning on a healthy balance", () => {
+    render(<CreditsSection />);
+    expect(screen.queryByText(/running low|out of credits/i)).toBeNull();
   });
 
   it("renders the balance and payment-gated top-up CTA without a page heading", () => {

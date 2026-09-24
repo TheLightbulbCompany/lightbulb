@@ -46,6 +46,20 @@ describe("OutOfCreditsBanner", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it("warns below $5 for a managed-model owner", () => {
+    mockCredits.mockReturnValue({ balance: { balance_microcents: 4_905_211, balance_dollars: "4.91", is_exhausted: false } });
+    render(<OutOfCreditsBanner />);
+    expect(screen.getByText("Workspace credits are running low ($4.91 left).")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Top up" })).toHaveAttribute("href", "/chat?panel=llm");
+  });
+
+  it("does not warn low for an owner on another provider", () => {
+    mockSwr.mockReturnValue({ data: { provider_choice: "byo_key" } });
+    mockCredits.mockReturnValue({ balance: { balance_microcents: 1_000_000, balance_dollars: "1.00", is_exhausted: false } });
+    const { container } = render(<OutOfCreditsBanner />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it("stays hidden on an indeterminate balance", () => {
     // Metronome outage / no customer yet. A false out-of-credits banner is
     // worse than a late one.

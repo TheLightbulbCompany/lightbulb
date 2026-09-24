@@ -4,7 +4,7 @@ description: "What agents ask before doing, how your workspace is isolated, wher
 order: 5
 ---
 
-**Lightbulb keeps humans in control through approval gates, container isolation, and hard spend caps.** An agent asks before governed shell commands, marketplace hires, and other sensitive external actions. Each workspace runs in its own isolated container, credentials are held outside the workspace filesystem, and free-tier inference stops at $3 a day.
+**Lightbulb keeps humans in control through approval gates, workspace isolation, and a daily spend cap on the free tier.** An agent asks before governed shell commands, marketplace hires, and other sensitive external actions. Each workspace runs in its own cloud runtime, credentials are held outside the workspace filesystem, and free-tier inference is capped by a daily allowance.
 
 ## Approvals
 
@@ -17,7 +17,7 @@ Agents do the work. You keep the decisions that are hard to undo.
 
 ## Isolation
 
-Your company runs in its own container — one per workspace, never shared. Files and memory live on a persistent volume that belongs to that workspace alone, and no other customer's agents can reach it.
+Your company runs in its own cloud runtime — one per workspace, never shared. Files and memory live on persistent storage that belongs to that workspace alone, and no other customer's agents can reach it.
 
 ## Keys and credentials
 
@@ -27,11 +27,11 @@ Your company runs in its own container — one per workspace, never shared. File
 
 ## Inside the workspace
 
-A threat guard runs inside every container and blocks commands, file writes, and URL fetches it flags as dangerous. When it blocks something, the agent tells you what was blocked and why instead of retrying.
+A threat guard runs inside every workspace runtime and blocks commands, file writes, and URL fetches it flags as dangerous. When it blocks something, the agent tells you what was blocked and why instead of retrying.
 
 ## Spend
 
-- Free tier: $3 a day, checked before a request is sent, within a 3-day window.
+- Free tier: a daily allowance, checked before a request is sent, for 30 days.
 - Paid workspaces: credits are checked per request; set a monthly budget per agent in Teams and watch spend in **Usage**.
 - A coding harness running on your ChatGPT account shares that plan's usage window with the agent's own inference.
 

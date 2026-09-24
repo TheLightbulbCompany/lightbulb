@@ -346,12 +346,13 @@ function BillingPanel() {
       : null;
   // trial_local's `trial_end` is the OVERALL free-tier window expiry — stamped
   // locally at signup as created + 30 days (backend trial_cap._is_expired), NOT
-  // the daily $3 reset boundary (which resets at UTC midnight and is tracked
-  // separately). Once it elapses the backend blocks usage outright
+  // the daily allowance reset boundary (which resets at UTC midnight and is
+  // tracked separately). Once it elapses the backend blocks usage outright
   // (trial_block_reason -> TRIAL_EXPIRED) WITHOUT flipping subscription_status,
   // so isTrialLocal stays true. Detect the elapsed window here so the card
-  // stops promising "$3/day of included usage" and instead shows the paused
-  // state — while keeping the Subscribe CTA as the owner's path forward.
+  // stops promising "a daily allowance of included usage" and instead shows
+  // the paused state — while keeping the Subscribe CTA as the owner's path
+  // forward.
   const isTrialExpired =
     isTrialLocal &&
     account?.trial_end != null &&
@@ -488,7 +489,7 @@ function BillingPanel() {
                 : isTrialLocal
                   ? isTrialExpired
                     ? `Free tier ended${trialEndLabel ? ` on ${trialEndLabel}` : ""} — your agents are paused.`
-                    : "Free tier — $3/day of included usage."
+                    : "Free tier — a daily allowance of included usage."
                   : isSubscribed
                     ? "Active subscription"
                     : "No active subscription"}

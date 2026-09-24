@@ -8,10 +8,11 @@ import { captureSignupCta } from "@/lib/signupFlow";
 import { Arrow } from "./Arrow";
 
 /**
- * Pricing — one flat price, three ways to power inference.
+ * Pricing — one workspace, three ways to power inference.
  *
- * The cards are provider PATHS, not tiers: every plan is the same $50
- * workspace. Order and highlighting come from `PROVIDER_CARDS`.
+ * The cards are provider PATHS, not plans. Exact plan prices (Base/Workspace/
+ * Ultra) live on the in-app Billing page via `/billing/account` — never
+ * hardcoded here. Order and highlighting come from `PROVIDER_CARDS`.
  */
 const ART: Record<string, { src: string; pos: string }> = {
   chatgpt_oauth: { src: "/landing/ladder-star.jpg", pos: "center 30%" },
@@ -32,16 +33,13 @@ export function PricingThreeCard() {
     <section id="pricing" className="lb-pricing">
       <div className="lb-wrap">
         <h2 className="lb-h2">
-          One price.{" "}
+          One workspace.{" "}
           <br className="lb-brk" />
           Three ways to power it.
         </h2>
 
         <p className="lb-price-hero">
-          <b>
-            <sup>$</sup>50
-          </b>
-          <span>/mo</span>
+          <b>Choose your plan</b>
         </p>
         <p className="lb-price-free">
           <strong>Start free for 30 days</strong> — no credit card.

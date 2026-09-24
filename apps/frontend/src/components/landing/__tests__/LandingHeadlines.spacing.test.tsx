@@ -23,7 +23,7 @@ import { render } from "@testing-library/react";
  *   "Your team and your agents,in one place."
  *   "Three steps between youand your next hire."
  *   "Everything you needto run the company."
- *   "One price.Three ways to power it."
+ *   "One workspace.Three ways to power it."
  *
  * The fix is an explicit {" "} before each break — invisible when the break
  * renders, correct when it doesn't. These assertions are width-independent on
@@ -65,6 +65,6 @@ describe("landing headlines survive .lb-brk being hidden", () => {
   it("PricingThreeCard keeps a space after the first sentence", async () => {
     const { PricingThreeCard } = await import("../PricingThreeCard");
     const { container } = render(<PricingThreeCard />);
-    expect(flatten(container)).toContain("One price. Three ways to power it.");
+    expect(flatten(container)).toContain("One workspace. Three ways to power it.");
   });
 });

@@ -209,7 +209,7 @@ export default function Page() {
           <div className="auth-brand-middle">
             <div className="auth-eyebrow">Get started</div>
             <h1 className="auth-tagline">
-              Your <em>personal AI</em>
+              Your AI <em>company</em>
               <br />
               starts here.
             </h1>
@@ -224,7 +224,7 @@ export default function Page() {
                 </div>
                 <div>
                   <div className="auth-feat-title">Private by design</div>
-                  <div className="auth-feat-desc">Your own isolated container. No shared data.</div>
+                  <div className="auth-feat-desc">Your own private workspace. No shared data.</div>
                 </div>
               </div>
               <div className="auth-feat" role="listitem">

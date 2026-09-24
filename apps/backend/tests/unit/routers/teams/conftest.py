@@ -10,7 +10,7 @@ fence end to end opts back in with ``@pytest.mark.real_fences``.
 import pytest
 
 from main import app
-from routers.teams import agents, approvals, issues
+from routers.teams import agents, approvals, issues, work
 from routers.teams.agents import SafeId
 from routers.teams.approvals import ApprovalId
 from routers.teams.issues import IssueId
@@ -28,6 +28,22 @@ def _pass_agent(agent_id: SafeId) -> str:
     return agent_id
 
 
+def _pass_goal(goal_id: SafeId) -> str:
+    return goal_id
+
+
+def _pass_project(project_id: SafeId) -> str:
+    return project_id
+
+
+def _pass_routine(routine_id: SafeId) -> str:
+    return routine_id
+
+
+def _pass_trigger(trigger_id: SafeId) -> str:
+    return trigger_id
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_fences: keep the Teams company-fence dependencies live")
 
@@ -41,6 +57,10 @@ def _stub_company_fences(request):
         issues._company_issue: _pass_issue,
         approvals._company_approval: _pass_approval,
         agents._company_agent: _pass_agent,
+        work._company_goal: _pass_goal,
+        work._company_project: _pass_project,
+        work._company_routine: _pass_routine,
+        work._company_routine_trigger: _pass_trigger,
     }
     saved = {k: app.dependency_overrides.get(k) for k in stubs}
     app.dependency_overrides.update(stubs)

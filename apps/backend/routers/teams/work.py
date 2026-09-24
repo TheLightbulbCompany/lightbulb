@@ -38,6 +38,56 @@ _ctx = _agents._ctx
 # Interpolated into a fixed upstream path, so it may not carry "/", "." or "?".
 RoutineId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 
+
+def _same_company(entity: Any, ctx: TeamsContext, what: str) -> dict:
+    """404 unless ``entity`` is in the caller's workspace company.
+
+    Paperclip authorizes by the member's session, and a Paperclip user can hold
+    memberships in more than one company, so the session alone does not pin an
+    entity to THIS workspace. Same fence as issues' ``CompanyIssueId``.
+    """
+    if not isinstance(entity, dict) or entity.get("companyId") != ctx.company_id:
+        raise HTTPException(status_code=404, detail=f"{what} not found")
+    return entity
+
+
+async def _company_goal(goal_id: RoutineId, ctx: TeamsContext = Depends(_ctx)) -> str:
+    _same_company(await _agents._admin().get_goal(session_cookie=ctx.session_cookie, goal_id=goal_id), ctx, "Goal")
+    return goal_id
+
+
+async def _company_project(project_id: RoutineId, ctx: TeamsContext = Depends(_ctx)) -> str:
+    project = await _agents._admin().get_project(session_cookie=ctx.session_cookie, project_id=project_id)
+    _same_company(project, ctx, "Project")
+    return project_id
+
+
+async def _company_routine(routine_id: RoutineId, ctx: TeamsContext = Depends(_ctx)) -> str:
+    routine = await _agents._admin().get_routine(session_cookie=ctx.session_cookie, routine_id=routine_id)
+    _same_company(routine, ctx, "Routine")
+    return routine_id
+
+
+async def _company_routine_trigger(
+    routine_id: RoutineId, trigger_id: RoutineId, ctx: TeamsContext = Depends(_ctx)
+) -> str:
+    """The routine is in this workspace AND the trigger is one of its triggers.
+
+    Upstream's ``/api/routine-triggers/{id}`` (patch, delete, rotate-secret) is
+    NOT routine-scoped, so fencing the routine alone would not pin the trigger.
+    """
+    routine = await _agents._admin().get_routine(session_cookie=ctx.session_cookie, routine_id=routine_id)
+    _same_company(routine, ctx, "Routine")
+    if not any(isinstance(t, dict) and t.get("id") == trigger_id for t in routine.get("triggers") or []):
+        raise HTTPException(status_code=404, detail="Trigger not found on this routine")
+    return trigger_id
+
+
+CompanyGoalId = Annotated[str, Depends(_company_goal)]
+CompanyProjectId = Annotated[str, Depends(_company_project)]
+CompanyRoutineId = Annotated[str, Depends(_company_routine)]
+CompanyRoutineTriggerId = Annotated[str, Depends(_company_routine_trigger)]
+
 logger = logging.getLogger(__name__)
 
 
@@ -102,7 +152,7 @@ async def create_routine(
 
 @router.post("/routines/{routine_id}/triggers")
 async def create_routine_trigger(
-    routine_id: str,
+    routine_id: CompanyRoutineId,
     body: CreateRoutineTriggerBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -137,7 +187,7 @@ async def create_routine_trigger(
 
 @router.patch("/routines/{routine_id}")
 async def patch_routine(
-    routine_id: str,
+    routine_id: CompanyRoutineId,
     body: PatchRoutineBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -226,7 +276,7 @@ async def patch_routine(
 
 
 @router.delete("/routines/{routine_id}")
-async def delete_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def delete_routine(routine_id: CompanyRoutineId, ctx: TeamsContext = Depends(_ctx)):
     """Delete a routine. Idempotent — upstream 404 is swallowed.
 
     Nightly CEO loop opt-out: deleting the nightly routine is an
@@ -257,7 +307,7 @@ async def delete_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 @router.post("/routines/{routine_id}/run")
 async def run_routine(
-    routine_id: str,
+    routine_id: CompanyRoutineId,
     body: dict[str, Any] = Body(default_factory=dict),
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -281,7 +331,7 @@ async def run_routine(
 
 @router.get("/routines/{routine_id}/runs")
 async def list_routine_runs(
-    routine_id: str,
+    routine_id: CompanyRoutineId,
     ctx: TeamsContext = Depends(_ctx),
 ):
     """List run history for a routine."""
@@ -293,7 +343,7 @@ async def list_routine_runs(
 
 
 @router.get("/routines/{routine_id}")
-async def get_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def get_routine(routine_id: CompanyRoutineId, ctx: TeamsContext = Depends(_ctx)):
     """Fetch a single routine by id (the routine detail page).
 
     Webhook triggers are stamped with ``fireUrl`` — the public address the
@@ -312,7 +362,7 @@ async def get_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.get("/routines/{routine_id}/activity")
-async def list_routine_activity(routine_id: RoutineId, ctx: TeamsContext = Depends(_ctx)):
+async def list_routine_activity(routine_id: CompanyRoutineId, ctx: TeamsContext = Depends(_ctx)):
     """A routine's activity — the ported stock RoutineDetail Activity section.
 
     Stock (``ui/src/api/routines.ts`` ``routinesApi.activity`` @
@@ -381,8 +431,8 @@ async def list_routine_activity(routine_id: RoutineId, ctx: TeamsContext = Depen
 
 @router.patch("/routines/{routine_id}/triggers/{trigger_id}")
 async def patch_routine_trigger(
-    routine_id: str,
-    trigger_id: str,
+    routine_id: RoutineId,
+    trigger_id: CompanyRoutineTriggerId,
     body: UpdateRoutineTriggerBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -442,8 +492,8 @@ async def patch_routine_trigger(
 
 @router.delete("/routines/{routine_id}/triggers/{trigger_id}")
 async def delete_routine_trigger(
-    routine_id: str,
-    trigger_id: str,
+    routine_id: RoutineId,
+    trigger_id: CompanyRoutineTriggerId,
     ctx: TeamsContext = Depends(_ctx),
 ):
     """Delete a routine trigger. Idempotent — upstream 404 is swallowed.
@@ -469,8 +519,8 @@ async def delete_routine_trigger(
 
 @router.post("/routines/{routine_id}/triggers/{trigger_id}/rotate-secret")
 async def rotate_routine_trigger_secret(
-    routine_id: str,
-    trigger_id: str,
+    routine_id: RoutineId,
+    trigger_id: CompanyRoutineTriggerId,
     ctx: TeamsContext = Depends(_ctx),
 ):
     """Rotate a webhook trigger's signing secret.
@@ -492,7 +542,7 @@ async def rotate_routine_trigger_secret(
 
 @router.get("/routines/{routine_id}/revisions")
 async def list_routine_revisions(
-    routine_id: str,
+    routine_id: CompanyRoutineId,
     ctx: TeamsContext = Depends(_ctx),
 ):
     """List a routine's revision history (for the detail page's Revisions view)."""
@@ -505,8 +555,8 @@ async def list_routine_revisions(
 
 @router.post("/routines/{routine_id}/revisions/{revision_id}/restore")
 async def restore_routine_revision(
-    routine_id: str,
-    revision_id: str,
+    routine_id: CompanyRoutineId,
+    revision_id: RoutineId,
     ctx: TeamsContext = Depends(_ctx),
 ):
     """Restore a routine to a prior revision snapshot.
@@ -548,7 +598,7 @@ async def list_goals(ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.get("/goals/{goal_id}")
-async def get_goal(goal_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def get_goal(goal_id: CompanyGoalId, ctx: TeamsContext = Depends(_ctx)):
     """Fetch a single goal by id (the goal detail page).
 
     Maps to upstream ``GET /api/goals/{id}`` which returns the full Goal row.
@@ -576,7 +626,7 @@ async def create_goal(
 
 @router.patch("/goals/{goal_id}")
 async def patch_goal(
-    goal_id: str,
+    goal_id: CompanyGoalId,
     body: PatchGoalBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -589,7 +639,7 @@ async def patch_goal(
 
 
 @router.delete("/goals/{goal_id}")
-async def delete_goal(goal_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def delete_goal(goal_id: CompanyGoalId, ctx: TeamsContext = Depends(_ctx)):
     """Delete a goal.
 
     Maps to upstream ``DELETE /api/goals/{id}``. The admin client's
@@ -616,7 +666,7 @@ async def list_projects(ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.get("/projects/{project_id}")
-async def get_project(project_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def get_project(project_id: CompanyProjectId, ctx: TeamsContext = Depends(_ctx)):
     """Fetch a single project by id."""
     return await _agents._admin().get_project(
         project_id=project_id,
@@ -639,7 +689,7 @@ async def create_project(
 
 @router.patch("/projects/{project_id}")
 async def patch_project(
-    project_id: str,
+    project_id: CompanyProjectId,
     body: PatchProjectBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -652,7 +702,7 @@ async def patch_project(
 
 
 @router.delete("/projects/{project_id}")
-async def delete_project(project_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def delete_project(project_id: CompanyProjectId, ctx: TeamsContext = Depends(_ctx)):
     """Delete a project.
 
     ``_delete`` treats a 404 as already-gone (idempotent), so a

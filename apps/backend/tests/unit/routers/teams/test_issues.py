@@ -133,6 +133,33 @@ def test_list_issues_omits_exclude_routine_executions_when_false(client, monkeyp
     )
 
 
+@pytest.mark.parametrize(
+    "value,status",
+    [("22222222-2222-2222-2222-222222222222", 200), ("ceo", 422), ("../x", 422)],
+)
+def test_list_issues_participant_agent_filter(client, monkeypatch, value, status):
+    """The agent Dashboard's Recent Tasks: ``participantAgentId`` forwards
+    verbatim and, like ``assignee``, must be a uuid (upstream casts it)."""
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value={"issues": []})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/issues",
+        params={"participantAgentId": value},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == status
+    if status == 200:
+        admin.list_issues.assert_awaited_once_with(
+            company_id="co_abc", session_cookie="cookie", params={"participantAgentId": value}
+        )
+    else:
+        admin.list_issues.assert_not_awaited()
+
+
 def test_list_issues_rejects_bad_sort_dir(client, monkeypatch):
     """A malformed ``sortDir`` 422s at the boundary before any upstream call."""
     admin = MagicMock()

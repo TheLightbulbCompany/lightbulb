@@ -258,3 +258,49 @@ def test_watchdog_decision_rejects_bad_decision(client, monkeypatch):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422
+
+
+# --- agent runs list (ported stock agent Dashboard / Runs tabs) --------------
+
+AGT = "22222222-2222-2222-2222-222222222222"
+H = {"Authorization": "Bearer x"}
+
+
+@pytest.fixture
+def admin(client, monkeypatch):
+    from routers.teams import agents as agents_mod
+
+    fake = MagicMock()
+    fake.get_agent = AsyncMock(return_value={"id": AGT, "companyId": "co_abc", "name": "CEO"})
+    fake.list_company_heartbeat_runs = AsyncMock(return_value=[{"id": "run_1", "status": "succeeded"}, "junk"])
+    monkeypatch.setattr(agents_mod, "_admin", lambda: fake)
+    return fake
+
+
+def test_agent_runs_forwards_own_company_and_resolved_agent_id(client, admin):
+    # A url-key resolves to the agent row; the upstream filter carries its uuid.
+    r = client.get("/api/v1/teams/agents/ceo/runs", headers=H)
+    assert r.status_code == 200
+    assert r.json() == {"runs": [{"id": "run_1", "status": "succeeded"}]}
+    admin.get_agent.assert_awaited_once_with(agent_id="ceo", session_cookie="cookie")
+    admin.list_company_heartbeat_runs.assert_awaited_once_with(
+        session_cookie="cookie", company_id="co_abc", agent_id=AGT, limit=200
+    )
+
+
+def test_agent_runs_forwards_limit(client, admin):
+    assert client.get(f"/api/v1/teams/agents/{AGT}/runs?limit=5", headers=H).status_code == 200
+    assert admin.list_company_heartbeat_runs.await_args.kwargs["limit"] == 5
+
+
+@pytest.mark.parametrize("agent", [{"id": AGT, "companyId": "co_OTHER"}, {"id": AGT}, None, []])
+def test_agent_runs_404_for_another_companys_agent(client, admin, agent):
+    admin.get_agent.return_value = agent
+    assert client.get(f"/api/v1/teams/agents/{AGT}/runs", headers=H).status_code == 404
+    admin.list_company_heartbeat_runs.assert_not_awaited()
+
+
+@pytest.mark.parametrize("url", ["/api/v1/teams/agents/a.b/runs", f"/api/v1/teams/agents/{AGT}/runs?limit=0"])
+def test_agent_runs_bad_input_is_422(client, admin, url):
+    assert client.get(url, headers=H).status_code == 422
+    admin.get_agent.assert_not_awaited()

@@ -64,6 +64,9 @@ async def list_issues(
     # to a Postgres ``uuid``, so a malformed value 500s and leaks the company
     # path. ``"null"`` is the sentinel upstream accepts to filter unassigned.
     assignee: Optional[str] = Query(default=None, pattern=r"^([0-9a-fA-F-]{36}|null)$"),
+    # Upstream ``participantAgentId`` (assignee, author or commenter) — the
+    # agent Dashboard's Recent Tasks. Same uuid-cast guard as ``assignee``.
+    participant_agent_id: Optional[str] = Query(default=None, alias="participantAgentId", pattern=_UUID_RE),
     sort_field: Optional[str] = Query(default=None, alias="sortField", pattern=r"^(updated)$"),
     sort_dir: Optional[str] = Query(default=None, alias="sortDir", pattern=r"^(asc|desc)$"),
     limit: Optional[int] = Query(default=None, ge=1, le=500),
@@ -98,6 +101,8 @@ async def list_issues(
         upstream_params["projectId"] = project
     if assignee is not None:
         upstream_params["assigneeAgentId"] = assignee
+    if participant_agent_id is not None:
+        upstream_params["participantAgentId"] = participant_agent_id
     if sort_field is not None:
         upstream_params["sortField"] = sort_field
     if sort_dir is not None:

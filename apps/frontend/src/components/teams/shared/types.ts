@@ -563,6 +563,8 @@ export interface RunDetail {
   exitCode?: number | null;
   signal?: string | null;
   usageJson?: Record<string, unknown> | null;
+  /** Adapter result; `summary`/`result` feed the agent Dashboard/Runs excerpts. */
+  resultJson?: Record<string, unknown> | null;
   sessionIdBefore?: string | null;
   sessionIdAfter?: string | null;
   logBytes?: number | null;

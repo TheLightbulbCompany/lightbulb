@@ -216,12 +216,16 @@ export function describePanel(
     // param here, not a one-shot — the reconciler delivers chat params
     // straight from descriptor.params (never via oneShots), see Ruling 3 in
     // task-7a's report.
+    // A session is workspace-scoped: a `room` riding along (old links) is ignored.
+    if (params.session) {
+      return { panelId: MESSAGES_PANEL_ID, component: "chat", title: "Messages", params: { sessionId: params.session }, renderer: "always" };
+    }
     if (params.room) {
       return {
         panelId: MESSAGES_PANEL_ID,
         component: "chat",
         title: "Messages",
-        params: { roomId: params.room, ...(params.session ? { sessionId: params.session } : params.message ? { messageId: params.message } : {}) },
+        params: { roomId: params.room, ...(params.message ? { messageId: params.message } : {}) },
         renderer: "always",
       };
     }
@@ -256,8 +260,8 @@ export function describePanel(
   // tab — every "session" URL/link retargets the same chat descriptor a room
   // permalink with ?session= already produces.
   if (key === "session") {
-    if (!params.room || !params.session) return null;
-    return describePanel("chat", { room: params.room, session: params.session });
+    if (!params.session) return null;
+    return describePanel("chat", { session: params.session });
   }
 
   if (key.startsWith("teams-")) {

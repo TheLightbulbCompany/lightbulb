@@ -130,6 +130,8 @@ async def _actor_label(command: dict) -> dict | None:
     """Room-derived handle and name of the sender; the desktop shows it in the owner's terminal."""
     from core.services.messaging import human_emails, with_human_handles
 
+    if not command.get("roomId"):
+        return None  # a roomless command comes from the session's own human
     kind, member_id = ("agent", command["actor"]["id"]) if "actor" in command else ("human", command["actorUserId"])
     room_members = await store.list_members(command["roomId"])
     members = with_human_handles(room_members, await human_emails(room_members))
@@ -555,7 +557,7 @@ class LocalSessionRelay:
     async def _dispatch_checks(self, row: dict, command: dict, claim: bool) -> list[dict] | None:
         owner, sid = row["ownerId"], row["sessionId"]
         auth = sessions.command_caller(owner, command)
-        current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid)
+        current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid, owner_only=True)
         sessions._require_control(current, sessions._public(sessions.LocalSessionCommand, command))
         connection, _ = await self.connect(current["connectionId"])
         if connection["device_id"] != current["deviceId"] or connection["user_id"] != current["humanUserId"]:

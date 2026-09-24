@@ -2,17 +2,18 @@ import { expect, it, vi } from "vitest";
 import { copyText, messagePermalink, sessionPermalink, parseSessionPermalink } from "../messageLinks";
 
 it("recognizes only exact same-origin session URLs", () => {
-  const url = sessionPermalink("room-1", "session-1", "https://flickmeon.ai");
-  expect(url).toBe("https://flickmeon.ai/chat?panel=session&room=room-1&session=session-1");
-  expect(parseSessionPermalink(url, "https://flickmeon.ai")).toEqual({ roomId: "room-1", sessionId: "session-1" });
+  const url = sessionPermalink("session-1", "https://flickmeon.ai");
+  expect(url).toBe("https://flickmeon.ai/chat?panel=session&session=session-1");
+  expect(parseSessionPermalink(url, "https://flickmeon.ai")).toEqual({ sessionId: "session-1" });
   for (const invalid of [url.replace("flickmeon.ai", "other.invalid"), `${url}&message=msg`, `${url}&session=second`, url.replace("/chat?", "/other?"), "javascript:alert(1)"]) {
     expect(parseSessionPermalink(invalid, "https://flickmeon.ai")).toBeNull();
   }
 });
 
-it("still accepts the legacy panel=chat grammar for session links minted before the dock panel shipped", () => {
-  const legacy = "https://flickmeon.ai/chat?panel=chat&room=room-1&session=session-1";
-  expect(parseSessionPermalink(legacy, "https://flickmeon.ai")).toEqual({ roomId: "room-1", sessionId: "session-1" });
+it("still accepts room-scoped and legacy panel=chat session links, ignoring the room", () => {
+  for (const legacy of ["https://flickmeon.ai/chat?panel=session&room=room-1&session=session-1", "https://flickmeon.ai/chat?panel=chat&room=room-1&session=session-1"]) {
+    expect(parseSessionPermalink(legacy, "https://flickmeon.ai")).toEqual({ sessionId: "session-1" });
+  }
 });
 
 it("builds a chat permalink", () => {

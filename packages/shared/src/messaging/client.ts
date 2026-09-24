@@ -21,8 +21,8 @@ import type {
   SteerRunResponse,
   TypingRequest,
   UpsertRoomMemberRequest,
-  RoomResources,
   WorkspaceSessions,
+  LocalSession,
   LocalSessionEventPage,
   LocalSessionCommand,
   LocalSessionCommandReceipt,
@@ -37,7 +37,7 @@ import type {
 export type RoomAttachmentInput = Blob | { uri: string; name: string; type: string };
 
 const roomPath = (roomId: string) => `/messaging/rooms/${encodeURIComponent(roomId)}`;
-const localSessionPath = (roomId: string, sessionId: string) => `${roomPath(roomId)}/local-sessions/${encodeURIComponent(sessionId)}`;
+const sessionPath = (sessionId: string) => `/messaging/sessions/${encodeURIComponent(sessionId)}`;
 
 /**
  * Prod incident: the server stored + returned 201 within the same second, but
@@ -58,11 +58,12 @@ const SEND_MESSAGE_TIMEOUT_MS = 30_000;
 const HISTORY_TIMEOUT_MS = 30_000;
 
 export interface MessagingClient {
-  listResources(roomId: string, options?: { includeEnded?: boolean }): Promise<RoomResources>;
   listWorkspaceSessions(): Promise<WorkspaceSessions>;
-  listLocalSessionEvents(roomId: string, sessionId: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
-  submitLocalSessionCommand(roomId: string, sessionId: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt>;
-  getLocalSessionCommand(roomId: string, sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
+  /** One session, ended included -- the list keeps only live ones. 404s LOCAL_SESSION_NOT_FOUND otherwise. */
+  getLocalSession(sessionId: string): Promise<LocalSession>;
+  listLocalSessionEvents(sessionId: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
+  submitLocalSessionCommand(sessionId: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt>;
+  getLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
   updateMessage(roomId: string, messageId: string, request: UpdateMessageRequest): Promise<CanonicalRoomMessage>;
   setReaction(roomId: string, messageId: string, emoji: string, active: boolean): Promise<CanonicalRoomMessage>;
   getLiveConfig(): Promise<LiveConfig>;
@@ -92,14 +93,13 @@ export interface MessagingClient {
 
 export function createMessagingClient(api: ApiMethods): MessagingClient {
   return {
-    listResources: (roomId, options) =>
-      api.get(`${roomPath(roomId)}/resources${options?.includeEnded ? "?includeEnded=true" : ""}`) as Promise<RoomResources>,
     listWorkspaceSessions: () => api.get("/messaging/sessions") as Promise<WorkspaceSessions>,
-    listLocalSessionEvents: (roomId, sessionId, afterSeq, limit = 50) => api.get(
-      `${localSessionPath(roomId, sessionId)}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
+    getLocalSession: (sessionId) => api.get(sessionPath(sessionId)) as Promise<LocalSession>,
+    listLocalSessionEvents: (sessionId, afterSeq, limit = 50) => api.get(
+      `${sessionPath(sessionId)}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ) as Promise<LocalSessionEventPage>,
-    submitLocalSessionCommand: (roomId, sessionId, request) => api.post(`${localSessionPath(roomId, sessionId)}/commands`, request) as Promise<LocalSessionCommandReceipt>,
-    getLocalSessionCommand: (roomId, sessionId, requestId) => api.get(`${localSessionPath(roomId, sessionId)}/commands/${encodeURIComponent(requestId)}`) as Promise<LocalSessionCommandReceipt>,
+    submitLocalSessionCommand: (sessionId, request) => api.post(`${sessionPath(sessionId)}/commands`, request) as Promise<LocalSessionCommandReceipt>,
+    getLocalSessionCommand: (sessionId, requestId) => api.get(`${sessionPath(sessionId)}/commands/${encodeURIComponent(requestId)}`) as Promise<LocalSessionCommandReceipt>,
     updateMessage: (roomId, messageId, request) => api.patch(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}`, request) as Promise<CanonicalRoomMessage>,
     setReaction: (roomId, messageId, emoji, active) => api.put(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/reactions`, { emoji, active }) as Promise<CanonicalRoomMessage>,
     getLiveConfig: () => api.get("/messaging/live-config") as Promise<LiveConfig>,

@@ -1,27 +1,26 @@
 "use client";
 
 import { useId, useState } from "react";
-import { sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, useSessionCommand, type LocalSession, type RoomResourceSource } from "@lightbulb/shared";
+import { sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, useSessionCommand, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { copyText, sessionPermalink } from "./messageLinks";
 import { LocalSessionWork } from "./LocalSessionWork";
-import { NativeSessionTranscript, type Person } from "./NativeSessionTranscript";
+import { NativeSessionTranscript } from "./NativeSessionTranscript";
 
-export function LocalSessionPanel({ session, ownerName, own, roomId, client, revision, onAccessLost, onShare, participants = [] }: {
-  session: LocalSession; ownerName: string; own: boolean; roomId: string; client: RoomResourceSource["client"];
-  revision: number; onAccessLost: () => void; onShare?: (url: string) => void;
-  participants?: readonly Person[];
+export function LocalSessionPanel({ session, ownerName, own, client, revision, onAccessLost }: {
+  session: LocalSession; ownerName: string; own: boolean; client: SessionSource["client"];
+  revision: number; onAccessLost: () => void;
 }) {
   const busy = session.status === "busy";
   // Backstop poll while the session is producing output: the relay throttles
   // transcript hints (1/s per session, no trailing edge), so hints alone can
   // leave an open transcript behind during sustained output. Idle sessions
-  // stay on hints plus the resources safety poll. Quiet: no spinner, no focus steal.
-  const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs: busy ? 5000 : 0 });
+  // stay on hints plus the sessions safety poll. Quiet: no spinner, no focus steal.
+  const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs: busy ? 5000 : 0 });
   const [text, setText] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
   const id = useId();
-  const command = useSessionCommand(client, roomId, session, { uuid: () => crypto.randomUUID(), onAccessLost, onSent: () => setText("") });
+  const command = useSessionCommand(client, session, { uuid: () => crypto.randomUUID(), onAccessLost, onSent: () => setText("") });
   const target = sessionLabel(session);
   const glyph = session.provider === "claude" ? ">" : "›";
   return <>
@@ -32,9 +31,8 @@ export function LocalSessionPanel({ session, ownerName, own, roomId, client, rev
       {session.controlUnavailableReason && <p role="status" className="text-sm text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
       {session.workspace?.changed && <p role="status" className="text-sm text-warn">Checkout changes detected. The next remote contribution asks the session to re-read relevant files; refresh is not proven.</p>}
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" onClick={async () => setCopyStatus(await copyText(sessionPermalink(roomId, session.sessionId)) ? "Session link copied." : "Could not copy session link.")}>Copy session link</Button>
-        {onShare && <Button variant="outline" onClick={() => onShare(sessionPermalink(roomId, session.sessionId))}>Add link to conversation draft</Button>}
-        <LocalSessionWork roomId={roomId} sessionId={session.sessionId} />
+        <Button variant="outline" onClick={async () => setCopyStatus(await copyText(sessionPermalink(session.sessionId)) ? "Session link copied." : "Could not copy session link.")}>Copy session link</Button>
+        <LocalSessionWork sessionId={session.sessionId} />
       </div>
       {copyStatus && <p role="status">{copyStatus}</p>}
       <details className="text-sm text-muted-foreground"><summary>About this session</summary>
@@ -44,13 +42,13 @@ export function LocalSessionPanel({ session, ownerName, own, roomId, client, rev
     </div>
     <div className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0}>
       {history.hasOlder && <Button variant="outline" disabled={history.loading} onClick={() => void history.load("older")}>Load older</Button>}
-      <NativeSessionTranscript provider={session.provider} events={history.events} busy={busy && !history.hasNewer} ownerName={ownerName} participants={participants} />
+      <NativeSessionTranscript provider={session.provider} events={history.events} busy={busy && !history.hasNewer} ownerName={ownerName} participants={[]} />
       {history.loading && <p role="status">Loading session history…</p>}
       {history.error && <div role="alert"><p>{history.error}</p><Button variant="outline" onClick={() => void history.retry()}>Retry history</Button></div>}
       {!history.loading && !history.error && history.events.length === 0 && <p>No shared output yet.</p>}
       {history.hasNewer && <div className="local-session-pagination"><p className="text-sm text-muted-foreground">More recent activity is available.</p><Button variant="outline" disabled={history.loading} onClick={() => void history.load("newer")}>Load newer</Button><Button variant="outline" disabled={history.loading} onClick={() => void history.load("latest")}>Jump to latest</Button></div>}
     </div>
-    <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); command.send(text); }}>
+    {session.status === "ended" ? null : own ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); command.send(text); }}>
       <label htmlFor={id} className="text-sm font-semibold">Send to {target}</label>
       <div className="native-session-prompt-row"><span className="native-session-glyph" aria-hidden="true">{glyph}</span>
         <textarea id={id} className="room-input" rows={2} value={text} disabled={!command.canSend || command.locked} onChange={event => setText(event.target.value)}
@@ -64,6 +62,6 @@ export function LocalSessionPanel({ session, ownerName, own, roomId, client, rev
       {command.receipt?.held && <p className="text-sm text-muted-foreground">Admission is not completed work.</p>}
       {command.canCheck && <Button type="button" variant="outline" disabled={command.checking} onClick={() => void command.checkDelivery()}>Check delivery</Button>}
       {command.attempt?.state === "uncertain" && <Button type="button" variant="outline" disabled={!command.canSend || command.checking} onClick={() => command.retry()}>Retry same request</Button>}
-    </form>
+    </form> : <p className="room-composer text-sm text-muted-foreground">Only {ownerName} can send to this session.</p>}
   </>;
 }

@@ -155,7 +155,7 @@ async def test_agent_dispatch_uses_typed_author_and_fences_revocation_or_expiry(
 
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
     db[0].put_item(Item={"pk": f"ROOM#{ROOM}", "sk": "MEMBER#agent#friday", "kind": "agent", "id": "friday"})
-    caller = grants.verify(grants.mint(OWNER, ROOM, "friday", OTHER_ROOM))
+    caller = grants.verify(grants.mint(OWNER, ROOM, "friday", OTHER_ROOM, ALICE.user_id))
     sid = await start(transport)
     await service.submit_command(caller, ROOM, sid, command(service))
     transport[3].clear()
@@ -605,10 +605,10 @@ async def test_router_dispatches_post_but_receipt_get_is_read_only(transport):
     sid = await start(transport)
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_current_user] = lambda: BOB
+    app.dependency_overrides[get_current_user] = lambda: ALICE
     with patch("core.services.local_session_relay.get_local_session_relay", return_value=relay(transport)):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            path = f"/messaging/rooms/{ROOM}/local-sessions/{sid}/commands"
+            path = f"/messaging/sessions/{sid}/commands"
             result = await client.post(path, json=command(service).model_dump(by_alias=True))
             assert result.status_code == 202
             assert result.json()["state"] == "dispatched"
@@ -863,11 +863,11 @@ async def test_http_dispatch_failure_returns_durable_receipt_without_logging_tex
     sid = await start(transport)
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_current_user] = lambda: BOB
+    app.dependency_overrides[get_current_user] = lambda: ALICE
     with patch("core.services.local_session_relay.get_local_session_relay", side_effect=RuntimeError("secret-token")):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             result = await client.post(
-                f"/messaging/rooms/{ROOM}/local-sessions/{sid}/commands",
+                f"/messaging/sessions/{sid}/commands",
                 json=command(service).model_dump(by_alias=True),
             )
     assert result.status_code == 202 and result.json()["state"] == "pending"
@@ -908,7 +908,7 @@ async def test_session_revision_contention_retries_without_rejecting_authorized_
     await service.submit_command(BOB, ROOM, sid, command(service, requestId="request-2"))
     authorize, calls = service.authorize_session, 0
 
-    async def ingest_before_authorization(*args):
+    async def ingest_before_authorization(*args, **kwargs):
         nonlocal calls
         calls += 1
         if calls == (1 if phase == "before-claim" else 2):
@@ -923,7 +923,7 @@ async def test_session_revision_contention_retries_without_rejecting_authorized_
                     "events": [{"kind": "lifecycle", "role": "system", "text": "busy"}],
                 },
             )
-        return await authorize(*args)
+        return await authorize(*args, **kwargs)
 
     transport[3].clear()
     with patch.object(service, "authorize_session", side_effect=ingest_before_authorization):
@@ -1005,7 +1005,7 @@ async def test_rich_events_round_trip_and_old_shape_still_accepted(transport):
     app.include_router(router)
     app.dependency_overrides[get_current_user] = lambda: BOB
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get(f"/messaging/rooms/{ROOM}/local-sessions/{sid}/events")
+        response = await client.get(f"/messaging/sessions/{sid}/events")
     assert response.status_code == 200
     wire = response.json()
     assert "nextAfterSeq" in wire and wire["nextAfterSeq"] is None

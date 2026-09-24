@@ -123,8 +123,8 @@ export type {
   ToolTranscriptRow,
   TranscriptRow,
 } from "./messaging/localSessionTranscript";
-export { accessLost, useLocalSessionHistory, useRoomResources } from "./messaging/useRoomResources";
-export type { RoomResourceSource } from "./messaging/useRoomResources";
+export { accessLost, useLocalSessionHistory } from "./messaging/useLocalSessionHistory";
+export type { SessionSource } from "./messaging/useLocalSessionHistory";
 export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";
 export { canSendToSession, sessionLabel, sessionStatus, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";
 export type { WorkspaceSection } from "./messaging/localSessionLabels";
@@ -139,7 +139,6 @@ export type {
   LocalSessionEventTool,
   LocalSessionLifecycle,
   LocalSessionEventPage,
-  RoomResources,
   WorkspaceSessions,
   CanonicalRoomMessage,
   CreateMessageRequest,

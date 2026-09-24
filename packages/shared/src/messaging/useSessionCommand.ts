@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/error";
 import { canSendToSession } from "./localSessionLabels";
 import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt } from "./types";
-import { accessLost, type RoomResourceSource } from "./useRoomResources";
+import { accessLost, type SessionSource } from "./useLocalSessionHistory";
 
 export type SessionCommandAttempt = {
   request: LocalSessionCommand;
@@ -42,7 +42,7 @@ export function receiptCopy(receipt: LocalSessionCommandReceipt | undefined): st
  * has expo-crypto. `onSent` fires when the composer should clear its draft.
  */
 export function useSessionCommand(
-  client: RoomResourceSource["client"], roomId: string, session: LocalSession,
+  client: SessionSource["client"], session: LocalSession,
   { uuid, onAccessLost, onSent }: { uuid: () => string; onAccessLost: () => void; onSent?: () => void },
 ) {
   const [attempt, setAttempt] = useState<SessionCommandAttempt | null>(null);
@@ -79,7 +79,7 @@ export function useSessionCommand(
         if (cancelled) return;
         count += 1;
         try {
-          const next = await client.getLocalSessionCommand(roomId, session.sessionId, requestId);
+          const next = await client.getLocalSessionCommand(session.sessionId, requestId);
           if (cancelled || !alive.current) return;
           setAttempt(current => current && current.request.requestId === requestId
             ? { ...current, state: "received", receipt: next, error: undefined } : current);
@@ -95,14 +95,14 @@ export function useSessionCommand(
     };
     tick();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [requestId, receiptPolling, client, roomId, session.sessionId]);
+  }, [requestId, receiptPolling, client, session.sessionId]);
 
   async function submit(request: LocalSessionCommand) {
     if (pending.current || !canSend) return;
     pending.current = true;
     setAttempt({ request, state: "sending" });
     try {
-      const receipt = await client.submitLocalSessionCommand(roomId, session.sessionId, request);
+      const receipt = await client.submitLocalSessionCommand(session.sessionId, request);
       if (!alive.current) return;
       setAttempt({ request, state: "received", receipt });
       onSent?.();
@@ -138,7 +138,7 @@ export function useSessionCommand(
     pending.current = true;
     setChecking(true);
     try {
-      const receipt = await client.getLocalSessionCommand(roomId, session.sessionId, attempt.request.requestId);
+      const receipt = await client.getLocalSessionCommand(session.sessionId, attempt.request.requestId);
       if (alive.current) {
         setAttempt({ ...attempt, state: "received", receipt, error: undefined });
         if (attempt.state === "uncertain") onSent?.();

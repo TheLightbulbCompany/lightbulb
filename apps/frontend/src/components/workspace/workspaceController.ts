@@ -288,10 +288,10 @@ export function openMessagePanel(roomId: string, messageId?: string): void {
 }
 
 let sessionIntent = 0;
-/** Retargets the Messages panel at a room+session; the session view itself
+/** Retargets the Messages panel at a workspace session; the session view itself
  *  lives inside Messages (spec §4), never as its own dock tab. */
-export function openSessionPanel(roomId: string, sessionId: string): void {
-  const descriptor = describePanel("chat", { room: roomId, session: sessionId });
+export function openSessionPanel(sessionId: string): void {
+  const descriptor = describePanel("chat", { session: sessionId });
   if (descriptor && _api) addOrFocus(descriptor, { sessionIntent: String(++sessionIntent) });
 }
 

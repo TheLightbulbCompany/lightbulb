@@ -42,7 +42,6 @@ const firstMessage: CanonicalRoomMessage = {
 
 const handlers = new Set<(event: LiveEvent) => void>();
 const messaging = {
-  listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })),
   listRooms: vi.fn<() => Promise<RoomListResponse>>(async () => ({ rooms: [room as RoomSummary], sections: [] })),
   getRoom: vi.fn<(roomId: string) => Promise<RoomDetail>>(async () => room),
   listMessages: vi.fn(async () => ({ messages: [firstMessage], nextAfterSeq: null as number | null })),
@@ -76,7 +75,7 @@ const live = {
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, userId: "user-a", orgId: "org-a" }) }));
 
-import { mergeCanonicalMessages, useRoomResources } from "@lightbulb/shared";
+import { mergeCanonicalMessages } from "@lightbulb/shared";
 import { useRooms } from "../useRooms";
 
 it("keeps newer reactions when message snapshots arrive out of order", () => {
@@ -132,23 +131,6 @@ beforeEach(() => {
 });
 
 describe("useRooms canonical reconciliation", () => {
-  it("shares its live subscription with resources and fences late resource hydration after access loss", async () => {
-    const rooms = renderHook(() => useRooms(), { wrapper });
-    await waitFor(() => expect(rooms.result.current.activeRoom?.roomId).toBe(room.roomId));
-    const claims = live.claimActiveRoomSubscription.mock.calls.length;
-    let finish!: () => void;
-    messaging.listResources.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ devices: [], sessions: [], pairedNodes: [] }); }));
-    const resource = renderHook(() => useRoomResources(room.roomId, rooms.result.current.resourceSource));
-    expect(live.claimActiveRoomSubscription).toHaveBeenCalledTimes(claims);
-    act(() => { for (const handler of handlers) handler({
-      schemaVersion: 1, eventId: "removed", type: "room.access.removed", occurredAt: "now",
-      payload: { roomId: room.roomId, roomRevision: 3 },
-    }); });
-    await act(async () => finish());
-    expect(rooms.result.current.accessRemoved).toBe(true);
-    expect(resource.result.current.data).toBeNull();
-    expect(resource.result.current.error).toContain("removed");
-  });
   it("does not immediately re-mark a visible room read after marking it unread", async () => {
     const { result } = renderHook(() => useRooms(), { wrapper });
     await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));

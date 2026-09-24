@@ -105,12 +105,21 @@ async def test_agent_invocation_is_room_bound_typed_and_revocable(db, monkeypatc
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
     agent = "33333333-3333-4333-8333-333333333333"
     db[0].put_item(Item={"pk": f"ROOM#{ROOM}", "sk": f"MEMBER#agent#{agent}", "kind": "agent", "id": agent})
-    token = grants.mint(OWNER, ROOM, agent, "44444444-4444-4444-8444-444444444444")
+    token = grants.mint(OWNER, ROOM, agent, "44444444-4444-4444-8444-444444444444", ALICE.user_id)
     caller = grants.verify(token)
     sid = await registered()
     assert (await service.list_resources(caller, ROOM)).sessions[0].session_id == sid
     with pytest.raises(ApiProblem):
         await service.list_resources(caller, OTHER_ROOM)
+    # An agent commands only for the session's own human: a teammate's message or a routine
+    # (no requester) may read the session but never drive it.
+    from dataclasses import replace as _replace
+
+    for requester in (BOB.user_id, None):
+        other = _replace(caller, requester_id=requester)
+        assert (await service.list_events(other, ROOM, sid)).events == []
+        with pytest.raises(ApiProblem, match="owner"):
+            await service.submit_command(other, ROOM, sid, command(service))
     receipt = await service.submit_command(caller, ROOM, sid, command(service))
     public = receipt.model_dump(by_alias=True)
     assert public["actor"] == {"kind": "agent", "id": agent}
@@ -128,7 +137,8 @@ async def test_agent_invocation_is_room_bound_typed_and_revocable(db, monkeypatc
 
     # Dispatch reconstructs a typed agent, never a human lookalike.
     stored = await repo.get_command(OWNER, sid, receipt.request_id)
-    assert isinstance(service.command_caller(OWNER, stored), grants.AgentInvocation)
+    restored = service.command_caller(OWNER, stored)
+    assert isinstance(restored, grants.AgentInvocation) and restored.requester_id == ALICE.user_id
     from dataclasses import replace
 
     with pytest.raises(ApiProblem):
@@ -670,16 +680,20 @@ async def test_http_routes_use_clerk_identity_and_validate_payloads(db):
         assert (await client.put(path, json={"deviceId": MAC, "enabled": True})).status_code in (401, 403)
         app.dependency_overrides[get_current_user] = lambda: BOB
         assert (await client.put(path, json={"deviceId": MAC, "enabled": True})).status_code == 403
-        base = f"/api/v1/messaging/rooms/{ROOM}"
-        assert (await client.get(f"{base}/resources")).status_code == 200
-        assert (await client.get(f"{base}/local-sessions/{sid}/events?afterSeq=0&limit=2")).status_code == 200
+        # Sessions are workspace-scoped (2026-09-24): a teammate reads, only the owner commands.
+        base = f"/api/v1/messaging/sessions/{sid}"
+        assert (await client.get("/api/v1/messaging/sessions")).status_code == 200
+        assert (await client.get(f"{base}/events?afterSeq=0&limit=2")).status_code == 200
         payload = command(service).model_dump(by_alias=True)
-        assert (
-            await client.post(f"{base}/local-sessions/{sid}/commands", json={**payload, "actorUserId": ALICE.user_id})
-        ).status_code == 422
-        response = await client.post(f"{base}/local-sessions/{sid}/commands", json=payload)
-        assert response.status_code == 202 and response.json()["actorUserId"] == BOB.user_id
-        assert (await client.get(f"{base}/local-sessions/{sid}/commands/request-1")).json() == response.json()
+        assert (await client.post(f"{base}/commands", json=payload)).status_code == 403
+        app.dependency_overrides[get_current_user] = lambda: ALICE
+        assert (await client.post(f"{base}/commands", json={**payload, "actorUserId": BOB.user_id})).status_code == 422
+        response = await client.post(f"{base}/commands", json=payload)
+        assert response.status_code == 202 and response.json()["actorUserId"] == ALICE.user_id
+        assert response.json()["roomId"] == ""
+        assert (await client.get(f"{base}/commands/request-1")).json() == response.json()
+        app.dependency_overrides[get_current_user] = lambda: BOB
+        assert (await client.get(f"{base}/commands/request-1")).status_code == 403
         app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=ALICE.user_id)
         assert (await client.put(path, json={"deviceId": MAC, "enabled": True})).status_code == 409
 
@@ -908,6 +922,25 @@ async def test_workspace_sessions_route_binds(db):
     body = response.json()
     assert [s["sessionId"] for s in body["sessions"]] == [sid]
     assert set(body["sessions"][0]) >= {"sessionId", "humanUserId", "status", "lastEventAt", "provider"}
+
+
+async def test_single_session_route_reads_an_ended_session_for_any_member(db):
+    from routers import messaging
+
+    sid = await registered(conversation="conv-single")
+    row = await repo.get_session(OWNER, sid)
+    enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    await repo.put_session({**row, "endedAt": int(time.time()), "lastEventAt": int(time.time())}, row, enrollment)
+    app = FastAPI()
+    app.include_router(messaging.router, prefix="/api/v1")
+    app.dependency_overrides[get_current_user] = lambda: BOB
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/api/v1/messaging/sessions/{sid}")
+    assert response.status_code == 200
+    assert response.json()["sessionId"] == sid and response.json()["status"] == "ended"
+    with pytest.raises(ApiProblem) as excinfo:
+        await service.get_session(AuthContext(user_id="user_x", org_id="org_other"), sid)
+    assert excinfo.value.error.code == "LOCAL_SESSION_NOT_FOUND"
 
 
 async def test_live_sessions_for_room_is_bounded_live_only_and_never_raises(db):

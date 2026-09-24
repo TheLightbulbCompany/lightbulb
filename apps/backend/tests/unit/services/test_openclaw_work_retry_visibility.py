@@ -40,11 +40,18 @@ async def test_canonical_ingress_mints_optional_room_grant_after_membership_chec
     post = AsyncMock(return_value=httpx.Response(202))
     monkeypatch.setattr(worker, "_post", post)
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
-    await worker._dispatch_message(meta, member, {"messageId": event}, "user_request")
+    human = {"messageId": event, "author": {"kind": "human", "id": "user_alice"}}
+    await worker._dispatch_message(meta, member, human, "user_request")
     body = post.call_args.args[2]
     assert "invocation" not in body
     caller = local_session_grants.verify(post.call_args.args[4])
     assert (caller.owner_id, caller.room_id, caller.agent_id) == ("owner_test", room, "friday")
+    # The requester is the canonical author; an agent-authored trigger carries none.
+    assert caller.requester_id == "user_alice"
+    await worker._dispatch_message(
+        meta, member, {"messageId": event, "author": {"kind": "agent", "id": "user_alice"}}, "user_request"
+    )
+    assert local_session_grants.verify(post.call_args.args[4]).requester_id is None
     membership.return_value = None
     post.reset_mock()
     await worker._dispatch_message(meta, member, {"messageId": event}, "user_request")

@@ -330,7 +330,12 @@ def command_caller(owner: str, command: dict) -> Caller:
     if "actor" in command:
         actor = AgentActor.model_validate(command["actor"])
         return AgentInvocation(
-            owner, command["roomId"], actor.id, int(command["invocationExpiresAt"]), command["invocationId"]
+            owner,
+            command["roomId"],
+            actor.id,
+            int(command["invocationExpiresAt"]),
+            command["invocationId"],
+            command.get("invocationRequesterId"),
         )
     user = command["actorUserId"]
     return AuthContext(user_id=user, org_id=owner if owner != user else None)
@@ -462,17 +467,36 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
 
-async def authorize_session(auth: Caller, room_id: str, session_id: str) -> tuple[dict, dict]:
-    """One authorization path for directory hydration, events, commands and receipts."""
+async def authorize_session(
+    auth: Caller, room_id: str | None, session_id: str, *, owner_only: bool = False
+) -> tuple[dict, dict]:
+    """One authorization path for directory hydration, events, commands and receipts.
+
+    ``room_id`` is the agent path (and legacy room-scoped commands): caller and session owner
+    must share that room. Without one, a session is a workspace thing (owner ruling
+    2026-09-24: sessions left rooms): any member of the workspace may READ it, and only its
+    own human may command it or change it (``owner_only``). The desktop's native approval
+    still applies on top.
+    """
     owner = caller_owner(auth)
-    room_id = validate_uuid(room_id, label="room ID")
-    await require_caller(auth, room_id)
+    if room_id:
+        room_id = validate_uuid(room_id, label="room ID")
+        await require_caller(auth, room_id)
+    elif isinstance(auth, AgentInvocation):
+        # An agent's authority is its room grant; it has no roomless path.
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
     session_id = validate_uuid(session_id, label="local session ID")
     row = await repo.get_session(owner, session_id)
     if row is None or row.get("ownerId") != owner:
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
-    if await messaging_repo.get_member(room_id, "human", row["humanUserId"]) is None:
+    if room_id and await messaging_repo.get_member(room_id, "human", row["humanUserId"]) is None:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Session owner is no longer in this room.")
+    agent = isinstance(auth, AgentInvocation)
+    if owner_only and (agent or not room_id):
+        # Ruling 2026-09-24: an agent commands a session only on behalf of that session's own
+        # human, i.e. when the message that woke it was theirs. Routines have no requester.
+        if (auth.requester_id if agent else auth.user_id) != row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
     return row, await _enrolled(owner, row["humanUserId"], row["deviceId"])
 
 
@@ -625,14 +649,22 @@ async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) 
         return []
 
 
+async def get_session(auth: Caller, session_id: str) -> LocalSession:
+    """One session for any workspace member, ended included: the list keeps only live
+    ones, but an open view or an old link must still show a session that has ended."""
+    row, _ = await authorize_session(auth, None, session_id)
+    return _session_public(row)
+
+
 async def list_events(
-    auth: Caller, room_id: str, session_id: str, after_seq: int = 0, limit: int = 50
+    auth: Caller, room_id: str | None, session_id: str, after_seq: int = 0, limit: int = 50
 ) -> LocalSessionEventPage:
     session, _ = await authorize_session(auth, room_id, session_id)
     if after_seq < 0 or after_seq >= 10**20 - 1 or not 1 <= limit <= 100:
         raise ApiProblem("INVALID_REQUEST", "Invalid event pagination.")
     rows, next_seq = await repo.list_events(session["ownerId"], session["sessionId"], after_seq, limit)
-    await require_caller(auth, room_id)
+    if room_id:
+        await require_caller(auth, room_id)
     return LocalSessionEventPage(events=[_public(LocalSessionEvent, row) for row in rows], next_after_seq=next_seq)
 
 
@@ -661,9 +693,12 @@ def _require_control(row: dict, request: LocalSessionCommand) -> None:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "An active turn ID is required.")
 
 
-async def submit_command(auth: Caller, room_id: str, session_id: str, request: LocalSessionCommand) -> CommandReceipt:
+async def submit_command(
+    auth: Caller, room_id: str | None, session_id: str, request: LocalSessionCommand
+) -> CommandReceipt:
     owner = caller_owner(auth)
-    room_id = validate_uuid(room_id, label="room ID")
+    # A roomless command is stored with roomId "": current desktops require the field as a string.
+    room_id = validate_uuid(room_id, label="room ID") if room_id else ""
     session_id = validate_uuid(session_id, label="local session ID")
     payload = request.model_dump(by_alias=True)
     author = (
@@ -671,6 +706,7 @@ async def submit_command(auth: Caller, room_id: str, session_id: str, request: L
             "actor": {"kind": "agent", "id": auth.agent_id},
             "invocationExpiresAt": auth.expires_at,
             "invocationId": auth.invocation_id,
+            "invocationRequesterId": auth.requester_id,
         }
         if isinstance(auth, AgentInvocation)
         else {"actorUserId": auth.user_id}
@@ -683,7 +719,7 @@ async def submit_command(auth: Caller, room_id: str, session_id: str, request: L
         payload,
     )
     for _ in range(6):
-        row, enrollment = await authorize_session(auth, room_id, session_id)
+        row, enrollment = await authorize_session(auth, room_id, session_id, owner_only=True)
         existing = await repo.get_command(owner, session_id, request.request_id)
         if existing:
             if existing["requestHash"] != req_hash:
@@ -715,9 +751,9 @@ async def submit_command(auth: Caller, room_id: str, session_id: str, request: L
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Retry the same requestId.")
 
 
-async def get_command(auth: Caller, room_id: str, session_id: str, request_id: str) -> CommandReceipt:
-    room_id = validate_uuid(room_id, label="room ID")
-    session, _ = await authorize_session(auth, room_id, session_id)
+async def get_command(auth: Caller, room_id: str | None, session_id: str, request_id: str) -> CommandReceipt:
+    room_id = validate_uuid(room_id, label="room ID") if room_id else ""
+    session, _ = await authorize_session(auth, room_id, session_id, owner_only=True)
     # Reuse the command identifier contract without accepting payload-owned identity.
     from pydantic import TypeAdapter, ValidationError
 
@@ -728,5 +764,6 @@ async def get_command(auth: Caller, room_id: str, session_id: str, request_id: s
     row = await repo.get_command(session["ownerId"], session["sessionId"], request_id)
     if row is None or row["roomId"] != room_id:
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Command not found in this room.")
-    await require_caller(auth, room_id)
+    if room_id:
+        await require_caller(auth, room_id)
     return _public(CommandReceipt, row)

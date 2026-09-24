@@ -5,7 +5,6 @@ import {
   type CanonicalRoomMessage,
   type LiveEvent,
   type RoomDetail,
-  type RoomResources,
 } from "@lightbulb/shared";
 import type { ReactNode } from "react";
 import { AppState } from "react-native";
@@ -105,12 +104,6 @@ const mockRoom: RoomDetail = {
     { kind: "agent", id: "agent-1", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "active", joinedAt: "x", joinedSeq: 0 },
   ],
 };
-const mockSession = {
-  sessionId: "sess-1", deviceId: "mac-1", humanUserId: "user-a", provider: "claude" as const, generation: "g1",
-  status: "busy" as const, providerVersion: "2.1.224", controlUnavailableReason: null, activeTurnId: "t1",
-  capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true,
-  latestEventSeq: 4, title: "Fix relay", cwdName: "lightbulb",
-};
 // Fixed more than a week in the past (not "recent" by any calendar reckoning at
 // any run date) so `dateDividerLabel` always renders the absolute-date branch —
 // never "Today"/"Yesterday" or a bare weekday name, which could otherwise
@@ -142,11 +135,6 @@ const mockSetTyping = jest.fn(async () => {});
 // Live events this suite dispatches by hand (typing changes only so far);
 // everything else stays the fixed no-op the rest of the suite never drives.
 const typingHandlers = new Set<(event: LiveEvent) => void>();
-// Named and hoisted so a single test can override its resolved value; every
-// other case gets the empty snapshot reset in beforeEach, since the header's
-// devices poll now runs on every mount and must never hand `undefined` to
-// the resources hook.
-const mockListResources = jest.fn(async (): Promise<RoomResources> => ({ devices: [], sessions: [], pairedNodes: [] }));
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null,
   // room-unavailable is the blocked-states suite's own room id (its Try again
@@ -169,7 +157,7 @@ const mockLive = {
     downloadAttachment: jest.fn(), uploadAttachment: jest.fn(), markUnread: mockMarkUnread,
     setTyping: mockSetTyping, abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
     updateRoom: jest.fn(), upsertMember: jest.fn(), removeMember: jest.fn(),
-    updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(), listResources: mockListResources,
+    updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(),
     setMemberPrefs: mockSetMemberPrefs, putSections: jest.fn(),
   },
   claimActiveRoomSubscription: jest.fn(() => () => {}),
@@ -217,8 +205,6 @@ describe("conversation screen", () => {
     mockSetTyping.mockClear();
     typingHandlers.clear();
     mockSetMemberPrefs.mockClear();
-    mockListResources.mockReset();
-    mockListResources.mockResolvedValue({ devices: [], sessions: [], pairedNodes: [] });
     mockMessages = [...mockBase];
     mockRoomId = "room-1";
     mockIsPreview = false;
@@ -648,11 +634,4 @@ describe("conversation screen", () => {
     await waitFor(() => expect(screen.getByText("The star could not be saved.")).toBeTruthy());
   });
 
-  it("shows the devices header action, badges live sessions, and pushes the devices screen", async () => {
-    mockListResources.mockResolvedValue({ devices: [{ deviceId: "mac-1", humanUserId: "user-a", cliDeviceId: null }], sessions: [mockSession], pairedNodes: [] });
-    await render(<Conversation />);
-    const button = await screen.findByLabelText("Devices & sessions, 1 live");
-    await fireEvent.press(button);
-    expect(mockPush).toHaveBeenCalledWith("/(app)/room/room-1/devices");
-  });
 });

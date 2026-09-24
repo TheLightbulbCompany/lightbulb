@@ -8,7 +8,7 @@ import { openPanel } from "@/components/workspace/workspaceController";
 
 type Link = { kind: "issue"; companyId: string; issueId: string } | { kind: "workspace"; companyId: string; projectId: string; workspaceId: string };
 type Work = { state: "empty" | "linked" | "unavailable"; link: Link | null; revision: string | null; title?: string };
-type Props = { roomId: string; sessionId: string };
+type Props = { sessionId: string };
 
 export function LocalSessionWork(props: Props) {
   const [open, setOpen] = useState(false);
@@ -22,13 +22,13 @@ function ViewerWork(props: Props) {
   const { userId, orgId, isLoaded } = useAuth();
   // Auth/selection change unmounts all protected display and in-flight form state.
   return isLoaded && userId && orgId
-    ? <WorkDetails key={JSON.stringify([userId, orgId, props.roomId, props.sessionId])} {...props} />
+    ? <WorkDetails key={JSON.stringify([userId, orgId, props.sessionId])} {...props} />
     : <p>Linked work unavailable.</p>;
 }
 
-function WorkDetails({ roomId, sessionId }: Props) {
+function WorkDetails({ sessionId }: Props) {
   const api = useTeamsApi();
-  const path = `/rooms/${encodeURIComponent(roomId)}/local-sessions/${encodeURIComponent(sessionId)}/work-link`;
+  const path = `/local-sessions/${encodeURIComponent(sessionId)}/work-link`;
   const read = api.read<Work>(path, { revalidateOnMount: true, dedupingInterval: 0, refreshInterval: 30_000, shouldRetryOnError: false });
   const [editing, setEditing] = useState(false);
   const [kind, setKind] = useState<"issue" | "workspace">("issue");

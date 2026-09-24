@@ -283,14 +283,6 @@ export interface LiveConfig {
   workspaceId: string;
 }
 
-/** Resources belong to human members; they are never company/room members. */
-export interface LocalDevice {
-  deviceId: string;
-  humanUserId: string;
-  /** Explicitly enrolled sibling identity; absent means no association was supplied. */
-  cliDeviceId: string | null;
-}
-
 export interface LocalSessionCapabilities {
   sendMode: "none" | "queue" | "immediate";
   steer: boolean;
@@ -320,20 +312,6 @@ export interface LocalSession {
   lastEventAt?: string | null;
   endedAt?: string | null;
   lastAssistantMessage?: string | null;
-}
-
-export interface PairedNode {
-  deviceId: string;
-  humanUserId: string;
-  clientId: "openclaw-macos" | "node-host";
-  /** Explicit validated association only; not physical co-location or readiness. */
-  macDeviceId: string | null;
-}
-
-export interface RoomResources {
-  devices: LocalDevice[];
-  sessions: LocalSession[];
-  pairedNodes: PairedNode[];
 }
 
 export interface WorkspaceSessions { sessions: LocalSession[] }

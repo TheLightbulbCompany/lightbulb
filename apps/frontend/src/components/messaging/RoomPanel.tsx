@@ -4,7 +4,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExtern
 import NextLink from "next/link";
 import { ArrowLeft, Check, Circle, CircleAlert, Link } from "lucide-react";
 import type { Components } from "react-markdown";
-import { LISTEN_MODE_LABELS, listenModeOptions, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type RoomResourceSource, type UpdateMessageRequest } from "@lightbulb/shared";
+import { LISTEN_MODE_LABELS, listenModeOptions, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { QuietDisclosure } from "@/components/chat/QuietDisclosure";
 import { Button } from "@/components/ui/button";
@@ -12,9 +12,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
-import { RoomResources } from "./RoomResources";
-import { ColumnGrip } from "./ColumnGrip";
-import { useSessionColumnWidth } from "./sidebarPrefs";
 import { roomMarkdown as publicMarkdown } from "./roomMarkdown";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
@@ -49,7 +46,6 @@ import type {
 import "./messaging.css";
 
 export interface RoomPanelProps {
-  targetSession?: { sessionId: string; nonce: number } | null;
   ownerScopeId: string;
   currentUserId: string;
   roomId: string;
@@ -97,9 +93,6 @@ export interface RoomPanelProps {
   onSteerRun?: (runId: string, text: string) => void;
   onLinkToWork?: () => void;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
-  resourceSource?: RoomResourceSource;
-  /** False hides the Devices & sessions tab (a permalink can still open the pane). */
-  showResourcesTab?: boolean;
 }
 
 const NO_PINNED_MESSAGES: readonly string[] = [];
@@ -150,7 +143,7 @@ const roomMarkdown: Partial<Components> = {
     if (session) return <a href={safe!} className="text-info underline underline-offset-4" onClick={event => {
       if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       event.preventDefault();
-      openSessionPanel(session.roomId, session.sessionId);
+      openSessionPanel(session.sessionId);
     }}>{children}</a>;
     return safe ? <a href={safe} target="_blank" rel="noopener noreferrer" className="text-info underline underline-offset-4">{children}</a> : <span>{children}</span>;
   },
@@ -218,13 +211,11 @@ function RoomBoundary(props: RoomPanelProps) {
 }
 
 function RoomContent({
-  ownerScopeId,
   roomId,
   currentUserId,
   room,
   readSeqAtOpen,
   targetMessageId,
-  targetSession,
   state,
   httpReady,
   liveConnected,
@@ -265,8 +256,6 @@ function RoomContent({
   onSteerRun,
   onLinkToWork,
   onDownloadAttachment,
-  resourceSource,
-  showResourcesTab = true,
 }: RoomPanelProps) {
   const id = useId();
   // token increments on every selection (even of the same result) so RoomTimeline
@@ -305,19 +294,7 @@ function RoomContent({
   const [contextCollapsed, setContextCollapsed] = useState(true);
   const [detailsTab, setDetailsTab] = useState<DetailsTab>("members");
   const [editTarget, setEditTarget] = useState<string | null>(null);
-  const [localSelection, setSelection] = useState<{ kind: "thread" | "resources" | "tasks"; id: string } | null>(null);
-  const [consumedSession, setConsumedSession] = useState<number | null>(null);
-  const panelRef = useRef<HTMLElement>(null);
-  const column = useSessionColumnWidth(ownerScopeId, panelRef);
-  const targetSessionNonce = targetSession?.nonce;
-  useEffect(() => {
-    if (targetSessionNonce === undefined) return;
-    onSelectThread?.(null);
-    setSearchTarget(null);
-    setSelection({ kind: "resources", id: "resources" });
-    // Only a new explicit navigation may reopen resources.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetSessionNonce]);
+  const [localSelection, setSelection] = useState<{ kind: "thread" | "tasks"; id: string } | null>(null);
   const selection = useMemo(() => selectedThreadId === undefined ? localSelection
     : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
       : localSelection?.kind !== "thread" ? localSelection : null, [selectedThreadId, localSelection]);
@@ -333,18 +310,6 @@ function RoomContent({
   const contextHeading = useRef<HTMLHeadingElement>(null);
   const contextTrigger = useRef<HTMLButtonElement>(null);
   const contextWasOpen = useRef(false);
-  const [previousMessageTarget, setPreviousMessageTarget] = useState(targetMessageId);
-  if (targetMessageId !== previousMessageTarget) {
-    setPreviousMessageTarget(targetMessageId);
-    if (targetMessageId && selection?.kind === "resources") {
-      // Reconcile before children process the target: a hidden timeline must
-      // not consume it, and closing must not restore an obsolete trigger.
-      trigger.current = null;
-      contextWasOpen.current = false;
-      setSelection(null);
-      setContextCollapsed(true);
-    }
-  }
   const historyRef = useRef<HTMLDivElement>(null);
   const isNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
   const visibleRoom = room?.roomId === roomId ? room : undefined;
@@ -397,9 +362,8 @@ function RoomContent({
   // for RoomTimeline -- a thread-scoped result is handled by the effect below.
   const activeSearchTarget = searchTarget && !searchTarget.threadRootMessageId && !selection ? searchTarget : null;
   const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
-  const showResources = selection?.kind === "resources" && !!resourceSource;
   const showTasks = selection?.kind === "tasks" && !!onLinkToWork;
-  const showDetail = !!(parentMessage || showResources || showTasks);
+  const showDetail = !!(parentMessage || showTasks);
   const showContext = showDetail || !contextCollapsed;
   const activeRuns = runs.filter((run) => run.state === "running");
   // Any author: a human naming ISO-14 references it as much as an agent does.
@@ -495,7 +459,7 @@ function RoomContent({
   }, [closeDetail, isNarrow, showDetail]);
 
   useEffect(() => {
-    if (!showDetail || showResources) return;
+    if (!showDetail) return;
     // An open dialog owns Escape — dismissing the overlay underneath it as
     // well would close two things on one keypress. A Radix popper (menu,
     // emoji picker) is portalled out of this subtree, so its own
@@ -506,9 +470,9 @@ function RoomContent({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeOverlay, showDetail, showResources]);
+  }, [closeOverlay, showDetail]);
 
-  const openDetail = useCallback((kind: "thread" | "resources" | "tasks", targetId: string, button: HTMLButtonElement, fromThread = false) => {
+  const openDetail = useCallback((kind: "thread" | "tasks", targetId: string, button: HTMLButtonElement, fromThread = false) => {
     if (!fromThread) trigger.current = button;
     onSelectThread?.(kind === "thread" ? targetId : null);
     setSelection({ kind, id: targetId });
@@ -615,7 +579,7 @@ function RoomContent({
 
   const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
   const roomName = roomDisplayName(visibleRoom, counterparts);
-  return <section ref={panelRef} style={column.style}
+  return <section
     className={cn("room-panel", showContext && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
     <div className="room-conversation" hidden={showContext && isNarrow} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participantCount={participants.length}
@@ -657,8 +621,6 @@ function RoomContent({
           onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Details{pinnedMessageIds.length > 0 && <span className="room-count">{pinnedMessageIds.length}</span>}</button>
         {onLinkToWork && <button type="button" className="room-tab" aria-current={showTasks ? "page" : undefined}
           onClick={event => openDetail("tasks", "tasks", event.currentTarget)}>Tasks{roomTasks.length > 0 && ` · ${roomTasks.length}`}</button>}
-        {resourceSource && (showResourcesTab || showResources) && <button type="button" className="room-tab" aria-current={showResources ? "page" : undefined}
-          onClick={event => openDetail("resources", "resources", event.currentTarget)}>Devices & sessions</button>}
       </nav>
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
@@ -749,18 +711,12 @@ function RoomContent({
           </div>}
         </section>} />
     </aside>}
-    {showResources && <RoomResources key={JSON.stringify([ownerScopeId, currentUserId, roomId, participants.filter(p => p.kind === "human").map(p => p.id).sort()])}
-      roomId={roomId} source={resourceSource!} participants={participants} currentUserId={currentUserId} onClose={closeDetail}
-      target={targetSession?.nonce !== consumedSession ? targetSession : null}
-      onTargetConsumed={() => setConsumedSession(targetSession?.nonce ?? null)}
-      resizeHandle={<ColumnGrip {...column.grip} />}
-      onShare={url => composer.onTextChange(composer.text ? `${composer.text}\n${url}` : url)} />}
     {showTasks && <aside className="room-context" aria-label="Tasks" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold">Tasks</h3></header>
       <div className="room-context-body"><RoomTasks tasks={roomTasks} onOpenAll={onLinkToWork!} /></div>
     </aside>}
-    {showDetail && !showResources && !showTasks && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
+    {showDetail && !showTasks && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">Thread</h3></header>
       <div className="room-context-body">{parentMessage ? <>{renderMessage(parentMessage, true)}

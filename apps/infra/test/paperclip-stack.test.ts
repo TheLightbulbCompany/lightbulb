@@ -209,7 +209,7 @@ describe("PaperclipStack — Fargate service shape", () => {
           User: "1000:1000",
           Command: [
             Match.stringLikeRegexp(
-              'set -eu && PGPASSWORD_ENC=\\$\\(node -e .*encodeURIComponent\\(process\\.env\\.PGPASSWORD\\).*\\) && export DATABASE_URL="postgres://\\$\\{PGUSER\\}:\\$\\{PGPASSWORD_ENC\\}@\\$\\{PGHOST\\}:\\$\\{PGPORT\\}/\\$\\{PGDATABASE\\}".*exec node ',
+              'set -eu && : "\\$\\{PAPERCLIP_SECRETS_MASTER_KEY:\\?.*\\}" && PGPASSWORD_ENC=\\$\\(node -e .*encodeURIComponent\\(process\\.env\\.PGPASSWORD\\).*\\) && export DATABASE_URL="postgres://\\$\\{PGUSER\\}:\\$\\{PGPASSWORD_ENC\\}@\\$\\{PGHOST\\}:\\$\\{PGPORT\\}/\\$\\{PGDATABASE\\}".*exec node ',
             ),
           ],
         }),
@@ -351,6 +351,23 @@ describe("PaperclipStack — Fargate service shape", () => {
     template.hasResourceProperties("AWS::Logs::LogGroup", {
       LogGroupName: "/lightbulb/dev/paperclip-migrate",
       RetentionInDays: 14,
+    });
+  });
+
+  test("server gets a stable, retained secrets master key (never an ephemeral key file)", () => {
+    // Unset, Paperclip writes a fresh key file on each task's ephemeral disk and every
+    // task replacement orphans every local_encrypted secret (2026-09-23 incident).
+    template.hasResource("AWS::SecretsManager::Secret", {
+      DeletionPolicy: "Retain",
+      Properties: Match.objectLike({ Name: "lightbulb/dev/paperclip_secrets_master_key" }),
+    });
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "lightbulb-dev-paperclip-server",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Secrets: Match.arrayWith([Match.objectLike({ Name: "PAPERCLIP_SECRETS_MASTER_KEY" })]),
+        }),
+      ]),
     });
   });
 

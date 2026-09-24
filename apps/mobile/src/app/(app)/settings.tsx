@@ -540,6 +540,15 @@ export default function Settings() {
         />
       </Section>
 
+      <Section title="Help">
+        <NavigationRow
+          title="Contact support"
+          icon="envelope"
+          link
+          onPress={() => void Linking.openURL("mailto:support@thelightbulb.company")}
+        />
+      </Section>
+
       {/* Sign out — confirmed before acting. */}
       <Section>
         <Button label="Sign out" onPress={confirmSignOut} modifiers={DANGER} />

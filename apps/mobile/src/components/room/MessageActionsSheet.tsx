@@ -2,7 +2,7 @@ import { SymbolView, type SFSymbol } from "expo-symbols";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
 import type { ComponentProps } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { hapticSelection } from "../../lib/haptics";
@@ -12,6 +12,23 @@ import { BottomSheet } from "../ui/BottomSheet";
 /** The shipped fixed set, the same four the web's RoomPanel defaults to. */
 export const QUICK_REACTIONS = ["👍", "✅", "🎉", "👀"] as const;
 
+/**
+ * App Store 1.2: a prefilled email to support, which needs no backend. The
+ * ids are what support looks the message up by; the excerpt is for the human.
+ */
+export function reportMessageUrl(roomId: string, message: CanonicalRoomMessage): string {
+  const excerpt = message.text.length > 280 ? `${message.text.slice(0, 280)}…` : message.text;
+  const body = [
+    "I want to report this message.",
+    "",
+    `Room: ${roomId}`,
+    `Message: ${message.messageId}`,
+    `Author: ${message.author.displayName} (${message.author.kind} ${message.author.id})`,
+    `Excerpt: ${excerpt}`,
+  ].join("\n");
+  return `mailto:support@thelightbulb.company?subject=${encodeURIComponent("Report a message")}&body=${encodeURIComponent(body)}`;
+}
+
 interface ActionRow {
   icon: SFSymbol;
   label: string;
@@ -20,7 +37,7 @@ interface ActionRow {
 
 /**
  * The long-press sheet: the fixed reaction bar over Reply in thread / Copy text
- * / Mark unread / Copy link.
+ * / Mark unread / Copy link / Report (not on your own messages).
  *
  * Kept mounted by its callers and toggled via `visible` (BottomSheet's own
  * contract), so closing — from a row action, the scrim, or a drag — always
@@ -82,6 +99,15 @@ export function MessageActionsSheet({
       label: "Copy link",
       run: () => Clipboard.setStringAsync(messageUrl(roomId, message.messageId)),
     },
+    ...(message.author.kind === "human" && message.author.id === currentUserId
+      ? []
+      : [
+          {
+            icon: "flag" as const,
+            label: "Report",
+            run: () => Linking.openURL(reportMessageUrl(roomId, message)),
+          },
+        ]),
   ];
 
   return (

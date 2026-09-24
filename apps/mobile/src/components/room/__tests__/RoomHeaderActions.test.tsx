@@ -66,4 +66,23 @@ describe("RoomHeaderActions", () => {
     await fireEvent.press(star);
     expect(onToggleStar).not.toHaveBeenCalled();
   });
+
+  it("offers Leave only when the screen passes a handler", async () => {
+    const onLeave = jest.fn();
+    const { rerender } = await render(
+      <RoomHeaderActions starred={false} muted={false} onToggleStar={() => {}} onToggleMute={() => {}} />,
+    );
+    expect(screen.queryByLabelText("Leave this conversation")).toBeNull();
+    await rerender(
+      <RoomHeaderActions
+        starred={false}
+        muted={false}
+        onToggleStar={() => {}}
+        onToggleMute={() => {}}
+        onLeave={onLeave}
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText("Leave this conversation"));
+    expect(onLeave).toHaveBeenCalledTimes(1);
+  });
 });

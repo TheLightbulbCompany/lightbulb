@@ -98,7 +98,10 @@ describe("RunNotifications inline team-run status", () => {
     act(() => emit("teams.heartbeat.run.queued", { runId: "run-7", agentId: "agent-1" }));
     await act(async () => emit("teams.heartbeat.run.status", { runId: "run-7", agentId: "agent-1", status: "succeeded" }));
 
-    expect(live.nativeNotify).toHaveBeenCalledWith("Team agent run completed");
+    // Clickable like the failure banner: it opens where the run happened.
+    expect(live.nativeNotify).toHaveBeenCalledWith("Team agent run completed", undefined, {
+      onClick: expect.any(Function), tag: "teams:run-7",
+    });
     expect(live.notifySuccess).not.toHaveBeenCalled();
     expect(live.dismissNotification).toHaveBeenCalledWith("teams:run-7");
   });

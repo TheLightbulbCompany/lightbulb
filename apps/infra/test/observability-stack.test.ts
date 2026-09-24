@@ -196,6 +196,8 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   // routers/paperclip_events.py receive_paperclip_event, before the push
   // decision. P30/P31/W82 bind one error_code each; W83 binds the rollup.
   "paperclip.run.failed": [["error_code"]],
+  // core/services/paperclip_escalation.py escalate; P33 binds the rollup.
+  "paperclip.escalation.exhausted": [[]],
   // routers/messaging.py _count_hook_auth_failure; P24 binds route=paperclip_run.
   "internal_hook.auth_failed": [["route"]],
   // core/services/jev.py decide(); P26 binds the rollup and outcome=error|timeout|rate_limited.

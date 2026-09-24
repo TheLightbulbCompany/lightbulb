@@ -357,6 +357,27 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     }));
   });
 
+  test("escalation overrides route the founder org to Forge in prod only", () => {
+    const envOf = (environment: "dev" | "prod") =>
+      Match.objectLike({
+        ContainerDefinitions: Match.arrayWith([
+          Match.objectLike({
+            Name: "backend",
+            Environment: Match.arrayWith([
+              Match.objectLike({
+                Name: "PAPERCLIP_ESCALATION_AGENT_OVERRIDES",
+                Value: environment === "prod"
+                  ? '{"org_3H3viGAfq2SXc9dIdcatmGXg8Td":"f293693d-1ec4-4dc3-bd3c-e54109e324bf"}'
+                  : "{}",
+              }),
+            ]),
+          }),
+        ]),
+      });
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", envOf("dev"));
+    buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", envOf("prod"));
+  });
+
   test("Stripe developer configuration defaults off, and the Accounts v2 version pin defaults empty, when no prop threads a value", () => {
     // configuration.developer is an Unknown field for our platform today
     // (probed 2026-08-29) — sending it would break every company-account

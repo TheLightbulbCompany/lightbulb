@@ -289,6 +289,26 @@ every run that needs one fails at setup (see P30). Check the Paperclip task's
 master-key secret and what changed it. The log line carries the master key
 fingerprint.
 
+## P33 — paperclip-escalation-exhausted
+
+A Paperclip issue was blocked by recovery after a platform-failed run
+(`setup_failed`, `process_lost` or `timeout`), and the backend could not hand it
+on. `core/services/paperclip_escalation.py` checks each such issue about 90 s
+after the failure and moves it failed agent → escalation agent (the owner's
+`PAPERCLIP_ESCALATION_AGENT_OVERRIDES` entry, else the starter Engineering
+agent) → root CEO, with one PATCH `{assigneeAgentId, status: "todo"}`. It emits
+`paperclip.escalation.exhausted` when the root CEO was the agent that failed, or
+when no rung is invokable (paused, terminated, pending approval).
+
+The issue is still `blocked`. Search the backend logs for
+`paperclip escalation exhausted` to get the owner, issue and failed agent. The
+platform fault is usually the real problem: check P30, P31, P32 and W82 first.
+Once runs work again, move the issue to a live agent and set it to `todo`.
+
+Related: `paperclip.escalation.escalated{rung}` counts successful handoffs, and
+`paperclip.escalation.refused` counts 422s (the issue had real open blockers,
+so it was left alone).
+
 ## provision-executions-failed / provision-executions-timedout
 
 A provisioning Step Functions execution failed or timed out. **New signups

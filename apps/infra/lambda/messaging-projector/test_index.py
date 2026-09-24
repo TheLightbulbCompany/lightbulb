@@ -1203,7 +1203,16 @@ class ThreadRootModifyTests(unittest.TestCase):
         self.modify(root).assert_not_called()
 
     def test_an_edit_after_a_participant_add_still_publishes(self):
+        # The edit REMOVEs threadTouchedAt, so its image never carries it.
         root = {**message_item(), "messageRevision": 2, "editedText": "y", "editedAt": "2026-09-10T00:09:00Z",
-                "threadParticipants": {BOB_ID}, "threadTouchedAt": "2026-09-10T00:05:00Z"}
+                "threadParticipants": {BOB_ID}}
+        publish = self.modify(root)
+        self.assertEqual(publish.call_args_list[0].args[1]["type"], "room.message.updated")
+
+    def test_an_edit_stamped_before_a_reply_but_committed_after_still_publishes(self):
+        # The clock race: the edit's editedAt is OLDER than the reply's touch, yet it
+        # committed last. Its image has no threadTouchedAt, so it is never skipped.
+        root = {**message_item(), "messageRevision": 2, "editedText": "", "deletedAt": "2026-09-10T00:04:59Z",
+                "editedAt": "2026-09-10T00:04:59Z", "threadParticipants": {BOB_ID}}
         publish = self.modify(root)
         self.assertEqual(publish.call_args_list[0].args[1]["type"], "room.message.updated")

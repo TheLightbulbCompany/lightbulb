@@ -153,6 +153,18 @@ async def test_thread_reply_records_repliers_and_mentions_on_the_root(world):
     assert reply["threadRootSeq"] == root["messageSeq"]
 
 
+@pytest.mark.asyncio
+async def test_an_edit_or_delete_of_the_root_clears_the_thread_touch_marker(world):
+    """The projector reads threadTouchedAt's PRESENCE as "reply bookkeeping, not an
+    edit"; every edit/delete removes it so a late-committing edit is never skipped."""
+    room_id = await _room()
+    root = await say(room_id, ANN, "root")
+    await say(room_id, ANN, "reply", thread_root=root["messageId"])
+    assert "threadTouchedAt" in await repo.get_message(room_id, root["messageSeq"])
+    await repo.update_message(OWNER, room_id, root["messageSeq"], USER_A, "fix", 0, "root, edited")
+    assert "threadTouchedAt" not in await repo.get_message(room_id, root["messageSeq"])
+
+
 # ---------------------------------------------------------------------------
 # message kinds
 # ---------------------------------------------------------------------------

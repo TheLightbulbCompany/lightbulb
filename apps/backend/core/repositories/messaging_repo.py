@@ -1109,7 +1109,9 @@ async def update_message(
                         "Update": {
                             "TableName": table_name,
                             "Key": {"pk": room_pk(room_id), "sk": msg_sk(seq)},
-                            "UpdateExpression": "SET editedText = :text, messageRevision = :next, editedAt = :now, deletedAt = :deleted",
+                            # REMOVE threadTouchedAt: an edit/delete image never carries it, so the
+                            # projector can't mistake it for a reply's root ADD (no clocks involved).
+                            "UpdateExpression": "SET editedText = :text, messageRevision = :next, editedAt = :now, deletedAt = :deleted REMOVE threadTouchedAt",
                             "ConditionExpression": "attribute_exists(sk) AND #author.#kind = :human AND #author.id = :user AND (attribute_not_exists(messageRevision) OR messageRevision = :expected)",
                             "ExpressionAttributeNames": {"#author": "author", "#kind": "kind"},
                             "ExpressionAttributeValues": {

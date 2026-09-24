@@ -852,12 +852,12 @@ def _project_live(item: dict[str, Any]) -> None:
 def _thread_touch_only(item: dict[str, Any]) -> bool:
     """This MODIFY is a thread reply's ``threadParticipants`` ADD on its root, not an
     edit. The stream carries NEW_IMAGE only, so there is no old image to diff: the
-    ADD stamps ``threadTouchedAt`` and an edit stamps ``editedAt``, and whichever is
-    newer says which write produced this image. (A later reaction write also reads
-    as "not an edit" -- it only ever replayed the same ``edit:<revision>`` event,
-    which clients already deduplicate.)"""
-    touched = item.get("threadTouchedAt")
-    return isinstance(touched, str) and touched > str(item.get("editedAt") or "")
+    ADD sets ``threadTouchedAt`` and every edit/delete REMOVEs it, so its presence
+    alone says which write produced this image -- no timestamps compared, so a slow
+    or clock-skewed edit/delete is never skipped. (A later reaction write also
+    reads as "not an edit" -- it only ever replayed the same ``edit:<revision>``
+    event, which clients already deduplicate.)"""
+    return isinstance(item.get("threadTouchedAt"), str)
 
 
 def process_record(record: dict[str, Any]) -> None:

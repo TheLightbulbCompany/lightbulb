@@ -118,8 +118,11 @@ async def test_decision_computed_once_and_returned_to_every_candidate(monkeypatc
     assert "thread" not in state
     assert state["latest"]["author"] == "Aden (human)"
     who = questions["who"]
-    assert who["instructions"].startswith("Which AI teammate, if any, should act on the latest message?")
+    # The owner's bar (2026-09-24): would a good employee in this room naturally respond?
+    assert who["instructions"] == jev.WHO_INSTRUCTIONS
+    assert "would a good, helpful employee in this room naturally respond" in who["instructions"]
     assert set(who["criteria"]) == {"a1", "a2", "none"}
+    assert who["criteria"]["none"] == jev.NONE_CRITERION
     assert who["criteria"]["a2"] == "Growth card. Last spoke 3h ago."
     assert set(questions["placement"]["criteria"]) == {"main", "thread"}
     row = store[(ROOM, "m1")]

@@ -31,7 +31,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
-from bridge import sync, turn, browser_control, followups
+from bridge import sync, turn, browser_control, followups, mcp_compat
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
 log = logging.getLogger("bridge")
@@ -730,6 +730,7 @@ def main() -> None:
     # No turn is running yet: whatever is here is a crashed turn's leftovers or the old
     # shared per-room cache (media/messaging/attachments/) -- neither may outlive its turn.
     shutil.rmtree(sync.turn_media_root(), ignore_errors=True)
+    mcp_compat.install()
     log.info("bridge on 0.0.0.0:%d home=%s owner=%s", PORT, sync.HOME, OWNER)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 

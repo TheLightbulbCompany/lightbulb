@@ -11,11 +11,25 @@ const room = (id: string, extra: Partial<DirectoryRoom> = {}): DirectoryRoom => 
 const nameOf = (value: DirectoryRoom) => value.name ?? value.roomId;
 
 describe("groupRooms", () => {
+  it("sorts by latest message, newest first, with never-written rooms last and starred still pinned", () => {
+    const at = (iso: string | null) => ({ lastMessageAt: iso });
+    const groups = groupRooms([
+      room("old", at("2026-09-24T09:00:00Z")),
+      room("quiet", at(null)),
+      room("new", at("2026-09-24T10:00:00Z")),
+      room("pinned", { ...at("2026-09-01T00:00:00Z"), starred: true }),
+    ], [], { sort: "recent", nameOf });
+    expect(groups.map((group) => [group.id, group.rooms.map((value) => value.roomId)])).toEqual([
+      ["starred", ["pinned"]],
+      ["channels", ["new", "old", "quiet"]],
+    ]);
+  });
+
   it("orders starred, custom sections, channels, then direct messages", () => {
     const groups = groupRooms(
       [room("beta"), room("alpha", { starred: true }), room("dm-1", { kind: "dm" }), room("shipping", { sectionId: "s-1" })],
       [{ id: "s-1", name: "Ship" }],
-      { sort: "alpha", nameOf },
+      { sort: "name", nameOf },
     );
     expect(groups.map((group) => group.label)).toEqual(["Starred", "Ship", "Channels", "Direct messages"]);
     expect(groups[0].rooms.map((value) => value.roomId)).toEqual(["alpha"]);
@@ -28,7 +42,7 @@ describe("groupRooms", () => {
     const groups = groupRooms(
       [room("internal"), room("shared", { shared: true })],
       [],
-      { sort: "alpha", nameOf },
+      { sort: "name", nameOf },
     );
     expect(groups.map((group) => group.label)).toEqual(["Channels", "External connections"]);
     expect(groups[0].rooms.map((value) => value.roomId)).toEqual(["internal"]);
@@ -36,14 +50,14 @@ describe("groupRooms", () => {
   });
 
   it("hides empty built-in channel groups for external-only and internal-only lists", () => {
-    expect(groupRooms([room("shared", { shared: true })], [], { sort: "alpha", nameOf }).map((group) => group.label))
+    expect(groupRooms([room("shared", { shared: true })], [], { sort: "name", nameOf }).map((group) => group.label))
       .toEqual(["External connections"]);
-    expect(groupRooms([room("internal")], [], { sort: "alpha", nameOf }).map((group) => group.label))
+    expect(groupRooms([room("internal")], [], { sort: "name", nameOf }).map((group) => group.label))
       .toEqual(["Channels"]);
   });
 
   it("keeps group DMs inside Direct messages", () => {
-    const groups = groupRooms([room("g", { kind: "group-dm" }), room("d", { kind: "dm" })], [], { sort: "alpha", nameOf });
+    const groups = groupRooms([room("g", { kind: "group-dm" }), room("d", { kind: "dm" })], [], { sort: "name", nameOf });
     expect(groups.map((group) => group.label)).toEqual(["Direct messages"]);
     expect(groups[0].rooms.map((value) => value.roomId)).toEqual(["d", "g"]);
   });
@@ -52,20 +66,20 @@ describe("groupRooms", () => {
     const groups = groupRooms(
       [room("both", { starred: true, sectionId: "s-1" })],
       [{ id: "s-1", name: "Ship" }],
-      { sort: "alpha", nameOf },
+      { sort: "name", nameOf },
     );
     expect(groups.map((group) => group.label)).toEqual(["Starred"]);
     expect(groups[0].rooms).toHaveLength(1);
   });
 
   it("drops empty groups and a section that no longer exists falls back to its kind", () => {
-    const groups = groupRooms([room("orphan", { sectionId: "gone" })], [{ id: "s-1", name: "Ship" }], { sort: "alpha", nameOf });
+    const groups = groupRooms([room("orphan", { sectionId: "gone" })], [{ id: "s-1", name: "Ship" }], { sort: "name", nameOf });
     expect(groups.map((group) => group.label)).toEqual(["Channels"]);
   });
 
   it("sorts alphabetically by default and unread-first on request", () => {
     const rooms = [room("zulu", { unreadCount: 0 }), room("alpha", { unreadCount: 0 }), room("mike", { unreadCount: 3 })];
-    expect(groupRooms(rooms, [], { sort: "alpha", nameOf })[0].rooms.map((value) => value.roomId)).toEqual(["alpha", "mike", "zulu"]);
+    expect(groupRooms(rooms, [], { sort: "name", nameOf })[0].rooms.map((value) => value.roomId)).toEqual(["alpha", "mike", "zulu"]);
     expect(groupRooms(rooms, [], { sort: "unread", nameOf })[0].rooms.map((value) => value.roomId)).toEqual(["mike", "alpha", "zulu"]);
   });
 
@@ -81,7 +95,7 @@ describe("archived rooms", () => {
     const groups = groupRooms(
       [room("live"), room("old", { archivedAt }), room("fav", { archivedAt, starred: true }), room("kept", { archivedAt, sectionId: "s-1" })],
       [{ id: "s-1", name: "Ship" }],
-      { sort: "alpha", nameOf },
+      { sort: "name", nameOf },
     );
     expect(groups.map((group) => group.label)).toEqual(["Channels", "Archived"]);
     expect(groups[1].rooms.map((value) => value.roomId)).toEqual(["fav", "kept", "old"]);
@@ -91,7 +105,7 @@ describe("archived rooms", () => {
     const groups = groupRooms(
       [room("dm-1", { kind: "dm" }), room("trio", { kind: "group-dm", archivedAt: "2026-09-23T00:00:00Z" })],
       [],
-      { sort: "alpha", nameOf },
+      { sort: "name", nameOf },
     );
     expect(groups.map((group) => [group.label, group.rooms.map((value) => value.roomId)]))
       .toEqual([["Direct messages", ["dm-1"]], ["Archived", ["trio"]]]);

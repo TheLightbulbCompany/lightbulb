@@ -309,3 +309,39 @@ async def test_no_audience_emits_metric(async_client, secret_set):
     assert resp.status_code == 200
     assert resp.json()["pushed"] is False
     metric.assert_called_once_with("paperclip_events.no_audience")
+
+
+@pytest.mark.asyncio
+async def test_run_failed_metric_counts_even_when_push_is_suppressed(async_client, secret_set):
+    """The alarm metric is emitted before the cooldown/dedupe that silences the push."""
+    metric = MagicMock()
+    with (
+        patch(
+            "routers.paperclip_events.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.ALREADY_SEEN),
+        ),
+        patch("routers.paperclip_events.put_metric", metric),
+    ):
+        known = await async_client.post(
+            "/api/v1/webhooks/paperclip-events",
+            json=_event("agent.run.failed", {"errorCode": "setup_failed", "agentId": "pa-1"}),
+            headers=_AUTH,
+        )
+        unknown = await async_client.post(
+            "/api/v1/webhooks/paperclip-events",
+            json=_event("agent.run.failed", {"errorCode": "brand_new_code"}, eventId="evt-2"),
+            headers=_AUTH,
+        )
+        missing = await async_client.post(
+            "/api/v1/webhooks/paperclip-events",
+            json=_event("agent.run.failed", {}, eventId="evt-3"),
+            headers=_AUTH,
+        )
+    for resp in (known, unknown, missing):
+        assert resp.json()["pushed"] is False
+    assert [c.kwargs["dimensions"]["error_code"] for c in metric.call_args_list] == [
+        "setup_failed",
+        "other",
+        "other",
+    ]
+    assert all(c.args == ("paperclip.run.failed",) for c in metric.call_args_list)

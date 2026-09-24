@@ -426,6 +426,11 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
         "capabilities",
         "reportsTo",
         "budgetMonthlyCents",
+        "permissions",
     }
     extra_top_level = set(upstream_body.keys()) - allowed_top_level
     assert not extra_top_level, f"unexpected top-level fields in upstream create_agent body: {extra_top_level}"
+
+    # 8. Governed agent creation: Paperclip 916 made new agents hire-capable by default,
+    #    so every BFF-created agent must carry canCreateAgents=false explicitly.
+    assert upstream_body["permissions"] == {"canCreateAgents": False}

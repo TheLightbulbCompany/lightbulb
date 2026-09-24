@@ -192,6 +192,7 @@ describe("Settings account controls (App Store readiness)", () => {
     await render(<Settings />);
     expect(await screen.findByText("Privacy Policy")).toBeTruthy();
     expect(screen.getByText("Terms of Service")).toBeTruthy();
+    expect(screen.getByText("Contact support")).toBeTruthy();
     expect(screen.getByText("Delete account")).toBeTruthy();
   });
 

@@ -11,6 +11,7 @@ import {
 import { router, Stack, useFocusEffect, useIsPreview, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Alert,
   FlatList,
   Pressable,
   StyleSheet,
@@ -41,6 +42,7 @@ import { typingLine } from "../../../../lib/typingLine";
 /** RoomHeader.tsx's own copy — the same two strings the room list shows. */
 const STAR_FAILED = "The star could not be saved.";
 const MUTE_FAILED = "The notification setting could not be saved.";
+const LEAVE_FAILED = "You could not leave this conversation.";
 
 /**
  * How far the reader may scroll back, in px, before the jump-to-latest pill
@@ -180,6 +182,32 @@ function Conversation() {
     [roomId, setRoomPrefs],
   );
 
+  // The web's canLeaveRoom gate: a group DM, or a channel you do not own
+  // (the backend refuses a channel owner), never the vendor-shared channel
+  // (the backend refuses that too). A 1:1 DM has no leave; mute it.
+  const { leaveRoom } = rooms;
+  const canLeave =
+    !rooms.activeRoom?.shared &&
+    (rooms.activeRoom?.kind === "group-dm" ||
+      (isChannel && !!viewer && viewer.role !== "owner"));
+  const confirmLeave = useCallback(() => {
+    if (!roomId) return;
+    Alert.alert("Leave this conversation?", "You will stop seeing its messages.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Leave",
+        style: "destructive",
+        onPress: () => {
+          setPrefsError(null);
+          leaveRoom(roomId).then(
+            () => router.back(),
+            () => setPrefsError(LEAVE_FAILED),
+          );
+        },
+      },
+    ]);
+  }, [leaveRoom, roomId]);
+
   // In-flight and failed sends, drawn through the same MessageGroup as a real
   // message. On a fast network the server answers first; on a slow one this is
   // the difference between "sent" and "nothing happened".
@@ -270,6 +298,7 @@ function Conversation() {
         starred={!!room?.starred}
         muted={!!room?.muted}
         disabled={!room}
+        onLeave={canLeave ? confirmLeave : undefined}
         onToggleStar={() => void savePrefs({ starred: !room?.starred }, STAR_FAILED)}
         onToggleMute={() => void savePrefs({ muted: !room?.muted }, MUTE_FAILED)}
       />

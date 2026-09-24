@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { Linking } from "react-native";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
 import * as Haptics from "expo-haptics";
 
@@ -25,7 +26,7 @@ const message: CanonicalRoomMessage = {
   reactions: { "👍": ["user-a"] },
 };
 
-import { MessageActionsSheet, QUICK_REACTIONS } from "../MessageActionsSheet";
+import { MessageActionsSheet, QUICK_REACTIONS, reportMessageUrl } from "../MessageActionsSheet";
 
 describe("MessageActionsSheet", () => {
   beforeEach(() => mockSetStringAsync.mockClear());
@@ -89,6 +90,51 @@ describe("MessageActionsSheet", () => {
         expect.stringContaining("panel=chat&room=room-1&message=m1"),
       ),
     );
+  });
+
+  // App Store 1.2: report objectionable content by prefilled email.
+  it("reports someone else's message to support by email", async () => {
+    const openURL = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    await render(
+      <MessageActionsSheet
+        message={message}
+        currentUserId="user-a"
+        roomId="room-1"
+        onClose={() => {}}
+        onReact={() => {}}
+      />,
+    );
+    await fireEvent.press(screen.getByText("Report"));
+    const url = openURL.mock.calls[0][0];
+    expect(url.startsWith("mailto:support@thelightbulb.company?")).toBe(true);
+    const body = decodeURIComponent(url.split("&body=")[1]);
+    expect(body).toContain("Room: room-1");
+    expect(body).toContain("Message: m1");
+    expect(body).toContain("Author: Friday (agent agent-1)");
+    expect(body).toContain("Excerpt: ship it");
+    openURL.mockRestore();
+  });
+
+  // A UTF-16 slice at 280 can split an emoji's surrogate pair, and
+  // encodeURIComponent throws on the lone half, before openURL's .catch.
+  it("builds the report link when the cut lands inside an emoji", () => {
+    const text = `${"a".repeat(279)}😀 and more`;
+    const url = reportMessageUrl("room-1", { ...message, text });
+    const body = decodeURIComponent(url.split("&body=")[1]);
+    expect(body).toContain(`Excerpt: ${"a".repeat(279)}😀…`);
+  });
+
+  it("does not offer Report on your own message", async () => {
+    await render(
+      <MessageActionsSheet
+        message={{ ...message, author: { kind: "human", id: "user-a", displayName: "Me" } }}
+        currentUserId="user-a"
+        roomId="room-1"
+        onClose={() => {}}
+        onReact={() => {}}
+      />,
+    );
+    expect(screen.queryByText("Report")).toBeNull();
   });
 
   it("raises reply-in-thread and mark-unread to the caller", async () => {

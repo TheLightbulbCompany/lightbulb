@@ -6,7 +6,7 @@ import { hapticSelection } from "../../lib/haptics";
 import { AnimatedPressable, usePressScale } from "../../lib/pressScale";
 
 /**
- * The conversation header's star/mute icon pair — RoomHeader.tsx's own icon
+ * The conversation header's star/mute icon pair (plus leave when offered) — RoomHeader.tsx's own icon
  * buttons, same `aria-label` wording as `accessibilityLabel`. Presentational
  * only: a native header has no room below the buttons for an inline error, so
  * the screen that mounts this owns the async call, the pending flag and the
@@ -18,15 +18,19 @@ export function RoomHeaderActions({
   disabled,
   onToggleStar,
   onToggleMute,
+  onLeave,
 }: {
   starred: boolean;
   muted: boolean;
   disabled?: boolean;
   onToggleStar: () => void;
   onToggleMute: () => void;
+  /** Present only where the viewer may leave (the web's same gate). */
+  onLeave?: () => void;
 }) {
   const starScale = usePressScale();
   const muteScale = usePressScale();
+  const leaveScale = usePressScale();
   return (
     <View style={styles.row}>
       <AnimatedPressable
@@ -65,6 +69,26 @@ export function RoomHeaderActions({
       >
         <SymbolView accessibilityElementsHidden name={muted ? "bell.slash" : "bell"} size={18} tintColor={colors.inkSoft} />
       </AnimatedPressable>
+      {onLeave && (
+        <AnimatedPressable
+          onPress={onLeave}
+          onPressIn={leaveScale.onPressIn}
+          onPressOut={leaveScale.onPressOut}
+          disabled={disabled}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Leave this conversation"
+          accessibilityState={{ disabled: !!disabled }}
+          style={[styles.button, leaveScale.style]}
+        >
+          <SymbolView
+            accessibilityElementsHidden
+            name="rectangle.portrait.and.arrow.right"
+            size={18}
+            tintColor={colors.inkSoft}
+          />
+        </AnimatedPressable>
+      )}
     </View>
   );
 }

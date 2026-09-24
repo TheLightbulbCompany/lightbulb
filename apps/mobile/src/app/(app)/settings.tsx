@@ -540,6 +540,19 @@ export default function Settings() {
         />
       </Section>
 
+      <Section title="Help">
+        <NavigationRow
+          title="Contact support"
+          icon="envelope"
+          link
+          onPress={() =>
+            Linking.openURL("mailto:support@thelightbulb.company").catch(() =>
+              Alert.alert("Contact support", "Email support@thelightbulb.company."),
+            )
+          }
+        />
+      </Section>
+
       {/* Sign out — confirmed before acting. */}
       <Section>
         <Button label="Sign out" onPress={confirmSignOut} modifiers={DANGER} />

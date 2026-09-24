@@ -249,22 +249,20 @@ describe("panelRegistry", () => {
     });
   });
 
-  it("aliases Goals and Projects onto Tasks, pre-grouped", () => {
+  it("resolves Goals and Projects as their own panels, not aliased onto Tasks", () => {
+    const tasks = describePanel("teams-issues", {})?.panelId;
+
     const goals = describePanel("teams-goals", {});
-    expect(goals?.panelId).toBe("teams-issues");
-    expect(goals?.title).toBe("Tasks");
-    expect(goals?.params.groupBy).toBe("goal");
+    expect(goals?.panelId).toBe("teams-goals");
+    expect(goals?.panelId).not.toBe(tasks);
+    expect(goals?.title).toBe("Goals");
+    expect(goals?.params).toEqual({ teamsKey: "goals" });
 
     const projects = describePanel("teams-projects", {});
-    expect(projects?.panelId).toBe("teams-issues");
-    expect(projects?.title).toBe("Tasks");
-    expect(projects?.params.groupBy).toBe("project");
-  });
-
-  it("keeps one panel id when Goals, Projects and Tasks are all opened", () => {
-    const tasks = describePanel("teams-issues", {})?.panelId;
-    expect(describePanel("teams-goals", {})?.panelId).toBe(tasks);
-    expect(describePanel("teams-projects", {})?.panelId).toBe(tasks);
+    expect(projects?.panelId).toBe("teams-projects");
+    expect(projects?.panelId).not.toBe(tasks);
+    expect(projects?.title).toBe("Projects");
+    expect(projects?.params).toEqual({ teamsKey: "projects" });
   });
 
   it("carries an explicit ?groupBy, and ignores one that is not a grouping", () => {

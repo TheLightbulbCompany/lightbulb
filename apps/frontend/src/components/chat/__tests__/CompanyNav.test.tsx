@@ -19,14 +19,17 @@ import { resolvePanelAlias, describePanel } from "../../workspace/panelRegistry"
 // were added; "Dashboard" became "Home" with the IA shell. The consolidation
 // (spec 2026-09-06) took it to NINE: Org chart became a view of the Agents
 // panel and Brain came off the rail — Search stays, overriding the spec
-// (owner ruling 2026-09-08).
+// (owner ruling 2026-09-08). Goals and Projects (owner ruling 2026-09-24)
+// lifted the alias that hid them behind Tasks, bringing it to ELEVEN.
 const ALL_LABELS = [
   "Home",
   "Search",
   "Inbox",
   "Money",
   "Tasks",
+  "Projects",
   "Automations",
+  "Goals",
   "Leads",
   "Library",
   "Accounts",
@@ -147,15 +150,16 @@ describe("CompanyNav", () => {
     fireEvent.click(screen.getByText("Library"));
     expect(onPanelChange).toHaveBeenCalledWith("teams-artifacts");
   });
-  it("offers exactly nine items, in the consolidated order", () => {
+  it("offers exactly eleven items, in the consolidated order", () => {
     // The rail cut's whole point (spec §3), so it is asserted as an ordered
-    // list, not a count: 22 items became 9. Provisioning off, since Domain &
-    // Site is a capability question rather than an IA one.
+    // list, not a count: 22 items became 9, then 11 once Goals/Projects were
+    // lifted off Tasks' alias. Provisioning off, since Domain & Site is a
+    // capability question rather than an IA one.
     const labels = visibleCompanySections({ provisioningEnabled: false }).flatMap((s) =>
       s.items.map((i) => i.label),
     );
     expect(labels).toEqual(ALL_LABELS);
-    expect(labels).toHaveLength(9);
+    expect(labels).toHaveLength(11);
   });
 
   it("stops offering Brain, whose key is gone entirely", () => {

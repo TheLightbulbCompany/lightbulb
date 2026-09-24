@@ -33,11 +33,6 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   inbox: () => import("./panels/InboxPanel").then((m) => m.InboxPanel),
   issues: () => import("./panels/IssuesPanel").then((m) => m.IssuesPanel),
   routines: () => import("./panels/RoutinesPanel").then((m) => m.RoutinesPanel),
-  // UNREACHABLE while `teams-goals` / `teams-projects` alias to `teams-issues`
-  // (panelRegistry.RETIRED_PANEL_ALIASES) — the alias resolves before this map
-  // is consulted, so nothing routes here. Kept because these panels are still
-  // the only place a goal or project is CREATED, edited or deleted; lifting
-  // the alias is what makes them reachable again. Do not treat as live.
   goals: () => import("./panels/GoalsPanel").then((m) => m.GoalsPanel),
   projects: () => import("./panels/ProjectsListPanel").then((m) => m.ProjectsListPanel),
   artifacts: () => import("./panels/ArtifactsPanel").then((m) => m.ArtifactsPanel),

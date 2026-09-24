@@ -324,6 +324,27 @@ def _line(message: dict) -> dict:
     }
 
 
+#: The routing bar (owner ruling 2026-09-24): "would a good employee in this room naturally
+#: respond?" -- employee judgement, not a checklist; the examples are examples. Framed as a
+#: colleague because Jev read the old "should act on" as "only when asked" and skipped a shared
+#: link (prod 21:38Z); a thin agent card (name + role) made that worse, so the bar must carry it.
+WHO_INSTRUCTIONS = (
+    "These AI teammates are listening in on a conversation among colleagues. For each, ask: "
+    "would a good, helpful employee in this room naturally respond to the latest message? "
+    "A good teammate who sees a link shared with 'we should study this' reads it and posts the "
+    "takeaways; when a question lands in their area, they answer it; when they are mentioned "
+    "indirectly, they chime in; when they have context for a decision or a commitment they can "
+    "track, they speak up. They stay out of personal back-and-forth, thanks and acknowledgements, "
+    "and they don't pile on after a colleague has already answered. Pick at most ONE: the "
+    "teammate whose role and tools fit best (judge by role and tools, not by name), or nobody."
+)
+NONE_CRITERION = (
+    "Nobody: a good employee would stay quiet here -- social chatter, thanks or an acknowledgement, "
+    "a personal matter between specific people, something a colleague has already answered, or "
+    "a reply that would only prolong agent-to-agent back-and-forth"
+)
+
+
 async def _decide_for_message(
     meta: dict, message: dict, latest: dict, members: list[dict], history: list[dict]
 ) -> dict:
@@ -341,20 +362,10 @@ async def _decide_for_message(
 
     cards = await asyncio.gather(*(agent_card(meta["ownerId"], a, names.get(a, a), recency(a)) for a in candidates))
     criteria = dict(zip(candidates, cards))
-    criteria["none"] = (
-        "Nobody: chatter, acknowledgement, addressed to a specific human, "
-        "or would prolong agent-to-agent back-and-forth"
-    )
+    criteria["none"] = NONE_CRITERION
     state = _state(meta, latest, history)
     questions = {
-        "who": {
-            "type": "choice",
-            "instructions": (
-                "Which AI teammate, if any, should act on the latest message? "
-                "Judge by each teammate's role and tools, not by name."
-            ),
-            "criteria": criteria,
-        },
+        "who": {"type": "choice", "instructions": WHO_INSTRUCTIONS, "criteria": criteria},
         "placement": {
             "type": "choice",
             "instructions": "Where should a reply to the latest message go?",

@@ -471,6 +471,7 @@ def _render_push(message: dict[str, Any], meta: dict[str, Any], mentioned: bool)
             "messageId": message["messageId"],
             "messageSeq": message["messageSeq"],
             "threadRootMessageId": message["threadRootMessageId"],
+            "roomKind": meta.get("kind"),
         },
     }
 

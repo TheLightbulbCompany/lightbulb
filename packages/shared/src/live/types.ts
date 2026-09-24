@@ -156,6 +156,15 @@ export interface LiveEventEnvelope<T extends LiveEventType, P> {
   payload: P;
 }
 
+/** The banner the projector rendered for this reader: the same text the phone
+ * push carries, present only when it notifies an unmuted reader. */
+export type MessagePush = {
+  title: string;
+  subtitle: string;
+  body: string;
+  threadId: string;
+  data: { roomId: string; messageId: string; messageSeq: number; threadRootMessageId: string | null; roomKind?: string };
+};
 export type RoomTypingChanged = { roomId: string; userId: string; displayName: string; expiresAt: string };
 export type RoomRunFrame = { roomId: string; agentId: string; runId: string; threadRootMessageId?: string | null; frame: ChatIncomingMessage };
 export type RoomMetadataChanged = { roomId: string; roomRevision: number };
@@ -192,6 +201,8 @@ export type LiveEvent =
       mentionedUserIds?: string[];
       /** An edit/delete of the room's current preview: update the preview, leave counts alone. */
       previewOnly?: true;
+      /** The phone's banner for this reader, present only when it notifies an unmuted reader. */
+      push?: MessagePush;
     }>
   | LiveEventEnvelope<"room.message.reactions.changed", CanonicalRoomMessage>
   | LiveEventEnvelope<"room.typing.changed", RoomTypingChanged>

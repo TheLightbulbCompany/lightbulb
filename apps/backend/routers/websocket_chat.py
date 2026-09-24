@@ -154,6 +154,9 @@ async def ws_message(
             "local session frame rejected",
             extra={
                 "code": exc.error.code,
+                # Which check fired (fixed server strings, never frame content): the 2026-09-24
+                # heartbeat outage logged only LOCAL_SESSION_FORBIDDEN and hid the cause.
+                "detail": exc.error.message,
                 "frame": frame,
                 "sid": sid,
                 "cid": x_connection_id,

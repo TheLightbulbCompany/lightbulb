@@ -1260,3 +1260,58 @@ async def test_event_batches_hint_the_room_but_not_every_user_stream(transport, 
     )
     assert any("/rooms/" in h["channel"] for h in transport[4])
     assert not any("/users/" in h["channel"] for h in transport[4])
+
+
+@pytest.mark.asyncio
+async def test_device_heartbeat_processes_sessions_concurrently(transport, monkeypatch):
+    """Prod 2026-09-24: one frame named 17 mirrors and each ran its ~8 network calls in turn,
+    so the ack missed the desktop's 10 s deadline and every reconnect timed out again. Items
+    now run concurrently (bounded), in about ceil(17/8) item-times, and order is preserved."""
+    import time as clock
+
+    from core.services import local_session_relay as module
+
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    frame = heartbeat(sid)
+    base = frame["sessions"][0]
+    frame["sessions"] = [{**base, "sessionId": f"s{i:02d}"} for i in range(17)]
+    in_flight = {"now": 0, "peak": 0}
+
+    async def slow(self, cid, connection, enrollment, owner, now, item):
+        in_flight["now"] += 1
+        in_flight["peak"] = max(in_flight["peak"], in_flight["now"])
+        await asyncio.sleep(0.1)
+        in_flight["now"] -= 1
+        return item.session_id, None
+
+    monkeypatch.setattr(module.LocalSessionRelay, "_heartbeat_item", slow)
+    started = clock.monotonic()
+    response = await relay(transport).handle_message("conn-1", frame)
+    elapsed = clock.monotonic() - started
+    assert response["rejected"] == [f"s{i:02d}" for i in range(17)]
+    assert in_flight["peak"] == module.HEARTBEAT_CONCURRENCY
+    assert elapsed < 0.1 * 17 / 2  # 3 batches, not 17 sequential items
+
+
+@pytest.mark.asyncio
+async def test_a_failing_heartbeat_item_surfaces_after_the_others_finish(transport, monkeypatch):
+    from core.services import local_session_relay as module
+
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    frame = heartbeat(sid)
+    frame["sessions"] = [{**frame["sessions"][0], "sessionId": f"s{i}"} for i in range(3)]
+    finished = []
+
+    async def item(self, cid, connection, enrollment, owner, now, it):
+        if it.session_id == "s0":
+            raise RuntimeError("boom")
+        await asyncio.sleep(0.05)
+        finished.append(it.session_id)
+        return None, None
+
+    monkeypatch.setattr(module.LocalSessionRelay, "_heartbeat_item", item)
+    with pytest.raises(RuntimeError):
+        await relay(transport).handle_message("conn-1", frame)
+    assert sorted(finished) == ["s1", "s2"]

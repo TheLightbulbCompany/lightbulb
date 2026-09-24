@@ -5,14 +5,15 @@ is NO agent run here: SES sending is not gated by the trial cap (the cap
 fences Bedrock inference), so we can always answer even when we cannot think.
 Nothing is reserved and nothing is spent.
 
-Only ever sent to the OWNER, and only for a PRIVATE address.
-`routers/ses_inbound.py` enforces a sender allowlist before this point, so an
-inbound that reaches the cap check on a private address is authenticated —
-that is the entire safety argument for answering at all. A `public` address
-has no allowlist to enforce, so its `From` is unproven and the router drops
-it silently rather than calling here. Unknown-recipient and unverified-sender
-inbound stay silent for the same reason: replying would confirm the address
-exists and turn the endpoint into a reflector.
+Only ever sent to an EXPLICITLY ALLOWLISTED sender (the owner, or someone on the
+owner's ``verified_senders`` — `sender_allowed`), and only after the sender is
+authenticated. `routers/ses_inbound.py` enforces both before calling here — that
+is the entire safety argument for answering at all. An open-mode stranger (an
+address with ``send_to_anyone`` on, the default) may wake the agent but is
+NEVER answered here: the router drops an over-cap stranger silently
+(``dropped_over_cap``). Unknown-recipient and unverified-sender inbound stay
+silent for the same reason: replying would confirm the address exists and turn
+the endpoint into a reflector.
 
 Two independent loop fences, because this is machine-generated mail:
 ``Auto-Submitted: auto-replied`` (RFC 3834) is what tells a well-behaved

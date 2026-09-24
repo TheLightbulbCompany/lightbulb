@@ -60,6 +60,32 @@ describe("AgentEmailSection", () => {
     });
   });
 
+  it("defaults Open email to ON for an agent with no row yet, and the owner can still turn it off", async () => {
+    mockGet.mockResolvedValue({ addresses: [] });
+    renderSection();
+
+    const toggle = (await screen.findByRole("checkbox")) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+
+    fireEvent.click(toggle);
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(mockPatch).toHaveBeenCalled());
+    expect(mockPatch).toHaveBeenCalledWith("/agent-mail/addresses/agent_f", {
+      verified_senders: [],
+      send_to_anyone: false,
+    });
+  });
+
+  it("shows an explicitly closed row as OFF", async () => {
+    mockGet.mockResolvedValue({ addresses: [baseAddress] });
+    renderSection();
+
+    await screen.findByText("friday@acme.flickmeon.ai");
+    expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
+  });
+
   it("shows the paused-outbound banner and re-enables via PATCH outbound_disabled: null ONLY", async () => {
     // Re-enable must not also persist unsaved edits — it PATCHes exactly
     // { outbound_disabled: null }, not save()'s full body.

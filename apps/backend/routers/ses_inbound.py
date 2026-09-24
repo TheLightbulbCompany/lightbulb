@@ -21,9 +21,10 @@ DETERMINISTIC drop (disabled, unknown recipient, over cap, spam/virus, failed
 authentication, auto-submitted, duplicate) is terminal — retrying would
 produce the identical drop again — so those stay 200, as does a successful
 ``delivered`` and a ``stored_not_woken`` (the message is saved to the inbox
-either way; only WAKING the agent is gated, on the sender allowlist AND on
-that sender being authenticated — see ``sender_allowed`` and
-``authenticated_sender`` below). ``container_not_running`` also stays 200: it now
+either way; only WAKING the agent is gated, on the sender being allowlisted OR
+the address being open (``send_to_anyone``, the default), AND on that sender
+being authenticated — see ``sender_allowed`` and ``authenticated_sender``
+below). ``container_not_running`` also stays 200: it now
 only means the owner is OVER CAP (the cap gate below already normally
 intercepts that case before ``deliver_to_agent`` is even called; this is
 belt-and-suspenders for the same predicate) — waking a capped owner is
@@ -234,8 +235,10 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             return _final("dropped_auto_submitted")
 
         # Store first — every gated-clean message lands in the inbox whether or
-        # not it wakes the agent. Waking (and the cap autoreply) is reserved for
-        # the owner + the owner's allowlist.
+        # not it wakes the agent. Waking is open to any authenticated sender
+        # unless the owner turned ``send_to_anyone`` off, in which case it is
+        # reserved for the owner + the owner's allowlist. The cap autoreply is
+        # reserved for the allowlist either way (see the cap block below).
         #
         # Idempotent on SES's message_id: the 503 paths below roll back the
         # dedup row so SES retries, and that retry must reuse the row the
@@ -251,25 +254,31 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             headers=body.headers or {},
             attachments=body.attachments or [],
         )
-        # Waking takes BOTH: the owner listed this sender, AND the `From` it
-        # was listed under is actually authenticated. `sender_allowed` alone
-        # is not enough — `From` is a bare header parse, so an attacker whose
-        # own domain passes SPF can forge an allowlisted `From` and wake
-        # somebody else's agent. See `authenticated_sender`. The message is
-        # still STORED either way; only the wake tightens.
-        if not (sender_allowed(row, sender) and authenticated_sender(verdicts, body.headers or {}, sender)):
+        # Waking takes BOTH: the sender is permitted — listed by the owner, or
+        # the address is open (`send_to_anyone`, the default since the
+        # 2026-09-24 owner ruling) — AND the `From` is actually authenticated.
+        # `sender_allowed` alone is not enough — `From` is a bare header parse,
+        # so an attacker whose own domain passes SPF can forge an allowlisted
+        # `From` and wake somebody else's agent. See `authenticated_sender`,
+        # which stays mandatory in open mode too. The message is still STORED
+        # either way; only the wake tightens.
+        allowlisted = sender_allowed(row, sender)
+        if not (
+            (allowlisted or row.get("send_to_anyone")) and authenticated_sender(verdicts, body.headers or {}, sender)
+        ):
             return _final("stored_not_woken")
         key = reply_key(row["address"], stored["received_key"])
 
         # Free-tier cost cap — same predicate the chat/container-start
         # gates use, so an over-cap owner can't route around it via email.
         #
-        # ANSWERED, not silently dropped — because only an allowlisted sender
-        # (`sender_allowed` above) reaches this point at all: every other
-        # sender already exited with `stored_not_woken`. That allowlist check
-        # is the whole safety argument for replying here in a way we do NOT
-        # for the drops above (replying to those would confirm the address
-        # exists and turn this into a reflector).
+        # ANSWERED only for an EXPLICITLY allowlisted sender (`allowlisted`
+        # above — the owner or someone the owner listed). An open-mode
+        # stranger who reaches this point is dropped WITHOUT a reply
+        # (`dropped_over_cap`): replying would confirm the address exists and
+        # turn this into a reflector, exactly what we refuse for the drops
+        # above. That allowlist check is the whole safety argument for
+        # replying here.
         #
         # The reply is server-templated with no agent run — that is the whole
         # reason we can answer at all when the cap says we cannot think.
@@ -285,6 +294,8 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # block back above them.
         cap_reason = await trial_block_reason(row["owner_id"])
         if cap_reason is not None:
+            if not allowlisted:
+                return _final("dropped_over_cap")
             notified = await send_cap_autoreply(
                 owner_id=row["owner_id"],
                 reason=cap_reason,
@@ -308,6 +319,7 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             body_text=body.text or "",
             reply_key=key,
             attachments_manifest=manifest,
+            trusted=allowlisted,
         )
 
         result = await deliver_to_agent(

@@ -20,7 +20,7 @@ Once connected, an agent uses the service as tools (Stripe, Notion, Linear, …)
 
 ## Agent email
 
-Each agent can have its own address, `<agent>@<company>.flickmeon.ai`, minted on first use from the company name — so name the company first. Mail from you or an allow-listed sender wakes the agent; anything else (verification codes, newsletters) waits in its inbox for 30 days. Agents can always email you. Emailing anyone else is off until you enable it in **Control Panel → Agents → Email**, and outbound pauses for the whole account if a recipient reports spam.
+Each agent can have its own address, `<agent>@<company>.thelightbulb.company`, minted on first use from the company name — so name the company first. Email is open by default: anyone whose mail passes sender authentication can email an agent and wake it, and the agent can email anyone (bulk and automated mail is dropped, and everything it receives is kept in its inbox for 30 days). Turn **Open email** off in **Control Panel → Agents → Email** and only you and the senders you allow-list wake the agent, and it can only email you and them. Outbound is subject to a daily limit and pauses for the whole account if a recipient reports spam.
 
 ## Files
 

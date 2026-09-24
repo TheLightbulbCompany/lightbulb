@@ -45,7 +45,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
   );
   const row = data?.addresses.find((a) => a.agent_id === agentId);
   const [senders, setSenders] = useState("");
-  const [anyone, setAnyone] = useState(false);
+  const [anyone, setAnyone] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -62,7 +62,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
   // effect would not re-fire and the old agent's unsaved edits would carry
   // over onto the new one.
   const sendersFromRow = (row?.verified_senders ?? []).join("\n");
-  const anyoneFromRow = row?.send_to_anyone ?? false;
+  const anyoneFromRow = row?.send_to_anyone ?? true;
   useEffect(() => {
     setSenders(sendersFromRow);
     setAnyone(anyoneFromRow);
@@ -125,7 +125,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
         )}
         <label className="block text-xs">
           <span className="font-semibold">Who can wake this agent by email</span>
-          <span className="block text-[var(--midnight-muted)]">One per line: an address (bob@example.com) or a domain (@example.com). You are always allowed.</span>
+          <span className="block text-[var(--midnight-muted)]">One per line: an address (bob@example.com) or a domain (@example.com). You are always allowed. Applies when open email is off; while it is on, anyone whose mail passes authentication can wake this agent.</span>
           <textarea
             className="mt-1 w-full rounded-md border border-[var(--edge)] bg-transparent p-2 font-mono text-xs"
             rows={4}
@@ -136,7 +136,7 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
         </label>
         <label className="flex items-center gap-2 text-xs">
           <input type="checkbox" checked={anyone} disabled={saving} onChange={(e) => setAnyone(e.target.checked)} />
-          Let this agent email anyone (daily limit applies; a spam report pauses all outbound)
+          Open email: anyone can email this agent and it can email anyone (daily limit applies; a spam report pauses all outbound)
         </label>
         {err && <p className="text-xs text-err">{err}</p>}
         <Button type="button" size="sm" disabled={saving} onClick={() => save()}>{saving ? "Saving…" : "Save"}</Button>

@@ -8,10 +8,11 @@ no security hot edges. Each mutating handler validates with a
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, HTTPException, Path
 
 from core.repositories import billing_repo
 from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
@@ -33,6 +34,9 @@ from .schemas import (
 
 router = APIRouter()
 _ctx = _agents._ctx
+
+# Interpolated into a fixed upstream path, so it may not carry "/", "." or "?".
+RoutineId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 
 logger = logging.getLogger(__name__)
 
@@ -305,6 +309,47 @@ async def get_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
         ),
         ctx.owner_id,
     )
+
+
+@router.get("/routines/{routine_id}/activity")
+async def list_routine_activity(routine_id: RoutineId, ctx: TeamsContext = Depends(_ctx)):
+    """A routine's activity — the ported stock RoutineDetail Activity section.
+
+    Stock (``ui/src/api/routines.ts`` ``routinesApi.activity`` @
+    v2026.916.1-isol8.2) has no routine-scoped route: the browser fans out
+    ``GET /companies/{co}/activity?entityType=&entityId=`` over the routine,
+    each of its triggers and each of its runs, then dedupes by id and sorts
+    newest first. The BFF does that fan-out itself so the browser never names
+    a company or an entity: the routine is fetched on the member session and
+    must be in the caller's workspace (404 otherwise — a Paperclip user can
+    belong to several companies), and every activity call is pinned to that
+    company and to ids read off the routine and its runs.
+    """
+    admin = _agents._admin()
+    routine = await admin.get_routine(routine_id=routine_id, session_cookie=ctx.session_cookie)
+    if not isinstance(routine, dict) or routine.get("companyId") != ctx.company_id or not routine.get("id"):
+        raise HTTPException(status_code=404, detail="Routine not found")
+    runs = await admin.list_routine_runs(routine_id=routine["id"], session_cookie=ctx.session_cookie)
+    entities = [("routine", routine["id"])]
+    entities += [
+        ("routine_trigger", t["id"]) for t in routine.get("triggers") or [] if isinstance(t, dict) and t.get("id")
+    ]
+    entities += [("routine_run", r["id"]) for r in runs if isinstance(r, dict) and r.get("id")]
+    pages = await asyncio.gather(
+        *(
+            admin.list_activity(
+                session_cookie=ctx.session_cookie,
+                company_id=ctx.company_id,
+                entity_type=kind,
+                entity_id=entity_id,
+            )
+            for kind, entity_id in entities
+        )
+    )
+    deduped = {e["id"]: e for page in pages for e in envelope_list(page, "events")["events"] if e.get("id")}
+    # ISO-8601 timestamps sort lexically; stock sorts by Date.
+    events = sorted(deduped.values(), key=lambda e: str(e.get("createdAt") or ""), reverse=True)
+    return {"events": events}
 
 
 # ---- Routine triggers + revisions (A2 — editable routines) ------------

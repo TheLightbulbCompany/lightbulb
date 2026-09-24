@@ -300,7 +300,8 @@ describe("RoutinesPanel", () => {
     // Clicking "Run now" opens the editor instead of firing immediately.
     await user.click(screen.getByRole("button", { name: /run daily standup now/i }));
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText(/run daily standup/i)).toBeInTheDocument();
+    expect(within(dialog).getByText("Run routine", { selector: "h2" })).toBeInTheDocument();
+    expect(within(dialog).getByText("Daily standup")).toBeInTheDocument();
     expect(mockPost).not.toHaveBeenCalled();
 
     // Fill the text variable; pick a select option (Radix Select portals).
@@ -310,7 +311,7 @@ describe("RoutinesPanel", () => {
     await user.click(within(dialog).getByRole("combobox"));
     await user.click(await screen.findByRole("option", { name: "formal" }));
 
-    await user.click(within(dialog).getByRole("button", { name: /^Run$/ }));
+    await user.click(within(dialog).getByRole("button", { name: /^Run routine$/ }));
 
     await waitFor(() => {
       expect(mockPost).toHaveBeenCalledTimes(1);
@@ -320,6 +321,8 @@ describe("RoutinesPanel", () => {
     const b = body as { source: string; variables: Record<string, unknown> };
     expect(b.source).toBe("manual");
     expect(b.variables).toEqual({ topic: "Q3 launch", tone: "formal" });
+    // Ported stock dialog: the run carries the (prefilled) agent choice.
+    expect(body).toHaveProperty("assigneeAgentId", "a1");
   });
 
   it("blocks the run while a required variable is empty", async () => {
@@ -337,7 +340,7 @@ describe("RoutinesPanel", () => {
     await user.click(screen.getByRole("button", { name: /run daily standup now/i }));
     const dialog = await screen.findByRole("dialog");
     // Required + empty → Run is disabled, so clicking it does nothing.
-    const runBtn = within(dialog).getByRole("button", { name: /^Run$/ });
+    const runBtn = within(dialog).getByRole("button", { name: /^Run routine$/ });
     expect(runBtn).toBeDisabled();
     await user.click(runBtn);
     expect(mockPost).not.toHaveBeenCalled();

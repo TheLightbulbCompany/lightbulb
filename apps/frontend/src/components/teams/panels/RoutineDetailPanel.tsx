@@ -11,23 +11,25 @@
 // A2 (editable routines): the read-only shell above is now the DEFAULT view;
 // edit affordances layer on top of it — an Edit dialog (title / description /
 // assignee / priority / status / typed variables incl. the `date` type), a
-// schedule Add / Edit / Delete + webhook secret Rotate on each trigger, and a
-// Revisions view with Restore. All mutations go through useTeamsApi; the
+// schedule Add / Edit / Delete + webhook secret Rotate on each trigger. A Run
+// button and Run history / Activity / History tabs use the pieces ported from
+// stock Paperclip v2026.916.1-isol8.2 under components/teams/routines/
+// (run-variables dialog, activity section, revision history with compare +
+// restore). All mutations go through useTeamsApi; the
 // backend keeps the trial-gate on activation-adjacent actions (a 402 surfaces
 // inline as an upgrade prompt rather than a broken button).
 
 "use client";
 
-import { useState } from "react";
-import { notifyConversionGate } from "@/lib/notify";
+import { useMemo, useState } from "react";
+import { notifyConversionGate, notifySuccess } from "@/lib/notify";
 import {
   ChevronRight,
-  History,
   KeyRound,
   KeySquare,
   Pencil,
+  Play,
   Plus,
-  RotateCcw,
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
@@ -35,7 +37,15 @@ import {
   EditorialButton,
   EditorialDialog,
   EditorialSelect,
+  PanelTabs,
 } from "@/components/teams/shell";
+import { RoutineActivitySection } from "@/components/teams/routines/RoutineActivitySection";
+import { RoutineHistoryTab } from "@/components/teams/routines/RoutineHistoryTab";
+import {
+  RoutineRunVariablesDialog,
+  routineRunNeedsConfiguration,
+  type RoutineRunDialogSubmitData,
+} from "@/components/teams/routines/RoutineRunVariablesDialog";
 import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker";
 import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -71,8 +81,9 @@ import {
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import type {
   CompanyAgent,
+  IssueProject,
+  RestoreRoutineRevisionResponse,
   RoutineDetail,
-  RoutineRevision,
   RoutineRun,
   RoutineTriggerSecretMaterial,
   RoutineTriggerSummary,
@@ -307,11 +318,18 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
     error: runsError,
     mutate: mutateRuns,
   } = read<{ runs: RoutineRun[] }>(`/routines/${routineId}/runs`);
-  const { data: revisionsData, mutate: mutateRevisions } = read<{
-    revisions: RoutineRevision[];
-  }>(`/routines/${routineId}/revisions`);
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
   const agents = agentsResp?.agents ?? [];
+  const { data: projectsResp } = read<{ projects: IssueProject[] }>("/projects");
+  const projects = projectsResp?.projects ?? [];
+  const agentLookup = useMemo(
+    () => new Map((agentsResp?.agents ?? []).map((a) => [a.id, a])),
+    [agentsResp],
+  );
+  const projectLookup = useMemo(
+    () => new Map((projectsResp?.projects ?? []).map((p) => [p.id, p])),
+    [projectsResp],
+  );
   const isError = !!error;
 
   // Edit state. Kept OUT of render-time reads so the read-only view (and its
@@ -327,9 +345,19 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   const [secretDialogTrigger, setSecretDialogTrigger] = useState<RoutineTriggerSummary | null>(
     null,
   );
+  // Stock RoutineDetail sections that ours renders as tabs under Triggers.
+  const [section, setSection] = useState<"runs" | "activity" | "history">("runs");
+  const [runDialogOpen, setRunDialogOpen] = useState(false);
+  // Webhook triggers a revision restore recreated: upstream mints fresh
+  // one-time secret material for each, shown once here.
+  const [restoredSecrets, setRestoredSecrets] = useState<
+    NonNullable<RestoreRoutineRevisionResponse["secretMaterials"]>
+  >([]);
 
   async function refresh(): Promise<void> {
-    await Promise.all([mutate?.(), mutateRuns?.(), mutateRevisions?.()]);
+    // Activity is read by its tab alone (it fans out upstream), and SWR
+    // revalidates it when that tab mounts.
+    await Promise.all([mutate?.(), mutateRuns?.()]);
   }
 
   // One shared runner for every mutation: clears the last error, flips busy,
@@ -388,16 +416,23 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
     });
   }
 
-  async function restoreRevision(revisionId: string): Promise<void> {
-    if (
-      typeof window !== "undefined" &&
-      !window.confirm("Restore the automation to this revision?")
-    )
-      return;
-    await run(async () => {
-      await post(`/routines/${routineId}/revisions/${revisionId}/restore`, {});
+  // Stock RoutineDetail's run: fire directly unless the routine needs the
+  // run dialog (variables). `source: "manual"` marks it as UI-fired.
+  async function fireRun(data?: RoutineRunDialogSubmitData): Promise<void> {
+    const body: Record<string, unknown> = { source: "manual" };
+    if (data?.variables && Object.keys(data.variables).length > 0) body.variables = data.variables;
+    if (data?.assigneeAgentId) body.assigneeAgentId = data.assigneeAgentId;
+    if (data?.projectId) body.projectId = data.projectId;
+    const ok = await run(async () => {
+      await post(`/routines/${routineId}/run`, body);
       await refresh();
     });
+    if (ok) {
+      setRunDialogOpen(false);
+      notifySuccess(`Running ${routine?.title ?? "automation"}…`, {
+        dedupeKey: `routine-run:${routineId}`,
+      });
+    }
   }
 
   // Same status-mutation path RoutinesPanel's enable/disable toggle uses
@@ -457,7 +492,6 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
 
   const runs = [...(runsData?.runs ?? [])].sort((a, b) => runTime(b) - runTime(a)); // newest first
   const triggers = routine.triggers ?? [];
-  const revisions = revisionsData?.revisions ?? [];
   const assigneeAgent = routine.assigneeAgentId
     ? agents.find((a) => a.id === routine.assigneeAgentId)
     : null;
@@ -510,19 +544,38 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
               </p>
             )}
           </div>
-          <EditorialButton
-            variant="secondary"
-            size="sm"
-            disabled={busy}
-            onClick={() => {
-              setActionError(null);
-              setEditing(true);
-            }}
-            aria-label="Edit automation"
-          >
-            <Pencil size={16} aria-hidden="true" />
-            Edit
-          </EditorialButton>
+          <div className="flex shrink-0 items-center gap-2">
+            <EditorialButton
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                setActionError(null);
+                if (routineRunNeedsConfiguration({ variables: routine.variables ?? [] })) {
+                  setRunDialogOpen(true);
+                } else {
+                  void fireRun();
+                }
+              }}
+              aria-label="Run automation now"
+            >
+              <Play size={16} aria-hidden="true" />
+              Run
+            </EditorialButton>
+            <EditorialButton
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                setActionError(null);
+                setEditing(true);
+              }}
+              aria-label="Edit automation"
+            >
+              <Pencil size={16} aria-hidden="true" />
+              Edit
+            </EditorialButton>
+          </div>
         </div>
 
         {/* Circuit-breaker auto-pause banner: the routine stopped firing on
@@ -560,7 +613,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
         {/* Main-column banner for errors from the inline actions (delete /
             rotate / restore). When an edit dialog is open it renders the error
             itself, so suppress the banner to avoid a duplicate message. */}
-        {actionError && !editing && !triggerDialog && !secretDialogTrigger && (
+        {actionError && !editing && !triggerDialog && !secretDialogTrigger && !runDialogOpen && (
           <DialogError message={actionError} />
         )}
 
@@ -712,10 +765,29 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
         </section>
 
         <section className="flex flex-col gap-3">
-          <h2 className="section-label">
-            <b>Run history</b>
-          </h2>
-          {runsError ? (
+          <PanelTabs
+            ariaLabel="Automation sections"
+            value={section}
+            onValueChange={(next) => setSection(next as typeof section)}
+            tabs={[
+              { value: "runs", label: "Run history" },
+              { value: "activity", label: "Activity" },
+              { value: "history", label: "History" },
+            ]}
+          />
+          {section === "activity" ? (
+            <RoutineActivitySection routineId={routineId} />
+          ) : section === "history" ? (
+            <RoutineHistoryTab
+              routine={routine}
+              agents={agentLookup}
+              projects={projectLookup}
+              onRestored={(data) => {
+                setRestoredSecrets(data.secretMaterials ?? []);
+                void refresh();
+              }}
+            />
+          ) : runsError ? (
             <p role="alert" className="text-sm" style={{ color: "var(--err)" }}>
               Failed to load run history.
             </p>
@@ -792,48 +864,6 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
           )}
         </section>
 
-        {revisions.length > 0 && (
-          <section className="flex flex-col gap-3">
-            <h2 className="section-label inline-flex items-center gap-1.5">
-              <History size={16} aria-hidden="true" />
-              <b>Revisions</b>
-            </h2>
-            <ul className="flex flex-col">
-              {revisions.map((rev) => (
-                <li
-                  key={rev.id}
-                  className="flex items-center gap-2 px-3 py-2 text-sm"
-                  style={{ borderBottom: "1px solid var(--edge)" }}
-                >
-                  {rev.revisionNumber != null && (
-                    <span className="font-mono text-xs text-[var(--midnight-muted)] shrink-0">
-                      v{rev.revisionNumber}
-                    </span>
-                  )}
-                  <span className="truncate text-[var(--midnight-soft)]">
-                    {rev.changeSummary ?? "Revision"}
-                  </span>
-                  <span className="flex-1" />
-                  {rev.createdAt && (
-                    <span className="text-xs text-[var(--midnight-muted)] shrink-0">
-                      {timeAgo(rev.createdAt)}
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => restoreRevision(rev.id)}
-                    className="inline-flex items-center gap-1 text-xs text-[var(--midnight)] hover:underline disabled:opacity-50 shrink-0"
-                    aria-label={`Restore revision ${rev.revisionNumber ?? rev.id}`}
-                  >
-                    <RotateCcw size={12} strokeWidth={1.75} aria-hidden="true" />
-                    Restore
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
       </main>
 
       <aside className="@3xl:sticky @3xl:top-4 @3xl:self-start">
@@ -1013,6 +1043,43 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
           <SecretField label="Webhook secret" value={rotatedSecret.webhookSecret} />
         </EditorialDialog>
       )}
+
+      {restoredSecrets.length > 0 && (
+        <EditorialDialog
+          open
+          onOpenChange={(o) => !o && setRestoredSecrets([])}
+          title="Webhook triggers recreated"
+          description="Restoring the revision recreated these webhook triggers with new URLs and secrets. Copy them now — each secret is shown only once."
+          footer={
+            <EditorialButton variant="primary" size="sm" onClick={() => setRestoredSecrets([])}>
+              Done
+            </EditorialButton>
+          }
+        >
+          <div className="flex flex-col gap-4">
+            {restoredSecrets.map((material) => (
+              <div key={material.triggerId} className="flex flex-col gap-3">
+                <SecretField label="Webhook URL" value={material.webhookUrl} />
+                <SecretField label="Webhook secret" value={material.webhookSecret} />
+              </div>
+            ))}
+          </div>
+        </EditorialDialog>
+      )}
+
+      <RoutineRunVariablesDialog
+        open={runDialogOpen}
+        onOpenChange={setRunDialogOpen}
+        routineName={routine.title}
+        agents={agents}
+        projects={projects}
+        defaultProjectId={routine.projectId ?? null}
+        defaultAssigneeAgentId={routine.assigneeAgentId ?? null}
+        variables={routine.variables ?? []}
+        isPending={busy}
+        error={runDialogOpen ? actionError : null}
+        onSubmit={(data) => void fireRun(data)}
+      />
 
       {secretDialogTrigger && (
         <SetSigningSecretDialog

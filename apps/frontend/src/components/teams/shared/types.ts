@@ -702,6 +702,59 @@ export interface RoutineRevision {
   revisionNumber?: number | null;
   changeSummary?: string | null;
   createdAt?: string | null;
+  // Full upstream RoutineRevision (packages/shared/src/types/routine.ts @
+  // v2026.916.1-isol8.2) — read by the ported RoutineHistoryTab.
+  snapshot?: RoutineRevisionSnapshot | null;
+  restoredFromRevisionId?: string | null;
+  createdByAgentId?: string | null;
+  createdByUserId?: string | null;
+}
+
+/** Upstream RoutineRevisionSnapshotRoutineV1 subset the history tab renders. */
+export interface RoutineRevisionSnapshotRoutine {
+  title: string;
+  description?: string | null;
+  assigneeAgentId?: string | null;
+  projectId?: string | null;
+  priority?: string | null;
+  status?: string | null;
+  concurrencyPolicy?: string | null;
+  catchUpPolicy?: string | null;
+  variables?: RoutineVariable[];
+  // Upstream RoutineEnvConfig: key -> plain string or a secret_ref binding.
+  env?: Record<string, unknown> | null;
+}
+
+/** Upstream RoutineRevisionSnapshotTriggerV1. */
+export interface RoutineRevisionSnapshotTrigger {
+  id: string;
+  kind: string;
+  label?: string | null;
+  enabled?: boolean;
+  cronExpression?: string | null;
+  timezone?: string | null;
+  signingMode?: string | null;
+  replayWindowSec?: number | null;
+}
+
+export interface RoutineRevisionSnapshot {
+  routine: RoutineRevisionSnapshotRoutine;
+  triggers?: RoutineRevisionSnapshotTrigger[];
+}
+
+/** Upstream RestoreRoutineRevisionResponse (ui/src/api/routines.ts). */
+export interface RestoreRoutineRevisionResponse {
+  revision?: RoutineRevision | null;
+  restoredFromRevisionNumber?: number | null;
+  secretMaterials?: Array<RoutineTriggerSecretMaterial & { triggerId: string }>;
+}
+
+/** One row of GET /teams/routines/{id}/activity (upstream ActivityEvent subset). */
+export interface RoutineActivityEvent {
+  id: string;
+  action: string;
+  details?: Record<string, unknown> | null;
+  createdAt: string;
 }
 
 /** Single routine from GET /routines/{id} (upstream RoutineDetail subset). */
@@ -714,6 +767,10 @@ export interface RoutineDetail {
   description?: string | null;
   assigneeAgentId?: string | null;
   assignee?: RoutineAgentSummary | null;
+  // Default project for runs (prefills the run dialog) and the revision the
+  // routine currently sits on (the history tab's "Current" row).
+  projectId?: string | null;
+  latestRevisionId?: string | null;
   triggers?: RoutineTriggerSummary[];
   // Variable definitions the routine declares. A run-now caller must collect a
   // value per variable; empty/absent means the routine takes no input.

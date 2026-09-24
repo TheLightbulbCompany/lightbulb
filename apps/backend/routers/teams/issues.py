@@ -216,9 +216,19 @@ async def patch_issue(
     needed because the read-only assignee row in IssueProperties was
     replaced with a real picker that needs an "Unassigned" path.
     """
-    return await _agents._admin().patch_issue(
+    payload = body.model_dump(exclude_unset=True, by_alias=True)
+    admin = _agents._admin()
+    # Handing a BLOCKED issue to an agent must unblock it in the same PATCH: on its own the
+    # new agent is woken, its run is cancelled as blocked, and the issue snaps back to the
+    # recovery owner (Paperclip audit 2026-09-24 F6). Real open blockers still 422, and that
+    # reason reaches the caller (main.py's PaperclipApiError handler).
+    if payload.get("assigneeAgentId") and "status" not in payload:
+        current = await admin.get_issue(issue_id=issue_id, session_cookie=ctx.session_cookie)
+        if (current or {}).get("status") == "blocked":
+            payload["status"] = "todo"
+    return await admin.patch_issue(
         issue_id=issue_id,
-        body=body.model_dump(exclude_unset=True, by_alias=True),
+        body=payload,
         session_cookie=ctx.session_cookie,
     )
 

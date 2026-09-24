@@ -134,6 +134,11 @@ async def list_workspace_sessions(auth: AuthContext = Depends(get_current_user))
 
 # Sessions are a workspace thing, not a room's (owner ruling 2026-09-24): any member reads,
 # only the session's own human commands. Agents keep their room-granted routes above.
+@router.get("/messaging/sessions/{session_id}", response_model=local_sessions.LocalSession)
+async def get_local_session(session_id: str, auth: AuthContext = Depends(get_current_user)):
+    return await local_sessions.get_session(auth, session_id)
+
+
 @router.get("/messaging/sessions/{session_id}/events", response_model=local_sessions.LocalSessionEventPage)
 async def list_local_session_events(
     session_id: str,

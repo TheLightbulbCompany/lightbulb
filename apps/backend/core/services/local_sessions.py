@@ -330,7 +330,12 @@ def command_caller(owner: str, command: dict) -> Caller:
     if "actor" in command:
         actor = AgentActor.model_validate(command["actor"])
         return AgentInvocation(
-            owner, command["roomId"], actor.id, int(command["invocationExpiresAt"]), command["invocationId"]
+            owner,
+            command["roomId"],
+            actor.id,
+            int(command["invocationExpiresAt"]),
+            command["invocationId"],
+            command.get("invocationRequesterId"),
         )
     user = command["actorUserId"]
     return AuthContext(user_id=user, org_id=owner if owner != user else None)
@@ -486,8 +491,12 @@ async def authorize_session(
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
     if room_id and await messaging_repo.get_member(room_id, "human", row["humanUserId"]) is None:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Session owner is no longer in this room.")
-    if not room_id and owner_only and row["humanUserId"] != auth.user_id:
-        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
+    agent = isinstance(auth, AgentInvocation)
+    if owner_only and (agent or not room_id):
+        # Ruling 2026-09-24: an agent commands a session only on behalf of that session's own
+        # human, i.e. when the message that woke it was theirs. Routines have no requester.
+        if (auth.requester_id if agent else auth.user_id) != row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
     return row, await _enrolled(owner, row["humanUserId"], row["deviceId"])
 
 
@@ -640,6 +649,13 @@ async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) 
         return []
 
 
+async def get_session(auth: Caller, session_id: str) -> LocalSession:
+    """One session for any workspace member, ended included: the list keeps only live
+    ones, but an open view or an old link must still show a session that has ended."""
+    row, _ = await authorize_session(auth, None, session_id)
+    return _session_public(row)
+
+
 async def list_events(
     auth: Caller, room_id: str | None, session_id: str, after_seq: int = 0, limit: int = 50
 ) -> LocalSessionEventPage:
@@ -690,6 +706,7 @@ async def submit_command(
             "actor": {"kind": "agent", "id": auth.agent_id},
             "invocationExpiresAt": auth.expires_at,
             "invocationId": auth.invocation_id,
+            "invocationRequesterId": auth.requester_id,
         }
         if isinstance(auth, AgentInvocation)
         else {"actorUserId": auth.user_id}

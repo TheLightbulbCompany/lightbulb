@@ -22,13 +22,16 @@ class AgentInvocation:
     agent_id: str
     expires_at: int
     invocation_id: str
+    # The human whose message triggered this turn, derived by the backend from the canonical
+    # message author -- never from the agent. None for agent-authored or routine triggers.
+    requester_id: str | None = None
 
 
 def session_key(agent: str, room: str) -> str:
     return f"agent:{agent}:lightbulb:channel:{room}"
 
 
-def mint(owner: str, room: str, agent: str, event: str) -> str:
+def mint(owner: str, room: str, agent: str, event: str, requester: str | None = None) -> str:
     now = int(time.time())
     claims = {
         "kind": PURPOSE,
@@ -37,6 +40,7 @@ def mint(owner: str, room: str, agent: str, event: str) -> str:
         "roomId": room,
         "agentId": agent,
         "eventId": event,
+        "requesterId": requester,
         "sessionKey": session_key(agent, room),
         "iat": now,
         "exp": now + MAX_LIFETIME,
@@ -52,7 +56,19 @@ def verify(token: str) -> AgentInvocation:
         if not isinstance(token, str) or not 1 <= len(token) <= 4096:
             raise ValueError()
         claims = jwt.decode(token, _signing_key(), algorithms=["HS256"], audience=AUDIENCE)
-        if set(claims) != {"kind", "aud", "ownerId", "roomId", "agentId", "eventId", "sessionKey", "iat", "exp", "jti"}:
+        if set(claims) != {
+            "kind",
+            "aud",
+            "ownerId",
+            "roomId",
+            "agentId",
+            "eventId",
+            "requesterId",
+            "sessionKey",
+            "iat",
+            "exp",
+            "jti",
+        }:
             raise ValueError()
         if claims["kind"] != PURPOSE or claims["aud"] != AUDIENCE:
             raise ValueError()
@@ -64,11 +80,17 @@ def verify(token: str) -> AgentInvocation:
             raise ValueError()
         if not isinstance(claims["agentId"], str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", claims["agentId"]):
             raise ValueError()
+        if claims["requesterId"] is not None and not (
+            isinstance(claims["requesterId"], str) and re.fullmatch(r"[A-Za-z0-9_-]{1,256}", claims["requesterId"])
+        ):
+            raise ValueError()
         for key in ("roomId", "eventId", "jti"):
             if not isinstance(claims[key], str) or str(uuid.UUID(claims[key])) != claims[key]:
                 raise ValueError()
         if claims["sessionKey"] != session_key(claims["agentId"], claims["roomId"]):
             raise ValueError()
-        return AgentInvocation(claims["ownerId"], claims["roomId"], claims["agentId"], claims["exp"], claims["jti"])
+        return AgentInvocation(
+            claims["ownerId"], claims["roomId"], claims["agentId"], claims["exp"], claims["jti"], claims["requesterId"]
+        )
     except (jwt.InvalidTokenError, ValueError, TypeError, KeyError, RuntimeError):
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.") from None

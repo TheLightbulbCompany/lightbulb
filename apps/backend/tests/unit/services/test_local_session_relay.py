@@ -155,7 +155,7 @@ async def test_agent_dispatch_uses_typed_author_and_fences_revocation_or_expiry(
 
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
     db[0].put_item(Item={"pk": f"ROOM#{ROOM}", "sk": "MEMBER#agent#friday", "kind": "agent", "id": "friday"})
-    caller = grants.verify(grants.mint(OWNER, ROOM, "friday", OTHER_ROOM))
+    caller = grants.verify(grants.mint(OWNER, ROOM, "friday", OTHER_ROOM, ALICE.user_id))
     sid = await start(transport)
     await service.submit_command(caller, ROOM, sid, command(service))
     transport[3].clear()

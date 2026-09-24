@@ -578,7 +578,14 @@ class OpenClawWorkWorker:
 
         invocation = None
         try:
-            invocation = local_session_grants.mint(owner_id, meta["roomId"], member["id"], message["messageId"])
+            author = message.get("author") or {}
+            invocation = local_session_grants.mint(
+                owner_id,
+                meta["roomId"],
+                member["id"],
+                message["messageId"],
+                author.get("id") if author.get("kind") == "human" else None,
+            )
         except (RuntimeError, ApiProblem):
             logger.warning("Local session invocation unavailable")
         ingress_path = f"/plugins/lightbulb-channel/inbound/{member['id']}"

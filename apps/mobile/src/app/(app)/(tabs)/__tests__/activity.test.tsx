@@ -1,0 +1,198 @@
+import type { ActivityAction, ActivityItem } from "@lightbulb/shared";
+import { act, fireEvent, render, screen } from "@testing-library/react-native";
+import { Alert } from "react-native";
+
+// Every out-of-scope name a jest.mock factory reaches is `mock`-prefixed and
+// read lazily (babel lowers these to `var`; the factories run mid-import).
+const mockPush = jest.fn();
+let mockFocused = true;
+jest.mock("expo-router", () => ({
+  router: { push: (...args: unknown[]) => mockPush(...args) },
+  useIsFocused: () => mockFocused,
+}));
+
+const mockRunAction = jest.fn();
+const mockMarkSeen = jest.fn(async () => {});
+const mockLoadMore = jest.fn();
+const mockRefresh = jest.fn(async () => {});
+let mockState: Record<string, unknown> = {};
+jest.mock("../../../../lib/activity", () => ({
+  ...jest.requireActual("../../../../lib/activity"),
+  useMobileActivity: () => ({
+    items: [], unseenCount: 0, paperclipAvailable: true, loading: false, loadingMore: false,
+    error: undefined, hasMore: false,
+    loadMore: mockLoadMore, refresh: mockRefresh, markSeen: mockMarkSeen, runAction: mockRunAction,
+    ...mockState,
+  }),
+}));
+// Stable, as the real one is memoized: a fresh object per render re-runs the roster load forever.
+const mockConfig = {};
+jest.mock("../../../../lib/teamsData", () => ({
+  useTeamsConfig: () => mockConfig,
+  fetchAgents: async () => [{ id: "agent-9", name: "Growth" }],
+  fetchMembers: async () => [{ userId: "user_2", name: "Dana" }],
+}));
+
+import Activity from "../activity";
+
+const action = (over: Partial<ActivityAction> & { id: string; label: string }): ActivityAction => ({
+  style: null, confirm: null, input: null, navigate: null, ...over,
+});
+const item = (over: Partial<ActivityItem> = {}): ActivityItem => ({
+  id: "paperclip:approval:1", kind: "paperclip", subtype: "approval", roomId: null, messageId: null,
+  threadRootMessageId: null, actor: { kind: "agent", id: "agent-1", name: "Growth" },
+  createdAt: new Date(Date.now() - 2 * 60_000).toISOString(), state: "open",
+  resolvedBy: null, resolvedAt: null, read: false,
+  summary: {
+    title: "Growth wants to publish a post on LinkedIn",
+    requester: { kind: "agent", id: "agent-1", name: "Growth" },
+    reason: "Launch announcement",
+    preview: { text: "We just shipped v2", destination: "LinkedIn · Lightbulb page", fields: [] },
+    links: [],
+  },
+  actions: [
+    action({ id: "approve", label: "Approve", style: "primary" }),
+    action({ id: "reject", label: "Reject", style: "destructive", confirm: "Reject this request?",
+      input: { kind: "text", label: "Why? (optional)", required: false, options: null } }),
+    action({ id: "open", label: "Open issue", navigate: { kind: "issue", id: "iss-1", roomId: null } }),
+  ],
+  ...over,
+});
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockFocused = true;
+  mockState = {};
+  mockRunAction.mockImplementation(async (id: string) => item({ id, state: "resolved", actions: [] }));
+});
+
+it("renders the summary, requester, preview, destination and time, with an unread dot", async () => {
+  mockState = { items: [item()] };
+  await render(<Activity />);
+  expect(screen.getByText("Growth wants to publish a post on LinkedIn")).toBeTruthy();
+  expect(screen.getByText("Growth · 2m")).toBeTruthy();
+  expect(screen.getByText("We just shipped v2")).toBeTruthy();
+  expect(screen.getByText("LinkedIn · Lightbulb page")).toBeTruthy();
+  expect(screen.getByLabelText("Unread")).toBeTruthy();
+});
+
+it("shows who resolved an item and no buttons", async () => {
+  mockState = {
+    items: [item({
+      read: true, state: "resolved", actions: [],
+      resolvedBy: { kind: "human", id: "user_2", name: "Dana" },
+      resolvedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+    })],
+  };
+  await render(<Activity />);
+  expect(screen.getByText("Resolved by Dana · 5m")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+  expect(screen.queryByLabelText("Unread")).toBeNull();
+});
+
+it("runs a plain action with no extra fields", async () => {
+  mockState = { items: [item()] };
+  await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "Approve" }));
+  expect(mockRunAction).toHaveBeenCalledWith("paperclip:approval:1", "approve", {});
+});
+
+it("confirms, then asks for the note, then runs with it", async () => {
+  mockState = { items: [item()] };
+  const alert = jest.spyOn(Alert, "alert");
+  await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "Reject" }));
+  expect(alert).toHaveBeenCalledWith("Reject this request?", undefined, expect.any(Array));
+  expect(mockRunAction).not.toHaveBeenCalled();
+  const buttons = alert.mock.calls[0][2]!;
+  await act(async () => { buttons.find((b) => b.text === "Reject")!.onPress!(); });
+  await fireEvent.changeText(screen.getByLabelText("Why? (optional)"), "off-brand");
+  // The sheet's own submit, drawn after the row's button.
+  await fireEvent.press(screen.getAllByRole("button", { name: "Reject" }).at(-1)!);
+  expect(mockRunAction).toHaveBeenCalledWith("paperclip:approval:1", "reject", { note: "off-brand", value: "off-brand" });
+});
+
+it("picks a select option and sends its value", async () => {
+  mockState = {
+    items: [item({ actions: [action({ id: "change_status", label: "Change status",
+      input: { kind: "select", label: "Status", required: true, options: [{ value: "done", label: "Done" }] } })] })],
+  };
+  await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "Change status" }));
+  await fireEvent.press(screen.getByLabelText("Done"));
+  expect(mockRunAction).toHaveBeenCalledWith("paperclip:approval:1", "change_status", { value: "done" });
+});
+
+it("picks a person from the workspace roster", async () => {
+  mockState = {
+    items: [item({ actions: [action({ id: "reassign", label: "Reassign",
+      input: { kind: "person", label: "Assign to", required: true, options: null } })] })],
+  };
+  await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "Reassign" }));
+  await fireEvent.press(await screen.findByLabelText("Dana"));
+  expect(mockRunAction).toHaveBeenCalledWith("paperclip:approval:1", "reassign", { value: "user_2" });
+});
+
+it("shows the server's message when an action fails", async () => {
+  mockState = { items: [item()] };
+  mockRunAction.mockRejectedValue(new Error("You can't decide this approval."));
+  await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "Approve" }));
+  expect(await screen.findByText("You can't decide this approval.")).toBeTruthy();
+});
+
+it("navigates: an issue action, a thread row, a run", async () => {
+  mockState = {
+    items: [
+      item(),
+      item({ id: "mention:m1", kind: "mention", subtype: null, roomId: "room-1", threadRootMessageId: "root-1",
+        summary: { ...item().summary, title: "Bob mentioned you in #general" }, actions: [] }),
+      item({ id: "run:r1", kind: "agent_run", subtype: null, summary: { ...item().summary, title: "A run failed" },
+        actions: [action({ id: "view", label: "View result", navigate: { kind: "run", id: "r1", roomId: null } })] }),
+    ],
+  };
+  await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "Open issue" }));
+  expect(mockPush).toHaveBeenLastCalledWith({ pathname: "/(app)/teams/issue/[id]", params: { id: "iss-1" } });
+  expect(mockRunAction).not.toHaveBeenCalled();
+
+  mockPush.mockClear();
+  await fireEvent.press(screen.getByLabelText("Bob mentioned you in #general"));
+  expect(mockPush.mock.calls).toEqual([["/(app)/room/room-1"], ["/(app)/room/room-1/thread/root-1"]]);
+
+  mockPush.mockClear();
+  await fireEvent.press(screen.getByLabelText("A run failed"));
+  expect(mockPush).toHaveBeenCalledWith({ pathname: "/(app)/teams/run/[runId]", params: { runId: "r1" } });
+});
+
+it("marks seen up to the newest item while focused, and not while blurred", async () => {
+  const newest = new Date(Date.now() - 60_000).toISOString();
+  mockState = { items: [item({ createdAt: new Date(Date.now() - 3_600_000).toISOString() }), item({ id: "b", createdAt: newest })] };
+  mockFocused = false;
+  const view = await render(<Activity />);
+  expect(mockMarkSeen).not.toHaveBeenCalled();
+  mockFocused = true;
+  await view.rerender(<Activity />);
+  expect(mockMarkSeen).toHaveBeenCalledWith(newest);
+});
+
+it("shows the empty state, the Paperclip footnote and skeletons", async () => {
+  mockState = { paperclipAvailable: false };
+  const view = await render(<Activity />);
+  expect(screen.getByText("Nothing needs you right now.")).toBeTruthy();
+  expect(screen.getByText(/Paperclip is unavailable/)).toBeTruthy();
+
+  mockState = { loading: true };
+  await view.rerender(<Activity />);
+  expect(screen.queryByText("Nothing needs you right now.")).toBeNull();
+  expect(screen.getByTestId("activity-skeleton")).toBeTruthy();
+});
+
+it("reports a load failure in plain words", async () => {
+  mockState = { error: new Error("Network request failed") };
+  await render(<Activity />);
+  expect(screen.getByText("Couldn’t load activity: Network request failed")).toBeTruthy();
+  await fireEvent.press(screen.getByRole("button", { name: "Retry" }));
+  expect(mockRefresh).toHaveBeenCalled();
+});

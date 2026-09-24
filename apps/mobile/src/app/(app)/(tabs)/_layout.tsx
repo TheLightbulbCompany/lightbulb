@@ -3,6 +3,7 @@ import { NativeTabs } from "expo-router/unstable-native-tabs";
 import { useEffect, useState } from "react";
 
 import { colors } from "../../../config/theme";
+import { useMobileActivity } from "../../../lib/activity";
 import { useMobileRooms } from "../../../lib/rooms";
 import { badgeCount } from "../../../lib/unreadBadge";
 
@@ -21,6 +22,13 @@ function TabBadge({ onCount }: { onCount: (total: number) => void }) {
     onCount(total);
     void Notifications.setBadgeCountAsync(total).catch(() => {});
   }, [onCount, total]);
+  return null;
+}
+
+/** Activity's unseen count (the server's, capped at 99), lifted to the layout like TabBadge's. */
+function ActivityBadge({ onCount }: { onCount: (total: number) => void }) {
+  const { unseenCount } = useMobileActivity();
+  useEffect(() => onCount(unseenCount), [onCount, unseenCount]);
   return null;
 }
 
@@ -43,9 +51,11 @@ function TabBadge({ onCount }: { onCount: (total: number) => void }) {
  */
 export default function TabsLayout() {
   const [unread, setUnread] = useState(0);
+  const [unseen, setUnseen] = useState(0);
   return (
     <>
       <TabBadge onCount={setUnread} />
+      <ActivityBadge onCount={setUnseen} />
       <NativeTabs tintColor={colors.forest}>
         <NativeTabs.Trigger name="home">
           <NativeTabs.Trigger.Icon sf={{ default: "house", selected: "house.fill" }} />
@@ -65,6 +75,10 @@ export default function TabsLayout() {
         <NativeTabs.Trigger name="activity">
           <NativeTabs.Trigger.Icon sf="at" />
           <NativeTabs.Trigger.Label>Activity</NativeTabs.Trigger.Label>
+          {/* Same zero rule as Home's badge above. */}
+          {unseen > 0 && (
+            <NativeTabs.Trigger.Badge>{String(unseen)}</NativeTabs.Trigger.Badge>
+          )}
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="more">
           <NativeTabs.Trigger.Icon

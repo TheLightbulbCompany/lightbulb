@@ -351,7 +351,7 @@ export function useTeamsConfig(): PlatformAdapter {
  * so the caller's primary (gate-bearing) data is never blanked by a name-source
  * hiccup. Shared by the board + issue-detail loads.
  */
-function fetchAgents(config: PlatformAdapter): Promise<TeamsAgent[]> {
+export function fetchAgents(config: PlatformAdapter): Promise<TeamsAgent[]> {
   return fetchJsonWithStatus(config, "/teams/agents")
     .then((r) => {
       const list = (r.body as { agents?: unknown } | null)?.agents;

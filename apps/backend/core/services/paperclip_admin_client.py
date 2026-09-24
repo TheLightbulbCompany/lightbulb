@@ -1984,6 +1984,34 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def list_issue_recovery_actions(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Read an issue's recovery action. Maps to ``GET /api/issues/{id}/recovery-actions``
+        (``{active, actions}``; upstream revalidates the active action on read)."""
+        return await self._get(
+            f"/api/issues/{issue_id}/recovery-actions",
+            session_cookie=session_cookie,
+        )
+
+    async def resolve_issue_recovery_action(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        body: dict,
+    ) -> dict:
+        """Record the human's decision on a boarded recovery. Maps to
+        ``POST /api/issues/{id}/recovery-actions/resolve`` (``{issue, recoveryAction}``)."""
+        return await self._post(
+            f"/api/issues/{issue_id}/recovery-actions/resolve",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
     async def mark_issue_read(
         self,
         *,

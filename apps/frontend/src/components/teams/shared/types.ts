@@ -368,6 +368,92 @@ export interface Issue {
    * the monitor's real status/attempt count, which outlives the one-shot policy
    * entry once the monitor fires. */
   executionState?: IssueExecutionState | null;
+  /** The parked scheduled retry (detail route). The recovery card reads it to
+   * tell a retry that is genuinely running from one whose due time passed. */
+  scheduledRetry?: IssueScheduledRetry | null;
+}
+
+// ---------------------------------------------------------------------------
+// Issue recovery actions — mirrored from upstream Paperclip
+// packages/shared/src/{constants.ts,types/issue.ts,types/heartbeat.ts}
+// @ v2026.916.1-isol8.2 (MIT, (c) 2025 Paperclip AI). Read by the ported
+// IssueRecoveryActionCard via GET /teams/issues/{id}/recovery-actions.
+// ---------------------------------------------------------------------------
+
+export type IssueRecoveryActionKind =
+  | "missing_disposition"
+  | "deliberate_wait_without_target"
+  | "stranded_assigned_issue"
+  | "workspace_validation"
+  | "configuration_validation"
+  | "active_run_watchdog"
+  | "issue_graph_liveness";
+
+export type IssueRecoveryActionStatus = "active" | "escalated" | "resolved" | "cancelled";
+
+export type IssueRecoveryActionOwnerType = "agent" | "user" | "board" | "system";
+
+export type IssueRecoveryActionOutcome =
+  | "restored"
+  | "handed_back"
+  | "owner_completed"
+  | "delegated"
+  | "false_positive"
+  | "blocked"
+  | "escalated"
+  | "cancelled";
+
+export type GitWorktreeBranchAncestryVerdict = "ancestor" | "diverged" | "unknown";
+
+export interface IssueRecoveryAction {
+  id: string;
+  companyId: string;
+  sourceIssueId: string;
+  recoveryIssueId: string | null;
+  kind: IssueRecoveryActionKind;
+  status: IssueRecoveryActionStatus;
+  ownerType: IssueRecoveryActionOwnerType;
+  ownerAgentId: string | null;
+  ownerUserId: string | null;
+  previousOwnerAgentId: string | null;
+  returnOwnerAgentId: string | null;
+  cause: string;
+  fingerprint: string;
+  evidence: Record<string, unknown>;
+  nextAction: string;
+  wakePolicy: Record<string, unknown> | null;
+  monitorPolicy: Record<string, unknown> | null;
+  attemptCount: number;
+  maxAttempts: number | null;
+  timeoutAt: Date | string | null;
+  lastAttemptAt: Date | string | null;
+  outcome: IssueRecoveryActionOutcome | null;
+  resolutionNote: string | null;
+  resolvedAt: Date | string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export type IssueScheduledRetryStatus = "scheduled_retry" | "queued" | "running" | "cancelled";
+
+export interface IssueScheduledRetry {
+  runId: string;
+  status: IssueScheduledRetryStatus;
+  agentId: string;
+  agentName: string | null;
+  retryOfRunId: string | null;
+  scheduledRetryAt: Date | string | null;
+  scheduledRetryAttempt: number;
+  scheduledRetryReason: string | null;
+  retryExhaustedReason?: string | null;
+  error?: string | null;
+  errorCode?: string | null;
+}
+
+/** Upstream ``GET /api/issues/:id/recovery-actions`` response. */
+export interface IssueRecoveryActionsResponse {
+  active: IssueRecoveryAction | null;
+  actions: IssueRecoveryAction[];
 }
 
 export interface Approval {

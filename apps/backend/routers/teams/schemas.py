@@ -543,6 +543,38 @@ class CreateWorkProductBody(_Strict):
     metadata: Optional[dict] = None
 
 
+_RECOVERY_ACTION_ID = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+
+
+class ResolveIssueRecoveryActionBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/recovery-actions/resolve``.
+
+    Mirrors upstream's ``resolveIssueRecoveryActionSchema`` (``.strict()``,
+    packages/shared/src/validators/issue.ts @ v2026.916.1-isol8.2), including its
+    outcome ↔ ``sourceIssueStatus`` pairing. ``executionReconciliation`` is
+    deliberately NOT accepted: it is the provider-stopped evidence attestation
+    for reconciliation-class causes, and the ported card hides itself for those
+    (``requiresExecutionReconciliation``) — so nothing here ever sends it.
+    """
+
+    action_id: Optional[str] = Field(default=None, pattern=_RECOVERY_ACTION_ID)
+    outcome: str = Field(pattern=r"^(restored|false_positive|blocked|cancelled)$")
+    source_issue_status: str = Field(pattern=r"^(todo|done|in_review|blocked)$")
+    resolution_note: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _outcome_matches_status(self) -> "ResolveIssueRecoveryActionBody":
+        allowed = {
+            "restored": {"todo", "done", "in_review"},
+            "blocked": {"blocked"},
+            "false_positive": {"done", "in_review"},
+            "cancelled": {"done", "in_review"},
+        }[self.outcome]
+        if self.source_issue_status not in allowed:
+            raise ValueError(f"outcome {self.outcome!r} requires sourceIssueStatus in {sorted(allowed)}")
+        return self
+
+
 class PatchWorkProductBody(_Strict):
     """Body for ``PATCH /teams/issues/{id}/work-products/{wpid}``.
 

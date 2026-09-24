@@ -394,3 +394,24 @@ async def test_list_organization_members_strict_404_is_empty_other_errors_raise(
                 await clerk_admin.list_organization_members("org_gone", strict=True)
         else:
             assert await clerk_admin.list_organization_members("org_gone", strict=True) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [{"data": "not-a-list"}, {"data": None}, "garbage"])
+async def test_list_organization_members_strict_raises_on_a_malformed_200(monkeypatch, payload):
+    """A malformed 200 is not "no members": the last-member teardown and the workspace wipe
+    would otherwise read it as an empty org and tear a live workspace down."""
+    from core.services import clerk_admin
+
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+
+    @asynccontextmanager
+    async def fake_client(*a, **k):
+        client = MagicMock()
+        client.get = AsyncMock(return_value=_make_response(200, payload))
+        yield client
+
+    with patch("core.services.clerk_admin.httpx.AsyncClient", new=fake_client):
+        with pytest.raises(RuntimeError, match="malformed"):
+            await clerk_admin.list_organization_members("org_a", strict=True)
+        assert await clerk_admin.list_organization_members("org_a") == []

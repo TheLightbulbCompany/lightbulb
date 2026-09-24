@@ -393,6 +393,10 @@ async def list_organization_members(org_id: str, *, strict: bool = False) -> lis
                 payload = response.json()
                 rows = payload.get("data") if isinstance(payload, dict) else payload
                 if not isinstance(rows, list):
+                    # A malformed 200 is not "no members": strict callers (the workspace wipe,
+                    # the last-member teardown) must fail closed on it like on any HTTP error.
+                    if strict:
+                        raise RuntimeError("clerk_admin.list_organization_members failed: malformed payload")
                     return []
                 for m in rows:
                     pud = (m.get("public_user_data") or {}) if isinstance(m, dict) else {}

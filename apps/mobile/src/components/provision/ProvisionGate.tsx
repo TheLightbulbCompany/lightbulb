@@ -73,6 +73,7 @@ import { isSubscriptionGate, purchaseGateCopy } from "../../lib/purchaseCta";
 import { ByoKeyScreen } from "./ByoKeyScreen";
 import { ChatGPTConnectScreen } from "./ChatGPTConnectScreen";
 import { ProvisioningStepper } from "./ProvisioningStepper";
+import { WorkspaceChooser } from "../workspace/WorkspaceGate";
 
 const DEFAULT_MANAGE_URL = `${WEB_ORIGIN}/settings`;
 
@@ -272,6 +273,10 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   const onRetry = useCallback(() => {
     void refetch();
   }, [refetch]);
+
+  // 409 `workspace_required`: the token carries no org. Same chooser as WorkspaceGate,
+  // without auto-activating a lone membership (the client already thinks it has one).
+  if (status.kind === "workspaceRequired") return <WorkspaceChooser autoActivate={false} />;
 
   // Team-pending (202): an org member whose admin hasn't provisioned the shared
   // workspace yet — there is NO working chat behind this, so it BLOCKS the Tabs

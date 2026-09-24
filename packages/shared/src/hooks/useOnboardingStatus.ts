@@ -122,7 +122,11 @@ export function useOnboardingStatus(
       clearTimeout(timer);
     }
     if (classified.kind === "unrecognized") {
-      throw new Error(`Unexpected ${swrKey} status: ${classified.status}`);
+      // The status rides along (mobile routes a 409 `workspace_required` to its picker);
+      // the message is unchanged.
+      throw Object.assign(new Error(`Unexpected ${swrKey} status: ${classified.status}`), {
+        status: classified.status,
+      });
     }
     return classified;
   }, [api, swrKey]);
@@ -181,4 +185,11 @@ export function useOnboardingStatus(
  *  nudge calls it — the event is how the stepper advances (there is no poll). */
 export function refreshOnboardingStatus(swrKey = "/container/status"): void {
   void mutate(swrKey);
+}
+
+/** Drop every cached SWR read and refetch what is mounted. For a client-side workspace
+ *  switch: runtime RPC keys and mobile's status key carry no workspace, so without this
+ *  workspace B would render A's cached answers until each revalidated. */
+export function resetSwrCache(): void {
+  void mutate(() => true, undefined);
 }

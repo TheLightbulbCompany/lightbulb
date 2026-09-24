@@ -46,6 +46,7 @@ export function isContainerComingUp(status: ContainerStatus | null): boolean {
     case "error":
     case "blocked":
     case "needsSignup":
+    case "workspaceRequired":
     case "unreachable":
       return false;
   }

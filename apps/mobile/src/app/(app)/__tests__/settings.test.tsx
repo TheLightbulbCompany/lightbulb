@@ -5,6 +5,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 // Error is served as a failed request.
 let mockAccountFixture: Record<string, unknown> | Error;
 const mockPost = jest.fn(async () => ({ status: "deleted" }));
+let mockMembershipCount = 1;
+const mockPush = jest.fn();
 
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok"), signOut: jest.fn() }),
@@ -13,6 +15,9 @@ jest.mock("@clerk/clerk-expo", () => ({
       id: "user_1",
       fullName: "Test User",
       primaryEmailAddress: { emailAddress: "test@example.com" },
+      get organizationMemberships() {
+        return Array.from({ length: mockMembershipCount }, (_, i) => ({ id: `mem_${i}` }));
+      },
     },
   }),
   useOrganization: () => ({ organization: null, membership: null }),
@@ -22,7 +27,10 @@ jest.mock("@clerk/clerk-expo", () => ({
 // for a single mount.
 jest.mock("expo-router", () => {
   const { useEffect } = jest.requireActual("react");
-  return { useFocusEffect: (cb: () => void) => useEffect(cb, [cb]) };
+  return {
+    useFocusEffect: (cb: () => void) => useEffect(cb, [cb]),
+    router: { push: (href: string) => mockPush(href) },
+  };
 });
 
 jest.mock("../../../lib/pushDevice", () => ({ unregisterDevice: jest.fn() }));
@@ -282,5 +290,27 @@ describe("deleting an Apple-billed account", () => {
 
     expect(alertSpy.mock.calls[0][0]).toBe("Delete account");
     alertSpy.mockRestore();
+  });
+});
+
+// F4: someone in two or more workspaces needs a way between them; one
+// workspace has nothing to switch to, so the row stays out of the way.
+describe("Settings Switch workspace", () => {
+  beforeEach(() => {
+    mockAccountFixture = new Error("offline");
+    mockPush.mockClear();
+  });
+
+  it("is hidden with a single workspace", async () => {
+    mockMembershipCount = 1;
+    await render(<Settings />);
+    expect(screen.queryByText("Switch workspace")).toBeNull();
+  });
+
+  it("opens the workspace list with two or more", async () => {
+    mockMembershipCount = 2;
+    await render(<Settings />);
+    await fireEvent.press(screen.getByText("Switch workspace"));
+    expect(mockPush).toHaveBeenCalledWith("/workspaces");
   });
 });

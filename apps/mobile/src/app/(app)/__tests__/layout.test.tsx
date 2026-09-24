@@ -56,8 +56,21 @@ jest.mock("../../../components/push/NotificationTapRouter", () => ({
     return null;
   },
 }));
+let mockLiveEventsMounts = 0;
 jest.mock("../../../providers/live-events", () => ({
-  LiveEventsProvider: ({ children }: { children?: ReactNode }) => children,
+  LiveEventsProvider: ({ children }: { children?: ReactNode }) => {
+    mockLiveEventsMounts += 1;
+    return children;
+  },
+}));
+// null = the session has no active workspace yet (the gate shows its chooser).
+let mockWorkspaceReady = true;
+let mockWorkspaceGateRenders = 0;
+jest.mock("../../../components/workspace/WorkspaceGate", () => ({
+  WorkspaceGate: ({ children }: { children?: ReactNode }) => {
+    mockWorkspaceGateRenders += 1;
+    return mockWorkspaceReady ? children : null;
+  },
 }));
 
 import AppLayout, { unstable_settings } from "../_layout";
@@ -76,6 +89,9 @@ beforeEach(() => {
   mockConsentGranted = true;
   mockPushRegistrations = 0;
   mockTapRouters = 0;
+  mockLiveEventsMounts = 0;
+  mockWorkspaceReady = true;
+  mockWorkspaceGateRenders = 0;
 });
 
 // The defect this restructure fixes: a conversation used to be a HIDDEN TAB
@@ -148,4 +164,22 @@ it("routes notification taps only once the gated Stack is mounted", async () => 
   mockConsentGranted = true;
   await render(<AppLayout />);
   expect(mockTapRouters).toBeGreaterThan(0);
+});
+
+// F4: every product API 409s without an active workspace, so nothing that calls
+// one — the live-events config read, the gates, the tabs — may mount before the
+// workspace gate passes. Consent still comes first (App Store 5.1.1(i)).
+it("mounts nothing that calls the API until a workspace is active, and asks for consent first", async () => {
+  mockWorkspaceReady = false;
+  await render(<AppLayout />);
+  expect(mockWorkspaceGateRenders).toBeGreaterThan(0);
+  expect(mockLiveEventsMounts).toBe(0);
+  expect(names()).toEqual([]);
+  // Push tokens are per user, not per workspace: registration is not held back.
+  expect(mockPushRegistrations).toBeGreaterThan(0);
+
+  mockConsentGranted = false;
+  mockWorkspaceGateRenders = 0;
+  await render(<AppLayout />);
+  expect(mockWorkspaceGateRenders).toBe(0);
 });

@@ -10,6 +10,17 @@ class GateError extends Error {
 const dailyCap = () => new GateError(429, 'Lightbulb: daily limit reached — resets at midnight UTC', 'trial_daily_cap');
 const fail = (status, message) => { throw new GateError(status, message); };
 const S = (item, field) => item?.[field]?.S;
+
+// Shared by chat and the models-list probe: same bearer -> owner_id -> denied check.
+async function authenticateOwner(event, ddb, env) {
+  const bearer = /^(?:Bearer)\s+(\S+)$/i.exec(event.headers?.authorization ?? event.headers?.Authorization ?? '')?.[1];
+  if (!bearer) fail(401, 'Invalid gateway token');
+  const hash = createHash('sha256').update(bearer).digest('hex');
+  const token = (await ddb.getItem({ TableName: env.TOKENS_TABLE, Key: { token_hash: { S: hash } }, ConsistentRead: true }))?.Item;
+  const ownerId = S(token, 'owner_id');
+  if (!ownerId || token?.denied?.BOOL) fail(token?.denied?.BOOL ? 403 : 401, 'Invalid gateway token');
+  return ownerId;
+}
 const routeFields = ['models', 'plugins', 'provider', 'route', 'user', 'metadata', 'trace', 'debug', 'service_tier', 'modalities', 'audio', 'prediction'];
 const allowedFields = new Set(['model', 'messages', 'stream', 'stream_options', 'session_id', 'max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'stop', 'tools', 'tool_choice', 'parallel_tool_calls', 'response_format', 'reasoning', 'reasoning_effort', 'frequency_penalty', 'presence_penalty', 'seed']);
 
@@ -80,13 +91,22 @@ export function prepareBody(input, policy, ownerId, env) {
 export async function handleRequest(event, responder, { ddb, secrets, env, forwardImpl = forward, log = console.log }) {
   let ownerId, estimate, requestId, model;
   try {
-    if ((event.requestContext?.http?.method ?? event.httpMethod) !== 'POST' || event.rawPath !== '/v1/chat/completions') fail(404, 'Unknown route');
-    const bearer = /^(?:Bearer)\s+(\S+)$/i.exec(event.headers?.authorization ?? event.headers?.Authorization ?? '')?.[1];
-    if (!bearer) fail(401, 'Invalid gateway token');
-    const hash = createHash('sha256').update(bearer).digest('hex');
-    const token = (await ddb.getItem({ TableName: env.TOKENS_TABLE, Key: { token_hash: { S: hash } }, ConsistentRead: true }))?.Item;
-    ownerId = S(token, 'owner_id');
-    if (!ownerId || token?.denied?.BOOL) fail(token?.denied?.BOOL ? 403 : 401, 'Invalid gateway token');
+    const method = event.requestContext?.http?.method ?? event.httpMethod;
+    // Hermes's OpenAI-compatible "custom" provider resolves context length for a base_url it
+    // doesn't recognize by probing an OpenAI-shaped models list, trying "<base_url>/models" and,
+    // when base_url already ends in "/v1", the stripped "<host>/models" too (agent/model_metadata.py
+    // fetch_endpoint_model_metadata) -- both land here as pre-auth 404s. Answer them instead.
+    if (method === 'GET' && (event.rawPath === '/v1/models' || event.rawPath === '/models')) {
+      ownerId = await authenticateOwner(event, ddb, env);
+      const policy = JSON.parse(env.MODEL_POLICY_JSON);
+      const data = (policy.models ?? []).map(id => ({ id, object: 'model', owned_by: 'lightbulb' }));
+      responder.writeHead(200, { 'content-type': 'application/json' });
+      responder.write(JSON.stringify({ object: 'list', data }));
+      responder.end();
+      return;
+    }
+    if (method !== 'POST' || event.rawPath !== '/v1/chat/completions') fail(404, 'Unknown route');
+    ownerId = await authenticateOwner(event, ddb, env);
     const billing = (await ddb.getItem({ TableName: env.BILLING_TABLE, Key: { owner_id: { S: ownerId } }, ConsistentRead: true }))?.Item;
     const status = S(billing, 'subscription_status');
     // Capped traffic costs real money now: an EXPIRED trial and a lapsed Base are refused

@@ -38,7 +38,7 @@ Four kinds are supported. Pick the smallest kind that fits the decision shape:
 
 Key shared semantics:
 
-- **Who may resolve it.** Paperclip lets ANY participant — other agents included — resolve an interaction unless it says otherwise. A card that asks the board/user to decide must carry `"resolverPolicy": "human_only"` (the `confirm` helper sets it; add it yourself to every `raw` create). Never resolve a board card yourself.
+- **Who may resolve it.** Paperclip lets ANY participant — other agents included — resolve an interaction unless it says otherwise. A card that asks the board/user to decide must carry `"resolverPolicy": "board_only"` (the `confirm` helper sets it; add it yourself to every `raw` create). Never resolve a board card yourself.
 - **Continuation policy.** `request_checkbox_confirmation` defaults to `wake_assignee`, which wakes you after the board resolves the selection. `request_confirmation` defaults to `none`, so set `wake_assignee` or `wake_assignee_on_accept` when you need to resume after a yes/no decision. `none` never wakes you — only use it when you truly do not need to resume.
 - **Target binding and staleness.** `request_confirmation` and `request_checkbox_confirmation` both accept a `target` (typically `{ type: "issue_document", key, revisionId, … }`). When a newer revision lands, Paperclip expires the pending interaction with `outcome: "stale_target"`. Rebuild against the latest revision and create a fresh interaction.
 - **Supersede on user comment.** Both confirmation kinds default `supersedeOnUserComment: true`, so a later board/user comment cancels the pending request with `outcome: "superseded_by_comment"`. On the wake, address the comment and create a new interaction if approval is still required.
@@ -51,7 +51,7 @@ Create a `request_checkbox_confirmation` (board selects any subset, then confirm
 POST /api/issues/{issueId}/interactions
 {
   "kind": "request_checkbox_confirmation",
-  "resolverPolicy": "human_only",
+  "resolverPolicy": "board_only",
   "idempotencyKey": "checkbox:{issueId}:cleanup-files:{planRevisionId}",
   "title": "Confirm files to delete",
   "summary": "Pick the files you want removed before I run the cleanup.",

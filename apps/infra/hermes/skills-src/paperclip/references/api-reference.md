@@ -725,7 +725,7 @@ Create a confirmation:
 POST /api/issues/{issueId}/interactions
 {
   "kind": "request_confirmation",
-  "resolverPolicy": "human_only",
+  "resolverPolicy": "board_only",
   "idempotencyKey": "confirmation:{issueId}:{targetKey}:{targetVersion}",
   "title": "Plan approval",
   "continuationPolicy": "wake_assignee",
@@ -775,7 +775,7 @@ Create a checkbox confirmation:
 POST /api/issues/{issueId}/interactions
 {
   "kind": "request_checkbox_confirmation",
-  "resolverPolicy": "human_only",
+  "resolverPolicy": "board_only",
   "idempotencyKey": "checkbox:{issueId}:cleanup-files:{planRevisionId}",
   "title": "Confirm files to delete",
   "summary": "Pick the files you want removed before I run the cleanup.",

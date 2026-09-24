@@ -46,8 +46,9 @@ def build_hermes_gateway_adapter_config(owner_id: str, *, hook_token: str) -> di
 
     ``apiKey`` is a schema secret field on Paperclip's side, so a literal value is persisted
     as a managed company secret and resolved back at runtime. That means the token is a
-    SNAPSHOT: rotating an owner's ``hook_token`` requires re-pointing the adapter
-    (``repoint_agent_adapter``), exactly as the previous ``http`` adapter's baked header did.
+    SNAPSHOT: rotating an owner's ``hook_token`` requires re-syncing every agent's adapter
+    config (``paperclip_agent_lifecycle.sync_agent_adapter_config``), exactly as the previous
+    ``http`` adapter's baked header did.
     """
     if not hook_token:
         raise AdapterConfigError(f"hermes_gateway adapter for owner={owner_id} needs a hook_token")

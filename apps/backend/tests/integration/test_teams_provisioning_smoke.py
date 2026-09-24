@@ -393,8 +393,8 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
 
     # 4. apiKey is the WORKSPACE's hook token, never the persisted ``service_token_encrypted``
     #    the legacy pre-fix behaviour passed through. It is a SNAPSHOT (Paperclip persists it as
-    #    a managed company secret), so rotating the owner's hook token means re-pointing the
-    #    adapter -- see repoint_agent_adapter.
+    #    a managed company secret), so rotating the owner's hook token means re-syncing every
+    #    agent's adapter config -- see sync_agent_adapter_config.
     assert adapter_config["apiKey"], "apiKey must not be empty"
     assert adapter_config["apiKey"] == "hook-smoke-27", (
         "apiKey must be the WORKSPACE's hook token, not the persisted service_token_encrypted"

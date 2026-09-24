@@ -1,6 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { Redirect, Stack } from "expo-router";
 import { getFocusedRouteNameFromRoute } from "expo-router/react-navigation";
+import { useEffect } from "react";
 
 import { AiConsentGate } from "../../components/consent/AiConsentGate";
 import { ProvisionGate } from "../../components/provision/ProvisionGate";
@@ -9,6 +10,7 @@ import { PushRegistration } from "../../components/push/PushRegistration";
 import { WorkspaceGate } from "../../components/workspace/WorkspaceGate";
 import { colors } from "../../config/theme";
 import { getCurrentTarget } from "../../lib/activeAgent";
+import { clearRoomsCache } from "../../lib/roomsCache";
 import { LiveEventsProvider } from "../../providers/live-events";
 
 /**
@@ -47,6 +49,13 @@ export default function AppLayout() {
   // which reads as signed out by default — and would bounce back to sign-in.
   // WorkspaceGate's setActive({ organization }) is what completes that task.
   const { isSignedIn, isLoaded } = useAuth({ treatPendingAsSignedOut: false });
+  // The one place every sign-out path (Settings, the consent decline, the
+  // gates' "Sign out", an expired session) passes through: the persisted room
+  // list and messages must not outlive the session that fetched them.
+  const signedOut = isLoaded && !isSignedIn;
+  useEffect(() => {
+    if (signedOut) clearRoomsCache();
+  }, [signedOut]);
   if (!isLoaded) return null;
   if (!isSignedIn) return <Redirect href="/(auth)/sign-in" />;
 

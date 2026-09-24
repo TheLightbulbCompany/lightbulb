@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 
 import { useLiveEvents } from "../providers/live-events";
+import { roomsCache } from "./roomsCache";
 
 /**
  * The phone's half of RoomsPlatform.
@@ -64,7 +65,8 @@ export function useMobileRooms(
   options: UseRoomsOptions & { visible?: boolean } = {},
 ): UseRoomsResult {
   const { visible = true, ...roomOptions } = options;
-  return useRooms(useRoomsPlatform(visible), roomOptions);
+  // Persisted per user + workspace, so a cold start paints the last-known list.
+  return useRooms(useRoomsPlatform(visible), { persistence: roomsCache, ...roomOptions });
 }
 
 /** One not-yet-canonical message a room screen still has to draw. */

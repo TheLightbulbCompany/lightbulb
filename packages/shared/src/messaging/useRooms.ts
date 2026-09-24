@@ -20,6 +20,7 @@ import type {
   MessagePage,
   MemberRef,
   PatchRoomRequest,
+  RoomListResponse,
   RoomMember,
   RoomSummary,
   RoomSection,
@@ -84,6 +85,27 @@ export interface UseRoomsOptions {
   autoSelect?: boolean;
   /** Web's older-page control opts in; mobile keeps full history until its UI supports paging. */
   boundedHistory?: boolean;
+  /**
+   * Keeps the room list and recent history across launches (mobile only; web
+   * passes nothing). Read once per scope when that scope's store is created,
+   * so a cold start paints before the network answers; written on every change
+   * after. MUST be referentially stable.
+   */
+  persistence?: RoomsPersistence;
+}
+
+/** What `RoomsPersistence` keeps for one `userId:orgId` scope. */
+export interface RoomsSnapshot {
+  rooms: RoomListResponse;
+  history: { roomId: string; messages: CanonicalRoomMessage[]; complete: boolean }[];
+}
+/** Bump when `RoomsSnapshot` or the types inside it change shape: a stored
+ *  snapshot of another version is discarded, never read. */
+export const ROOMS_SNAPSHOT_VERSION = 1;
+export interface RoomsPersistence {
+  /** The snapshot saved for exactly this scope, or null. */
+  load(scope: string): RoomsSnapshot | null;
+  save(scope: string, snapshot: RoomsSnapshot): void;
 }
 
 export type UseRoomsResult = ReturnType<typeof useRooms>;
@@ -113,18 +135,50 @@ interface RoomsStore {
   refresh: ReturnType<typeof setTimeout> | null;
   refreshedRevision: number | null;
   mounted: number;
+  persistence?: RoomsPersistence;
+  /** The list as last seen (network, optimistic patch or snapshot); what `persist` writes. */
+  rooms: RoomListResponse | null;
+  /** The snapshot's list: SWR fallback until the network answers. */
+  fallback: RoomListResponse | undefined;
 }
 const stores = new WeakMap<object, RoomsStore>();
-const storeFor = (cache: object, scope: string | null): RoomsStore => {
+const storeFor = (cache: object, scope: string | null, persistence?: RoomsPersistence): RoomsStore => {
   let store = stores.get(cache);
   if (store?.scope !== scope) {
-    store = { scope, history: new Map(), refresh: null, refreshedRevision: null, mounted: 0 };
+    const snapshot = scope ? persistence?.load(scope) ?? null : null;
+    store = {
+      scope, refresh: null, refreshedRevision: null, mounted: 0, persistence,
+      history: new Map(snapshot?.history.map(({ roomId, messages, complete }) => [roomId, { messages, complete }])),
+      rooms: snapshot?.rooms ?? null,
+      fallback: snapshot?.rooms,
+    };
     stores.set(cache, store);
   }
   return store;
 };
 // ponytail: 20 rooms per scope, least-recently-written evicted; a byte budget if long rooms make memory matter.
 const HISTORY_ROOMS = 20;
+// ponytail: the snapshot keeps the newest 50 messages of the 10 most recently written rooms; tune if cold opens still wait.
+const PERSISTED_ROOMS = 10;
+const PERSISTED_MESSAGES = 50;
+/** Hand the store's current list + recent history to the platform (which debounces). */
+const persist = (store: RoomsStore) => {
+  if (!store.persistence || !store.scope || !store.rooms) return;
+  const listed = new Set(store.rooms.rooms.map((room) => room.roomId));
+  const history = [...store.history].filter(([roomId]) => listed.has(roomId)).slice(-PERSISTED_ROOMS)
+    .map(([roomId, { messages, complete }]) => ({
+      roomId,
+      messages: messages.slice(-PERSISTED_MESSAGES),
+      complete: complete && messages.length <= PERSISTED_MESSAGES,
+    }));
+  store.persistence.save(store.scope, { rooms: store.rooms, history });
+};
+/** A room this reader may have lost: out of memory and out of the snapshot. */
+const forget = (store: RoomsStore, roomId: string) => {
+  store.history.delete(roomId);
+  if (store.rooms) store.rooms = { ...store.rooms, rooms: store.rooms.rooms.filter((room) => room.roomId !== roomId) };
+  persist(store);
+};
 /** The newest sequence reachable from the first cached message with no hole. */
 const contiguousSequence = (messages: readonly CanonicalRoomMessage[]) => {
   let end = messages[0]?.messageSeq ?? 0;
@@ -136,7 +190,7 @@ const contiguousSequence = (messages: readonly CanonicalRoomMessage[]) => {
 };
 
 export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {}) {
-  const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, boundedHistory = false } = options;
+  const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, boundedHistory = false, persistence } = options;
   const { userId, orgId, live, isVisible, onVisibilityChange, uuid } = platform;
   const {
     messaging,
@@ -148,11 +202,11 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   } = live;
   const scope = userId ? `${userId}:${orgId ?? userId}` : null;
   const { cache } = useSWRConfig();
-  const store = useMemo(() => storeFor(cache, scope), [cache, scope]);
+  const store = useMemo(() => storeFor(cache, scope, persistence), [cache, scope, persistence]);
   const roomsResponse = useSWR(
     scope ? ["messaging-rooms", scope] : null,
     () => messaging.listRooms(),
-    { revalidateOnFocus: false },
+    { revalidateOnFocus: false, fallbackData: store.fallback },
   );
   const roomsData = roomsResponse.data;
   const mutateRooms = roomsResponse.mutate;
@@ -258,7 +312,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     historyCache.delete(roomId);
     historyCache.set(roomId, { messages, complete: isComplete });
     if (historyCache.size > HISTORY_ROOMS) historyCache.delete(historyCache.keys().next().value!);
-  }, [historyCache]);
+    persist(store);
+  }, [historyCache, store]);
   // Cached history paints only for a room the current list vouches for; a room
   // missing from it waits for the detail (and its 403/404) like a cold open.
   const roomsRef = useRef(rooms);
@@ -272,7 +327,9 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     if (!roomsData) return;
     const listed = new Set(roomsData.rooms.map((room) => room.roomId));
     for (const roomId of [...historyCache.keys()]) if (!listed.has(roomId)) historyCache.delete(roomId);
-  }, [roomsData, historyCache]);
+    store.rooms = roomsData;
+    persist(store);
+  }, [roomsData, historyCache, store]);
   /** The ref, the rendered state and the cache always move together. */
   const applyMessages = useCallback((roomId: string, next: CanonicalRoomMessage[], complete?: boolean) => {
     messagesRef.current = next;
@@ -329,11 +386,11 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     setHistoryComplete(false);
     setHistoryErrorMessage(null);
     setAccessRemoved(true);
-    if (activeRoomId) historyCache.delete(activeRoomId);
+    if (activeRoomId) forget(store, activeRoomId);
     messagesRef.current = [];
     setMessages([]);
     setOptimistic([]);
-  }, [activeRoomId]);
+  }, [activeRoomId, store]);
 
   useEffect(() => {
     const error = roomError;
@@ -721,7 +778,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     }
     if (event.type === "room.access.removed") {
       // Removal or a channel delete: drop it from the list even when it isn't on screen.
-      historyCache.delete(event.payload.roomId);
+      forget(store, event.payload.roomId);
       if (event.payload.roomId === activeRoomId) removeActiveAccess();
       void mutateRooms();
       return;
@@ -773,7 +830,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
         return new Map(current).set(key, next);
       });
     }
-  }), [activeRoomId, boundedHistory, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon, clearPersistedOptimistic, removeActiveAccess, isVisible, historyCache]);
+  }), [activeRoomId, boundedHistory, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon, clearPersistedOptimistic, removeActiveAccess, isVisible, store]);
 
   useEffect(() => {
     if (typing.size === 0) return;
@@ -1151,7 +1208,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     // loading state used to be `roomsLoading || directoryLoading`, and with the
     // directory fan-out gone this is the only thing left standing between a
     // cold mount and a false "No conversations yet".
-    roomsLoading: roomsResponse.isLoading || !scope,
+    // `&& !roomsData`: a persisted list is not loading, even while SWR revalidates it.
+    roomsLoading: (roomsResponse.isLoading && !roomsData) || !scope,
     // Nothing is fetched for the directory any more — the room list is the
     // whole sidebar. Both are retained so consumers need not change at once.
     directoryError: undefined as Error | undefined,

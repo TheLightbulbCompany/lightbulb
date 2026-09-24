@@ -31,8 +31,13 @@ let mockFocusedTab: string | undefined;
 jest.mock("expo-router/react-navigation", () => ({
   getFocusedRouteNameFromRoute: () => mockFocusedTab,
 }));
+let mockSignedIn = true;
 jest.mock("@clerk/clerk-expo", () => ({
-  useAuth: () => ({ isSignedIn: true, isLoaded: true }),
+  useAuth: () => ({ isSignedIn: mockSignedIn, isLoaded: true }),
+}));
+const mockClearRoomsCache = jest.fn();
+jest.mock("../../../lib/roomsCache", () => ({
+  clearRoomsCache: () => mockClearRoomsCache(),
 }));
 // Consent is still being read from the keychain until a test says otherwise.
 let mockConsentGranted = true;
@@ -84,6 +89,8 @@ const titleOf = (name: string) => {
 };
 
 beforeEach(() => {
+  mockSignedIn = true;
+  mockClearRoomsCache.mockClear();
   mockScreens.length = 0;
   mockFocusedTab = undefined;
   mockConsentGranted = true;
@@ -182,4 +189,16 @@ it("mounts nothing that calls the API until a workspace is active, and asks for 
   mockWorkspaceGateRenders = 0;
   await render(<AppLayout />);
   expect(mockWorkspaceGateRenders).toBe(0);
+});
+
+// Every sign-out — Settings, the consent decline, the gates' escape hatches, an
+// expired session — lands here signed out, so this one place deletes the
+// persisted rooms and messages before anyone else can sign in on the phone.
+it("deletes the persisted rooms cache whenever the session is signed out", async () => {
+  await render(<AppLayout />);
+  expect(mockClearRoomsCache).not.toHaveBeenCalled();
+
+  mockSignedIn = false;
+  await render(<AppLayout />);
+  expect(mockClearRoomsCache).toHaveBeenCalledTimes(1);
 });

@@ -55,6 +55,7 @@ def test_forwards_with_member_session(admin):
     )
 
 
+@pytest.mark.real_fences
 def test_another_companys_issue_is_404_and_never_forwarded(admin):
     admin.get_issue.return_value = {"id": ISSUE, "companyId": "co_OTHER"}
     assert client.post(URL, headers=H).status_code == 404

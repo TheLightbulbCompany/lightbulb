@@ -191,6 +191,7 @@ def test_detail_routes_forward_with_member_session(client, admin):
     admin.list_approval_issues.assert_awaited_once_with(approval_id=APV, session_cookie="cookie")
 
 
+@pytest.mark.real_fences
 @pytest.mark.parametrize("name", list(_CALLS))
 def test_another_companys_approval_is_404_and_never_forwarded(client, admin, name):
     admin.get_approval.return_value = {"id": APV, "companyId": "co_OTHER"}

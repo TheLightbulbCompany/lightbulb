@@ -24,6 +24,7 @@ import logging
 from fastapi import APIRouter, Depends
 
 from . import agents as _agents
+from .issues import CompanyIssueId
 from .deps import TeamsContext, envelope_list
 from .schemas import UpsertFeedbackVoteBody
 
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/issues/{issue_id}/feedback-votes")
-async def list_feedback_votes(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def list_feedback_votes(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """List the caller's feedback votes on an issue's agent outputs.
 
     Upstream ``GET /api/issues/{id}/feedback-votes`` returns a bare array;
@@ -50,7 +51,7 @@ async def list_feedback_votes(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 @router.post("/issues/{issue_id}/feedback-votes")
 async def cast_feedback_vote(
-    issue_id: str,
+    issue_id: CompanyIssueId,
     body: UpsertFeedbackVoteBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -89,7 +90,7 @@ async def cast_feedback_vote(
 
 
 @router.get("/issues/{issue_id}/feedback-traces")
-async def list_feedback_traces(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def list_feedback_traces(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """List an issue's feedback traces — CONSENT-GATED.
 
     Traces are the shared-with-Labs export records for votes on this issue.

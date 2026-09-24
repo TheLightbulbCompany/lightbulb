@@ -215,6 +215,7 @@ def test_get_content_streams_bytes_with_upstream_content_type(client, monkeypatc
 
 def test_delete_attachment_maps_to_attachment_route(client, monkeypatch):
     admin = MagicMock()
+    admin.list_issue_attachments = AsyncMock(return_value=[{"id": "att1"}])
     admin.delete_attachment = AsyncMock(return_value={"ok": True})
     _patch_admin(monkeypatch, admin)
 
@@ -224,4 +225,21 @@ def test_delete_attachment_maps_to_attachment_route(client, monkeypatch):
     )
     assert r.status_code == 200
     assert r.json() == {"ok": True}
+    admin.list_issue_attachments.assert_awaited_once_with(session_cookie="cookie", issue_id="iss1")
     admin.delete_attachment.assert_awaited_once_with(session_cookie="cookie", attachment_id="att1")
+
+
+def test_delete_attachment_not_on_the_issue_is_404_and_never_forwarded(client, monkeypatch):
+    """Upstream's DELETE /api/attachments/{id} is not issue-scoped, so an attachment
+    from another issue (possibly another company) must never reach it."""
+    admin = MagicMock()
+    admin.list_issue_attachments = AsyncMock(return_value=[{"id": "att_other"}])
+    admin.delete_attachment = AsyncMock()
+    _patch_admin(monkeypatch, admin)
+
+    r = client.delete(
+        "/api/v1/teams/issues/iss1/attachments/att1",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 404
+    admin.delete_attachment.assert_not_awaited()

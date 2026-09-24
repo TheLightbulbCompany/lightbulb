@@ -787,6 +787,9 @@ export function MessagingWorkspaceProvider({
       ? async () => { if (rooms.activeRoomId) await rooms.leaveRoom(rooms.activeRoomId); } : undefined,
     ...(rooms.activeRoom?.kind === "group-dm" || (rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(viewerRole))
       ? { onSetArchived: async (archived: boolean) => { await rooms.updateRoom({ archived }); } } : {}),
+    // Only the channel's owner -- not an admin -- may delete it (the backend enforces the same).
+    ...(rooms.activeRoom?.kind === "channel" && viewerRole === "owner"
+      ? { onDeleteRoom: async () => { if (rooms.activeRoomId) await rooms.deleteRoom(rooms.activeRoomId); } } : {}),
     ...(rooms.activeRoom && rooms.activeRoom.kind !== "dm" && ["owner", "admin"].includes(viewerRole) ? {
       onRenameRoom: async (name: string) => { await rooms.updateRoom({ name }); },
       onSetTopic: async (topic: string | null) => { await rooms.updateRoom({ topic }); },

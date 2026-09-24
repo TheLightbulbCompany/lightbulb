@@ -729,7 +729,7 @@ async def create_message(
     target_ids = [t["agentId"] for t in dispatch_targets]
     for attempt in range(_SEQ_RETRY_ATTEMPTS):
         meta = await get_room(room_id)
-        if meta is None:
+        if meta is None or meta.get("deletedAt"):
             raise RoomNotFound(room_id)
         if meta.get("archivedAt"):
             raise RoomArchived(room_id)
@@ -764,8 +764,10 @@ async def create_message(
                     "TableName": table_name,
                     "Key": {"pk": room_pk(room_id), "sk": "META"},
                     "UpdateExpression": "SET lastSeq = :seq, lastMessageAt = :now, updatedAt = :now",
-                    # An archive committing after the read above cancels this; the retry sees it.
-                    "ConditionExpression": "lastSeq = :expected AND attribute_not_exists(archivedAt)",
+                    # An archive or delete committing after the read above cancels this; the retry sees it.
+                    "ConditionExpression": (
+                        "lastSeq = :expected AND attribute_not_exists(archivedAt) AND attribute_not_exists(deletedAt)"
+                    ),
                     "ExpressionAttributeValues": {":seq": seq, ":expected": expected, ":now": now},
                 }
             },
@@ -1215,6 +1217,63 @@ async def remove_member(
         )
     await _transact(items)
     return {**meta, "revision": revision, "updatedAt": now, "deliveryKey": new_delivery_key or meta["deliveryKey"]}
+
+
+async def delete_room(*, meta: dict, deleted_by: str, new_delivery_key: str, live_events: list[dict]) -> dict:
+    """Tombstone a room: stamp ``deletedAt``/``deletedBy`` on META, rotate its
+    ``deliveryKey`` and write the ``LIVE`` notices in ONE transaction, conditioned
+    on the ``meta`` the caller read — the same revocation contract as a human
+    removal, so every open subscription on the old channel goes silent. Messages
+    and members stay (soft delete). A lost race (already deleted, or any other
+    META write) raises ``RoomNotFound``; the caller re-reads to tell them apart."""
+    room_id = meta["roomId"]
+    now = utc_now_iso()
+    table_name = _table().name
+    revision = int(meta["revision"]) + 1
+    items: list[dict] = [
+        {
+            "Update": {
+                "TableName": table_name,
+                "Key": {"pk": room_pk(room_id), "sk": "META"},
+                "UpdateExpression": (
+                    "SET deletedAt = :now, deletedBy = :by, deliveryKey = :key, revision = :rev, updatedAt = :now"
+                ),
+                "ConditionExpression": "revision = :expected AND attribute_not_exists(deletedAt)",
+                "ExpressionAttributeValues": {
+                    ":now": now,
+                    ":by": deleted_by,
+                    ":key": new_delivery_key,
+                    ":rev": revision,
+                    ":expected": revision - 1,
+                },
+            }
+        }
+    ]
+    for live in live_events:
+        items.append(
+            _live_item(
+                table_name,
+                room_id,
+                live.get("ownerId") or meta["ownerId"],
+                live["userId"],
+                live.get("channelKey"),
+                live["event"],
+            )
+        )
+    try:
+        await _transact(items)
+    except ClientError as exc:
+        if _is_cancelled(exc):
+            raise RoomNotFound(room_id) from exc
+        raise
+    return {
+        **meta,
+        "deletedAt": now,
+        "deletedBy": deleted_by,
+        "deliveryKey": new_delivery_key,
+        "revision": revision,
+        "updatedAt": now,
+    }
 
 
 _ROOM_META_FIELDS = ("name", "topic", "archivedAt", "archivedBy")

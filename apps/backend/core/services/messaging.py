@@ -111,6 +111,7 @@ API_ERROR_STATUS = {
     "PIN_LIMIT": 409,
     "ROOM_ARCHIVED": 409,
     "ROOM_NOT_ARCHIVABLE": 409,
+    "ROOM_NOT_DELETABLE": 409,
     "RUN_NOT_ACTIVE": 409,
     "RATE_LIMITED": 429,
     "RUNTIME_UNAVAILABLE": 503,
@@ -1162,7 +1163,8 @@ async def require_room_member(owner_id: str, user_id: str, room_id: str) -> tupl
         messaging_repo.get_room(room_id),
         messaging_repo.get_member(room_id, "human", user_id),
     )
-    if meta is None:
+    # A deleted room is gone for everyone: every member door answers 404, never a reconcile hint.
+    if meta is None or meta.get("deletedAt"):
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
     if member is not None and messaging_repo.member_home(member, meta["ownerId"]) == owner_id:
         return meta, member
@@ -1286,7 +1288,11 @@ async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
     removed a moment ago can still be discovered by it, and ``get_member`` is
     the strongly-consistent read that keeps them out of the response.
     """
-    discovered = await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)
+    discovered = [
+        row
+        for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)
+        if not row["meta"].get("deletedAt")
+    ]
     limit = asyncio.Semaphore(_SUMMARY_CONCURRENCY)
 
     async def summarise(row: dict) -> RoomSummary | None:
@@ -1883,8 +1889,8 @@ async def remove_member(auth: AuthContext, room_id: str, kind: str, member_id: s
 
 
 async def leave_room(auth: AuthContext, room_id: str) -> None:
-    """A member removes themselves. A channel's owner must transfer or delete the room
-    first — room deletion is out of scope, so this is a hard refusal. A group DM's
+    """A member removes themselves. A channel's owner must transfer ownership or delete
+    the channel instead, so this is a hard refusal. A group DM's
     "owner" is just whoever started it and holds no powers there, so they may leave too."""
     owner_id = resolve_owner_id(auth)
     meta, member = await require_room_member(owner_id, auth.user_id, room_id)
@@ -1903,26 +1909,8 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
         await _publish_room_metadata(new_meta)
         return new_meta
 
-    members = await messaging_repo.list_members(meta["roomId"])
-    humans = [row for row in members if row.get("kind") == "human"]
     new_key = str(uuid.uuid4())
-    revision = int(meta["revision"]) + 1
-    notices: list[dict] = []
-    for human in humans:
-        home = messaging_repo.member_home(human, meta["ownerId"])
-        key = await messaging_repo.ensure_user_stream(home, human["id"])
-        removed = human["id"] == member_id
-        event = make_live_event(
-            "room.access.removed" if removed else "room.subscription.rotated",
-            (
-                {"roomId": meta["roomId"], "roomRevision": revision}
-                if removed
-                else {"roomId": meta["roomId"], "deliveryKey": new_key, "roomRevision": revision}
-            ),
-            room_id=meta["roomId"],
-            room_revision=revision,
-        )
-        notices.append({"userId": human["id"], "ownerId": home, "channelKey": key, "event": event})
+    notices = await _rotation_notices(meta, new_key, removed={member_id})
     new_meta = await messaging_repo.remove_member(
         meta=meta,
         kind="human",
@@ -1938,6 +1926,60 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
         except Exception:
             logger.exception("autojoin marker on removal failed room=%s member=%s", meta["roomId"], member_id)
     return new_meta
+
+
+async def _rotation_notices(meta: dict, new_key: str, *, removed: set[str] | None = None) -> list[dict]:
+    """The durable ``LIVE`` rows a deliveryKey rotation writes in its own transaction:
+    ``room.access.removed`` to each human in ``removed`` (every human when None),
+    ``room.subscription.rotated`` with the new key to the rest."""
+    members = await messaging_repo.list_members(meta["roomId"])
+    humans = [row for row in members if row.get("kind") == "human"]
+    revision = int(meta["revision"]) + 1
+    notices: list[dict] = []
+    for human in humans:
+        home = messaging_repo.member_home(human, meta["ownerId"])
+        key = await messaging_repo.ensure_user_stream(home, human["id"])
+        is_removed = removed is None or human["id"] in removed
+        event = make_live_event(
+            "room.access.removed" if is_removed else "room.subscription.rotated",
+            (
+                {"roomId": meta["roomId"], "roomRevision": revision}
+                if is_removed
+                else {"roomId": meta["roomId"], "deliveryKey": new_key, "roomRevision": revision}
+            ),
+            room_id=meta["roomId"],
+            room_revision=revision,
+        )
+        notices.append({"userId": human["id"], "ownerId": home, "channelKey": key, "event": event})
+    return notices
+
+
+async def delete_room(auth: AuthContext, room_id: str) -> None:
+    """Owner-only channel delete, as a TOMBSTONE: META gains deletedAt/deletedBy and the
+    deliveryKey rotates with a ``room.access.removed`` notice to every human in the same
+    transaction -- the revocation contract of a human removal, applied to the whole room.
+    Messages and members stay. #general, the shared vendor channel and DMs refuse, like
+    archive; a room already deleted is a 404 from require_room_member."""
+    owner_id = resolve_owner_id(auth)
+    for attempt in range(3):
+        meta, member = await require_room_member(owner_id, auth.user_id, room_id)
+        if member.get("role") != "owner":
+            raise ApiProblem("ROOM_FORBIDDEN", "Only the channel's owner can delete it.")
+        if meta.get("kind") != "channel" or is_default_room(meta) or is_vendor_room(meta):
+            name = "#general" if is_default_room(meta) else "This room"
+            raise ApiProblem("ROOM_NOT_DELETABLE", f"{name} can't be deleted.")
+        new_key = str(uuid.uuid4())
+        notices = await _rotation_notices(meta, new_key)
+        try:
+            await messaging_repo.delete_room(
+                meta=meta, deleted_by=auth.user_id, new_delivery_key=new_key, live_events=notices
+            )
+            return
+        except messaging_repo.RoomNotFound:
+            # Lost the revision CAS (or a concurrent delete): re-read. The next
+            # require_room_member answers 404 if the room is now gone.
+            if attempt == 2:
+                raise
 
 
 async def revoke_human_membership(owner_id: str, user_id: str) -> None:
@@ -2289,6 +2331,8 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
         )
     except messaging_repo.RoomArchived as exc:
         raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE) from exc
+    except messaging_repo.RoomNotFound as exc:  # deleted between require_room_member and the commit
+        raise ApiProblem("ROOM_NOT_FOUND", "Room not found.") from exc
     except messaging_repo.MessageForbidden as exc:
         # Lost the race: removed between require_room_member and the transaction committing.
         # Same code require_room_member itself raises for "no longer a member".
@@ -2638,7 +2682,7 @@ async def create_follow_up(owner_id: str, request: FollowUpRequest) -> FollowUpR
     room_id, agent_id = str(request.room_id), str(request.agent_id)
     follow_up_id = str(request.follow_up_id)
     meta = await messaging_repo.get_room(room_id)
-    if meta is None or meta.get("ownerId") != owner_id:
+    if meta is None or meta.get("deletedAt") or meta.get("ownerId") != owner_id:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
     # Read-then-write is enough: openclaw_work._room_follow_up re-reads the room and drops archived ones.
     if meta.get("archivedAt"):
@@ -2673,7 +2717,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     room_id = str(request.room_id)
     agent_id = str(request.agent_id)
     meta = await messaging_repo.get_room(room_id)
-    if meta is None or meta.get("ownerId") != owner_id:
+    if meta is None or meta.get("deletedAt") or meta.get("ownerId") != owner_id:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
     member = await messaging_repo.get_member(room_id, "agent", agent_id)
     if member is None:
@@ -2746,6 +2790,8 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         # Deliberate: a reply to a turn that began before the archive is refused too, so an
         # archived channel's history ends where the archive did. The bridge drops a 4xx.
         raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE) from exc
+    except messaging_repo.RoomNotFound as exc:  # deleted after the pre-check; the bridge drops a 4xx
+        raise ApiProblem("ROOM_NOT_FOUND", "Room not found.") from exc
     except messaging_repo.MessageForbidden as exc:
         # Lost the race: removed between the get_member pre-check above and the
         # transaction committing. Same code that pre-check itself raises.

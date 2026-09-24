@@ -81,6 +81,8 @@ export interface MessagingClient {
   setMemberPrefs(roomId: string, request: MemberPrefsRequest): Promise<RoomDetail>;
   putSections(request: SectionsRequest): Promise<RoomListResponse>;
   leaveRoom(roomId: string): Promise<void>;
+  /** Owner-only channel delete (a tombstone; history is kept server-side). */
+  deleteRoom(roomId: string): Promise<void>;
   setPin(roomId: string, messageId: string, pinned: boolean): Promise<RoomDetail>;
   setTyping(request: TypingRequest): Promise<void>;
   abortRun(runId: string): Promise<AbortRunResponse>;
@@ -164,6 +166,9 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     putSections: (request) => api.put("/messaging/me/sections", request) as Promise<RoomListResponse>,
     async leaveRoom(roomId) {
       await api.post(`${roomPath(roomId)}/leave`, {});
+    },
+    async deleteRoom(roomId) {
+      await api.del(roomPath(roomId));
     },
     setPin: (roomId, messageId, pinned) => (pinned
       ? api.put(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`, {})

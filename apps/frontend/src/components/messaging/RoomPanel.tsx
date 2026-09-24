@@ -91,6 +91,7 @@ export interface RoomPanelProps {
   onSetPrefs?: (prefs: MemberPrefsRequest) => Promise<void>;
   onSetTopic?: (topic: string | null) => Promise<void>;
   onLeaveRoom?: () => Promise<void>;
+  onDeleteRoom?: () => Promise<void>;
   onSetArchived?: (archived: boolean) => Promise<void>;
   onAbortRun?: (runId: string) => void;
   onSteerRun?: (runId: string, text: string) => void;
@@ -258,6 +259,7 @@ function RoomContent({
   onSetPrefs,
   onSetTopic,
   onLeaveRoom,
+  onDeleteRoom,
   onSetArchived,
   onAbortRun,
   onSteerRun,
@@ -638,7 +640,7 @@ function RoomContent({
           }} />}
         onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
         onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom}
-        onSetArchived={onSetArchived} />
+        onSetArchived={onSetArchived} onDeleteRoom={onDeleteRoom} />
       <nav className="room-tabs" aria-label="Conversation views">
         <button type="button" className="room-tab" aria-current={contextCollapsed && !showDetail ? "page" : undefined}
           onClick={() => {

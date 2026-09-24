@@ -157,6 +157,7 @@ describe("messaging HTTP client", () => {
     await client.setMemberPrefs("r 1", { starred: true });
     await client.putSections({ sections: [{ id: "s-1", name: "Ship" }] });
     await client.leaveRoom("r 1");
+    await client.deleteRoom("r 1");
     await client.setPin("r 1", "m 1", true);
     await client.setPin("r 1", "m 1", false);
     await client.markUnread("r 1", 4);
@@ -165,6 +166,7 @@ describe("messaging HTTP client", () => {
       ["patch", "/messaging/rooms/r%201/me", { starred: true }],
       ["put", "/messaging/me/sections", { sections: [{ id: "s-1", name: "Ship" }] }],
       ["post", "/messaging/rooms/r%201/leave", {}],
+      ["del", "/messaging/rooms/r%201", undefined],
       ["put", "/messaging/rooms/r%201/pins/m%201", {}],
       ["del", "/messaging/rooms/r%201/pins/m%201", undefined],
       ["post", "/messaging/rooms/r%201/unread", { fromSeq: 4 }],

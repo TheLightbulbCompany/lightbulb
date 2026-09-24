@@ -296,6 +296,12 @@ async def patch_room(
     return await service.patch_room(auth, room_id, request)
 
 
+@router.delete("/messaging/rooms/{room_id}", status_code=204)
+async def delete_room(room_id: str, auth: AuthContext = Depends(get_current_user)):
+    await service.delete_room(auth, room_id)
+    return Response(status_code=204)
+
+
 @router.patch("/messaging/rooms/{room_id}/me", response_model=RoomDetail)
 async def patch_room_me(
     room_id: str,

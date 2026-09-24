@@ -117,3 +117,27 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       once every env runs 916. Re-apply
       on re-vendor; paperclip-skill-primitives.test.ts pins the helper and the
       api-reference examples.
+  13. CEO timer-wake board keeping (SKILL.md routing table's `ceo-heartbeat.md`
+      row + references/ceo-heartbeat.md in full): the stock Paperclip fork
+      ships a separate CEO-only `HEARTBEAT.md` (a different file from the
+      generic heartbeat this skill already carries as references/heartbeat.md)
+      that upstream hands only to instruction-bundle adapters
+      (`supportsInstructionsBundle: true`) — `hermes_gateway` sets that false,
+      so Paperclip never delivers it to our agents on its own.
+      references/ceo-heartbeat.md vendors that file verbatim (own header names
+      the exact upstream path/tag and the two inline edits: `$AGENT_HOME` ->
+      `$HERMES_HOME`, and the "hire via `paperclip-create-agent`" line ->
+      this skill's own Hiring rule, since we neither bundle that skill nor
+      allow direct `/agents`/`/agent-hires` calls), then appends a
+      Lightbulb-local "Board hygiene (timer wakes)" section (owner ruling
+      2026-09-24: on a timer wake the CEO may close/cancel/nudge/flag stale
+      board items, including cancelling human-created work, always with a
+      one-line reason comment; bounded to 10 mutations/wake). The routing
+      row's detection signal is the literal `- reason: heartbeat_timer` line
+      Paperclip's `renderPaperclipWakePrompt` puts in the wake summary
+      (`packages/adapter-utils/src/server-utils.ts:2346` on the fork) — NOT an
+      env var; our bridge's native-run path (`apps/infra/hermes/bridge/turn.py`
+      `_run_native_paperclip`) never sets `PAPERCLIP_WAKE_REASON`, only
+      `PAPERCLIP_TASK_ID` when the wake is issue-scoped. Re-apply the header's
+      two edits and the hygiene section on any re-vendor of the CEO file; do
+      not let a diff silently drop them.

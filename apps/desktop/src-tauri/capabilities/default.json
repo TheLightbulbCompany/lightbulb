@@ -14,6 +14,7 @@
   "permissions": [
     "desktop-approval:deny-desktop-shell-answer",
     "core:default",
+    "core:window:allow-set-badge-count",
     "deep-link:default",
     "shell:allow-open",
     "updater:default",

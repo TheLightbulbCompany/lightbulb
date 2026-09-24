@@ -502,6 +502,7 @@ export interface Approval {
 /** Full approval object from GET /approvals/{id} (upstream Approval subset). `status` is a free string (more values than the row union). */
 export interface ApprovalDetail {
   id: string;
+  companyId?: string | null;
   type?: string | null;
   status: string;
   requestedByAgentId?: string | null;
@@ -510,6 +511,17 @@ export interface ApprovalDetail {
   decisionNote?: string | null;
   decidedAt?: string | null;
   createdAt?: string | null;
+}
+
+/** Upstream ApprovalComment (packages/shared/src/types/approval.ts @ v2026.916.1-isol8.2). */
+export interface ApprovalComment {
+  id: string;
+  approvalId: string;
+  authorAgentId: string | null;
+  authorUserId: string | null;
+  body: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 export interface HeartbeatRun {

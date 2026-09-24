@@ -22,7 +22,7 @@ describe("shellUrlFromPaperclipPath", () => {
 
   it("lands shapes with no detail panel on the list panel that owns them", () => {
     expect(shellUrlFromPaperclipPath("/PAP/approvals/ca6ba09d-b558")).toBe(
-      "/chat?panel=teams-inbox",
+      "/chat?panel=teams-approval-detail&detailId=ca6ba09d-b558",
     );
     expect(shellUrlFromPaperclipPath("/PAP/agents/cto")).toBe("/chat?panel=teams-agents");
     expect(shellUrlFromPaperclipPath("/PAP/projects/growth")).toBe(

@@ -9,6 +9,7 @@ import { useApi } from "@/lib/api";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 import { isTauri, openExternalUrl } from "@/lib/externalAuth";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import {
   approvalLabel,
@@ -35,7 +36,14 @@ const NO_URL_MSG =
 // Every payload on this rail is agent-authored, so a link off one is
 // untrusted: it only ever renders when it's an https:// URL.
 
-export function ApprovalRow({ approval }: { approval: Approval }) {
+export function ApprovalRow({
+  approval,
+  showDetailLink = true,
+}: {
+  approval: Approval;
+  /** Off when the row is rendered INSIDE the approval detail it would link to. */
+  showDetailLink?: boolean;
+}) {
   const { approve, reject } = useApprovalMutations();
   const api = useApi();
   const [busy, setBusy] = useState(false);
@@ -166,7 +174,17 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
     <li className="flex flex-col gap-2 px-3 py-2">
       <div className="flex items-center gap-2">
         <ShieldQuestion size={16} className="shrink-0" style={{ color: "var(--midnight)" }} />
-        <span className="min-w-0 flex-1 truncate text-ui text-[var(--midnight)]">{title}</span>
+        {showDetailLink ? (
+          <a
+            href={teamsDetailUrl("approval", approval.id)}
+            onClick={(e) => handleShellLinkClick(e, teamsDetailUrl("approval", approval.id))}
+            className="min-w-0 flex-1 truncate text-ui text-[var(--midnight)] hover:underline"
+          >
+            {title}
+          </a>
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-ui text-[var(--midnight)]">{title}</span>
+        )}
         {approval.createdAt && (
           <span className="shrink-0 whitespace-nowrap text-caption text-[var(--midnight-muted)]">{timeAgo(approval.createdAt)}</span>
         )}

@@ -10,16 +10,41 @@ approval payload returns 422 at the FastAPI boundary.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Path
 
 from core.services import marketplace_hire
 
 from . import agents as _agents
 from .deps import TeamsContext, envelope_list
-from .schemas import ApproveApprovalBody, RejectApprovalBody
+from .schemas import (
+    AddApprovalCommentBody,
+    ApproveApprovalBody,
+    RejectApprovalBody,
+    RequestApprovalRevisionBody,
+    ResubmitApprovalBody,
+)
 
 router = APIRouter()
 _ctx = _agents._ctx
+
+# Interpolated into the fixed upstream path, so it may not carry "/", "." or "?".
+# Same constraint as the issue/run ids (#3119); defined here until that lands.
+ApprovalId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
+
+
+async def _require_company_approval(approval_id: str, ctx: TeamsContext) -> dict:
+    """The approval, or 404 unless it belongs to the caller's workspace company.
+
+    Paperclip authorizes by the member's session, and a Paperclip user can hold
+    memberships in more than one company — so the session alone does not pin an
+    approval to THIS workspace. Same fence as issues' ``_require_company_issue``.
+    """
+    approval = await _agents._admin().get_approval(approval_id=approval_id, session_cookie=ctx.session_cookie)
+    if not isinstance(approval, dict) or approval.get("companyId") != ctx.company_id:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    return approval
 
 
 @router.get("/approvals")
@@ -34,7 +59,7 @@ async def list_approvals(ctx: TeamsContext = Depends(_ctx)):
 
 @router.post("/approvals/{approval_id}/approve")
 async def approve(
-    approval_id: str,
+    approval_id: ApprovalId,
     body: ApproveApprovalBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -63,7 +88,7 @@ async def approve(
 
 @router.post("/approvals/{approval_id}/reject")
 async def reject(
-    approval_id: str,
+    approval_id: ApprovalId,
     body: RejectApprovalBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -76,13 +101,61 @@ async def reject(
 
 
 @router.get("/approvals/{approval_id}")
-async def get_approval(approval_id: str, ctx: TeamsContext = Depends(_ctx)):
-    """Fetch a single approval by id.
+async def get_approval(approval_id: ApprovalId, ctx: TeamsContext = Depends(_ctx)):
+    """Fetch a single approval by id (upstream ``GET /api/approvals/{id}``),
+    fenced to the caller's company. Read by the approval detail panel."""
+    return await _require_company_approval(approval_id, ctx)
 
-    Maps to upstream ``GET /api/approvals/{id}``. Used by the approval
-    detail page that Inbox approval rows link into.
-    """
-    return await _agents._admin().get_approval(
+
+@router.get("/approvals/{approval_id}/comments")
+async def list_approval_comments(approval_id: ApprovalId, ctx: TeamsContext = Depends(_ctx)):
+    """Upstream ``GET /api/approvals/{id}/comments``."""
+    await _require_company_approval(approval_id, ctx)
+    return await _agents._admin().list_approval_comments(approval_id=approval_id, session_cookie=ctx.session_cookie)
+
+
+@router.post("/approvals/{approval_id}/comments", status_code=201)
+async def add_approval_comment(
+    approval_id: ApprovalId,
+    body: AddApprovalCommentBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Upstream ``POST /api/approvals/{id}/comments``."""
+    await _require_company_approval(approval_id, ctx)
+    return await _agents._admin().add_approval_comment(
+        approval_id=approval_id, body=body.body, session_cookie=ctx.session_cookie
+    )
+
+
+@router.post("/approvals/{approval_id}/request-revision")
+async def request_approval_revision(
+    approval_id: ApprovalId,
+    body: RequestApprovalRevisionBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Upstream ``POST /api/approvals/{id}/request-revision`` (board only;
+    Paperclip's own 403 reaches the caller via ``PaperclipApiError``)."""
+    await _require_company_approval(approval_id, ctx)
+    return await _agents._admin().request_approval_revision(
         approval_id=approval_id,
+        decision_note=body.decision_note,
         session_cookie=ctx.session_cookie,
     )
+
+
+@router.post("/approvals/{approval_id}/resubmit")
+async def resubmit_approval(
+    approval_id: ApprovalId,
+    body: ResubmitApprovalBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Upstream ``POST /api/approvals/{id}/resubmit``, without a replacement payload."""
+    await _require_company_approval(approval_id, ctx)
+    return await _agents._admin().resubmit_approval(approval_id=approval_id, session_cookie=ctx.session_cookie)
+
+
+@router.get("/approvals/{approval_id}/issues")
+async def list_approval_issues(approval_id: ApprovalId, ctx: TeamsContext = Depends(_ctx)):
+    """Upstream ``GET /api/approvals/{id}/issues`` — the tasks linked to the approval."""
+    await _require_company_approval(approval_id, ctx)
+    return await _agents._admin().list_approval_issues(approval_id=approval_id, session_cookie=ctx.session_cookie)

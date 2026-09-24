@@ -33,7 +33,7 @@ export function teamsPanelUrl(panel: string): string {
 }
 
 export function teamsDetailUrl(
-  kind: "issue" | "routine" | "project" | "goal" | "run",
+  kind: "issue" | "routine" | "project" | "goal" | "run" | "approval",
   id: string,
 ): string {
   return `/chat?panel=teams-${kind}-detail&detailId=${encodeURIComponent(id)}`;
@@ -58,10 +58,11 @@ export function shellUrlFromPaperclipPath(href?: string | null): string | null {
   const [, section, id, runId, hash = ""] = m;
   if (runId) return teamsDetailUrl("run", runId);
   if (section === "issues") return teamsDetailUrl("issue", id) + hash;
+  if (section === "approvals") return teamsDetailUrl("approval", id);
   // No detail panel takes these ids — agent url-keys and project url-keys are
-  // not the uuids our panels resolve, and approvals only ever render inside the
-  // Inbox. Land on the list panel that owns them; a list beats a dead link.
-  return teamsPanelUrl(section === "approvals" ? "inbox" : section);
+  // not the uuids our panels resolve. Land on the list panel that owns them; a
+  // list beats a dead link.
+  return teamsPanelUrl(section);
 }
 
 // Commit an in-shell URL with no anchor to fall through to — a button, or a

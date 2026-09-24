@@ -67,12 +67,14 @@ const DETAIL_LOADERS = {
   project: () => import("./panels/ProjectDetailPanel").then((m) => m.ProjectDetailPanel),
   goal: () => import("./panels/GoalDetailPanel").then((m) => m.GoalDetailPanel),
   run: () => import("./panels/RunDetailPanel").then((m) => m.RunDetailPanel),
+  approval: () => import("./approvals/ApprovalDetail").then((m) => m.ApprovalDetail),
 };
 const IssueDetailPanel = dynamic(DETAIL_LOADERS.issue, { loading: PanelSkeleton });
 const RoutineDetailPanel = dynamic(DETAIL_LOADERS.routine, { loading: PanelSkeleton });
 const ProjectDetailPanel = dynamic(DETAIL_LOADERS.project, { loading: PanelSkeleton });
 const GoalDetailPanel = dynamic(DETAIL_LOADERS.goal, { loading: PanelSkeleton });
 const RunDetailPanel = dynamic(DETAIL_LOADERS.run, { loading: PanelSkeleton });
+const ApprovalDetail = dynamic(DETAIL_LOADERS.approval, { loading: PanelSkeleton });
 
 // Issues + Inbox take params/callbacks (unlike the propless list panels in
 // PANELS), so they get their own prop-typed dynamic wrappers. They point at the
@@ -168,6 +170,8 @@ export function TeamsPanelRouter({
       return <GoalDetailPanel goalId={detailId} />;
     if (panel === "run-detail")
       return <RunDetailPanel runId={detailId} />;
+    if (panel === "approval-detail")
+      return <ApprovalDetail approvalId={detailId} />;
   }
 
   // Param-taking list panels — threaded from panelParams; the consume callbacks

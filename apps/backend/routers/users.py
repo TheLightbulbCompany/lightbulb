@@ -3,13 +3,15 @@
 import logging
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
+from html import escape
 from pydantic import BaseModel
 
 from core.auth import get_current_user, resolve_owner_id, AuthContext
 from core.repositories import admin_actions_repo, billing_repo, user_repo
 from core.services.admin_audit import extract_client_ip
-from schemas.user_schemas import SyncUserRequest, SyncUserResponse
+from schemas.user_schemas import SyncUserRequest, SyncUserResponse, UserPrefs, UserPrefsUpdate
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -125,6 +127,64 @@ async def get_me(auth: AuthContext = Depends(get_current_user)) -> dict:
         "provider_choice": provider_choice,
         "byo_provider": byo_provider,
     }
+
+
+def _prefs(row: dict | None) -> UserPrefs:
+    return UserPrefs(timezone=user_repo.timezone_of(row), dailySummary=user_repo.daily_summary_on(row))
+
+
+@router.get("/me/prefs", response_model=UserPrefs, operation_id="get_my_prefs")
+async def get_my_prefs(auth: AuthContext = Depends(get_current_user)) -> UserPrefs:
+    """The caller's per-human prefs: IANA ``timezone`` and the ``dailySummary`` digest toggle."""
+    return _prefs(await user_repo.get(auth.user_id))
+
+
+@router.put("/me/prefs", response_model=UserPrefs, operation_id="update_my_prefs")
+async def update_my_prefs(body: UserPrefsUpdate, auth: AuthContext = Depends(get_current_user)) -> UserPrefs:
+    """Set any of ``timezone`` / ``dailySummary``; omitted fields are unchanged."""
+    if not await user_repo.get(auth.user_id):
+        await user_repo.put(auth.user_id, auth.email)
+    await user_repo.set_prefs(auth.user_id, timezone=body.timezone, daily_summary=body.dailySummary)
+    return _prefs(await user_repo.get(auth.user_id))
+
+
+def _unsubscribe_page(message: str, *, form_token: str | None = None, status_code: int = 200) -> HTMLResponse:
+    form = (
+        f'<form method="post" action="?token={escape(form_token)}"><button type="submit">Unsubscribe</button></form>'
+        if form_token
+        else ""
+    )
+    return HTMLResponse(
+        f'<!doctype html><meta name="viewport" content="width=device-width"><title>Lightbulb</title>'
+        f'<div style="font-family:sans-serif;max-width:480px;margin:48px auto;padding:0 16px">'
+        f"<p>{escape(message)}</p>{form}</div>",
+        status_code=status_code,
+    )
+
+
+@router.get("/digest/unsubscribe", response_class=HTMLResponse, include_in_schema=False)
+async def digest_unsubscribe_page(token: str = Query(..., max_length=2048)) -> HTMLResponse:
+    """The email footer link. A GET never changes anything (link scanners
+    prefetch it); it shows a one-button form that POSTs the same token."""
+    from core.services.daily_digest import verify_unsubscribe_token
+
+    if verify_unsubscribe_token(token) is None:
+        return _unsubscribe_page("This unsubscribe link is invalid or has expired.", status_code=400)
+    return _unsubscribe_page("Stop the Lightbulb daily summary email and notification?", form_token=token)
+
+
+@router.post("/digest/unsubscribe", response_class=HTMLResponse, include_in_schema=False)
+async def digest_unsubscribe(token: str = Query(..., max_length=2048)) -> HTMLResponse:
+    """RFC 8058 one-click target (``List-Unsubscribe-Post``). Unauthenticated: the
+    signed, expiring, purpose-scoped token is the only credential, and all it can
+    do is turn the "Daily summary" pref off. Idempotent."""
+    from core.services.daily_digest import verify_unsubscribe_token
+
+    user_id = verify_unsubscribe_token(token)
+    if user_id is None:
+        return _unsubscribe_page("This unsubscribe link is invalid or has expired.", status_code=400)
+    await user_repo.set_prefs(user_id, daily_summary=False)
+    return _unsubscribe_page("You're unsubscribed from the daily summary. Turn it back on in Settings.")
 
 
 async def _org_blocker(user_id: str, *, active_org_id: str | None, clerk_admin) -> str | None:

@@ -38,6 +38,7 @@ reaching the send. See ``routers/webhooks.py``.
 """
 
 import logging
+from email import policy
 from email.message import EmailMessage
 
 import anyio
@@ -54,6 +55,7 @@ logger = logging.getLogger(__name__)
 _SEND_TIMEOUT_S = 10
 
 _ses_client = None
+_POLICY = policy.default.clone(max_line_length=998)
 
 
 def _client():
@@ -108,7 +110,10 @@ async def send_ses_email(
         return None
 
     try:
-        msg = EmailMessage()
+        # RFC 5322's hard 998-char line limit instead of the soft 78: a header
+        # holding one long token (an RFC 8058 List-Unsubscribe URL) would
+        # otherwise be RFC 2047-encoded to fit, which no mail client parses.
+        msg = EmailMessage(policy=_POLICY)
         msg["From"] = from_addr
         msg["To"] = ", ".join(to) if isinstance(to, list) else to
         msg["Subject"] = subject

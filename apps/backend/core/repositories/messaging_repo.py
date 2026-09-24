@@ -1780,6 +1780,29 @@ async def set_activity_seen(home_owner_id: str, user_id: str, up_to: str) -> str
     return await get_activity_seen(home_owner_id, user_id) or up_to
 
 
+DIGEST_TTL_S = 3 * 24 * 3600
+
+
+async def claim_digest(user_id: str, home_owner_id: str, local_date: str) -> bool:
+    """Claim the one daily digest for (human, workspace, local date). ``True``
+    exactly once: the conditional put is the send's idempotency boundary."""
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={
+                "pk": f"DIGEST#{user_id}#{home_owner_id}#{local_date}",
+                "sk": "DIGEST",
+                "expiresAt": int(time.time()) + DIGEST_TTL_S,
+            },
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
 async def batch_get(keys: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
     """Strongly read many ``(pk, sk)`` rows, 100 per request; missing rows are absent."""
     table = _table()

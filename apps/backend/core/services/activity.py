@@ -783,6 +783,37 @@ async def teams_context(auth: AuthContext, request: Any, response: Any) -> Any:
     )
 
 
+def _unseen_message_rows(unseen_rows: list[dict], gates: dict) -> list[dict]:
+    # ponytail: the badge counts unseen pointers in rooms the viewer is still in; a
+    # deleted-but-unseen message still counts until it is read or seen.
+    return [
+        r for r in unseen_rows if r.get("kind") in _MESSAGE_KINDS and r.get("roomId") in gates and not r.get("doneAt")
+    ]
+
+
+def _unseen_paperclip(items: list[ActivityItem], seen: str | None) -> list[ActivityItem]:
+    return [item for item in items if _newer_than(item.created_at, seen)]
+
+
+async def unseen_counts(owner_id: str, user_id: str, teams_ctx: TeamsCtx) -> dict[str, int] | None:
+    """The unseen badge's items, counted by kind (``paperclip`` items by subtype:
+    ``approval`` / ``assigned_issue``). Same query and "unseen" rule as the feed's
+    ``unseenCount``; ``None`` when Paperclip is unavailable, so a caller that
+    must not under-report (the daily digest) can retry instead."""
+    seen = await messaging_repo.get_activity_seen(owner_id, user_id)
+    rows = await messaging_repo.list_activity_since(owner_id, user_id, seen, UNSEEN_CAP)
+    gates = await _room_gates(owner_id, user_id, {r["roomId"] for r in rows if r.get("roomId")})
+    paperclip = await _paperclip_within_budget(teams_ctx)
+    if paperclip is None:
+        return None
+    counts: dict[str, int] = {}
+    for kind in [r["kind"] for r in _unseen_message_rows(rows, gates)] + [
+        i.subtype or i.kind for i in _unseen_paperclip(paperclip, seen)
+    ]:
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
 async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, teams_ctx: TeamsCtx) -> ActivityPage:
     owner_id = resolve_owner_id(auth)
     user_id = auth.user_id
@@ -813,14 +844,10 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
     except BaseException:
         paperclip_task.cancel()
         raise
-    # ponytail: the badge counts unseen pointers in rooms the viewer is still in; a
-    # deleted-but-unseen message still counts until it is read or seen.
-    unseen = sum(
-        1 for r in unseen_rows if r.get("kind") in _MESSAGE_KINDS and r.get("roomId") in gates and not r.get("doneAt")
-    )
+    unseen = len(_unseen_message_rows(unseen_rows, gates))
     fetched = await paperclip_task
     paperclip, source = (fetched, "ok") if fetched is not None else ([], "unavailable")
-    unseen += sum(1 for item in paperclip if _newer_than(item.created_at, seen))
+    unseen += len(_unseen_paperclip(paperclip, seen))
     items = sorted(items + paperclip, key=lambda item: item.created_at, reverse=True)
     return ActivityPage(
         items=items, next=next_cursor, unseen_count=min(UNSEEN_CAP, unseen), sources=ActivitySources(paperclip=source)

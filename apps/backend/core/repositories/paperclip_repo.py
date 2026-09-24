@@ -1442,6 +1442,29 @@ class PaperclipRepo:
         )
         return bool(resp.get("Attributes"))
 
+    async def list_active_workspace_members(self) -> dict[str, set[str]]:
+        """``{org_id: member_user_ids}`` for every ACTIVE workspace row (a scan).
+
+        ponytail: a full-table scan per call; fine while the daily-digest pass
+        is its only caller at a few per hour. Add a GSI if the table grows past
+        a few thousand rows.
+        """
+        from boto3.dynamodb.conditions import Attr
+
+        out: dict[str, set[str]] = {}
+        kwargs: dict = {
+            "FilterExpression": Attr("user_id").begins_with("org_") & Attr("status").eq("active"),
+            "ProjectionExpression": "user_id, member_user_ids",
+        }
+        while True:
+            resp = await run_in_thread(self._table().scan, **kwargs)
+            for item in resp.get("Items", []):
+                out[item["user_id"]] = set(item.get("member_user_ids") or ())
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                return out
+            kwargs["ExclusiveStartKey"] = last_key
+
     async def scan_purge_due(self, now: datetime) -> list[PaperclipWorkspace]:
         """Disabled workspace rows whose ``scheduled_purge_at <= now``, via the
         by-status-purge-at GSI (KEYS_ONLY, so each hit is re-read)."""

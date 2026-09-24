@@ -7,10 +7,12 @@ import type { BillingAccount } from "@/hooks/useBilling";
 type CheckoutPlan = "base" | "workspace" | "ultra";
 
 // Ordered cheapest first; `stored` is the billing row's `plan` value. Features are
-// what the backend actually differentiates today: Base IS the capped managed model
+// only what the backend differentiates today: Base IS the capped managed model
 // (trial_cap.is_managed_capped); a paid plan is always-on (has_always_on_entitlement);
 // ChatGPT/own key are open to every paid plan (change_provider has no plan gate);
-// prepaid credits need Workspace/Ultra (metronome_funding). Ultra has no extra gate yet.
+// prepaid credits need Workspace/Ultra (metronome_funding). Nothing in the backend
+// separates Ultra from Workspace, so their cards list the same features on purpose.
+const PAID_FEATURES = ["Everything in Base", "Prepaid credits for Lightbulb-managed models"];
 const PLANS: { key: CheckoutPlan; stored: BillingAccount["plan"]; name: string; features: string[] }[] = [
   {
     key: "base",
@@ -22,16 +24,8 @@ const PLANS: { key: CheckoutPlan; stored: BillingAccount["plan"]; name: string; 
       "Always-on agents: listening, routines, webhooks",
     ],
   },
-  {
-    key: "workspace",
-    stored: "standard",
-    name: "Workspace",
-    features: [
-      "Everything in Base",
-      "More models with prepaid credits (coming soon)",
-    ],
-  },
-  { key: "ultra", stored: "ultra_pro", name: "Ultra", features: ["Everything in Workspace"] },
+  { key: "workspace", stored: "standard", name: "Workspace", features: PAID_FEATURES },
+  { key: "ultra", stored: "ultra_pro", name: "Ultra", features: PAID_FEATURES },
 ];
 
 /**

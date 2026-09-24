@@ -29,17 +29,18 @@ FENCES = {
 }
 
 _INLINE = "fetches the entity itself and 404s a foreign companyId inline (behaviour-tested)"
-_SWEEP3 = "attachment content / bare work-product / local-session fence: sweep PR 3"
+_SESSION = (
+    "our own DDB local-session row, caller-scoped by sessions.authorize_session; "
+    "the linked issue/project is company-checked by resolve_work"
+)
 
 ALLOWLIST = {
     ("GET", "/teams/agents/{agent_id}"): _INLINE,
     ("GET", "/teams/agents/{agent_id}/runs"): _INLINE,
     ("GET", "/teams/heartbeat-runs/{run_id}"): _INLINE,
     ("GET", "/teams/runs/{run_id}"): _INLINE,
-    ("GET", "/teams/attachments/{attachment_id}/content"): _SWEEP3,
-    ("DELETE", "/teams/work-products/{work_product_id}"): _SWEEP3,
-    ("GET", "/teams/local-sessions/{session_id}/work-link"): _SWEEP3,
-    ("PATCH", "/teams/local-sessions/{session_id}/work-link"): _SWEEP3,
+    ("GET", "/teams/local-sessions/{session_id}/work-link"): _SESSION,
+    ("PATCH", "/teams/local-sessions/{session_id}/work-link"): _SESSION,
 }
 
 
@@ -106,6 +107,8 @@ def _foreign_admin(monkeypatch):
         ("get", "/issues/iss1/comments"),
         ("post", "/issues/iss1/comments"),
         ("delete", "/issues/iss1/attachments/att1"),
+        ("get", "/issues/iss1/attachments/att1/content"),
+        ("delete", "/issues/iss1/work-products/11111111-1111-1111-1111-111111111111"),
         ("get", "/issues/iss1/documents/plan"),
         ("post", "/issues/iss1/interactions/int1/accept"),
         ("post", "/issues/iss1/interactions/int1/respond"),
@@ -150,3 +153,63 @@ def test_trigger_not_on_the_routine_is_404_and_never_forwarded(client, monkeypat
     )
     assert r.status_code == 404, r.text
     assert {name for name, *_ in admin.mock_calls} == {"get_routine"}
+
+
+# ---- own-company issue, but the child entity is not on it: still 404, never forwarded ----
+
+_WP = "11111111-1111-1111-1111-111111111111"
+
+
+@pytest.mark.real_fences
+@pytest.mark.parametrize(
+    "method,url,forward",
+    [
+        ("get", "/issues/iss1/attachments/att1/content", "open_attachment_stream"),
+        ("delete", "/issues/iss1/attachments/att1", "delete_attachment"),
+        ("delete", f"/issues/iss1/work-products/{_WP}", "delete_work_product"),
+    ],
+)
+def test_child_not_on_own_issue_is_404_and_never_forwarded(client, monkeypatch, method, url, forward):
+    admin = MagicMock()
+    admin.get_issue = AsyncMock(return_value={"id": "iss1", "companyId": "co_abc"})
+    admin.list_issue_attachments = AsyncMock(return_value=[{"id": "att_elsewhere"}])
+    admin.list_issue_work_products = AsyncMock(return_value=[{"id": "22222222-2222-2222-2222-222222222222"}])
+    setattr(admin, forward, AsyncMock())
+    monkeypatch.setattr(agents, "_admin", lambda: admin)
+    r = client.request(method.upper(), f"/api/v1/teams{url}", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 404, r.text
+    getattr(admin, forward).assert_not_awaited()
+
+
+class _Upstream:
+    headers = {"content-type": "application/pdf", "content-length": "3"}
+
+    async def aiter_bytes(self):
+        yield b"pdf"
+
+    async def aclose(self):
+        pass
+
+
+@pytest.mark.real_fences
+def test_own_issue_attachment_content_streams(client, monkeypatch):
+    admin = MagicMock()
+    admin.get_issue = AsyncMock(return_value={"id": "iss1", "companyId": "co_abc"})
+    admin.list_issue_attachments = AsyncMock(return_value=[{"id": "att1"}])
+    admin.open_attachment_stream = AsyncMock(return_value=_Upstream())
+    monkeypatch.setattr(agents, "_admin", lambda: admin)
+    r = client.get("/api/v1/teams/issues/iss1/attachments/att1/content", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200 and r.content == b"pdf"
+    admin.open_attachment_stream.assert_awaited_once_with(session_cookie="cookie", attachment_id="att1")
+
+
+@pytest.mark.real_fences
+def test_own_issue_work_product_delete_forwards(client, monkeypatch):
+    admin = MagicMock()
+    admin.get_issue = AsyncMock(return_value={"id": "iss1", "companyId": "co_abc"})
+    admin.list_issue_work_products = AsyncMock(return_value=[{"id": _WP}])
+    admin.delete_work_product = AsyncMock(return_value={})
+    monkeypatch.setattr(agents, "_admin", lambda: admin)
+    r = client.delete(f"/api/v1/teams/issues/iss1/work-products/{_WP}", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    admin.delete_work_product.assert_awaited_once_with(session_cookie="cookie", work_product_id=_WP)

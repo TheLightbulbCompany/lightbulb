@@ -3,13 +3,17 @@
 // Stock renders `/api/attachments/{id}/content` straight into <img>/<video>
 // src and <a href>: same origin, cookie auth. Here those bytes only come
 // through the Teams BFF with a Clerk bearer, so every media src and every
-// Open/Download action fetches a Blob first.
+// Open/Download action fetches a Blob first — issue-scoped, from the
+// AttachmentIssueContext the issue page provides.
 
 "use client";
 
-import { useEffect, useRef, useState } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { attachmentPathFromHref } from "@/components/teams/shared/components/MarkdownView";
+import {
+  attachmentPathFromHref,
+  useAttachmentIssueId,
+  useAttachmentObjectUrl,
+} from "@/components/teams/shared/lib/attachments";
 
 // Types a new tab may render from our origin. Anything else (SVG, HTML, …) is
 // re-typed as octet-stream so the browser downloads it instead of running it:
@@ -26,42 +30,15 @@ function saveBlob(url: string, name: string) {
   a.remove();
 }
 
-/** Object URL for an upstream attachment path, or null until loaded / on error. */
-export function useAttachmentObjectUrl(upstreamPath: string | null | undefined): string | null {
-  const { download } = useTeamsApi();
-  // `download` is a fresh function every render; capture it once so the fetch
-  // depends only on the path (same mount-ref as ArtifactCards' ImagePreview).
-  const downloadRef = useRef(download);
-  const [url, setUrl] = useState<string | null>(null);
-  const path = attachmentPathFromHref(upstreamPath);
-
-  useEffect(() => {
-    if (!path) return;
-    let cancelled = false;
-    let objectUrl: string | undefined;
-    downloadRef
-      .current(path)
-      .then((blob) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setUrl(objectUrl);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [path]);
-
-  return url;
-}
+export { useAttachmentObjectUrl };
 
 /** Open (new tab) and Download actions for an upstream attachment path. */
 export function useAttachmentActions() {
   const { download } = useTeamsApi();
+  const issueId = useAttachmentIssueId();
 
   const fetchBlob = async (upstreamPath: string) => {
-    const path = attachmentPathFromHref(upstreamPath);
+    const path = attachmentPathFromHref(upstreamPath, issueId);
     if (!path) throw new Error("Not an attachment path");
     return download(path);
   };

@@ -2331,7 +2331,7 @@ class PaperclipAdminClient:
         ``contentPath`` (``/api/attachments/{id}/content``) and sibling
         ``openPath`` / ``downloadPath`` (see ``withContentPath``). Those paths
         are upstream-local, so the BFF rewrites them to its own
-        ``/teams/attachments/{id}/content`` proxy on the frontend.
+        ``/teams/issues/{issueId}/attachments/{id}/content`` proxy on the frontend.
         """
         return await self._get(
             f"/api/issues/{issue_id}/attachments",

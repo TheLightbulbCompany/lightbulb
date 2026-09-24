@@ -8,19 +8,12 @@ import { remarkSoftBreaks } from "@/components/teams/shared/lib/remark-soft-brea
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { handleShellLinkClick, shellUrlFromPaperclipPath } from "@/lib/shellNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-
-/**
- * Agent comments carry attachment links in the upstream Paperclip shape
- * (`/api/attachments/{id}/content`, the `contentPath` the upload helper prints)
- * — a path that only resolves on the Paperclip BFF and needs a Clerk bearer,
- * so a bare anchor 404s against the frontend origin. Returns the BFF-relative
- * download path (`/attachments/{id}/content`) for such hrefs, else null.
- */
-export function attachmentPathFromHref(href?: string | null): string | null {
-  if (!href) return null;
-  const m = /^\/api(\/attachments\/[^/?#]+\/content)(?:[?#].*)?$/.exec(href);
-  return m ? m[1] : null;
-}
+import {
+  attachmentIdFromHref,
+  issueAttachmentContentPath,
+  useAttachmentIssueId,
+  useAttachmentObjectUrl,
+} from "@/components/teams/shared/lib/attachments";
 
 function textContent(node: React.ReactNode): string {
   if (typeof node === "string") return node;
@@ -28,16 +21,22 @@ function textContent(node: React.ReactNode): string {
   return "";
 }
 
-// Fetches the attachment bytes through the authenticated Teams download (a bare
-// <a href> can't carry the Clerk bearer) and hands them to the browser as a
-// named file — same flow as the artifact gallery's download affordance.
-function AttachmentLink({ path, name, children }: {
-  path: string;
+// Agent comments carry attachment links in the upstream shape
+// (`/api/attachments/{id}/content`, see shared/lib/attachments). With an owning
+// issue in context the bytes come through the issue-scoped Teams download (a
+// bare <a href> can't carry the Clerk bearer) and reach the browser as a named
+// file. Without one there is no fenced route to ask, so the link text renders
+// as plain text — never a fetch, never a dead anchor.
+function AttachmentLink({ attachmentId, name, children }: {
+  attachmentId: string;
   name: string;
   children?: React.ReactNode;
 }) {
+  const issueId = useAttachmentIssueId();
   const { download } = useTeamsApi();
   const [busy, setBusy] = useState(false);
+  if (!issueId) return <span data-attachment-inert>{children}</span>;
+  const path = issueAttachmentContentPath(issueId, attachmentId);
 
   async function handleClick() {
     setBusy(true);
@@ -71,14 +70,23 @@ function AttachmentLink({ path, name, children }: {
   );
 }
 
+// An agent-pasted attachment image: fetched as a blob through the issue-scoped
+// route; without an owning issue (or until/unless it loads) its alt text shows
+// as plain text instead of a broken image.
+function AttachmentImage({ src, alt }: { src: string; alt: string }) {
+  const url = useAttachmentObjectUrl(src);
+  // eslint-disable-next-line @next/next/no-img-element -- blob: URL
+  return url ? <img src={url} alt={alt} className="max-w-full rounded-sm" /> : <span data-attachment-inert>{alt}</span>;
+}
+
 // react-markdown does NOT render raw HTML (no rehype-raw), so the body is
 // inert apart from link hrefs, which we guard. Themed with the teams CSS vars.
 export const markdownComponents: Components = {
   a: ({ href, children, ...props }) => {
-    const attachmentPath = attachmentPathFromHref(href);
-    if (attachmentPath) {
+    const attachmentId = attachmentIdFromHref(href);
+    if (attachmentId) {
       return (
-        <AttachmentLink path={attachmentPath} name={textContent(children) || "attachment"}>
+        <AttachmentLink attachmentId={attachmentId} name={textContent(children) || "attachment"}>
           {children}
         </AttachmentLink>
       );
@@ -104,6 +112,13 @@ export const markdownComponents: Components = {
         {children}
       </a>
     );
+  },
+  img: ({ src, alt, title }) => {
+    if (typeof src === "string" && attachmentIdFromHref(src)) {
+      return <AttachmentImage src={src} alt={alt || "attachment"} />;
+    }
+    // eslint-disable-next-line @next/next/no-img-element -- markdown image, not a page asset
+    return <img src={src} alt={alt} title={title} />;
   },
   h1: ({ children }) => <h1 className="text-base font-semibold mt-3 mb-1">{children}</h1>,
   h2: ({ children }) => <h2 className="text-sm font-semibold mt-3 mb-1">{children}</h2>,

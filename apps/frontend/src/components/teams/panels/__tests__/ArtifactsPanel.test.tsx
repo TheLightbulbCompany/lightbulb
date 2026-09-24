@@ -221,7 +221,7 @@ describe("ArtifactsPanel — Recent view (default)", () => {
     expect(screen.getAllByTestId("artifact-card")).toHaveLength(2);
     expect(screen.queryByTestId("artifact-stack-card")).not.toBeInTheDocument();
     // The image card's thumbnail resolves off-render; flush it inside the test.
-    await waitFor(() => expect(download).toHaveBeenCalledWith("/attachments/att1/content"));
+    await waitFor(() => expect(download).toHaveBeenCalledWith("/issues/iss_1/attachments/att1/content"));
   });
 
   it("says when the feed is capped so an owner never mistakes 100 for everything", () => {
@@ -412,7 +412,7 @@ describe("ArtifactsPanel — view on click", () => {
     // The dialog image (not the card thumbnail) shows the same alt; assert the
     // authenticated content route was hit for it.
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
-    expect(download).toHaveBeenCalledWith("/attachments/att1/content");
+    expect(download).toHaveBeenCalledWith("/issues/iss_1/attachments/att1/content");
   });
 
   it("renders a file-backed work product's markdown bytes inline, below its summary", async () => {
@@ -434,7 +434,7 @@ describe("ArtifactsPanel — view on click", () => {
     fireEvent.click(cardFor("Pricing proposal"));
 
     expect(await screen.findByText("Three tiers")).toBeInTheDocument();
-    expect(download).toHaveBeenCalledWith("/attachments/att9/content");
+    expect(download).toHaveBeenCalledWith("/issues/iss_1/attachments/att9/content");
     // The file bytes render after an async blob read; the summary's md node
     // is on screen first, so wait for the one that carries the file.
     await waitFor(() =>
@@ -483,7 +483,7 @@ describe("ArtifactsPanel — view on click", () => {
     fireEvent.click(cardFor("Pricing proposal"));
 
     expect(await screen.findByText("Could not load this output.")).toBeInTheDocument();
-    expect(download).toHaveBeenCalledWith("/attachments/att9/content");
+    expect(download).toHaveBeenCalledWith("/issues/iss_1/attachments/att9/content");
     // The file bytes render after an async blob read; the summary's md node
     // is on screen first, so wait for the one that carries the file.
     await waitFor(() =>
@@ -516,7 +516,7 @@ describe("ArtifactsPanel — view on click", () => {
     fireEvent.click(cardFor("notes.txt"));
 
     expect(await screen.findByText("hello")).toBeInTheDocument();
-    expect(download).toHaveBeenCalledWith("/attachments/att2/content");
+    expect(download).toHaveBeenCalledWith("/issues/iss_1/attachments/att2/content");
   });
 });
 
@@ -562,7 +562,7 @@ describe("ArtifactsPanel — secondary icons stop propagation (do not open the v
       within(cardFor("Screenshot.png")).getByRole("button", { name: "Download Screenshot.png" }),
     );
 
-    await waitFor(() => expect(download).toHaveBeenCalledWith("/attachments/att1/content"));
+    await waitFor(() => expect(download).toHaveBeenCalledWith("/issues/iss_1/attachments/att1/content"));
     await waitFor(() => expect(anchorClick).toHaveBeenCalled());
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     anchorClick.mockRestore();
@@ -629,7 +629,7 @@ describe("ArtifactsPanel — delete", () => {
     expect(nullMutate).not.toHaveBeenCalled();
   });
 
-  it("routes a work-product delete to the work-products DELETE endpoint", async () => {
+  it("routes a work-product delete to the issue-scoped work-products DELETE endpoint", async () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [WORK_PRODUCT]);
     render(<ArtifactsPanel />);
@@ -638,7 +638,7 @@ describe("ArtifactsPanel — delete", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Deploy preview" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(del).toHaveBeenCalledWith("/work-products/wp1"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/issues/iss_1/work-products/wp1"));
     await waitFor(() =>
       expect(teamsMutate).toHaveBeenCalledWith("/teams/issues/iss_1/work-products"),
     );

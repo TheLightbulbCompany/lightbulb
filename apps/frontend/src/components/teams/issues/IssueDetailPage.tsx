@@ -16,6 +16,7 @@
 
 "use client";
 
+import { AttachmentIssueContext } from "@/components/teams/shared/lib/attachments";
 import { useState } from "react";
 import { useUser } from "@clerk/nextjs";
 import { Copy, EyeOff, MoreHorizontal, Trash2 } from "lucide-react";
@@ -242,6 +243,9 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   }
 
   return (
+    // Every agent-pasted attachment link / image on this page (description,
+    // comments, interactions, documents, outputs) fetches issue-scoped bytes.
+    <AttachmentIssueContext.Provider value={issue.id}>
     <div
       className="grid grid-cols-1 @3xl:grid-cols-[minmax(0,1fr)_320px] gap-6 p-4 sm:p-6"
       style={{ background: "var(--cream)", color: "var(--midnight)" }}
@@ -564,5 +568,6 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
         </p>
       </EditorialDialog>
     </div>
+    </AttachmentIssueContext.Provider>
   );
 }

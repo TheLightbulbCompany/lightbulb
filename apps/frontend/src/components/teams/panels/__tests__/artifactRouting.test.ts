@@ -59,7 +59,7 @@ describe("artifactRouting", () => {
       deletePathForArtifact(artifact({ id: "document:d1", href: "/ACME/issues/ISO-1#document-plan" })),
     ).toBe("/issues/iss_1/documents/plan");
     expect(deletePathForArtifact(artifact({ id: "work_product:wp1" }))).toBe(
-      "/work-products/wp1",
+      "/issues/iss_1/work-products/wp1",
     );
     expect(deletePathForArtifact(artifact({ id: "attachment:att1" }))).toBe(
       "/issues/iss_1/attachments/att1",
@@ -93,7 +93,7 @@ describe("artifactRouting", () => {
   it("resolves the BFF content route for downloadable, attachment-backed artifacts", () => {
     // A direct attachment carries its id in its own typed id.
     expect(artifactContentPath(artifact({ id: "attachment:att1" }))).toBe(
-      "/attachments/att1/content",
+      "/issues/iss_1/attachments/att1/content",
     );
     // A work-product's attachment id lives only in its upstream open/download
     // path; strip the `/api` prefix and the `?download=1` query.
@@ -104,17 +104,27 @@ describe("artifactRouting", () => {
           downloadPath: "/api/attachments/att9/content?download=1",
         }),
       ),
-    ).toBe("/attachments/att9/content");
+    ).toBe("/issues/iss_1/attachments/att9/content");
     expect(
       artifactContentPath(
         artifact({ id: "work_product:wp1", openPath: "/api/attachments/att9/content" }),
       ),
-    ).toBe("/attachments/att9/content");
+    ).toBe("/issues/iss_1/attachments/att9/content");
     // Documents (and anything without an attachment path) have no content route.
     expect(
       artifactContentPath(artifact({ id: "document:d1", href: "/x#document-plan" })),
     ).toBeNull();
     expect(artifactContentPath(artifact({ id: "work_product:wp1" }))).toBeNull();
+  });
+
+  it("has no content or work-product delete route without an owning issue (the BFF is issue-scoped)", () => {
+    expect(artifactContentPath(artifact({ id: "attachment:att1", issue: undefined }))).toBeNull();
+    expect(
+      artifactContentPath(
+        artifact({ id: "work_product:wp1", issue: undefined, openPath: "/api/attachments/att9/content" }),
+      ),
+    ).toBeNull();
+    expect(deletePathForArtifact(artifact({ id: "work_product:wp1", issue: undefined }))).toBeNull();
   });
 
   it("sorts artifacts newest/oldest by updatedAt without mutating the input", () => {

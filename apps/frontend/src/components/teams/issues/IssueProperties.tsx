@@ -21,6 +21,7 @@ import { EditorialButton } from "@/components/teams/shell";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import { assignableMembers } from "@/components/teams/shared/lib/assignees";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
@@ -672,7 +673,7 @@ export function IssueProperties({
           agents={agents}
           selectedAgentId={issue.assigneeAgentId ?? null}
           onChange={onAssigneeChange}
-          members={members}
+          members={assignableMembers(members)}
           selectedUserId={issue.assigneeUserId ?? null}
           onUserChange={onAssigneeUserChange}
         />

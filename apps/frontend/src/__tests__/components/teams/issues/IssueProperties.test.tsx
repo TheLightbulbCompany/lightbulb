@@ -254,10 +254,14 @@ describe("IssueProperties", () => {
     expect(onParentChange).toHaveBeenCalledWith(null);
   });
 
-  test("assigning a human member calls onAssigneeUserChange with the user id", async () => {
+  test("assigning a human member sends their Paperclip user id, not the Clerk id", async () => {
     const user = userEvent.setup();
     const onAssigneeUserChange = vi.fn();
-    const members = [{ userId: "user_7", name: "Ada Lovelace", email: "ada@x.co" }];
+    const members = [
+      { userId: "user_7", name: "Ada Lovelace", email: "ada@x.co", paperclipUserId: "pcu_7" },
+      // No Paperclip identity yet: Paperclip would refuse them, so they are not offered.
+      { userId: "user_8", name: "Leo Newcomer", email: "leo@x.co", paperclipUserId: null },
+    ];
     render(
       <IssueProperties
         issue={baseIssue}
@@ -270,7 +274,19 @@ describe("IssueProperties", () => {
     // The popover lists agents + a People section; pick the human member.
     const option = await screen.findByText("Ada Lovelace");
     await user.click(option);
-    expect(onAssigneeUserChange).toHaveBeenCalledWith("user_7");
+    expect(onAssigneeUserChange).toHaveBeenCalledWith("pcu_7");
+    expect(screen.queryByText("Leo Newcomer")).not.toBeInTheDocument();
+  });
+
+  test("a human assignee (Paperclip id) reads by name", () => {
+    render(
+      <IssueProperties
+        issue={{ ...baseIssue, assigneeUserId: "pcu_7" }}
+        members={[{ userId: "user_7", name: "Ada Lovelace", paperclipUserId: "pcu_7" }]}
+        {...requiredHandlers()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Ada Lovelace" })).toBeInTheDocument();
   });
 
   // ── Monitor row ──────────────────────────────────────────────────────────

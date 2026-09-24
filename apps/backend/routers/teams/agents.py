@@ -440,19 +440,21 @@ async def list_members(ctx: TeamsContext = Depends(_ctx)):
 
     Returns the ``{members: [...]}`` envelope shape every Teams panel reads.
     Each row matches the frontend ``CompanyMember`` type
-    (``userId``/``name``/``email``/``imageUrl``).
+    (``userId``/``name``/``email``/``imageUrl``/``paperclipUserId``).
+    ``paperclipUserId`` is the id Paperclip's ``assigneeUserId`` holds, null for
+    a member with no Paperclip identity yet (who therefore cannot own a task).
     """
     if ctx.org_id is None:
-        member = await _resolve_member_identity(ctx.user_id)
-        return {"members": [member] if member else []}
-    from core.services.clerk_admin import list_organization_members
+        members = [m for m in [await _resolve_member_identity(ctx.user_id)] if m]
+    else:
+        from core.services.clerk_admin import list_organization_members
 
-    return {
-        "members": [
+        members = [
             _member_row(m["user_id"], m["first_name"], m["last_name"], m["email"], m["image_url"])
             for m in await list_organization_members(ctx.org_id)
         ]
-    }
+    clerk_to_principal = {clerk: pc for pc, clerk in (await build_principal_to_clerk(ctx)).items()}
+    return {"members": [{**m, "paperclipUserId": clerk_to_principal.get(m["userId"])} for m in members]}
 
 
 def _member_row(user_id: str, first: str | None, last: str | None, email: str | None, image_url) -> dict:

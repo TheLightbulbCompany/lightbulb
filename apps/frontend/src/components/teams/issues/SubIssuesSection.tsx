@@ -8,16 +8,18 @@ import { EditorialButton } from "@/components/teams/shell";
 import { IssueRow } from "@/components/teams/inbox/IssueRow";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
 import { sortSubIssues, buildSubIssueProgressSummary } from "@/components/teams/shared/lib/subIssues";
-import type { CompanyAgent, Issue, IssueProject } from "@/components/teams/shared/types";
+import type { CompanyAgent, CompanyMember, Issue, IssueProject } from "@/components/teams/shared/types";
 
 export function SubIssuesSection({
   issueId,
   agents,
+  members,
   projects,
   parentLabel,
 }: {
   issueId: string;
   agents: CompanyAgent[];
+  members?: CompanyMember[];
   projects: IssueProject[];
   parentLabel?: string;
 }) {
@@ -70,6 +72,7 @@ export function SubIssuesSection({
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         agents={agents}
+        members={members}
         projects={projects}
         parentId={issueId}
         parentLabel={parentLabel}

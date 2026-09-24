@@ -42,6 +42,22 @@ def client(teams_ctx):
         app.dependency_overrides.pop(agents_mod._ctx, None)
 
 
+@pytest.fixture(autouse=True)
+def workspace_repo(monkeypatch):
+    """Workspace o1 holds clerk_a (Paperclip identity pcu_a) and clerk_leo
+    (joined in Clerk, no Paperclip identity yet)."""
+    from types import SimpleNamespace
+
+    from routers.teams import agents as agents_mod
+
+    identities = {"clerk_a": SimpleNamespace(paperclip_user_id="pcu_a")}
+    repo = MagicMock()
+    repo.get_workspace = AsyncMock(return_value=SimpleNamespace(member_user_ids={"clerk_a", "clerk_leo"}))
+    repo.get_identity = AsyncMock(side_effect=lambda uid: identities.get(uid))
+    monkeypatch.setattr(agents_mod, "_repo", lambda: repo)
+    return repo
+
+
 def _org_member(user_id: str, first: str, last: str, email: str) -> dict:
     return {
         "user_id": user_id,
@@ -75,8 +91,22 @@ def test_list_members_is_the_clerk_org_roster(client, monkeypatch):
     r = client.get("/api/v1/teams/members", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
     assert r.json()["members"] == [
-        {"userId": "clerk_a", "name": "Ada Lovelace", "email": "ada@x.co", "imageUrl": "https://img/clerk_a"},
-        {"userId": "clerk_leo", "name": "leo@x.co", "email": "leo@x.co", "imageUrl": "https://img/clerk_leo"},
+        # paperclipUserId is what a task's assigneeUserId holds; a member with
+        # no Paperclip identity yet carries null and cannot own a task.
+        {
+            "userId": "clerk_a",
+            "name": "Ada Lovelace",
+            "email": "ada@x.co",
+            "imageUrl": "https://img/clerk_a",
+            "paperclipUserId": "pcu_a",
+        },
+        {
+            "userId": "clerk_leo",
+            "name": "leo@x.co",
+            "email": "leo@x.co",
+            "imageUrl": "https://img/clerk_leo",
+            "paperclipUserId": None,
+        },
     ]
     org_members.assert_awaited_once_with("o1")
     admin.list_members.assert_not_called()
@@ -136,6 +166,7 @@ def test_list_members_personal_context_is_just_the_caller(monkeypatch):
                 "name": "Grace Hopper",
                 "email": "grace@x.co",
                 "imageUrl": "https://img/clerk_solo",
+                "paperclipUserId": "pcu_solo",
             }
         ]
         org_members.assert_not_called()

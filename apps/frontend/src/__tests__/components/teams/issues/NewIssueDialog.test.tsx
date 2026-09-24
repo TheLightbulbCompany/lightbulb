@@ -141,7 +141,7 @@ describe("NewIssueDialog", () => {
   test("agent assignee select renders only when agents provided", () => {
     const agents: CompanyAgent[] = [{ id: "ag_1", name: "Main Agent" }];
     render(<NewIssueDialog {...baseProps} agents={agents} />);
-    expect(screen.getByLabelText(/assign to agent/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/assignee/i)).toBeInTheDocument();
     expect(screen.getByText("Main Agent")).toBeInTheDocument();
   });
 
@@ -155,7 +155,7 @@ describe("NewIssueDialog", () => {
     fireEvent.change(screen.getByLabelText(/project/i), {
       target: { value: "p1" },
     });
-    fireEvent.change(screen.getByLabelText(/assign to agent/i), {
+    fireEvent.change(screen.getByLabelText(/assignee/i), {
       target: { value: "ag_1" },
     });
     fireEvent.click(screen.getByRole("button", { name: /create task/i }));
@@ -189,7 +189,7 @@ describe("NewIssueDialog", () => {
     expect(screen.getByPlaceholderText("Optional details...")).toHaveValue(
       "You are my CEO.",
     );
-    expect(screen.getByLabelText(/assign to agent/i)).toHaveValue("friday");
+    expect(screen.getByLabelText(/assignee/i)).toHaveValue("friday");
   });
 
   test("stays blank when no default props are given", () => {
@@ -211,7 +211,7 @@ describe("NewIssueDialog", () => {
     const { rerender } = render(
       <NewIssueDialog {...baseProps} agents={[friday]} />,
     );
-    expect(screen.getByLabelText(/assign to agent/i)).toHaveValue("");
+    expect(screen.getByLabelText(/assignee/i)).toHaveValue("");
 
     // User starts typing before the CEO id resolves.
     await user.type(screen.getByPlaceholderText("Task title"), "My first task");
@@ -225,10 +225,34 @@ describe("NewIssueDialog", () => {
         defaultAssigneeAgentId="friday"
       />,
     );
-    expect(screen.getByLabelText(/assign to agent/i)).toHaveValue("friday");
+    expect(screen.getByLabelText(/assignee/i)).toHaveValue("friday");
     expect(screen.getByPlaceholderText("Task title")).toHaveValue(
       "My first task",
     );
+  });
+
+  test("offers workspace people and assigns a human without naming an agent", async () => {
+    const user = userEvent.setup();
+    render(
+      <NewIssueDialog
+        {...baseProps}
+        agents={[{ id: "ag_1", name: "Main Agent" }]}
+        members={[
+          { userId: "user_7", name: "Ada Lovelace", paperclipUserId: "pcu_7" },
+          { userId: "user_8", name: "Leo Newcomer", paperclipUserId: null },
+        ]}
+        defaultAssigneeAgentId="ag_1"
+      />,
+    );
+    // Only members with a Paperclip identity can own a task.
+    expect(screen.queryByRole("option", { name: "Leo Newcomer" })).not.toBeInTheDocument();
+    await user.type(screen.getByPlaceholderText("Task title"), "Call the bank");
+    await user.selectOptions(screen.getByLabelText(/assignee/i), "Ada Lovelace");
+    await user.click(screen.getByRole("button", { name: /create task/i }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    const payload = mockCreate.mock.calls[0][0];
+    expect(payload.assigneeUserId).toBe("pcu_7");
+    expect(payload.assigneeAgentId).toBeUndefined();
   });
 
   test("seeds the Status select from defaultStatus", () => {

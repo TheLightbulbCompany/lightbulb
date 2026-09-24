@@ -96,6 +96,9 @@ class CreateIssueBody(_Strict):
     # ``project_id``, so it goes out as ``goalId``.
     goal_id: Optional[str] = None
     assignee_agent_id: Optional[str] = None
+    # A human owner: a Paperclip user id (``CompanyMember.paperclipUserId``).
+    # Upstream refuses a non-member of the company and wakes no agent for it.
+    assignee_user_id: Optional[str] = None
     priority: Optional[str] = Field(default=None, pattern=r"^(critical|high|medium|low)$")
     # Compose-time status preset + execution work mode — both forward to
     # upstream's createIssueSchema, so the composer can set the starting state

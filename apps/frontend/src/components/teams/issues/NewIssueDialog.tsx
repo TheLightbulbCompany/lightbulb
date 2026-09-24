@@ -15,8 +15,10 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useIssueMutations } from "./hooks/useIssueMutations";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
+import { assignableMembers, parseAssigneeValue } from "@/components/teams/shared/lib/assignees";
 import type {
   CompanyAgent,
+  CompanyMember,
   Goal,
   IssueProject,
   IssuePriority,
@@ -54,6 +56,9 @@ export interface NewIssueDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   agents?: CompanyAgent[];
+  /** Workspace humans (`/members`). Those with a Paperclip identity are offered
+   * as assignees; a human assignee wakes no agent. */
+  members?: CompanyMember[];
   projects?: IssueProject[];
   /** Company goals. Like `projects`, the picker renders only when non-empty. */
   goals?: Goal[];
@@ -86,6 +91,7 @@ export function NewIssueDialog({
   open,
   onOpenChange,
   agents = [],
+  members = [],
   projects = [],
   goals = [],
   onCreated,
@@ -107,7 +113,9 @@ export function NewIssueDialog({
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
   const [projectId, setProjectId] = useState<string>(defaultProjectId ?? "");
   const [goalId, setGoalId] = useState<string>("");
-  const [assigneeAgentId, setAssigneeAgentId] = useState<string>(
+  // A raw agent id, or `user:<paperclipUserId>` for a human (upstream's
+  // encoding — parseAssigneeValue reads both).
+  const [assignee, setAssignee] = useState<string>(
     defaultAssigneeAgentId ?? "",
   );
   const [submitting, setSubmitting] = useState(false);
@@ -122,10 +130,11 @@ export function NewIssueDialog({
   useEffect(() => {
     const prev = prevDefaultAssignee.current;
     prevDefaultAssignee.current = defaultAssigneeAgentId;
-    if (!prev && defaultAssigneeAgentId && !assigneeAgentId) {
-      setAssigneeAgentId(defaultAssigneeAgentId);
+    if (!prev && defaultAssigneeAgentId && !assignee) {
+      setAssignee(defaultAssigneeAgentId);
     }
-  }, [defaultAssigneeAgentId, assigneeAgentId]);
+  }, [defaultAssigneeAgentId, assignee]);
+  const people = assignableMembers(members);
 
   const reset = () => {
     setTitle(defaultTitle ?? "");
@@ -135,7 +144,7 @@ export function NewIssueDialog({
     setWorkMode("standard");
     setProjectId(defaultProjectId ?? "");
     setGoalId("");
-    setAssigneeAgentId(defaultAssigneeAgentId ?? "");
+    setAssignee(defaultAssigneeAgentId ?? "");
     setError(null);
   };
 
@@ -150,6 +159,7 @@ export function NewIssueDialog({
     setSubmitting(true);
     setError(null);
     try {
+      const { assigneeAgentId, assigneeUserId } = parseAssigneeValue(assignee);
       const payload = {
         title: trimmedTitle,
         description: description.trim() || undefined,
@@ -159,6 +169,7 @@ export function NewIssueDialog({
         projectId: projectId || undefined,
         goalId: goalId || undefined,
         assigneeAgentId: assigneeAgentId || undefined,
+        assigneeUserId: assigneeUserId || undefined,
       };
       const issue = parentId ? await createChild(parentId, payload) : await create(payload);
       emitStep("task");
@@ -338,29 +349,42 @@ export function NewIssueDialog({
             Standard runs autonomously; Ask pauses for input; Planning plans first.
           </p>
         </div>
-        {agents.length > 0 && (
+        {(agents.length > 0 || people.length > 0) && (
           <div>
             <label
               htmlFor="new-issue-assignee"
               className="section-label"
               style={{ ...labelStyle, marginTop: 0 }}
             >
-              <b>Assign to agent</b>
+              <b>Assignee</b>
             </label>
             <select
               id="new-issue-assignee"
-              value={assigneeAgentId}
-              onChange={(e) => setAssigneeAgentId(e.target.value)}
+              value={assignee}
+              onChange={(e) => setAssignee(e.target.value)}
               disabled={submitting}
               className="w-full rounded-sm px-3 py-2 text-sm"
               style={selectStyle}
             >
               <option value="">Unassigned</option>
-              {agents.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
+              {agents.length > 0 && (
+                <optgroup label="Agents">
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {people.length > 0 && (
+                <optgroup label="People">
+                  {people.map((m) => (
+                    <option key={m.userId} value={`user:${m.userId}`}>
+                      {m.name || m.email || "Workspace member"}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </div>
         )}

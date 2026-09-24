@@ -9,7 +9,7 @@ import {
   redacted,
   shapes,
 } from "@expo/ui/swift-ui/modifiers";
-import { useFocusEffect } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { Alert, Linking } from "react-native";
 import { deepLinkToSubscriptions } from "expo-iap";
@@ -519,6 +519,13 @@ export default function Settings() {
             {organization != null ? <Text modifiers={CAPTION}>{organization.name}</Text> : null}
           </VStack>
         </HStack>
+        {(user?.organizationMemberships.length ?? 0) > 1 ? (
+          <NavigationRow
+            title="Switch workspace"
+            icon="arrow.left.arrow.right"
+            onPress={() => router.push("/workspaces")}
+          />
+        ) : null}
       </Section>
 
       {billingSections}

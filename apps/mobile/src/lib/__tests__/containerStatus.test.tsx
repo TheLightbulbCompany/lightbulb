@@ -383,6 +383,17 @@ describe("useContainerStatus blocked / needsSignup / teamPending / unreachable",
     expect(status.message).toBe("Network request failed");
   });
 
+  // F4: a session with no active org gets 409 `workspace_required`. That used to
+  // read as `unreachable`, which never blocks, so Home dead-ended on Retry.
+  it("maps a 409 (workspace_required) to the blocking 'workspaceRequired' kind", async () => {
+    mockUseOnboardingStatus.mockReturnValue({
+      ...networkErrorResult("Unexpected /container/status status: 409"),
+      networkError: Object.assign(new Error("Unexpected /container/status status: 409"), { status: 409 }),
+    });
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("workspaceRequired"));
+  });
+
   it("maps the initial (neither classified nor errored) state to kind 'loading'", async () => {
     mockUseOnboardingStatus.mockReturnValue(loadingResult());
     const { result } = await renderHook(() => useContainerStatus());

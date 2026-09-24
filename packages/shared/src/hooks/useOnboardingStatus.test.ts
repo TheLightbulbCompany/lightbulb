@@ -215,6 +215,22 @@ describe("useOnboardingStatus", () => {
     expect(result.current.classified).toBeNull();
   });
 
+  // The 409 `workspace_required` (no org claim) is not a status this hook classifies, but
+  // mobile routes it to its workspace picker — so the error carries the status, and the
+  // message stays exactly what web already shows.
+  it("carries the HTTP status on an unrecognized-status error", async () => {
+    global.fetch = vi.fn().mockImplementation(
+      jsonResponder(409, { detail: { code: "workspace_required", message: "Choose" } }),
+    );
+    const { result } = renderHook(
+      () => useOnboardingStatus({ api: makeApi(), enabled: true }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.networkError).toBeDefined());
+    expect((result.current.networkError as Error & { status?: number }).status).toBe(409);
+    expect(result.current.networkError?.message).toBe("Unexpected /container/status status: 409");
+  });
+
   it("does not fetch while disabled", async () => {
     const fetchSpy = vi.fn();
     global.fetch = fetchSpy;

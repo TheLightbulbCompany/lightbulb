@@ -50,6 +50,10 @@
  *   teamPending — 202 (org member waiting on admin's workspace)
  *   blocked     — 402 (provision gate fired; carries code + action.href + admin_only)
  *   needsSignup — 404 (admin never started signup)
+ *   workspaceRequired — 409 `workspace_required`: the session carries no org
+ *                 claim (the only 409 `/container/status` raises). BLOCKS, and
+ *                 routes to the workspace chooser — as `unreachable` it fell
+ *                 through to Home, which dead-ended on Retry (F4).
  *   unreachable — network / auth / unexpected error, OR an unrecognized
  *                 status code the shared classifier couldn't place
  *
@@ -129,6 +133,7 @@ export type ContainerStatus =
       ownerRole?: "admin" | "member";
     }
   | { kind: "needsSignup" }
+  | { kind: "workspaceRequired" }
   | { kind: "unreachable"; message: string };
 
 /**
@@ -293,7 +298,9 @@ export function useContainerStatus() {
   // the user. Rendering policy belongs to each binding; web can retain the
   // sticky last-good read while mobile surfaces current connectivity loss.
   const status: ContainerStatus = networkError
-    ? { kind: "unreachable", message: networkError.message }
+    ? (networkError as Error & { status?: number }).status === 409
+      ? { kind: "workspaceRequired" }
+      : { kind: "unreachable", message: networkError.message }
     : classified
       ? fromClassified(classified, "Request failed")
       : { kind: "loading" };

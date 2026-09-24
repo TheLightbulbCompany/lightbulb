@@ -43,6 +43,11 @@ jest.mock("../ByoKeyScreen", () => {
   };
 });
 
+jest.mock("../../workspace/WorkspaceGate", () => {
+  const { Text: RNText } = require("react-native");
+  return { WorkspaceChooser: () => <RNText>MOCK_WORKSPACE_CHOOSER</RNText> };
+});
+
 import { ProvisionGate } from "../ProvisionGate";
 // Real (unmocked) module — only `react`-dependent, so it's safe to load for
 // real here and lets this file prove ProvisionGate actually wires its
@@ -250,6 +255,24 @@ describe("ProvisionGate provider sign-in routing", () => {
     // Nothing for the member to do on the web — their admin's provision is
     // already running and the poll clears this on its own.
     expect(screen.queryByText(/on isol8\.co/)).toBeNull();
+  });
+
+  // F4: the server's 409 `workspace_required` is a first-class state that
+  // routes to the workspace chooser, not a non-blocking "unreachable".
+  it("routes workspaceRequired to the workspace chooser and hides the app", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: { kind: "workspaceRequired" },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    expect(screen.getByText("MOCK_WORKSPACE_CHOOSER")).toBeTruthy();
+    expect(screen.queryByText("APP")).toBeNull();
   });
 
   it("hands needsSignup users to workspace-first web onboarding", async () => {

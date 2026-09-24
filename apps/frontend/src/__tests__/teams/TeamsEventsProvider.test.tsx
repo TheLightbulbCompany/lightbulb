@@ -61,7 +61,7 @@ const FIXTURE_KEYS = [
   "/teams/issues/iss_1",
   "/teams/issues/iss_1/comments",
   "/teams/issues/iss_1/interactions",
-  "/teams/issues/iss_1/runs", // IssueRunsSection — must refresh on run status events
+  "/teams/issues/iss_1/runs", // IssueRunLedger — must refresh on run status events
 
   "/teams/issues/ADM-481", // identifier-keyed variant (details.identifier)
   "/teams/issues/iss_other", // a DIFFERENT issue: must NOT be invalidated

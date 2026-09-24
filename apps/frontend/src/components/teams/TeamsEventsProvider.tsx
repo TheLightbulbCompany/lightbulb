@@ -229,7 +229,7 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     [mutate],
   );
 
-  // The per-issue runs lists (`/teams/issues/{id}/runs`, IssueRunsSection).
+  // The per-issue runs lists (`/teams/issues/{id}/runs`, IssueRunLedger).
   // These sit one segment DEEPER than the `?`-bounded prefix matcher reaches,
   // and a run that dies inside the gateway (e.g. a compaction timeout surfaced
   // as openclaw_gateway_wait_error) writes no issue activity — so neither the

@@ -8,7 +8,7 @@
 //   - @paperclipai/shared types      -> components/teams/shared/types
 //   - @/lib/issue-monitor            -> ./lib/issue-monitor
 //   - formatRetryReason (lib/runRetryState.ts) and formatDateTime (lib/utils.ts)
-//                                    -> inlined below (this card is their only user)
+//                                    -> ./lib/runRetryState (shared with IssueRunLedger)
 //   - hooks/useRetryNowMutation (react-query + ToastContext)
 //                                    -> useRetryNowMutation below: the same outcome
 //                                       handling over useTeamsApi.post and lib/notify,
@@ -37,39 +37,7 @@ import type {
   IssueScheduledRetry,
 } from "@/components/teams/shared/types";
 import { formatMonitorOffset } from "./lib/issue-monitor";
-
-// --- ui/src/lib/runRetryState.ts (formatRetryReason) ------------------------
-
-const RETRY_REASON_LABELS: Record<string, string> = {
-  transient_failure: "Transient failure",
-  missing_issue_comment: "Missing task comment",
-  process_lost: "Process lost",
-  assignment_recovery: "Assignment recovery",
-  issue_continuation_needed: "Continuation needed",
-  max_turns_continuation: "Max-turn continuation",
-};
-
-function readNonEmptyString(value: unknown) {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function formatRetryReason(reason: string | null | undefined) {
-  const normalized = readNonEmptyString(reason);
-  if (!normalized) return null;
-  return RETRY_REASON_LABELS[normalized] ?? normalized.replace(/_/g, " ");
-}
-
-// --- ui/src/lib/utils.ts (formatDateTime) -----------------------------------
-
-function formatDateTime(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
+import { formatDateTime, formatRetryReason } from "./lib/runRetryState";
 
 // --- ui/src/hooks/useRetryNowMutation.ts ------------------------------------
 

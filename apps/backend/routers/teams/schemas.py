@@ -65,6 +65,12 @@ class WakeAgentBody(_Strict):
     # run-detail Retry/Resume actions use it to target the original issue
     # (``{issueId, taskId, taskKey}``) or run (``{resumeFromRunId}``).
     source: Optional[str] = Field(default=None, pattern=r"^(timer|assignment|on_demand|automation)$")
+    # The ported ExecutionBlockerNotice's exact failed-run retry sends
+    # ``triggerDetail: "manual"`` + ``failedRunId`` (upstream ``retryFailedRun``).
+    # Upstream re-derives the run's issue/agent/company and refuses a mismatch;
+    # the id pattern only keeps junk out. ``debug`` (providerTrace) stays unexposed.
+    trigger_detail: Optional[str] = Field(default=None, pattern=r"^(manual|ping|callback|system)$")
+    failed_run_id: Optional[str] = Field(default=None, max_length=200, pattern=r"^[A-Za-z0-9_-]+$")
     reason: Optional[str] = Field(default=None, max_length=2000)
     payload: Optional[dict] = None
 

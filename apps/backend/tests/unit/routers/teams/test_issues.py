@@ -830,6 +830,7 @@ async def test_patch_issue_forwards_camelcase_assignee_to_paperclip():
     fake_ctx = MagicMock()
     fake_ctx.session_cookie = "sess=abc"
 
+    fake_admin.get_issue = AsyncMock(return_value={"id": "iss_1", "status": "todo"})
     body = PatchIssueBody(assignee_agent_id="agt_friday", project_id="proj_x")
 
     with patch("routers.teams.issues._agents", fake_agents_module):
@@ -1042,3 +1043,43 @@ def test_delete_work_product_rejects_bad_uuid(client, monkeypatch):
     )
     assert r.status_code == 422
     admin.delete_work_product.assert_not_awaited()
+
+
+def _patch_fixture(current_status):
+    fake_admin = MagicMock()
+    fake_admin.patch_issue = AsyncMock(return_value={"id": "iss_1"})
+    fake_admin.get_issue = AsyncMock(return_value={"id": "iss_1", "status": current_status})
+    fake_agents_module = MagicMock()
+    fake_agents_module._admin.return_value = fake_admin
+    fake_ctx = MagicMock()
+    fake_ctx.session_cookie = "sess=abc"
+    return fake_admin, fake_agents_module, fake_ctx
+
+
+@pytest.mark.asyncio
+async def test_reassigning_a_blocked_issue_unblocks_it_in_the_same_patch():
+    """Audit 2026-09-24 F6: a bare assignee change on a blocked issue wakes the new agent,
+    whose run is cancelled as blocked, and the issue snaps back to the recovery owner."""
+    fake_admin, agents, ctx = _patch_fixture("blocked")
+    with patch("routers.teams.issues._agents", agents):
+        await patch_issue(issue_id="iss_1", body=PatchIssueBody(assignee_agent_id="agent_forge"), ctx=ctx)
+    assert fake_admin.patch_issue.call_args.kwargs["body"] == {"assigneeAgentId": "agent_forge", "status": "todo"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["todo", "in_progress", "in_review"])
+async def test_reassigning_an_unblocked_issue_leaves_its_status_alone(status):
+    fake_admin, agents, ctx = _patch_fixture(status)
+    with patch("routers.teams.issues._agents", agents):
+        await patch_issue(issue_id="iss_1", body=PatchIssueBody(assignee_agent_id="agent_forge"), ctx=ctx)
+    assert fake_admin.patch_issue.call_args.kwargs["body"] == {"assigneeAgentId": "agent_forge"}
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_status_or_an_unassign_never_reads_the_issue():
+    fake_admin, agents, ctx = _patch_fixture("blocked")
+    with patch("routers.teams.issues._agents", agents):
+        await patch_issue(issue_id="iss_1", body=PatchIssueBody(assignee_agent_id="a", status="blocked"), ctx=ctx)
+        await patch_issue(issue_id="iss_1", body=PatchIssueBody(assignee_agent_id=None), ctx=ctx)
+    fake_admin.get_issue.assert_not_awaited()
+    assert fake_admin.patch_issue.call_args_list[0].kwargs["body"] == {"assigneeAgentId": "a", "status": "blocked"}

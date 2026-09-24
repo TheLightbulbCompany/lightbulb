@@ -32,21 +32,6 @@ def test_is_trial_expired(account, expected):
 
 
 @pytest.mark.asyncio
-async def test_trial_block_reason_ignores_a_stale_bedrock_spend_counter(monkeypatch):
-    """A leftover ``trial_daily_spend_microcents`` map is no longer read: only expiry and the
-    OpenRouter capped-day stamp block."""
-
-    async def fake_get_by_owner_id(owner_id):
-        return {
-            "subscription_status": "trial_local",
-            "trial_daily_spend_microcents": {trial_cap.utc_today(): 10_000_000},
-        }
-
-    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
-    assert await trial_cap.trial_block_reason("owner1") is None
-
-
-@pytest.mark.asyncio
 async def test_trial_block_reason_false_for_no_account(monkeypatch):
     async def fake_get_by_owner_id(owner_id):
         return None

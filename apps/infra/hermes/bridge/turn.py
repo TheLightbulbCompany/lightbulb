@@ -9,7 +9,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -1232,10 +1234,9 @@ def _native_image_part(path: str) -> dict:
     return {"type": "image_url", "image_url": {"url": data_url}}
 
 
-def _message_image_paths(body: dict, media: list[str]) -> dict[str, list[str]]:
+def _message_image_paths(body: dict, media: list[str], base: Path) -> dict[str, list[str]]:
     """Associate up to 20 images with their messages, prioritizing current then newest history."""
     available = set(media)
-    room_id = (body.get("room") or {}).get("id")
     by_message: dict[str, list[str]] = {}
     remaining = MAX_NATIVE_IMAGES
     messages = [body.get("message") or {}, *reversed(body.get("recentHistory", []))]
@@ -1249,7 +1250,7 @@ def _message_image_paths(body: dict, media: list[str]) -> dict[str, list[str]]:
         for attachment in message.get("attachments") or []:
             if attachment.get("contentType") not in IMAGE_ATTACHMENT_TYPES:
                 continue
-            path = str(sync.attachment_path(room_id, attachment))
+            path = str(sync.attachment_path(base, attachment))
             if path in available:
                 paths.append(path)
         paths = paths[:remaining]
@@ -1259,7 +1260,7 @@ def _message_image_paths(body: dict, media: list[str]) -> dict[str, list[str]]:
     return by_message
 
 
-def _current_message_media(body: dict, media: list[str]) -> list[str]:
+def _current_message_media(body: dict, media: list[str], base: Path) -> list[str]:
     """Only the CURRENT message's own materialized attachment paths (images and PDFs).
 
     Bug: `media` used to be the FULL `sync.materialize_attachments` list, history included,
@@ -1271,11 +1272,10 @@ def _current_message_media(body: dict, media: list[str]) -> list[str]:
     rode along natively in `user_message`). Restricting this to the current message's own
     attachments removes that stale choice entirely."""
     available = set(media)
-    room_id = (body.get("room") or {}).get("id")
     message = body.get("message") or {}
     out = []
     for attachment in message.get("attachments") or []:
-        path = str(sync.attachment_path(room_id, attachment))
+        path = str(sync.attachment_path(base, attachment))
         if path in available:
             out.append(path)
     return out
@@ -1695,11 +1695,24 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
 
 
 def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str, dict]:
-    """The one seam every other test replaces instead of constructing a real AIAgent."""
-    media = sync.materialize_attachments(body)
-    images = _message_image_paths(body, media)
+    """The one seam every other test replaces instead of constructing a real AIAgent.
+
+    The turn's attachments live in a folder of its own that is gone when the turn is (see
+    sync.turn_media_root); nothing a turn fetched is left for a later turn in another room."""
+    root = sync.turn_media_root()
+    root.mkdir(parents=True, exist_ok=True)
+    base = Path(tempfile.mkdtemp(prefix="turn-", dir=root))
+    try:
+        return _run_turn_in(agent_id, body, frames, base)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, str | None, str, dict]:
+    media = sync.materialize_attachments(body, base)
+    images = _message_image_paths(body, media, base)
     # A follow-up's trigger message already had its turn: its attachments are not re-sent.
-    current_media = [] if body.get("followUp") else _current_message_media(body, media)
+    current_media = [] if body.get("followUp") else _current_message_media(body, media, base)
     if body.get("followUp"):
         images.pop((body.get("message") or {}).get("messageId"), None)
     session_key = _resolve_session_key(agent_id, body)

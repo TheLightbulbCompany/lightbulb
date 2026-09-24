@@ -77,12 +77,47 @@ def test_materialize_fetches_only_messages_with_attachments(home, monkeypatch):
             {"messageId": "m2", "attachments": [{"id": "a2", "fileName": "doc.pdf", "contentType": "application/pdf", "size": 5}]},
         ],
     }
-    paths = sync.materialize_attachments(body)
+    base = home / "turn"
+    paths = sync.materialize_attachments(body, base)
     assert [Path(p).name for p in paths] == ["a1.png", "a2.pdf"]
+    assert all(Path(p).parent == base for p in paths)
     # OWNER is "org_test" in this test env (conftest.py), not the brief's literal example.
     assert fetched == ["attachments/org_test/room-1/a1", "attachments/org_test/room-1/a2"]
     assert Path(paths[0]).read_bytes() == b"bytes"
-    assert sync.materialize_attachments(body) == paths and len(fetched) == 2  # cached on disk, not refetched
+    assert sync.materialize_attachments(body, base) == paths and len(fetched) == 2  # not refetched within a turn
+
+
+def test_a_turns_attachments_are_gone_when_the_turn_ends(home, monkeypatch):
+    # A shared per-room cache left a DM's files readable from any later turn in any room.
+    seen = _capture_agent_call(monkeypatch)
+    monkeypatch.setattr(sync, "_get_backend_bytes", lambda _path: b"%PDF-1.4 x")
+    fetched_into = []
+    real = sync.materialize_attachments
+
+    def spy(body, base):
+        fetched_into.append(base)
+        return real(body, base)
+
+    monkeypatch.setattr(sync, "materialize_attachments", spy)
+    body = f.ingress(message=f.message(attachments=[
+        {"id": "a1", "fileName": "a1.pdf", "contentType": "application/pdf", "size": 10},
+    ]))
+    turn._run_hermes("ceo", body, None)
+    assert seen and fetched_into and fetched_into[0].parent == sync.turn_media_root()
+    assert not fetched_into[0].exists()
+    assert list(sync.turn_media_root().iterdir()) == []
+
+
+def test_startup_clears_the_old_shared_attachment_cache(home, monkeypatch):
+    from bridge import server
+
+    legacy = home / "media" / "messaging" / "attachments" / "dm-room"
+    legacy.mkdir(parents=True)
+    (legacy / "a.pdf").write_bytes(b"%PDF-1.4 secret")
+    monkeypatch.setattr(server, "ThreadingHTTPServer", lambda *a: SimpleNamespace(serve_forever=lambda: None))
+    monkeypatch.setattr(server.signal, "signal", lambda *a: None)
+    server.main()
+    assert not (home / "media" / "messaging").exists()
 
 
 def test_room_context_and_system_prompt_carry_the_media_list():
@@ -115,13 +150,18 @@ def test__run_hermes_materializes_attachments_before_building_the_system_prompt(
     # so this test does not also need the native-vision stub just to reach the turn header.
     attachment = {"id": "a1", "fileName": "a1.pdf", "contentType": "application/pdf", "size": 5}
     body = f.ingress(message=f.message(attachments=[attachment]))
-    expected_path = str(sync.attachment_path(f.ROOM, attachment))
-    monkeypatch.setattr(sync, "materialize_attachments", lambda body: [expected_path])
+    captured = {}
+
+    def fake_materialize(body, base):
+        captured["path"] = str(sync.attachment_path(base, attachment))
+        return [captured["path"]]
+
+    monkeypatch.setattr(sync, "materialize_attachments", fake_materialize)
 
     turn._run_hermes("ceo", body, None)
 
     ctx, _ = f.split_turn_input(seen["user_message"])
-    assert ctx["media"] == [expected_path]
+    assert ctx["media"] == [captured["path"]]
 
 
 # ---- fix round: the model answered about the WRONG image -----------------------------------
@@ -306,5 +346,5 @@ def test_a_failed_attachment_fetch_is_skipped_not_fatal(home, monkeypatch):
         ]},
         "recentHistory": [],
     }
-    paths = sync.materialize_attachments(body)
+    paths = sync.materialize_attachments(body, home / "turn")
     assert [Path(p).name for p in paths] == ["a2.pdf"]  # a1 skipped, a2 still yielded

@@ -79,7 +79,7 @@ def test_a_turn_aborted_while_queued_never_runs(home, posted, monkeypatch):
     # and can only be blocked on _turn_lock.
     real = turn.sync.materialize_attachments
     monkeypatch.setattr(turn.sync, "materialize_attachments",
-                        lambda body: (queued.set() if ran else None, real(body))[1])
+                        lambda body, base: (queued.set() if ran else None, real(body, base))[1])
 
     def start(run_id):
         thread = threading.Thread(target=turn.run_turn, args=(

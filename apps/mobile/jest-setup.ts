@@ -63,6 +63,9 @@ jest.mock(
         return true;
       }
       create() {}
+      delete() {
+        for (const uri of [...files.keys()]) if (uri.startsWith(`${this.uri}/`)) files.delete(uri);
+      }
     }
     class FakeFile {
       uri: string;

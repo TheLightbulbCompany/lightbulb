@@ -26,7 +26,7 @@ const message: CanonicalRoomMessage = {
   reactions: { "👍": ["user-a"] },
 };
 
-import { MessageActionsSheet, QUICK_REACTIONS } from "../MessageActionsSheet";
+import { MessageActionsSheet, QUICK_REACTIONS, reportMessageUrl } from "../MessageActionsSheet";
 
 describe("MessageActionsSheet", () => {
   beforeEach(() => mockSetStringAsync.mockClear());
@@ -113,6 +113,15 @@ describe("MessageActionsSheet", () => {
     expect(body).toContain("Author: Friday (agent agent-1)");
     expect(body).toContain("Excerpt: ship it");
     openURL.mockRestore();
+  });
+
+  // A UTF-16 slice at 280 can split an emoji's surrogate pair, and
+  // encodeURIComponent throws on the lone half, before openURL's .catch.
+  it("builds the report link when the cut lands inside an emoji", () => {
+    const text = `${"a".repeat(279)}😀 and more`;
+    const url = reportMessageUrl("room-1", { ...message, text });
+    const body = decodeURIComponent(url.split("&body=")[1]);
+    expect(body).toContain(`Excerpt: ${"a".repeat(279)}😀…`);
   });
 
   it("does not offer Report on your own message", async () => {

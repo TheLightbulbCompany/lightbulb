@@ -17,7 +17,10 @@ export const QUICK_REACTIONS = ["👍", "✅", "🎉", "👀"] as const;
  * ids are what support looks the message up by; the excerpt is for the human.
  */
 export function reportMessageUrl(roomId: string, message: CanonicalRoomMessage): string {
-  const excerpt = message.text.length > 280 ? `${message.text.slice(0, 280)}…` : message.text;
+  // Cut on code points: a UTF-16 slice can split an emoji's surrogate pair,
+  // and encodeURIComponent throws on a lone surrogate.
+  const chars = Array.from(message.text);
+  const excerpt = chars.length > 280 ? `${chars.slice(0, 280).join("")}…` : message.text;
   const body = [
     "I want to report this message.",
     "",

@@ -182,12 +182,14 @@ function Conversation() {
     [roomId, setRoomPrefs],
   );
 
-  // The web's RoomDetailsPanel gate: a group DM, or a channel you do not own
-  // (the backend refuses a channel owner). A 1:1 DM has no leave; mute it.
+  // The web's canLeaveRoom gate: a group DM, or a channel you do not own
+  // (the backend refuses a channel owner), never the vendor-shared channel
+  // (the backend refuses that too). A 1:1 DM has no leave; mute it.
   const { leaveRoom } = rooms;
   const canLeave =
-    rooms.activeRoom?.kind === "group-dm" ||
-    (isChannel && !!viewer && viewer.role !== "owner");
+    !rooms.activeRoom?.shared &&
+    (rooms.activeRoom?.kind === "group-dm" ||
+      (isChannel && !!viewer && viewer.role !== "owner"));
   const confirmLeave = useCallback(() => {
     if (!roomId) return;
     Alert.alert("Leave this conversation?", "You will stop seeing its messages.", [

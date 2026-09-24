@@ -3,7 +3,12 @@
   display: grid;
   grid-template-columns: 56px 264px minmax(0, 1fr);
   grid-template-areas: "rail sidebar main";
-  height: 100vh;
+  /* Pinned to the viewport rather than sized in vh: in the desktop app's
+     WKWebView, vh can go stale after a window resize and the whole shell
+     rendered in the top half of the window. fixed + inset:0 always matches
+     the real viewport, and document scroll can never move it. */
+  position: fixed;
+  inset: 0;
   /* clip, not hidden: a hidden box is still programmatically scrollable, so
      any stray scrollIntoView/focus reveal can shift the entire shell out of
      the viewport (dockview keeps a viewport-sized layer clipped below the

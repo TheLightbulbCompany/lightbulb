@@ -95,14 +95,19 @@ it("offers an add-topic affordance when there is none", () => {
   expect(screen.getByRole("button", { name: "Add a topic" })).toBeInTheDocument();
 });
 
-it("toggles star and mute and keeps a word beside the icon state", async () => {
+it("toggles star and mute from the overflow menu, naming the current state in words", async () => {
   const onSetPrefs = vi.fn().mockResolvedValue(undefined);
   const { rerender } = render(<RoomHeader {...props} onSetPrefs={onSetPrefs} />);
-  await userEvent.click(screen.getByRole("button", { name: "Star this conversation" }));
+  // Star and mute live in the ⋯ menu now, not as header buttons.
+  expect(screen.queryByRole("button", { name: /star this conversation/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /mute this conversation/i })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Star this conversation" }));
   expect(onSetPrefs).toHaveBeenCalledWith({ starred: true });
   rerender(<RoomHeader {...props} onSetPrefs={onSetPrefs} room={{ ...room, starred: true, muted: true }} />);
-  expect(screen.getByRole("button", { name: "Unstar this conversation" })).toHaveAttribute("aria-pressed", "true");
-  await userEvent.click(screen.getByRole("button", { name: "Unmute this conversation" }));
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  expect(await screen.findByRole("menuitem", { name: "Unstar this conversation" })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("menuitem", { name: "Unmute this conversation" }));
   expect(onSetPrefs).toHaveBeenLastCalledWith({ muted: false });
 });
 
@@ -139,7 +144,8 @@ it("does not leak a failed star's error into a freshly opened rename dialog", as
   const onSetPrefs = vi.fn().mockRejectedValueOnce(new Error("Could not star."));
   const onRenameRoom = vi.fn().mockResolvedValue(undefined);
   render(<RoomHeader {...props} onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} />);
-  await userEvent.click(screen.getByRole("button", { name: "Star this conversation" }));
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Star this conversation" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Could not star.");
   await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
   await userEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
@@ -163,20 +169,20 @@ it("hides the pinned count when nothing is pinned", () => {
   expect(screen.queryByRole("button", { name: /pinned/ })).not.toBeInTheDocument();
 });
 
-// Star/Mute/Options are 36px-square (size-9) and Search is 42px wide (h-9
-// px-4) -- both under the 44px touch floor at <=859px. jsdom has no `css:
+// Options and the view switches are 32-36px square and Search is 42px wide
+// (h-9 px-4) -- all under the 44px touch floor at <=859px. jsdom has no `css:
 // true` here, so the media-query rule can't be observed via computed style;
 // assert the DOM structure the selector needs (the buttons live inside
 // .room-audience) plus the rule's source text instead.
-it("puts Star, Mute, Conversation options and Search inside .room-audience for the mobile touch-floor rule", () => {
+it("puts the view switches, Conversation options and Search inside .room-audience for the mobile touch-floor rule", () => {
   // The default `search` prop is a bare <span /> -- stand in a real Search
-  // trigger (same accessible name RoomMessageSearch renders) so the fourth
-  // element the mobile audit flagged is actually exercised here too.
-  render(<RoomHeader {...props} onSetPrefs={vi.fn()} search={<button type="button" aria-label="Search this conversation">Search</button>} />);
-  const audience = screen.getByRole("button", { name: "Star this conversation" }).closest(".room-audience");
+  // trigger (same accessible name RoomMessageSearch renders) so the element
+  // the mobile audit flagged is actually exercised here too.
+  render(<RoomHeader {...props} onSetPrefs={vi.fn()} search={<button type="button" aria-label="Search this conversation">Search</button>}
+    views={<nav aria-label="Conversation views"><button type="button" aria-label="Details" /></nav>} />);
+  const audience = screen.getByRole("button", { name: "Conversation options" }).closest(".room-audience");
   expect(audience).not.toBeNull();
-  expect(within(audience as HTMLElement).getByRole("button", { name: "Mute this conversation" })).toBeInTheDocument();
-  expect(within(audience as HTMLElement).getByRole("button", { name: "Conversation options" })).toBeInTheDocument();
+  expect(within(audience as HTMLElement).getByRole("button", { name: "Details" })).toBeInTheDocument();
   expect(within(audience as HTMLElement).getByRole("button", { name: "Search this conversation" })).toBeInTheDocument();
 
   const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");

@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
-import { LocalSessionPanel } from "../LocalSessionPanel";
+import { SessionFocus } from "../SessionFocus";
 import type { LocalSession } from "@lightbulb/shared";
 
 const m = vi.hoisted(() => ({ get: vi.fn(), patch: vi.fn(), userId: "bob", orgId: "org", open: vi.fn() }));
@@ -14,24 +14,33 @@ const session: LocalSession = { sessionId: "session", deviceId: "mac", humanUser
 const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() };
 function view() {
   const cache = new Map();
-  const tree = () => <SWRConfig value={{ provider: () => cache }}><LocalSessionPanel session={session} ownerName="Alice" own={false} client={client} revision={1} onAccessLost={() => {}} /></SWRConfig>;
+  const tree = () => <SWRConfig value={{ provider: () => cache }}><SessionFocus focus={{ sessionId: "session" }} entries={[{ session, ownerName: "Alice", own: false }]} loading={false}
+    hintRevision={1} client={client} resolveSessionOwner={() => ({ ownerName: "Alice", own: false })} onAccessLost={() => {}} onClose={() => {}} /></SWRConfig>;
   return { ...render(tree()), tree };
+}
+// Linked work lives behind the session header's ⋯ menu and opens as a dialog.
+async function openWork() {
+  await userEvent.click(screen.getByRole("button", { name: "Session options" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Linked work" }));
+  return screen.findByRole("dialog", { name: "Linked work" });
 }
 beforeEach(() => {
   vi.clearAllMocks(); m.userId = "bob"; m.orgId = "org";
   m.get.mockResolvedValue(linked); m.patch.mockResolvedValue({ state: "empty", revision: "rev2", link: null });
 });
 
-it("fetches protected work only on explicit expansion using Teams credentials and drops it on collapse/error", async () => {
+it("fetches protected work only on explicit open using Teams credentials and drops it on close/error", async () => {
   view();
   expect(m.get).not.toHaveBeenCalled();
-  await userEvent.click(screen.getByRole("button", { name: "Linked work" }));
+  await openWork();
   expect(await screen.findByText(linked.title)).toBeInTheDocument();
   expect(m.get).toHaveBeenCalledWith("/teams/local-sessions/session/work-link", { credentials: "include", retryOn401: true });
-  await userEvent.click(screen.getByRole("button", { name: "Linked work" }));
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   expect(screen.queryByText(linked.title)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Session options" })).toHaveFocus();
   m.get.mockRejectedValue(new Error("PRIVATE SERVER ERROR"));
-  await userEvent.click(screen.getByRole("button", { name: "Linked work" }));
+  await openWork();
   expect(await screen.findByText("Linked work unavailable.")).toBeInTheDocument();
   expect(screen.queryByText(linked.title)).not.toBeInTheDocument();
   expect(screen.queryByText("PRIVATE SERVER ERROR")).not.toBeInTheDocument();
@@ -41,7 +50,7 @@ it("fences late protected responses across acting user changes", async () => {
   let resolve!: (value: typeof linked) => void;
   m.get.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
   const v = view();
-  await userEvent.click(screen.getByRole("button", { name: "Linked work" }));
+  await openWork();
   await waitFor(() => expect(m.get).toHaveBeenCalled());
   m.userId = "outsider";
   m.get.mockResolvedValue({ state: "unavailable", revision: "rev1", link: linked.link });
@@ -54,7 +63,7 @@ it("fences late protected responses across acting user changes", async () => {
 it("links only explicit identifiers, using current revision, and never sends a session command", async () => {
   m.get.mockResolvedValue({ state: "empty", revision: null, link: null });
   view();
-  await userEvent.click(screen.getByRole("button", { name: "Linked work" }));
+  await openWork();
   await userEvent.click(await screen.findByRole("button", { name: "Link existing work" }));
   await userEvent.type(screen.getByRole("textbox", { name: "Issue ID" }), "44444444-4444-4444-8444-444444444444");
   await userEvent.click(screen.getByRole("button", { name: "Save link" }));

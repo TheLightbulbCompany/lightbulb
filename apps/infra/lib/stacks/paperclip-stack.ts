@@ -372,6 +372,16 @@ export class PaperclipStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
+    // Upstream Decisions HMAC-sign every decision spec and verify it on decide/execute. Unset,
+    // Paperclip generates this key into the task's EPHEMERAL disk too, so each task replacement
+    // turns every pending decision into a 403 "signature verification failed". RETAIN.
+    const decisionSigningSecret = new secretsmanager.Secret(this, "PaperclipDecisionSigningSecret", {
+      secretName: `lightbulb/${env}/paperclip_decision_signing_secret`,
+      description: `Lightbulb ${env} Paperclip decision-spec HMAC secret`,
+      generateSecretString: { passwordLength: 48, excludePunctuation: true, includeSpace: false },
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
     // PAPERCLIP_PUBLIC_URL is Better Auth's ORIGIN IDENTITY — it feeds the auth
     // baseURL, the trustedOrigins set, the secure-cookie scheme, and the `Origin`
     // header the backend BFF sends on /api/auth/* calls (server/src/auth/better-auth.ts).
@@ -511,6 +521,9 @@ export class PaperclipStack extends cdk.Stack {
         RUN_LOG_S3_BUCKET: attachmentsBucket.bucketName,
         RUN_LOG_S3_REGION: this.region,
         RUN_LOG_S3_PREFIX: "run-logs",
+        // Paperclip's own hourly pg_dump lands on the task's ephemeral disk -- useless there
+        // (Aurora PITR is the backup) and a full DB dump on a container filesystem.
+        PAPERCLIP_DB_BACKUP_ENABLED: "false",
         // Drives the remote-agent heartbeat loop. Upstream sets this for
         // public ECS deploys; without it some scheduler-dependent flows
         // never fire.
@@ -552,6 +565,7 @@ export class PaperclipStack extends cdk.Stack {
         BETTER_AUTH_SECRET: ecs.Secret.fromSecretsManager(betterAuthSecret),
         PAPERCLIP_ISOL8_NOTIFY_TOKEN: ecs.Secret.fromSecretsManager(notifyWebhookSecret),
         PAPERCLIP_SECRETS_MASTER_KEY: ecs.Secret.fromSecretsManager(secretsMasterKey),
+        PAPERCLIP_DECISION_SIGNING_SECRET: ecs.Secret.fromSecretsManager(decisionSigningSecret),
       },
       // Paperclip's image entrypoint expects DATABASE_URL. The shim below
       // assembles it from PG* env at container start, then directly execs
@@ -581,7 +595,7 @@ export class PaperclipStack extends cdk.Stack {
       command: [
         // Refuse to start without the master key: Paperclip would otherwise mint an
         // ephemeral key file and silently orphan every stored secret (2026-09-23).
-        "set -eu && : \"${PAPERCLIP_SECRETS_MASTER_KEY:?unset - refusing to start with an ephemeral secrets key}\" && PGPASSWORD_ENC=$(node -e 'process.stdout.write(encodeURIComponent(process.env.PGPASSWORD))') && export DATABASE_URL=\"postgres://${PGUSER}:${PGPASSWORD_ENC}@${PGHOST}:${PGPORT}/${PGDATABASE}\" && exec node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js",
+        "set -eu && : \"${PAPERCLIP_SECRETS_MASTER_KEY:?unset - refusing to start with an ephemeral secrets key}\" && : \"${PAPERCLIP_DECISION_SIGNING_SECRET:?unset - refusing to start with an ephemeral decision signing key}\" && PGPASSWORD_ENC=$(node -e 'process.stdout.write(encodeURIComponent(process.env.PGPASSWORD))') && export DATABASE_URL=\"postgres://${PGUSER}:${PGPASSWORD_ENC}@${PGHOST}:${PGPORT}/${PGDATABASE}\" && exec node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js",
       ],
       // Match the UID the image's Dockerfile chowns /paperclip + /app to.
       // Avoids running node as root in production for no upside.

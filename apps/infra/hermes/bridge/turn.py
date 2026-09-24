@@ -9,7 +9,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -18,7 +20,7 @@ import uuid as _uuid
 from collections import namedtuple
 from pathlib import Path
 
-from bridge import API, HOOK_TOKEN, OWNER, now
+from bridge import API, HOME, HOOK_TOKEN, OWNER, now
 from bridge import sync, browser_control
 from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
@@ -446,9 +448,24 @@ MEDIA_SIGNATURES = {"image/png": (b"\x89PNG\r\n\x1a\n",), "image/jpeg": (b"\xff\
 OUTBOUND_MEDIA_MAX_BYTES = 7 * 1024 * 1024
 
 
-def _attachable(line: str, root: Path, budget: int) -> dict | None:
+def _within(resolved: Path, root: Path, home: Path | None) -> bool:
+    """Inside the agent's own profile or the one send-a-file folder, `HERMES_HOME/outbox/`,
+    through no dot-named part (`.env`, `.hermes/`, `.run/`). Nothing else under HOME: its
+    `media/messaging/attachments/<room>/` caches EVERY room's files, so a wider rule would let
+    an injected agent re-post a private DM's attachment into a channel. This stops a one-line
+    injection, not a determined agent -- one with a shell can copy any file it can read into
+    either base first; that is not an isolation boundary."""
+    for base in [root] + ([home / "outbox"] if home is not None else []):
+        base = base.resolve()
+        if resolved.is_relative_to(base):
+            return not any(part.startswith(".") for part in resolved.relative_to(base).parts)
+    return False
+
+
+def _attachable(line: str, root: Path, budget: int, home: Path | None = None) -> dict | None:
     """The file a `MEDIA:` line names, ready to post, if it is safe to send: inside the agent's
-    own profile dir (resolved, so a symlink cannot point out of it), a type the room accepts
+    own profile dir or `HERMES_HOME/outbox/`, through no dot-named part (see `_within`;
+    resolved, so a symlink cannot point out of it), a type the room accepts
     whose BYTES agree with that type, and within both the per-type cap and what is left of the
     outbound budget. The read happens HERE, at the one place that decides whether the line is
     stripped -- a file that cannot be read keeps its path rather than vanishing, and nothing
@@ -465,7 +482,7 @@ def _attachable(line: str, root: Path, budget: int) -> dict | None:
         return None
     try:
         resolved = path.resolve()
-        if not resolved.is_relative_to(root.resolve()):
+        if not _within(resolved, root, home):
             log.warning("media dropped (path): %s", path)
             return None
         if not resolved.is_file():
@@ -502,7 +519,7 @@ def _attachable(line: str, root: Path, budget: int) -> dict | None:
             "dataBase64": base64.b64encode(data).decode()}
 
 
-def extract_media(reply: str, root: Path) -> tuple[str, list[dict]]:
+def extract_media(reply: str, root: Path, home: Path | None = None) -> tuple[str, list[dict]]:
     """Split the attachable `MEDIA:` files out of a reply, returning the text without them and
     the attachments as the backend's `AgentMessageRequest.attachments` wants them.
 
@@ -514,7 +531,7 @@ def extract_media(reply: str, root: Path) -> tuple[str, list[dict]]:
     lines: list[str] = []
     budget = OUTBOUND_MEDIA_MAX_BYTES
     for line in reply.splitlines():
-        item = _attachable(line, root, budget) if len(kept) < MAX_ATTACHMENTS else None
+        item = _attachable(line, root, budget, home) if len(kept) < MAX_ATTACHMENTS else None
         if item is None:
             lines.append(line)
         else:
@@ -720,7 +737,7 @@ def _post_reply(agent_id: str, body: dict, reply: str) -> None:
     screenshot beats losing the reply, and it is what lets this image ship without waiting on
     a prod backend promotion. The eventId is unchanged, so a re-post can only replay the
     stored message -- never create a second one."""
-    text, attachments = extract_media(reply, _profile_dir(agent_id))
+    text, attachments = extract_media(reply, _profile_dir(agent_id), HOME)
     if not attachments:
         _post_backend(f"agent-messages/{OWNER}", {**body, "text": reply})
         return
@@ -1217,10 +1234,9 @@ def _native_image_part(path: str) -> dict:
     return {"type": "image_url", "image_url": {"url": data_url}}
 
 
-def _message_image_paths(body: dict, media: list[str]) -> dict[str, list[str]]:
+def _message_image_paths(body: dict, media: list[str], base: Path) -> dict[str, list[str]]:
     """Associate up to 20 images with their messages, prioritizing current then newest history."""
     available = set(media)
-    room_id = (body.get("room") or {}).get("id")
     by_message: dict[str, list[str]] = {}
     remaining = MAX_NATIVE_IMAGES
     messages = [body.get("message") or {}, *reversed(body.get("recentHistory", []))]
@@ -1234,7 +1250,7 @@ def _message_image_paths(body: dict, media: list[str]) -> dict[str, list[str]]:
         for attachment in message.get("attachments") or []:
             if attachment.get("contentType") not in IMAGE_ATTACHMENT_TYPES:
                 continue
-            path = str(sync.attachment_path(room_id, attachment))
+            path = str(sync.attachment_path(base, attachment))
             if path in available:
                 paths.append(path)
         paths = paths[:remaining]
@@ -1244,7 +1260,7 @@ def _message_image_paths(body: dict, media: list[str]) -> dict[str, list[str]]:
     return by_message
 
 
-def _current_message_media(body: dict, media: list[str]) -> list[str]:
+def _current_message_media(body: dict, media: list[str], base: Path) -> list[str]:
     """Only the CURRENT message's own materialized attachment paths (images and PDFs).
 
     Bug: `media` used to be the FULL `sync.materialize_attachments` list, history included,
@@ -1256,11 +1272,10 @@ def _current_message_media(body: dict, media: list[str]) -> list[str]:
     rode along natively in `user_message`). Restricting this to the current message's own
     attachments removes that stale choice entirely."""
     available = set(media)
-    room_id = (body.get("room") or {}).get("id")
     message = body.get("message") or {}
     out = []
     for attachment in message.get("attachments") or []:
-        path = str(sync.attachment_path(room_id, attachment))
+        path = str(sync.attachment_path(base, attachment))
         if path in available:
             out.append(path)
     return out
@@ -1680,11 +1695,24 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
 
 
 def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str, dict]:
-    """The one seam every other test replaces instead of constructing a real AIAgent."""
-    media = sync.materialize_attachments(body)
-    images = _message_image_paths(body, media)
+    """The one seam every other test replaces instead of constructing a real AIAgent.
+
+    The turn's attachments live in a folder of its own that is gone when the turn is (see
+    sync.turn_media_root); nothing a turn fetched is left for a later turn in another room."""
+    root = sync.turn_media_root()
+    root.mkdir(parents=True, exist_ok=True)
+    base = Path(tempfile.mkdtemp(prefix="turn-", dir=root))
+    try:
+        return _run_turn_in(agent_id, body, frames, base)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, str | None, str, dict]:
+    media = sync.materialize_attachments(body, base)
+    images = _message_image_paths(body, media, base)
     # A follow-up's trigger message already had its turn: its attachments are not re-sent.
-    current_media = [] if body.get("followUp") else _current_message_media(body, media)
+    current_media = [] if body.get("followUp") else _current_message_media(body, media, base)
     if body.get("followUp"):
         images.pop((body.get("message") or {}).get("messageId"), None)
     session_key = _resolve_session_key(agent_id, body)

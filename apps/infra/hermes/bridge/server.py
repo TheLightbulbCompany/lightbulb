@@ -727,6 +727,9 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _save_on_sigterm)
     sync.HOME.mkdir(parents=True, exist_ok=True)
     (sync.HOME / "profiles").mkdir(exist_ok=True)
+    # No turn is running yet: whatever is here is a crashed turn's leftovers or the old
+    # shared per-room cache (media/messaging/attachments/) -- neither may outlive its turn.
+    shutil.rmtree(sync.turn_media_root(), ignore_errors=True)
     log.info("bridge on 0.0.0.0:%d home=%s owner=%s", PORT, sync.HOME, OWNER)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 

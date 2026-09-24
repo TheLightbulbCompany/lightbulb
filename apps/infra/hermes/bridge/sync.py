@@ -211,8 +211,8 @@ EXCLUDE_GLOBS = (
     "*.sqlite-wal",
     "*.sqlite-shm",
     *LOCK_SIDECAR_GLOBS,
-    # Task 25: attachments materialized locally for a turn (media/messaging/attachments/...)
-    # are re-fetched from the backend on the next process, not synced to S3.
+    # Task 25: attachments a turn fetches (media/messaging/turn-*/...) live only for that
+    # turn and are never synced to S3.
     "media/messaging/*",
     "media/messaging/**/*",
     # Task 13 (M4-R20): backend-owned. Written by hermes_profiles.upload_profile /
@@ -1264,15 +1264,22 @@ def _get_backend_bytes(path: str) -> bytes:
         return res.read()
 
 
-def attachment_path(room_id: str, attachment: dict) -> Path:
-    return HOME / "media" / "messaging" / "attachments" / room_id / (
-        f"{attachment['id']}{_EXT.get(attachment.get('contentType'), '')}"
-    )
+# Every turn fetches into its OWN folder under here, removed when the turn ends
+# (turn._run_hermes). A shared per-room cache outlived its turn and sat readable by every
+# agent's next turn in ANY room -- a DM's attachment one `ls` away from a channel turn, which
+# is exactly what the room's deliveryKey rotation promises cannot happen.
+# ponytail: a turn re-fetches its history's attachments every time (the shared cache that
+# avoided that was the leak); add a per-room, per-turn-lifetime memo only if fetch latency shows up.
+def turn_media_root() -> Path:
+    return HOME / "media" / "messaging"
 
 
-def materialize_attachments(body: dict) -> list[str]:
-    """Download the attachments a turn can see into the plugin-era layout; skip files
-    already present (a turn revisiting the same history does not re-fetch them). One
+def attachment_path(base: Path, attachment: dict) -> Path:
+    return base / f"{attachment['id']}{_EXT.get(attachment.get('contentType'), '')}"
+
+
+def materialize_attachments(body: dict, base: Path) -> list[str]:
+    """Download the attachments a turn can see into that turn's own folder. One
     attachment's fetch failing (network blip, deleted object, ...) must not fail the whole
     turn -- it is skipped and logged, not raised."""
     import bridge
@@ -1281,7 +1288,7 @@ def materialize_attachments(body: dict) -> list[str]:
     out: list[str] = []
     for m in [body.get("message") or {}] + list(body.get("recentHistory", [])):
         for att in m.get("attachments") or []:
-            target = attachment_path(room_id, att)
+            target = attachment_path(base, att)
             if not target.exists():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 try:

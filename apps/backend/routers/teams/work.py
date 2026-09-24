@@ -227,10 +227,9 @@ async def patch_routine(
     # it on re-activate. Billing survives a full reprovision (the container +
     # Paperclip company are wiped, the billing row is not), so this flag is what
     # keeps the owner's opt-out honored after a company wipe — the arm step
-    # reads it on the fresh company and declines to re-seed. A full reprovision
-    # DELETES the routine, so create_enabled_schedule_routine's title-skip
-    # backstop cannot fire on the fresh company; the durable flag is then the
-    # ONLY thing between the owner's opt-out and a silent re-arm. That is why the
+    # reads it on the fresh company and leaves the CEO's timer heartbeat alone. A
+    # full reprovision DELETES the routine, so the durable flag is the ONLY
+    # thing between the owner's opt-out and a silent re-arm. That is why the
     # opt-OUT write below is durable (propagated), not best-effort.
     #
     # Resolve identity BEFORE the mutation (the title is the identity; a combined

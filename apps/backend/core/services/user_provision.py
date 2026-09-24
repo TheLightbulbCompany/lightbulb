@@ -24,17 +24,13 @@ from core.observability.product_analytics import (
     capture_product_event,
 )
 from core.repositories import billing_repo, container_repo
-from core.services.agent_routine_provisioning import (
-    NIGHTLY_CEO_ROUTINE_CRON,
-    NIGHTLY_CEO_ROUTINE_DESCRIPTION,
-    NIGHTLY_CEO_ROUTINE_TITLE,
-    create_enabled_schedule_routine,
-)
 from core.services.provision_dispatch import dispatch_provision
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_owner_email import lookup_owner_email
+from core.services.container_provision import provider_choice_from_row
 from core.services.paperclip_provisioning import (
+    SPECIALIST_HEARTBEAT,
     build_paperclip_provisioning,
     close_paperclip_provisioning,
 )
@@ -213,104 +209,93 @@ def _arm_status(status: str) -> str:
     return status
 
 
-async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
-    """Idempotently arm the paid nightly CEO routine on Friday.
+def ceo_heartbeat_interval_sec(account: dict) -> int:
+    """The CEO's timer-heartbeat interval for this billing row.
+
+    The owner's own money or quota (BYO key, ChatGPT OAuth) wakes once a day; the
+    managed gate wakes every 8 h on a paid plan and every 12 h on the free trial
+    (``trial_local`` resolves to the managed gate whatever it stores)."""
+    provider_choice, _ = provider_choice_from_row(account)
+    if provider_choice in ("byo_key", "chatgpt_oauth"):
+        return 86400
+    if account.get("subscription_status") == "trial_local":
+        return 43200
+    return 28800
+
+
+async def arm_nightly_ceo(owner_id: str) -> str:
+    """Idempotently arm the CEO's Paperclip timer heartbeat (and the specialists').
 
     THE deterministic caller is the provision executor's step 0
     (``scripts.provision_runner._seed_owner_paperclip``), right after the
-    owner's Paperclip seed — every path to "paid + provider chosen" (org first
-    provision, trial→paid conversion via reprovision_for_user, admin
-    reprovision, image roll) runs there. ``owner_id`` is the workspace (Clerk
-    org) id; its company row comes from the authoritative owner resolver.
+    owner's Paperclip seed; ``reconcile_runtime`` re-runs it on every billing
+    change, which is how the interval follows a plan or provider switch.
+    ``owner_id`` is the workspace (Clerk org) id; its company row comes from
+    the authoritative owner resolver.
 
-    Armed for paid OR an unexpired trial (``should_arm_nightly_ceo``): paid buys
-    always-on, and the nightly CEO is ALSO extended to live ``trial_local``
-    owners as a retention lever (an EXPIRED trial is not armed, and self-disarms
-    at the wake path). Returns the outcome (``armed`` covers created, reactivated
-    OR title-skipped: the routine is present either way) and emits it as the
-    ``nightly_ceo.arm`` metric's ``status``. Does NOT
-    swallow: a failure emits ``status=error`` and re-raises, and the caller
-    decides — the executor classifies it into its retry ABI exactly like a
-    seed failure; ``reconcile_runtime`` logs and moves on.
+    Armed for paid OR an unexpired trial (``should_arm_nightly_ceo``). Sets the
+    CEO's ``runtimeConfig.heartbeat`` to a timer at ``ceo_heartbeat_interval_sec``
+    that runs even on an empty inbox, and re-applies ``SPECIALIST_HEARTBEAT`` to
+    the starter specialists (teardown's disarm turns theirs off too). No
+    ``maxDailyRuns``: Paperclip counts every run against it, assignment wakes
+    included, so it would silence chat-driven work. It converges both ways: a
+    not-entitled owner gets every starter heartbeat turned off, and an owner
+    opt-out (``nightly_ceo_opted_out``) turns the CEO's off.
 
-    ``trust_cache=False`` (the executor) never short-circuits on the
-    ``nightly_ceo_armed_company`` cache: the claim is written BEFORE the routine
-    is created, so a runner that dies between the two leaves a row that says
-    "armed" with no routine — trusted, that cache would return ``already_armed``
-    forever. The retry re-issues the create (title-skip makes it idempotent)
-    without re-claiming.
-
-    Idempotency, three race classes closed:
-      - Normal re-run (every ``reconcile_runtime``): the ``nightly_ceo_armed_company`` cache on
-        the billing row short-circuits before any Paperclip call once it equals
-        the current company.
-      - Concurrency: ``try_claim_nightly_arm`` is a conditional write that
-        elects exactly one winner to seed (plus ``create_enabled_schedule_routine``'s
-        title-skip as a backstop).
-      - Owner opt-out: ``nightly_ceo_opted_out`` (durable — survives a full
-        reprovision because billing is preserved) blocks arming entirely (bailed
-        above). Any paused routine reaching the create step is therefore an
-        ENTITLEMENT pause (teardown / cancel), which ``reconcile_paused=True``
-        re-enables on re-entitlement. Both re-subscribe paths reach the reconcile:
-        a torn-down container re-provisions through the executor
-        (``trust_cache=False``, which ignores the cache), and a container that
-        SURVIVED teardown is re-armed by the reconcile the re-subscribe's Stripe
-        ``entering_live`` edge dispatches — teardown's ``disarm_owner_nightly_automation``
-        releases the ``nightly_ceo_armed_company`` cache when it pauses, so that
-        ``trust_cache=True`` arm no longer short-circuits on it.
+    Idempotent without a claim: each agent is a read-modify-write that PATCHes
+    only when the heartbeat differs. Returns the outcome and emits it as the
+    ``nightly_ceo.arm`` metric's ``status``. Does NOT swallow: a failure emits
+    ``status=error`` and re-raises, and the caller decides — the executor
+    classifies it into its retry ABI exactly like a seed failure;
+    ``reconcile_runtime`` logs and moves on.
     """
     try:
-        account = await billing_repo.get_by_owner_id(owner_id)
-        if not should_arm_nightly_ceo(account):
-            return _arm_status("not_entitled")
-        if account.get("nightly_ceo_opted_out"):
-            return _arm_status("opted_out")
+        # Consistent: a reconcile runs right after the billing write it follows.
+        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+        entitled = should_arm_nightly_ceo(account)
 
         provisioning = await build_paperclip_provisioning()
         try:
-            # Confirm a COMMITTED active company before seeding. This is why
-            # there is no orphan/failed-company cost leak: we only ever arm a
-            # company provision_org actually finished (status="active").
+            # Confirm a COMMITTED active company before touching it: we only ever
+            # arm a company provision_org actually finished (status="active").
             row = await provisioning._repo.resolve_owner_row(owner_id)
-            # ``row.org_id != owner_id``: never arm a company that belongs to a
+            # ``row.org_id != owner_id``: never touch a company that belongs to a
             # different workspace under this workspace's billing account.
             if row is None or row.status != "active" or row.org_id != owner_id:
-                return _arm_status("company_not_active")
-            company_id = row.company_id
-            cached = account.get("nightly_ceo_armed_company") == company_id
-            if cached and trust_cache:
-                return _arm_status("already_armed")  # cheap cache hit
-            friday_id = (row.starter_agent_ids or {}).get("ceo") or (row.seeded_agent_ids or [None])[0]
-            if not friday_id:
-                return _arm_status("friday_not_seeded")
-            # A cache already naming this company means the claim is ours —
-            # skip re-claiming and go straight to the title-idempotent create.
-            if not cached and not await billing_repo.try_claim_nightly_arm(owner_id, company_id):
-                return _arm_status("claim_lost")  # a concurrent arm won
-            try:
-                admin_cookie = await get_admin_session_cookie(provisioning._admin._http)
-                await create_enabled_schedule_routine(
-                    admin=provisioning._admin,
-                    session_cookie=admin_cookie,
-                    company_id=company_id,
-                    agent_id=friday_id,
-                    title=NIGHTLY_CEO_ROUTINE_TITLE,
-                    description=NIGHTLY_CEO_ROUTINE_DESCRIPTION,
-                    cron=NIGHTLY_CEO_ROUTINE_CRON,
-                    timezone="UTC",
-                    # Re-enable a teardown/expiry/past_due-paused routine on
-                    # re-entitlement. Owner opt-outs are already filtered above
-                    # (nightly_ceo_opted_out), so a paused routine here is safe
-                    # to reactivate — without this a churn→resubscribe owner
-                    # keeps a paused routine (the title-skip won't reconcile it).
-                    reconcile_paused=True,
-                )
-            except Exception:
-                # Seed failed — release the claim (or the stale cache) so the
-                # next run retries, then let the caller classify.
-                await billing_repo.release_nightly_arm(owner_id, company_id)
-                raise
-            # Leave the claim as the armed cache.
+                return _arm_status("company_not_active" if entitled else "not_entitled")
+            starters = row.starter_agent_ids or {}
+            ceo_id = starters.get("ceo") or (row.seeded_agent_ids or [None])[0]
+            if not ceo_id:
+                return _arm_status("friday_not_seeded" if entitled else "not_entitled")
+            specialists = [agent_id for key, agent_id in starters.items() if key != "ceo" and agent_id]
+            admin = provisioning._admin
+            admin_cookie = await get_admin_session_cookie(admin._http)
+
+            async def put(agent_id: str, heartbeat: dict) -> None:
+                await admin.set_agent_heartbeat(session_cookie=admin_cookie, agent_id=agent_id, heartbeat=heartbeat)
+
+            # Converge, never only enable: a de-entitled owner (expired trial,
+            # past_due, canceled) must stop waking, or every timer cold-starts a
+            # microVM the gate then refuses.
+            if not entitled:
+                for agent_id in (ceo_id, *specialists):
+                    await put(agent_id, {"enabled": False})
+                return _arm_status("not_entitled")
+            for agent_id in specialists:
+                await put(agent_id, SPECIALIST_HEARTBEAT)
+            if (account or {}).get("nightly_ceo_opted_out"):
+                await put(ceo_id, {"enabled": False})
+                return _arm_status("opted_out")
+            await put(
+                ceo_id,
+                {
+                    "enabled": True,
+                    "intervalSec": ceo_heartbeat_interval_sec(account),
+                    "wakeOnDemand": True,
+                    # The CEO's sweep must run on an empty inbox too.
+                    "skipTimerWhenNoActionableWork": False,
+                },
+            )
             return _arm_status("armed")
         finally:
             await close_paperclip_provisioning(provisioning)

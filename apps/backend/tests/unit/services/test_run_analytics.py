@@ -9,7 +9,7 @@
   recentRuns-window fallback, provider inversion via trigger label (renamed
   label -> null), issue_assignment for non-routine origins.
 - degraded emission on enrichment failure (event still captured).
-- nightly-CEO sentinel tagging (description AND title paths).
+- timer-heartbeat tagging (run_source heartbeat_timer; is_nightly_ceo for the CEO).
 - runId dedup FIFO, deterministic capture uuid, and the disabled short-circuit.
 - internal-owner tagging via the platform-admin email rule + its TTL cache.
 """
@@ -88,9 +88,8 @@ async def test_session_key_classification_matrix():
         ({"agent_id": "a", "source": "group", "channel": "discord", "group_id": "g"}, "channel", "human"),
         ({"agent_id": "a", "source": "channel", "channel": "slack", "channel_id": "c"}, "channel", "human"),
         ({"agent_id": "a", "source": "cron", "cron_id": "cron-1"}, "cron", "autonomous"),
-        # Adapter fallback session without an issue id (and the run-keyed shape).
+        # Adapter fallback session without an issue id (the run-keyed shape joins Paperclip; below).
         ({"agent_id": "a", "source": "paperclip"}, "paperclip_other", "human"),
-        ({"agent_id": "a", "source": "paperclip", "run_id": "hb-1"}, "paperclip_other", "human"),
         # Malformed / keyless -> fail open into unknown, still counted.
         ({}, "unknown", "unknown"),
     ]
@@ -300,40 +299,48 @@ async def test_no_matching_run_row_emits_degraded_event():
 # ---------------------------------------------------------------------------
 
 
-async def test_nightly_ceo_flag_via_description_sentinel_and_via_title():
-    from core.services.agent_routine_provisioning import (
-        NIGHTLY_CEO_ROUTINE_DESCRIPTION,
-        NIGHTLY_CEO_ROUTINE_TITLE,
+_RUN_PARSED = {"agent_id": "ceo-1", "source": "paperclip", "run_id": "hb-1"}
+
+
+def _timer_paperclip(invocation_source, ceo_id="ceo-1"):
+    admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(return_value={"id": "hb-1", "invocationSource": invocation_source})
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(starter_agent_ids={"ceo": ceo_id}))
+    return patch.multiple(
+        run_analytics,
+        PaperclipAdminClient=MagicMock(return_value=admin),
+        get_admin_session_cookie=AsyncMock(return_value="pc.sid=abc"),
+        PaperclipRepo=MagicMock(return_value=repo),
     )
 
-    for i, issue_fields in enumerate(
-        (
-            {"title": "Anything", "description": NIGHTLY_CEO_ROUTINE_DESCRIPTION},
-            {"title": NIGHTLY_CEO_ROUTINE_TITLE, "description": ""},
-        )
-    ):
-        admin = _admin_stub(
-            issue={"originKind": "routine_execution", "originId": "rt-1", **issue_fields},
-            routine={"recentRuns": [_dispatch_run("schedule")]},
-        )
-        with _paperclip(admin):
-            kwargs = await _emit(_ISSUE_PARSED, payload=_payload(run_id=f"r-nightly-{i}"))
-        assert kwargs["properties"]["is_nightly_ceo"] is True
 
-    kwargs = await _emit({"agent_id": "a", "source": "webchat"}, payload=_payload(run_id="r-plain"))
-    assert kwargs["properties"]["is_nightly_ceo"] is False
-
-
-async def test_nightly_ceo_run_emits_its_own_cloudwatch_metric():
-    from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
-
-    admin = _admin_stub(
-        issue={"originKind": "routine_execution", "originId": "rt-1", "title": NIGHTLY_CEO_ROUTINE_TITLE},
-        routine={"recentRuns": [_dispatch_run("schedule")]},
+async def test_ceo_timer_heartbeat_run_is_the_nightly_ceo_loop():
+    with _timer_paperclip("timer"), patch.object(run_analytics, "put_metric") as metric:
+        kwargs = await _emit(_RUN_PARSED, payload=_payload(run_id="hb-1"), phase="error")
+    props = kwargs["properties"]
+    assert (props["run_source"], props["initiation_type"], props["is_nightly_ceo"]) == (
+        "heartbeat_timer",
+        "autonomous",
+        True,
     )
-    with _paperclip(admin), patch.object(run_analytics, "put_metric") as metric:
-        await _emit(_ISSUE_PARSED, payload=_payload(run_id="r-nightly-metric"), phase="error")
     metric.assert_any_call("nightly_ceo.run", dimensions={"outcome": "failure"})
+
+
+async def test_specialist_timer_run_is_autonomous_but_not_the_ceo_loop():
+    with _timer_paperclip("timer", ceo_id="someone-else"):
+        props = (await _emit(_RUN_PARSED, payload=_payload(run_id="hb-1")))["properties"]
+    assert (props["run_source"], props["is_nightly_ceo"]) == ("heartbeat_timer", False)
+
+
+async def test_non_timer_issueless_run_stays_paperclip_other():
+    with _timer_paperclip("on_demand"):
+        props = (await _emit(_RUN_PARSED, payload=_payload(run_id="hb-1")))["properties"]
+    assert (props["run_source"], props["initiation_type"], props["is_nightly_ceo"]) == (
+        "paperclip_other",
+        "human",
+        False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -543,3 +550,15 @@ async def test_run_completed_metric_deduped_on_owner_run_id():
                 await task
     run_completed = [c for c in metric.call_args_list if c.args and c.args[0] == "run.completed"]
     assert len(run_completed) == 1
+
+
+async def test_failed_timer_lookup_keeps_the_paperclip_other_category():
+    admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(side_effect=RuntimeError("paperclip down"))
+    with patch.multiple(
+        run_analytics,
+        PaperclipAdminClient=MagicMock(return_value=admin),
+        get_admin_session_cookie=AsyncMock(return_value="pc.sid=abc"),
+    ):
+        props = (await _emit(_RUN_PARSED, payload=_payload(run_id="hb-fail")))["properties"]
+    assert (props["run_source"], props["enrichment_failed"]) == ("paperclip_other", False)

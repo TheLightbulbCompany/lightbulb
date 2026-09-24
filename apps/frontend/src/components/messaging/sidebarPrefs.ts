@@ -3,7 +3,7 @@ import type { SidebarSort } from "./roomSections";
 
 const SIDEBAR_PREFS_KEY_PREFIX = "lightbulb.messaging.sidebar.";
 export interface SidebarPrefs { collapsed: string[]; sort: SidebarSort }
-const EMPTY: SidebarPrefs = { collapsed: [], sort: "alpha" };
+const EMPTY: SidebarPrefs = { collapsed: [], sort: "recent" };
 
 export const SESSION_COLUMN_MIN = 360;
 // Floor 360px, ceiling 80% of the panel. Below ~450px wide the ceiling is
@@ -18,7 +18,9 @@ export function readSidebarPrefs(scope: string): SidebarPrefs {
     const parsed = JSON.parse(raw) as Partial<SidebarPrefs>;
     return {
       collapsed: Array.isArray(parsed.collapsed) ? parsed.collapsed.filter((value) => typeof value === "string") : [],
-      sort: parsed.sort === "unread" ? "unread" : "alpha",
+      // A stored "alpha" was the old default, written on any collapse toggle whether or not
+      // anyone chose it -- so it reads as the new default; A–Z is now stored as "name".
+      sort: parsed.sort === "unread" || parsed.sort === "name" ? parsed.sort : "recent",
     };
   } catch {
     return EMPTY;

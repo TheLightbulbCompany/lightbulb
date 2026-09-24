@@ -351,7 +351,8 @@ function DirectoryContent({
           <DropdownMenuContent align="end">
             <DropdownMenuLabel>Sort</DropdownMenuLabel>
             <DropdownMenuRadioGroup value={prefs.sort} onValueChange={(value) => updatePrefs({ sort: value as SidebarSort })}>
-              <DropdownMenuRadioItem value="alpha">A–Z</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="recent">Recent activity</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="name">A–Z</DropdownMenuRadioItem>
               <DropdownMenuRadioItem value="unread">Unread first</DropdownMenuRadioItem>
             </DropdownMenuRadioGroup>
             <DropdownMenuSeparator />

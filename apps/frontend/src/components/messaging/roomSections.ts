@@ -1,7 +1,7 @@
 import type { LocalSession, RoomSection } from "@lightbulb/shared";
 import type { DirectoryRoom } from "./types";
 
-export type SidebarSort = "alpha" | "unread";
+export type SidebarSort = "recent" | "name" | "unread";
 export interface RoomGroup {
   id: string;
   label: string;
@@ -39,10 +39,13 @@ export function groupRooms(
   for (const room of rooms) byId.get(bucket(room))?.rooms.push(room);
   // A muted room never carries a badge, so it never jumps the queue either.
   const unread = (room: DirectoryRoom) => room.muted ? 0 : room.unreadCount;
+  // Newest message first; a room nobody has written in yet sorts after every one that has.
+  const latest = (room: DirectoryRoom) => room.lastMessageAt ? Date.parse(room.lastMessageAt) : -Infinity;
   for (const group of order) {
     group.rooms.sort((left, right) => (options.sort === "unread" && unread(right) !== unread(left)
       ? unread(right) - unread(left)
-      : options.nameOf(left).localeCompare(options.nameOf(right))));
+      : options.sort === "recent" && latest(right) !== latest(left) ? latest(right) - latest(left)
+        : options.nameOf(left).localeCompare(options.nameOf(right))));
   }
   return order.filter((group) => group.rooms.length > 0 || options.alwaysShow?.includes(group.id));
 }

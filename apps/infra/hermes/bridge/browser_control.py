@@ -28,7 +28,10 @@ def _post(path: str, body: dict, timeout: float = 20.0) -> dict | None:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read() or b"{}")
             return payload if 200 <= response.status < 300 else None
-    except (OSError, ValueError, urllib.error.HTTPError):
+    except urllib.error.HTTPError as exc:
+        # 409 = another holder (a person in the live view) owns the lease: say so, not "unavailable".
+        return {"conflict": True} if exc.code == 409 else None
+    except (OSError, ValueError):
         return None
 
 
@@ -53,7 +56,10 @@ def _disconnect(task_id: str) -> bool:
 def _refresh(state: dict, task_id: str = "") -> bool:
     if not os.environ.get("AGENT_BROWSER_CDP"):
         return False
-    result = _post("acquire", {"runId": state["runId"], "agentId": state["agentId"]}, timeout=10.0)
+    # A cold AgentCore browser session takes longer than 10 s to start: the backend granted the
+    # lease after the agent had already been told the browser was unavailable (prod, 2026-09-24).
+    result = _post("acquire", {"runId": state["runId"], "agentId": state["agentId"]}, timeout=60.0)
+    state["inUse"] = bool(result and result.get("conflict"))
     if not result or not result.get("cdpUrl") or result.get("generation") is None:
         return False
     now = time.time()
@@ -101,6 +107,8 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
     if state:
         state["taskId"] = task_id
     if not state or not _refresh(state, task_id):
+        if state and state.get("inUse"):
+            return {"action": "block", "message": "The shared browser is in use by a person; ask them to click Done."}
         return {"action": "block", "message": "Browser control is unavailable for this turn."}
     if state.get("snapshotGeneration") != state.get("generation"):
         if tool_name != "browser_snapshot":

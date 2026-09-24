@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useCallback, useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RoomDetail } from "@lightbulb/shared";
+import { ApiError, type RoomDetail } from "@lightbulb/shared";
 import type { RoomDirectoryProps } from "../RoomDirectory";
 import type { RoomPanelProps } from "../RoomPanel";
 import { RoomComposer } from "../RoomComposer";
@@ -62,7 +62,9 @@ const room: RoomDetail = {
   ],
 };
 const state = {
-  resourceSource: { client: { listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), listWorkspaceSessions: vi.fn(async () => ({ sessions: [] as never[] })) }, onEvent: () => () => {}, connectionRevision: 1 },
+  resourceSource: { client: { listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), listWorkspaceSessions: vi.fn(async () => ({ sessions: [] as never[] })),
+    // A session missing from the settled list is fetched directly (SessionFocus's fallback); default to a genuine 404.
+    getLocalSession: vi.fn(async () => { throw new ApiError(404, null); }) }, onEvent: () => () => {}, connectionRevision: 1 },
   rooms: [room], roomsError: undefined as Error | undefined, roomsLoading: false,
   directoryError: undefined as Error | undefined, directoryLoading: false,
   activeRoomId: room.roomId as string | null, activeRoom: room,
@@ -740,7 +742,7 @@ it("holds a permalink until the workspace session list lands, then opens it in f
   const landList = holdSessionList();
   mocks.rooms.mockReturnValue(state);
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingConversation /></MessagingWorkspaceProvider>);
-  act(() => workspaceValue.openSession("s1", { from: "link" }));
+  act(() => workspaceValue.openSession("s1"));
   expect(workspaceValue.sessionFocus).toBeNull();
   await landList([liveSession("s1", "colleague")]);
   expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1" });
@@ -751,17 +753,18 @@ it("says a linked session that the settled list lacks is no longer shared", asyn
   const landList = holdSessionList();
   mocks.rooms.mockReturnValue(state);
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingConversation /></MessagingWorkspaceProvider>);
-  act(() => workspaceValue.openSession("old", { from: "link" }));
+  act(() => workspaceValue.openSession("old"));
   await landList([]);
   expect(workspaceValue.sessionFocus).toEqual({ sessionId: "old" });
-  expect(screen.getByText("This session is no longer shared.")).toBeInTheDocument();
+  // The settled list lacks it, so it is fetched directly; a 404 is "no longer shared".
+  expect(await screen.findByText("This session is no longer shared.")).toBeInTheDocument();
 });
 
 it("drops a held permalink when a conversation is picked before the session list lands", async () => {
   const landList = holdSessionList();
   mocks.rooms.mockReturnValue(state);
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>);
-  act(() => workspaceValue.openSession("s1", { from: "link" }));
+  act(() => workspaceValue.openSession("s1"));
   act(() => directory.onSelectRoom("room-1"));
   await landList([{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never]);
   expect(workspaceValue.sessionFocus).toBeNull();
@@ -777,7 +780,7 @@ it("clears focus when the active room moves off by any path", async () => {
   });
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
   await waitFor(() => expect(directory.sessions).toHaveLength(1));
-  act(() => workspaceValue.openSession("s1", { from: "sidebar" }));
+  act(() => workspaceValue.openSession("s1"));
   expect(workspaceValue.sessionFocus).toEqual({ sessionId: "s1" });
   // ⌥↓ (like a notification click) moves the active room without the directory.
   fireEvent.keyDown(window, { key: "ArrowDown", altKey: true });

@@ -27,6 +27,15 @@ jest.mock("@clerk/clerk-expo", () => ({
 }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "33333333-3333-4333-8333-333333333333" }));
 jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
+const mockFetchMembers = jest.fn();
+// A stable reference -- see sessions.test.tsx's identical note: the real
+// useTeamsConfig memoizes its adapter, and an unstable mock here would refire
+// the roster effect on every render.
+const mockTeamsConfig = {};
+jest.mock("../../../lib/teamsData", () => ({
+  useTeamsConfig: () => mockTeamsConfig,
+  fetchMembers: (...args: unknown[]) => mockFetchMembers(...args),
+}));
 
 const mockRoom: RoomDetail = {
   roomId: "room-1", name: "Launch", kind: "channel", roomRevision: 1, deliveryKey: "k",
@@ -73,6 +82,8 @@ const mockLive = {
     markRead: jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 3 })),
     getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
     listWorkspaceSessions: mockListSessions,
+    // A session missing from the settled list is fetched directly; default to a genuine 404.
+    getLocalSession: jest.fn(async () => { throw new ApiError(404, null); }),
     listLocalSessionEvents: mockListEvents,
     submitLocalSessionCommand: mockSubmit,
     getLocalSessionCommand: mockGetCommand,
@@ -99,6 +110,8 @@ describe("session screen", () => {
     mockEvents = events;
     mockListSessions.mockClear();
     mockListSessions.mockImplementation(async () => ({ sessions: [mockSession] }));
+    mockFetchMembers.mockReset();
+    mockFetchMembers.mockResolvedValue([]);
     mockListEvents.mockClear();
     mockSubmit.mockReset();
     mockSubmit.mockImplementation(async (_s: string, request: LocalSessionCommand) => receipt(request));

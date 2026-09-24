@@ -31,11 +31,13 @@ export interface MessagingWorkspaceValue {
   /** `explicit` false only for the default-agent fallback, which isn't a user's pick. */
   selectAgentDm: (agentId: string, explicit?: boolean) => Promise<string | null>;
   openMessage: (roomId: string, messageId: string | null) => void;
-  openSession: (sessionId: string, options: { from: "sidebar" | "link" }) => void;
+  openSession: (sessionId: string) => void;
   sessionFocus: SessionFocusTarget | null;
   closeSession: () => void;
   /** Not gated on the active dock panel: a split dock keeps the focused session on screen. */
   sessionSource: SessionSource;
+  /** ownerName/own for a session fetched directly, outside the workspace session list. */
+  resolveSessionOwner: (humanUserId: string) => { ownerName: string; own: boolean };
   workspaceSessions: ReturnType<typeof useWorkspaceSessions>;
   scope: string;
   /** Latched at the room list's first load per workspace; null until then. */
@@ -288,6 +290,12 @@ export function MessagingWorkspaceProvider({
   // A roster row's display name, with the same "Workspace member" fallback everywhere one is missing.
   const rosterName = (member: CompanyMember | undefined) => member?.name || member?.email || "Workspace member";
   const humanName = useCallback((id: string) => rosterName(humanRoster?.members?.find((candidate) => candidate.userId === id)), [humanRoster]);
+  // The same owner-name/own resolution sidebarSessions applies per section, for a
+  // session fetched directly rather than found in the workspace list (SessionFocus's
+  // single-session fallback).
+  const resolveSessionOwner = useCallback((humanUserId: string) =>
+    ({ ownerName: humanUserId === userId ? "You" : humanName(humanUserId), own: humanUserId === userId }),
+    [userId, humanName]);
   const sidebarSessions: SidebarSession[] = useMemo(() =>
     workspaceSections(workspaceSessions.sessions, userId, humanName).flatMap((section) =>
       section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId }))),
@@ -569,9 +577,9 @@ export function MessagingWorkspaceProvider({
   // so it waits here and is replayed once the list settles.
   const heldLink = useRef<string | null>(null);
   const closeSession = useCallback(() => { heldLink.current = null; setSessionFocus(null); }, []);
-  const openSession = useCallback((sessionId: string, { from }: { from: "sidebar" | "link" }) => {
+  const openSession = useCallback((sessionId: string) => {
     heldLink.current = null; // the latest intent wins
-    if (from === "link" && workspaceSessions.loading && !workspaceSessions.sessions.some((candidate) => candidate.sessionId === sessionId)) {
+    if (workspaceSessions.loading && !workspaceSessions.sessions.some((candidate) => candidate.sessionId === sessionId)) {
       heldLink.current = sessionId;
       return;
     }
@@ -582,7 +590,7 @@ export function MessagingWorkspaceProvider({
   useEffect(() => {
     const link = heldLink.current;
     if (!link || workspaceSessions.loading) return;
-    openSession(link, { from: "link" });
+    openSession(link);
   }, [workspaceSessions.loading, openSession]);
   const openMessage = useCallback((roomId: string, messageId: string | null) => {
     closeSession();
@@ -663,7 +671,7 @@ export function MessagingWorkspaceProvider({
     onRetry: () => void rooms.refreshRooms(),
     draftRoomIds,
     sessions: sidebarSessions,
-    onSelectSession: (sessionId: string) => void openSession(sessionId, { from: "sidebar" }),
+    onSelectSession: (sessionId: string) => void openSession(sessionId),
   };
   const selectMessageParticipant = useCallback(async (participant: RoomParticipant) => {
     markExplicitChoice();
@@ -768,6 +776,7 @@ export function MessagingWorkspaceProvider({
     sessionFocus,
     closeSession,
     sessionSource: rooms.resourceSource,
+    resolveSessionOwner,
     workspaceSessions,
     scope,
     freshLanding,

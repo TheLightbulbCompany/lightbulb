@@ -22,6 +22,7 @@ import type {
   TypingRequest,
   UpsertRoomMemberRequest,
   WorkspaceSessions,
+  LocalSession,
   LocalSessionEventPage,
   LocalSessionCommand,
   LocalSessionCommandReceipt,
@@ -58,6 +59,8 @@ const HISTORY_TIMEOUT_MS = 30_000;
 
 export interface MessagingClient {
   listWorkspaceSessions(): Promise<WorkspaceSessions>;
+  /** One session, ended included -- the list keeps only live ones. 404s LOCAL_SESSION_NOT_FOUND otherwise. */
+  getLocalSession(sessionId: string): Promise<LocalSession>;
   listLocalSessionEvents(sessionId: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
   submitLocalSessionCommand(sessionId: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt>;
   getLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
@@ -91,6 +94,7 @@ export interface MessagingClient {
 export function createMessagingClient(api: ApiMethods): MessagingClient {
   return {
     listWorkspaceSessions: () => api.get("/messaging/sessions") as Promise<WorkspaceSessions>,
+    getLocalSession: (sessionId) => api.get(sessionPath(sessionId)) as Promise<LocalSession>,
     listLocalSessionEvents: (sessionId, afterSeq, limit = 50) => api.get(
       `${sessionPath(sessionId)}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ) as Promise<LocalSessionEventPage>,

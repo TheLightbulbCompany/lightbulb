@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  buildRows, sessionLabel, sessionStatus, sessionViewKey, unavailableReason, useLocalSessionHistory, useSessionCommand, useWorkspaceSessions,
+  ApiError, buildRows, sessionLabel, sessionStatus, sessionViewKey, unavailableReason, useLocalSessionHistory, useSessionCommand, useWorkspaceSessions,
   type LocalSession, type SessionSource, type TranscriptRow,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -21,6 +21,7 @@ import { colors, fonts, spacing } from "../../../config/theme";
 import { memberName } from "../../../lib/localSessions";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
 import { useMobileRooms } from "../../../lib/rooms";
+import { fetchMembers, useTeamsConfig, type CompanyMember } from "../../../lib/teamsData";
 
 /** Distance from the bottom, in px, still counted as "at the bottom" (the room screen's value). */
 const BOTTOM_SLACK = 80;
@@ -47,9 +48,40 @@ export default function SessionScreen() {
   // visible: false — this screen belongs to no single room, so it marks nothing read.
   const rooms = useMobileRooms({ subscribeToRoom: false, autoSelect: false, visible: false });
   const workspace = useWorkspaceSessions(rooms.resourceSource, { enabled: live });
-  const session = workspace.sessions.find((s) => s.sessionId === sessionId);
+  const listed = workspace.sessions.find((s) => s.sessionId === sessionId);
+  // The workspace list excludes ended sessions -- one missing from it (once the
+  // list has settled) is fetched directly, the same fallback the web pane uses,
+  // so an ended session still opens with its real status.
+  const coldLoading = workspace.loading && workspace.sessions.length === 0;
+  const fetchedFor = useRef<string | null>(null);
+  const [fallback, setFallback] = useState<{ sessionId: string; session: LocalSession | null; notFound: boolean } | null>(null);
+  useEffect(() => {
+    if (listed || coldLoading || !sessionId || fetchedFor.current === sessionId) return;
+    fetchedFor.current = sessionId;
+    let alive = true;
+    void rooms.resourceSource.client.getLocalSession(sessionId)
+      .then((s) => { if (alive) setFallback({ sessionId, session: s, notFound: false }); })
+      .catch((e) => { if (alive) setFallback({ sessionId, session: null, notFound: e instanceof ApiError && e.status === 404 }); });
+    return () => { alive = false; };
+  }, [listed, coldLoading, sessionId, rooms.resourceSource.client]);
+  const resolvedFallback = fallback?.sessionId === sessionId ? fallback : null;
+  const session = listed ?? resolvedFallback?.session ?? undefined;
   const members = useMemo(() => rooms.rooms.flatMap((room) => room.members ?? []), [rooms.rooms]);
-  const ownerName = session ? memberName(members, session.humanUserId) : "Room member";
+  // Workspace-wide, so a shared session's owner can be someone the viewer shares
+  // no room with -- the org roster first (the same GET /teams/members
+  // sessions.tsx uses), room members as the fallback.
+  const config = useTeamsConfig();
+  const [roster, setRoster] = useState<CompanyMember[]>([]);
+  useEffect(() => {
+    let alive = true;
+    void fetchMembers(config).then((list) => { if (alive) setRoster(list); });
+    return () => { alive = false; };
+  }, [config]);
+  const ownerName = useMemo(() => {
+    if (!session) return "Workspace member";
+    const member = roster.find((m) => m.userId === session.humanUserId);
+    return member ? (member.name || member.email || "Workspace member") : memberName(members, session.humanUserId);
+  }, [session, roster, members]);
   const own = session ? session.humanUserId === userId : false;
   const name = useCallback(
     (who: string | null) => (who ? members?.find((m) => m.id === who)?.displayName ?? "Teammate" : ownerName),
@@ -94,10 +126,10 @@ export default function SessionScreen() {
                 <Text style={styles.link}>Try again</Text>
               </Pressable>
             </>
-          ) : workspace.loading && workspace.sessions.length === 0 ? (
-            <TimelineSkeleton />
-          ) : (
+          ) : resolvedFallback?.notFound ? (
             <Text style={styles.meta}>This session is no longer shared.</Text>
+          ) : (
+            <TimelineSkeleton />
           )}
         </View>
       </View>
@@ -115,7 +147,7 @@ export default function SessionScreen() {
         </View>
       )}
       <SessionBody
-        key={sessionViewKey(session, 0)}
+        key={sessionViewKey(session)}
         session={session}
         client={rooms.resourceSource.client}
         revision={workspace.hintRevision}
@@ -238,7 +270,7 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
           <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={colors.white} />
         </Pressable>
       )}
-      {own ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} />
+      {session.status === "ended" ? null : own ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} />
         : <Text style={[styles.meta, styles.readOnly]}>Only {ownerName} can send to this session.</Text>}
     </KeyboardAvoidingView>
   );

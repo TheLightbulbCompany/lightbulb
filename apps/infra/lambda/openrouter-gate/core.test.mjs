@@ -158,3 +158,29 @@ test('each admitted request emits one EMF request metric with tier and billing m
 test('an expired trial is refused before any priced upstream call', async () => { const f = fixture({ balance: null, status: 'trial_local', provider: 'none', metronome: false, trialEnd: Math.floor(Date.now() / 1000) - 60 }); f.deps.env = { ...env, MODEL_POLICY_JSON: JSON.stringify(deepseek) }; await handleRequest(f.event({ model: 'deepseek/deepseek-v4-flash', messages: [{ role: 'user', content: 'Hi' }], stream: true }), f.responder, f.deps); assert.equal(f.calls.errors[0].status, 403); assert.equal(f.calls.forwards.length, 0); });
 test('an unexpired trial is still admitted on the capped path', async () => { const f = fixture({ balance: null, status: 'trial_local', provider: 'none', metronome: false, trialEnd: Math.floor(Date.now() / 1000) + 86400 }); f.deps.env = { ...env, MODEL_POLICY_JSON: JSON.stringify(deepseek) }; await handleRequest(f.event({ model: 'deepseek/deepseek-v4-flash', messages: [{ role: 'user', content: 'Hi' }], stream: true }), f.responder, f.deps); assert.equal(f.calls.errors.length, 0, f.calls.errors[0]?.message); assert.equal(f.calls.forwards.length, 1); });
 test('a lapsed Base subscription is not admitted on the capped path', async () => { for (const status of ['canceled', 'past_due']) { const f = fixture({ balance: null, status, provider: 'none', plan: 'base', metronome: false }); f.deps.env = { ...env, MODEL_POLICY_JSON: JSON.stringify(deepseek) }; await handleRequest(f.event({ model: 'deepseek/deepseek-v4-flash', messages: [{ role: 'user', content: 'Hi' }], stream: true }), f.responder, f.deps); assert.equal(f.calls.errors[0].status, 403, status); assert.equal(f.calls.forwards.length, 0); } });
+
+// Hermes's "custom" provider probes an OpenAI-shaped models list at either of these paths
+// (agent/model_metadata.py fetch_endpoint_model_metadata) before it ever sends a chat request.
+const modelsEvent = (path, token = 'good') => ({ rawPath: path, requestContext: { http: { method: 'GET' } }, headers: { authorization: `Bearer ${token}` } });
+test('an authorized GET lists the policy models in OpenAI shape', async () => {
+  for (const path of ['/v1/models', '/models']) {
+    const f = fixture();
+    await handleRequest(modelsEvent(path), f.responder, f.deps);
+    assert.equal(f.calls.errors.length, 0, f.calls.errors[0]?.message);
+    assert.equal(f.calls.head.status, 200, path);
+    const parsed = JSON.parse(Buffer.concat(f.calls.chunks).toString());
+    assert.deepEqual(parsed, { object: 'list', data: policy.models.map(id => ({ id, object: 'model', owned_by: 'lightbulb' })) });
+    assert.equal(f.calls.forwards.length, 0);
+  }
+});
+test('an unauthorized GET to the models list is refused like chat', async () => {
+  const f = fixture({ token: 'wrong' });
+  await handleRequest(modelsEvent('/v1/models'), f.responder, f.deps);
+  assert.equal(f.calls.errors[0].status, 401);
+  assert.equal(f.calls.head, undefined);
+});
+test('every other path still 404s', async () => {
+  const f = fixture();
+  await handleRequest(modelsEvent('/v1/embeddings'), f.responder, f.deps);
+  assert.equal(f.calls.errors[0].status, 404);
+});

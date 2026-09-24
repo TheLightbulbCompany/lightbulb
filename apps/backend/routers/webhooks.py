@@ -529,6 +529,25 @@ async def _handle_organization_membership_deleted(
     if revocation_error is not None:
         raise revocation_error
 
+    await _teardown_if_no_members_left(org_id)
+
+
+async def _teardown_if_no_members_left(org_id: str) -> None:
+    """The LAST member leaving (or deleting their Clerk account) leaves an org nobody can sign in
+    to, but Clerk keeps the empty org, so ``organization.deleted`` never fires and the workspace
+    runs on (prod org_3JKLW…, 2026-09-23). Run the same teardown the org deletion does.
+
+    STRICT roster read: a Clerk blip must fail closed (raise, and the webhook retries) rather
+    than read as "no members" and tear a live workspace down."""
+    from core.services.clerk_admin import list_organization_members
+
+    if not settings.CLERK_SECRET_KEY:
+        return  # no roster to read (tests, local dev): unknown is not "empty"
+    if await list_organization_members(org_id, strict=True):
+        return
+    logger.info("organizationMembership.deleted: org %s has no members left -- tearing it down", org_id)
+    await _handle_organization_deleted({"id": org_id})
+
 
 async def _handle_organization_deleted(data: dict) -> None:
     """Cancel the org's Stripe subscription, then
@@ -591,6 +610,16 @@ async def _handle_organization_deleted(data: dict) -> None:
             "Stripe subscription cancel on organization.deleted failed for org %s",
             org_id,
         )
+
+    # The runtime itself. A paid workspace also reaches this through the Stripe
+    # subscription.deleted teardown, but a free trial has no subscription to cancel, so
+    # nothing else would ever stop it. Idempotent; profiles are kept (delete_profiles=False).
+    try:
+        from core.services.hermes_provisioning import delete_workspace_runtime
+
+        await delete_workspace_runtime(org_id)
+    except Exception:
+        logger.exception("runtime teardown on organization.deleted failed for org %s", org_id)
 
     provisioning = await build_paperclip_provisioning()
     try:

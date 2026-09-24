@@ -299,8 +299,14 @@ describe("LLMPanel", () => {
     mockSWRData.mockReturnValue({ provider_choice: null });
     render(<LLMPanel />);
     expect(screen.getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/settings?panel=billing");
-    expect(screen.getByRole("button", { name: /Sign in with ChatGPT/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /Bring your own API key/ })).toBeDisabled();
+    // Locked cards are focusable links to Billing that say why, not silent disabled buttons.
+    for (const name of [/Sign in with ChatGPT/, /Bring your own API key/]) {
+      const card = screen.getByRole("link", { name });
+      expect(card).toHaveAttribute("href", "/settings?panel=billing");
+      expect(card).toHaveTextContent("Paid plans");
+      expect(card).toHaveAccessibleDescription(/Available on paid plans/);
+    }
+    expect(screen.queryByRole("button", { name: /Sign in with ChatGPT/ })).toBeNull();
     expect(screen.queryByText(/coming soon/i)).toBeNull();
   });
 
@@ -317,7 +323,7 @@ describe("LLMPanel", () => {
     expect(screen.queryByText("Active")).toBeNull();
     expect(screen.getByText(reason)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/settings?panel=billing");
-    expect(screen.getByRole("button", { name: /Sign in with ChatGPT/ })).toBeDisabled();
+    expect(screen.getByRole("link", { name: /Sign in with ChatGPT/ })).toHaveAttribute("href", "/settings?panel=billing");
   });
 
   it("treats a trial with no trial_end yet as live", () => {

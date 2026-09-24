@@ -825,6 +825,12 @@
 .free-tier-note a:hover {
   color: var(--midnight);
 }
+.free-tier-note--urgent,
+.free-tier-note--urgent a,
+.free-tier-note--urgent a:hover {
+  color: var(--warn);
+  font-weight: 600;
+}
 .version-text {
   text-align: center;
   font-size: var(--text-2xs);

@@ -13,6 +13,7 @@ import { useStatusLoaded } from "@lightbulb/shared";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { CreditsSection } from "./CreditsSection";
 import { OpenAIIcon, AnthropicIcon } from "@/components/chat/ProviderIcons";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -346,37 +347,55 @@ const PROVIDER_ICONS: Record<CredentialProviderChoice, React.ReactNode> = {
  * Inline credential picker. The choices are rendered on the panel rather than
  * behind a button so an owner can see what the options are; a pick hands off to
  * ChangeProviderModal opened on that credential stage, which owns the OAuth
- * device-code and BYO-key flows. `disabled` = free trial, where a switch 409s
- * (use_trial_checkout) until the workspace is on a paid plan.
+ * device-code and BYO-key flows. `locked` = free trial or lapsed plan, where a
+ * switch 409s (use_trial_checkout): each card then links to Billing with a
+ * "Paid plans" badge instead of sitting there silently disabled, so it stays
+ * focusable and says why.
  */
 function ProviderChoiceCards({
   onPick,
-  disabled = false,
+  locked = false,
 }: {
   onPick: (choice: CredentialProviderChoice) => void;
-  disabled?: boolean;
+  locked?: boolean;
 }) {
+  const cardClass =
+    "block rounded-xl border border-[var(--edge)] bg-cream p-4 text-left transition-colors hover:border-[var(--midnight)] hover:bg-[var(--cream-deep)]";
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {locked && (
+        <p id="provider-cards-locked" className="sr-only">
+          Available on paid plans. Opens plans.
+        </p>
+      )}
       {PROVIDER_SWITCH_CARDS.map((card) => {
         const id = card.id as CredentialProviderChoice;
-        return (
-          <button
-            key={id}
-            type="button"
-            onClick={() => onPick(id)}
-            disabled={disabled}
-            className="rounded-xl border border-[var(--edge)] bg-cream p-4 text-left transition-colors hover:border-[var(--midnight)] hover:bg-[var(--cream-deep)] disabled:opacity-50 disabled:hover:border-[var(--edge)] disabled:hover:bg-cream"
-          >
-            {/* Icon beside the copy on narrow widths, above it once the grid
-                goes multi-column. */}
-            <div className="flex items-start gap-3 sm:block">
-              <div className={`${HERO_TILE} sm:mb-3`}>{PROVIDER_ICONS[id]}</div>
-              <div className="min-w-0">
-                <h3 className="text-sm font-medium text-[var(--midnight)]">{card.title}</h3>
-                <p className="mt-1 text-xs text-[var(--midnight-muted)]">{card.subtitle}</p>
-              </div>
+        const body = (
+          // Icon beside the copy on narrow widths, above it once the grid
+          // goes multi-column.
+          <div className="flex items-start gap-3 sm:block">
+            <div className={`${HERO_TILE} sm:mb-3`}>{PROVIDER_ICONS[id]}</div>
+            <div className="min-w-0">
+              <h3 className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--midnight)]">
+                {card.title}
+                {locked && <Badge variant="outline">Paid plans</Badge>}
+              </h3>
+              <p className="mt-1 text-xs text-[var(--midnight-muted)]">{card.subtitle}</p>
             </div>
+          </div>
+        );
+        return locked ? (
+          <Link
+            key={id}
+            href="/settings?panel=billing"
+            aria-describedby="provider-cards-locked"
+            className={cardClass}
+          >
+            {body}
+          </Link>
+        ) : (
+          <button key={id} type="button" onClick={() => onPick(id)} className={cardClass}>
+            {body}
           </button>
         );
       })}
@@ -441,7 +460,7 @@ function ManagedAllowanceBlock({
           Or use your own provider
           {trial && !blocked && <> on a paid plan. {plansLink}</>}
         </p>
-        <ProviderChoiceCards onPick={onPick} disabled={trial || blocked !== null} />
+        <ProviderChoiceCards onPick={onPick} locked={trial || blocked !== null} />
       </div>
     </>
   );

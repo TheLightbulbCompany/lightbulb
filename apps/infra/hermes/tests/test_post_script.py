@@ -1,0 +1,52 @@
+"""lightbulb-post.sh: builds the out-of-turn post request with a deterministic event id.
+A fake `curl` on PATH records the JSON body and answers 201, so no network is touched."""
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+
+import pytest
+
+SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "skills-src/lightbulb/scripts/lightbulb-post.sh"
+pytestmark = pytest.mark.skipif(not shutil.which("jq"), reason="the script needs jq")
+
+
+def _run(tmp_path, *args, body="Morning brief"):
+    log = tmp_path / "curl.json"
+    fake = tmp_path / "bin" / "curl"
+    fake.parent.mkdir(exist_ok=True)
+    # The payload follows -d; the URL is the last arg. Answer like the backend: JSON + code.
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'while [[ $# -gt 0 ]]; do case "$1" in -d) printf "%s" "$2" > "$LOG"; shift 2;; *) url="$1"; shift;; esac; done\n'
+        'printf "%s" "$url" > "$LOG.url"\n'
+        "printf '{\"roomId\":\"r1\"}\\n201'\n"
+    )
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{fake.parent}:{os.environ['PATH']}", "LOG": str(log),
+           "PAPERCLIP_AGENT_ID": "agent-1", "OPENCLAW_HOOK_TOKEN": "t", "ISOL8_API_URL": "https://api.x/",
+           "ISOL8_OWNER_ID": "org_1"}
+    proc = subprocess.run(["bash", str(SCRIPT), *args], input=body, env=env, capture_output=True, text=True)
+    sent = json.loads(log.read_text()) if log.exists() else None
+    return proc, sent, (tmp_path / "curl.json.url").read_text() if sent else None
+
+
+def test_default_posts_to_general_with_a_deterministic_agent_scoped_event_id(tmp_path):
+    proc, sent, url = _run(tmp_path)
+    assert proc.returncode == 0 and "Posted to room r1" in proc.stdout
+    assert url == "https://api.x/api/v1/internal/messaging/agent-posts/org_1"
+    assert set(sent) == {"eventId", "agentId", "text"} and sent["agentId"] == "agent-1"
+    assert sent["eventId"].startswith("post:agent-1:")
+    assert _run(tmp_path)[1]["eventId"] == sent["eventId"]  # a retry replays
+    assert _run(tmp_path, "--handle", "ann")[1]["eventId"] != sent["eventId"]  # another target does not
+
+
+def test_targets_and_event_id_override(tmp_path):
+    _, sent, _ = _run(tmp_path, "--room", "r9", "--issue", "iss", "--event-id", "brief-2026-09-24")
+    assert (sent["roomId"], sent["issueId"], sent["eventId"]) == ("r9", "iss", "post:agent-1:brief-2026-09-24")
+
+
+def test_refuses_two_targets_and_an_empty_body(tmp_path):
+    assert _run(tmp_path, "--room", "r", "--user", "u")[0].returncode != 0
+    assert _run(tmp_path, body="  \n")[0].returncode != 0

@@ -17,6 +17,27 @@ the genuinely missing piece:
 | Durable artifacts | Your workspace persists every file across sessions and restarts. Keep the root for files that ARE the agent (persona, `skills/`, `pipelines/`, `memory/`) — write run scratch and working evidence you don't intend to ship under **`.run/`** (a dot-dir: just as durable, but excluded from marketplace exports). Anything left loose in the root ships if this agent is ever published. Every file here is re-downloaded on each cold start, so **delete a git clone or worktree under `.run/` once its PR merges or closes** — keep only what you are still working on. |
 | Generic webhook → agent run | Teams → Automations: any external service can POST to a signed per-trigger URL and start a routine run (create one via the "Any other app" option — the owner gets a one-time URL + secret). Connected apps with 1-click trigger seeding: Stripe, Sentry, Linear, Attio — pick the app + event(s) in the Automations panel; event selection is MULTI-SELECT for the apps whose deliveries name the fired event in the BODY (Stripe, Linear, Attio, Vercel, Meta) and ONE trigger carries the whole list — three Stripe events = one URL to paste, not three, and the seeded instructions tell the agent to read the event type off the payload and branch on it. GitHub and Sentry name the fired event in an HTTP header instead, which does not reach the agent, so they stay one event per trigger (pick them separately); the owner pastes the URL into that app's dashboard and pastes back its signing secret. PostHog is the mirror image: it signs nothing, so Lightbulb shows a URL AND an Authorization header value the owner sets on a PostHog HTTP Webhook destination (nothing to paste back). Meta Ads and Instagram (dev only for now, pending Meta App Review) are the same one-click shape but app-level: Meta gives Lightbulb a single webhook callback for every user, so picking app + event + Page/Instagram account subscribes that asset and deliveries are routed by the asset id in the payload. GitHub, Vercel, and Google go further: pick app + event(s) + repository/project/Google account and Lightbulb registers the webhook itself (for Vercel, one webhook subscribed to every event picked) (GitHub needs repo admin; Vercel needs a full-access token on a Pro/Enterprise team; Google rides the connected account's gog grant — Calendar changed / Drive file changed, and the push carries no payload, so the seeded routine tells the agent to `gog -a <account>` what changed) — live immediately, no paste step. Gmail has two events: "New email (checked on a schedule)" seeds a routine that gog-searches the picked account's inbox every 10 minutes — zero setup, live immediately; "New email (real-time push)" registers a Gmail watch to the OWNER'S OWN Pub/Sub topic (Google is BYO, so they have a GCP project) and the finish dialog gives the one-time topic/subscription steps. The Google/Gmail events are the exception to multi-select: each one opens its own push channel, watch or poll schedule, so they are armed one event per trigger (picking two together is refused with a message naming them). Google watches expire ≤7 days and renew THEMSELVES: each Google-triggered automation also carries a twice-weekly "Keep the Google watch alive" schedule trigger, and the routine's description tells you to re-arm the watch from its state file at `$HERMES_HOME/google-watch/<trigger>.json` before acting — a run where nothing changed is just that maintenance tick, stop quietly. Two things are true of BOTH doors into this: wiring an app pre-fills an EDITABLE title + instructions (the template is a starting point, not a fixed form), and an automation that already exists can take a new trigger of either kind from its own detail panel (Triggers → Add → on a schedule, a connected app, or any other app). Arming a Google/Gmail event on an automation someone wrote by hand APPENDS the renewal step as a clearly delimited block at the end of its instructions — nothing hand-written is overwritten — and the dialog says so before it is confirmed. |
 
+## Post outside a room turn
+
+Your room tools only work inside a Lightbulb room turn. From a Paperclip run, a
+heartbeat or a routine, post with the script (body on stdin):
+
+```bash
+printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh                     # #general
+printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --room <roomId>       # a room you are in
+printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --handle aden         # a teammate's DM (or --user <userId>)
+printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --issue "$PAPERCLIP_TASK_ID"  # the issue creator's DM
+```
+
+- Target order: `--room`, then `--user`/`--handle`, then `--issue` (falls through to
+  #general when an agent created the issue), then #general. Name at most one of
+  room/user/handle. A DM is created if it does not exist; a named room is NOT joined
+  for you — you must already be a member.
+- A retry of the same post replays instead of doubling. A recurring post whose text
+  may repeat (a daily brief) passes `--event-id <something per day>` so tomorrow's
+  identical text still posts.
+- Posting is never required: a routine that has nothing worth saying posts nothing.
+
 The honest boundary: outside GitHub/Vercel/Google, Lightbulb cannot yet
 REGISTER the webhook inside the external service itself — the owner does
 that one dashboard step (the Automations panel walks them through it).

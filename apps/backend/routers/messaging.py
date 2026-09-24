@@ -33,6 +33,7 @@ from core.services.messaging import (
     AbortRunResponse,
     AgentMessageReceiptResponse,
     AgentMessageRequest,
+    AgentPostRequest,
     ApiProblem,
     CanonicalMessage,
     FollowUpRequest,
@@ -620,6 +621,18 @@ async def steer_run(run_id: str, request: SteerRunRequest, auth: AuthContext = D
 async def post_agent_message(owner_id: str, body: AgentMessageRequest, request: Request):
     await _require_hook_token(owner_id, request)
     return await service.create_agent_message(owner_id, body)
+
+
+@router.post(
+    "/internal/messaging/agent-posts/{owner_id}",
+    response_model=AgentMessageReceiptResponse,
+    status_code=201,
+)
+async def post_agent_post(owner_id: str, body: AgentPostRequest, request: Request):
+    """An agent posting outside a room turn (``lightbulb-post.sh``): resolves the target
+    room, then writes through the same canonical agent writer as ``agent-messages``."""
+    await _require_hook_token(owner_id, request)
+    return await service.post_agent_message(owner_id, body)
 
 
 @router.get(

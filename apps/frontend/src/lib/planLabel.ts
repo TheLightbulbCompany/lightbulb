@@ -88,3 +88,21 @@ export function freeTierDaysLeft(
     Math.max(0, Math.ceil((trialEndSec * 1000 - nowMs) / 86_400_000)),
   );
 }
+
+/**
+ * Today's managed-model allowance line for capped owners (trial, Base, paid with no
+ * provider). A tripped cap wins over the percentage, which lags it by the backend's
+ * ~60 s cache. Null when there's nothing to say (uncapped owner, OpenRouter unreadable).
+ */
+export function allowanceLine(
+  account:
+    | { capped_today?: boolean; allowance?: { used_usd: number; limit_usd: number } | null }
+    | null
+    | undefined,
+): string | null {
+  if (account?.capped_today) return "Daily allowance used — resets at 00:00 UTC.";
+  const a = account?.allowance;
+  if (!a || a.limit_usd <= 0) return null;
+  const pct = Math.min(100, Math.round((a.used_usd / a.limit_usd) * 100));
+  return `Today: ${pct}% of your daily allowance used · resets 00:00 UTC`;
+}

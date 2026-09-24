@@ -7,7 +7,7 @@ import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { useBilling } from "@/hooks/useBilling";
 import type { UsageSummary } from "@/hooks/useBilling";
 import { Button } from "@/components/ui/button";
-import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
+import { planLabel, isFreeTierExpired, allowanceLine } from "@/lib/planLabel";
 
 // =============================================================================
 // Helpers
@@ -124,6 +124,10 @@ export function UsagePanel({ embedded = false }: UsagePanelProps = {}) {
             </span>
           )}
         </div>
+      )}
+
+      {!isTrialExpired && allowanceLine(account) && (
+        <p className="text-sm text-[var(--midnight)]">{allowanceLine(account)}</p>
       )}
 
       {usage && (

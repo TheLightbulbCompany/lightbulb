@@ -287,6 +287,20 @@ describe("LLMPanel", () => {
     expect(screen.getByRole("link", { name: "Upgrade" })).toHaveAttribute("href", "/settings?panel=billing");
   });
 
+  it("shows how much of today's allowance is used, until the cap trips", () => {
+    const allowance = { used_usd: 0.155, limit_usd: 0.25, resets_at: 0 };
+    accountFields = { subscription_status: "trial_local", allowance };
+    mockSWRData.mockReturnValue({ provider_choice: null });
+    const { unmount } = render(<LLMPanel />);
+    expect(screen.getByText("Today: 62% of your daily allowance used · resets 00:00 UTC")).toBeInTheDocument();
+    unmount();
+
+    accountFields = { subscription_status: "trial_local", allowance, capped_today: true };
+    render(<LLMPanel />);
+    expect(screen.getByText("Daily allowance used")).toBeInTheDocument();
+    expect(screen.queryByText(/Today:/)).toBeNull();
+  });
+
   it("tells a Workspace owner prepaid credits are coming soon", () => {
     accountFields = { subscription_status: "active", plan: "standard" };
     mockSWRData.mockReturnValue({ provider_choice: null });

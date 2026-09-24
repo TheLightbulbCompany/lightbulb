@@ -164,6 +164,33 @@ class TestGetUsage:
         assert data["lifetime_spend"] == 15.75
         assert data["by_member"] == []
 
+    @pytest.mark.asyncio
+    @patch("routers.billing._resolve_clerk_user", new_callable=AsyncMock)
+    @patch("routers.billing.usage_repo")
+    @patch("routers.billing.get_usage_summary")
+    async def test_owner_attributed_usage_is_named_not_a_raw_org_id(
+        self, mock_get_summary, mock_usage_repo, mock_clerk, async_client
+    ):
+        row = {"total_spend_microdollars": 0, "total_input_tokens": 1, "total_output_tokens": 1, "request_count": 1}
+        mock_usage_repo.get_member_usage = AsyncMock(
+            return_value=[{"user_id": "org_test_456", **row}, {"user_id": "user_test_123", **row}]
+        )
+        mock_get_summary.return_value = {
+            "period": "2026-09",
+            "total_spend": 0,
+            "total_input_tokens": 2,
+            "total_output_tokens": 2,
+            "total_cache_read_tokens": 0,
+            "total_cache_write_tokens": 0,
+            "request_count": 2,
+            "lifetime_spend": 0,
+        }
+        mock_clerk.return_value = {"display_name": "Ada", "email": "ada@example.com"}
+
+        members = (await async_client.get("/api/v1/billing/usage")).json()["by_member"]
+        assert [m["display_name"] for m in members] == ["Workspace agents & automations", "Ada"]
+        mock_clerk.assert_awaited_once_with("user_test_123")
+
 
 class TestGetMyUsage:
     @pytest.mark.asyncio

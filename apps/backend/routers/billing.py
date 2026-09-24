@@ -20,7 +20,7 @@ from core.auth import (
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
-from core.services import trial_cap
+from core.services import openrouter_keys, trial_cap
 from core.services.billing_service import BillingService
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
@@ -130,6 +130,8 @@ async def get_billing_account(
         ultra_price_usd=settings.ULTRA_PRICE_USD,
         subscription_source=(account.get("subscription_source") if account else None),
         capped_today=bool(account) and account.get("openrouter_capped_day") == trial_cap.utc_today(),
+        # Only capped owners have a daily allowance; omitted (None) when OpenRouter can't be read.
+        allowance=await openrouter_keys.owner_allowance(owner_id) if trial_cap.is_managed_capped(account) else None,
     )
 
 
@@ -155,10 +157,13 @@ async def get_usage(
 
         # Resolve Clerk names in parallel
         async def _enrich(m: dict) -> MemberUsage:
-            clerk_info = await _resolve_clerk_user(m["user_id"])
+            # Usage with no human behind it (agent runs, routines, webhooks) is attributed to the
+            # owner id itself; Clerk has no user by that id, so name it instead of leaking org_….
+            owned = m["user_id"] == owner_id
+            clerk_info = {} if owned else await _resolve_clerk_user(m["user_id"])
             return MemberUsage(
                 user_id=m["user_id"],
-                display_name=clerk_info.get("display_name"),
+                display_name="Workspace agents & automations" if owned else clerk_info.get("display_name"),
                 email=clerk_info.get("email"),
                 total_spend=m["total_spend_microdollars"] / 1_000_000,
                 total_input_tokens=m["total_input_tokens"],

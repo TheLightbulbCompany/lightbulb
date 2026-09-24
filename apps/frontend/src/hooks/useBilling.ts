@@ -39,6 +39,8 @@ export interface BillingAccount {
   ultra_price_usd: number;
   // The managed model's per-key daily limit tripped today (UTC); clears at the rollover.
   capped_today?: boolean;
+  // Capped owners only: OpenRouter's own daily usage on the owner's key. Absent on a read failure.
+  allowance?: { used_usd: number; limit_usd: number; resets_at: number } | null;
 }
 
 export interface MemberUsage {

@@ -1,3 +1,5 @@
+import time
+
 import httpx
 import pytest
 import boto3
@@ -545,3 +547,36 @@ async def test_check_account_balance_emits_nothing_on_error():
             await check_account_balance(http=http, sm=sm)
 
     mock_gauge.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_owner_allowance_reads_openrouters_daily_usage_and_caches_it(monkeypatch):
+    from core.services import openrouter_keys
+
+    monkeypatch.setattr(openrouter_keys, "_allowance_cache", {})
+    with mock_aws():
+        sm, requests, _, _ = _relimit_fixture(monkeypatch, account=None, current_limit=0.25)
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            assert request.url == "https://openrouter.ai/api/v1/keys/key-hash"
+            return httpx.Response(200, json={"data": {"limit": 0.25, "usage_daily": 0.155, "limit_remaining": 0.095}})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            first = await openrouter_keys.owner_allowance("owner-123", http=http, sm=sm)
+            second = await openrouter_keys.owner_allowance("owner-123", http=http, sm=sm)
+    assert first["used_usd"] == 0.155 and first["limit_usd"] == 0.25
+    assert first["resets_at"] % 86400 == 0 and 0 < first["resets_at"] - time.time() <= 86400
+    assert second == first
+    assert len(requests) == 1  # the second read is served from the 60 s cache
+
+
+@pytest.mark.asyncio
+async def test_owner_allowance_fails_soft(monkeypatch):
+    from core.services import openrouter_keys
+
+    monkeypatch.setattr(openrouter_keys, "_allowance_cache", {})
+    with mock_aws():
+        sm, _, _, _ = _relimit_fixture(monkeypatch, account=None, current_limit=0.25)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500))) as http:
+            assert await openrouter_keys.owner_allowance("owner-123", http=http, sm=sm) is None

@@ -41,6 +41,7 @@ import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import type {
   CompanyAgent,
+  CompanyMember,
   Goal,
   IssueProject,
   IssueUpdateInput,
@@ -59,6 +60,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
   const issueMutations = useIssueMutations();
   const { read, mutate } = useTeamsApi();
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
+  const { data: membersResp } = read<{ members: CompanyMember[] }>("/members");
   const { data: projectsResp } = read<{ projects: IssueProject[] }>("/projects");
   // Company goals back the Goals row's "add" picker (id + title). Read
   // unconditionally per useTeamsApi's rules-of-hooks contract.
@@ -233,6 +235,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
         open={creating}
         onOpenChange={setCreating}
         agents={agents}
+        members={membersResp?.members ?? []}
         projects={projects}
         defaultProjectId={projectId}
         onCreated={() => {

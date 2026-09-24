@@ -5,6 +5,15 @@
 // IssueFiltersPopover. Upstream's User parameter was already a bare userId
 // string, so no Isol8 CompanyMember swap is required.
 
+import type { CompanyMember } from "../types";
+
+/** Members who can own a task, keyed by the Paperclip user id an issue's
+ * `assigneeUserId` holds (not the Clerk id). One without a Paperclip identity
+ * is left out: Paperclip would refuse the assignment. */
+export function assignableMembers(members: readonly CompanyMember[]): CompanyMember[] {
+  return members.flatMap((m) => (m.paperclipUserId ? [{ ...m, userId: m.paperclipUserId }] : []));
+}
+
 export interface AssigneeSelection {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;

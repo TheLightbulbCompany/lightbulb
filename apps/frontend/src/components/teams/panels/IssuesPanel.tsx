@@ -22,6 +22,7 @@ import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type {
   CompanyAgent,
+  CompanyMember,
   Goal,
   Issue,
   IssueProject,
@@ -101,6 +102,7 @@ export function IssuesPanel({
   // are non-empty (its defaults are []). TasksList also resolves assignee /
   // status-circle names from the roster, and feeds agents to the board.
   const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
+  const { data: membersData } = read<{ members: CompanyMember[] }>("/members");
   const { data: projectsData, mutate: mutateProjects } = read<{ projects: IssueProject[] }>(
     "/projects",
   );
@@ -313,6 +315,7 @@ export function IssuesPanel({
         open={newTaskOpen}
         onOpenChange={(open) => (open ? setCreating(true) : closeNewTask())}
         agents={agentsData?.agents ?? []}
+        members={membersData?.members ?? []}
         projects={projectsData?.projects ?? []}
         goals={goalsData?.goals ?? []}
         defaultTitle={prefilled ? ONBOARDING_FIRST_TASK_TITLE : undefined}

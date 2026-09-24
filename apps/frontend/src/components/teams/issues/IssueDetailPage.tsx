@@ -514,6 +514,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
         <SubIssuesSection
           issueId={issueId}
           agents={agents}
+          members={members}
           projects={projects}
           parentLabel={issue.identifier ? `${issue.identifier} ${issue.title}` : issue.title}
         />

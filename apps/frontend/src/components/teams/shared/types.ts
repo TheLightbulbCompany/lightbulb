@@ -187,6 +187,8 @@ export interface IssueCreateInput {
    * upstream inherits the parent task's goal rather than leaving it unset. */
   goalId?: string;
   assigneeAgentId?: string;
+  /** A human owner's Paperclip user id (`CompanyMember.paperclipUserId`). */
+  assigneeUserId?: string;
   status?: IssueStatus;
   workMode?: IssueWorkMode;
 }
@@ -212,7 +214,8 @@ export interface IssueUpdateInput {
    * camelCase-aliases this to ``parentId``. ``undefined`` leaves the parent
    * unchanged. */
   parentId?: string | null;
-  /** Assign a human company member by Clerk user id, or ``null`` to clear it.
+  /** Assign a human company member by Paperclip user id
+   * (``CompanyMember.paperclipUserId``), or ``null`` to clear it.
    * Mutually exclusive with ``assigneeAgentId`` — the picker sends the other
    * as ``null`` so only one assignee kind is ever set. ``undefined`` leaves
    * the user-assignee unchanged. */
@@ -1038,6 +1041,8 @@ export interface CompanyMember {
   name?: string | null;
   email?: string | null;
   imageUrl?: string | null;
+  /** The id Paperclip's `assigneeUserId` holds; null until the member has a Paperclip identity. */
+  paperclipUserId?: string | null;
 }
 
 export interface CompanyAgent {

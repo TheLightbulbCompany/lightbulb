@@ -281,6 +281,39 @@ def test_create_issue_forwards_goal_id_as_camelcase(client, monkeypatch):
     assert body == {"title": "Bug", "goalId": "goal_1"}
 
 
+def test_human_assignee_is_forwarded_and_wakes_no_agent(client, monkeypatch):
+    """A task can be owned by a workspace human (Paperclip ``assigneeUserId``).
+    Create and PATCH forward it as-is; the PATCH never takes the agent-only
+    blocked->todo path, so no agent is handed the task."""
+    admin = MagicMock()
+    admin.create_issue = AsyncMock(return_value={"id": "iss_1"})
+    admin.patch_issue = AsyncMock(return_value={"id": "iss_1"})
+    admin.get_issue = AsyncMock(return_value={"id": "iss_1", "companyId": "co_abc", "status": "blocked"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues",
+        json={"title": "Call the bank", "status": "todo", "assigneeUserId": "pcu_b"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert admin.create_issue.await_args.kwargs["body"] == {
+        "title": "Call the bank",
+        "status": "todo",
+        "assigneeUserId": "pcu_b",
+    }
+
+    r = client.patch(
+        "/api/v1/teams/issues/11111111-1111-1111-1111-111111111111",
+        json={"assigneeUserId": "pcu_b", "assigneeAgentId": None},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert admin.patch_issue.await_args.kwargs["body"] == {"assigneeUserId": "pcu_b", "assigneeAgentId": None}
+
+
 def test_create_issue_rejects_unknown_field(client):
     """Unknown body fields must 422 at the FastAPI boundary
     (CreateIssueBody is extra="forbid")."""

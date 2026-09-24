@@ -136,6 +136,17 @@ export interface IssueLiveRun {
   createdAt?: string | null;
   /** Upstream decorateActiveRunStatus: human copy for the current phase. */
   currentStatusMessage?: string | null;
+  invocationSource?: string | null;
+  /** Output-silence watchdog (upstream buildRunOutputSilence). */
+  outputSilence?: IssueRunOutputSilence | null;
+}
+
+/** Upstream ActiveRunForIssue["outputSilence"] — the fields the run ledger reads. */
+export interface IssueRunOutputSilence {
+  level: "ok" | "suspicious" | "critical" | "snoozed" | "not_applicable";
+  silenceAgeMs?: number | null;
+  evaluationIssueId?: string | null;
+  evaluationIssueIdentifier?: string | null;
 }
 
 /** Thumbs up/down value for a feedback vote on an agent output. */
@@ -394,6 +405,8 @@ export interface Issue {
   /** The parked scheduled retry (detail route). The recovery card reads it to
    * tell a retry that is genuinely running from one whose due time passed. */
   scheduledRetry?: IssueScheduledRetry | null;
+  /** Why execution stopped (detail route); drives the ported ExecutionBlockerNotice. */
+  executionBlocker?: ExecutionBlocker | null;
   /** Upstream's flattened monitor columns (detail route); the ported
    * IssueMonitorBanner falls back to them when executionState has no monitor. */
   monitorNextCheckAt?: string | null;
@@ -556,7 +569,19 @@ export interface HeartbeatRun {
   failureReason?: string | null;
 }
 
-/** A run for an issue (upstream RunForIssue subset). `status` is a free string. */
+/** Upstream heartbeatRuns.livenessState (RunLivenessState). */
+export type RunLivenessState =
+  | "completed"
+  | "advanced"
+  | "plan_only"
+  | "empty_response"
+  | "blocked"
+  | "failed"
+  | "needs_followup";
+
+/** A run for an issue (upstream RunForIssue subset — the fields the ported
+ *  IssueRunLedger reads). `status` is a free string; every non-id field is
+ *  optional-defensive because the BFF forwards upstream rows verbatim. */
 export interface IssueRun {
   runId: string;
   status: string;
@@ -564,6 +589,41 @@ export interface IssueRun {
   startedAt?: string | null;
   finishedAt?: string | null;
   createdAt?: string | null;
+  invocationSource?: string | null;
+  responsibleUserId?: string | null;
+  errorCode?: string | null;
+  resultJson?: Record<string, unknown> | null;
+  retryOfRunId?: string | null;
+  scheduledRetryAt?: string | null;
+  scheduledRetryAttempt?: number | null;
+  scheduledRetryReason?: string | null;
+  retryExhaustedReason?: string | null;
+  livenessState?: RunLivenessState | null;
+  livenessReason?: string | null;
+  continuationAttempt?: number | null;
+  lastUsefulActionAt?: string | null;
+  nextAction?: string | null;
+}
+
+/** Upstream WatchdogDecisionInput (ui/src/api/heartbeats.ts) — the body of
+ *  POST /teams/heartbeat-runs/{runId}/watchdog-decisions, plus its run id. */
+export interface WatchdogDecisionInput {
+  runId: string;
+  decision: "snooze" | "continue" | "dismissed_false_positive";
+  evaluationIssueId?: string | null;
+  reason?: string | null;
+  snoozedUntil?: string | null;
+}
+
+/** Upstream ExecutionBlocker (packages/shared/src/types/execution-projection.ts):
+ *  why a task's execution stopped and what has to happen next. */
+export interface ExecutionBlocker {
+  /** Null when live execution authority itself blocks continuation. */
+  recoveryActionId: string | null;
+  runId: string | null;
+  agentId: string | null;
+  cause: string;
+  nextAction: string;
 }
 
 /** Full heartbeat-run row for the run-detail panel (upstream

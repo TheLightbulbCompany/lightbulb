@@ -124,6 +124,37 @@ def test_wake_agent_body_still_rejects_unknown_fields():
         WakeAgentBody(source="on_demand", adapterConfig={"url": "x"})
 
 
+def test_wake_agent_body_accepts_exact_failed_run_retry():
+    """The ported ExecutionBlockerNotice's Retry (upstream retryFailedRun) sends
+    triggerDetail + failedRunId; both forward camelCase."""
+    body = WakeAgentBody(
+        source="on_demand",
+        trigger_detail="manual",
+        reason="retry_failed_run",
+        failed_run_id="3f2b0c1e-9d4a-4c1b-8e2f-0a1b2c3d4e5f",
+    )
+    assert body.model_dump(exclude_none=True, by_alias=True) == {
+        "source": "on_demand",
+        "triggerDetail": "manual",
+        "reason": "retry_failed_run",
+        "failedRunId": "3f2b0c1e-9d4a-4c1b-8e2f-0a1b2c3d4e5f",
+    }
+
+
+@pytest.mark.parametrize("failed_run_id", ["a/b", "run?x=1", "../run", ""])
+def test_wake_agent_body_rejects_junk_failed_run_id(failed_run_id):
+    with pytest.raises(ValidationError):
+        WakeAgentBody(failedRunId=failed_run_id)
+
+
+def test_wake_agent_body_rejects_unknown_trigger_detail_and_debug():
+    with pytest.raises(ValidationError):
+        WakeAgentBody(triggerDetail="turbo")
+    # providerTrace is never exposed through the BFF.
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        WakeAgentBody(debug={"providerTrace": "raw"})
+
+
 def test_create_issue_accepts_work_mode_and_status():
     """The composer can file a task straight into a status and pick an
     execution work mode — both forward camelCase to upstream's

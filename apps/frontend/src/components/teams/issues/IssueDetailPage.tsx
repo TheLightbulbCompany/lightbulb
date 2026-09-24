@@ -6,9 +6,10 @@
 // ported TaskChatThread (./task-chat), whose thread header carries the
 // breadcrumb, title + actions and status cards; sub-tasks, documents, output
 // and attachments sit in the side panel under the properties, as stock's
-// properties pane does when the shell is on. Drops activity/related-work tabs,
-// the run ledger and plugin slots. The ported status cards sit in the thread's
-// slots: the monitor banner in the header, the monitor strip above the composer
+// properties pane does when the shell is on. Drops activity/related-work tabs
+// and plugin slots; the ported run ledger sits in the side panel. The ported
+// status cards sit in the thread's slots: the monitor banner, recovery card and
+// execution-blocker notice in the header, the monitor strip above the composer
 // (composerAccessory), and the continuation handoff + scheduled-retry card in
 // the footer.
 
@@ -22,7 +23,8 @@ import { TaskChatThread } from "./task-chat/TaskChatThread";
 import { IssueProperties } from "./IssueProperties";
 import { SubIssuesSection } from "./SubIssuesSection";
 import { IssueApprovalsSection } from "./IssueApprovalsSection";
-import { IssueRunsSection } from "./IssueRunsSection";
+import { IssueRunLedger } from "./IssueRunLedger";
+import { ExecutionBlockerNotice } from "./ExecutionBlockerNotice";
 import { IssueTreeControlSection } from "./IssueTreeControlSection";
 import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { IssueWorkProductsSection } from "./IssueWorkProductsSection";
@@ -352,6 +354,9 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
                   canFalsePositive
                 />
               ) : null}
+              {issue.executionBlocker ? (
+                <ExecutionBlockerNotice issueId={issue.id} blocker={issue.executionBlocker} />
+              ) : null}
             </>
           }
           issue={issue}
@@ -502,7 +507,12 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           parentLabel={issue.identifier ? `${issue.identifier} ${issue.title}` : issue.title}
         />
         <IssueApprovalsSection issueId={issueId} />
-        <IssueRunsSection issueId={issueId} agents={agents} />
+        <IssueRunLedger
+          issueId={issueId}
+          issueStatus={issue.status}
+          agents={agents}
+          members={members}
+        />
         <IssueTreeControlSection issueId={issueId} />
         <IssueDocumentsSection issueId={issueId} agents={agents} />
         <IssueWorkProductsSection issueId={issueId} />

@@ -228,7 +228,7 @@ export interface IssueDocument {
 }
 
 /** A binary attachment from `GET /teams/issues/{id}/attachments`. Content
- * downloads through `/teams/attachments/{id}/content` (bearer-auth). */
+ * downloads through `/teams/issues/{issueId}/attachments/{id}/content` (bearer-auth). */
 export interface IssueAttachment {
   id: string;
   originalFilename?: string | null;
@@ -1136,13 +1136,14 @@ export function useTeamsIssue(issueId: string | undefined) {
  */
 export async function fetchAttachmentDataUri(
   config: PlatformAdapter,
+  issueId: string,
   attachmentId: string,
 ): Promise<string | null> {
   try {
     const token = await config.getToken();
     if (!token) return null;
     const res = await fetch(
-      `${config.apiUrl}/teams/attachments/${encodeURIComponent(attachmentId)}/content`,
+      `${config.apiUrl}/teams/issues/${encodeURIComponent(issueId)}/attachments/${encodeURIComponent(attachmentId)}/content`,
       { headers: { Authorization: `Bearer ${token}` } },
     );
     if (!res.ok) return null;

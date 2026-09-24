@@ -607,7 +607,7 @@ function ReadyBody({
       {/* Outputs — work products (with board review), documents, attachments. */}
       <WorkProductsSection workProducts={workProducts} onReview={onReviewWorkProduct} />
       <DocumentsSection documents={documents} />
-      <AttachmentsSection attachments={attachments} />
+      <AttachmentsSection issueId={state.issue.id} attachments={attachments} />
 
       {/* Sub-issues — interactive mini-cards + add affordance. */}
       <View style={styles.section}>

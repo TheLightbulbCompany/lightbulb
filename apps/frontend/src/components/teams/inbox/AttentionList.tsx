@@ -5,6 +5,7 @@ import { useMemo } from "react";
 import { ExternalLink } from "lucide-react";
 
 import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
+import { AttachmentIssueContext } from "@/components/teams/shared/lib/attachments";
 import { IssueThreadInteractionCard } from "@/components/teams/issues/IssueThreadInteractionCard";
 import { useInteractionMutations } from "@/components/teams/issues/hooks/useInteractionMutations";
 import { useAttentionFeed } from "@/components/teams/inbox/hooks/useAttentionFeed";
@@ -274,15 +275,17 @@ export function AttentionList({
         >
           <DecisionMeta item={item} />
           {item.interaction ? (
-            <IssueThreadInteractionCard
-              interaction={item.interaction}
-              agentMap={agentMap}
-              currentUserId={currentUserId}
-              onAcceptInteraction={onAcceptInteraction}
-              onRejectInteraction={onRejectInteraction}
-              onSubmitInteractionAnswers={onSubmitInteractionAnswers}
-              onCancelInteraction={onCancelInteraction}
-            />
+            <AttachmentIssueContext.Provider value={item.interaction.issueId}>
+              <IssueThreadInteractionCard
+                interaction={item.interaction}
+                agentMap={agentMap}
+                currentUserId={currentUserId}
+                onAcceptInteraction={onAcceptInteraction}
+                onRejectInteraction={onRejectInteraction}
+                onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+                onCancelInteraction={onCancelInteraction}
+              />
+            </AttachmentIssueContext.Provider>
           ) : item.approval ? (
             // ApprovalRow is itself an <li> (written for the band's <ul>) and
             // draws no surface of its own. Reused verbatim rather than forked,

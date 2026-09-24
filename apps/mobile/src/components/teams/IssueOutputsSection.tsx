@@ -200,7 +200,7 @@ export function DocumentsSection({ documents }: { documents: IssueDocument[] }) 
  * data URI triples memory, and anything bigger belongs on web. */
 const IMAGE_PREVIEW_MAX_BYTES = 4 * 1024 * 1024;
 
-function AttachmentRow({ attachment }: { attachment: IssueAttachment }) {
+function AttachmentRow({ issueId, attachment }: { issueId: string; attachment: IssueAttachment }) {
   const config = useTeamsConfig();
   const [preview, setPreview] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -228,7 +228,7 @@ function AttachmentRow({ attachment }: { attachment: IssueAttachment }) {
           }
           setLoading(true);
           setFailed(false);
-          void fetchAttachmentDataUri(config, attachment.id).then((uri) => {
+          void fetchAttachmentDataUri(config, issueId, attachment.id).then((uri) => {
             setLoading(false);
             if (uri) setPreview(uri);
             else setFailed(true);
@@ -275,7 +275,7 @@ function AttachmentRow({ attachment }: { attachment: IssueAttachment }) {
   );
 }
 
-export function AttachmentsSection({ attachments }: { attachments: IssueAttachment[] }) {
+export function AttachmentsSection({ issueId, attachments }: { issueId: string; attachments: IssueAttachment[] }) {
   if (attachments.length === 0) return null;
   return (
     <View style={styles.section}>
@@ -284,7 +284,7 @@ export function AttachmentsSection({ attachments }: { attachments: IssueAttachme
         <Text style={styles.sectionCount}> · {attachments.length}</Text>
       </Text>
       {attachments.map((attachment) => (
-        <AttachmentRow key={attachment.id} attachment={attachment} />
+        <AttachmentRow key={attachment.id} issueId={issueId} attachment={attachment} />
       ))}
     </View>
   );

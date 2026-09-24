@@ -195,10 +195,11 @@ def test_get_content_streams_bytes_with_upstream_content_type(client, monkeypatc
             self.closed = True
 
     fake = _FakeUpstream()
+    admin.list_issue_attachments = AsyncMock(return_value=[{"id": "att1"}])
     admin.open_attachment_stream = AsyncMock(return_value=fake)
     _patch_admin(monkeypatch, admin)
 
-    r = client.get("/api/v1/teams/attachments/att1/content", headers={"Authorization": "Bearer x"})
+    r = client.get("/api/v1/teams/issues/iss1/attachments/att1/content", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
     assert r.content == b"PNG-BYTES"
     assert r.headers["content-type"] == "image/png"
@@ -206,6 +207,39 @@ def test_get_content_streams_bytes_with_upstream_content_type(client, monkeypatc
     assert r.headers["x-content-type-options"] == "nosniff"
     admin.open_attachment_stream.assert_awaited_once_with(session_cookie="cookie", attachment_id="att1")
     assert fake.closed is True  # connection released after the pump
+    admin.list_issue_attachments.assert_awaited_once_with(session_cookie="cookie", issue_id="iss1")
+
+
+def test_get_content_not_on_the_issue_is_404_and_never_forwarded(client, monkeypatch):
+    """Upstream's content route is not issue-scoped (any company the member is in),
+    so an attachment that is not on the path issue is never streamed."""
+    admin = MagicMock()
+    admin.list_issue_attachments = AsyncMock(return_value={"attachments": [{"id": "att_other"}]})
+    admin.get_issue = AsyncMock(return_value={"id": "iss1", "companyId": "co_abc"})
+    admin.list_issues = AsyncMock(return_value=[])
+    admin.open_attachment_stream = AsyncMock()
+    _patch_admin(monkeypatch, admin)
+
+    r = client.get("/api/v1/teams/issues/iss1/attachments/att1/content", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 404
+    admin.open_attachment_stream.assert_not_awaited()
+
+
+def test_get_content_rejects_bad_attachment_id(client, monkeypatch):
+    admin = MagicMock()
+    admin.list_issue_attachments = AsyncMock()
+    admin.open_attachment_stream = AsyncMock()
+    _patch_admin(monkeypatch, admin)
+
+    r = client.get("/api/v1/teams/issues/iss1/attachments/a%3Fb/content", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 422
+    admin.list_issue_attachments.assert_not_awaited()
+    admin.open_attachment_stream.assert_not_awaited()
+
+
+def test_old_unscoped_content_route_is_gone(client):
+    r = client.get("/api/v1/teams/attachments/att1/content", headers={"Authorization": "Bearer x"})
+    assert r.status_code in (404, 405)
 
 
 # --------------------------------------------------------------------------

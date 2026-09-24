@@ -9,7 +9,7 @@
 //   - document:     GET /teams/issues/{issueId}/documents/{key}  → markdown body
 //   - work_product: GET /teams/issues/{issueId}/work-products    → matched row
 //                   + its attachment bytes when file-backed
-//   - attachment:   GET /teams/attachments/{id}/content (bytes)  → inline media
+//   - attachment:   GET /teams/issues/{issueId}/attachments/{id}/content → inline media
 //
 // Attachment bytes are fetched through the BFF content route (which carries the
 // Clerk bearer + forwards upstream's CSP / nosniff headers) and turned into an
@@ -22,6 +22,7 @@ import Link from "next/link";
 import { ExternalLink, Trash2, Download } from "lucide-react";
 import { EditorialDialog } from "@/components/teams/shell/EditorialDialog";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { AttachmentIssueContext } from "@/components/teams/shared/lib/attachments";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { teamsDetailUrl } from "@/lib/shellNav";
@@ -350,24 +351,26 @@ export function ArtifactViewerDialog({
         </>
       }
     >
-      <div className="max-h-[60vh] overflow-y-auto">
-        {kind === "document" ? (
-          <DocumentBody artifact={artifact} issueId={issueId} />
-        ) : kind === "work_product" ? (
-          <WorkProductBody artifact={artifact} issueId={issueId} />
-        ) : kind === "attachment" ? (
-          // An `attachment:` row always resolves a content path from its own id.
-          <ContentBody
-            key={artifact.id}
-            artifact={artifact}
-            path={artifactContentPath(artifact)!}
-          />
-        ) : (
-          <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
-            This can’t be opened here.
-          </p>
-        )}
-      </div>
+      <AttachmentIssueContext.Provider value={issueId || null}>
+        <div className="max-h-[60vh] overflow-y-auto">
+          {kind === "document" ? (
+            <DocumentBody artifact={artifact} issueId={issueId} />
+          ) : kind === "work_product" ? (
+            <WorkProductBody artifact={artifact} issueId={issueId} />
+          ) : kind === "attachment" && artifactContentPath(artifact) ? (
+            // Attachment bytes are served issue-scoped: no owning issue, no content.
+            <ContentBody
+              key={artifact.id}
+              artifact={artifact}
+              path={artifactContentPath(artifact)!}
+            />
+          ) : (
+            <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
+              This can’t be opened here.
+            </p>
+          )}
+        </div>
+      </AttachmentIssueContext.Provider>
     </EditorialDialog>
   );
 }

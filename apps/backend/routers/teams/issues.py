@@ -750,22 +750,25 @@ async def ensure_work_product_review_document(
     )
 
 
-@router.delete("/work-products/{work_product_id}")
+@router.delete("/issues/{issue_id}/work-products/{work_product_id}")
 async def delete_work_product(
-    work_product_id: str = Path(..., pattern=_UUID_RE),
+    issue_id: CompanyIssueId,
+    work_product_id: Annotated[str, Path(pattern=_UUID_RE)],
     ctx: TeamsContext = Depends(_ctx),
 ):
     """Delete a work-product — the Artifacts gallery's per-artifact delete for
     a ``work_product:<id>`` row.
 
-    Maps to upstream ``DELETE /api/work-products/{id}``. The id is validated as
-    a uuid at the boundary (a malformed value is a local 422, never forwarded
-    for upstream to cast-error + leak the company path). Company scope is the
-    session cookie's company — NEVER a client param: upstream resolves the
-    work-product, then asserts the cookie's company owns the parent issue, so a
-    cross-tenant id is rejected upstream (404/403). 404 is treated as
-    already-gone (idempotent) by the admin client's ``_delete``.
+    Maps to upstream ``DELETE /api/work-products/{id}``, which is NOT
+    issue-scoped: upstream only checks the caller can access the parent
+    issue's company, and a Paperclip user can belong to several. So the work
+    product must be on ``issue_id`` (already fenced to this workspace) or it
+    is a 404, never forwarded. 404 upstream is treated as already-gone
+    (idempotent) by the admin client's ``_delete``.
     """
+    rows = await _agents._admin().list_issue_work_products(session_cookie=ctx.session_cookie, issue_id=issue_id)
+    if _find_work_product(rows, work_product_id) is None:
+        raise HTTPException(status_code=404, detail="Work product not found on this issue")
     return await _agents._admin().delete_work_product(
         session_cookie=ctx.session_cookie,
         work_product_id=work_product_id,
@@ -898,14 +901,78 @@ async def upload_issue_attachment(
     )
 
 
-@router.get("/attachments/{attachment_id}/content")
-async def get_attachment_content(attachment_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def _require_issue_attachment(issue_id: str, attachment_id: str, ctx: TeamsContext) -> None:
+    """404 unless ``attachment_id`` is on ``issue_id``.
+
+    Upstream's attachment-by-id routes are NOT issue-scoped: they only check the
+    caller can read the attachment's issue, in ANY company they belong to, and
+    upstream has no attachment-metadata route. So the attachment must appear in
+    the (company-fenced) issue's own list, or the request is never forwarded.
+    """
+    if not await _attachment_on_issue(issue_id, attachment_id, ctx):
+        raise HTTPException(status_code=404, detail="Attachment not found on this issue")
+
+
+async def _attachment_on_issue(issue_id: str, attachment_id: str, ctx: TeamsContext) -> bool:
+    rows = await _agents._admin().list_issue_attachments(session_cookie=ctx.session_cookie, issue_id=issue_id)
+    if isinstance(rows, dict):
+        rows = rows.get("attachments")
+    return any(isinstance(r, dict) and r.get("id") == attachment_id for r in rows or [])
+
+
+async def _require_readable_attachment(issue_id: str, attachment_id: str, ctx: TeamsContext) -> None:
+    """READ-only widening of ``_require_issue_attachment`` (delete stays strict).
+
+    Agents upload to one task and paste the link into a related task's thread
+    (the upload helper takes ``--issue-id``), typically parent <-> subtask. So on
+    a miss, the attachment may also be on ``issue_id``'s parent or one of its
+    DIRECT children — each candidate itself company-checked, anything foreign
+    skipped. Bounded: one level up, one level down, children capped at one list
+    call. Grandchildren and siblings still 404.
+    """
+    if await _attachment_on_issue(issue_id, attachment_id, ctx):
+        return
+    admin = _agents._admin()
+    candidates: list[str] = []
+    issue = await admin.get_issue(issue_id=issue_id, session_cookie=ctx.session_cookie)
+    parent_id = issue.get("parentId") if isinstance(issue, dict) else None
+    if parent_id:
+        parent = await admin.get_issue(issue_id=parent_id, session_cookie=ctx.session_cookie)
+        if isinstance(parent, dict) and parent.get("companyId") == ctx.company_id:
+            candidates.append(parent_id)
+    rows = await admin.list_issues(
+        company_id=ctx.company_id,
+        session_cookie=ctx.session_cookie,
+        params={"descendantOf": issue_id},
+    )
+    if isinstance(rows, dict):
+        rows = rows.get("issues")
+    for row in rows if isinstance(rows, list) else []:
+        # descendantOf is the whole subtree; only DIRECT children count.
+        if (
+            isinstance(row, dict)
+            and row.get("parentId") == issue_id
+            and row.get("companyId") == ctx.company_id
+            and isinstance(row.get("id"), str)
+        ):
+            candidates.append(row["id"])
+    for candidate in candidates:
+        if await _attachment_on_issue(candidate, attachment_id, ctx):
+            return
+    raise HTTPException(status_code=404, detail="Attachment not found on this issue")
+
+
+@router.get("/issues/{issue_id}/attachments/{attachment_id}/content")
+async def get_attachment_content(
+    issue_id: CompanyIssueId,
+    attachment_id: IssueId,
+    ctx: TeamsContext = Depends(_ctx),
+):
     """Stream an attachment's bytes back to the browser.
 
-    Proxies upstream ``GET /api/attachments/{id}/content``. The upstream route
-    resolves the attachment and asserts the session cookie's company owns it,
-    so a cross-tenant id is rejected upstream (404/403) — the BFF doesn't
-    re-derive ownership here.
+    Proxies upstream ``GET /api/attachments/{id}/content`` once the attachment
+    is proven to be on ``issue_id`` or its company-checked parent / a direct
+    child (see ``_require_readable_attachment``).
 
     Streamed via ``StreamingResponse`` over the upstream
     ``aiter_bytes()`` so a large file never buffers in backend memory. The
@@ -913,6 +980,7 @@ async def get_attachment_content(attachment_id: str, ctx: TeamsContext = Depends
     are copied through; ``X-Content-Type-Options: nosniff`` is forwarded if
     present so the browser doesn't MIME-sniff an untrusted upload.
     """
+    await _require_readable_attachment(issue_id, attachment_id, ctx)
     admin = _agents._admin()
 
     # Open the upstream stream ONCE. ``open_attachment_stream`` does the GET,
@@ -971,11 +1039,7 @@ async def delete_issue_attachment(
     ``issue_id`` (already fenced to this workspace) or it is a 404, never
     forwarded. 404 upstream is treated as already-gone by the admin client.
     """
-    rows = await _agents._admin().list_issue_attachments(session_cookie=ctx.session_cookie, issue_id=issue_id)
-    if isinstance(rows, dict):
-        rows = rows.get("attachments")
-    if not any(isinstance(r, dict) and r.get("id") == attachment_id for r in rows or []):
-        raise HTTPException(status_code=404, detail="Attachment not found on this issue")
+    await _require_issue_attachment(issue_id, attachment_id, ctx)
     return await _agents._admin().delete_attachment(
         session_cookie=ctx.session_cookie,
         attachment_id=attachment_id,

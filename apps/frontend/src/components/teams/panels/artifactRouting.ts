@@ -10,6 +10,10 @@ import type {
   CompanyArtifact,
   CompanyArtifactGroup,
 } from "@/components/teams/shared/types";
+import {
+  attachmentPathFromHref,
+  issueAttachmentContentPath,
+} from "@/components/teams/shared/lib/attachments";
 
 export type ArtifactKind = "document" | "work_product" | "attachment";
 
@@ -53,8 +57,8 @@ export function documentKeyFromArtifact(a: CompanyArtifact): string | null {
  * The BFF DELETE path (relative to `/teams`) for an artifact, routed by its
  * typed prefix:
  *   - `document:`     → `/issues/{issueId}/documents/{key}`   (needs issue + key)
- *   - `work_product:` → `/work-products/{id}`                 (needs id)
- *   - `attachment:`   → `/issues/{issueId}/attachments/{id}`  (needs issue + id)
+ *   - `work_product:` → `/issues/{issueId}/work-products/{id}` (needs issue + id)
+ *   - `attachment:`   → `/issues/{issueId}/attachments/{id}`   (needs issue + id)
  * Returns null when the required parts can't be resolved (e.g. a document with
  * no href, or an unrecognized prefix) so the caller can disable delete rather
  * than call a malformed endpoint.
@@ -68,7 +72,8 @@ export function deletePathForArtifact(a: CompanyArtifact): string | null {
     return `/issues/${issueId}/documents/${key}`;
   }
   if (kind === "work_product") {
-    return `/work-products/${artifactRawId(a.id)}`;
+    if (!issueId) return null;
+    return `/issues/${issueId}/work-products/${artifactRawId(a.id)}`;
   }
   if (kind === "attachment") {
     if (!issueId) return null;
@@ -105,20 +110,20 @@ export function issueListPathForArtifact(a: CompanyArtifact): string | null {
  *   - a direct `attachment:` artifact carries the attachment id in its OWN typed
  *     id, so the route is derived from that;
  *   - a `work_product:` artifact whose output has an attachment carries the
- *     attachment id only inside `openPath`/`downloadPath`, so the route is parsed
- *     back out of those (stripping the `/api` prefix and any `?download=1` query).
- * The bytes must be fetched through `useTeamsApi().download` (Clerk bearer) — a
- * bare `<a href>` to the upstream path can't authenticate — so this returns our
- * BFF-relative path, never the raw upstream one. Documents have no content route.
+ *     attachment id only inside `openPath`/`downloadPath`, so it is parsed back
+ *     out of those.
+ * The BFF serves bytes only issue-scoped (`/issues/{issueId}/attachments/{id}/content`,
+ * the attachment must be on that issue), so an artifact with no owning issue has
+ * no content route. Fetch through `useTeamsApi().download` (Clerk bearer) — a
+ * bare `<a href>` to the upstream path can't authenticate. Documents have none.
  */
 export function artifactContentPath(a: CompanyArtifact): string | null {
+  const issueId = a.issue?.id;
+  if (!issueId) return null;
   if (artifactKind(a.id) === "attachment") {
-    return `/attachments/${artifactRawId(a.id)}/content`;
+    return issueAttachmentContentPath(issueId, artifactRawId(a.id));
   }
-  const src = a.downloadPath ?? a.openPath;
-  if (!src) return null;
-  const path = src.split("?")[0].replace(/^\/api/, "");
-  return path.startsWith("/attachments/") ? path : null;
+  return attachmentPathFromHref(a.downloadPath ?? a.openPath, issueId);
 }
 
 export type ArtifactSort = "newest" | "oldest";

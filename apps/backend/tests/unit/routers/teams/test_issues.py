@@ -1034,42 +1034,49 @@ def test_delete_document_rejects_bad_key(client, monkeypatch):
     admin.delete_issue_document.assert_not_awaited()
 
 
-def test_delete_work_product_proxies_with_session(client, monkeypatch):
-    """`DELETE /teams/work-products/{id}` forwards the uuid to the admin client
-    with the caller's session cookie — company scope is the cookie's company
-    asserted upstream, never a client param."""
+_WP = "11111111-1111-1111-1111-111111111111"
+
+
+def _wp_admin(monkeypatch, rows):
     admin = MagicMock()
+    admin.list_issue_work_products = AsyncMock(return_value=rows)
     admin.delete_work_product = AsyncMock(return_value={})
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    return admin
 
-    wp_id = "11111111-1111-1111-1111-111111111111"
-    r = client.delete(
-        f"/api/v1/teams/work-products/{wp_id}",
-        headers={"Authorization": "Bearer x"},
-    )
+
+def test_delete_work_product_proxies_with_session(client, monkeypatch):
+    """`DELETE /teams/issues/{id}/work-products/{wpId}` forwards once the work
+    product is on the (company-fenced) issue."""
+    admin = _wp_admin(monkeypatch, [{"id": _WP}])
+    r = client.delete(f"/api/v1/teams/issues/iss_1/work-products/{_WP}", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
-    admin.delete_work_product.assert_awaited_once_with(
-        session_cookie="cookie",
-        work_product_id=wp_id,
-    )
+    admin.list_issue_work_products.assert_awaited_once_with(session_cookie="cookie", issue_id="iss_1")
+    admin.delete_work_product.assert_awaited_once_with(session_cookie="cookie", work_product_id=_WP)
+
+
+def test_delete_work_product_not_on_the_issue_is_404_and_never_forwarded(client, monkeypatch):
+    """Upstream's DELETE /api/work-products/{id} is not issue-scoped."""
+    admin = _wp_admin(monkeypatch, [{"id": "22222222-2222-2222-2222-222222222222"}])
+    r = client.delete(f"/api/v1/teams/issues/iss_1/work-products/{_WP}", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 404
+    admin.delete_work_product.assert_not_awaited()
 
 
 def test_delete_work_product_rejects_bad_uuid(client, monkeypatch):
     """A malformed work-product id is a local 422 — never forwarded upstream."""
-    admin = MagicMock()
-    admin.delete_work_product = AsyncMock(return_value={})
-    from routers.teams import agents as agents_mod
-
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-
-    r = client.delete(
-        "/api/v1/teams/work-products/not-a-uuid",
-        headers={"Authorization": "Bearer x"},
-    )
+    admin = _wp_admin(monkeypatch, [])
+    r = client.delete("/api/v1/teams/issues/iss_1/work-products/not-a-uuid", headers={"Authorization": "Bearer x"})
     assert r.status_code == 422
+    admin.list_issue_work_products.assert_not_awaited()
     admin.delete_work_product.assert_not_awaited()
+
+
+def test_old_unscoped_work_product_delete_is_gone(client):
+    r = client.delete(f"/api/v1/teams/work-products/{_WP}", headers={"Authorization": "Bearer x"})
+    assert r.status_code in (404, 405)
 
 
 def _patch_fixture(current_status):

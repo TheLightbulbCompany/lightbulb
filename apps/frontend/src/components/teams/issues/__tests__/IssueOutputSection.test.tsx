@@ -10,7 +10,17 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({ download }),
 }));
 
-import { IssueOutputSection } from "../issue-output/IssueOutputSection";
+import { IssueOutputSection as Section } from "../issue-output/IssueOutputSection";
+import { AttachmentIssueContext } from "@/components/teams/shared/lib/attachments";
+
+// The issue page provides the owning issue; attachment bytes are issue-scoped.
+function IssueOutputSection(props: React.ComponentProps<typeof Section>) {
+  return (
+    <AttachmentIssueContext.Provider value="issue-1">
+      <Section {...props} />
+    </AttachmentIssueContext.Provider>
+  );
+}
 
 function makeWorkProduct(overrides: Partial<IssueWorkProduct> & { id: string }): IssueWorkProduct {
   return {
@@ -73,7 +83,7 @@ describe("IssueOutputSection", () => {
 
     // Bytes fetched through the BFF (never the raw upstream path) into a player.
     await waitFor(() => expect(container.querySelector("video[controls]")).not.toBeNull());
-    expect(download).toHaveBeenCalledWith(`/attachments/${UUIDS["att-1"]}/content`);
+    expect(download).toHaveBeenCalledWith(`/issues/issue-1/attachments/${UUIDS["att-1"]}/content`);
     expect(container.querySelector("video")?.getAttribute("src")).toBe("blob:mock");
     expect(screen.getByText("demo.mp4")).toBeInTheDocument();
     expect(screen.getByText("Output")).toBeInTheDocument();
@@ -84,7 +94,7 @@ describe("IssueOutputSection", () => {
     download.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Download demo.mp4" }));
     await waitFor(() =>
-      expect(download).toHaveBeenCalledWith(`/attachments/${UUIDS["att-1"]}/content`),
+      expect(download).toHaveBeenCalledWith(`/issues/issue-1/attachments/${UUIDS["att-1"]}/content`),
     );
   });
 

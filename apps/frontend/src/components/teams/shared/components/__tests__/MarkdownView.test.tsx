@@ -6,24 +6,31 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({ download }),
 }));
 
-import { MarkdownView, attachmentPathFromHref } from "../MarkdownView";
+import { MarkdownView } from "../MarkdownView";
+import { AttachmentIssueContext, attachmentPathFromHref } from "@/components/teams/shared/lib/attachments";
+import { TaskChatMarkdown } from "@/components/teams/issues/task-chat/TaskChatMarkdown";
 import { roomUrlTransform } from "@/components/messaging/markdown";
 
 describe("attachmentPathFromHref", () => {
-  it("maps upstream contentPath hrefs to the BFF download path", () => {
-    expect(attachmentPathFromHref("/api/attachments/att-1/content")).toBe(
-      "/attachments/att-1/content",
+  it("maps upstream contentPath hrefs to the issue-scoped BFF path", () => {
+    expect(attachmentPathFromHref("/api/attachments/att-1/content", "iss1")).toBe(
+      "/issues/iss1/attachments/att-1/content",
     );
-    expect(attachmentPathFromHref("/api/attachments/att-1/content?download=1")).toBe(
-      "/attachments/att-1/content",
+    expect(attachmentPathFromHref("/api/attachments/att-1/content?download=1", "iss1")).toBe(
+      "/issues/iss1/attachments/att-1/content",
     );
   });
 
+  it("has no path without an owning issue", () => {
+    expect(attachmentPathFromHref("/api/attachments/att-1/content", null)).toBeNull();
+  });
+
   it("rejects everything else", () => {
-    expect(attachmentPathFromHref(undefined)).toBeNull();
-    expect(attachmentPathFromHref("https://example.com/api/attachments/x/content")).toBeNull();
-    expect(attachmentPathFromHref("/api/attachments/att-1/other")).toBeNull();
-    expect(attachmentPathFromHref("/ACME/issues/ISO-1")).toBeNull();
+    expect(attachmentPathFromHref(undefined, "iss1")).toBeNull();
+    expect(attachmentPathFromHref("https://example.com/api/attachments/x/content", "iss1")).toBeNull();
+    expect(attachmentPathFromHref("/api/attachments/att-1/other", "iss1")).toBeNull();
+    expect(attachmentPathFromHref("/api/attachments/a%2F..%2Fb/content", "iss1")).toBeNull();
+    expect(attachmentPathFromHref("/ACME/issues/ISO-1", "iss1")).toBeNull();
   });
 });
 
@@ -78,15 +85,41 @@ describe("MarkdownView attachment links", () => {
     URL.revokeObjectURL = vi.fn();
   });
 
-  it("renders an agent-pasted attachment link as an authenticated download", async () => {
-    render(
-      <MarkdownView>
-        {"- Artifact: [ICP rewrite](/api/attachments/att-9/content)"}
-      </MarkdownView>,
-    );
-    const button = screen.getByRole("button", { name: "ICP rewrite" });
-    fireEvent.click(button);
-    await waitFor(() => expect(download).toHaveBeenCalledWith("/attachments/att-9/content"));
+  const onIssue = (ui: React.ReactNode) => (
+    <AttachmentIssueContext.Provider value="iss-7">{ui}</AttachmentIssueContext.Provider>
+  );
+
+  it("downloads an agent-pasted attachment link (issue comment) through the issue-scoped route", async () => {
+    render(onIssue(<MarkdownView>{"- Artifact: [ICP rewrite](/api/attachments/att-9/content)"}</MarkdownView>));
+    fireEvent.click(screen.getByRole("button", { name: "ICP rewrite" }));
+    await waitFor(() => expect(download).toHaveBeenCalledWith("/issues/iss-7/attachments/att-9/content"));
+  });
+
+  it("resolves a task-chat attachment link through the issue-scoped route", async () => {
+    render(onIssue(<TaskChatMarkdown>{"Done: [report.pdf](/api/attachments/att-3/content?download=1)"}</TaskChatMarkdown>));
+    fireEvent.click(screen.getByRole("button", { name: "report.pdf" }));
+    await waitFor(() => expect(download).toHaveBeenCalledWith("/issues/iss-7/attachments/att-3/content"));
+  });
+
+  it("renders an attachment link as plain filename text with no issue context, never fetching", () => {
+    render(<MarkdownView>{"See [report.pdf](/api/attachments/att-9/content)"}</MarkdownView>);
+    expect(screen.getByText("report.pdf").tagName).toBe("SPAN");
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it("renders an attachment image from the issue-scoped bytes", async () => {
+    const { container } = render(onIssue(<MarkdownView>{"![shot.png](/api/attachments/att-4/content)"}</MarkdownView>));
+    await waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toBe("blob:mock"));
+    expect(download).toHaveBeenCalledWith("/issues/iss-7/attachments/att-4/content");
+  });
+
+  it("renders an attachment image as its filename with no issue context, never a broken image", () => {
+    const { container } = render(<MarkdownView>{"![shot.png](/api/attachments/att-4/content)"}</MarkdownView>);
+    expect(container.querySelector("img")).toBeNull();
+    expect(screen.getByText("shot.png")).toBeInTheDocument();
+    expect(download).not.toHaveBeenCalled();
   });
 
   it("leaves ordinary links as plain anchors", () => {

@@ -1,11 +1,12 @@
 // Issue attachments data layer: list (SWR) + upload + download + delete, all
 // through the Teams BFF (`/teams/issues/{id}/attachments` + the shared
-// `/teams/attachments/{id}/content` proxy). Mirrors useIssueMutations' shape
+// issue-scoped `/teams/issues/{id}/attachments/{attachmentId}/content` proxy). Mirrors useIssueMutations' shape
 // so the section component stays declarative.
 
 import { useCallback } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { IssueAttachment } from "@/components/teams/shared/types";
+import { issueAttachmentContentPath } from "@/components/teams/shared/lib/attachments";
 
 const SWR_PREFIX = "/teams";
 const swrKey = (path: string) => `${SWR_PREFIX}${path}`;
@@ -55,7 +56,7 @@ export function useIssueAttachments(issueId: string): UseIssueAttachmentsResult 
 
   const doDownload = useCallback(
     async (attachment: IssueAttachment): Promise<void> => {
-      const blob = await download(`/attachments/${attachment.id}/content`);
+      const blob = await download(issueAttachmentContentPath(issueId, attachment.id));
       const url = URL.createObjectURL(blob);
       try {
         const a = document.createElement("a");
@@ -69,7 +70,7 @@ export function useIssueAttachments(issueId: string): UseIssueAttachmentsResult 
         URL.revokeObjectURL(url);
       }
     },
-    [download],
+    [download, issueId],
   );
 
   return {

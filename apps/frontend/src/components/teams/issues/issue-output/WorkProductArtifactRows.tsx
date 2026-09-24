@@ -31,7 +31,8 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { MarkdownView, attachmentPathFromHref } from "@/components/teams/shared/components/MarkdownView";
+import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { attachmentIdFromHref } from "@/components/teams/shared/lib/attachments";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import type {
   IssueDocument,
@@ -236,7 +237,7 @@ export function WorkProductCard({ workProduct }: { workProduct: IssueWorkProduct
   const attachmentHref = workProduct.type === "artifact"
     ? (isImage || isVideo ? href : stringMeta(metadata, "downloadPath") ?? href)
     : null;
-  const isAttachment = Boolean(attachmentPathFromHref(attachmentHref));
+  const isAttachment = Boolean(attachmentIdFromHref(attachmentHref));
   const externalHref = isAttachment ? undefined : safeHref(href);
   const name = stringMeta(metadata, "originalFilename") ?? workProduct.title;
 

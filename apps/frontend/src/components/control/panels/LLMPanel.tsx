@@ -29,7 +29,7 @@ import {
 } from "./llm-auth-status";
 
 import { PROVIDER_SWITCH_CARDS } from "@/lib/providerCards";
-import { isFreeTierExpired } from "@/lib/planLabel";
+import { allowanceLine, isFreeTierExpired } from "@/lib/planLabel";
 
 type UserData = {
   // Plain string, not `ProviderChoice`: this is the owner's STORED choice,
@@ -416,12 +416,14 @@ function ManagedAllowanceBlock({
   blocked,
   prepaidSoon,
   cappedToday,
+  allowanceText,
 }: {
   onPick: (choice: CredentialProviderChoice) => void;
   trial: boolean;
   blocked: string | null;
   prepaidSoon: boolean;
   cappedToday: boolean;
+  allowanceText: string | null;
 }) {
   const plansLink = (
     <Link href="/settings?panel=billing" className="underline">
@@ -444,6 +446,9 @@ function ManagedAllowanceBlock({
             Upgrade
           </Link>
         </p>
+      )}
+      {allowanceText && !cappedToday && !blocked && (
+        <p className="text-sm text-[var(--midnight-muted)]">{allowanceText}</p>
       )}
       {blocked && (
         <p className="text-sm text-err">
@@ -654,6 +659,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
           blocked={blocked}
           prepaidSoon={prepaidSoon}
           cappedToday={account?.capped_today === true}
+          allowanceText={allowanceLine(account)}
         />
       )}
 

@@ -5,6 +5,12 @@ from typing import Literal
 from pydantic import BaseModel
 
 
+class Allowance(BaseModel):
+    used_usd: float
+    limit_usd: float
+    resets_at: int  # epoch seconds, next 00:00 UTC
+
+
 class BillingAccountResponse(BaseModel):
     is_subscribed: bool
     current_spend: float
@@ -48,6 +54,8 @@ class BillingAccountResponse(BaseModel):
     # True while the openrouter-gate's per-key daily limit has tripped today (UTC); clears at the
     # rollover. Lets the Model & Credits screen say "Daily allowance used" instead of "Active".
     capped_today: bool = False
+    # Capped owners only: today's managed-model spend vs the key's daily limit, from OpenRouter.
+    allowance: Allowance | None = None
 
 
 class PortalResponse(BaseModel):

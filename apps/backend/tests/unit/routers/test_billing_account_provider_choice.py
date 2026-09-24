@@ -133,3 +133,27 @@ async def test_account_capped_today_only_for_todays_stamp(mock_repo, mock_get_su
         resp = await async_client.get("/api/v1/billing/account")
         assert resp.status_code == 200
         assert resp.json()["capped_today"] is expected
+
+
+@pytest.mark.asyncio
+@patch("routers.billing.openrouter_keys.owner_allowance")
+@patch("routers.billing.get_usage_summary")
+@patch("routers.billing.billing_repo")
+async def test_account_allowance_only_for_capped_owners(mock_repo, mock_get_summary, mock_allowance, async_client):
+    mock_get_summary.return_value = _summary_zero()
+    mock_allowance.return_value = {"used_usd": 0.155, "limit_usd": 0.25, "resets_at": 1790294400}
+
+    mock_repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_c", "subscription_status": "trial_local"})
+    assert (await async_client.get("/api/v1/billing/account")).json()["allowance"] == mock_allowance.return_value
+
+    mock_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "owner_id": "org_c",
+            "subscription_status": "active",
+            "plan": "standard",
+            "provider_choice": "byo_key",
+        }
+    )
+    mock_allowance.reset_mock()
+    assert (await async_client.get("/api/v1/billing/account")).json()["allowance"] is None
+    mock_allowance.assert_not_awaited()

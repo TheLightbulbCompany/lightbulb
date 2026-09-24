@@ -15,8 +15,12 @@ import { UsagePanel } from "../UsagePanel";
 // the sidebar footer — otherwise the two badges contradict each other on the
 // same screen.
 
-let billingAccount: { subscription_status: string | null; trial_end?: number | null } | null =
-  null;
+let billingAccount: {
+  subscription_status: string | null;
+  trial_end?: number | null;
+  capped_today?: boolean;
+  allowance?: { used_usd: number; limit_usd: number; resets_at: number } | null;
+} | null = null;
 vi.mock("@/hooks/useBilling", () => ({
   useBilling: () => ({
     account: billingAccount,
@@ -74,5 +78,20 @@ describe("UsagePanel subscription badge", () => {
     render(<UsagePanel />);
     expect(screen.getByText("Free tier")).toBeInTheDocument();
     expect(screen.queryByText("Free tier ended")).not.toBeInTheDocument();
+  });
+
+  it("shows today's daily allowance, and the tripped cap over the percentage", () => {
+    billingAccount = {
+      subscription_status: "trial_local",
+      allowance: { used_usd: 0.155, limit_usd: 0.25, resets_at: 0 },
+    };
+    const { unmount } = render(<UsagePanel />);
+    expect(screen.getByText("Today: 62% of your daily allowance used · resets 00:00 UTC")).toBeInTheDocument();
+    unmount();
+
+    billingAccount = { ...billingAccount, capped_today: true };
+    render(<UsagePanel />);
+    expect(screen.getByText(/Daily allowance used — resets at 00:00 UTC/)).toBeInTheDocument();
+    expect(screen.queryByText(/Today:/)).toBeNull();
   });
 });

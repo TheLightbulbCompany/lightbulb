@@ -89,6 +89,49 @@ async def update_key_limit(http, *, management_key, key_hash, limit_usd):
         raise ValueError("OpenRouter did not confirm the key limit")
 
 
+async def _management_key(sm=None) -> str:
+    sm = sm or boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+    management_name = f"lightbulb/{settings.ENVIRONMENT or 'dev'}/openrouter/management"
+    return (await run_in_thread(sm.get_secret_value, SecretId=management_name))["SecretString"]
+
+
+async def _read_key(http, management_key: str, key_hash: str) -> dict:
+    response = await http.get(
+        f"https://openrouter.ai/api/v1/keys/{key_hash}",
+        headers={"Authorization": f"Bearer {management_key}"},
+    )
+    response.raise_for_status()
+    return response.json().get("data", {})
+
+
+_ALLOWANCE_TTL_S = 60
+# ponytail: per-process dict, one entry per owner who opened a billing page; bounded by owner count.
+_allowance_cache: dict[str, tuple[float, dict | None]] = {}
+
+
+async def owner_allowance(owner_id: str, *, http=None, sm=None) -> dict | None:
+    """Today's managed-model allowance from OpenRouter's own counter on the owner's key
+    (``usage_daily`` against the key's ``limit``, both reset at 00:00 UTC). Cached ~60 s
+    per process so page loads don't hammer the management API; None on any failure."""
+    now = time.time()
+    hit = _allowance_cache.get(owner_id)
+    if hit is None or now - hit[0] >= _ALLOWANCE_TTL_S:
+        value = None
+        try:
+            row = await openrouter_key_repo.get(owner_id)
+            if row and row.get("state") == "active":
+                management_key = await _management_key(sm)
+                async with httpx.AsyncClient(timeout=5) if http is None else contextlib.nullcontext(http) as client:
+                    data = await _read_key(client, management_key, row["key_hash"])
+                value = {"used_usd": float(data["usage_daily"]), "limit_usd": float(data["limit"])}
+        except Exception:
+            logger.warning("OpenRouter allowance read failed for %s", owner_id, exc_info=True)
+        hit = _allowance_cache[owner_id] = (now, value)
+    if hit[1] is None:
+        return None
+    return {**hit[1], "resets_at": (int(now) // 86400 + 1) * 86400}
+
+
 async def relimit_owner_key(owner_id: str, *, http=None, sm=None) -> bool:
     """Move the owner's active key onto its plan's daily limit. Idempotent:
     reads the key's current limit and PATCHes only on a difference. True when
@@ -97,16 +140,9 @@ async def relimit_owner_key(owner_id: str, *, http=None, sm=None) -> bool:
     if not row or row.get("state") != "active":
         return False
     limit_usd = limit_for_account(await billing_repo.get_by_owner_id(owner_id, consistent_read=True))
-    sm = sm or boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-    management_name = f"lightbulb/{settings.ENVIRONMENT or 'dev'}/openrouter/management"
-    management_key = (await run_in_thread(sm.get_secret_value, SecretId=management_name))["SecretString"]
+    management_key = await _management_key(sm)
     async with httpx.AsyncClient(timeout=10) if http is None else contextlib.nullcontext(http) as client:
-        response = await client.get(
-            f"https://openrouter.ai/api/v1/keys/{row['key_hash']}",
-            headers={"Authorization": f"Bearer {management_key}"},
-        )
-        response.raise_for_status()
-        if response.json().get("data", {}).get("limit") == limit_usd:
+        if (await _read_key(client, management_key, row["key_hash"])).get("limit") == limit_usd:
             return False
         await update_key_limit(client, management_key=management_key, key_hash=row["key_hash"], limit_usd=limit_usd)
     # A new limit is new headroom: lift today's gate-stamped cap marker.

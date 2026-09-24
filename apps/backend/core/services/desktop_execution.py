@@ -780,9 +780,8 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
         from core.services.paperclip_admin_session import get_admin_session_cookie
 
         repo = PaperclipRepo(table_name="paperclip-companies")
-        owner = await repo.resolve_owner_row(owner_id)
-        owner = await repo.get(owner.user_id, consistent_read=True) if owner else None
-        if not owner or owner.status != "active" or (owner.org_id or owner.user_id) != owner_id:
+        owner = await repo.resolve_owner_row(owner_id, consistent_read=True)
+        if not owner or owner.org_id != owner_id:
             raise DesktopError("run_forbidden", 403)
         admin = shared_admin_client()
         try:
@@ -905,14 +904,8 @@ async def _paperclip_member(auth, device_id):
         or not any(m.get("user_id") == member_id for m in await list_organization_members(auth["ownerId"]))
     ):
         raise DesktopError("desktop_forbidden", 403)
-    member = await PaperclipRepo(table_name="paperclip-companies").get(member_id, consistent_read=True)
-    if (
-        not member
-        or member.user_id != member_id
-        or member.status != "active"
-        or (member.org_id or member.user_id) != auth["ownerId"]
-        or member.company_id != auth["companyId"]
-    ):
+    ws = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(auth["ownerId"], consistent_read=True)
+    if not ws or member_id not in ws.member_user_ids or ws.company_id != auth["companyId"]:
         raise DesktopError("desktop_forbidden", 403)
     return member_id
 

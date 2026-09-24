@@ -206,18 +206,17 @@ async def test_get_overview_reads_current_month_usage_period():
 def _paperclip_repo_returning(company) -> MagicMock:
     """A fake ``_paperclip_repo()`` resolving to ``company``."""
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=company)
     repo.resolve_owner_row = AsyncMock(return_value=company)
     return repo
 
 
 @pytest.mark.asyncio
 async def test_get_provisioning_narrows_and_excludes_secrets():
-    """CEO admin-provisioning-tab: secrets on both the containers row
-    (gateway_token) and the paperclip-companies row
-    (paperclip_password_encrypted / service_token_encrypted) must never
-    reach the composed payload, even though both source rows carry them."""
-    from core.repositories.paperclip_repo import PaperclipCompany
+    """CEO admin-provisioning-tab: the containers row's gateway_token must
+    never reach the composed payload, and the paperclip panel is narrowed
+    through an ALLOWLIST — an attribute outside it (here a credential stuck
+    onto the row object) is excluded by default, not leaked by default."""
+    from core.repositories.paperclip_repo import PaperclipWorkspace
     from core.services import admin_service
 
     now = datetime.now(timezone.utc)
@@ -233,19 +232,19 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
         "created_at": now.isoformat(),
         "updated_at": now.isoformat(),
     }
-    paperclip_company = PaperclipCompany(
-        user_id="user_1",
-        org_id="",
+    paperclip_company = PaperclipWorkspace(
+        org_id="owner_1",
         company_id="company_1",
-        paperclip_user_id="pc_user_1",
-        paperclip_password_encrypted="SECRET-PW",
-        service_token_encrypted="SECRET-ST",
         status="active",
         created_at=now,
         updated_at=now,
+        provisioner_user_id="user_1",
+        member_user_ids={"user_2", "user_1"},
         funnel_state="submitted",
         starter_agent_ids={"ceo": "agent-ceo"},
     )
+    paperclip_company.paperclip_password_encrypted = "SECRET-PW"
+    paperclip_company.service_token_encrypted = "SECRET-ST"
 
     with (
         patch(
@@ -278,23 +277,24 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
     assert "claim_stale" not in result["container"]
     assert result["paperclip"]["funnel_state"] == "submitted"
     assert result["paperclip"]["starter_agent_ids"] == {"ceo": "agent-ceo"}
+    assert result["paperclip"]["provisioner_user_id"] == "user_1"
+    # A set is not JSON — the wire carries a sorted list.
+    assert result["paperclip"]["member_user_ids"] == ["user_1", "user_2"]
+    assert "paperclip_user_id" not in result["paperclip"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["failed", "provisioning"])
 async def test_get_provisioning_includes_inactive_authoritative_org_row(status):
     """Diagnostics retain failure details while the org row is not active."""
-    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.repositories.paperclip_repo import PaperclipWorkspace
     from core.services import admin_service
 
     now = datetime.now(timezone.utc)
-    paperclip_company = PaperclipCompany(
-        user_id="owner_user",
+    paperclip_company = PaperclipWorkspace(
         org_id="org_acme",
         company_id="company_1",
-        paperclip_user_id="pc_user_1",
-        paperclip_password_encrypted="SECRET-PW",
-        service_token_encrypted="SECRET-ST",
+        provisioner_user_id="owner_user",
         status=status,
         created_at=now,
         updated_at=now,
@@ -414,7 +414,7 @@ async def test_get_provisioning_container_read_failure_isolated_from_compute_sta
 async def test_get_provisioning_paperclip_read_failure_not_mistaken_for_empty_row():
     """A failing/timed-out owner-row lookup flows through _with_timeout
     as an {"error", "source"} sentinel -- not None, and not a real
-    PaperclipCompany. _narrow_paperclip only special-cases `company is None`;
+    PaperclipWorkspace. _narrow_paperclip only special-cases `company is None`;
     threading the sentinel through it unnarrowed would silently fabricate a
     present-but-all-None paperclip row (every allowlisted field None) instead
     of surfacing that the read itself failed -- the admin UI would then
@@ -424,7 +424,6 @@ async def test_get_provisioning_paperclip_read_failure_not_mistaken_for_empty_ro
     from core.services import admin_service
 
     failing_repo = MagicMock()
-    failing_repo.get = AsyncMock(side_effect=RuntimeError("ddb_blip"))
     failing_repo.resolve_owner_row = AsyncMock(side_effect=RuntimeError("ddb_blip"))
 
     with (

@@ -387,7 +387,7 @@ async def _ensure_paperclip_for_org(
                 # Strongly-consistent cross-instance guard against
                 # double-create. The per-org asyncio lock above only
                 # serializes THIS process, and find_org_owner reads the
-                # eventually-consistent by-org-id GSI — so two admins on
+                # eventually-consistent workspace row — so two admins on
                 # different backend instances (or within the GSI propagation
                 # gap) could both see owner=None and both create a separate
                 # company, silently splitting the org's workspace. The claim
@@ -430,17 +430,8 @@ async def _ensure_paperclip_for_org(
                 # just-written row. On genuine success the claim stays as a
                 # permanent "bootstrapped" marker (find_org_owner then returns
                 # the company and this branch is not re-entered).
-                #
-                # The row must also belong to THIS org. provision_org
-                # short-circuits on repo.get(user_id) when the user already has
-                # an active row — and since rows are keyed per-user, a user
-                # whose row belongs to ANOTHER workspace would make this read
-                # return that unrelated active row even though no org-indexed
-                # company exists. Checking org_id keeps us from holding the
-                # claim on another workspace's row while find_org_owner(org_id)
-                # stays None.
-                row = await provisioning.get_company_row(user_id)
-                if row is None or row.status != "active" or row.org_id != org_id:
+                row = await provisioning.get_workspace(org_id)
+                if row is None or row.status != "active":
                     logger.warning(
                         "ensure_user_ready (org): create for org=%s user=%s "
                         "returned without an active paperclip row (likely a "
@@ -505,7 +496,7 @@ async def _ensure_paperclip_for_owner(
     provisioning = await build_paperclip_provisioning()
     try:
         try:
-            before = await provisioning.get_company_row(owner_user_id)
+            before = await provisioning.get_workspace(owner_id)
             company = await provisioning.provision_org(
                 owner_id=owner_id, owner_user_id=owner_user_id, owner_email=owner_email
             )
@@ -513,10 +504,8 @@ async def _ensure_paperclip_for_owner(
 
             before_starters = getattr(before, "starter_agent_ids", None) if before else None
             company_starters = getattr(company, "starter_agent_ids", None)
-            fresh_or_partial = (
-                before is None
-                or getattr(before, "org_id", None) != owner_id
-                or (isinstance(before_starters, dict) and any(not before_starters.get(key) for key in _STARTER_KEYS))
+            fresh_or_partial = before is None or (
+                isinstance(before_starters, dict) and any(not before_starters.get(key) for key in _STARTER_KEYS)
             )
             complete = (
                 getattr(company, "status", None) == "active"
@@ -592,12 +581,8 @@ async def _ensure_paperclip_for_member(
     member_email comes from auth.email on the member's JWT; if
     missing, lookup_owner_email falls back to user_repo + Clerk.
 
-    Implementation note: ``paperclip_repo`` does not expose a single
-    "fetch the org's company row" helper at the module level. Instead we
-    reuse ``PaperclipProvisioning.find_org_owner``, which already filters
-    to ``status="active"`` rows and is the same lookup
-    ``provision_member`` itself uses internally. Returning ``None`` from
-    that helper means the owner's company is either missing or not yet
+    ``PaperclipProvisioning.find_org_owner`` returns the workspace row only
+    when it is ``active``; None means the company is missing or not yet
     active — indistinguishable for our purposes (both → return gracefully).
 
     Two DISTINCT duplicate outcomes, same request body, opposite verdicts —
@@ -644,21 +629,6 @@ async def _ensure_paperclip_for_member(
             put_metric("paperclip.member_add", dimensions={"outcome": "no_email"})
             return
 
-        # ``lookup_owner_email`` short-circuits to None when
-        # ``fallback_user_id`` is falsy (see paperclip_owner_email.py
-        # lines 46-47), so we MUST thread the owner's Clerk user_id
-        # here. The owner's user_id sits on the PaperclipCompany row
-        # we already fetched via ``find_org_owner`` — passing None
-        # would make the lookup return None and call provision_member
-        # with owner_email="" which fails Paperclip sign-in.
-        owner_email = (
-            await lookup_owner_email(
-                org_id=org_id,
-                fallback_user_id=owner_company.user_id,
-            )
-            or ""
-        )
-
         # Membership-add observability (the orphan-member incident was a
         # SILENT skip): one INFO on dispatch and one INFO/WARNING on the
         # outcome, both carrying org + user ids, plus the bounded-outcome
@@ -674,7 +644,6 @@ async def _ensure_paperclip_for_member(
                 owner_id=org_id,
                 user_id=member_user_id,
                 email=member_email,
-                owner_email=owner_email,
             )
         except PaperclipApiError as exc:
             # 409: a concurrent member-join is mid-flight (or the member was

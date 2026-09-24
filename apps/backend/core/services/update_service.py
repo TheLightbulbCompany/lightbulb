@@ -104,14 +104,12 @@ def _build_paperclip_provisioning():
 
 
 async def _paperclip_purge_pass() -> None:
-    """Daily pass: hard-delete disabled Paperclip rows past their grace
-    window.
+    """Daily pass: delete disabled workspace rows past their grace window.
 
-    Scans ``paperclip-companies`` via the ``by-status-purge-at`` GSI
-    for rows with ``status="disabled"`` AND
-    ``scheduled_purge_at <= now``, then calls
-    ``PaperclipProvisioning.purge(user_id=...)`` for each. Per-row
-    failures are logged and swallowed so one bad row doesn't break
+    Scans ``paperclip-companies`` via the ``by-status-purge-at`` GSI for
+    workspace rows with ``status="disabled"`` AND ``scheduled_purge_at <=
+    now``, then calls ``PaperclipProvisioning.purge(org_id=...)`` for each.
+    Per-row failures are logged and swallowed so one bad row doesn't break
     the whole pass.
     """
     from datetime import datetime, timezone
@@ -135,13 +133,12 @@ async def _paperclip_purge_pass() -> None:
         logger.info("paperclip_purge_pass: %d disabled rows due for purge", len(due))
         purged = 0
         failed = 0
-        for company in due:
+        for ws in due:
             try:
-                await provisioning.purge(user_id=company.user_id)
-                logger.info("paperclip_purge_pass: deleted user_id=%s", company.user_id)
+                await provisioning.purge(org_id=ws.org_id)
                 purged += 1
             except Exception:
-                logger.exception("paperclip_purge_pass: failed for user_id=%s", company.user_id)
+                logger.exception("paperclip_purge_pass: failed for org_id=%s", ws.org_id)
                 failed += 1
         put_metric("paperclip.purge_pass.purged", value=purged)
         if failed:
@@ -205,7 +202,9 @@ async def _paperclip_provision_retry_pass() -> None:
 
             try:
                 if op == "archive_member":
-                    await provisioning.archive_member(user_id=changes["user_id"])
+                    # A payload queued before archive_member became
+                    # org-scoped has no org_id: KeyError → marked failed.
+                    await provisioning.archive_member(user_id=changes["user_id"], org_id=changes["org_id"])
                 else:
                     logger.error(
                         "paperclip_provision_retry_pass: unknown op=%r (owner=%s, update=%s)",

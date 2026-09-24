@@ -65,7 +65,6 @@ async def _compute(
                 "bootstrap_last_error": None,
                 "teams_state": None,
                 "company_id": None,
-                "paperclip_user_id": None,
                 "user_id": None,
             }
         )
@@ -236,7 +235,6 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
                 "bootstrap_last_error": None,
                 "teams_state": "failed",
                 "company_id": "co_1",
-                "paperclip_user_id": "pc_1",
                 "user_id": "creator_1",
             }
         )
@@ -316,7 +314,6 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
                 "bootstrap_last_error": None,
                 "teams_state": None,
                 "company_id": None,
-                "paperclip_user_id": None,
                 "user_id": None,
             }
         )
@@ -340,7 +337,7 @@ class TestTeamsState:
 
     @pytest.mark.asyncio
     async def test_failed_row_surfaces_failed(self):
-        repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="failed")))
+        repo = MagicMock(get_workspace=AsyncMock(return_value=SimpleNamespace(status="failed")))
         contract = await _compute(
             "user_x",
             container={"status": "running"},
@@ -356,7 +353,7 @@ class TestTeamsState:
         for anything but "failed"), the COMPOSER's own teams_state carries
         the raw status — routers/container.py's _status_response is what
         re-applies the omit-unless-failed wire contract."""
-        repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="active")))
+        repo = MagicMock(get_workspace=AsyncMock(return_value=SimpleNamespace(status="active")))
         contract = await _compute(
             "user_x",
             container={"status": "running"},
@@ -368,7 +365,7 @@ class TestTeamsState:
 
     @pytest.mark.asyncio
     async def test_no_row_surfaces_none(self):
-        repo = MagicMock(get=AsyncMock(return_value=None))
+        repo = MagicMock(get_workspace=AsyncMock(return_value=None))
         contract = await _compute(
             "user_x",
             container={"status": "running"},
@@ -380,7 +377,7 @@ class TestTeamsState:
 
     @pytest.mark.asyncio
     async def test_read_error_swallowed_surfaces_none(self):
-        repo = MagicMock(get=AsyncMock(side_effect=RuntimeError("ddb down")))
+        repo = MagicMock(get_workspace=AsyncMock(side_effect=RuntimeError("ddb down")))
         contract = await _compute(
             "user_x",
             container={"status": "running"},
@@ -392,15 +389,16 @@ class TestTeamsState:
 
 
 def _repo_from_get(get_mock_repo: MagicMock) -> MagicMock:
-    """Wrap a bare `.get`-configured repo double into one whose
+    """Wrap a bare `.get_workspace`-configured repo double into one whose
     `get_onboarding_state` calls through to the REAL implementation logic
-    (getattr-defensive projection) against whatever `.get` returns — the
-    same relationship the real PaperclipRepo.get_onboarding_state has to
-    PaperclipRepo.get for a personal (non-org) owner_id."""
+    (resolve_owner_row + getattr-defensive projection) against whatever
+    `.get_workspace` returns. The pending-brief lookup is stubbed so no test
+    reaches DynamoDB."""
     from core.repositories.paperclip_repo import PaperclipRepo
 
     real = PaperclipRepo(table_name="paperclip-companies")
-    real.get = get_mock_repo.get
+    real.get_workspace = get_mock_repo.get_workspace
+    real._has_pending_brief = AsyncMock(return_value=False)
     return real
 
 
@@ -433,7 +431,6 @@ class TestResolveOnboardingStateThreading:
             "bootstrap_last_error": None,
             "teams_state": "active",
             "company_id": "co_1",
-            "paperclip_user_id": "pc_1",
             "user_id": "creator_1",
         }
         with (
@@ -471,7 +468,6 @@ class TestResolveOnboardingStateThreading:
                 "bootstrap_last_error": None,
                 "teams_state": None,
                 "company_id": None,
-                "paperclip_user_id": None,
                 "user_id": "creator_1",
             }
         )
@@ -534,7 +530,6 @@ class TestResolveOnboardingStateThreading:
             "friday_agent_id",
             "teams_state",
             "company_id",
-            "paperclip_user_id",
             "user_id",
         }
     )
@@ -596,7 +591,6 @@ class TestGenerationThreading:
                 "bootstrap_last_error": None,
                 "teams_state": "active",
                 "company_id": "co_1",
-                "paperclip_user_id": "pc_1",
                 "user_id": "creator_1",
             }
         )

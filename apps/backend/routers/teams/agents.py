@@ -258,29 +258,27 @@ async def build_principal_to_clerk(ctx: TeamsContext) -> dict[str, str]:
     """Map Paperclip principalId → Clerk user_id for the caller's org.
 
     For a personal context the caller is the only member (seed their own
-    pairing); for an org, build the map from the ``paperclip-companies``
-    ``by-org-id`` GSI rows. GSI failures degrade to an empty map so the
-    caller can ship a best-effort response rather than 5xx.
+    pairing); for an org, map every human who joined the workspace's company
+    (``member_user_ids``) through their identity row. Read failures degrade
+    to what is known so the caller can ship a best-effort response.
 
     Lives here (rather than in ``feed.py``) because both the activity feed's
-    actor enrichment and the ``/members`` roster need the same principal map;
-    keeping one copy stops the two from drifting on org/personal handling.
+    actor enrichment and the ``/members`` roster need the same principal map.
     """
     principal_to_clerk: dict[str, str] = {}
+    if ctx.paperclip_user_id:
+        principal_to_clerk[ctx.paperclip_user_id] = ctx.user_id
     if ctx.org_id is None:
-        if ctx.paperclip_user_id:
-            principal_to_clerk[ctx.paperclip_user_id] = ctx.user_id
         return principal_to_clerk
+    repo = _repo()
     try:
-        org_rows = await _repo().list_by_org_id(ctx.org_id)
+        ws = await repo.get_workspace(ctx.org_id)
+        for clerk_uid in sorted(ws.member_user_ids) if ws is not None else []:
+            identity = await repo.get_identity(clerk_uid)
+            if identity is not None and identity.paperclip_user_id:
+                principal_to_clerk[identity.paperclip_user_id] = clerk_uid
     except Exception:
-        logger.exception("teams: list_by_org_id failed for org=%s", ctx.org_id)
-        return principal_to_clerk
-    for row in org_rows:
-        paperclip_uid = row.get("paperclip_user_id")
-        clerk_uid = row.get("user_id")
-        if paperclip_uid and clerk_uid:
-            principal_to_clerk[paperclip_uid] = clerk_uid
+        logger.exception("teams: member principal map failed for org=%s", ctx.org_id)
     return principal_to_clerk
 
 

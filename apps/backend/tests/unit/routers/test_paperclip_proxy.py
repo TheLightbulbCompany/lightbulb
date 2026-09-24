@@ -23,6 +23,7 @@ from __future__ import annotations
 import gzip
 import json
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -50,6 +51,35 @@ from routers.paperclip_proxy import (
 # value must derive too. A literal here matched only while the configured domain
 # happened to equal it — which stopped being true when the product domain moved.
 COOKIE_APEX = apex_domain(url_host(settings.FRONTEND_URL))
+
+
+def _ws(org_id, status="active", members=()):
+    """A workspace row: ``member_user_ids`` is the join fence."""
+    return SimpleNamespace(org_id=org_id, company_id="co_1", status=status, member_user_ids=set(members))
+
+
+def _identity(paperclip_user_id="pcu_1"):
+    return SimpleNamespace(
+        paperclip_user_id=paperclip_user_id, paperclip_email="", paperclip_password_encrypted="unused"
+    )
+
+
+def _fake_repo(workspaces=None, identity=None):
+    """A ``PaperclipRepo`` stand-in: workspace rows keyed by org id, plus
+    the caller's identity row."""
+    workspaces = workspaces or {}
+
+    class _FakeRepo:
+        def __init__(self, table_name: str) -> None:
+            pass
+
+        async def get_workspace(self, org_id: str):
+            return workspaces.get(org_id)
+
+        async def get_identity(self, _user_id: str):
+            return identity
+
+    return _FakeRepo
 
 
 # ---------------------------------------------------------------
@@ -342,7 +372,6 @@ def test_http_proxy_drops_encoding_after_httpx_decodes_upstream_gzip(monkeypatch
     ``upstream.content`` but retains the upstream header. This exercises the
     route boundary to keep the body and response headers in agreement.
     """
-    from types import SimpleNamespace
 
     from fastapi.testclient import TestClient
 
@@ -352,16 +381,7 @@ def test_http_proxy_drops_encoding_after_httpx_decodes_upstream_gzip(monkeypatch
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.test")
     cookie = proxy_mod._mint_paperclip_session(user_id="user_proxy", email="user@example.com", org_id="org_proxy")
 
-    class _FakeRepo:
-        def __init__(self, table_name: str) -> None:
-            pass
-
-        async def get(self, _user_id: str):
-            return SimpleNamespace(
-                status="active",
-                org_id="org_proxy",
-                paperclip_password_encrypted="unused",
-            )
+    _FakeRepo = _fake_repo({"org_proxy": _ws("org_proxy", members={"user_proxy"})}, _identity())
 
     async def _gzip_response(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -589,7 +609,7 @@ def test_http_redirects_to_chat_for_browser_nav_no_auth(monkeypatch):
 def test_http_accepts_paperclip_session_cookie_and_forwards(monkeypatch):
     """Once the handshake has set the session cookie, subsequent requests
     skip Clerk's JWKS roundtrip and authenticate from the cookie. With no
-    Paperclip company row yet (typical first-visit race against the
+    workspace row yet (typical first-visit race against the
     background autoprovision task), the proxy returns the auto-refresh
     "setting up" stub instead of a JSON 503.
     """
@@ -599,16 +619,10 @@ def test_http_accepts_paperclip_session_cookie_and_forwards(monkeypatch):
 
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
     monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
-    cookie = proxy_mod._mint_paperclip_session(user_id="user_session_path", email="u@example.com")
+    cookie = proxy_mod._mint_paperclip_session(user_id="user_session_path", email="u@example.com", org_id="org_s")
 
-    class _FakeRepo:
-        def __init__(self, table_name: str) -> None:
-            pass
-
-        async def get(self, _user_id: str):
-            return None  # row missing → setting-up stub
-
-    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+    # row missing → setting-up stub
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _fake_repo())
 
     app = _build_http_app()
     client = TestClient(app)
@@ -639,21 +653,13 @@ def test_http_disabled_company_redirects_to_chat(monkeypatch):
     monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
     cookie = proxy_mod._mint_paperclip_session(user_id="user_disabled", email="d@example.com", org_id="org_disabled")
 
-    class _DisabledCompany:
-        status = "disabled"
-        # Workspace rows carry the active org_id — a MATCHED terminal row,
-        # which is what the /chat redirect is for (a mismatched one gets
-        # the repair stub instead; see the org-scope tests).
-        org_id = "org_disabled"
-
-    class _FakeRepo:
-        def __init__(self, table_name: str) -> None:
-            pass
-
-        async def get(self, _user_id: str):
-            return _DisabledCompany()
-
-    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+    # THIS session's workspace row is disabled — what the /chat redirect is
+    # for (a missing row for this org gets the setting-up stub instead).
+    monkeypatch.setattr(
+        proxy_mod,
+        "PaperclipRepo",
+        _fake_repo({"org_disabled": _ws("org_disabled", "disabled", {"user_disabled"})}, _identity()),
+    )
 
     app = _build_http_app()
     client = TestClient(app)
@@ -680,17 +686,10 @@ def test_http_accepts_bearer_header_when_cookie_absent(monkeypatch):
     monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
 
     async def _fake_decode(token: str):
-        return {"sub": "user_bearer_path", "email": "u@example.com"}
-
-    class _FakeRepo:
-        def __init__(self, table_name: str) -> None:
-            pass
-
-        async def get(self, _user_id: str):
-            return None
+        return {"sub": "user_bearer_path", "email": "u@example.com", "o": {"id": "org_bearer"}}
 
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
-    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _fake_repo())
 
     app = _build_http_app()
     client = TestClient(app)
@@ -821,10 +820,10 @@ def test_paperclip_session_rejects_wrong_kind(monkeypatch):
         proxy_mod._verify_paperclip_session(fake_service_token)
 
 
-def _stub_handshake_repo_and_dispatch(monkeypatch, row, container=True):
-    """Stub the /__handshake__ readiness check's container lookup + repo row
-    + the dispatch; returns the list the dispatch stub records (user_id,
-    org_id) into."""
+def _stub_handshake_repo_and_dispatch(monkeypatch, workspaces, container=True):
+    """Stub the /__handshake__ readiness check's container lookup + workspace
+    rows (by org id) + the dispatch; returns the list the dispatch stub
+    records (user_id, org_id) into."""
     import routers.paperclip_proxy as proxy_mod
 
     async def _fake_get_container(owner_id: str):
@@ -832,14 +831,7 @@ def _stub_handshake_repo_and_dispatch(monkeypatch, row, container=True):
 
     monkeypatch.setattr(proxy_mod.container_repo, "get_by_owner_id", _fake_get_container)
 
-    class _FakeRepo:
-        def __init__(self, table_name: str) -> None:
-            pass
-
-        async def get(self, _user_id: str):
-            return row
-
-    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _fake_repo(workspaces))
 
     calls: list = []
 
@@ -867,7 +859,7 @@ def test_handshake_validates_clerk_jwt_and_sets_cookie(monkeypatch):
 
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
-    calls = _stub_handshake_repo_and_dispatch(monkeypatch, row=None)
+    calls = _stub_handshake_repo_and_dispatch(monkeypatch, workspaces={})
 
     app = _build_http_app()
     client = TestClient(app)
@@ -894,13 +886,11 @@ def test_handshake_validates_clerk_jwt_and_sets_cookie(monkeypatch):
     assert calls == [("user_handshake", "org_handshake")]
 
 
-def test_handshake_org_context_dispatches_repair_for_mismatched_row(monkeypatch):
-    """An org-context /__handshake__ whose per-user row still points at a
-    personal/previous-org company must dispatch the org join/repair BEFORE
-    minting the org-scoped cookie — otherwise the very next request lands
-    on the repair stub (which never re-spawns) with no repair in flight."""
-    from types import SimpleNamespace
-
+def test_handshake_org_context_dispatches_join_for_unjoined_member(monkeypatch):
+    """An org-context /__handshake__ for a human not yet in the workspace's
+    ``member_user_ids`` must dispatch the join BEFORE minting the org-scoped
+    cookie — otherwise the very next request lands on the setting-up stub
+    (which never re-spawns) with no join in flight."""
     from fastapi.testclient import TestClient
 
     import routers.paperclip_proxy as proxy_mod
@@ -915,7 +905,7 @@ def test_handshake_org_context_dispatches_repair_for_mismatched_row(monkeypatch)
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
     calls = _stub_handshake_repo_and_dispatch(
-        monkeypatch, row=SimpleNamespace(status="active", org_id="user_org_member")
+        monkeypatch, workspaces={"org_acme": _ws("org_acme", members={"user_owner"})}
     )
 
     app = _build_http_app()
@@ -927,7 +917,7 @@ def test_handshake_org_context_dispatches_repair_for_mismatched_row(monkeypatch)
     )
     assert resp.status_code == 204
 
-    # The repair was dispatched under the org context...
+    # The join was dispatched under the org context...
     assert calls == [("user_org_member", "org_acme")]
 
     # ...and the minted cookie carries that same org context.
@@ -952,7 +942,7 @@ def test_handshake_no_container_skips_dispatch(monkeypatch):
 
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
-    calls = _stub_handshake_repo_and_dispatch(monkeypatch, row=None, container=False)
+    calls = _stub_handshake_repo_and_dispatch(monkeypatch, workspaces={}, container=False)
 
     app = _build_http_app()
     client = TestClient(app)
@@ -968,11 +958,9 @@ def test_handshake_no_container_skips_dispatch(monkeypatch):
 
 
 def test_handshake_matched_active_row_skips_dispatch(monkeypatch):
-    """Control: an already-provisioned row for THIS owner context mints the
-    cookie without any dispatch — handshakes must stay cheap for the
-    common re-entry case."""
-    from types import SimpleNamespace
-
+    """Control: a human already joined to THIS workspace's active company
+    mints the cookie without any dispatch — handshakes must stay cheap for
+    the common re-entry case."""
     from fastapi.testclient import TestClient
 
     import routers.paperclip_proxy as proxy_mod
@@ -982,7 +970,9 @@ def test_handshake_matched_active_row_skips_dispatch(monkeypatch):
 
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
-    calls = _stub_handshake_repo_and_dispatch(monkeypatch, row=SimpleNamespace(status="active", org_id="org_handshake"))
+    calls = _stub_handshake_repo_and_dispatch(
+        monkeypatch, workspaces={"org_handshake": _ws("org_handshake", members={"user_handshake"})}
+    )
 
     app = _build_http_app()
     client = TestClient(app)
@@ -1031,7 +1021,7 @@ def test_handshake_rejects_invalid_clerk_jwt(monkeypatch):
 
 def test_ws_accepts_paperclip_session_cookie(monkeypatch):
     """WS upgrade with isol8_paperclip cookie → past auth gate (closes
-    later with 4503 because no PaperclipCompany row, not 4401).
+    later with 4503 because no Paperclip identity row, not 4401).
 
     Mirrors the HTTP path: after the bootstrap establishes the proxy
     session cookie, in-page WebSocket upgrades for live-events use that
@@ -1045,14 +1035,8 @@ def test_ws_accepts_paperclip_session_cookie(monkeypatch):
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
     cookie = proxy_mod._mint_paperclip_session(user_id="ws_user_session", email="w@example.com")
 
-    class _FakeRepo:
-        def __init__(self, table_name: str) -> None:
-            pass
-
-        async def get(self, _user_id: str):
-            return None  # → 4503 not provisioned (proves we passed auth).
-
-    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+    # No identity → 4503 not provisioned (proves we passed auth).
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _fake_repo())
 
     app = _build_ws_app()
     client = TestClient(app)
@@ -1089,21 +1073,10 @@ def test_http_handoff_token_via_query_param(monkeypatch):
 
     monkeypatch.setattr(proxy_mod.container_repo, "get_by_owner_id", _fake_get_container)
 
-    # User already has an active Paperclip company → skip autoprovision.
-    class _FakeRepo:
-        def __init__(self, table_name: str) -> None:
-            pass
-
-        async def get(self, _user_id: str):
-            class _Co:
-                status = "active"
-                # Workspace rows carry the active org_id — matching the
-                # handoff's org-scoped readiness check.
-                org_id = "org_handoff"
-
-            return _Co()
-
-    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+    # User already joined this workspace's active company → skip the join.
+    monkeypatch.setattr(
+        proxy_mod, "PaperclipRepo", _fake_repo({"org_handoff": _ws("org_handoff", members={"user_handoff"})})
+    )
 
     app = _build_http_app()
     client = TestClient(app)
@@ -1183,15 +1156,8 @@ def test_http_handoff_autoprovision_routes_through_canonical_trigger(monkeypatch
 
     monkeypatch.setattr(proxy_mod.container_repo, "get_by_owner_id", _fake_get_container)
 
-    # No active Paperclip row yet → the handoff must spawn autoprovision.
-    class _FakeRepo:
-        def __init__(self, table_name: str) -> None:
-            pass
-
-        async def get(self, _user_id: str):
-            return None
-
-    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+    # No workspace row yet → the handoff must spawn the canonical trigger.
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _fake_repo())
 
     calls = []
 
@@ -1226,25 +1192,22 @@ def test_http_handoff_autoprovision_routes_through_canonical_trigger(monkeypatch
 
 
 @pytest.mark.parametrize(
-    ("row_org_id", "expect_dispatch"),
+    ("ws_org_id", "members", "expect_dispatch"),
     [
-        # Active row still pointing at the member's PERSONAL company (or a
-        # previous org's) — "active" is true, but not for THIS owner
-        # context, so the handoff must still dispatch the canonical trigger
-        # to join/repair; suppressing it would sign the member into the
-        # stale workspace with nothing on this path ever fixing the row.
-        ("user_org_member", True),
-        # Active row already pointing at THIS org — genuinely provisioned;
-        # no dispatch (the pre-existing fast path).
-        ("org_acme", False),
+        # Joined ANOTHER workspace's company only — nothing for THIS owner
+        # context, so the handoff must dispatch the canonical join.
+        ("org_other", {"user_org_member"}, True),
+        # THIS workspace is active but the human has not joined it yet.
+        ("org_acme", {"user_owner"}, True),
+        # Already joined THIS workspace's active company — no dispatch
+        # (the fast path).
+        ("org_acme", {"user_org_member"}, False),
     ],
 )
-def test_http_handoff_active_row_readiness_is_org_scoped(monkeypatch, row_org_id, expect_dispatch):
-    """The handoff's "already provisioned" check must use the same
-    org-scoped predicate as provision_org's idempotency short-circuit
-    (active AND org_id == resolved owner), not status alone."""
-    from types import SimpleNamespace
-
+def test_http_handoff_active_row_readiness_is_org_scoped(monkeypatch, ws_org_id, members, expect_dispatch):
+    """The handoff's "already provisioned" check is org-scoped: this human
+    is in THIS workspace's ``member_user_ids`` and the row is active — not
+    status alone."""
     from fastapi.testclient import TestClient
 
     import routers.paperclip_proxy as proxy_mod
@@ -1269,14 +1232,7 @@ def test_http_handoff_active_row_readiness_is_org_scoped(monkeypatch, row_org_id
 
     monkeypatch.setattr(proxy_mod.container_repo, "get_by_owner_id", _fake_get_container)
 
-    class _FakeRepo:
-        def __init__(self, table_name: str) -> None:
-            pass
-
-        async def get(self, _user_id: str):
-            return SimpleNamespace(status="active", org_id=row_org_id)
-
-    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _fake_repo({ws_org_id: _ws(ws_org_id, members=members)}))
 
     calls = []
 
@@ -1314,8 +1270,6 @@ def test_http_handoff_token_wins_over_stale_session_cookie(monkeypatch):
     guard, the org-scoped readiness check, and the autoprovision dispatch
     under the stale personal identity — the exact context switch (personal
     Teams visit → org handoff) the handshake exists to serve."""
-    from types import SimpleNamespace
-
     from fastapi.testclient import TestClient
 
     import routers.paperclip_proxy as proxy_mod
@@ -1344,15 +1298,10 @@ def test_http_handoff_token_wins_over_stale_session_cookie(monkeypatch):
 
     monkeypatch.setattr(proxy_mod.container_repo, "get_by_owner_id", _fake_get_container)
 
-    class _FakeRepo:
-        def __init__(self, table_name: str) -> None:
-            pass
-
-        async def get(self, _user_id: str):
-            # Active PERSONAL row — must not suppress the org dispatch.
-            return SimpleNamespace(status="active", org_id="user_org_member")
-
-    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+    # Joined only ANOTHER workspace — must not suppress THIS org's join.
+    monkeypatch.setattr(
+        proxy_mod, "PaperclipRepo", _fake_repo({"org_other": _ws("org_other", members={"user_org_member"})})
+    )
 
     calls = []
 
@@ -1378,7 +1327,7 @@ def test_http_handoff_token_wins_over_stale_session_cookie(monkeypatch):
 
     # The handshake ran under the TOKEN's org context, not the cookie's
     # personal one: container looked up by org_id, and the org-scoped
-    # readiness check dispatched the repair.
+    # readiness check dispatched the join.
     assert container_lookups == ["org_acme"]
     assert calls == [("user_org_member", "org_acme")]
 
@@ -1393,12 +1342,13 @@ def test_http_handoff_token_wins_over_stale_session_cookie(monkeypatch):
     assert claims["org_id"] == "org_acme"
 
 
-def _org_cookie_session_env(monkeypatch, row_org_id, row_status="active"):
+def _org_cookie_session_env(
+    monkeypatch, row_org_id, row_status="active", members=("user_org_member",), identity=_identity()
+):
     """Shared setup for the established-session org-scope tests: a session
-    cookie carrying org context + a per-user row with ``row_status``
-    pointing at ``row_org_id``."""
-    from types import SimpleNamespace
-
+    cookie carrying org context ``org_acme`` + ONE workspace row for
+    ``row_org_id`` with ``row_status`` and ``members``, plus the caller's
+    identity row."""
     import routers.paperclip_proxy as proxy_mod
 
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
@@ -1406,30 +1356,36 @@ def _org_cookie_session_env(monkeypatch, row_org_id, row_status="active"):
 
     cookie = proxy_mod._mint_paperclip_session(user_id="user_org_member", email="m@example.com", org_id="org_acme")
 
-    class _FakeRepo:
-        def __init__(self, table_name: str) -> None:
-            pass
-
-        async def get(self, _user_id: str):
-            return SimpleNamespace(
-                status=row_status,
-                org_id=row_org_id,
-                paperclip_password_encrypted="irrelevant",
-            )
-
-    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+    monkeypatch.setattr(
+        proxy_mod, "PaperclipRepo", _fake_repo({row_org_id: _ws(row_org_id, row_status, members)}, identity)
+    )
     return proxy_mod, cookie
 
 
-def test_established_session_stubs_on_org_mismatched_active_row(monkeypatch):
-    """An org-context session whose per-user row is still active for a
-    DIFFERENT owner (personal or previous org) must get the setting-up
-    stub, not a forward into the stale workspace — the handshake that
-    minted this cookie dispatched the join/repair, and the row re-points
-    when it lands."""
+@pytest.mark.parametrize(
+    ("row_org_id", "members", "identity"),
+    [
+        # Only ANOTHER workspace exists (the human joined that one).
+        ("org_other", ("user_org_member",), _identity()),
+        # THIS workspace is active but the human is not a member of it.
+        ("org_acme", ("user_owner",), _identity()),
+        # Member, but the identity sign-up is missing / unconfirmed.
+        ("org_acme", ("user_org_member",), None),
+        ("org_acme", ("user_org_member",), _identity(paperclip_user_id="")),
+    ],
+)
+def test_established_session_stubs_when_not_joined(monkeypatch, row_org_id, members, identity):
+    """An org-context session whose human has not JOINED this workspace's
+    active company must get the setting-up stub, never a forward into
+    Paperclip — the handshake that minted this cookie dispatched the join."""
     from fastapi.testclient import TestClient
 
-    proxy_mod, cookie = _org_cookie_session_env(monkeypatch, row_org_id="user_org_member")
+    proxy_mod, cookie = _org_cookie_session_env(monkeypatch, row_org_id=row_org_id, members=members, identity=identity)
+
+    def _sentinel(cookies, uid):
+        raise AssertionError("forward path must not be reached")
+
+    monkeypatch.setattr(proxy_mod, "is_trusted", _sentinel)
 
     app = _build_http_app()
     client = TestClient(app)
@@ -1440,13 +1396,13 @@ def test_established_session_stubs_on_org_mismatched_active_row(monkeypatch):
 
 @pytest.mark.parametrize("row_status", ["failed", "disabled"])
 def test_established_session_stubs_on_org_mismatched_terminal_row(monkeypatch, row_status):
-    """A terminal (failed/disabled) row recorded for a DIFFERENT owner
-    context says nothing about THIS owner's provision — it must read as
+    """A terminal (failed/disabled) row for a DIFFERENT workspace says
+    nothing about THIS owner's provision — it must read as
     repair-pending (stub), not fall through to the terminal-status
     redirect and abort the Teams handoff."""
     from fastapi.testclient import TestClient
 
-    proxy_mod, cookie = _org_cookie_session_env(monkeypatch, row_org_id="user_org_member", row_status=row_status)
+    proxy_mod, cookie = _org_cookie_session_env(monkeypatch, row_org_id="org_other", row_status=row_status)
 
     app = _build_http_app()
     client = TestClient(app)
@@ -1457,9 +1413,9 @@ def test_established_session_stubs_on_org_mismatched_terminal_row(monkeypatch, r
 
 
 def test_established_session_redirects_on_own_terminal_row(monkeypatch):
-    """Control: a failed row recorded for THIS owner context still takes
-    the terminal-status redirect to /chat (explicit retry trigger) — the
-    mismatch-stub above must not swallow genuinely-failed provisions."""
+    """Control: THIS workspace's failed row still takes the terminal-status
+    redirect to /chat (explicit retry trigger) — the not-joined stub above
+    must not swallow genuinely-failed provisions."""
     from fastapi.testclient import TestClient
 
     proxy_mod, cookie = _org_cookie_session_env(monkeypatch, row_org_id="org_acme", row_status="failed")
@@ -1472,14 +1428,10 @@ def test_established_session_redirects_on_own_terminal_row(monkeypatch):
     assert "need=reprovision" in resp.headers["location"]
 
 
-def test_established_session_orgless_cookie_over_org_row_redirects_for_rehandshake(monkeypatch):
-    """A session with NO org claims (legacy pre-org_id cookie, or a genuine
-    personal session) sitting on a row that points at an ORG must redirect
-    out to /chat for a fresh handshake — not spin on the stub (no repair is
-    in flight: the personal-context dispatch is correctly fenced from
-    adopting org rows) and not forward into the org workspace blind."""
-    from types import SimpleNamespace
-
+def test_established_session_orgless_cookie_redirects_for_rehandshake(monkeypatch):
+    """A session with NO org claims (legacy pre-org_id cookie) cannot name a
+    workspace: it must redirect out to /chat for a fresh handshake — not
+    spin on the stub and not forward into any workspace blind."""
     from fastapi.testclient import TestClient
 
     import routers.paperclip_proxy as proxy_mod
@@ -1490,14 +1442,9 @@ def test_established_session_orgless_cookie_over_org_row_redirects_for_rehandsha
     # Legacy-shaped cookie: no org_id claim.
     cookie = proxy_mod._mint_paperclip_session(user_id="user_org_member", email="m@example.com")
 
-    class _FakeRepo:
-        def __init__(self, table_name: str) -> None:
-            pass
-
-        async def get(self, _user_id: str):
-            return SimpleNamespace(status="active", org_id="org_acme")
-
-    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+    monkeypatch.setattr(
+        proxy_mod, "PaperclipRepo", _fake_repo({"org_acme": _ws("org_acme", members={"user_org_member"})}, _identity())
+    )
 
     app = _build_http_app()
     client = TestClient(app)
@@ -1508,9 +1455,9 @@ def test_established_session_orgless_cookie_over_org_row_redirects_for_rehandsha
 
 
 def test_established_session_forwards_on_org_matched_active_row(monkeypatch):
-    """Control: the same org-context session with a row already pointing at
-    THIS org proceeds past the stub into the forward path — proving the
-    mismatch stub above isn't suppressing legitimate org sessions."""
+    """Control: the same org-context session, joined to THIS workspace's
+    active company with a confirmed identity, proceeds past the stub into
+    the forward path — the not-joined stub isn't suppressing members."""
     from fastapi.testclient import TestClient
 
     proxy_mod, cookie = _org_cookie_session_env(monkeypatch, row_org_id="org_acme")

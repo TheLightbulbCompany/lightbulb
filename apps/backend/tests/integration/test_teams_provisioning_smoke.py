@@ -1,11 +1,10 @@
 """End-to-end smoke for the Teams BFF: provision (DDB-seeded) -> create
 agent through the BFF -> assert the upstream POST that hits Paperclip
 carries the canonical ``openclaw_gateway`` adapter shape with the
-underscore form (the bug Tasks 1-26 fix) and the user's own service
-token + sessionKey.
+underscore form (the bug Tasks 1-26 fix) and the workspace's hook token.
 
 This is the only pre-Playwright check that the FULL ``_ctx`` chain
-(auth -> paperclip_repo.get -> user-session sign-in -> admin.create_agent)
+(auth -> workspace + identity rows -> user-session sign-in -> admin.create_agent)
 runs end-to-end. Previous unit tests in
 ``tests/unit/routers/teams/test_agents.py`` mock ``_ctx`` out wholesale
 and only cover the synthesis call; this file exercises the real
@@ -48,7 +47,7 @@ os.environ.setdefault(
 
 from core.auth import AuthContext, get_current_user  # noqa: E402
 from core.encryption import encrypt  # noqa: E402
-from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo  # noqa: E402
+from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo, PaperclipWorkspace  # noqa: E402
 from core.services.paperclip_admin_client import PaperclipAdminClient  # noqa: E402
 
 PAPERCLIP_COMPANIES_TABLE = "paperclip-companies"
@@ -57,11 +56,6 @@ PAPERCLIP_COMPANIES_TABLE = "paperclip-companies"
 @pytest.fixture
 def smoke_user_id() -> str:
     return "user_smoke_27"
-
-
-@pytest.fixture
-def smoke_service_token_plaintext() -> str:
-    return "openclaw-service-token-smoke-27"
 
 
 @pytest.fixture
@@ -232,9 +226,9 @@ def seeded_company(
     smoke_user_id,
     smoke_company_id,
     smoke_paperclip_user_id,
-    smoke_service_token_plaintext,
 ):
-    """Insert an 'active' paperclip-companies row for the smoke user.
+    """Insert the workspace's 'active' row (the smoke user joined) and the
+    smoke user's settled identity row.
 
     Uses the real PaperclipRepo (resolved against the moto resource via
     smoke_env's monkeypatch) so this exercises the same DDB read path
@@ -242,30 +236,34 @@ def seeded_company(
     """
     repo = PaperclipRepo(table_name=PAPERCLIP_COMPANIES_TABLE)
     now = datetime.now(timezone.utc)
-    company = PaperclipCompany(
-        user_id=smoke_user_id,
+    ws = PaperclipWorkspace(
         org_id="org_smoke_27",
         company_id=smoke_company_id,
-        paperclip_user_id=smoke_paperclip_user_id,
-        paperclip_password_encrypted=encrypt("smoke-password"),
-        service_token_encrypted=encrypt(smoke_service_token_plaintext),
         status="active",
         created_at=now,
         updated_at=now,
+        provisioner_user_id=smoke_user_id,
+        member_user_ids={smoke_user_id},
+    )
+    identity = PaperclipIdentity(
+        user_id=smoke_user_id,
+        paperclip_user_id=smoke_paperclip_user_id,
+        paperclip_password_encrypted=encrypt("smoke-password"),
     )
 
-    # Run the async put synchronously.
+    # Run the async puts synchronously.
     import asyncio
 
-    asyncio.get_event_loop().run_until_complete(repo.put(company))
-    return company
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(repo.put_workspace(ws))
+    loop.run_until_complete(repo.put_identity(identity))
+    return ws
 
 
 async def test_create_agent_through_bff_sends_canonical_adapter(
     smoke_env,
     seeded_company,
     smoke_user_id,
-    smoke_service_token_plaintext,
     smoke_company_id,
     captured_upstream_calls,
 ):
@@ -287,8 +285,8 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
     from main import app
     from routers.teams import agents as agents_mod
 
-    # Override Clerk JWT auth — the BFF's _ctx chain reads auth.user_id
-    # to look up the company row.
+    # Override Clerk JWT auth — the BFF's _ctx chain reads auth.org_id for
+    # the workspace row and auth.user_id for the identity row.
     async def _fake_current_user() -> AuthContext:
         return AuthContext(user_id=smoke_user_id, org_id="org_smoke_27")
 
@@ -391,14 +389,11 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
         f"apiBaseUrl must be scoped to the owner; got {adapter_config['apiBaseUrl']!r}"
     )
 
-    # 4. apiKey is the WORKSPACE's hook token, never the persisted ``service_token_encrypted``
-    #    the legacy pre-fix behaviour passed through. It is a SNAPSHOT (Paperclip persists it as
+    # 4. apiKey is the WORKSPACE's hook token. It is a SNAPSHOT (Paperclip persists it as
     #    a managed company secret), so rotating the owner's hook token means re-syncing every
     #    agent's adapter config -- see sync_agent_adapter_config.
     assert adapter_config["apiKey"], "apiKey must not be empty"
-    assert adapter_config["apiKey"] == "hook-smoke-27", (
-        "apiKey must be the WORKSPACE's hook token, not the persisted service_token_encrypted"
-    )
+    assert adapter_config["apiKey"] == "hook-smoke-27", "apiKey must be the WORKSPACE's hook token"
 
     # 5. sessionKeyStrategy is "issue" so each Paperclip issue gets its own session
     #    (transcripts don't bleed across unrelated issues). There is no ``sessionKey`` fallback

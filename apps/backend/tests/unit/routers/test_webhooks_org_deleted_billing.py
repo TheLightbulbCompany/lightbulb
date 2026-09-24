@@ -1,7 +1,7 @@
 """organization.deleted must cancel the org's Stripe subscription (Fix B).
 
-Before this fix, ``_handle_organization_deleted`` only disabled Paperclip
-member rows for the deleted org -- it never touched Stripe, so a deleted
+Before this fix, ``_handle_organization_deleted`` only disabled the
+org's Paperclip rows -- it never touched Stripe, so a deleted
 Clerk org kept billing its workspace subscription forever.
 
 The fix reuses the same Stripe-cancel path as the admin "cancel
@@ -23,19 +23,10 @@ import pytest
 
 
 def _fake_provisioning() -> MagicMock:
-    """A stand-in for PaperclipProvisioning with an empty by-org-id GSI page.
-
-    ``_handle_organization_deleted`` reaches through
-    ``provisioning._repo._table()`` to run a raw DynamoDB query for the
-    member-disable sweep. We stub that out to return zero rows so the
-    sweep is a no-op and the test can focus on the new Stripe-cancel path.
-    """
+    """A stand-in for PaperclipProvisioning: ``disable_workspace`` is the
+    one Paperclip call ``_handle_organization_deleted`` makes."""
     provisioning = MagicMock()
-    provisioning.disable = AsyncMock()
-    table = MagicMock()
-    table.query.return_value = {"Items": []}
-    provisioning._repo = MagicMock()
-    provisioning._repo._table.return_value = table
+    provisioning.disable_workspace = AsyncMock()
     return provisioning
 
 
@@ -56,7 +47,7 @@ async def test_organization_deleted_cancels_active_stripe_subscription(monkeypat
     and the billing row is cleared (subscription_id=None, status=canceled)."""
     from routers import webhooks
 
-    _patch_provisioning(monkeypatch)
+    provisioning = _patch_provisioning(monkeypatch)
 
     billing_row = {"owner_id": "org_acme", "stripe_subscription_id": "sub_123"}
     with (
@@ -82,6 +73,8 @@ async def test_organization_deleted_cancels_active_stripe_subscription(monkeypat
     assert set_sub_kwargs["owner_id"] == "org_acme"
     assert set_sub_kwargs["subscription_id"] is None
     assert set_sub_kwargs["status"] == "canceled"
+    # The workspace's ONE Paperclip row is disabled once, by org id.
+    provisioning.disable_workspace.assert_awaited_once_with(org_id="org_acme")
 
 
 @pytest.mark.asyncio
@@ -144,38 +137,14 @@ async def test_organization_deleted_stripe_error_is_swallowed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_organization_deleted_member_sweep_failure_does_not_block_cancel(monkeypatch):
-    """If the member-disable sweep's GSI query blows up (DynamoDB throttle,
-    GSI error, etc.), the Stripe cancel must still run.
-
-    Before this fix, the sweep's outer ``table.query`` pagination call was
-    not wrapped in try/except -- only the per-item ``disable()`` call was.
-    A query failure propagated out of the handler *before* the Stripe
-    cancel step ever ran, and because the Clerk webhook route records the
-    svix event as "seen" before dispatch (with no delete-on-failure
-    rollback), Clerk's retry of the same event was swallowed as a
-    duplicate. Net effect: the subscription was never canceled --
-    indefinite billing, the exact bug this handler exists to close.
-
-    The fix runs the Stripe-cancel step first, inside its own independent
-    best-effort try/except, so a sweep failure can never prevent it. The
-    sweep itself is untouched -- its ``table.query`` call is still
-    unwrapped, so the sweep failure still propagates out of the handler
-    (a separate, pre-existing, out-of-scope gap in the Clerk webhook
-    route's dedupe-rollback handling). What matters here is that the
-    Stripe cancel has already run by the time that happens.
-    """
+async def test_organization_deleted_workspace_disable_failure_does_not_block_cancel(monkeypatch):
+    """A DynamoDB failure in ``disable_workspace`` must neither prevent the
+    Stripe cancel (which runs first, in its own try/except) nor escape the
+    handler -- the webhook has to keep returning 200 to Clerk."""
     from routers import webhooks
 
-    provisioning = MagicMock()
-    provisioning.disable = AsyncMock()
-    broken_table = MagicMock()
-    broken_table.query.side_effect = RuntimeError("GSI throttled")
-    provisioning._repo = MagicMock()
-    provisioning._repo._table.return_value = broken_table
-
-    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
-    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+    provisioning = _patch_provisioning(monkeypatch)
+    provisioning.disable_workspace.side_effect = RuntimeError("ddb throttled")
 
     billing_row = {"owner_id": "org_sweep_fail", "stripe_subscription_id": "sub_456"}
     with (
@@ -189,12 +158,9 @@ async def test_organization_deleted_member_sweep_failure_does_not_block_cancel(m
         ),
         patch("core.services.billing_service.stripe.Subscription.delete") as mock_delete,
     ):
-        # The sweep's GSI query throws and that still propagates (untouched,
-        # pre-existing behavior) -- but the Stripe cancel must have already
-        # run before it does.
-        with pytest.raises(RuntimeError, match="GSI throttled"):
-            await webhooks._handle_organization_deleted({"id": "org_sweep_fail"})
+        await webhooks._handle_organization_deleted({"id": "org_sweep_fail"})
 
+    provisioning.disable_workspace.assert_awaited_once_with(org_id="org_sweep_fail")
     mock_delete.assert_called_once()
     call_args, _call_kwargs = mock_delete.call_args
     assert call_args[0] == "sub_456"

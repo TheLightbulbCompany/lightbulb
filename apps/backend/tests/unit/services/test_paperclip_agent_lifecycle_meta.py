@@ -55,12 +55,12 @@ async def test_create_paperclip_for_chat_forwards_meta_fields():
         ),
     ):
         mock_repo = MagicMock()
-        mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co-1"))
+        mock_repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co-1"))
         mock_repo_cls.return_value = mock_repo
 
         await create_paperclip_for_chat(
             creator_user_id="user_creator",
-            owner_id="user_owner",
+            owner_id="org_owner",
             name="Ray",
             role=None,
             model=None,
@@ -97,12 +97,12 @@ async def test_create_paperclip_for_chat_no_meta_keeps_existing_behavior():
         ),
     ):
         mock_repo = MagicMock()
-        mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
+        mock_repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co"))
         mock_repo_cls.return_value = mock_repo
 
         await create_paperclip_for_chat(
             creator_user_id="u",
-            owner_id="u",
+            owner_id="org_u",
             name="Ray",
             role=None,
             model=None,
@@ -140,13 +140,13 @@ async def test_chat_retry_reuses_the_key_across_a_rebuilt_adapter_config():
         ),
     ):
         mock_repo = MagicMock()
-        mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
+        mock_repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co"))
         mock_repo_cls.return_value = mock_repo
 
         for _ in range(2):
             await create_paperclip_for_chat(
                 creator_user_id="member",
-                owner_id="org",
+                owner_id="org_1",
                 name="Forge",
                 role="engineer",
                 model=None,
@@ -181,12 +181,12 @@ async def test_create_paperclip_for_marketplace_forwards_meta():
         ),
     ):
         mock_repo = MagicMock()
-        mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
+        mock_repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co"))
         mock_repo_cls.return_value = mock_repo
 
         await create_paperclip_for_marketplace(
             buyer_user_id="u",
-            owner_id="u",
+            owner_id="org_u",
             name="Ray",
             role=None,
             meta=meta,

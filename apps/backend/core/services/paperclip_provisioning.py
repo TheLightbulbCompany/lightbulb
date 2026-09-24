@@ -1,48 +1,26 @@
-"""Orchestrator for provisioning Paperclip on Clerk webhook events.
+"""Orchestrator for provisioning Paperclip: one workspace = one company.
 
-Three entry points (all async, all idempotent on user_id / owner_id):
+The paperclip-companies table holds ONE workspace row per Clerk org (keyed by
+the org id: company facts + ``member_user_ids``) and one identity row per human
+(keyed by their Clerk user id: their Better Auth account only). See
+``core/repositories/paperclip_repo.py``.
 
-* ``provision_org`` — for ``organization.created``. Creates the Paperclip
-  company AND the org owner's Better Auth account in a single
-  end-to-end chain (sign_up_user -> create_company -> mint service token
-  -> seed the required agent roster -> persist row). This is the only path that calls
-  ``create_company``.
+* ``provision_org`` — creates the workspace's Paperclip company (the only
+  caller of ``create_company``) with the provisioner as its first member, and
+  seeds the starter roster onto the workspace row.
+* ``provision_member`` — joins a human to the workspace's existing company
+  (sign up or adopt their identity; the bootstrap admin invites; they accept)
+  and records the join on the workspace row.
+* ``archive_member`` — removes one human from ONE workspace's company
+  (``organizationMembership.deleted``, the account wipe).
+* ``disable_workspace`` / ``purge`` — a deleted Clerk org's workspace row goes
+  ``disabled`` with a purge timer; the cleanup cron deletes it afterwards.
 
-* ``provision_member`` — for ``organizationMembership.created``. Adds a
-  new Isol8 member to the org's existing Paperclip company via the
-  full Better Auth + invite-flow chain:
-
-      member_signUp ->
-      owner_signIn (using stored owner password) ->
-      owner.create_invite ->
-      member.accept_invite ->
-      owner.approve_join_request ->
-      mint member service-token ->
-      persist member row.
-
-  Requires the caller (T12 webhook handler) to pass ``owner_email`` —
-  Clerk's ``organizationMembership.created`` payload includes the org
-  owner's email anyway, so we keep the orchestrator self-contained
-  rather than depending on user_repo.
-
-* ``disable`` — for cancellation/deletion. Marks the row
-  ``status="disabled"`` with ``scheduled_purge_at = now + grace_days``;
-  the company itself is left alive (other org members still have
-  access). The ``purge`` cron entrypoint hard-deletes after the grace
-  window.
-
-Failure semantics: a failure mid-provisioning calls ``_mark_failed``, which
-leaves exactly ONE durable ``status="failed"`` marker. When a row already
-exists it downgrades that row in place (preserving paperclip_user_id +
-password so a retry can ADOPT), guarded so it never clobbers a row a
-concurrent attempt completed to ``active``. When NO row exists yet it writes
-a durable marker via a CONDITIONAL put-if-absent (carrying NO fabricated
-paperclip_user_id — a zeroed id poisoned the row — and never overwriting a
-real row): this keeps the net-new / orphan-422 failure honestly visible
-(``/teams`` → 503, ``teams_status="failed"``) instead of an eternal
-provisioning spinner. Then it re-raises. Subsequent retries with the same
-args are safe — the ``status="active"`` short-circuit is the only path that
-skips work.
+Failure semantics: ``_mark_failed`` downgrades an unconfirmed sign-up claim so
+it can be reclaimed, and (for ``provision_org``) leaves the workspace row
+``failed`` — in place, or via a put-if-absent marker — so ``/teams`` answers an
+honest 503 instead of an eternal provisioning spinner. It never downgrades a
+confirmed identity or an ``active`` workspace. Then it re-raises.
 """
 
 from __future__ import annotations
@@ -63,8 +41,7 @@ from core.config import settings
 from core.encryption import decrypt, encrypt
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
-from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
-from core.services import service_token
+from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo, PaperclipWorkspace
 from core.services.company_identity import generate_company_name
 from core.services.paperclip_adapter_config import (
     HERMES_GATEWAY_TYPE,
@@ -149,13 +126,10 @@ STARTER_CAPABILITIES = {
 }
 
 
-# The onboarding attribute names carried on ``PaperclipCompany`` -- the exact
-# set of ``PaperclipCompany`` fields listed under "Onboarding" in
-# ``core/repositories/paperclip_repo.py``. Kept as a tuple (not re-derived
-# via dataclasses.fields()) so it stays an explicit, reviewable list: every
-# whole-item ``repo.put`` writer-safety fix in this module reads this same
-# set, and drift between "what the dataclass carries" and "what a put
-# preserves" is exactly the bug class this guard exists to close.
+# Every onboarding attribute on ``PaperclipWorkspace``. A reconcile's
+# whole-item ``put_workspace`` carries all of them forward: drift between
+# "what the dataclass carries" and "what a put preserves" is exactly the
+# bug class this guard exists to close.
 _ONBOARDING_FIELD_NAMES = (
     "onboarding_generation",
     "funnel_state",
@@ -163,6 +137,11 @@ _ONBOARDING_FIELD_NAMES = (
     "funnel_completed_at",
     "onboarding_goal_id",
     "onboarding_project_id",
+    "onboarding_brief_text",
+    "onboarding_submitted_by",
+    "first_contact_state",
+    "first_contact_attempts",
+    "first_contact_reason",
 )
 
 
@@ -177,47 +156,31 @@ _SEED_WAIT_ATTEMPTS = 6
 _SEED_WAIT_INTERVAL_S = 1.0
 
 
-def _is_credential_less_failed(existing: Optional[PaperclipCompany]) -> bool:
-    """A ``failed`` row with no confirmed ``paperclip_user_id``. Signup may
-    already have succeeded; any staged password is retained for recovery.
-    Its retry must go through the seed-claim fence like a fresh row;
-    a failed row WITH a confirmed identity is adopted and needs no fence
-    (``try_acquire_seed_claim`` reclaims exactly this shape)."""
-    return existing is not None and existing.status == "failed" and not existing.paperclip_user_id
+def _is_credential_less_failed(identity: Optional[PaperclipIdentity]) -> bool:
+    """A ``failed`` sign-up claim with no confirmed ``paperclip_user_id``.
+    Signup may already have succeeded; the staged password is retained for
+    recovery. Its retry must go through the sign-up fence like a fresh one."""
+    return identity is not None and identity.status == "failed" and not identity.paperclip_user_id
 
 
-def _carry_forward_onboarding_fields(existing: Optional[PaperclipCompany]) -> dict:
-    """Read-merge helper for every whole-item ``repo.put`` in this module.
-
-    ``PaperclipRepo.put`` is a raw ``PutItem`` — any onboarding field not
-    set on the ``PaperclipCompany`` passed to it is simply ABSENT from the
-    new item, silently wiping a previously-written value. Every put site in
-    this module that is NOT the deliberate G2 mint (provision_org's
-    fresh-create branch) must carry the row's existing onboarding fields
-    forward through this helper, or reconcile/adopt/re-point writes would
-    reintroduce the exact clobber the co-located design's "load-bearing
-    safety requirement" exists to prevent.
-
-    Returns ``{}`` (no onboarding kwargs at all) when ``existing`` is None —
-    there is nothing to preserve, and ``PaperclipCompany``'s onboarding
-    fields already default to None.
-    """
-    if existing is None:
+def _carry_forward_onboarding_fields(ws: Optional[PaperclipWorkspace]) -> dict:
+    """Read-merge helper for a reconcile's whole-item ``put_workspace``: every
+    onboarding field the row already carries, so the put cannot wipe it."""
+    if ws is None:
         return {}
-    return {name: getattr(existing, name) for name in _ONBOARDING_FIELD_NAMES}
+    return {name: getattr(ws, name) for name in _ONBOARDING_FIELD_NAMES}
 
 
-def _auth_email(existing: Optional[PaperclipCompany], live_email: str) -> str:
+def _auth_email(identity: Optional[PaperclipIdentity], live_email: str) -> str:
     """The address to sign in to Better Auth with.
 
     Better Auth's ``user.email`` is set at sign-up and never updated, so the
     live Clerk address stops being the sign-in truth the moment a human moves
-    mailbox domains. Prefer the address recorded on the row; fall back to the
-    live one only for rows written before ``paperclip_email`` existed (or not
-    yet backfilled). NEVER the other way round — overwriting the stored value
-    with a live Clerk address is what mints duplicate Better Auth accounts.
+    mailbox domains. Prefer the address recorded on the identity row; fall
+    back to the live one only when it is empty. NEVER the other way round —
+    that is what mints duplicate Better Auth accounts.
     """
-    return (existing.paperclip_email if existing is not None else "") or live_email
+    return (identity.paperclip_email if identity is not None else "") or live_email
 
 
 async def build_paperclip_provisioning() -> "PaperclipProvisioning":
@@ -322,98 +285,49 @@ class PaperclipProvisioning:
         owner_id: str,
         owner_user_id: str,
         owner_email: str,
-    ) -> PaperclipCompany:
-        """Provision the Paperclip company + Better Auth user for a new owner.
+    ) -> PaperclipWorkspace:
+        """Provision the workspace's Paperclip company, with ``owner_user_id``
+        as the provisioner.
 
-        ``owner_id`` is the container's owner — Clerk's org_id for orgs
-        and Clerk's user_id for personal owners. It's the same value
-        every other backend layer keys on (``container_repo.get_by_owner_id``,
-        ``_resolve_owner_id`` helpers, ``fetch_paperclip_agents_for_owner``).
-        The DDB column on the persisted row is still called ``org_id`` —
-        that's a Paperclip-side concept and we don't churn the storage
-        layer for the rename.
+        ``owner_id`` is the workspace (Clerk org) id — the key of the ONE
+        workspace row this writes. ``owner_user_id``'s Better Auth identity
+        lives on their own identity row.
 
         Paperclip's ``POST /api/companies`` requires
-        ``req.actor.isInstanceAdmin`` in ``authenticated`` deployment mode
-        (per ``paperclip/server/src/routes/companies.ts``). The
-        old flow signed up the new user and immediately tried to create
-        the company AS that user — which 403'd because the new user
-        isn't an admin. Fixed flow: the bootstrap admin
-        (``admin+paperclip@isol8.co`` in new envs, ``admin@isol8.co`` in
-        legacy envs — email loaded dynamically from Secrets Manager,
-        never hardcoded), the only ``instance_admin`` on the deployment,
-        creates the company and invites the new user as a co-owner via
-        the standard
-        invite/accept/approve chain. New user ends up as an active
-        owner; admin stays as a co-owner of every company (harmless
-        side effect — admin doesn't act without explicit code paths).
+        ``req.actor.isInstanceAdmin``, so the bootstrap admin (email loaded
+        from Secrets Manager, never hardcoded) creates the company and invites
+        the new user as a co-owner via invite/accept/approve.
 
-        Service-token contract: every seeded agent's
-        ``adapterConfig.authToken`` is a JWT whose ``sub`` claim MUST
-        equal the container's ``owner_id``, because the WS Lambda
-        authorizer uses ``sub`` to route the connection to that owner's
-        OpenClaw container. We mint with ``owner_id`` directly so the
-        token's ``sub`` matches the routing key for both org and
-        personal owners.
+        Idempotent — AND fenced across backend instances. An ``active``
+        workspace with a complete starter roster short-circuits. A fresh
+        sign-up first claims the provisioner's IDENTITY row via
+        ``repo.try_acquire_seed_claim`` BEFORE any Paperclip side effect; only
+        the winner signs up, and a loser waits briefly for the winner's active
+        workspace and adopts it, or raises the 409-shaped in-flight error the
+        caller already tolerates (``_await_concurrent_seed``). Company creation
+        itself is serialized by the org-create claim the caller holds
+        (``user_provision._ensure_paperclip_for_org``).
 
-        Idempotent — AND fenced across backend instances. The read-then-act
-        idempotency below is not enough on its own: two concurrent calls on
-        different backend tasks could both read "no row" and both run the
-        full seed chain (duplicate same-email Better Auth users + duplicate
-        companies, observed live 2026-07-24). So the fresh-create path first
-        claims the row itself via ``repo.try_acquire_seed_claim`` (a
-        strongly-consistent conditional put of a bare ``status="seeding"``
-        row) BEFORE any Paperclip side effect; only the winner proceeds, and
-        its later writes (the post-sign-up credential put, then the final
-        active/failed put) replace that claim row in place. A loser waits
-        briefly for the winner's active row and adopts it, or raises the
-        same 409-shaped in-flight error the caller already tolerates (see
-        ``_await_concurrent_seed``). A winner that fails mid-chain releases
-        the claim via the ordinary ``_mark_failed`` in-place downgrade
-        (``seeding`` -> ``failed``), and a winner that crashed hard before
-        any durable progress leaves a bare ``seeding`` row that goes stale
-        and is re-claimable after ~5 minutes.
-
-        Idempotent: if a row already exists for ``owner_user_id`` with
-        ``status="active"``, return it unchanged. A non-active row that
-        already carries a ``company_id`` (a partial roster, including the
-        legacy Friday-partial case) is
-        RECONCILED — we adopt that company (sign in with the stored
-        credential, skip the create + invite/accept/approve chain) and
-        retry the seed against it, so a persistent seed outage never mints
-        a new orphan company on each poll. A non-active row with NO
-        company_id (a pre-create failure) redoes the full chain, adopting
-        the user via sign-in — Paperclip's Better Auth sign-up is NOT
-        idempotent, so ``_mark_failed`` preserves the credential to make
-        that retry a sign-in rather than a re-422'ing sign-up.
+        A non-active workspace row that already carries a ``company_id`` (a
+        partial roster) is RECONCILED — we adopt that company and retry the
+        seed against it, so a persistent seed outage never mints a new orphan
+        company on each poll. A workspace row with NO company_id (a pre-create
+        failure) redoes the full chain; a confirmed identity is adopted via
+        sign-in (Better Auth sign-up is NOT idempotent).
         """
-        existing = await self._repo.get(owner_user_id)
-        # Idempotency must be org-scoped: rows are keyed per-user, so a user
-        # provisioned in a different context (e.g. a personal company,
-        # org_id == their user_id) would otherwise short-circuit here and
-        # never get an org-indexed company. Only an active row for THIS
-        # owner_id counts as "already provisioned."
+        ws = await self._repo.get_workspace(owner_id)
+        identity = await self._repo.get_identity(owner_user_id)
         starter_incomplete = (
-            existing is not None
-            and existing.starter_agent_ids is not None
-            and any(not existing.starter_agent_ids.get(starter_key) for starter_key, *_ in STARTER_ROSTER)
+            ws is not None
+            and ws.starter_agent_ids is not None
+            and any(not ws.starter_agent_ids.get(starter_key) for starter_key, *_ in STARTER_ROSTER)
         )
-        if (
-            existing is not None
-            and existing.status == "active"
-            and existing.org_id == owner_id
-            and not starter_incomplete
-        ):
-            logger.info(
-                "paperclip_provisioning.provision_org: owner %s already active for owner_id %s",
-                owner_user_id,
-                owner_id,
-            )
-            return existing
+        if ws is not None and ws.status == "active" and not starter_incomplete:
+            logger.info("paperclip_provisioning.provision_org: workspace %s already active", owner_id)
+            return ws
 
         # Lazy import to keep the cycle clean (admin_session imports
-        # PaperclipAdminClient, which would otherwise create an import
-        # cycle if loaded at module level).
+        # PaperclipAdminClient).
         from core.services.paperclip_admin_session import (
             get_admin_session_cookie,
             invalidate_admin_session,
@@ -423,166 +337,69 @@ class PaperclipProvisioning:
         # bootstrap secret is missing (rather than failing 4 steps in).
         admin_cookie = await get_admin_session_cookie(self._admin._http)
 
-        # ---- Cross-instance seed fence (fresh-create path) ----------------
-        # Claim the row BEFORE the first Paperclip side effect (the sign-up
-        # below). Fenced cases:
-        #   * ``existing is None`` — the genuine fresh create. The claim's
-        #     put-if-absent elects exactly one winner across backend
-        #     instances; the loser adopts-or-defers in _await_concurrent_seed.
-        #   * ``existing.status == "seeding"`` — a leftover bare claim. If it
-        #     is a live peer's (non-stale), we are the loser; if its holder
-        #     crashed hard before any durable progress (stale, ~5 min), we
-        #     steal it and run the full chain ourselves.
-        # A credential-less ``failed`` marker goes through the fence too: its
-        # retry re-runs the sign-up, so concurrent retries would re-mint
-        # duplicate accounts. Every OTHER existing state deliberately
-        # bypasses the fence and keeps today's semantics: an active row
-        # already short-circuited above, and the adopt (credential-bearing) /
-        # reconcile (company_id-bearing) paths sign in rather than sign up,
-        # so a concurrent retry there cannot duplicate an account.
-        #
-        # Placed AFTER the admin-cookie fetch on purpose: everything from
-        # here on runs inside the try below, whose failure path downgrades
-        # the claim row via _mark_failed (seeding -> failed) so a later poll
-        # retries promptly instead of waiting out the stale window.
-        # Set only on the fresh-create/seeding path below; threaded into
-        # _mark_failed so its downgrade is fenced on OUR claim (a stale holder
-        # must not flip a newer holder's stolen seeding row to failed).
-        seed_claim_id: str | None = None
-        if existing is None or existing.status == "seeding" or _is_credential_less_failed(existing):
-            seed_claim_id = uuid4().hex
-            claimed = await self._repo.try_acquire_seed_claim(
-                owner_user_id,
-                org_id=owner_id,
-                claim_id=seed_claim_id,
+        # A non-active workspace row carrying a real company_id is a prior
+        # attempt that CREATED the company but whose roster didn't land: adopt
+        # it instead of reminting (Paperclip ignores our Idempotency-Key, so a
+        # re-create mints a new orphan company on every retry).
+        reconciling_company = ws is not None and bool(ws.company_id)
+        # Never a second company for an org that already has one on record (a
+        # pre-migration per-member row, during the deploy → migration-script
+        # gap). 409 = the caller's "in flight — no-op"; raised before the
+        # try, so no failed marker lands on a workspace awaiting migration.
+        if not reconciling_company and await self._repo.org_company_ids(owner_id):
+            raise PaperclipApiError(
+                f"org {owner_id} already has a company on record but no workspace row — refusing to create another",
+                status_code=409,
+                body=None,
             )
+
+        # ---- Cross-instance sign-up fence ----------------------------------
+        # Fenced: no identity yet, a leftover bare ``seeding`` claim (a live
+        # peer's → we lose; a hard-crashed holder's, stale ~5 min → we steal),
+        # or a credential-less ``failed`` claim (its retry re-runs sign-up).
+        # A confirmed identity is adopted via sign-in and needs no fence.
+        seed_claim_id: str | None = None
+        if identity is None or identity.status == "seeding" or _is_credential_less_failed(identity):
+            seed_claim_id = uuid4().hex
+            claimed = await self._repo.try_acquire_seed_claim(owner_user_id, claim_id=seed_claim_id)
             if not claimed:
                 put_metric("paperclip.provision.seed_claim_lost")
-                return await self._await_concurrent_seed(
-                    owner_id=owner_id,
-                    owner_user_id=owner_user_id,
-                )
+                return await self._await_concurrent_seed(owner_id=owner_id, owner_user_id=owner_user_id)
 
-        # Sign-up-or-ADOPT (same rationale as provision_member): a user who
-        # already has a Paperclip account — a personal row that the org-scoped
-        # idempotency check let fall through, or a prior ``failed`` row
-        # (``_mark_failed`` preserves paperclip_user_id + password) — is
-        # adopted by signing in with their stored password rather than
-        # re-signing-up (which would 422 and corrupt the row). We hold the
-        # password, and Paperclip has no user-delete/reset. The final
-        # ``repo.put`` re-points the row at this org.
-        adopting_existing = existing is not None and bool(existing.paperclip_user_id)
-        # Reconcile a partially seeded company instead of reminting one. When a
-        # prior attempt CREATED the company but the required roster didn't land,
-        # step 8 persists a NON-active ``failed`` row carrying the
-        # real ``company_id`` (a CEO-less company must never be marked active).
-        # The ``status=="active"`` short-circuit above never fires for it, so
-        # without adopting that company here the next /container/status poll
-        # re-runs the full create + invite/accept/approve chain — and because
-        # Paperclip ignores our ``Idempotency-Key``, MINTS A NEW ORPHAN COMPANY
-        # on every ~3s poll for as long as the seed outage lasts. When a
-        # non-active row already carries a company_id we ADOPT it: skip the
-        # create + invite/accept/approve chain and resume at the seed step,
-        # retrying the stored seed contract against the SAME company. A net-new failure with
-        # NO company_id (the orphan-422 / pre-create marker) is deliberately
-        # excluded — its ``company_id`` is "" and it re-runs the full chain.
-        #
-        # The ``org_id == owner_id`` guard is own-side defense-in-depth (L3):
-        # rows are keyed per-user, so a seat-only ex-member re-entering
-        # PERSONAL context (owner_id == their own user_id) can still find
-        # their OWN row still carrying the ORG's company_id from a prior
-        # membership. Without this guard that row would be adopted here,
-        # re-pointing a personal provision at someone else's company.
-        # Cross-tenant access is separately fenced by Paperclip authz (the
-        # re-signed-in session isn't a member of that company), so the real
-        # damage is a silently dropped 30-day purge timer on the row, not a
-        # data leak — this closes it at the source instead of relying on the
-        # downstream fence.
-        reconciling_company = (
-            existing is not None
-            and (existing.status != "active" or starter_incomplete)
-            and bool(existing.company_id)
-            and existing.org_id == owner_id
-        )
-        password = decrypt(existing.paperclip_password_encrypted) if adopting_existing else secrets.token_urlsafe(32)
+        adopting_existing = identity is not None and bool(identity.paperclip_user_id)
+        password = decrypt(identity.paperclip_password_encrypted) if adopting_existing else secrets.token_urlsafe(32)
         try:
-            # 1. Obtain the owner's Better Auth account + session — signup for
-            #    a brand-new user, sign-in to adopt an existing account. The
-            #    session is used later for the invite-accept and seed-agent
-            #    steps.
+            # 1. The provisioner's Better Auth account + session — sign-up for
+            #    a brand-new user, sign-in to adopt an existing account.
             if adopting_existing:
-                owner_auth_email = _auth_email(existing, owner_email)
+                owner_auth_email = _auth_email(identity, owner_email)
                 signin = await self._admin.sign_in_user(email=owner_auth_email, password=password)
-                paperclip_user_id = existing.paperclip_user_id
+                paperclip_user_id = identity.paperclip_user_id
                 new_user_session_cookie = signin["_session_cookie"]
             else:
-                owner_auth_email = owner_email
                 signup, owner_auth_email, password = await self._sign_up_with_staged_credentials(
                     user_id=owner_user_id, email=owner_email, password=password
                 )
                 paperclip_user_id = signup["user"]["id"]
                 new_user_session_cookie = signup["_session_cookie"]
-
-                # Persist the freshly created credential BEFORE the rest of
-                # the chain (mirrors provision_member). If a later step
-                # fails, _mark_failed updates this row in place — preserving
-                # paperclip_user_id + password — so the next attempt ADOPTS
-                # via sign-in instead of re-signing-up, which would 422
-                # against the now-existing Better Auth user and strand it as
-                # an unadoptable orphan (observed live 2026-06-11: a failure
-                # after sign-up left a row with an empty paperclip_user_id,
-                # wedging every retry). company_id isn't known yet at this
-                # point in the org flow; adoption only needs the credential
-                # pair. Net-new only: an adopted row already carries its
-                # credential and must not be overwritten to "provisioning".
-                #
-                # WRITER SAFETY (whole-item put #1 of the audited 4 — see
-                # architecture spec §2's "load-bearing safety requirement"):
-                # this branch only runs when ``adopting_existing`` is False,
-                # which implies ``reconciling_company`` is also False (a
-                # company_id can only exist on a row that also carries
-                # paperclip_user_id — the credential pair is written together
-                # below, and ``_mark_failed``'s put-if-absent marker never
-                # carries a company_id either). So there is normally nothing
-                # to preserve here. Read-merge ``existing`` anyway, purely
-                # defensively: a residual row from an unrelated prior
-                # incarnation (the personal->org L6 edge case, out of scope
-                # per the 2026-07-24 decisions) could in principle carry
-                # onboarding fields this write would otherwise silently wipe.
-                now = datetime.now(timezone.utc)
-                await self._repo.put(
-                    PaperclipCompany(
+                # Settle the identity BEFORE the rest of the chain, so a later
+                # failure's retry ADOPTS via sign-in instead of re-signing-up
+                # (which 422s against the now-existing Better Auth user).
+                await self._repo.put_identity(
+                    PaperclipIdentity(
                         user_id=owner_user_id,
-                        org_id=owner_id,
-                        company_id="",
                         paperclip_user_id=paperclip_user_id,
                         paperclip_password_encrypted=encrypt(password),
                         paperclip_email=owner_auth_email,
-                        service_token_encrypted="",
-                        status="provisioning",
-                        created_at=now,
-                        updated_at=now,
-                        **_carry_forward_onboarding_fields(existing),
                     )
                 )
 
-            # 2. Reconcile-or-create the company. On the RECONCILE path (a prior
-            #    non-active row already carries a real company_id — see the
-            #    ``reconciling_company`` note above) we ADOPT that company and
-            #    skip both the create and the invite/accept/approve chain,
-            #    dropping straight to the seed retry below. The user is already
-            #    an approved owner of it from the first attempt. Otherwise the
-            #    ADMIN creates the company (admin becomes the initial owner via
-            #    Paperclip's auto-ensureMembership in ``routes/companies.ts``).
+            # 2. Reconcile-or-create the company.
             if reconciling_company:
-                company_id = existing.company_id
-                # Only used as the slug-derivation fallback below; the adopted
-                # company already has its real, user-visible name from the first
-                # attempt, so we don't re-generate (or re-create) it.
-                company_name = owner_email
+                company_id = ws.company_id
                 logger.info(
                     "paperclip_provisioning.provision_org: adopting existing company %s for "
-                    "owner_id %s (prior non-active row) — skipping create/invite, retrying seed",
+                    "owner_id %s (prior non-active row) — retrying seed",
                     company_id,
                     owner_id,
                 )
@@ -625,72 +442,40 @@ class PaperclipProvisioning:
                         raise
                 company_id = company["id"]
 
-            # NOTE: the agent-email slug is deliberately NOT allocated here.
-            # It is allocated (and the address minted) on the agent's first
-            # owner-directed send — see core/services/agent_mail_owner_send.py.
-            #
-            # The slug becomes the subdomain of an address other people are
-            # given, and `company_slug_repo` has no delete path, so whatever is
-            # reserved is permanent. Reserving it HERE would freeze
-            # `company_name` above — an auto-generated placeholder nobody
-            # chose, which for a personal owner is just their email local part.
-            # Minting late lets it derive from the name the agent actually
-            # picked during its first run.
+            # NOTE: the agent-email slug is deliberately NOT allocated here —
+            # see core/services/agent_mail_owner_send.py (minted on first send
+            # so it derives from the name the agent actually picked).
 
-            # 3+4+5. ADMIN creates a one-shot invite for the new user, who
-            #    accepts it, and the join request is ensured approved — leaving
-            #    the user an active owner of the company. Skipped entirely on the
-            #    reconcile path (the adopted company already has this membership).
-            #    ``human_role="owner"`` is critical: Paperclip's
-            #    ``resolveHumanInviteRole`` defaults a missing role to
-            #    ``"operator"``, and ``grantsForHumanRole("operator")``
-            #    grants only ``tasks:assign`` — no ``agents:create``.
-            #    Without this, the user joins their own company as a
-            #    low-privilege member and POST /api/companies/{co}/agents
-            #    403s with "Missing permission: agents:create". v1
-            #    assumes single-tenant orgs, so granting the new user
-            #    ``"owner"`` matches the Clerk-side org-owner concept;
-            #    multi-tenant role distinctions can be revisited later.
-            #    (Paperclip auto-approves human accepts, so the standalone
-            #    approve inside _accept_invite_and_ensure_approved only fires as
-            #    a fallback.)
-            if not reconciling_company:
+            # 3+4+5. ADMIN invites the provisioner, who accepts; the join is
+            #    ensured approved. ``human_role="owner"`` is critical: Paperclip
+            #    defaults a missing role to ``"operator"``, which lacks
+            #    ``agents:create``. Skipped on reconcile when the provisioner
+            #    already joined; a DIFFERENT admin reconciling a failed company
+            #    joins it here (409 "already belongs" is the join already done).
+            if ws is None or owner_user_id not in ws.member_user_ids:
                 invite = await self._admin.create_invite(
                     session_cookie=admin_cookie,
                     company_id=company_id,
                     email=owner_email,
                     human_role="owner",
                 )
-                invite_token = invite["token"]
+                try:
+                    await self._accept_invite_and_ensure_approved(
+                        member_session_cookie=new_user_session_cookie,
+                        approver_session_cookie=admin_cookie,
+                        company_id=company_id,
+                        invite_token=invite["token"],
+                    )
+                except PaperclipApiError as e:
+                    if e.status_code != 409:
+                        raise
 
-                await self._accept_invite_and_ensure_approved(
-                    member_session_cookie=new_user_session_cookie,
-                    approver_session_cookie=admin_cookie,
-                    company_id=company_id,
-                    invite_token=invite_token,
-                )
-
-            # 6. Mint a long-lived OpenClaw service-token JWT. Baked into each
-            #    seeded agent's adapter config so it can reach the container.
-            #
-            #    The JWT's ``sub`` claim MUST equal the container's
-            #    ``owner_id`` — the WS Lambda authorizer extracts ``sub``
-            #    and routes the connection to that owner's container.
-            #    For orgs ``owner_id`` is the Clerk org_id; for personal
-            #    owners it's the Clerk user_id. Previously this minted
-            #    with ``owner_user_id`` (the human creator's user_id),
-            #    which broke org wakes: the authorizer then tried to
-            #    route to a user-personal container that doesn't exist
-            #    for org members.
-            svc_token = service_token.mint(owner_id)
-
-            # Which adapter carries these seeded runs: the deployed native Hermes adapter
-            # through the hook-token-authenticated backend facade, whose ``apiKey`` is that
-            # token -- so the seed needs the owner's container row.
+            # 6. Seed the starter roster. The deployed native Hermes adapter
+            #    reaches the backend facade with the owner's hook token.
             owner_container = await container_repo.get_by_owner_id(owner_id)
             seed_hook_token = (owner_container or {}).get("hook_token") or ""
 
-            starter_agent_ids = dict(existing.starter_agent_ids or {}) if reconciling_company else {}
+            starter_agent_ids = dict(ws.starter_agent_ids or {}) if reconciling_company else {}
             for starter_key, name, role, title, parent_key in STARTER_ROSTER:
                 if starter_agent_ids.get(starter_key):
                     continue
@@ -698,9 +483,6 @@ class PaperclipProvisioning:
                 if parent_key and not reports_to:
                     continue
                 try:
-                    # Paperclip gets the authenticated backend facade, not a private runtime
-                    # address. Its native session header supplies the final agent id after
-                    # Paperclip assigns it.
                     adapter_config = build_hermes_gateway_adapter_config(owner_id, hook_token=seed_hook_token)
                     agent = await self._admin.create_agent(
                         company_id=company_id,
@@ -723,20 +505,19 @@ class PaperclipProvisioning:
                     logger.warning(
                         "paperclip_provisioning.provision_org: starter %s seed failed for %s: %s",
                         starter_key,
-                        owner_user_id,
+                        owner_id,
                         e,
                     )
                 except httpx.RequestError:
                     logger.warning(
                         "paperclip_provisioning.provision_org: starter %s seed transport failed for %s",
                         starter_key,
-                        owner_user_id,
+                        owner_id,
                     )
             missing_starter_keys = [
                 starter_key for starter_key, *_ in STARTER_ROSTER if not starter_agent_ids.get(starter_key)
             ]
             seed_ok = not missing_starter_keys
-            keep_agent_ids = list(starter_agent_ids.values())
 
             # Paperclip's built-ins are purged only after the selected seed
             # contract is complete. A later normal reconciliation retries any
@@ -745,70 +526,41 @@ class PaperclipProvisioning:
                 await self._purge_builtin_agents(
                     company_id=company_id,
                     session_cookie=new_user_session_cookie,
-                    keep_agent_ids=keep_agent_ids,
+                    keep_agent_ids=list(starter_agent_ids.values()),
                 )
 
-            # 8. Persist. The DDB column is still ``org_id`` — that's a
-            #    Paperclip-side stored concept; we just feed it from the
-            #    new ``owner_id`` kwarg.
+            # 7. Persist the workspace row.
             #
+            # Onboarding fields (G2 mint / writer-safety — INV-3, INV-4): on
+            # RECONCILE this is a retry of the SAME onboarding attempt — carry
+            # every onboarding field forward untouched. On a fresh create a
+            # genuinely-new company was just confirmed: mint a generation
+            # (adopting a concurrent peer's already-persisted one) and reset
+            # the funnel.
             now = datetime.now(timezone.utc)
-
-            # ---- Onboarding fields (G2 mint / writer-safety — INV-3, INV-4) ----
-            # WRITER SAFETY (whole-item put #2 of the audited 4): this is THE
-            # row-creating write for the company, so it is also the ONLY place
-            # onboarding_generation is minted (G2). Two cases:
-            #
-            # * ``reconciling_company`` (RECONCILE-ADOPT of an existing,
-            #   non-active row's real company_id — see the docstring above):
-            #   this is a RETRY of the SAME onboarding attempt, not a new one.
-            #   The generation (and whatever funnel progress exists)
-            #   was already established on ``existing`` by the ORIGINAL
-            #   create — carry it forward untouched. This is the exact case
-            #   the architecture spec's "load-bearing safety requirement"
-            #   warns about: skipping this carry-forward would silently reset
-            #   a company's funnel state on every reconcile retry.
-            # * fresh create (``not reconciling_company``): a genuinely-new
-            #   Paperclip company was just confirmed (``create_company`` ran
-            #   above, unconditionally in this branch). Mint a fresh
-            #   onboarding_generation and reset the funnel to its
-            #   initial states, atomically on this same write — never on
-            #   ``provision_member`` (org seat), per INV-3.
             if reconciling_company:
-                onboarding_fields = _carry_forward_onboarding_fields(existing)
+                onboarding_fields = _carry_forward_onboarding_fields(ws)
             else:
-                # if_not_exists, mapped onto this whole-item put: a company-less
-                # retry (create_company itself failed after signup succeeded) is
-                # UNCLAIMED (reconciling_company is False with no company_id, so
-                # the seed-claim fence never engages -- see #15/#20). A
-                # concurrent peer's retry may have already minted and persisted
-                # a generation before this read; adopt it instead of stomping it
-                # with a fresh random ULID. Only a genuinely generation-less
-                # existing row (or none at all) mints fresh.
                 onboarding_fields = {
                     "onboarding_generation": (
-                        existing.onboarding_generation
-                        if existing is not None and existing.onboarding_generation
-                        else str(ULID())
+                        ws.onboarding_generation if ws is not None and ws.onboarding_generation else str(ULID())
                     ),
                     "funnel_state": "not_started",
                 }
 
-            row = PaperclipCompany(
-                user_id=owner_user_id,
+            row = PaperclipWorkspace(
                 org_id=owner_id,
                 company_id=company_id,
-                paperclip_user_id=paperclip_user_id,
-                paperclip_password_encrypted=encrypt(password),
-                paperclip_email=owner_auth_email,
-                service_token_encrypted=encrypt(svc_token),
                 status="active" if seed_ok else "failed",
-                created_at=now,
+                created_at=ws.created_at if ws is not None else now,
                 updated_at=now,
-                # Never minted any more (the Friday/Atlas seed is retired), but
-                # this is a whole-item put: carry a legacy row's ids forward so a
-                # reconcile does not silently wipe them before the owner migrates.
-                seeded_agent_ids=(existing.seeded_agent_ids if reconciling_company else None),
+                provisioner_user_id=(ws.provisioner_user_id if ws is not None else "") or owner_user_id,
+                # ponytail: whole-item put — a member who joined between the
+                # read above and this write (only possible on an active,
+                # starter-incomplete legacy workspace) drops out of the set;
+                # their next request re-joins (409 swallowed) and re-adds them.
+                member_user_ids=(set(ws.member_user_ids) if ws is not None else set()) | {owner_user_id},
+                seeded_agent_ids=(ws.seeded_agent_ids if reconciling_company else None),
                 starter_agent_ids=starter_agent_ids,
                 last_error=(
                     None
@@ -818,15 +570,13 @@ class PaperclipProvisioning:
                 **onboarding_fields,
             )
             if reconciling_company:
-                await self._repo.put(row)
+                await self._repo.put_workspace(row)
             else:
-                # Fix round 1 (Important #2): the read that decided onboarding_fields above and
-                # this put are not atomic -- a peer's own mint can land in between. Condition the
-                # put so a peer who landed first WINS instead of being silently overwritten; on
-                # loss, adopt the stored generation with one consistent re-read and put once
-                # more (a single retry, not a new lease).
+                # The read that decided onboarding_fields and this put are not
+                # atomic: condition it so a peer who landed first WINS, then
+                # adopt the stored generation and put once more.
                 try:
-                    await self._repo.put(
+                    await self._repo.put_workspace(
                         row,
                         condition="attribute_not_exists(onboarding_generation) OR onboarding_generation = :g",
                         condition_values={":g": row.onboarding_generation},
@@ -834,12 +584,12 @@ class PaperclipProvisioning:
                 except ClientError as e:
                     if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
                         raise
-                    winner = await self._repo.get(owner_user_id, consistent_read=True)
+                    winner = await self._repo.get_workspace(owner_id, consistent_read=True)
                     row.onboarding_generation = winner.onboarding_generation if winner else row.onboarding_generation
-                    await self._repo.put(row)
+                    await self._repo.put_workspace(row)
             if seed_ok:
                 logger.info(
-                    "paperclip_provisioning.provision_org: owner_id %s active (company=%s, owner=%s)",
+                    "paperclip_provisioning.provision_org: owner_id %s active (company=%s, provisioner=%s)",
                     owner_id,
                     company_id,
                     owner_user_id,
@@ -854,22 +604,14 @@ class PaperclipProvisioning:
             return row
 
         except Exception as e:
-            # Don't corrupt an ADOPTED row (see provision_member): re-pointing
-            # a user's existing active row at this org only lands on the
-            # successful repo.put above, so a transient failure must preserve
-            # that row. Only mark-failed for net-new owners.
-            if not adopting_existing:
-                await self._mark_failed(
-                    user_id=owner_user_id,
-                    owner_id=owner_id,
-                    reason=f"provision_org failed: {e}",
-                    expected_seeding_claim_id=seed_claim_id,
-                )
-            # ``retryable`` is now set automatically:
-            #   - PaperclipApiError sets it in __init__ (5xx/429 → True).
-            #   - OrgNotProvisionedError carries the class attribute.
-            #   - Other exceptions are treated as non-retryable by the
-            #     T12 caller (``getattr(exc, "retryable", False)``).
+            await self._mark_failed(
+                user_id=owner_user_id,
+                org_id=owner_id,
+                reason=f"provision_org failed: {e}",
+                seed_claim_id=seed_claim_id,
+            )
+            # ``retryable`` is set on the exception itself (PaperclipApiError:
+            # 5xx/429 → True; anything else is non-retryable to the caller).
             raise
 
     async def provision_member(
@@ -878,90 +620,33 @@ class PaperclipProvisioning:
         owner_id: str,
         user_id: str,
         email: str,
-        owner_email: str,
-    ) -> PaperclipCompany:
-        """Add a new Isol8 member to the org's existing Paperclip company.
+    ) -> PaperclipWorkspace:
+        """Join ``user_id`` to the workspace ``owner_id``'s existing company.
 
-        ``owner_id`` is the container's owner — Clerk's org_id for orgs
-        and Clerk's user_id for personal owners. Since this entry point
-        only runs from ``organizationMembership.created`` it'll always
-        be a Clerk org_id in practice, but the kwarg is named ``owner_id``
-        to align with the rest of the backend. The DDB column is still
-        ``org_id`` (Paperclip-side stored concept).
-
-        ``owner_email`` is supplied by the webhook caller (Clerk's
-        ``organizationMembership.created`` payload exposes it). We
-        could look it up via ``user_repo`` instead, but keeping it as
-        a kwarg avoids the cross-service coupling and makes the
-        orchestrator easier to test in isolation.
-
-        Service-token contract: org members share the org's container
-        (keyed by ``owner_id``), so the member's stored
-        ``service_token_encrypted`` must be a JWT whose ``sub`` claim
-        equals ``owner_id`` — not the member's own user_id. The WS Lambda
-        authorizer extracts ``sub`` and routes the resulting connection
-        to that owner's container; minting with the member's user_id
-        would route to a user-personal container that doesn't exist for
-        org members.
-
-        Idempotent on ``user_id``: an already-active row short-circuits
-        to a no-op return.
+        Signs the member up (or adopts their existing Better Auth identity —
+        one identity per human, whatever workspaces they are in), then the
+        bootstrap admin (a co-owner of every company) invites them and the
+        member accepts. Records the join on the workspace row's
+        ``member_user_ids``; a member already recorded short-circuits.
         """
-        existing = await self._repo.get(user_id)
-        # Idempotency must be org-scoped: rows are keyed per-user, so a user
-        # with an active row for a DIFFERENT org_id (e.g. a personal company)
-        # must be treated as not-yet-joined to THIS org, not idempotent
-        # success — otherwise they'd never be invited and /teams would keep
-        # resolving them to their other company.
-        if existing is not None and existing.status == "active" and existing.org_id == owner_id:
-            logger.info(
-                "paperclip_provisioning.provision_member: member %s already active",
-                user_id,
-            )
-            return existing
+        ws = await self._repo.resolve_owner_row(owner_id)
+        if ws is None or not ws.company_id:
+            raise OrgNotProvisionedError(f"Owner {owner_id} has no active Paperclip company yet — caller should retry.")
+        if user_id in ws.member_user_ids:
+            logger.info("paperclip_provisioning.provision_member: member %s already joined %s", user_id, owner_id)
+            return ws
+        company_id = ws.company_id
+        identity = await self._repo.get_identity(user_id)
 
-        company_id = await self._repo.get_org_company_id(owner_id)
-        if not company_id:
-            raise OrgNotProvisionedError(
-                f"Owner {owner_id} has no Paperclip company yet. "
-                "organization.created webhook may not have run yet — caller should retry."
-            )
-
-        owner_row = await self.find_org_owner(owner_id)
-        if owner_row is None:
-            # Defensive — get_org_company_id returned a company_id but
-            # find_org_owner couldn't locate the row that produced it.
-            # Should be impossible if the GSI is consistent.
-            raise OrgNotProvisionedError(f"Owner {owner_id} has company {company_id} but no owner row found")
-        owner_password = decrypt(owner_row.paperclip_password_encrypted)
-
-        # Fresh-join fence: the same PK put-if-absent claim ``provision_org``
-        # takes, on the member's own row. Without it, N concurrent dispatches
-        # for a joining member (the /container/status poll and the /teams
-        # reconcile fire together on the first page load after an invite
-        # accept) each read "no row", each sign up the SAME email with its
-        # OWN random password — Better Auth's ``user.email`` has no unique
-        # constraint, so every sign-up returns 200 and mints a duplicate
-        # account — and the last DDB writer stores a password that does not
-        # belong to the account sign-in resolves by email. Every later mint
-        # is then INVALID_EMAIL_OR_PASSWORD, and the retries trip Better
-        # Auth's 3-per-10s sign-in limit (429). Losers wait for the winner's
-        # active row and adopt it; on timeout they raise the 409 the caller
-        # already treats as "join in flight, no-op". Placed after the owner
-        # lookups on purpose: everything from here on runs inside the try
-        # below, whose failure path downgrades the claim row (seeding ->
-        # failed) so the next poll retries promptly.
+        # Sign-up fence (same claim ``provision_org`` takes): N concurrent
+        # dispatches for a joining member would otherwise each sign up the
+        # SAME email with its OWN password — Better Auth's ``user.email`` is
+        # not unique, so every sign-up mints a duplicate account and the last
+        # writer stores a password that matches none of them.
         member_claim_id: str | None = None
-        if existing is None or existing.status == "seeding" or _is_credential_less_failed(existing):
+        if identity is None or identity.status == "seeding" or _is_credential_less_failed(identity):
             member_claim_id = uuid4().hex
-            claimed = await self._repo.try_acquire_seed_claim(
-                user_id,
-                org_id=owner_id,
-                claim_id=member_claim_id,
-                # The org's company is already known here; a membership
-                # removal that lands mid-claim needs it to archive cleanly.
-                company_id=company_id,
-            )
+            claimed = await self._repo.try_acquire_seed_claim(user_id, claim_id=member_claim_id)
             if not claimed:
                 put_metric("paperclip.provision.member_claim_lost")
                 return await self._await_concurrent_seed(
@@ -970,202 +655,77 @@ class PaperclipProvisioning:
                     what="provision_member",
                 )
 
-        # Sign-up-or-ADOPT. A brand-new user signs up. A user who ALREADY has
-        # a Paperclip account — e.g. a personal workspace row, which the
-        # org-scoped idempotency check above intentionally let fall through,
-        # or a prior attempt that left a ``failed`` row (``_mark_failed``
-        # preserves paperclip_user_id + password) — is ADOPTED by signing in
-        # with their stored password. Re-signing-up would 422 (email already
-        # in Better Auth) and corrupt their existing row via ``_mark_failed``;
-        # Paperclip exposes no user-delete/reset, but we hold the account's
-        # password, so sign-in is the clean path and also recovers a
-        # previously-corrupted row. The final ``repo.put`` re-points the row
-        # at this org.
-        adopting_existing = existing is not None and bool(existing.paperclip_user_id)
+        adopting_existing = identity is not None and bool(identity.paperclip_user_id)
         member_password = (
-            decrypt(existing.paperclip_password_encrypted) if adopting_existing else secrets.token_urlsafe(32)
+            decrypt(identity.paperclip_password_encrypted) if adopting_existing else secrets.token_urlsafe(32)
         )
+        from core.services.paperclip_admin_session import get_admin_session_cookie
+
         try:
-            # 1. Obtain the member's Better Auth account + session.
-            member_auth_email = _auth_email(existing, email) if adopting_existing else email
+            # 1. The member's Better Auth account + session.
             if adopting_existing:
+                member_auth_email = _auth_email(identity, email)
                 member_signin = await self._admin.sign_in_user(email=member_auth_email, password=member_password)
-                member_paperclip_user_id = existing.paperclip_user_id
                 member_session_cookie = member_signin["_session_cookie"]
             else:
                 member_signup, member_auth_email, member_password = await self._sign_up_with_staged_credentials(
                     user_id=user_id, email=email, password=member_password
                 )
-                member_paperclip_user_id = member_signup["user"]["id"]
                 member_session_cookie = member_signup["_session_cookie"]
-
-                # Persist the freshly created credential BEFORE the rest of
-                # the join chain. If a later step fails, this row lets the
-                # next attempt ADOPT (sign-in) instead of re-signing-up —
-                # re-signup would 422 against the now-existing Better Auth
-                # user and strand it as an orphan (the failure path's
-                # _mark_failed updates this row in place, preserving the
-                # paperclip_user_id + password). Only for net-new members:
-                # an adopted row already carries its credential and must not
-                # be overwritten to "provisioning".
-                #
-                # WRITER SAFETY (whole-item put #3 of the audited 4):
-                # deliberately carries NO onboarding fields, and per INV-3
-                # never mints onboarding_generation here (a seat-join is not
-                # a generation bump). Onboarding truth lives ONLY on the
-                # OWNER row (see PaperclipRepo.resolve_owner_row) — a member
-                # row is never read for it, so this is safe by construction,
-                # not by omission. The one accepted residual: if THIS row
-                # previously belonged to the member's own personal company
-                # (the sign-up-or-ADOPT re-point noted above), that row's
-                # personal onboarding fields are wiped here rather than
-                # carried forward — orphaning them is the explicitly
-                # out-of-scope personal->org L6 cleanup (2026-07-24 decision:
-                # "no live path in the main app today"), not a new gap this
-                # PR introduces.
-                now = datetime.now(timezone.utc)
-                await self._repo.put(
-                    PaperclipCompany(
+                await self._repo.put_identity(
+                    PaperclipIdentity(
                         user_id=user_id,
-                        org_id=owner_id,
-                        company_id=company_id,
-                        paperclip_user_id=member_paperclip_user_id,
+                        paperclip_user_id=member_signup["user"]["id"],
                         paperclip_password_encrypted=encrypt(member_password),
                         paperclip_email=member_auth_email,
-                        service_token_encrypted="",
-                        status="provisioning",
-                        created_at=now,
-                        updated_at=now,
                     )
                 )
 
-            # 2. Sign in as the org owner so we can act on the company
-            #    (create invite + approve join request).
-            owner_signin = await self._admin.sign_in_user(
-                email=_auth_email(owner_row, owner_email),
-                password=owner_password,
-            )
-            owner_session_cookie = owner_signin["_session_cookie"]
-
-            # 3. Owner mints a one-shot invite token for this member.
-            #    ``human_role="owner"`` mirrors provision_org — without
-            #    it, Paperclip defaults humanRole to ``"operator"`` and
-            #    the new member can't create agents in their own
-            #    company (agents:create not granted). v1 single-tenant
-            #    assumption: every Isol8 org member needs full access.
+            # 2+3. The admin invites the member as an owner (without
+            #    ``human_role="owner"`` Paperclip defaults to ``operator``,
+            #    which cannot create agents); the member accepts.
+            #    409 = "You already belong to this company": the join is
+            #    already done — record it rather than failing forever.
+            admin_cookie = await get_admin_session_cookie(self._admin._http)
             invite = await self._admin.create_invite(
-                session_cookie=owner_session_cookie,
+                session_cookie=admin_cookie,
                 company_id=company_id,
                 email=email,
                 human_role="owner",
             )
-            invite_token = invite["token"]
-
-            # 4+5. Member accepts the invite; the join request is ensured
-            #    approved (Paperclip auto-approves human accepts, so the
-            #    standalone approve only fires as a fallback — see
-            #    _accept_invite_and_ensure_approved).
-            #
-            #    409 = "You already belong to this company"
-            #    (paperclip server/src/routes/access.ts). That is the JOIN
-            #    already being done, not a failure — and it is the ONLY thing
-            #    standing between a stale row and a working Teams surface.
-            #    Prod 2026-09-13: a member whose row still pointed at their
-            #    personal company 403'd on every Teams route
-            #    (routers/teams/deps.py compares row.org_id to the active
-            #    owner) because this raise aborted the chain before step 7's
-            #    repo.put — the only write that re-points the row — and the
-            #    caller swallowed the 409 as an idempotent no-op. Forever.
-            #    Swallowing it here converges the row on the next request.
             try:
                 await self._accept_invite_and_ensure_approved(
                     member_session_cookie=member_session_cookie,
-                    approver_session_cookie=owner_session_cookie,
+                    approver_session_cookie=admin_cookie,
                     company_id=company_id,
-                    invite_token=invite_token,
+                    invite_token=invite["token"],
                 )
             except PaperclipApiError as e:
                 if e.status_code != 409:
                     raise
                 logger.info(
-                    "paperclip_provisioning.provision_member: %s already belongs to company %s "
-                    "— persisting row at owner_id %s",
+                    "paperclip_provisioning.provision_member: %s already belongs to company %s",
                     user_id,
                     company_id,
-                    owner_id,
                 )
 
-            # 6. Mint the member's OpenClaw service-token JWT.
-            #
-            #    Org members share the org's container (keyed by
-            #    ``owner_id``), so the JWT's ``sub`` claim MUST equal
-            #    ``owner_id`` — that's the value the WS Lambda authorizer
-            #    pulls out and routes against. Previously this minted
-            #    with the joining member's own ``user_id``, which broke
-            #    Paperclip wakes for org members: the authorizer would
-            #    try to route to a user-personal container that doesn't
-            #    exist for org members.
-            svc_token = service_token.mint(owner_id)
-
-            # 7. Persist the member row. DDB column stays ``org_id`` —
-            #    that's a Paperclip-side stored concept; we just feed it
-            #    from the new ``owner_id`` kwarg.
-            #
-            # WRITER SAFETY (whole-item put #4 of the audited 4): same
-            # reasoning as put #3 above — a member row deliberately carries
-            # NO onboarding fields and never mints onboarding_generation
-            # (INV-3). Unlike ``seeded_agent_ids`` (replicated below so the
-            # delete-protection survives even if the owner row is purged),
-            # onboarding truth is NOT replicated onto member rows: it has
-            # exactly one home (the owner row, via
-            # ``PaperclipRepo.resolve_owner_row``), and a member's own row is
-            # structurally never consulted for it.
-            now = datetime.now(timezone.utc)
-            row = PaperclipCompany(
-                user_id=user_id,
-                org_id=owner_id,
-                company_id=company_id,
-                paperclip_user_id=member_paperclip_user_id,
-                paperclip_password_encrypted=encrypt(member_password),
-                paperclip_email=member_auth_email,
-                service_token_encrypted=encrypt(svc_token),
-                status="active",
-                created_at=now,
-                updated_at=now,
-                # Replicate the seeded-agent marker onto every member row so
-                # the company's legacy Friday/Atlas stay protected even if the
-                # original provisioner's row is later purged (the company
-                # survives as long as ANY active member remains, and
-                # get_seeded_agent_ids resolves from any row carrying it).
-                seeded_agent_ids=owner_row.seeded_agent_ids,
-            )
-            await self._repo.put(row)
+            # 4. Record the join on the workspace row.
+            await self._repo.add_member(owner_id, user_id)
+            ws.member_user_ids.add(user_id)
             logger.info(
                 "paperclip_provisioning.provision_member: member %s added to owner_id %s (company=%s)",
                 user_id,
                 owner_id,
                 company_id,
             )
-            return row
+            return ws
 
-        except Exception as e:  # noqa: F841 — kept for clarity in future logging
-            # Don't corrupt an ADOPTED row: when we're re-pointing a user's
-            # existing (e.g. personal) active row at this org, a transient
-            # join failure must NOT mark that unrelated workspace failed — the
-            # re-point only lands on the successful repo.put above, so on
-            # failure the existing row is still valid and the next poll
-            # retries. Only mark-failed for net-new users (their own
-            # placeholder).
-            if not adopting_existing:
-                await self._mark_failed(
-                    user_id=user_id,
-                    owner_id=owner_id,
-                    reason=f"provision_member failed: {e}",
-                    company_id=company_id,
-                    expected_seeding_claim_id=member_claim_id,
-                )
-            # ``retryable`` is set on the exception itself (see provision_org
-            # for the full rationale).
+        except Exception as e:
+            await self._mark_failed(
+                user_id=user_id,
+                reason=f"provision_member failed: {e}",
+                seed_claim_id=member_claim_id,
+            )
             raise
 
     async def _sign_up_with_staged_credentials(
@@ -1195,198 +755,96 @@ class PaperclipProvisioning:
                 raise
         return account, email, password
 
-    async def archive_member(self, *, user_id: str, grace_days: int = 30) -> None:
-        """Archive a member's Paperclip membership AND disable their DDB row.
+    async def archive_member(self, *, user_id: str, org_id: str) -> None:
+        """Remove ``user_id`` from workspace ``org_id``'s Paperclip company —
+        and ONLY that one: a human in two workspaces keeps the other.
 
-        Used by ``organizationMembership.deleted`` (spec §3 case C). The
-        member is removed from the Clerk org but their Paperclip
-        membership lingers unless we proactively archive it. We
-        archive on the Paperclip side first (so the Teams UI stops
-        listing them immediately) then mark the DDB row disabled with
-        a purge timer (same 30-day grace as ``disable``).
-
-        Lookup chain:
-
-          1. ``repo.get(user_id)`` — find their company + paperclip_user_id.
-             If absent, no-op (member never had Paperclip provisioned).
-          2. ``list_members(company_id)`` — find the membership row
-             whose ``principalId`` matches our paperclip_user_id. We
-             need the membership ``id`` to call archive (NOT the
-             user_id).
-          3. ``archive_member(company_id, member_id)`` — POST to the
-             archive endpoint with admin session cookie.
-          4. ``update_status(disabled, purge_at)`` — same DDB shape as
-             ``disable``.
-
-        If the member row can't be located on Paperclip's side (already
-        archived externally, or list_members shape drift) we still mark
-        the DDB row disabled — but record ``last_error`` so admin
-        tooling can surface the inconsistency. We deliberately do NOT
-        raise: the user is already gone from Clerk, and a stuck
-        Paperclip row is recoverable out-of-band.
-
-        If Paperclip's archive call itself fails (5xx), we re-raise so
-        the webhook caller can enqueue a retry — DDB stays untouched
-        in that case so a successful retry can complete the full chain.
+        Used by ``organizationMembership.deleted`` and the account wipe. The
+        DDB membership is dropped FIRST (it is the Teams authorization fence),
+        then Paperclip's membership row is archived (Paperclip reassigns the
+        member's issues). A 5xx from the archive re-raises so the webhook can
+        enqueue a retry; the retry needs only the workspace + identity rows,
+        which this never touches. A membership Paperclip no longer lists is
+        logged, not raised: the user is already gone from Clerk.
         """
-        existing = await self._repo.get(user_id)
-        if existing is None:
+        ws = await self._repo.get_workspace(org_id)
+        if ws is None:
+            return
+        await self._repo.remove_member(org_id, user_id)
+        identity = await self._repo.get_identity(user_id)
+        if not ws.company_id or identity is None or not identity.paperclip_user_id:
             return
 
-        # Lazy import to avoid the same import-cycle workaround
-        # ``provision_org`` uses.
         from core.services.paperclip_admin_session import (
             get_admin_session_cookie,
             invalidate_admin_session,
         )
 
         admin_cookie = await get_admin_session_cookie(self._admin._http)
-
-        member_id: Optional[str] = None
         try:
-            members_resp = await self._admin.list_members(
-                session_cookie=admin_cookie,
-                company_id=existing.company_id,
-            )
+            members_resp = await self._admin.list_members(session_cookie=admin_cookie, company_id=ws.company_id)
         except PaperclipApiError as e:
-            if e.status_code == 401:
-                invalidate_admin_session()
-                admin_cookie = await get_admin_session_cookie(self._admin._http)
-                members_resp = await self._admin.list_members(
-                    session_cookie=admin_cookie,
-                    company_id=existing.company_id,
-                )
-            else:
+            if e.status_code != 401:
                 raise
+            invalidate_admin_session()
+            admin_cookie = await get_admin_session_cookie(self._admin._http)
+            members_resp = await self._admin.list_members(session_cookie=admin_cookie, company_id=ws.company_id)
 
-        # Paperclip's list_members returns either a flat list or a
-        # ``{members: [...]}`` envelope depending on caller; defensive
-        # against both since the BFF doesn't unwrap it.
-        members: list[dict]
-        if isinstance(members_resp, list):
-            members = members_resp
-        elif isinstance(members_resp, dict):
-            members = members_resp.get("members") or members_resp.get("items") or []
-        else:
-            members = []
-
-        for m in members:
-            if m.get("principalId") == existing.paperclip_user_id:
-                member_id = m.get("id")
-                break
-
-        purge_at = datetime.now(timezone.utc) + timedelta(days=grace_days)
+        member_id = next(
+            (m.get("id") for m in _member_rows(members_resp) if m.get("principalId") == identity.paperclip_user_id),
+            None,
+        )
         if member_id is None:
             logger.warning(
-                "paperclip_provisioning.archive_member: no member row found "
-                "for user=%s paperclip_user=%s in company=%s; marking DDB "
-                "disabled without Paperclip archive",
+                "paperclip_provisioning.archive_member: no member row for user=%s paperclip_user=%s in company=%s",
                 user_id,
-                existing.paperclip_user_id,
-                existing.company_id,
-            )
-            await self._repo.update_status(
-                user_id,
-                status="disabled",
-                scheduled_purge_at=purge_at,
-                last_error="archive_member: paperclip member row not found",
+                identity.paperclip_user_id,
+                ws.company_id,
             )
             return
 
         try:
-            await self._admin.archive_member(
-                session_cookie=admin_cookie,
-                company_id=existing.company_id,
-                member_id=member_id,
-            )
+            await self._admin.archive_member(session_cookie=admin_cookie, company_id=ws.company_id, member_id=member_id)
         except PaperclipApiError as e:
-            if e.status_code == 401:
-                invalidate_admin_session()
-                admin_cookie = await get_admin_session_cookie(self._admin._http)
-                await self._admin.archive_member(
-                    session_cookie=admin_cookie,
-                    company_id=existing.company_id,
-                    member_id=member_id,
-                )
-            else:
-                # Re-raise so the webhook caller can enqueue retry.
-                # DDB row stays untouched so the retry path can
-                # complete the full chain.
+            if e.status_code != 401:
                 raise
-
-        await self._repo.update_status(
-            user_id,
-            status="disabled",
-            scheduled_purge_at=purge_at,
-            owner_id=existing.org_id,
-        )
+            invalidate_admin_session()
+            admin_cookie = await get_admin_session_cookie(self._admin._http)
+            await self._admin.archive_member(session_cookie=admin_cookie, company_id=ws.company_id, member_id=member_id)
         logger.info(
-            "paperclip_provisioning.archive_member: user %s archived (company=%s, member=%s, purge_at=%s)",
+            "paperclip_provisioning.archive_member: user %s archived from org %s (company=%s, member=%s)",
             user_id,
-            existing.company_id,
+            org_id,
+            ws.company_id,
             member_id,
-            purge_at.isoformat(),
         )
 
-    async def disable(self, *, user_id: str, grace_days: int = 30) -> None:
-        """Mark a user's Paperclip row disabled with a purge timer.
+    async def remove_member(self, *, user_id: str, org_id: str) -> None:
+        """Drop the DDB membership only — the Teams fence when the Paperclip
+        archive itself is unavailable."""
+        await self._repo.remove_member(org_id, user_id)
 
-        Idempotent: returns early if no row exists. We deliberately do
-        NOT call ``disable_company`` here even when this is the only
-        member — that's a destructive action the cancellation flow may
-        want to delay until after the grace window closes (mirrors the
-        existing "30-day account recovery" UX). ``purge`` is where
-        Paperclip-side cleanup happens.
-        """
-        existing = await self._repo.get(user_id)
-        if existing is None:
+    async def disable_workspace(self, *, org_id: str, grace_days: int = 30) -> None:
+        """Mark a workspace row ``disabled`` with a purge timer (the Clerk org
+        was deleted). ``purge`` deletes the row after the grace window."""
+        if await self._repo.get_workspace(org_id) is None:
             return
         purge_at = datetime.now(timezone.utc) + timedelta(days=grace_days)
-        await self._repo.update_status(
-            user_id,
-            status="disabled",
-            scheduled_purge_at=purge_at,
-            owner_id=existing.org_id,
-        )
+        await self._repo.update_status(org_id, status="disabled", scheduled_purge_at=purge_at)
         logger.info(
-            "paperclip_provisioning.disable: user %s scheduled for purge at %s",
-            user_id,
-            purge_at.isoformat(),
+            "paperclip_provisioning.disable_workspace: %s scheduled for purge at %s", org_id, purge_at.isoformat()
         )
 
-    async def purge(self, *, user_id: str) -> None:
-        """Hard-delete a row whose grace window has elapsed.
+    async def purge(self, *, org_id: str) -> None:
+        """Delete a disabled workspace row whose grace window has elapsed.
 
-        Designed to be called from the cleanup cron (T13) for each row
-        returned by ``repo.scan_purge_due``. v1: we delete the local
-        mapping row only; we do NOT archive the underlying Paperclip
-        company even when this user was the last member of their org.
-        Reasoning:
-
-        - Calling ``disable_company`` requires a Better Auth session
-          token (post per-org architecture pivot in T11), which means
-          signing in as the just-purged user. That works (the Better
-          Auth account survives our local-row deletion), but adds
-          complexity for a non-essential cleanup.
-        - Orphan Paperclip companies are cheap (rows in a shared
-          Aurora cluster) and harmless. An out-of-band admin sweep
-          script can find companies in Paperclip with no matching
-          ``paperclip-companies`` row and archive them periodically.
-
-        Treat purge as "remove the user's mapping; let Paperclip-side
-        cleanup ride a separate ops cadence."
+        The Paperclip company itself is left alone: orphan companies are cheap
+        rows in a shared Aurora cluster, and an out-of-band sweep can archive
+        them. Identity rows are untouched — a human's identity outlives any
+        one workspace.
         """
-        existing = await self._repo.get(user_id)
-        if existing is None:
-            return
-
-        await self._repo.delete(user_id)
-        remaining_members = await self._repo.count_org_members(existing.org_id)
-        logger.info(
-            "paperclip_provisioning.purge: user %s purged (org_remaining=%d)",
-            user_id,
-            remaining_members,
-        )
+        await self._repo.delete(org_id)
+        logger.info("paperclip_provisioning.purge: workspace %s purged", org_id)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1396,10 +854,9 @@ class PaperclipProvisioning:
         """Delegate to the repo's strongly-consistent per-org create claim.
 
         Used by ``ensure_user_ready`` to serialize company creation across
-        backend instances (the per-org asyncio lock only covers one process,
-        and ``find_org_owner`` reads an eventually-consistent GSI). Returns a
-        per-attempt fencing token iff this caller may proceed to create the
-        company (None otherwise); pass it back to ``release_org_create_claim``.
+        backend instances. Returns a per-attempt fencing token iff this caller
+        may proceed to create the company (None otherwise); pass it back to
+        ``release_org_create_claim``.
         """
         return await self._repo.try_acquire_org_create_claim(owner_id, holder=holder)
 
@@ -1409,88 +866,14 @@ class PaperclipProvisioning:
         newer attempt's claim (ABA)."""
         await self._repo.release_org_create_claim(owner_id, token=token)
 
-    async def get_company_row(self, user_id: str) -> Optional[PaperclipCompany]:
-        """Strongly-consistent fetch of a user's row.
+    async def get_workspace(self, org_id: str) -> Optional[PaperclipWorkspace]:
+        """Strongly-consistent read of the workspace row — never
+        false-negatives on a just-written row."""
+        return await self._repo.get_workspace(org_id, consistent_read=True)
 
-        Used by ``ensure_user_ready`` to verify that a create actually wrote
-        an active row before leaving the per-org claim in place — a
-        strongly-consistent read so it never false-negatives on our own
-        just-written row.
-        """
-        return await self._repo.get(user_id, consistent_read=True)
-
-    async def find_org_owner(self, owner_id: str) -> Optional[PaperclipCompany]:
-        """Find the owner row (oldest ACTIVE ``created_at`` for this owner_id).
-
-        Filters out rows that aren't ``status="active"`` before picking
-        the oldest. ``disable()`` flips ``status="disabled"`` but leaves
-        the row in DDB until the purge worker runs (up to 30 days). If
-        the original/oldest member was disabled, returning their stale
-        Better Auth account would break ``provision_member`` (the
-        owner-side sign-in / create-invite / approve-join would all
-        fail) even though other active admins exist. Likewise we skip
-        ``provisioning`` and ``failed`` rows — neither is sign-in-able.
-
-        v1 implementation: query the ``by-org-id`` GSI for all rows in
-        the org, filter to ``active``, then pick the smallest
-        ``created_at``. For typical org sizes (1-10 users) this is
-        fine; if Teams ever supports large orgs we'd want to either:
-
-          * sort the GSI by ``created_at`` (range key on the GSI), or
-          * track the owner's user_id explicitly on every row.
-
-        Both are deferred — the GSI was declared with KEYS_ONLY-style
-        projection minimums and the table is small.
-
-        The DDB column queried by the GSI is still named ``org_id`` —
-        that's a Paperclip-side stored concept; the parameter name
-        ``owner_id`` reflects the platform-wide naming.
-
-        Returns None if the owner has no active rows.
-        """
-        # Re-query the GSI without a Limit so we can pick the oldest
-        # row. This is intentionally a separate code path from
-        # ``get_org_company_id`` (which only needs one row).
-        from boto3.dynamodb.conditions import Key  # local import to keep module load light
-
-        items: list[dict] = []
-        last_evaluated_key: Optional[dict] = None
-        # We access the repo's internal table to avoid duplicating the
-        # boto3 setup. This is a deliberate provisioning-side helper —
-        # if we ever need this for non-provisioning code we'll move it
-        # into paperclip_repo.
-        table = self._repo._table()  # noqa: SLF001 — same package, justified above
-        while True:
-            kwargs: dict = {
-                "IndexName": "by-org-id",
-                "KeyConditionExpression": Key("org_id").eq(owner_id),
-            }
-            if last_evaluated_key is not None:
-                kwargs["ExclusiveStartKey"] = last_evaluated_key
-            from core.dynamodb import run_in_thread
-
-            resp = await run_in_thread(table.query, **kwargs)
-            items.extend(resp.get("Items", []))
-            last_evaluated_key = resp.get("LastEvaluatedKey")
-            if not last_evaluated_key:
-                break
-
-        # Drop disabled / provisioning / failed rows BEFORE the oldest
-        # pick — see docstring. ``status`` should always be present
-        # since ``put()`` writes it, but treat missing as "not active"
-        # to be safe.
-        active_items = [it for it in items if it.get("status") == "active"]
-        if not active_items:
-            return None
-
-        # Pick the oldest by created_at; if any item is missing the
-        # field we fall back to the first row (defensive — shouldn't
-        # happen since put() always writes it).
-        def _sort_key(it: dict) -> str:
-            return it.get("created_at", "")
-
-        oldest = min(active_items, key=_sort_key)
-        return await self._repo.get(oldest["user_id"])
+    async def find_org_owner(self, owner_id: str) -> Optional[PaperclipWorkspace]:
+        """The workspace's row iff it is ``active`` (a company exists to join)."""
+        return await self._repo.resolve_owner_row(owner_id)
 
     async def _await_concurrent_seed(
         self,
@@ -1498,44 +881,37 @@ class PaperclipProvisioning:
         owner_id: str,
         owner_user_id: str,
         what: str = "provision_org",
-    ) -> PaperclipCompany:
-        """Loser side of the ``try_acquire_seed_claim`` fence in
-        ``provision_org`` (and, with ``what="provision_member"``, the member
-        join): a peer on another backend instance is running the
-        seed chain RIGHT NOW. Wait briefly for its active row and ADOPT it —
-        the exact same "already provisioned" semantics as the ``status ==
-        "active"`` short-circuit — instead of running a second full seed.
+    ) -> PaperclipWorkspace:
+        """Loser side of the ``try_acquire_seed_claim`` fence: a peer on
+        another backend instance is signing this human up RIGHT NOW. Wait
+        briefly for its result — the ACTIVE workspace (``provision_org``) or
+        this human's recorded join (``provision_member``) — and adopt it.
 
-        Strongly-consistent polls (the row was just written cross-instance;
-        an eventually-consistent read could miss the winner's final put for
-        the entire window). Two non-adopt outcomes, both deliberate:
-
-        * The winner FAILED (``status="failed"`` observed): stop waiting and
-          raise the in-flight 409 below — the NEXT poll's ordinary retry
-          path (adopt/reconcile/full-rerun, depending on what the failed row
-          carries) owns recovery; this loser must not start a competing
-          chain against a row a peer just downgraded.
-        * Timeout (winner still mid-chain): raise a 409-shaped
-          ``PaperclipApiError`` — the exact error class + status the caller
-          (``_ensure_paperclip_for_owner``) already treats as "provision
-          already in flight — no-op", so the poll loop simply comes back
-          and finds the active row.
+        Two non-adopt outcomes, both raising the 409-shaped
+        ``PaperclipApiError`` the caller already treats as "in flight —
+        no-op": the peer FAILED (a ``failed`` identity, or for
+        ``provision_org`` a ``failed`` workspace — the next poll's ordinary
+        retry path owns recovery), or the wait timed out.
         """
         for _ in range(_SEED_WAIT_ATTEMPTS):
             await asyncio.sleep(_SEED_WAIT_INTERVAL_S)
-            row = await self._repo.get(owner_user_id, consistent_read=True)
-            if row is not None and row.status == "active" and row.org_id == owner_id:
+            ws = await self._repo.get_workspace(owner_id, consistent_read=True)
+            if (
+                ws is not None
+                and ws.status == "active"
+                and (what == "provision_org" or owner_user_id in ws.member_user_ids)
+            ):
                 logger.info(
-                    "paperclip_provisioning.%s: adopted concurrent seed for "
-                    "owner_id %s (user=%s) — a peer instance won the seed claim",
+                    "paperclip_provisioning.%s: adopted concurrent seed for owner_id %s (user=%s)",
                     what,
                     owner_id,
                     owner_user_id,
                 )
-                return row
-            if row is not None and row.status == "failed":
-                # The winner failed; recovery belongs to the next poll's
-                # ordinary retry path against the downgraded row.
+                return ws
+            identity = await self._repo.get_identity(owner_user_id, consistent_read=True)
+            if (identity is not None and identity.status == "failed") or (
+                what == "provision_org" and ws is not None and ws.status == "failed"
+            ):
                 break
         raise PaperclipApiError(
             f"concurrent {what} seed in flight for owner {owner_id} "
@@ -1733,100 +1109,50 @@ class PaperclipProvisioning:
         self,
         *,
         user_id: str,
-        owner_id: str,
         reason: str,
-        company_id: str = "",
-        expected_seeding_claim_id: str | None = None,
+        seed_claim_id: str | None,
+        org_id: str | None = None,
     ) -> None:
-        """Persist ONE durable ``status="failed"`` marker for this seed failure.
+        """Leave the failure durably visible, never clobbering a success.
 
-        ``expected_seeding_claim_id`` (the fresh-create seed path passes the
-        token it acquired) fences the in-place downgrade on the bare
-        ``seeding`` row's ``seeding_claim_id`` so a stale holder can't flip a
-        NEWER holder's live claim (a stolen one) to ``failed``. It is a no-op
-        once the row advanced past the bare claim (that write dropped the id).
-
-        Two paths, both leaving exactly one honest failed record:
-
-        * A prior row exists → update it in place (preserving immutables like
-          paperclip_user_id + password so the next attempt can ADOPT), guarded
-          so it never downgrades a row a concurrent attempt already completed to
-          ``active``.
-        * NO prior row → write a durable marker via a CONDITIONAL put-if-absent
-          (``put_failed_marker_if_absent``). This restores the honest 503 on
-          ``/teams`` (and ``teams_status="failed"`` on ``/container/status``) for
-          the net-new / orphan-422 case: without it the row is MISSING, and the
-          consumer maps a missing row → 202 "provisioning" (an eternal spinner),
-          only a ``failed`` row → 503. The marker carries NO fabricated
-          paperclip_user_id — that is the OLD poison (an empty id blocked
-          adoption and, on a stale read, clobbered a real id) — and, being
-          conditional, can never overwrite a real row a concurrent provision
-          wrote in the gap. The marker is durable-visibility only, not adoptable.
-
-        Truncates the reason to keep the DynamoDB item small. The DDB column
-        ``org_id`` is fed from the ``owner_id`` kwarg — the rename is at the call
-        boundary, not the storage layer.
+        * The human's sign-up claim (when this attempt took one) goes
+          ``failed`` so the next attempt can reclaim it — a no-op once their
+          identity is confirmed, or when a newer holder stole the claim.
+        * For ``provision_org`` (``org_id`` given) the WORKSPACE row goes
+          ``failed`` — in place when it exists (skipped when a concurrent
+          attempt already made it ``active``), else via a put-if-absent marker
+          so ``/teams`` answers an honest 503 instead of an eternal 202.
         """
         truncated = reason[:1000]
-        # Strongly consistent: this can run milliseconds after the seed
-        # claim's conditional put (a sign-up that fails immediately). A
-        # replica-lagged miss here would fall through to the put-if-absent
-        # marker, which then fails ITS condition against the claim row — and
-        # the row stays a bare ``seeding`` claim for the whole stale window.
-        existing = await self._repo.get(user_id, consistent_read=True)
-        if existing is not None:
-            # Never downgrade a row that a concurrent provision attempt has
-            # already completed to ``active``. Two overlapping attempts for one
-            # member can race: the early adoptable row persisted here lets a
-            # second poll sign in and write the final ``active`` row while the
-            # first poll is still running; if that first poll then hits a late
-            # transient error, this failure path must NOT clobber the active
-            # row. The conditional write skips (no-ops) in that case.
-            landed = await self._repo.update_status(
-                user_id,
-                status="failed",
-                last_error=truncated,
-                not_if_status="active",
-                require_seeding_claim_id=expected_seeding_claim_id,
-                owner_id=existing.org_id,
-                # A bare member seed-claim row has no company_id; keep the
-                # failed marker carrying the known one (see update_status).
-                company_id=company_id or None,
-            )
-            if not landed:
-                logger.info(
-                    "paperclip_provisioning._mark_failed: skipped downgrade of "
-                    "user %s — row already active (concurrent provision won)",
-                    user_id,
-                )
+        if seed_claim_id is not None:
+            await self._repo.fail_signup_claim(user_id, reason=truncated, claim_id=seed_claim_id)
+        if org_id is None:
             return
-
-        # No prior row: write a durable ``failed`` marker via a CONDITIONAL
-        # put-if-absent — NOT the poisoned empty-id placeholder, and NOT an
-        # unconditional put. This makes the failure durably visible (honest 503
-        # on /teams, teams_status="failed" on /container/status) instead of the
-        # eternal 202 spinner a missing row produces. The conditional no-ops if a
-        # real row appeared concurrently (never clobbers it); the marker carries
-        # no fabricated paperclip_user_id (durable visibility only, not adoptable).
-        landed = await self._repo.put_failed_marker_if_absent(
-            user_id=user_id,
-            org_id=owner_id,
-            reason=truncated,
-            company_id=company_id,
-        )
-        if landed:
-            logger.warning(
-                "paperclip_provisioning._mark_failed: no existing row for user %s "
-                "(owner_id %s, company_id %r) — wrote durable failed marker: %s",
-                user_id,
-                owner_id,
-                company_id,
-                truncated,
+        # Strongly consistent: this can run milliseconds after the row's
+        # first write, and a replica-lagged miss would fall through to the
+        # put-if-absent marker, which then fails its condition.
+        if await self._repo.get_workspace(org_id, consistent_read=True) is not None:
+            landed = await self._repo.update_status(
+                org_id, status="failed", last_error=truncated, not_if_status="active"
             )
         else:
+            landed = await self._repo.put_failed_marker_if_absent(org_id=org_id, reason=truncated)
+        if landed:
+            logger.warning("paperclip_provisioning._mark_failed: workspace %s marked failed: %s", org_id, truncated)
+        else:
             logger.info(
-                "paperclip_provisioning._mark_failed: no marker written for user %s "
-                "(owner_id %s) — a real row appeared concurrently (put-if-absent no-op)",
-                user_id,
-                owner_id,
+                "paperclip_provisioning._mark_failed: workspace %s not marked failed (active, or a real row "
+                "appeared concurrently)",
+                org_id,
             )
+
+
+def _member_rows(members_resp) -> list[dict]:
+    """``list_members`` answers a bare list or a ``{members: [...]}`` envelope."""
+    if isinstance(members_resp, list):
+        rows = members_resp
+    elif isinstance(members_resp, dict):
+        rows = members_resp.get("members") or members_resp.get("items") or []
+    else:
+        rows = []
+    return [m for m in rows if isinstance(m, dict)]

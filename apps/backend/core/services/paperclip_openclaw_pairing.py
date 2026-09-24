@@ -31,52 +31,18 @@ from core.services.paperclip_admin_session import get_admin_session_cookie
 logger = logging.getLogger(__name__)
 
 
-def _is_org_owner_id(owner_id: str) -> bool:
-    """Delegates to core.auth.is_org_owner_id — single edit point for the prefix convention."""
-    from core.auth import is_org_owner_id
-
-    return is_org_owner_id(owner_id)
-
-
 async def resolve_company_id_for_owner(*, owner_id: str, repo: PaperclipRepo) -> str | None:
-    """Look up the Paperclip company_id for this owner.
+    """The Paperclip company_id of ``owner_id``'s ACTIVE workspace row, else None.
 
-    For personal users (owner_id = user_id): the row's company_id, unless the
-    row is a ``failed`` marker.
-    For orgs (owner_id = org_id): the company_id of an ``active`` row, located
-    by scanning the org's rows (``list_by_org_id``).
-
-    Returns None when no company exists yet (provisioning hasn't run) OR the
-    only row(s) are ``failed``. Every caller here guards with
-    ``if company_id is None`` (paperclip_agent_lifecycle, marketplace_listings,
-    company_deploy_service, agent_export), so returning None routes them into
-    their clean no-company branch instead of a doomed Paperclip call. Two
-    distinct failed shapes must both resolve to None:
-
-      * personal / net-new: a ``failed`` marker carries ``company_id=""`` (the
-        company was never created); the ``status == "failed"`` check below
-        catches it (as does the empty-id check).
-      * org reconcile: a ``failed`` row can now carry a REAL adopted
-        ``company_id`` (the Friday-partial case), and ``get_org_company_id``
-        returns the first row's id regardless of status — so org resolution
-        deliberately does NOT use ``get_org_company_id`` here. It requires an
-        ACTIVE row, so a failed org row (even one with a real company_id)
-        resolves to None, mirroring the personal ``status == "failed"`` filter.
+    None when no company exists yet (provisioning hasn't run) OR the workspace
+    is not ``active`` — a reconcile can persist a ``failed`` row carrying a
+    real adopted ``company_id``, and every caller (paperclip_agent_lifecycle,
+    marketplace_listings, company_deploy_service, agent_export, ...) guards
+    with ``if company_id is None`` into its clean no-company branch instead of
+    a doomed Paperclip call.
     """
-    if _is_org_owner_id(owner_id):
-        # Require an ACTIVE row: a reconcile can persist a ``failed`` org row
-        # carrying a real adopted company_id, which get_org_company_id would
-        # hand back regardless of status. Scan the org's rows (all active rows
-        # share one company_id by the provisioner's invariant) and return the
-        # first active, non-empty company_id; if none is active, return None.
-        for row in await repo.list_by_org_id(owner_id):
-            if row.get("status") == "active" and row.get("company_id"):
-                return row["company_id"]
-        return None
-    row = await repo.get(owner_id)
-    if row is None or row.status == "failed" or not row.company_id:
-        return None
-    return row.company_id
+    ws = await repo.resolve_owner_row(owner_id)
+    return (ws.company_id or None) if ws is not None else None
 
 
 async def fetch_paperclip_agents_for_owner(
@@ -162,29 +128,17 @@ async def fetch_paperclip_agents_for_owner(
 async def _resolve_seeded_agent_ids(*, owner_id: str, repo: PaperclipRepo) -> set[str]:
     """Resolve persisted legacy founder-seed IDs (Friday + Atlas) for an owner.
 
-    Source of truth is the persisted ``seeded_agent_ids`` captured on the
-    provisioner's ``paperclip-companies`` row at ``provision_org`` time —
-    NOT a role/name heuristic. A user-created agent that happens to use
+    Source of truth is the persisted ``seeded_agent_ids`` on the workspace
+    row — NOT a role/name heuristic. A user-created agent that happens to use
     role ``ceo`` or the name ``Atlas`` is therefore never mistaken for a
     seeded one, and renaming a seeded agent never drops its protection.
-
-    Owner keying mirrors ``resolve_company_id_for_owner``: personal owners
-    are their own row key; for orgs the seeded IDs live on the
-    provisioner's row, so we scan the org's rows for the one that carries
-    them.
 
     RAISES on lookup failure — callers choose the failure posture
     (``get_seeded_agent_ids`` fails open for UI labeling;
     ``is_seeded_agent`` fails closed for delete enforcement).
     """
-    if _is_org_owner_id(owner_id):
-        for row in await repo.list_by_org_id(owner_id):
-            ids = row.get("seeded_agent_ids")
-            if ids:
-                return set(ids)
-        return set()
-    row = await repo.get(owner_id)
-    return set(row.seeded_agent_ids) if row and row.seeded_agent_ids else set()
+    ws = await repo.get_workspace(owner_id)
+    return set(ws.seeded_agent_ids) if ws is not None and ws.seeded_agent_ids else set()
 
 
 async def get_seeded_agent_ids(*, owner_id: str, repo: PaperclipRepo) -> set[str]:

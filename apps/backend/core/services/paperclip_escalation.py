@@ -76,15 +76,10 @@ async def _check_later(company_id: str, issue_id: str, failed_agent_id: str, err
 
 async def _resolve_owner(company_id: str) -> tuple[str | None, dict]:
     """The owner id for a Paperclip company plus its starter-agent map."""
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    for user_id in await repo.get_user_ids_for_company(company_id):
-        row = await repo.get(user_id)
-        if row is None:
-            continue
-        owner_id = row.org_id or row.user_id
-        owner_row = await repo.resolve_owner_row(owner_id)
-        return owner_id, (owner_row.starter_agent_ids if owner_row else None) or {}
-    return None, {}
+    ws = await PaperclipRepo(table_name="paperclip-companies").find_workspace_by_company(company_id)
+    if ws is None:
+        return None, {}
+    return ws.org_id, ws.starter_agent_ids or {}
 
 
 async def escalate(company_id: str, issue_id: str, failed_agent_id: str, error_code: str) -> None:

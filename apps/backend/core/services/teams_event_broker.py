@@ -73,7 +73,7 @@ class TeamsEventBroker:
                 self._clients.pop(key, None)
             try:
                 company_id, cookie = await asyncio.gather(
-                    self._resolve_company_id(user_id),
+                    self._resolve_company_id(owner_id),
                     self._resolve_cookie(user_id),
                 )
 

@@ -152,7 +152,8 @@ class TestDeleteUserData:
         # empty-slate contract breaks silently if the next provision restores it.
         runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True)
         mock_user_repo.delete.assert_called_once_with("user_test_123")
-        mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("user_test_123")
+        # The WORKSPACE row (org-keyed) goes; the caller's identity row stays.
+        mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("org_test_456")
         mock_paperclip_repo_cls.return_value.delete_pending_brief.assert_called_once_with("org_test_456")
 
     @pytest.mark.asyncio
@@ -276,10 +277,9 @@ class TestDeleteUserData:
         # User-scoped: Clerk user_id, NOT org_id
         mock_user_repo.delete.assert_called_once_with("user_test_123")
         mock_conn_svc.delete_all_for_user.assert_called_once_with("user_test_123")
-        # paperclip-companies is ALSO user-scoped (the row provision_org
-        # wrote is keyed by the org creator's user_id, not org_id) -- see
-        # PaperclipRepo.resolve_owner_row's docstring.
-        mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("user_test_123")
+        # paperclip-companies: the WORKSPACE row is owner-scoped (keyed by
+        # org_id); the caller's user-keyed identity row is deliberately kept.
+        mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("org_test_456")
 
     @pytest.mark.asyncio
     @patch("routers.debug.PaperclipRepo")

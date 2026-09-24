@@ -20,7 +20,7 @@ def authority(monkeypatch):
     from core.services import paperclip_admin_client, paperclip_admin_session, clerk_admin
     from core.repositories import container_repo
 
-    owner = SimpleNamespace(user_id="user_1", org_id="org_1", company_id="company_1", status="active")
+    owner = SimpleNamespace(org_id="org_1", company_id="company_1", status="active", member_user_ids={"user_1"})
     run = {"id": "run_1", "agentId": "agent_1", "companyId": "company_1", "status": "running"}
     agent = {"id": "agent_1", "companyId": "company_1"}
     admin = SimpleNamespace(
@@ -28,9 +28,9 @@ def authority(monkeypatch):
     )
     monkeypatch.setattr(paperclip_admin_client, "shared_admin_client", lambda: admin)
     monkeypatch.setattr(paperclip_admin_session, "get_admin_session_cookie", AsyncMock(return_value="private"))
-    monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", AsyncMock(return_value=owner))
-    get = AsyncMock(return_value=owner)
-    monkeypatch.setattr(PaperclipRepo, "get", get)
+    # Models the real method: the workspace row only while it is active.
+    get = AsyncMock(side_effect=lambda owner_id, **_: owner if owner.status == "active" else None)
+    monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", get)
     members = [{"user_id": "user_1"}]
     monkeypatch.setattr(clerk_admin, "list_organization_members", AsyncMock(return_value=members))
     pairs = {
@@ -76,7 +76,7 @@ async def test_selected_native_pair_derives_current_member(authority, monkeypatc
     assert authority.get.call_args.kwargs == {"consistent_read": True}
 
 
-@pytest.mark.parametrize("bad", ["member", "pair", "clerk", "company", "inactive", "missing"])
+@pytest.mark.parametrize("bad", ["member", "pair", "clerk", "company", "inactive", "missing", "not_joined"])
 async def test_selected_member_denials(authority, monkeypatch, bad):
     from core.services import connection_service
 
@@ -92,8 +92,10 @@ async def test_selected_member_denials(authority, monkeypatch, bad):
         authority.owner.company_id = "foreign"
     elif bad == "inactive":
         authority.owner.status = "deleted"
+    elif bad == "not_joined":
+        authority.owner.member_user_ids.clear()
     else:
-        authority.get.return_value = None
+        authority.get.side_effect = lambda owner_id, **_: None
     with pytest.raises(ex.DesktopError):
         await ex._resolve(AUTH, REQUEST)
     assert not resolve.called

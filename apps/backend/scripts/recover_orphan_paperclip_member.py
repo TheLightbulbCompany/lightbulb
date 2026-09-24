@@ -18,7 +18,7 @@ Dry-run by default. Pass ``--apply`` to mutate. Requires AWS SSO
     cd apps/backend && uv run python -m scripts.recover_orphan_paperclip_member \
         --env prod --email member@example.com            # dry run
     cd apps/backend && uv run python -m scripts.recover_orphan_paperclip_member \
-        --env prod --email member@example.com --owner-id org_xxx --apply
+        --env prod --email member@example.com --user-id user_xxx --apply
 """
 
 from __future__ import annotations
@@ -57,7 +57,8 @@ def plan_recovery(
 
     ``aurora_rows`` is ``[{"id", "email", "membership_count"}, ...]`` from the Better Auth
     ``user`` table; ``ddb_failed_rows`` is ``[{"user_id", "status"}, ...]``
-    pre-filtered to the org (caller scopes by owner_id).
+    — failed IDENTITY rows only (``user_``-keyed; a workspace row is never a
+    candidate).
 
     Aurora side: delete exactly one orphan user, matched by email (refuse
     on zero or multiple matches).
@@ -68,8 +69,8 @@ def plan_recovery(
       it back to the email-matched Aurora user. So there is NO safe way to
       correlate a failed DDB row to ``email`` — selecting "the lone failed
       row" could delete an UNRELATED member's row (e.g. the target has only
-      an Aurora orphan while a different member is the sole failed row, or
-      ``--owner-id`` was mistyped). Therefore:
+      an Aurora orphan while a different member is the sole failed row).
+      Therefore:
       - any failed rows in scope → ``member_user_id`` is REQUIRED, and we
         delete only the row whose user_id == member_user_id (a no-op if that
         member has no failed row — Aurora-only recovery).
@@ -147,7 +148,7 @@ def _aurora_users(client, db_arn, secret_arn) -> list[dict]:
     ]
 
 
-def _ddb_failed_rows(env: str, owner_id: str | None) -> list[dict]:
+def _ddb_failed_rows(env: str) -> list[dict]:
     ddb = boto3.client("dynamodb", region_name=REGION)
     table = f"lightbulb-{env}-paperclip-companies"
     out = []
@@ -159,12 +160,10 @@ def _ddb_failed_rows(env: str, owner_id: str | None) -> list[dict]:
     while True:
         resp = ddb.scan(**scan_kwargs)
         for it in resp.get("Items", []):
-            row = {
-                "user_id": it["user_id"]["S"],
-                "status": it.get("status", {}).get("S"),
-                "org_id": it.get("org_id", {}).get("S"),
-            }
-            if row["status"] == "failed" and (owner_id is None or row["org_id"] == owner_id):
+            row = {"user_id": it["user_id"]["S"], "status": it.get("status", {}).get("S")}
+            # Identity rows only: a failed WORKSPACE row (keyed by org id)
+            # carries the company and is never this script's to delete.
+            if row["status"] == "failed" and row["user_id"].startswith("user_"):
                 out.append(row)
         last_key = resp.get("LastEvaluatedKey")
         if not last_key:
@@ -177,7 +176,6 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--env", required=True, choices=["dev", "prod"])
     ap.add_argument("--email", required=True)
-    ap.add_argument("--owner-id", default=None, help="owner id to scope the failed DDB rows")
     ap.add_argument(
         "--user-id",
         default=None,
@@ -191,7 +189,7 @@ def main() -> None:
     plan = plan_recovery(
         email=args.email,
         aurora_rows=_aurora_users(client, db_arn, secret_arn),
-        ddb_failed_rows=_ddb_failed_rows(args.env, args.owner_id),
+        ddb_failed_rows=_ddb_failed_rows(args.env),
         member_user_id=args.user_id,
     )
 

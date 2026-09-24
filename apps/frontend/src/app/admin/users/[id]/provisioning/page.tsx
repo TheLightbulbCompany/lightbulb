@@ -139,9 +139,13 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
           <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
             <DefRow label="Company ID" value={paperclipRow.company_id ?? "—"} mono />
             <DefRow
-              label="Paperclip user ID"
-              value={paperclipRow.paperclip_user_id ?? "—"}
+              label="Provisioned by"
+              value={paperclipRow.provisioner_user_id || "—"}
               mono
+            />
+            <DefRow
+              label="Members"
+              value={String(paperclipRow.member_user_ids?.length ?? 0)}
             />
             <DefRow label="Last error" value={paperclipRow.last_error ?? "—"} />
             <DefRow

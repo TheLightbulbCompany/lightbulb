@@ -291,17 +291,16 @@ _CONTAINER_PROVISION_FIELDS = (
     "updated_at",
 )
 
-# ALLOWLIST — every name verified against the PaperclipCompany dataclass
-# (paperclip_repo.py:157-256). ``paperclip_password_encrypted`` and
-# ``service_token_encrypted`` must never cross the admin wire, even
-# Fernet-encrypted, so they are deliberately absent here — narrowing through
-# an allowlist (rather than blocklisting those two fields) means a future
-# field added to the dataclass is excluded by default, not leaked by default.
+# ALLOWLIST — every name verified against the PaperclipWorkspace dataclass
+# (the workspace row carries no credential at all; those live on identity
+# rows, which this surface never reads). Narrowing through an allowlist means
+# a future field is excluded by default, not leaked by default.
 _PAPERCLIP_PROVISION_FIELDS = (
     "status",
     "company_id",
     "org_id",
-    "paperclip_user_id",
+    "provisioner_user_id",
+    "member_user_ids",
     "last_error",
     "seeded_agent_ids",
     "starter_agent_ids",
@@ -321,7 +320,7 @@ _PAPERCLIP_PROVISION_FIELDS = (
 def _iso(value: Any) -> Any:
     """``datetime`` -> ISO string; every other value passes through unchanged.
 
-    Shared by ``_narrow_paperclip`` (the PaperclipCompany dataclass stores
+    Shared by ``_narrow_paperclip`` (the PaperclipWorkspace dataclass stores
     real ``datetime`` objects) and ``_narrow_execution`` (boto3's
     ListExecutions item does the same for start/stop dates) so both
     narrowers hand back a JSON-safe dict rather than leaking a bare datetime
@@ -357,12 +356,13 @@ def _narrow_container(row: dict | None) -> dict | None:
 
 
 def _narrow_paperclip(company: Any) -> dict | None:
-    """PaperclipCompany -> allowlisted onboarding/teams fields (drops the
-    encrypted-credential pair: ``paperclip_password_encrypted`` and
-    ``service_token_encrypted``)."""
+    """PaperclipWorkspace -> allowlisted onboarding/teams fields."""
     if company is None:
         return None
-    return {k: _iso(getattr(company, k, None)) for k in _PAPERCLIP_PROVISION_FIELDS}
+    fields = {k: _iso(getattr(company, k, None)) for k in _PAPERCLIP_PROVISION_FIELDS}
+    if isinstance(fields["member_user_ids"], set):
+        fields["member_user_ids"] = sorted(fields["member_user_ids"])
+    return fields
 
 
 def _narrow_execution(resp: dict | None) -> dict | None:

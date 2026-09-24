@@ -282,26 +282,18 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             ("integrations", _wipe_integrations),
             ("ws-connections", lambda: connection_service.delete_all_for_user(user_id)),
             ("users", lambda: user_repo.delete(user_id)),
-            # paperclip-companies is keyed by user_id, NOT owner_id (mirrors
-            # "users"/"ws-connections" above) -- for an org, the OWNER row
-            # provision_org wrote is keyed by the org creator's user_id, not
-            # the org_id. Since this endpoint requires org-admin for org
-            # context, the calling admin IS (for the e2e harness's own
-            # throwaway orgs) that creator, so deleting by user_id here
-            # correctly reaches the row and rides its onboarding
-            # generation/funnel/bootstrap fields to zero-orphan (INV-10).
-            # This closes a real pre-existing gap: without it, a full
-            # /debug/user-data teardown left the paperclip-companies row
-            # (and now its onboarding state) behind, so the next fresh
-            # provision would RECONCILE-ADOPT the old company instead of
-            # minting a new onboarding_generation.
+            # The WORKSPACE row (keyed by the owner id) carries the company,
+            # its onboarding generation/funnel and the starter roster (INV-10).
+            # Left behind, the next fresh provision would RECONCILE-ADOPT the
+            # old company instead of minting a new onboarding_generation. The
+            # caller's identity row is kept: it is their Better Auth account's
+            # only password, and this endpoint deletes no Better Auth user.
             (
                 "paperclip-companies",
-                lambda: PaperclipRepo(table_name="paperclip-companies").delete(user_id),
+                lambda: PaperclipRepo(table_name="paperclip-companies").delete(owner_id),
             ),
             # The pending-brief sentinel lives in the SAME table under a
-            # synthetic PK, so the row delete above does not reach it, and it
-            # is keyed by OWNER id (org_id for an org) rather than user_id.
+            # synthetic PK, so the row delete above does not reach it.
             # Left behind it outlives the teardown by design -- a pending
             # brief deliberately survives reprovisioning -- and since this
             # endpoint does not delete the Clerk account, the next signup

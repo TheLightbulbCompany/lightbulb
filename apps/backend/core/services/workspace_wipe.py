@@ -24,31 +24,29 @@ This module snapshots by ORG id instead:
 
 Layers (each independently selectable): ``runtime`` (gate tokens, AgentCore
 runtime + S3 profiles + containers row, provisioning workflows,
-usage counters), ``paperclip`` (company, per-member Aurora users, per-member
-DDB rows + pending briefs + org-create claim, agent-key secrets), ``messaging``
+usage counters), ``paperclip`` (company, per-member Aurora users, the
+workspace row + deleted members' identity rows + pending briefs + org-create
+claim, agent-key secrets), ``messaging``
 (room partitions + owner partition), ``secrets`` (owner secrets, OpenRouter
 key, integrations, OAuth tokens, agent email, slack installs), ``identity``
 (per-member users rows, slug, join link, per-member Clerk users, Clerk org —
 ALWAYS LAST), ``billing`` (Metronome + fast-gate row, Stripe customer +
 company-stripe deauthorize, billing row).
 
-Members are the union of the org's Clerk memberships and its paperclip rows,
-read ONCE into the snapshot before any delete, so a re-run after a partial
-failure still finds everyone (and the Clerk org is kept while any member delete
-failed). A member who also belongs to another org keeps their account — only
-this org's membership goes, with the org — unless ``delete_shared_members``.
-The vendor org (``VENDOR_ORG_ID``) and an org the acting admin belongs to are
-refused. The managed OpenRouter key is retired (entitlement_teardown's path)
-and its row + secrets deleted only once the settlement worker has disabled it;
-until then that step fails and asks for a re-run.
+Members are the union of the org's Clerk memberships and the workspace row's
+``member_user_ids``, read ONCE into the snapshot before any delete, so a re-run
+after a partial failure still finds everyone (and the Clerk org is kept while
+any member delete failed). A member who also belongs to another org keeps their
+account AND their Paperclip identity row — only this org's membership goes,
+with the org — unless ``delete_shared_members``. The vendor org
+(``VENDOR_ORG_ID``) and an org the acting admin belongs to are refused. The
+managed OpenRouter key is retired (entitlement_teardown's path) and its row +
+secrets deleted only once the settlement worker has disabled it; until then
+that step fails and asks for a re-run.
 
-The Paperclip company is deleted only when it is this workspace's alone
-(``_company_refusal``, computed in the snapshot so preview and execute agree):
-if another org's active row names it, or this org's rows name two companies,
-the company step is ``"refused"`` and nothing in Aurora is deleted by it. The
-rest of the wipe runs; this org's paperclip-companies rows are still deleted
-(the other org's rows, which this wipe never touches, keep the company id,
-and the refusal detail records every id for the by-hand case).
+The Paperclip company deleted is the one named on the workspace row — one
+workspace = one company, keyed by org — and the workspace row goes with it. A
+read failure of that row stops preview/execute with nothing deleted.
 
 Billing/Stripe default PRESERVE: the billing layer runs only with
 ``include_billing=True`` AND ``confirm_billing="DELETE-BILLING"``. Anything
@@ -208,11 +206,8 @@ class WorkspaceSnapshot:
     workspace_name: str | None
     container: dict | None
     billing: dict | None
-    #: This org's paperclip-companies rows (by-org-id GSI) — the only rows the
-    #: wipe deletes by user id, so a member's row for ANOTHER org is never touched.
-    member_rows: list[dict]
-    #: Every person in the workspace: the union of Clerk memberships and
-    #: paperclip rows, read ONCE before any delete. Each carries user_id,
+    #: Every person in the workspace: the union of Clerk memberships and the
+    #: workspace row's ``member_user_ids``, read ONCE before any delete. Each carries user_id,
     #: email, emails (every known address, for the bootstrap guard),
     #: paperclip_user_id and other_orgs — so no step re-derives its member list
     #: from rows an earlier step deletes, and a re-run still finds them via Clerk.
@@ -229,9 +224,6 @@ class WorkspaceSnapshot:
     gate_hashes: list[str]
     join_link: dict | None = None
     openrouter_row: dict | None = None
-    #: Set when ``company_id`` is not this workspace's alone (``_company_refusal``):
-    #: the company step is then REFUSED in preview and execute alike.
-    company_refusal: str | None = None
     # The options this snapshot was taken FOR — part of the fingerprint, so a
     # preview binds exactly what executes.
     layers: tuple[str, ...] = ()
@@ -255,14 +247,13 @@ def deletable_member_ids(snapshot: WorkspaceSnapshot) -> list[str]:
     return [m["user_id"] for m in snapshot.members if snapshot.delete_shared_members or not m["other_orgs"]]
 
 
-async def _read_members(org_id: str, member_rows: list[dict]) -> list[dict]:
-    rows = {r["user_id"]: r for r in member_rows if r.get("user_id")}
+async def _read_members(org_id: str, repo: PaperclipRepo, joined: set[str]) -> list[dict]:
     clerk = {
         m["user_id"]: m for m in await clerk_admin.list_organization_members(org_id, strict=True) if m.get("user_id")
     }
     members: list[dict] = []
-    for uid in dict.fromkeys([*rows, *clerk]):
-        row = rows.get(uid, {})
+    for uid in dict.fromkeys([*sorted(joined), *clerk]):
+        identity = await repo.get_identity(uid)
         try:
             user_row = await user_repo.get(uid)
         except Exception:  # noqa: BLE001 -- best-effort; the other two sources still apply
@@ -270,7 +261,11 @@ async def _read_members(org_id: str, member_rows: list[dict]) -> list[dict]:
         emails = [
             e
             for e in dict.fromkeys(
-                [row.get("paperclip_email"), (clerk.get(uid) or {}).get("email"), (user_row or {}).get("email")]
+                [
+                    identity.paperclip_email if identity else None,
+                    (clerk.get(uid) or {}).get("email"),
+                    (user_row or {}).get("email"),
+                ]
             )
             if e
         ]
@@ -282,7 +277,7 @@ async def _read_members(org_id: str, member_rows: list[dict]) -> list[dict]:
                 "user_id": uid,
                 "email": emails[0] if emails else "",
                 "emails": emails,
-                "paperclip_user_id": row.get("paperclip_user_id") or "",
+                "paperclip_user_id": identity.paperclip_user_id if identity else "",
                 "other_orgs": [o["id"] for o in orgs if o.get("id") and o["id"] != org_id],
             }
         )
@@ -299,16 +294,13 @@ async def _read_workspace_snapshot(
     container = await container_repo.get_by_owner_id(org_id)
     billing = await billing_repo.get_by_owner_id(org_id)
     paperclip_repo = PaperclipRepo(table_name="paperclip-companies")
-    member_rows = await paperclip_repo.list_by_org_id(org_id)
-    # ponytail: once every paperclip-companies row is gone (a prior half-wipe),
-    # the company id is unrecoverable from DDB and the Aurora company survives;
-    # there is no org->company lookup against Paperclip itself to fall back on.
-    company_id = await paperclip_repo.get_org_company_id(org_id) or next(
-        (r["company_id"] for r in member_rows if r.get("company_id")), None
-    )
     # Before any step: a read failure here stops preview/execute with nothing deleted.
-    company_refusal = await _company_refusal(paperclip_repo, org_id, member_rows, company_id)
-    members = await _read_members(org_id, member_rows)
+    workspace = await paperclip_repo.get_workspace(org_id)
+    # ponytail: once the workspace row is gone (a prior half-wipe), the company
+    # id is unrecoverable from DDB and the Aurora company survives; there is no
+    # org->company lookup against Paperclip itself to fall back on.
+    company_id = (workspace.company_id or None) if workspace is not None else None
+    members = await _read_members(org_id, paperclip_repo, workspace.member_user_ids if workspace else set())
     room_ids = await messaging_repo.list_owner_room_ids(org_id)
     secret_names = await list_owner_secret_names(org_id)
     agent_key_names = await list_owner_agent_key_secret_names(org_id)
@@ -324,7 +316,6 @@ async def _read_workspace_snapshot(
         workspace_name=(org or {}).get("name"),
         container=container,
         billing=billing,
-        member_rows=member_rows,
         members=members,
         company_id=company_id,
         room_ids=room_ids,
@@ -338,47 +329,12 @@ async def _read_workspace_snapshot(
         gate_hashes=owner_gate_token_hashes(container),
         join_link=await workspace_join_repo.get_link(org_id),
         openrouter_row=await openrouter_key_repo.get(org_id),
-        company_refusal=company_refusal,
         layers=layers,
         include_billing=include_billing,
         delete_shared_members=delete_shared_members,
     )
     snapshot.fingerprint = snapshot_fingerprint(snapshot)
     return snapshot
-
-
-async def _company_refusal(
-    repo: PaperclipRepo, org_id: str, member_rows: list[dict], company_id: str | None
-) -> str | None:
-    """Why ``company_id`` must NOT be deleted by this workspace's wipe, else None.
-
-    The workspace twin of ``account_wipe._shared_company`` (2026-09-15: a wipe
-    hard-deleted the founder's shared company). paperclip-companies rows are per
-    USER, so a stale re-point can leave another org's row naming this company.
-    Unsafe when this org's rows name more than one company, or any active row
-    outside this org names ``company_id``. Reads propagate: never "safe" by default.
-    """
-    ids = sorted({r["company_id"] for r in member_rows if r.get("company_id")})
-    if len(ids) > 1:
-        return (
-            f"refused: workspace {org_id} rows name {len(ids)} different companies ({', '.join(ids)}) "
-            "— none deleted; resolve by hand"
-        )
-    if not company_id:
-        return None
-    own = {r["user_id"] for r in member_rows if r.get("user_id")}
-    others: dict[str, list[str]] = {}
-    for uid in await repo.get_user_ids_for_company(company_id):
-        if uid in own:
-            continue
-        row = await repo.get(uid)
-        if row is not None and row.org_id == org_id:
-            continue  # a member the by-org-id index has not caught up with yet
-        others.setdefault(row.org_id if row is not None else "unknown", []).append(uid)
-    if not others:
-        return None
-    named = ", ".join(f"{oid} ({', '.join(sorted(uids))})" for oid, uids in sorted(others.items()))
-    return f"refused: company {company_id} is also referenced by other workspace(s) {named} — kept"
 
 
 def snapshot_fingerprint(snapshot: WorkspaceSnapshot) -> str:
@@ -398,8 +354,6 @@ def snapshot_fingerprint(snapshot: WorkspaceSnapshot) -> str:
         },
         "billing_row": snapshot.billing is not None,
         "company_id": snapshot.company_id or "",
-        # A preview that showed "refused" must never execute as a delete.
-        "company_refusal": snapshot.company_refusal or "",
         "members": sorted([m["user_id"], sorted(m["other_orgs"])] for m in snapshot.members),
         "room_ids": sorted(snapshot.room_ids),
         "secret_names": sorted(snapshot.secret_names),
@@ -427,22 +381,15 @@ def snapshot_fingerprint(snapshot: WorkspaceSnapshot) -> str:
 async def resolve_workspace_org(user_id: str, confirm_org: str | None = None) -> str:
     """Resolve which workspace ``user_id``'s wipe means.
 
-    Sources: the user's Paperclip row (``org_id``) + Clerk memberships. When
-    they differ — or the user sits in several workspaces — there is no safe
-    guess: the caller must pass ``confirm_org`` naming the intended org
+    Source: the user's Clerk memberships. When the user sits in several
+    workspaces there is no safe guess: the caller must pass ``confirm_org`` naming the intended org
     explicitly, else ``AmbiguousWorkspaceError``. A ``confirm_org`` that
     matches NO known membership raises ``WorkspaceConfirmMismatchError``.
     """
     candidates: list[str] = []
     try:
-        paperclip_row = await PaperclipRepo(table_name="paperclip-companies").get(user_id)
-    except Exception:  # noqa: BLE001 -- resolution must not fail closed on a DDB blip
-        paperclip_row = None
-    if paperclip_row is not None and is_org_owner_id(paperclip_row.org_id):
-        candidates.append(paperclip_row.org_id)
-    try:
         memberships = await clerk_admin.list_user_organizations(user_id)
-    except Exception:  # noqa: BLE001 -- same posture as the read above
+    except Exception:  # noqa: BLE001 -- resolution must not fail closed on a Clerk blip
         memberships = []
     for m in memberships:
         oid = m.get("id")
@@ -661,10 +608,11 @@ async def _messaging_run(snap: WorkspaceSnapshot) -> str:
 
 
 def _paperclip_rows_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
-    # Pending briefs + the org-create claim are always attempted (idempotent).
+    # The workspace row, pending briefs + the org-create claim are always
+    # attempted (idempotent).
     return True, (
-        f"{len(snap.member_rows)} paperclip-companies row(s) + org and member pending_brief items "
-        "+ org-create claim (always attempted)"
+        f"workspace row + {len(deletable_member_ids(snap))} member identity row(s) + org and member "
+        "pending_brief items + org-create claim (always attempted)"
     )
 
 
@@ -674,14 +622,16 @@ async def _paperclip_rows_run(snap: WorkspaceSnapshot) -> str:
     repo = PaperclipRepo(table_name="paperclip-companies")
     deleted: list[str] = []
     kept: list[str] = []
-    # Only rows the by-org-id index returned for THIS org: a shared member's
-    # row for another org is never deleted.
-    for uid in dict.fromkeys(r["user_id"] for r in snap.member_rows if r.get("user_id")):
+    await repo.delete(snap.org_id)
+    deleted.append(f"{snap.org_id}: workspace row")
+    # Identity rows only for accounts this wipe deletes: a member who keeps
+    # their account is still in other workspaces' companies under it.
+    for uid in deletable_member_ids(snap):
         if uid in snap.unfinished:
             kept.append(uid)
             continue
         await repo.delete(uid)
-        deleted.append(f"{uid}: row")
+        deleted.append(f"{uid}: identity row")
     for owner in [snap.org_id, *deletable_member_ids(snap)]:
         if await repo.delete_pending_brief(owner):
             deleted.append(f"{owner}: pending_brief")
@@ -1111,10 +1061,6 @@ async def preview_workspace_wipe(
         if defn.layer not in selected_layers:
             _skip(steps, defn.system, defn.action, f"layer {defn.layer!r} not selected")
             continue
-        refusal = _refusal(defn, snap)
-        if refusal:
-            steps.append(WipeStep(defn.system, defn.action, "refused", refusal))
-            continue
         exists, detail = defn.preview(snap)
         _preview_step(
             steps,
@@ -1222,11 +1168,6 @@ async def wipe_workspace(
                 snap.unfinished |= {
                     f"step:{s.system}" for s in steps if s.status == "failed" and s.system in _MEMBER_KEYED_SYSTEMS
                 }
-            refusal = _refusal(defn, snap)
-            if refusal:
-                logger.warning("workspace_wipe: org=%s delete_company REFUSED: %s", org_id, refusal)
-                steps.append(WipeStep(defn.system, defn.action, "refused", refusal))
-                continue
             await _step(steps, system=defn.system, action=defn.action, fn=_bind(defn, snap))
     logger.warning(
         "workspace_wipe.wipe_workspace: billing %s for org=%s",
@@ -1258,11 +1199,6 @@ def _refuse_org(org_id: str) -> None:
         raise WorkspaceWipeError(f"{org_id!r} is not a workspace (Clerk organization) id.")
     if settings.VENDOR_ORG_ID and org_id == settings.VENDOR_ORG_ID:
         raise WorkspaceWipeError(f"{org_id} is the vendor (Lightbulb) org; refusing.")
-
-
-def _refusal(defn: WorkspaceStepDef, snap: WorkspaceSnapshot) -> str | None:
-    """The one refusal check preview and execute share."""
-    return snap.company_refusal if defn.system == "paperclip_company" else None
 
 
 def _bind(defn: WorkspaceStepDef, snap: WorkspaceSnapshot) -> Callable[[], Awaitable[str]]:

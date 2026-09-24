@@ -160,7 +160,7 @@ def _up_gate(code: str = "credits_required") -> MagicMock:
 async def test_gate_up_org_member_still_gets_membership_add():
     """Gate up + org member + active company → provision_member still runs
     (join-only), and no container is ever dispatched."""
-    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_owner")
+    fake_owner_row = MagicMock(status="active", company_id="co_1", provisioner_user_id="user_owner")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
     fake_provisioning.provision_member = AsyncMock()
@@ -187,7 +187,6 @@ async def test_gate_up_org_member_still_gets_membership_add():
         owner_id="org_o",
         user_id="user_m",
         email="m@example.com",
-        owner_email="o@example.com",
     )
     assert captured == [], f"gate up must never dispatch a container, got {captured}"
 
@@ -226,7 +225,7 @@ async def test_gate_up_membership_add_409_is_idempotent_no_op():
     idempotent as the normal-path one."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
-    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_owner")
+    fake_owner_row = MagicMock(status="active", company_id="co_1", provisioner_user_id="user_owner")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
     fake_provisioning.provision_member = AsyncMock(
@@ -256,7 +255,7 @@ async def test_gate_up_membership_add_failure_is_swallowed_and_metered():
     the paperclip.seed.error metric and retried on the next poll."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
-    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_owner")
+    fake_owner_row = MagicMock(status="active", company_id="co_1", provisioner_user_id="user_owner")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
     fake_provisioning.provision_member = AsyncMock(
@@ -288,7 +287,7 @@ async def test_ensure_paperclip_for_owner_calls_provision_org():
         key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
     }
     fake_provisioning = MagicMock()
-    fake_provisioning.get_company_row = AsyncMock(return_value=None)
+    fake_provisioning.get_workspace = AsyncMock(return_value=None)
     fake_provisioning.provision_org = AsyncMock(return_value=MagicMock(status="active", starter_agent_ids=starter_ids))
     ensure_default_room = AsyncMock()
     with (
@@ -323,7 +322,7 @@ async def test_existing_active_starter_workspace_does_not_gain_default_room():
     }
     existing = MagicMock(status="active", org_id="org_p", starter_agent_ids=starter_ids)
     fake_provisioning = MagicMock()
-    fake_provisioning.get_company_row = AsyncMock(return_value=existing)
+    fake_provisioning.get_workspace = AsyncMock(return_value=existing)
     fake_provisioning.provision_org = AsyncMock(return_value=existing)
     ensure_default_room = AsyncMock()
     with (
@@ -341,15 +340,15 @@ async def test_existing_active_starter_workspace_does_not_gain_default_room():
 
 
 @pytest.mark.asyncio
-async def test_other_workspace_row_does_not_suppress_new_org_default_room():
-    """A row for another workspace is absent for org onboarding freshness."""
+async def test_fresh_workspace_default_room_seeded_once_across_polls():
+    """The freshness read is the org's own workspace row: absent on the first
+    poll (room seeded), active + complete on the next (no second seed)."""
     starter_ids = {
         key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
     }
-    other = MagicMock(status="active", org_id="org_old", starter_agent_ids=starter_ids)
     new_org = MagicMock(status="active", org_id="org_new", starter_agent_ids=starter_ids)
     fake_provisioning = MagicMock()
-    fake_provisioning.get_company_row = AsyncMock(side_effect=[other, new_org])
+    fake_provisioning.get_workspace = AsyncMock(side_effect=[None, new_org])
     fake_provisioning.provision_org = AsyncMock(return_value=new_org)
     ensure_default_room = AsyncMock()
     with (
@@ -364,6 +363,7 @@ async def test_other_workspace_row_does_not_suppress_new_org_default_room():
                 owner_email="p@example.com",
             )
 
+    assert [c.args for c in fake_provisioning.get_workspace.await_args_list] == [("org_new",), ("org_new",)]
     ensure_default_room.assert_awaited_once_with("org_new", "user_p")
 
 
@@ -375,7 +375,7 @@ async def test_partial_starter_workspace_gets_default_room_after_completion():
     }
     partial = MagicMock(status="failed", starter_agent_ids={**complete, "analytics": None})
     fake_provisioning = MagicMock()
-    fake_provisioning.get_company_row = AsyncMock(return_value=partial)
+    fake_provisioning.get_workspace = AsyncMock(return_value=partial)
     fake_provisioning.provision_org = AsyncMock(return_value=MagicMock(status="active", starter_agent_ids=complete))
     ensure_default_room = AsyncMock()
     with (
@@ -403,7 +403,7 @@ async def test_org_admin_with_no_company_creates_it():
     fake_provisioning.provision_org = AsyncMock()
     fake_provisioning.provision_member = AsyncMock()
     # Post-create verification sees the active row for THIS org → claim kept.
-    fake_provisioning.get_company_row = AsyncMock(return_value=MagicMock(status="active", org_id="org_xyz"))
+    fake_provisioning.get_workspace = AsyncMock(return_value=MagicMock(status="active", org_id="org_xyz"))
 
     with (
         patch(
@@ -433,9 +433,9 @@ async def test_org_admin_create_without_active_row_releases_claim():
     fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value="tok-1")
     fake_provisioning.release_org_create_claim = AsyncMock()
     # provision_org "succeeds" (no raise) but writes no row — simulate the
-    # swallowed-409 path by having get_company_row report nothing active.
+    # swallowed-409 path by having get_workspace report nothing active.
     fake_provisioning.provision_org = AsyncMock()
-    fake_provisioning.get_company_row = AsyncMock(return_value=None)
+    fake_provisioning.get_workspace = AsyncMock(return_value=None)
     fake_provisioning.provision_member = AsyncMock()
 
     with (
@@ -449,21 +449,17 @@ async def test_org_admin_create_without_active_row_releases_claim():
 
 
 @pytest.mark.asyncio
-async def test_org_admin_create_other_workspace_row_mismatch_releases_claim():
-    """If provision_org short-circuits on the admin's pre-existing row for
-    ANOTHER workspace (rows are keyed per-user), the strongly-consistent read
-    returns an active row whose org_id is NOT this org. That must NOT count as a
-    successful org create — release the claim so it isn't held with no
-    org-indexed company."""
+async def test_org_admin_create_failed_workspace_row_releases_claim():
+    """If provision_org returns but the org's workspace row is NOT ``active``
+    (an incomplete starter seed persisted ``failed``), that is not a
+    successful org create — release the claim so a retry can reconcile. The
+    verify read is the ORG's workspace row, never the admin's own row."""
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
     fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value="tok-1")
     fake_provisioning.release_org_create_claim = AsyncMock()
     fake_provisioning.provision_org = AsyncMock()
-    # Active row exists, but it belongs to another workspace.
-    fake_provisioning.get_company_row = AsyncMock(
-        return_value=MagicMock(status="active", org_id="org_other"),
-    )
+    fake_provisioning.get_workspace = AsyncMock(return_value=MagicMock(status="failed", org_id="org_xyz"))
     fake_provisioning.provision_member = AsyncMock()
 
     with (
@@ -473,6 +469,7 @@ async def test_org_admin_create_other_workspace_row_mismatch_releases_claim():
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
     ):
         await _ensure_paperclip_for_org(org_id="org_xyz", user_id="user_admin", email="a@example.com", is_admin=True)
+    assert {c.args for c in fake_provisioning.get_workspace.await_args_list} == {("org_xyz",)}
     fake_provisioning.release_org_create_claim.assert_awaited_once_with("org_xyz", token="tok-1")
 
 
@@ -516,7 +513,7 @@ async def test_org_admin_create_failure_releases_claim():
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
     fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value="tok-1")
     fake_provisioning.release_org_create_claim = AsyncMock()
-    fake_provisioning.get_company_row = AsyncMock(return_value=None)
+    fake_provisioning.get_workspace = AsyncMock(return_value=None)
     boom = RuntimeError("paperclip down")
     fake_provisioning.provision_org = AsyncMock(side_effect=boom)
 
@@ -538,7 +535,7 @@ async def test_org_admin_with_existing_company_joins_it():
     """REGRESSION: org admin + org ALREADY has an active company →
     provision_member (join), NOT provision_org. The multi-admin case that
     previously 409'd on /teams."""
-    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_first")
+    fake_owner_row = MagicMock(status="active", company_id="co_1", provisioner_user_id="user_first")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
     fake_provisioning.provision_org = AsyncMock()
@@ -557,7 +554,6 @@ async def test_org_admin_with_existing_company_joins_it():
         owner_id="org_xyz",
         user_id="user_second_admin",
         email="b@example.com",
-        owner_email="owner@example.com",
     )
     fake_provisioning.provision_org.assert_not_awaited()
 
@@ -598,12 +594,9 @@ async def test_org_member_with_no_company_waits_does_not_create():
 # Org-member fast path
 # ---------------------------------------------------------------------------
 #
-# Implementation note: ``paperclip_repo`` exposes no module-level
-# ``get_by_org_id`` helper (see Task 4 Step 4.1 verification — only
-# ``PaperclipRepo.get_org_company_id(org_id) -> str | None`` exists).
-# ``_ensure_paperclip_for_member`` therefore reuses
-# ``PaperclipProvisioning.find_org_owner``, which already filters to
-# ``status="active"`` rows. The "company missing" and "company not yet
+# ``_ensure_paperclip_for_member`` reuses
+# ``PaperclipProvisioning.find_org_owner`` (the org's workspace row, only
+# when ``status="active"``). The "company missing" and "company not yet
 # active" cases collapse into a single ``find_org_owner -> None`` branch
 # in the unit under test, so we only assert the missing-company case
 # here; ``find_org_owner``'s active-only filter is its own concern,
@@ -641,7 +634,7 @@ async def test_ensure_paperclip_for_member_returns_when_owner_company_missing():
 @pytest.mark.asyncio
 async def test_ensure_paperclip_for_member_calls_provision_member_when_owner_active():
     """Org member with an existing active company row → provision_member."""
-    fake_owner_row = MagicMock(status="active", company_id="co_123", user_id="user_owner_123")
+    fake_owner_row = MagicMock(status="active", company_id="co_123", provisioner_user_id="user_owner_123")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
     fake_provisioning.provision_member = AsyncMock()
@@ -668,40 +661,26 @@ async def test_ensure_paperclip_for_member_calls_provision_member_when_owner_act
         owner_id="org_o",
         user_id="user_m",
         email="m@example.com",
-        owner_email="owner@example.com",
     )
 
 
 @pytest.mark.asyncio
-async def test_ensure_paperclip_for_member_threads_owner_user_id_to_lookup_owner_email():
-    """The owner_email lookup must pass the owner's Clerk user_id as
-    fallback_user_id — passing None makes lookup_owner_email return
-    None (paperclip_owner_email.py lines 46-47 short-circuit) and
-    provision_member would be called with empty owner_email,
-    breaking Paperclip sign-in."""
-    fake_company = MagicMock(
-        status="active",
-        company_id="co_123",
-        user_id="user_owner_123",
-    )
+async def test_ensure_paperclip_for_member_never_looks_up_the_owner_email():
+    """The bootstrap admin invites + approves a joining member, so the owner's
+    email (and sign-in) is no longer needed: no owner-email lookup, and
+    provision_member gets no ``owner_email``."""
+    fake_company = MagicMock(status="active", company_id="co_123", provisioner_user_id="user_owner_123")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
     fake_provisioning.provision_member = AsyncMock()
-    lookup_calls = []
-
-    async def capturing_lookup(*, org_id, fallback_user_id):
-        lookup_calls.append((org_id, fallback_user_id))
-        return "owner@example.com"
+    lookup = AsyncMock(return_value="owner@example.com")
 
     with (
         patch(
             "core.services.user_provision.evaluate_provision_gate",
             new=AsyncMock(return_value=None),
         ),
-        patch(
-            "core.services.user_provision.lookup_owner_email",
-            side_effect=capturing_lookup,
-        ),
+        patch("core.services.user_provision.lookup_owner_email", new=lookup),
         patch(
             "core.services.user_provision.build_paperclip_provisioning",
             new=AsyncMock(return_value=fake_provisioning),
@@ -713,16 +692,8 @@ async def test_ensure_paperclip_for_member_threads_owner_user_id_to_lookup_owner
     ):
         await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
 
-    # The owner-email lookup specifically must thread owner's user_id, not None.
-    owner_email_lookups = [
-        c
-        for c in lookup_calls
-        if c[0] == "org_o"  # the org-id lookup is for owner-email
-    ]
-    assert owner_email_lookups, "expected at least one lookup_owner_email(org_id=org_o, ...)"
-    assert all(c[1] == "user_owner_123" for c in owner_email_lookups), (
-        f"expected fallback_user_id='user_owner_123', got {owner_email_lookups}"
-    )
+    assert not [c for c in lookup.await_args_list if c.kwargs.get("org_id") == "org_o"]
+    assert "owner_email" not in fake_provisioning.provision_member.await_args.kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -750,7 +721,7 @@ async def test_ensure_paperclip_for_member_idempotent_on_duplicate_409():
     """
     from core.services.paperclip_admin_client import PaperclipApiError
 
-    fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")
+    fake_company = MagicMock(status="active", company_id="co_x", provisioner_user_id="user_owner")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
     duplicate_error = PaperclipApiError(
@@ -797,7 +768,7 @@ async def test_ensure_paperclip_for_member_reraises_non_409_paperclip_error():
     distinction this test guards lives in _ensure_paperclip_for_member."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
-    fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")
+    fake_company = MagicMock(status="active", company_id="co_x", provisioner_user_id="user_owner")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
     server_error = PaperclipApiError(
@@ -842,7 +813,7 @@ async def test_ensure_paperclip_for_owner_idempotent_on_duplicate_409():
     from core.services.paperclip_admin_client import PaperclipApiError
 
     fake_provisioning = MagicMock()
-    fake_provisioning.get_company_row = AsyncMock(return_value=None)
+    fake_provisioning.get_workspace = AsyncMock(return_value=None)
     fake_provisioning.provision_org = AsyncMock(
         side_effect=PaperclipApiError(
             "POST /api/auth/sign-up/email -> 409",
@@ -883,7 +854,7 @@ async def test_ensure_paperclip_for_owner_reraises_non_409_paperclip_error():
     from core.services.paperclip_admin_client import PaperclipApiError
 
     fake_provisioning = MagicMock()
-    fake_provisioning.get_company_row = AsyncMock(return_value=None)
+    fake_provisioning.get_workspace = AsyncMock(return_value=None)
     fake_provisioning.provision_org = AsyncMock(
         side_effect=PaperclipApiError(
             "POST /api/auth/sign-up/email -> 502",
@@ -924,7 +895,7 @@ async def test_ensure_paperclip_for_owner_records_duplicate_422_without_reraisin
     from core.services.paperclip_admin_client import PaperclipApiError
 
     fake_provisioning = MagicMock()
-    fake_provisioning.get_company_row = AsyncMock(return_value=None)
+    fake_provisioning.get_workspace = AsyncMock(return_value=None)
     fake_provisioning.provision_org = AsyncMock(
         side_effect=PaperclipApiError(
             "POST /api/auth/sign-up/email -> 422",
@@ -965,7 +936,7 @@ async def test_ensure_paperclip_for_member_records_duplicate_422_without_reraisi
     routes to the recorded-failure path."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
-    fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")
+    fake_company = MagicMock(status="active", company_id="co_x", provisioner_user_id="user_owner")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
     fake_provisioning.provision_member = AsyncMock(
@@ -1000,7 +971,7 @@ async def test_ensure_paperclip_for_member_records_duplicate_422_without_reraisi
 async def test_member_joins_company_but_does_not_dispatch_container():
     """Org member → paperclip join runs, but NO container dispatch (members
     ride the org admin's shared container; they never spin one up)."""
-    fake_company = MagicMock(status="active", company_id="co_x", user_id="user_owner")
+    fake_company = MagicMock(status="active", company_id="co_x", provisioner_user_id="user_owner")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_company)
     fake_provisioning.provision_member = AsyncMock()
@@ -1029,7 +1000,7 @@ async def test_running_container_skips_container_dispatch_for_admin(_container_r
     """RUNNING-container poll path: the org admin's poll must run paperclip
     provisioning but NOT dispatch the executor — the old caller-passed
     provision_container=False flag is gone; the decision comes from the row."""
-    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_first")
+    fake_owner_row = MagicMock(status="active", company_id="co_1", provisioner_user_id="user_first")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
     fake_provisioning.provision_member = AsyncMock()
@@ -1059,7 +1030,7 @@ async def test_running_container_org_admin_with_company_does_not_recreate(_conta
     role-blind JOIN already ran on this thread, so an org whose company exists
     must not re-issue the member-add (a Paperclip round trip + Clerk email
     lookup on every ~3s poll of a healthy org)."""
-    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_first")
+    fake_owner_row = MagicMock(status="active", company_id="co_1", provisioner_user_id="user_first")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
     fake_provisioning.provision_member = AsyncMock()
@@ -1229,11 +1200,11 @@ async def test_workspace_trial_started_event_dedups_across_members(
 
 def _arm_provisioning(row):
     """A fake PaperclipProvisioning whose authoritative owner resolver returns
-    ``row`` (``get_company_row`` / ``find_org_owner`` too, so a test can prove
+    ``row`` (``get_workspace`` / ``find_org_owner`` too, so a test can prove
     the arm never reads them)."""
     fake = MagicMock()
     fake.find_org_owner = AsyncMock(return_value=row)
-    fake.get_company_row = AsyncMock(return_value=row)
+    fake.get_workspace = AsyncMock(return_value=row)
     fake._repo = MagicMock()
     fake._repo.resolve_owner_row = AsyncMock(return_value=row)
     fake._admin = MagicMock()  # ._http is just an attribute access
@@ -1522,7 +1493,7 @@ async def test_arm_nightly_ceo_returns_armed_and_seeds_for_workspace_owner():
             for p in patches:
                 p.stop()
     provisioning._repo.resolve_owner_row.assert_awaited_once_with("org_p")
-    provisioning.get_company_row.assert_not_awaited()
+    provisioning.get_workspace.assert_not_awaited()
     provisioning.find_org_owner.assert_not_awaited()
     assert mocks["create_enabled_schedule_routine"].await_args.kwargs["agent_id"] == "friday1"
     metric.assert_called_once_with("nightly_ceo.arm", dimensions={"status": "armed"})
@@ -1567,7 +1538,7 @@ async def test_arm_nightly_ceo_org_owner_uses_authoritative_owner_resolver():
             p.stop()
     provisioning._repo.resolve_owner_row.assert_awaited_once_with("org_xyz")
     provisioning.find_org_owner.assert_not_awaited()
-    provisioning.get_company_row.assert_not_awaited()
+    provisioning.get_workspace.assert_not_awaited()
 
 
 @pytest.mark.asyncio

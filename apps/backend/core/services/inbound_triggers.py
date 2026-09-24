@@ -143,7 +143,6 @@ from typing import Any
 
 import httpx
 
-from core.auth import is_org_owner_id
 from core.config import settings
 from core.observability.product_analytics import capture_product_event
 from core.dynamodb import run_in_thread
@@ -373,11 +372,8 @@ async def _company_id_for_owner(owner_id: str) -> str | None:
     """Same resolution ``routers.paperclip_trigger_proxy._company_id_for_owner``
     uses, duplicated here rather than imported across the router/service
     boundary (services must not depend on routers)."""
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    if is_org_owner_id(owner_id):
-        return await repo.get_org_company_id(owner_id)
-    row = await repo.get(owner_id)
-    return row.company_id if row is not None and row.status == "active" else None
+    ws = await PaperclipRepo(table_name="paperclip-companies").get_workspace(owner_id)
+    return (ws.company_id or None) if ws is not None else None
 
 
 @lru_cache(maxsize=1)

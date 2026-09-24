@@ -10,41 +10,26 @@ from core.services import paperclip_openclaw_pairing as pop
 
 
 @pytest.mark.asyncio
-async def test_get_seeded_ids_personal_owner_reads_row():
+async def test_get_seeded_ids_reads_the_workspace_row():
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(seeded_agent_ids=["a1", "a3"]))
-    ids = await pop.get_seeded_agent_ids(owner_id="user_x", repo=repo)
-    assert ids == {"a1", "a3"}
-    repo.get.assert_awaited_once_with("user_x")
-
-
-@pytest.mark.asyncio
-async def test_get_seeded_ids_personal_owner_no_ids():
-    repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(seeded_agent_ids=None))
-    assert await pop.get_seeded_agent_ids(owner_id="user_x", repo=repo) == set()
-
-
-@pytest.mark.asyncio
-async def test_get_seeded_ids_org_owner_scans_for_provisioner_row():
-    # Members' rows carry no seeded ids; only the provisioner's does.
-    repo = MagicMock()
-    repo.list_by_org_id = AsyncMock(
-        return_value=[
-            {"user_id": "user_member"},
-            {"user_id": "user_owner", "seeded_agent_ids": ["a1", "a3"]},
-        ]
-    )
+    repo.get_workspace = AsyncMock(return_value=MagicMock(seeded_agent_ids=["a1", "a3"]))
     ids = await pop.get_seeded_agent_ids(owner_id="org_x", repo=repo)
     assert ids == {"a1", "a3"}
-    repo.list_by_org_id.assert_awaited_once_with("org_x")
+    repo.get_workspace.assert_awaited_once_with("org_x")
+
+
+@pytest.mark.asyncio
+async def test_get_seeded_ids_workspace_without_ids():
+    repo = MagicMock()
+    repo.get_workspace = AsyncMock(return_value=MagicMock(seeded_agent_ids=None))
+    assert await pop.get_seeded_agent_ids(owner_id="org_x", repo=repo) == set()
 
 
 @pytest.mark.asyncio
 async def test_get_seeded_ids_swallows_errors():
     repo = MagicMock()
-    repo.get = AsyncMock(side_effect=RuntimeError("ddb down"))
-    assert await pop.get_seeded_agent_ids(owner_id="user_x", repo=repo) == set()
+    repo.get_workspace = AsyncMock(side_effect=RuntimeError("ddb down"))
+    assert await pop.get_seeded_agent_ids(owner_id="org_x", repo=repo) == set()
 
 
 # --- is_seeded_agent: membership against the persisted set (fails CLOSED) ---

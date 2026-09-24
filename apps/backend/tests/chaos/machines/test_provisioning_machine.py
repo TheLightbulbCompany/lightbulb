@@ -1,14 +1,14 @@
 """Provisioning idempotency — short-circuit invariant.
 
 The highest-value provisioning invariant is that provision_org is idempotent:
-once an active PaperclipCompany row exists for an owner, repeated calls return
-it WITHOUT performing any Paperclip HTTP (the documented short-circuit at
-paperclip_provisioning.py:226). We prove "no HTTP" by handing it an admin
+once an active workspace row exists for an org, repeated calls return it
+WITHOUT performing any Paperclip HTTP (the documented short-circuit at the top
+of ``PaperclipProvisioning.provision_org``). We prove "no HTTP" by handing it an admin
 client that raises on every attribute access.
 
 INVARIANTS:
   * N calls over an existing active row all return that same row (company_id stable)
-  * exactly one row remains for the owner
+  * exactly one workspace row remains for the org, still active
   * zero admin-client (HTTP) methods are invoked on the short-circuit path
 
 NOT covered here (documented follow-up in the findings doc): the full
@@ -39,7 +39,7 @@ class _RaisingAdmin:
 @given(num_calls=st.integers(min_value=1, max_value=5))
 @pytest.mark.asyncio
 async def test_provision_org_idempotent_short_circuit(chaos_ddb, num_calls):
-    from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
+    from core.repositories.paperclip_repo import PaperclipRepo, PaperclipWorkspace
     from core.services.paperclip_provisioning import PaperclipProvisioning
 
     owner_id = "org_chaos_prov"
@@ -47,18 +47,16 @@ async def test_provision_org_idempotent_short_circuit(chaos_ddb, num_calls):
     repo = PaperclipRepo(table_name="paperclip-companies")
 
     now = datetime.now(timezone.utc)
-    seeded = PaperclipCompany(
-        user_id=owner_user_id,
+    seeded = PaperclipWorkspace(
         org_id=owner_id,
         company_id="company_chaos_1",
-        paperclip_user_id="pc_user_1",
-        paperclip_password_encrypted="enc",
-        service_token_encrypted="enc",
         status="active",
         created_at=now,
         updated_at=now,
+        provisioner_user_id=owner_user_id,
+        member_user_ids={owner_user_id},
     )
-    await repo.put(seeded)  # put overwrites the single key, so no cross-example accumulation
+    await repo.put_workspace(seeded)  # put overwrites the single key, so no cross-example accumulation
 
     provisioning = PaperclipProvisioning(_RaisingAdmin(), repo, env_name="dev")
 
@@ -71,6 +69,7 @@ async def test_provision_org_idempotent_short_circuit(chaos_ddb, num_calls):
         assert result.company_id == "company_chaos_1"
         assert result.status == "active"
 
-    # exactly one row, still active
-    row = await repo.get(owner_user_id)
+    # exactly one workspace row, still active, membership untouched
+    row = await repo.get_workspace(owner_id)
     assert row is not None and row.status == "active" and row.company_id == "company_chaos_1"
+    assert row.member_user_ids == {owner_user_id}

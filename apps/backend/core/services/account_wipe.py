@@ -30,21 +30,22 @@ spec's "Out of scope: Org accounts" follow-up note. When a user-keyed wipe
 finds no containers row but the member belongs to a workspace,
 ``_org_hint_for_missing_container`` names the org and points at it.
 
-A user is NOT necessarily the sole owner of the Paperclip company their row
-names: paperclip-companies rows are per user, and every member of a workspace
-carries the workspace's ``company_id``. When the company is shared
-(``_shared_company``), the company delete is REFUSED (status ``"refused"``) and
-only this member's membership is archived (``"paperclip_membership"``). On
-2026-09-15 an admin wipe of a joined member hard-deleted the founder
-workspace's company — every agent, issue and routine — before this guard.
+A human's wipe NEVER deletes a Paperclip company: one workspace = one
+company, owned by the workspace row, and the human's own paperclip-companies
+row is their Better Auth identity only. For every workspace the human belongs
+to (Clerk memberships, read strict before any step) the company delete is
+REFUSED (status ``"refused"``) and only this human's membership is archived
+(``"paperclip_membership"``). On 2026-09-15 an admin wipe of a joined member
+hard-deleted the founder workspace's company — every agent, issue and routine
+— under the old per-user row shape.
 
 Step-to-spec-row mapping. The design spec's teardown map lists 12 rows;
 this orchestrator emits one ``WipeStep`` per row EXCEPT rows 5 and 11,
 which fold into sibling steps because no standalone collaborator exists
 for them (see the inline notes at those call sites):
 
-  spec #1  -> "paperclip_company"     (PaperclipAdminClient.delete_company;
-              "refused" for a shared company, which instead gets
+  spec #1  -> "paperclip_company"     (always "refused" or "skipped": a company is
+              the workspace's; each workspace gets
               "paperclip_membership" -> PaperclipProvisioning.archive_member)
   spec #2  -> "paperclip_aurora_user" (paperclip_user_delete.delete_paperclip_user)
   (no spec row) -> "bedrock_gate_tokens" (bedrock_gate_tokens.delete_gate_token_rows)
@@ -74,10 +75,10 @@ not block the trial-account dogfood use case, but it IS a real gap for paid
 Bedrock-managed, ChatGPT-OAuth, and BYOK accounts — those credentials
 survive a wipe today. Follow-up work, not yet built.
 
-KNOWN GAP — DDB-orphaned Paperclip state: both Paperclip steps resolve their
-targets from the ``paperclip-companies`` DDB row, so an Aurora company whose
-DDB row is missing survives the wipe. It is now reported loudly rather than
-skipped silently (``_NO_PAPERCLIP_ROW`` + a warning log) — see that constant
+KNOWN GAP — DDB-orphaned Paperclip state: the Better Auth user delete
+resolves its target from the DDB identity row, so a Better Auth user whose
+identity row is missing survives the wipe. It is now reported loudly rather than
+skipped silently (``_NO_PAPERCLIP_ROW``) — see that constant
 for why enumerating from Aurora instead is not a safe fix.
 
 Also NOT wiped: the ``company-slugs`` table (a wiped account keeps its slug
@@ -120,7 +121,7 @@ from core.repositories import (
     usage_repo,
     user_repo,
 )
-from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
+from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo
 from core.services import clerk_admin, company_stripe
 from core.services.billing_service import delete_stripe_customer
 from core.services.paperclip_api_key import (
@@ -140,23 +141,18 @@ logger = logging.getLogger(__name__)
 # Neither a success nor a failure, and never a delete.
 WipeStatus = Literal["ok", "skipped", "failed", "would_delete", "refused"]
 
-# Both Paperclip teardown steps resolve the company + Better Auth user from the
-# DDB paperclip-companies row and NOTHING else, so an Aurora company whose DDB
-# row never landed (partial provision, prior partial wipe, duplicate-signup
-# debris) is left behind. That is not fixable by "enumerate from Aurora
-# instead": Aurora carries no Isol8 owner id, and every Isol8 user is
-# ``membership_role='owner'`` in every company they belong to (provision_org
-# AND provision_member both invite with ``human_role="owner"``) — so an
-# email-keyed lookup cannot tell an orphaned personal company from a LIVE org
-# company the same human is a member of, and a fallback teardown built on it
-# would delete other people's companies. (The DDB row carries the same hazard
-# for a workspace member — its company_id is the whole workspace's — which is
-# what ``_shared_company`` refuses.) Until Paperclip carries an owner-id
-# attribution column, the honest move is to say so in the report instead of
-# reporting a clean skip over rows nobody looked at.
+# The Better Auth user delete resolves its target from the DDB identity row and
+# NOTHING else, so a Better Auth user whose identity row never landed (partial
+# provision, prior partial wipe, duplicate-signup debris) is left behind. That
+# is not fixable by "enumerate from Aurora instead": Aurora carries no Isol8
+# owner id, and an email-keyed lookup cannot tell debris from a LIVE account.
+# Until Paperclip carries an owner-id attribution column, the honest move is to
+# say so in the report instead of reporting a clean skip.
+_NO_COMPANY = "no workspace membership — a human's wipe never deletes a Paperclip company"
+
 _NO_PAPERCLIP_ROW = (
-    "no paperclip-companies row — Aurora may still hold a company + Better Auth user for this "
-    "owner (partial provision / prior partial wipe). Not resolvable from the owner id; check "
+    "no paperclip identity row — Aurora may still hold a Better Auth user for this owner "
+    "(partial provision / prior partial wipe). Not resolvable from the owner id; check "
     "Aurora by the owner's email before treating the Paperclip side as gone."
 )
 
@@ -208,7 +204,7 @@ class OrgWipeUnsupportedError(Exception):
     (N Paperclip rows + N Better Auth users, shared company), which needs a
     looping per-member teardown that is a documented follow-up (design
     spec's "Out of scope: Org accounts"). A user who is a MEMBER of an org is
-    accepted; their shared company is protected by ``_shared_company``. The
+    accepted; no company is ever deleted by a human's wipe. The
     router (Task 4) turns this into a 400.
     """
 
@@ -284,7 +280,11 @@ class _Identifiers:
 
     user_row: dict | None
     container: dict | None
-    paperclip: PaperclipCompany | None
+    paperclip: PaperclipIdentity | None
+    """The human's identity row (their Better Auth account)."""
+    workspaces: list[str]
+    """Every workspace (Clerk org id) the human belongs to — read strict, so a
+    Clerk blip stops the wipe before its first step."""
     billing: dict | None
     pending_brief: dict | None
     """The owner's ``__pending_brief__:`` item, if any. Read independently of
@@ -298,13 +298,15 @@ async def _read_identifiers(owner_id: str) -> _Identifiers:
     user_row = await user_repo.get(owner_id)
     container = await container_repo.get_by_owner_id(owner_id)
     paperclip_repo = PaperclipRepo(table_name="paperclip-companies")
-    paperclip = await paperclip_repo.get(owner_id)
+    paperclip = await paperclip_repo.get_identity(owner_id)
     pending_brief = await paperclip_repo.get_pending_brief(owner_id)
     billing = await billing_repo.get_by_owner_id(owner_id)
+    workspaces = await _workspaces_of(owner_id)
     return _Identifiers(
         user_row=user_row,
         container=container,
         paperclip=paperclip,
+        workspaces=workspaces,
         billing=billing,
         pending_brief=pending_brief,
     )
@@ -315,18 +317,25 @@ def _refuse_org_owners(owner_id: str) -> None:
         raise OrgWipeUnsupportedError(owner_id)
 
 
-def _org_hint_for_missing_container(paperclip: PaperclipCompany | None) -> str:
+async def _workspaces_of(user_id: str) -> list[str]:
+    """The human's workspaces from Clerk. Strict: a read failure raises, and
+    the wipe stops before its first step instead of guessing "none"."""
+    orgs = await clerk_admin.list_user_organizations(user_id, strict=True)
+    return sorted({o["id"] for o in orgs if o.get("id") and is_org_owner_id(o["id"])})
+
+
+def _org_hint_for_missing_container(workspaces: list[str]) -> str:
     """Loud skip detail when a user-keyed wipe finds no containers row.
 
     Incident 2026-09-21: a user-keyed wipe of a workspace member misses the
     containers row (it lives under the ORG id) while every other user-keyed
     row is still destroyed — a half-wipe that reads as a clean skip. When the
-    member's Paperclip row names a workspace, say so and point at the
-    workspace wipe (``core.services.workspace_wipe``) instead of reporting a
-    bare absence. Never deletes anything; detail text only.
+    human belongs to a workspace, say so and point at the workspace wipe
+    (``core.services.workspace_wipe``) instead of reporting a bare absence.
+    Never deletes anything; detail text only.
     """
-    org_id = (paperclip.org_id if paperclip else "") or ""
-    if org_id and is_org_owner_id(org_id):
+    if workspaces:
+        org_id = workspaces[0]
         return (
             "no containers row under this USER id — but this account belongs to "
             f"workspace {org_id}, whose runtime lives under the ORG id. A user-keyed "
@@ -336,40 +345,32 @@ def _org_hint_for_missing_container(paperclip: PaperclipCompany | None) -> str:
     return "no containers row"
 
 
-async def _shared_company(owner_id: str, paperclip: PaperclipCompany | None) -> dict | None:
-    """The workspace facts when ``paperclip``'s company is not ``owner_id``'s
-    alone, else None. Preview and execute both call this, so they can never
-    disagree about whether the company is deleted.
-
-    Shared on EITHER signal: the row names a Clerk org (a personal row's
-    ``org_id`` is the user id itself), or another user's active row names the
-    same company. Any read failure propagates — the wipe then stops before its
-    first step rather than guessing "personal" and deleting the company.
-    """
-    if paperclip is None:
+async def _shared_company(workspaces: list[str]) -> dict | None:
+    """The facts of the (first) workspace the human belongs to, else None —
+    for the report and the admin's workspace-name confirm. Its company is
+    kept whatever this returns: a human's wipe never deletes a company."""
+    if not workspaces:
         return None
+    org_id = workspaces[0]
     repo = PaperclipRepo(table_name="paperclip-companies")
-    # A failed/seeding marker carries company_id="" — not a valid GSI key.
-    member_ids = await repo.get_user_ids_for_company(paperclip.company_id) if paperclip.company_id else []
-    in_workspace = is_org_owner_id(paperclip.org_id)
-    if not in_workspace and all(uid == owner_id for uid in member_ids):
-        return None
-    org = await clerk_admin.get_organization(paperclip.org_id) if in_workspace else None
-    owner = await repo.find_owner_row(paperclip.org_id) if in_workspace else None
+    ws = await repo.get_workspace(org_id)
+    provisioner = ws.provisioner_user_id if ws is not None else ""
+    identity = await repo.get_identity(provisioner) if provisioner else None
+    org = await clerk_admin.get_organization(org_id)
     return {
-        "company_id": paperclip.company_id,
-        "org_id": paperclip.org_id,
+        "company_id": ws.company_id if ws is not None else "",
+        "org_id": org_id,
         "workspace_name": (org or {}).get("name") or None,
-        "owner_user_id": owner.user_id if owner else None,
-        "owner_email": (owner.paperclip_email or None) if owner else None,
-        "member_count": len(member_ids),
+        "owner_user_id": provisioner or None,
+        "owner_email": (identity.paperclip_email or None) if identity is not None else None,
+        "member_count": len(ws.member_user_ids) if ws is not None else 0,
     }
 
 
 async def resolve_shared_company(owner_id: str) -> dict | None:
-    """``_shared_company`` for ``owner_id``'s current row — the admin router's
+    """``_shared_company`` for ``owner_id``'s workspaces — the admin router's
     input for its workspace-name confirm."""
-    return await _shared_company(owner_id, await PaperclipRepo(table_name="paperclip-companies").get(owner_id))
+    return await _shared_company(await _workspaces_of(owner_id))
 
 
 def _refused_detail(shared: dict) -> str:
@@ -406,13 +407,13 @@ async def _delete_paperclip_company_call(company_id: str) -> None:
         await http.aclose()
 
 
-async def _archive_paperclip_member_call(user_id: str) -> None:
+async def _archive_paperclip_member_call(user_id: str, org_id: str) -> None:
     """PaperclipProvisioning.archive_member — the same non-destructive removal
     ``organizationMembership.deleted`` uses: archives only this member's
-    membership (Paperclip reassigns their issues) and disables their row."""
+    membership in THIS workspace's company (Paperclip reassigns their issues)."""
     provisioning = await build_paperclip_provisioning()
     try:
-        await provisioning.archive_member(user_id=user_id)
+        await provisioning.archive_member(user_id=user_id, org_id=org_id)
     finally:
         await close_paperclip_provisioning(provisioning)
 
@@ -538,7 +539,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
     _refuse_bootstrap_account(owner_id, await resolve_account_emails(owner_id))
 
     ids = await _read_identifiers(owner_id)
-    shared = await _shared_company(owner_id, ids.paperclip)
+    shared = await _shared_company(ids.workspaces)
     steps: list[WipeStep] = []
 
     if shared:
@@ -548,19 +549,12 @@ async def preview_wipe(owner_id: str) -> WipeReport:
                 "paperclip_membership",
                 "archive_member",
                 "would_delete",
-                f"only this member's membership in company {shared['company_id']} is archived "
-                "(Paperclip reassigns their issues); the company is kept",
+                f"only this member's membership is archived in {', '.join(ids.workspaces)} "
+                "(Paperclip reassigns their issues); every company is kept",
             )
         )
     else:
-        _preview_step(
-            steps,
-            system="paperclip_company",
-            action="delete_company",
-            exists=ids.paperclip is not None,
-            detail_if_exists=f"company_id={ids.paperclip.company_id}" if ids.paperclip else "",
-            detail_if_absent=_NO_PAPERCLIP_ROW,
-        )
+        _skip(steps, "paperclip_company", "delete_company", _NO_COMPANY)
     _preview_step(
         steps,
         system="paperclip_aurora_user",
@@ -588,7 +582,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
             "(+ boot secret, S3 profiles, containers row, channel-links, "
             "and the Bedrock footprint: gate-token rows, AIPs, IAM role)"
         ),
-        detail_if_absent=_org_hint_for_missing_container(ids.paperclip),
+        detail_if_absent=_org_hint_for_missing_container(ids.workspaces),
     )
 
     # No standalone bedrock_aips / bedrock_role preview steps: the executed wipe
@@ -650,7 +644,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
     paperclip_rows = [
         label
         for label, present in (
-            ("paperclip-companies row", ids.paperclip is not None),
+            ("paperclip identity row", ids.paperclip is not None),
             ("pending_brief row", ids.pending_brief is not None),
         )
         if present
@@ -795,7 +789,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
 
     ids = await _read_identifiers(owner_id)
     # Before any step runs: a raise here stops the wipe with nothing deleted.
-    shared = await _shared_company(owner_id, ids.paperclip)
+    shared = await _shared_company(ids.workspaces)
     steps: list[WipeStep] = []
 
     email = emails[0] if emails else ""
@@ -808,41 +802,25 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     )
 
     # --- Step 1 (spec #1): Paperclip company ------------------------------
-    # A shared company is the whole workspace's: never delete it; remove only
-    # this member (the Better Auth user delete in step 2 is their own identity
-    # and is safe for the company — its FKs only cascade the user's sessions).
+    # A company is its workspace's: a human's wipe never deletes one. Remove
+    # only this human from each workspace's company (the Better Auth user
+    # delete in step 2 is their own identity; its FKs only cascade sessions).
     if shared:
         logger.warning(
-            "account_wipe: owner=%s company=%s is shared with org=%s — delete_company REFUSED, archiving membership",
+            "account_wipe: owner=%s belongs to %s — delete_company REFUSED, archiving membership",
             owner_id,
-            shared["company_id"],
-            shared["org_id"],
+            ids.workspaces,
         )
         steps.append(WipeStep("paperclip_company", "delete_company", "refused", _refused_detail(shared)))
 
         async def _s1m() -> str:
-            await _archive_paperclip_member_call(owner_id)
-            return f"membership archived in company {shared['company_id']}; company kept"
+            for org_id in ids.workspaces:
+                await _archive_paperclip_member_call(owner_id, org_id)
+            return f"membership archived in {', '.join(ids.workspaces)}; companies kept"
 
         await _step(steps, system="paperclip_membership", action="archive_member", fn=_s1m)
-    elif ids.paperclip is not None:
-        company_id = ids.paperclip.company_id
-
-        async def _s1(company_id: str = company_id) -> str:
-            await _delete_paperclip_company_call(company_id)
-            return f"company_id={company_id}"
-
-        await _step(steps, system="paperclip_company", action="delete_company", fn=_s1)
     else:
-        # LOUD, not silent: the report line alone is easy to read as "this
-        # owner had no Paperclip side" when it can equally mean "the handle to
-        # it is missing". See _NO_PAPERCLIP_ROW.
-        logger.warning(
-            "account_wipe: owner=%s has no paperclip-companies row — Paperclip company + Better "
-            "Auth user teardown SKIPPED; Aurora may still hold rows for this owner",
-            owner_id,
-        )
-        _skip(steps, "paperclip_company", "delete_company", _NO_PAPERCLIP_ROW)
+        _skip(steps, "paperclip_company", "delete_company", _NO_COMPANY)
 
     # --- Step 2 (spec #2): Paperclip Aurora (Better Auth) user ------------
     # BootstrapUserProtectedError (the two bootstrap admin emails) is caught
@@ -931,7 +909,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
 
         await _step(steps, system="runtime", action="delete_workspace_runtime", fn=_s3)
     else:
-        _skip(steps, "runtime", "delete_workspace_runtime", _org_hint_for_missing_container(ids.paperclip))
+        _skip(steps, "runtime", "delete_workspace_runtime", _org_hint_for_missing_container(ids.workspaces))
 
     # --- Steps 5-6 (spec #6-7-8): Bedrock AIPs + owner role ----------------
     # Deliberately NOT separate steps any more. Both are reaped inside step 3's
@@ -1031,7 +1009,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         deleted: list[str] = []
         if ids.paperclip is not None:
             await repo.delete(owner_id)
-            deleted.append("paperclip-companies row deleted")
+            deleted.append("paperclip identity row deleted")
         if await repo.delete_pending_brief(owner_id):
             deleted.append("pending_brief row deleted")
         return " + ".join(deleted) or "no paperclip-companies or pending_brief row"

@@ -53,10 +53,11 @@ def _fake_admin(
     return admin
 
 
-def _env(admin, *, company_id="c_1", company_status="active"):
+def _env(admin, *, company_id="c_1", has_workspace=True):
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(company_id=company_id, status=company_status))
-    repo.get_org_company_id = AsyncMock(return_value=company_id)
+    # The workspace row is keyed by the owner (org) id; the resolution is
+    # status-agnostic — a row with no company_id yet (still seeding) is "no company".
+    repo.get_workspace = AsyncMock(return_value=MagicMock(company_id=company_id) if has_workspace else None)
     return (
         patch("core.services.inbound_triggers.PaperclipRepo", return_value=repo),
         patch("core.services.inbound_triggers.get_admin_session_cookie", AsyncMock(return_value="s=1")),
@@ -130,20 +131,23 @@ async def test_seed_trigger_routine_unknown_event_id():
 
 
 @pytest.mark.asyncio
-async def test_seed_trigger_routine_no_active_company():
+@pytest.mark.parametrize("env_kwargs", [{"company_id": ""}, {"has_workspace": False}])
+async def test_seed_trigger_routine_no_active_company(env_kwargs):
+    """No workspace row, or one still seeding with no company_id yet."""
     admin = _fake_admin()
-    p_repo, p_cookie, p_client = _env(admin, company_status="seeding")
+    p_repo, p_cookie, p_client = _env(admin, **env_kwargs)
     with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="no active Paperclip company"):
         await seed_trigger_routine("owner_1", "stripe", ["invoice.payment_failed"])
     admin.create_routine.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_seed_trigger_routine_uses_org_company_lookup_for_org_owner():
+async def test_seed_trigger_routine_resolves_company_from_the_org_workspace_row():
     admin = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin, company_id="c_org")
-    with p_repo, p_cookie, p_client:
+    with p_repo as repo_cls, p_cookie, p_client:
         out = await seed_trigger_routine("org_abc", "stripe", ["invoice.payment_failed"])
+    repo_cls.return_value.get_workspace.assert_awaited_with("org_abc")
     assert out["proxy_url"].endswith("/api/v1/hooks/t/org_abc/pub_1")
     assert admin.create_routine.await_args.kwargs["company_id"] == "c_org"
 
@@ -1766,7 +1770,7 @@ async def test_seed_trigger_routine_emits_automation_armed():
 @pytest.mark.asyncio
 async def test_seed_trigger_routine_does_not_emit_when_it_fails():
     admin = _fake_admin()
-    p_repo, p_cookie, p_client = _env(admin, company_status="seeding")
+    p_repo, p_cookie, p_client = _env(admin, company_id="")
     with (
         p_repo,
         p_cookie,

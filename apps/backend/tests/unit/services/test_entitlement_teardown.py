@@ -26,10 +26,6 @@ def _runtime():
     with (
         patch("core.services.owner_facts.write_owner_facts", AsyncMock()) as facts,
         patch("core.services.hermes_provisioning.delete_workspace_runtime", AsyncMock()) as runtime,
-        patch(
-            "core.services.paperclip_provisioning.build_paperclip_provisioning",
-            AsyncMock(side_effect=RuntimeError("paperclip unavailable in tests")),
-        ),
         patch("core.billing.bedrock_aip.delete_owner_aips", AsyncMock()) as aips,
         patch("core.billing.bedrock_aip.delete_owner_bedrock_role", AsyncMock()) as role,
         patch(
@@ -239,36 +235,14 @@ async def test_a_failing_disarm_does_not_abort_teardown(_runtime):
 
 
 @pytest.mark.asyncio
-async def test_disarm_runs_before_paperclip_disable():
-    """Order is load-bearing for orgs. ``disable`` flips the owner's Paperclip
-    row to status='disabled', and org company-resolution
-    (``resolve_company_id_for_owner``) only returns an ACTIVE row — so disarm
-    MUST resolve the company before disable, or it silently no-ops for every
-    Team/org cancellation."""
-    order: list[str] = []
-
-    provisioning = MagicMock()
-    provisioning.disable = AsyncMock(side_effect=lambda **_: order.append("disable"))
-
-    async def _disarm(owner_id):
-        order.append("disarm")
-        return {"routines_paused": 1, "issues_cancelled": 0}
-
+async def test_teardown_makes_no_paperclip_call(_runtime):
+    """The Paperclip company belongs to the workspace, and a lapsed
+    entitlement is not a deleted workspace: teardown disarms the nightly
+    loop but never builds a provisioning client to disable anything
+    (``organization.deleted`` owns the workspace disable)."""
+    build = AsyncMock()
     with (
-        patch("core.services.owner_facts.write_owner_facts", AsyncMock()),
-        patch(
-            "core.services.paperclip_provisioning.build_paperclip_provisioning",
-            AsyncMock(return_value=provisioning),
-        ),
-        patch("core.services.paperclip_provisioning.close_paperclip_provisioning", AsyncMock()),
-        patch(
-            "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
-            side_effect=_disarm,
-        ),
-        patch(
-            "core.services.hermes_provisioning.delete_workspace_runtime",
-            AsyncMock(return_value={"owner_id": "org_1"}),
-        ),
+        patch("core.services.paperclip_provisioning.build_paperclip_provisioning", build),
         patch.object(
             entitlement_teardown.billing_repo,
             "get_by_owner_id",
@@ -277,7 +251,8 @@ async def test_disarm_runs_before_paperclip_disable():
     ):
         assert await entitlement_teardown.teardown_if_unentitled("org_1", trigger="subscription_deleted") is True
 
-    assert order == ["disarm", "disable"]
+    _runtime.disarm.assert_awaited_once_with("org_1")
+    build.assert_not_awaited()
 
 
 @pytest.mark.asyncio

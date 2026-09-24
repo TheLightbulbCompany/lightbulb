@@ -328,10 +328,10 @@ async def _build_teams_event_broker():
         from core.services.clerk_admin import get_primary_email
         from core.services.paperclip_admin_client import shared_admin_client
 
-        async def resolve_company_id(user_id: str) -> str:
-            company = await repo.get(user_id)
+        async def resolve_company_id(owner_id: str) -> str:
+            company = await repo.resolve_owner_row(owner_id)
             if company is None:
-                raise RuntimeError(f"no paperclip company for user {user_id}")
+                raise RuntimeError(f"no active paperclip company for owner {owner_id}")
             return company.company_id
 
         async def resolve_session_cookie(user_id: str) -> str:

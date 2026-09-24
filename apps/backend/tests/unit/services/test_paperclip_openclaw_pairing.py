@@ -28,7 +28,7 @@ def _claimed_path(agent_id):
 
 def _mock_admin_and_repo(agents, monkeypatch):
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(company_id="co_x"))
+    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co_x"))
     admin = MagicMock()
     admin.list_agents = AsyncMock(return_value=agents)
     admin.patch_agent = AsyncMock()
@@ -41,15 +41,15 @@ def _mock_admin_and_repo(agents, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fetch_returns_empty_list_for_personal_user_with_no_paperclip_row():
-    """Personal user (owner_id starts with 'user_') has no PaperclipCompany
-    row -> return []. Container provision falls back to 'main'."""
+async def test_fetch_for_org_with_no_company_returns_empty():
+    """No active workspace row (never provisioned, or not active) -> return [].
+    Container provision falls back to 'main'."""
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=None)
+    repo.resolve_owner_row = AsyncMock(return_value=None)
     admin_client = MagicMock()
 
     result = await fetch_paperclip_agents_for_owner(
-        owner_id="user_abc",
+        owner_id="org_xyz",
         repo=repo,
         admin_client=admin_client,
     )
@@ -59,12 +59,11 @@ async def test_fetch_returns_empty_list_for_personal_user_with_no_paperclip_row(
 
 
 @pytest.mark.asyncio
-async def test_fetch_for_personal_user_returns_their_company_agents(monkeypatch):
-    """Personal user happy path: repo.get(user_id) -> company_id ->
-    list_agents -> return list."""
+async def test_fetch_for_org_returns_its_company_agents(monkeypatch):
+    """Happy path: the org's ACTIVE workspace row -> company_id -> list_agents."""
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
     admin_client = MagicMock()
     admin_client.list_agents = AsyncMock(return_value=[{"id": pc_uuid, "name": "Friday", "role": "ceo"}])
 
@@ -74,12 +73,13 @@ async def test_fetch_for_personal_user_returns_their_company_agents(monkeypatch)
     )
 
     result = await fetch_paperclip_agents_for_owner(
-        owner_id="user_abc",
+        owner_id="org_xyz",
         repo=repo,
         admin_client=admin_client,
     )
 
     assert result == [{"id": pc_uuid, "name": "Friday", "role": "ceo"}]
+    repo.resolve_owner_row.assert_awaited_once_with("org_xyz")
     admin_client.list_agents.assert_called_once_with(
         session_cookie="cookie123",
         company_id="co_xyz",
@@ -87,57 +87,11 @@ async def test_fetch_for_personal_user_returns_their_company_agents(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_fetch_for_org_uses_list_by_org_id(monkeypatch):
-    """Org owner (owner_id starts with 'org_') resolves company via
-    repo.list_by_org_id (the org's ACTIVE row), NOT repo.get and NOT
-    repo.get_org_company_id (which would return a failed row's id)."""
-    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-    repo = MagicMock()
-    repo.get = AsyncMock()  # should NOT be called
-    repo.list_by_org_id = AsyncMock(return_value=[{"status": "active", "company_id": "co_xyz"}])
-    admin_client = MagicMock()
-    admin_client.list_agents = AsyncMock(return_value=[{"id": pc_uuid, "name": "Friday", "role": "ceo"}])
-
-    monkeypatch.setattr(
-        "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
-        AsyncMock(return_value="cookie123"),
-    )
-
-    result = await fetch_paperclip_agents_for_owner(
-        owner_id="org_xyz",
-        repo=repo,
-        admin_client=admin_client,
-    )
-
-    assert len(result) == 1
-    repo.get.assert_not_awaited()
-    repo.list_by_org_id.assert_awaited_once_with("org_xyz")
-
-
-@pytest.mark.asyncio
-async def test_fetch_for_org_with_no_company_returns_empty():
-    """Org never had Paperclip provisioned (no active row) -> return [].
-    Container provision falls back to 'main'."""
-    repo = MagicMock()
-    repo.list_by_org_id = AsyncMock(return_value=[])
-    admin_client = MagicMock()
-
-    result = await fetch_paperclip_agents_for_owner(
-        owner_id="org_xyz",
-        repo=repo,
-        admin_client=admin_client,
-    )
-
-    assert result == []
-    admin_client.list_agents.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_fetch_swallows_availability_failure_by_default(monkeypatch):
     """Default contract: availability failures fall back to [] so container
     provision never breaks because Paperclip is down."""
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
     admin_client = MagicMock()
     admin_client.list_agents = AsyncMock(
         side_effect=PaperclipApiError("list_agents", status_code=500, body="paperclip down")
@@ -149,7 +103,7 @@ async def test_fetch_swallows_availability_failure_by_default(monkeypatch):
     )
 
     result = await fetch_paperclip_agents_for_owner(
-        owner_id="user_abc",
+        owner_id="org_abc",
         repo=repo,
         admin_client=admin_client,
     )
@@ -162,7 +116,7 @@ async def test_fetch_raise_on_unavailable_reraises_availability_failure(monkeypa
     an outage swallowed into [] fails OPEN. raise_on_unavailable=True must
     re-raise the availability failure instead of masking it."""
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
     admin_client = MagicMock()
     admin_client.list_agents = AsyncMock(
         side_effect=PaperclipApiError("list_agents", status_code=500, body="paperclip down")
@@ -175,7 +129,7 @@ async def test_fetch_raise_on_unavailable_reraises_availability_failure(monkeypa
 
     with pytest.raises(PaperclipApiError):
         await fetch_paperclip_agents_for_owner(
-            owner_id="user_abc",
+            owner_id="org_abc",
             repo=repo,
             admin_client=admin_client,
             raise_on_unavailable=True,
@@ -189,7 +143,7 @@ async def test_fetch_raise_on_unavailable_rejects_non_list_payload(monkeypatch):
     must raise, not degrade to [] (which the Friday guard reads as allow).
     Default mode keeps the swallow for provision."""
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
     admin_client = MagicMock()
     admin_client.list_agents = AsyncMock(return_value={})
 
@@ -200,7 +154,7 @@ async def test_fetch_raise_on_unavailable_rejects_non_list_payload(monkeypatch):
 
     with pytest.raises(PaperclipApiError):
         await fetch_paperclip_agents_for_owner(
-            owner_id="user_abc",
+            owner_id="org_abc",
             repo=repo,
             admin_client=admin_client,
             raise_on_unavailable=True,
@@ -208,7 +162,7 @@ async def test_fetch_raise_on_unavailable_rejects_non_list_payload(monkeypatch):
 
     assert (
         await fetch_paperclip_agents_for_owner(
-            owner_id="user_abc",
+            owner_id="org_abc",
             repo=repo,
             admin_client=admin_client,
         )
@@ -217,70 +171,33 @@ async def test_fetch_raise_on_unavailable_rejects_non_list_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_company_id_none_for_personal_failed_marker():
-    """A personal owner whose only row is a net-new ``failed`` marker
-    (``company_id=""``) resolves to None — NOT the empty string. Every caller
+async def test_resolve_company_id_none_when_no_active_workspace():
+    """A ``failed`` workspace can carry a REAL adopted company_id (the reconcile
+    partial case); it must not leak to the ``if company_id is None`` callers.
+    Resolution goes through ``resolve_owner_row`` WITHOUT ``include_inactive``,
+    so an inactive row reads as None."""
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(return_value=None)
+
+    assert await resolve_company_id_for_owner(owner_id="org_abc", repo=repo) is None
+    repo.resolve_owner_row.assert_awaited_once_with("org_abc")
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_none_for_empty_company_id():
+    """An empty company_id resolves to None — NOT the empty string. Every caller
     guards with ``if company_id is None``, so an "" would slip through into a
     doomed Paperclip call with an empty company id."""
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(status="failed", company_id=""))
-
-    assert await resolve_company_id_for_owner(owner_id="user_abc", repo=repo) is None
-
-
-@pytest.mark.asyncio
-async def test_resolve_company_id_none_for_personal_failed_row_with_company():
-    """Even a ``failed`` row that happens to carry a company_id resolves to
-    None: a failed provision is treated as "no company" for pairing/lifecycle."""
-    repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(status="failed", company_id="co_partial"))
-
-    assert await resolve_company_id_for_owner(owner_id="user_abc", repo=repo) is None
-
-
-@pytest.mark.asyncio
-async def test_resolve_company_id_none_for_org_failed_marker_empty():
-    """An org whose only row is a net-new ``failed`` marker (empty company_id)
-    resolves to None: list_by_org_id has no active row."""
-    repo = MagicMock()
-    repo.list_by_org_id = AsyncMock(return_value=[{"status": "failed", "company_id": ""}])
+    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id=""))
 
     assert await resolve_company_id_for_owner(owner_id="org_abc", repo=repo) is None
 
 
 @pytest.mark.asyncio
-async def test_resolve_company_id_returns_id_for_active_personal_row():
-    """Regression guard: a healthy active row still resolves to its company_id."""
+async def test_resolve_company_id_returns_id_for_active_workspace():
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(status="active", company_id="co_live"))
-
-    assert await resolve_company_id_for_owner(owner_id="user_abc", repo=repo) == "co_live"
-
-
-@pytest.mark.asyncio
-async def test_resolve_company_id_none_for_org_failed_row_with_company():
-    """An ORG whose only row is ``failed`` but carries a REAL adopted company_id
-    (the reconcile Friday-partial case) must resolve to None — a deliberately-
-    failed workspace must not leak its id to the ``if company_id is None``
-    callers. ``get_org_company_id`` is mocked to prove the OLD path returned the
-    id (the bug this fixes); the fix routes org resolution through
-    ``list_by_org_id`` and requires an ACTIVE row, so both are stubbed and the
-    result is None regardless of which the implementation calls."""
-    repo = MagicMock()
-    repo.get_org_company_id = AsyncMock(return_value="co_partial")  # old path returned the id
-    repo.list_by_org_id = AsyncMock(return_value=[{"status": "failed", "company_id": "co_partial"}])
-
-    assert await resolve_company_id_for_owner(owner_id="org_abc", repo=repo) is None
-
-
-@pytest.mark.asyncio
-async def test_resolve_company_id_returns_id_for_active_org_row():
-    """Regression guard: an ORG with an ``active`` row still resolves to its
-    company_id. Green before and after the fix — the happy org path's outcome is
-    unchanged, only the lookup mechanism (get_org_company_id → list_by_org_id)."""
-    repo = MagicMock()
-    repo.get_org_company_id = AsyncMock(return_value="co_live")
-    repo.list_by_org_id = AsyncMock(return_value=[{"status": "active", "company_id": "co_live"}])
+    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co_live"))
 
     assert await resolve_company_id_for_owner(owner_id="org_abc", repo=repo) == "co_live"
 
@@ -303,7 +220,7 @@ async def test_fetch_returns_empty_on_paperclip_api_error(monkeypatch):
     from core.services.paperclip_admin_client import PaperclipApiError
 
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
     admin_client = MagicMock()
     admin_client.list_agents = AsyncMock(side_effect=PaperclipApiError("503", status_code=503, body={}))
 
@@ -313,7 +230,7 @@ async def test_fetch_returns_empty_on_paperclip_api_error(monkeypatch):
     )
 
     result = await fetch_paperclip_agents_for_owner(
-        owner_id="user_abc",
+        owner_id="org_abc",
         repo=repo,
         admin_client=admin_client,
     )
@@ -328,7 +245,7 @@ async def test_fetch_returns_empty_on_transient_httpx_error(monkeypatch):
     helper's contract is best-effort: container provision must never fail
     because Paperclip is down or the network is flaky."""
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
     admin_client = MagicMock()
     admin_client.list_agents = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
@@ -338,7 +255,7 @@ async def test_fetch_returns_empty_on_transient_httpx_error(monkeypatch):
     )
 
     result = await fetch_paperclip_agents_for_owner(
-        owner_id="user_abc",
+        owner_id="org_abc",
         repo=repo,
         admin_client=admin_client,
     )
@@ -352,7 +269,7 @@ async def test_fetch_returns_empty_on_admin_cookie_failure(monkeypatch):
     raises before the list_agents request goes out), still fall back to
     []. The fetch must not abort container provision."""
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
     admin_client = MagicMock()
     admin_client.list_agents = AsyncMock()  # never reached
 
@@ -362,7 +279,7 @@ async def test_fetch_returns_empty_on_admin_cookie_failure(monkeypatch):
     )
 
     result = await fetch_paperclip_agents_for_owner(
-        owner_id="user_abc",
+        owner_id="org_abc",
         repo=repo,
         admin_client=admin_client,
     )
@@ -384,7 +301,7 @@ async def test_fetch_propagates_unexpected_errors(monkeypatch):
     UX would be "agents disappear from /teams" with no operator signal.
     """
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
     admin_client = MagicMock()
     admin_client.list_agents = AsyncMock(side_effect=KeyError("missing-field"))
 
@@ -395,7 +312,7 @@ async def test_fetch_propagates_unexpected_errors(monkeypatch):
 
     with pytest.raises(KeyError):
         await fetch_paperclip_agents_for_owner(
-            owner_id="user_abc",
+            owner_id="org_abc",
             repo=repo,
             admin_client=admin_client,
         )

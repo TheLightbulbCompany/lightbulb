@@ -360,6 +360,18 @@ export class PaperclipStack extends cdk.Stack {
       props.paperclipEventsWebhookSecretName,
     );
 
+    // Paperclip seals every local_encrypted company secret (each agent's hermes_gateway
+    // apiKey among them) with this key. Unset, Paperclip generates one into a key file on
+    // the task's EPHEMERAL disk, so every task replacement orphans every stored secret —
+    // 2026-09-23: one replacement left 124 secrets in 12 companies undecryptable and every
+    // Paperclip-woken run failed at setup. RETAIN: losing this key loses every secret.
+    const secretsMasterKey = new secretsmanager.Secret(this, "PaperclipSecretsMasterKey", {
+      secretName: `lightbulb/${env}/paperclip_secrets_master_key`,
+      description: `Lightbulb ${env} Paperclip local_encrypted secrets master key (raw 32 chars)`,
+      generateSecretString: { passwordLength: 32, excludePunctuation: true, includeSpace: false },
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
     // PAPERCLIP_PUBLIC_URL is Better Auth's ORIGIN IDENTITY — it feeds the auth
     // baseURL, the trustedOrigins set, the secure-cookie scheme, and the `Origin`
     // header the backend BFF sends on /api/auth/* calls (server/src/auth/better-auth.ts).
@@ -532,6 +544,7 @@ export class PaperclipStack extends cdk.Stack {
         PGPASSWORD: ecs.Secret.fromSecretsManager(dbCredsSecret, "password"),
         BETTER_AUTH_SECRET: ecs.Secret.fromSecretsManager(betterAuthSecret),
         PAPERCLIP_ISOL8_NOTIFY_TOKEN: ecs.Secret.fromSecretsManager(notifyWebhookSecret),
+        PAPERCLIP_SECRETS_MASTER_KEY: ecs.Secret.fromSecretsManager(secretsMasterKey),
       },
       // Paperclip's image entrypoint expects DATABASE_URL. The shim below
       // assembles it from PG* env at container start, then directly execs

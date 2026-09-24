@@ -354,6 +354,23 @@ describe("PaperclipStack — Fargate service shape", () => {
     });
   });
 
+  test("server gets a stable, retained secrets master key (never an ephemeral key file)", () => {
+    // Unset, Paperclip writes a fresh key file on each task's ephemeral disk and every
+    // task replacement orphans every local_encrypted secret (2026-09-23 incident).
+    template.hasResource("AWS::SecretsManager::Secret", {
+      DeletionPolicy: "Retain",
+      Properties: Match.objectLike({ Name: "lightbulb/dev/paperclip_secrets_master_key" }),
+    });
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "lightbulb-dev-paperclip-server",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Secrets: Match.arrayWith([Match.objectLike({ Name: "PAPERCLIP_SECRETS_MASTER_KEY" })]),
+        }),
+      ]),
+    });
+  });
+
   test("both task execution roles have an explicit kms:Decrypt grant on the AuthStack CMK", () => {
     // CDK's `secret.grantRead()` only adds `secretsmanager:GetSecretValue`,
     // not the `kms:Decrypt` that customer-managed keys require for

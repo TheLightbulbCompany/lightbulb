@@ -52,6 +52,11 @@ class DeviceRegisterRequest(BaseModel):
     token: str = Field(..., description="Expo push token, ExponentPushToken[...]")
     platform: Literal["ios"] = Field(default="ios", description="Device platform")
     deviceId: str = Field(..., min_length=1, description="Stable per-install device id")
+    timezone: str | None = Field(
+        default=None,
+        max_length=64,
+        description="The device's IANA timezone (e.g. Europe/Paris). Stored on the user; an unknown zone is ignored.",
+    )
 
     @field_validator("token")
     @classmethod
@@ -63,3 +68,26 @@ class DeviceRegisterRequest(BaseModel):
 
 class DeviceRegisterResponse(BaseModel):
     status: str = Field(..., description="'registered'")
+
+
+class UserPrefs(BaseModel):
+    """GET/PUT /api/v1/users/me/prefs response."""
+
+    timezone: str = Field(..., description="IANA timezone; America/New_York when never set")
+    dailySummary: bool = Field(..., description="Daily 'needs you' digest (push + email); default on")
+
+
+class UserPrefsUpdate(BaseModel):
+    """PUT /api/v1/users/me/prefs body. Omitted fields are left unchanged."""
+
+    timezone: str | None = Field(default=None, max_length=64, description="IANA timezone, e.g. Europe/Paris")
+    dailySummary: bool | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_zone(cls, v: str | None) -> str | None:
+        from core.repositories.user_repo import valid_timezone
+
+        if v is not None and not valid_timezone(v):
+            raise ValueError("unknown IANA timezone")
+        return v

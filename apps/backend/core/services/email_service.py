@@ -40,6 +40,7 @@ async def send_email(
     reply_to: str | list[str] | None = None,
     text: str | None = None,
     kind: str = "generic",
+    headers: dict[str, str] | None = None,
 ) -> str | None:
     """Send one app email. Returns the SES MessageId, or None when sending is
     not configured / on failure. Never raises.
@@ -52,7 +53,7 @@ async def send_email(
     if env and env.lower() not in ("prod", "production"):
         subject = f"[{env.upper()}] {subject}"
 
-    headers = {}
+    headers = dict(headers or {})
     if reply_to is not None:
         headers["Reply-To"] = ", ".join(reply_to) if isinstance(reply_to, list) else reply_to
 

@@ -599,3 +599,24 @@ async def test_a_wrong_thread_root_seq_is_not_retried_as_a_sequence_race(world, 
         )
     assert len(calls) == 1
     assert int((await repo.get_room(room_id))["lastSeq"]) == 2  # nothing landed
+
+
+@pytest.mark.asyncio
+async def test_unseen_counts_is_the_badge_by_kind(world, monkeypatch):
+    """The daily digest's source: the same unseen rule as ``unseenCount``, split by kind."""
+    admin = fake_admin(approvals=APPROVALS[:2])
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: admin)
+    room_id = await _room()
+    await say(room_id, ANN, "@bob one", mentions=[USER_B])
+    await say(room_id, ANN, "@bob two", mentions=[USER_B])
+    dm = await _room("dm", members=(USER_A, USER_B), client_room_id="dm-1")
+    await say(dm, ANN, "psst")
+    page = await feed(teams_ctx=teams())
+    counts = await activity.unseen_counts(OWNER, USER_B, teams())
+    assert counts == {"mention": 2, "dm": 1, "approval": 2}
+    assert sum(counts.values()) == page["unseenCount"]
+    # Seen moves everything out, exactly like the badge.
+    await activity.mark_seen(auth(), activity.ActivitySeenRequest(up_to="2100-01-01T00:00:00Z"))
+    assert await activity.unseen_counts(OWNER, USER_B, teams()) == {}
+    # Paperclip down: None, never an under-count.
+    assert await activity.unseen_counts(OWNER, USER_B, no_paperclip()) is None

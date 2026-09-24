@@ -26,10 +26,10 @@ def test_the_config_points_at_the_native_backend_facade(monkeypatch):
         "apiBaseUrl": "https://api-dev.flickmeon.ai/api/v1/internal/paperclip/hermes/org_1",
         "apiKey": "hook-abc",
         "sessionKeyStrategy": "issue",
-        "timeoutSec": 900,
+        "timeoutSec": 3600,
         # Both sit at the native adapter's own clamp ceiling on purpose: every poll and every
         # reconnect is an InvokeAgentRuntime into the owner's microVM, and the adapter's
-        # defaults (2s / 1s) would cost ~900 invokes on one 900s run instead of ~90.
+        # defaults (2s / 1s) would cost ~3,600 invokes on a one-hour run instead of ~360.
         "eventReconnectMs": 30_000,
         "pollIntervalMs": 10_000,
         "paperclipApiUrl": "http://paperclip.internal:3100",

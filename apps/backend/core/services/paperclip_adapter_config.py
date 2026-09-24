@@ -19,13 +19,16 @@ from core.config import settings
 # polls our authenticated backend facade for the real Hermes terminal result.
 HERMES_GATEWAY_TYPE: Final[str] = "hermes_gateway"
 
-PAPERCLIP_RUN_TIMEOUT_SEC: Final[int] = 900
+# A Paperclip run's wall clock. Coding turns routinely run 15-25 min; a 900 s cap marked them
+# timed_out mid-turn and a continuation run then overlapped the still-running turn. 1 h stays
+# far inside the AgentCore session's 8 h max lifetime.
+PAPERCLIP_RUN_TIMEOUT_SEC: Final[int] = 3600
 
 # Both are the adapter's own CLAMP CEILINGS (execute.ts clamps eventReconnectMs to
 # 250..30_000 and pollIntervalMs to 250..10_000), chosen deliberately at the top of each
 # range because every one of those requests is an `InvokeAgentRuntime` into the owner's
-# microVM. The adapter's defaults -- 2 s reconnect, 1 s poll -- would cost ~900 invokes on a
-# single 900 s run. At the ceilings it is ~90. The SSE `/events` route is deliberately
+# microVM. The adapter's defaults -- 2 s reconnect, 1 s poll -- would cost ~3,600 invokes on a
+# full one-hour run. At the ceilings it is ~360. The SSE `/events` route is deliberately
 # unimplemented (the adapter falls back to polling and logs one line per reconnect), which
 # is the other reason eventReconnectMs is pinned as high as it will go.
 PAPERCLIP_EVENT_RECONNECT_MS: Final[int] = 30_000

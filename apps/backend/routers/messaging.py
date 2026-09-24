@@ -818,7 +818,7 @@ def _paperclip_hermes_status_or_lost(response: runtime_transport.RuntimeResponse
     The bridge's run registry is in-process and bounded, so a run vanishes exactly when the
     microVM that owned it did (AgentCore recycled the session, the process died). There is no
     honest way to report that as still-running -- the turn is not coming back -- and the
-    adapter would otherwise poll until its 900 s timeout before giving up. A terminal
+    adapter would otherwise poll until its run timeout before giving up. A terminal
     ``failed`` here ends the Paperclip run promptly and says why.
 
     A transport failure is NOT this: it raises ``RUNTIME_UNAVAILABLE`` above (503), which the

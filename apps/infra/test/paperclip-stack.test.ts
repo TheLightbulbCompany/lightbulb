@@ -125,8 +125,8 @@ describe("PaperclipStack — Fargate service shape", () => {
     // :latest).
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       Family: "lightbulb-dev-paperclip-server",
-      Cpu: "512",
-      Memory: "1024",
+      Cpu: "1024",
+      Memory: "4096",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Image: expectedPaperclipImage("dev"),

@@ -315,12 +315,13 @@ export class PaperclipStack extends cdk.Stack {
     attachmentsBucket.grantReadWrite(taskRole);
 
     // ─────────────────────────────────────────────────────────────────
-    // Task definition: 0.5 vCPU / 1 GB Fargate, upstream image
+    // Task definition: 1 vCPU / 4 GB Fargate, upstream image. v2026.916 OOM-killed at 1 GB on
+    // prod's data during startup recovery (2026-09-24), so the floor is 4 GB.
     // ─────────────────────────────────────────────────────────────────
     const taskDefinition = new ecs.FargateTaskDefinition(this, "PaperclipTaskDef", {
       family: `lightbulb-${env}-paperclip-server`,
-      cpu: 512,
-      memoryLimitMiB: 1024,
+      cpu: 1024,
+      memoryLimitMiB: 4096,
       executionRole,
       taskRole,
     });

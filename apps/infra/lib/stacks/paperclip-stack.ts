@@ -572,7 +572,9 @@ export class PaperclipStack extends cdk.Stack {
       // breadcrumb in the wrapper layer.
       entryPoint: ["/bin/sh", "-c"],
       command: [
-        "set -eu && PGPASSWORD_ENC=$(node -e 'process.stdout.write(encodeURIComponent(process.env.PGPASSWORD))') && export DATABASE_URL=\"postgres://${PGUSER}:${PGPASSWORD_ENC}@${PGHOST}:${PGPORT}/${PGDATABASE}\" && exec node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js",
+        // Refuse to start without the master key: Paperclip would otherwise mint an
+        // ephemeral key file and silently orphan every stored secret (2026-09-23).
+        "set -eu && : \"${PAPERCLIP_SECRETS_MASTER_KEY:?unset - refusing to start with an ephemeral secrets key}\" && PGPASSWORD_ENC=$(node -e 'process.stdout.write(encodeURIComponent(process.env.PGPASSWORD))') && export DATABASE_URL=\"postgres://${PGUSER}:${PGPASSWORD_ENC}@${PGHOST}:${PGPORT}/${PGDATABASE}\" && exec node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js",
       ],
       // Match the UID the image's Dockerfile chowns /paperclip + /app to.
       // Avoids running node as root in production for no upside.

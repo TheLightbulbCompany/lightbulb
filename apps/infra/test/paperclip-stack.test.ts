@@ -209,7 +209,7 @@ describe("PaperclipStack — Fargate service shape", () => {
           User: "1000:1000",
           Command: [
             Match.stringLikeRegexp(
-              'set -eu && PGPASSWORD_ENC=\\$\\(node -e .*encodeURIComponent\\(process\\.env\\.PGPASSWORD\\).*\\) && export DATABASE_URL="postgres://\\$\\{PGUSER\\}:\\$\\{PGPASSWORD_ENC\\}@\\$\\{PGHOST\\}:\\$\\{PGPORT\\}/\\$\\{PGDATABASE\\}".*exec node ',
+              'set -eu && : "\\$\\{PAPERCLIP_SECRETS_MASTER_KEY:\\?.*\\}" && PGPASSWORD_ENC=\\$\\(node -e .*encodeURIComponent\\(process\\.env\\.PGPASSWORD\\).*\\) && export DATABASE_URL="postgres://\\$\\{PGUSER\\}:\\$\\{PGPASSWORD_ENC\\}@\\$\\{PGHOST\\}:\\$\\{PGPORT\\}/\\$\\{PGDATABASE\\}".*exec node ',
             ),
           ],
         }),

@@ -119,11 +119,18 @@ function Conversation() {
     selectRoomRef.current(want);
   }, [roomId, preview, focused]);
 
+  // What this screen draws: the room detail once it lands, and until then the
+  // room-list entry already in memory, so the header, timeline and composer
+  // paint on the first frame instead of behind a detail round trip. Only the
+  // live subscription needs the detail (its deliveryKey), and the shared hook
+  // subscribes from the detail alone.
+  const room = rooms.activeRoom ?? (roomId ? rooms.directoryRoomDetails.get(roomId) : undefined);
+
   // Pinned at open so the "New messages" line does not walk down the list as
   // messages are marked read (mirrors MessagingWorkspaceContext's readSeqAtOpen).
   const readSeqAtOpen = useRef<number | null>(null);
-  if (rooms.activeRoom && readSeqAtOpen.current === null) {
-    readSeqAtOpen.current = rooms.activeRoom.lastReadSeq;
+  if (room && readSeqAtOpen.current === null) {
+    readSeqAtOpen.current = room.lastReadSeq;
   }
   const readSeq = readSeqAtOpen.current;
 
@@ -152,16 +159,16 @@ function Conversation() {
     [rooms.runs],
   );
 
-  const members = rooms.activeRoom?.members;
+  const members = room?.members;
   const viewer = members?.find((member) => member.kind === "human" && member.id === userId);
   const others = (members ?? []).filter(
     (member) => !(member.kind === "human" && member.id === userId),
   );
-  const isChannel = rooms.activeRoom?.kind === "channel";
-  const dmWithAgent = rooms.activeRoom?.kind === "dm" && others[0]?.kind === "agent";
+  const isChannel = room?.kind === "channel";
+  const dmWithAgent = room?.kind === "dm" && others[0]?.kind === "agent";
   // ponytail: Phase A's RoomSummary carries no private flag, so every channel
   // gets `#`; swap in a lock glyph once the backend ships one.
-  const title = `${isChannel ? "#" : ""}${roomDisplayName(rooms.activeRoom, others)}`;
+  const title = `${isChannel ? "#" : ""}${roomDisplayName(room, others)}`;
 
   // Star/mute from the header's icon buttons. A native header has no room
   // below the buttons for an inline error, so this screen owns the failure
@@ -261,25 +268,26 @@ function Conversation() {
         {isChannel && members ? (
           <Text style={styles.headerMeta} numberOfLines={1} maxFontSizeMultiplier={1}>
             {members.length} {members.length === 1 ? "member" : "members"}
-            {rooms.activeRoom?.shared ? " · Shared with Lightbulb" : ""}
+            {room?.shared ? " · Shared with Lightbulb" : ""}
           </Text>
         ) : null}
       </View>
     ),
     headerRight: () => (
       <RoomHeaderActions
-        starred={!!rooms.activeRoom?.starred}
-        muted={!!rooms.activeRoom?.muted}
-        disabled={!rooms.activeRoom}
+        starred={!!room?.starred}
+        muted={!!room?.muted}
+        disabled={!room}
         liveSessions={liveSessions}
         onOpenDevices={() => router.push(`/(app)/room/${roomId}/devices`)}
-        onToggleStar={() => void savePrefs({ starred: !rooms.activeRoom?.starred }, STAR_FAILED)}
-        onToggleMute={() => void savePrefs({ muted: !rooms.activeRoom?.muted }, MUTE_FAILED)}
+        onToggleStar={() => void savePrefs({ starred: !room?.starred }, STAR_FAILED)}
+        onToggleMute={() => void savePrefs({ muted: !room?.muted }, MUTE_FAILED)}
       />
     ),
   };
-  if (rooms.roomLoading || rooms.accessRemoved || rooms.roomError || rooms.selectRoomError) {
-    const blockedState = rooms.roomLoading
+  const roomLoading = rooms.roomLoading && !room;
+  if (roomLoading || rooms.accessRemoved || rooms.roomError || rooms.selectRoomError) {
+    const blockedState = roomLoading
       ? "loading" as const
       : rooms.accessRemoved
         ? "access-removed" as const
@@ -386,7 +394,7 @@ function Conversation() {
             </Pressable>
           ) : null}
           {/* The web band's `leading` slot: above the oldest loaded message. */}
-          {!preview && rooms.activeRoom?.isDefault ? <OnboardingBand participants={members ?? []} /> : null}
+          {!preview && room?.isDefault ? <OnboardingBand participants={members ?? []} /> : null}
           </View>
         }
         renderItem={({ item }) => {
@@ -481,7 +489,7 @@ function Conversation() {
         onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
         onTypingChange={reportTyping}
         draftKey={composerDraftKey}
-        roomKind={rooms.activeRoom?.kind}
+        roomKind={room?.kind}
         runningAgentIds={runningAgentIds}
       />
     </KeyboardAvoidingView>

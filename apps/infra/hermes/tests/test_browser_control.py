@@ -24,7 +24,7 @@ def test_lazy_acquire_refresh_and_release_use_run_fence(monkeypatch):
         browser_control.post_tool_call("browser_snapshot", status="ok", tool_call_id="snapshot-1")
         browser_control.release(state)
     assert calls == [
-        ("acquire", {"runId": "run-1", "agentId": "agent-1"}, 10.0),
+        ("acquire", {"runId": "run-1", "agentId": "agent-1"}, 60.0),
         ("release", {"runId": "run-1", "generation": "g1"}, 190.0),
     ]
     disconnect.assert_called_once_with("task-1")
@@ -106,3 +106,29 @@ def test_signed_url_stays_stable_until_refresh_and_then_requires_snapshot(monkey
         disconnect.assert_called_once_with('task')
     browser_control._TURN.set(None)
     browser_control._CURRENT.clear()
+
+
+def test_a_lease_held_by_a_person_says_so(monkeypatch):
+    """A 409 from acquire means a human owns the shared browser: tell the agent, not "unavailable"."""
+    monkeypatch.setenv("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
+    with patch.object(browser_control, "_post", return_value={"conflict": True}):
+        browser_control.begin_turn("run-1", "agent-1")
+        result = browser_control.pre_tool_call("browser_navigate", {})
+    assert result["action"] == "block"
+    assert "in use by a person" in result["message"]
+
+
+def test_post_maps_http_409_to_conflict(monkeypatch):
+    import urllib.error
+
+    def raise_409(*_a, **_k):
+        raise urllib.error.HTTPError("u", 409, "Conflict", None, None)
+
+    monkeypatch.setattr(browser_control.urllib.request, "urlopen", raise_409)
+    assert browser_control._post("acquire", {}) == {"conflict": True}
+
+    def raise_500(*_a, **_k):
+        raise urllib.error.HTTPError("u", 500, "err", None, None)
+
+    monkeypatch.setattr(browser_control.urllib.request, "urlopen", raise_500)
+    assert browser_control._post("acquire", {}) is None

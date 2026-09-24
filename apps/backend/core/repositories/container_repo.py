@@ -235,9 +235,11 @@ async def try_consume_stranger_wake(
     try:
         if await _bump():
             return True
-        # Refused: either a limit is reached, or the stored day is stale/absent (first stranger
-        # today). Roll the window over; if that write is refused too the day was current, so it
-        # was a limit.
+        # Refused: either a limit is reached, or the stored day is older than today / absent (the
+        # first stranger of the day). Roll the window FORWARD (`<`, never back: a task holding a
+        # stale day must not reset a window another task already advanced), then bump again. If
+        # the rollover is refused, either another task just rolled it (the bump now succeeds) or
+        # the day was current and a limit was really reached (the bump is refused again).
         try:
             await run_in_thread(
                 table.update_item,
@@ -246,14 +248,13 @@ async def try_consume_stranger_wake(
                     "SET stranger_wake_day = :d, stranger_wake_count = :zero, stranger_wake_senders = :empty"
                 ),
                 ConditionExpression=(
-                    "attribute_exists(owner_id) AND (attribute_not_exists(stranger_wake_day) OR stranger_wake_day <> :d)"
+                    "attribute_exists(owner_id) AND (attribute_not_exists(stranger_wake_day) OR stranger_wake_day < :d)"
                 ),
                 ExpressionAttributeValues={":d": day, ":zero": 0, ":empty": {}},
             )
         except ClientError as e:
-            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                return False
-            raise
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
         return await _bump()
     except Exception:  # noqa: BLE001 — fail closed, see docstring
         logger.warning("try_consume_stranger_wake failed for %s", owner_id, exc_info=True)

@@ -660,6 +660,66 @@ async def test_stranger_wake_counters_reset_on_a_new_day_and_are_per_owner(dynam
 
 
 @pytest.mark.asyncio
+async def test_a_new_day_resets_an_under_cap_window_to_one(dynamodb_table):
+    from core.repositories import container_repo
+
+    await _seed("owner_a", {"hook_token": "t"})
+    for _ in range(3):
+        assert await _wake("owner_a", "s1") is True  # well under both caps
+    assert await _wake("owner_a", "s2", day="2026-09-25") is True
+
+    row = await container_repo.get_by_owner_id("owner_a", consistent=True)
+    assert row["stranger_wake_day"] == "2026-09-25"
+    assert row["stranger_wake_count"] == 1 and row["stranger_wake_senders"] == {"s2": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_caller_holding_a_stale_day_cannot_wind_the_window_back(dynamodb_table):
+    from core.repositories import container_repo
+
+    await _seed("owner_a", {"hook_token": "t"})
+    for _ in range(3):
+        assert await _wake("owner_a", "s1", day="2026-09-25") is True
+
+    # A task that read the clock just before midnight, arriving after another task rolled forward.
+    assert await _wake("owner_a", "s1", day="2026-09-24") is False
+
+    row = await container_repo.get_by_owner_id("owner_a", consistent=True)
+    assert row["stranger_wake_day"] == "2026-09-25" and row["stranger_wake_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_wakes_of_the_day_admit_exactly_the_sender_cap(dynamodb_table):
+    """Racing rollovers: the loser of the rollover must still bump, not be refused.
+
+    Serializes only Moto's own UpdateItem execution -- Moto does not support concurrent
+    writes from worker threads (same gotcha as test_local_sessions.py's
+    test_command_idempotency_ordering_and_receipt_provenance), so without this a run
+    flakes with more than sender_cap admits. The race under test is untouched: each of
+    try_consume_stranger_wake's two conditional writes is still a separate call other
+    tasks can interleave around; only the individual write itself is now atomic, which
+    is exactly what real DynamoDB already guarantees per item.
+    """
+    import asyncio
+
+    from core.repositories import container_repo
+
+    await _seed("owner_a", {"hook_token": "t"})
+
+    lock = asyncio.Lock()
+    real_run_in_thread = container_repo.run_in_thread
+
+    async def locked_run_in_thread(*args, **kwargs):
+        async with lock:
+            return await real_run_in_thread(*args, **kwargs)
+
+    with patch.object(container_repo, "run_in_thread", locked_run_in_thread):
+        results = await asyncio.gather(*[_wake("owner_a", "s1", sender_cap=10) for _ in range(30)])
+
+    assert sum(results) == 10
+
+
+@pytest.mark.asyncio
 async def test_stranger_wake_fails_closed_without_a_container_row(dynamodb_table):
     assert await _wake("owner_missing", "s1") is False
 

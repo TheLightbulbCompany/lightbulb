@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 
 import { colors } from "../../../config/theme";
 import { useMobileRooms } from "../../../lib/rooms";
-import { badgeCount, useChannelMentions } from "../../../lib/unreadBadge";
+import { badgeCount } from "../../../lib/unreadBadge";
 
 /**
  * The unread number, Slack's way: DMs and mentions only, muted rooms excluded.
@@ -16,8 +16,7 @@ import { badgeCount, useChannelMentions } from "../../../lib/unreadBadge";
  */
 function TabBadge({ onCount }: { onCount: (total: number) => void }) {
   const { rooms } = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
-  const mentions = useChannelMentions(rooms);
-  const total = badgeCount(rooms, mentions);
+  const total = badgeCount(rooms);
   useEffect(() => {
     onCount(total);
     void Notifications.setBadgeCountAsync(total).catch(() => {});

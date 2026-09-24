@@ -4,14 +4,16 @@ Key registry (architecture spec §7; the ``by-member`` GSI is discovery ONLY —
 every protected operation rechecks the base ``MEMBER#`` row strongly):
 
     OWNER#<owner>   ROOM#<room>                        room directory projection
-    ROOM#<room>     META                               owner, fields, revision, lastSeq, deliveryKey, lastMessage (top-level preview)
-    ROOM#<room>     MEMBER#<kind>#<id>                 role, listenMode, mentionHandle, joinedSeq, homeOwnerId (foreign members of a shared room; memberKey is keyed on it)
-    ROOM#<room>     MSG#<20-digit seq>                 original request + public edit overlay + dispatchTargets
+    ROOM#<room>     META                               owner, fields, revision, lastSeq, deliveryKey, lastMessage (top-level preview),
+                                                       topCount (top-level ordinals, see unread_count)
+    ROOM#<room>     MEMBER#<kind>#<id>                 role, listenMode, mentionHandle, joinedSeq, joinedTopOrdinal, homeOwnerId (foreign members of a shared room; memberKey is keyed on it)
+    ROOM#<room>     MSG#<20-digit seq>                 original request + public edit overlay + dispatchTargets + topOrdinal
+    ROOM#<room>     MENTION#<user>#<20-digit seq>      one per @mentioned human (not the author); counted for mentionCount
     ROOM#<room>     IDEMP#EDIT#<user>#<operationId>     durable edit/delete retry receipt
     ROOM#<room>     IDEMP#human#<user>#<clientMessageId>  durable human retry receipt
     OWNER#<owner>   IDEMP#AGENT#<eventId>              durable agent retry receipt (owner-scoped
                                                        because the receipt route carries no roomId)
-    ROOM#<room>     READ#human#<user>                  last read seq
+    ROOM#<room>     READ#human#<user>                  last read seq + its topOrdinal
     ROOM#<room>     DELIVERY#AGENT#<agent>             last drained seq per agent
     ROOM#<room>     WORK#MESSAGE#<seq>#AGENT#<agent>   one-shot outbox -> EventBridge Pipe -> FIFO
     ROOM#<room>     LIVE#<eventId>#USER#<user>         one-shot private-user notification outbox
@@ -141,6 +143,10 @@ def agent_idemp_sk(event_id: str) -> str:
 
 def read_sk(user_id: str) -> str:
     return f"READ#human#{user_id}"
+
+
+def mention_sk(user_id: str, seq: int) -> str:
+    return f"MENTION#{user_id}#{seq:020d}"
 
 
 def delivery_sk(agent_id: str) -> str:
@@ -441,9 +447,70 @@ async def get_agent_delivery(room_id: str, agent_id: str) -> dict | None:
     return await _get(room_pk(room_id), delivery_sk(agent_id))
 
 
+async def get_read_row(room_id: str, user_id: str) -> dict | None:
+    return await _get(room_pk(room_id), read_sk(user_id))
+
+
 async def get_read_cursor(room_id: str, user_id: str) -> int:
-    row = await _get(room_pk(room_id), read_sk(user_id))
+    row = await get_read_row(room_id, user_id)
     return int(row["lastReadSeq"]) if row else 0
+
+
+# ---------------------------------------------------------------------------
+# exact room-list counts
+#
+# Every top-level message takes the next dense ordinal (``META.topCount``,
+# stamped as ``MSG.topOrdinal``); a thread reply stamps the current one without
+# bumping it. A cursor stores the ordinal of the seq it points at, so
+# ``unreadCount = topCount - max(READ.topOrdinal, MEMBER.joinedTopOrdinal)``
+# needs no read the room list does not already make. Own messages drop out
+# because a human's top-level post moves their own cursor to it.
+#
+# A missing ordinal reads as 0 and the count clamps at 0, so a room written
+# before ordinals existed shows 0 unread (never a crash or a negative) until
+# ``scripts/backfill_room_ordinals.py`` stamps it. No legacy read path.
+# ---------------------------------------------------------------------------
+
+COUNT_CAP = 99
+
+
+def _top_count(meta: dict) -> int:
+    return int(meta.get("topCount") or 0)
+
+
+async def _ordinal_at(meta: dict, seq: int) -> int:
+    """The top-level ordinal of the room position ``seq`` (0 = before everything)."""
+    if seq == int(meta["lastSeq"]):
+        return _top_count(meta)
+    if seq <= 0:
+        return 0
+    row = await get_message(meta["roomId"], seq)
+    return int((row or {}).get("topOrdinal") or 0)
+
+
+def read_floor(member: dict, read: dict | None) -> int:
+    return max(int((read or {}).get("lastReadSeq", 0)), int(member.get("joinedSeq", 0)))
+
+
+def unread_count(meta: dict, member: dict, read: dict | None) -> int:
+    """Top-level messages above the reader's floor, capped at ``COUNT_CAP``."""
+    floor = max(int((read or {}).get("topOrdinal") or 0), int(member.get("joinedTopOrdinal") or 0))
+    return min(COUNT_CAP, max(0, _top_count(meta) - floor))
+
+
+async def mention_count(room_id: str, user_id: str, floor: int) -> int:
+    """``MENTION#`` rows above ``floor``, capped. Callers skip a read room."""
+    from boto3.dynamodb.conditions import Key
+
+    response = await run_in_thread(
+        _table().query,
+        KeyConditionExpression=Key("pk").eq(room_pk(room_id))
+        & Key("sk").between(mention_sk(user_id, floor + 1), mention_sk(user_id, 10**19)),
+        Select="COUNT",
+        ConsistentRead=True,
+        Limit=COUNT_CAP,
+    )
+    return min(COUNT_CAP, int(response.get("Count", 0)))
 
 
 async def get_agent_idempotency(owner_id: str, event_id: str) -> dict | None:
@@ -546,7 +613,7 @@ async def list_rooms_for_member(owner_id: str, kind: str, member_id: str) -> lis
 # ---------------------------------------------------------------------------
 
 
-def _member_item(room_id: str, owner_id: str, m: dict, joined_seq: int, now: str) -> dict:
+def _member_item(room_id: str, owner_id: str, m: dict, joined_seq: int, joined_ordinal: int, now: str) -> dict:
     home = m.get("homeOwnerId") or owner_id
     return {
         "pk": room_pk(room_id),
@@ -564,6 +631,7 @@ def _member_item(room_id: str, owner_id: str, m: dict, joined_seq: int, now: str
         "listenMode": m.get("listenMode"),
         "joinedAt": now,
         "joinedSeq": joined_seq,
+        "joinedTopOrdinal": joined_ordinal,
         # "user" once a room admin sets this member; system promotions never override it.
         **({"modeSetBy": m["modeSetBy"]} if m.get("modeSetBy") else {}),
     }
@@ -605,6 +673,7 @@ async def create_room(
         "lastMessageAt": None,
         # Present-and-null, not absent: the room-list preview (see last_message_preview).
         "lastMessage": None,
+        "topCount": 0,
         "deliveryKey": str(uuid.uuid4()),
         "workspaceId": workspace_id,
         "createdAt": now,
@@ -641,7 +710,7 @@ async def create_room(
         },
     ]
     for m in members:
-        items.append({"Put": {"TableName": table_name, "Item": _member_item(room_id, owner_id, m, 0, now)}})
+        items.append({"Put": {"TableName": table_name, "Item": _member_item(room_id, owner_id, m, 0, 0, now)}})
     for a in agents:
         items.append(
             {
@@ -801,6 +870,9 @@ async def create_message(
             raise RoomArchived(room_id)
         expected = int(meta["lastSeq"])
         seq = expected + 1
+        top = thread_root_message_id is None
+        # A reply shares the current ordinal; only a top-level message takes a new one.
+        ordinal = _top_count(meta) + (1 if top else 0)
         now = utc_now_iso()
         message_id = str(uuid.uuid4())
         message = {
@@ -823,10 +895,11 @@ async def create_message(
             "clientMessageId": client_message_id,
             "requestHash": req_hash,
             "attachments": attachments or [],
+            "topOrdinal": ordinal,
         }
-        meta_values: dict[str, Any] = {":seq": seq, ":expected": expected, ":now": now}
-        meta_set = "SET lastSeq = :seq, lastMessageAt = :now, updatedAt = :now"
-        if thread_root_message_id is None:
+        meta_values: dict[str, Any] = {":seq": seq, ":expected": expected, ":now": now, ":top": ordinal}
+        meta_set = "SET lastSeq = :seq, lastMessageAt = :now, updatedAt = :now, topCount = :top"
+        if top:
             # The room-list preview follows top-level messages only; thread replies
             # change neither the preview nor the sidebar order.
             meta_set += ", lastMessage = :preview"
@@ -871,6 +944,27 @@ async def create_message(
         if system:
             del items[1]  # the author MEMBER check
         items.extend(_work_message_item(table_name, owner_id, room_id, message_id, seq, a) for a in target_ids)
+        # One tiny row per @mentioned human (members only, so <= MAX_ROOM_MEMBERS);
+        # with the agent targets that is <= 32 + 4 fixed + 1 READ, well under 100.
+        mentioned = {m["id"] for m in mentions if m.get("kind") == "human"}
+        mentioned.discard(author["id"] if author["kind"] == "human" else None)
+        items.extend(
+            {"Put": {"TableName": table_name, "Item": {"pk": room_pk(room_id), "sk": mention_sk(uid, seq)}}}
+            for uid in sorted(mentioned)
+        )
+        if top and author["kind"] == "human":
+            # Posting marks the room read for its author (Slack's rule). Unconditional
+            # and still monotonic: nothing can point past the seq this commit creates.
+            items.append(
+                {
+                    "Update": {
+                        "TableName": table_name,
+                        "Key": {"pk": room_pk(room_id), "sk": read_sk(author["id"])},
+                        "UpdateExpression": "SET lastReadSeq = :seq, topOrdinal = :top, userId = :u, updatedAt = :now",
+                        "ExpressionAttributeValues": {":seq": seq, ":top": ordinal, ":u": author["id"], ":now": now},
+                    }
+                }
+            )
         try:
             await _transact(items)
             return _plain(message), False
@@ -1131,7 +1225,7 @@ async def upsert_member(
             {
                 "Put": {
                     "TableName": table_name,
-                    "Item": _member_item(room_id, owner_id, member, int(meta["lastSeq"]), now),
+                    "Item": _member_item(room_id, owner_id, member, int(meta["lastSeq"]), _top_count(meta), now),
                     "ConditionExpression": "attribute_not_exists(sk)",
                 }
             }
@@ -1503,6 +1597,22 @@ async def advance_agent_delivery(room_id: str, agent_id: str, expected: int, thr
         raise
 
 
+async def _write_cursor(meta: dict, user_id: str, target: int, condition: str) -> None:
+    """Set ``lastReadSeq`` with the ordinal of that seq, so the pair never splits."""
+    await run_in_thread(
+        _table().update_item,
+        Key={"pk": room_pk(meta["roomId"]), "sk": read_sk(user_id)},
+        UpdateExpression="SET lastReadSeq = :n, topOrdinal = :o, userId = :u, updatedAt = :now",
+        ConditionExpression=condition,
+        ExpressionAttributeValues={
+            ":n": target,
+            ":o": await _ordinal_at(meta, target),
+            ":u": user_id,
+            ":now": utc_now_iso(),
+        },
+    )
+
+
 async def set_read_cursor(room_id: str, user_id: str, last_read_seq: int) -> int:
     """Monotonic upsert bounded by the room's current ``lastSeq``."""
     meta = await get_room(room_id)
@@ -1510,13 +1620,7 @@ async def set_read_cursor(room_id: str, user_id: str, last_read_seq: int) -> int
         raise RoomNotFound(room_id)
     target = max(0, min(int(last_read_seq), int(meta["lastSeq"])))
     try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"pk": room_pk(room_id), "sk": read_sk(user_id)},
-            UpdateExpression="SET lastReadSeq = :n, userId = :u, updatedAt = :now",
-            ConditionExpression="attribute_not_exists(lastReadSeq) OR lastReadSeq <= :n",
-            ExpressionAttributeValues={":n": target, ":u": user_id, ":now": utc_now_iso()},
-        )
+        await _write_cursor(meta, user_id, target, "attribute_not_exists(lastReadSeq) OR lastReadSeq <= :n")
         return target
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
@@ -1534,13 +1638,7 @@ async def mark_unread(room_id: str, user_id: str, *, joined_seq: int, from_seq: 
     ceiling = min(int(from_seq) - 1, last_seq) if from_seq is not None else last_seq - 1
     target = max(int(joined_seq), max(0, ceiling))
     try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"pk": room_pk(room_id), "sk": read_sk(user_id)},
-            UpdateExpression="SET lastReadSeq = :n, userId = :u, updatedAt = :now",
-            ConditionExpression="attribute_exists(lastReadSeq) AND lastReadSeq > :n",
-            ExpressionAttributeValues={":n": target, ":u": user_id, ":now": utc_now_iso()},
-        )
+        await _write_cursor(meta, user_id, target, "attribute_exists(lastReadSeq) AND lastReadSeq > :n")
         return target
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":

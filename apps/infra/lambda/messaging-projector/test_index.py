@@ -393,6 +393,15 @@ class ProjectorTests(unittest.TestCase):
         })
 
     @patch("index._publish")
+    def test_mentioned_user_ids_never_include_the_author(self, publish):
+        # A self-mention must not bump the author's own live mentionCount.
+        self._one_member_room()
+        message = message_item()
+        message["mentions"] = [{"kind": "human", "id": USER_ID}, {"kind": "human", "id": BOB_ID}]
+        index._project_message(message)
+        self.assertEqual(publish.call_args_list[0].args[1]["payload"]["mentionedUserIds"], [BOB_ID])
+
+    @patch("index._publish")
     def test_message_hint_preview_flags_attachments(self, publish):
         # An attachment-only message still has a preview that says so.
         self._one_member_room()

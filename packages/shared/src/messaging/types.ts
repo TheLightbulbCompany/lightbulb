@@ -39,7 +39,10 @@ export interface RoomSummary {
   /** The latest live top-level message's time, else the room's createdAt; the list is sorted on it. */
   lastMessageAt: string | null;
   lastMessage?: RoomLastMessage | null;
+  /** Top-level messages above my read cursor, never my own, capped at 99. */
   unreadCount: number;
+  /** Messages @mentioning me above my read cursor, thread replies included, capped at 99. */
+  mentionCount?: number;
   updatedAt: string;
   topic: string | null;
   starred: boolean;

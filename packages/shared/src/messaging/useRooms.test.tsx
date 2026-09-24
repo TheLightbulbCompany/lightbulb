@@ -654,10 +654,22 @@ describe("useRooms platform seams", () => {
       ...room, roomId: "room-new", name: "New",
       lastMessageSeq: 4, lastMessageAt: "2026-09-14T00:00:00Z", unreadCount: 0, lastReadSeq: 4,
     };
-    const available = (messageSeq = 2, notify = true): LiveEvent => ({
+    const authored = (authorId: string, seq: number) => ({
+      messageId: "msg-new", seq, authorId, authorKind: "human" as const, authorName: authorId,
+      textPreview: "hi", hasAttachments: false, createdAt: "2026-09-15T00:00:01Z", threadRootMessageId: null,
+    });
+    const available = (
+      messageSeq = 2, notify = true,
+      extra: { authorId?: string; threadRootMessageId?: string | null; mentionedUserIds?: string[] } = {},
+    ): LiveEvent => ({
       schemaVersion: 1, eventId: "evt-avail", type: "room.message.available",
       occurredAt: "2026-09-15T00:00:01Z", roomId: older.roomId, messageSeq,
-      payload: { roomId: older.roomId, messageId: "msg-new", messageSeq, threadRootMessageId: null, notify },
+      payload: {
+        roomId: older.roomId, messageId: "msg-new", messageSeq, notify,
+        threadRootMessageId: extra.threadRootMessageId ?? null,
+        lastMessage: authored(extra.authorId ?? "user-b", messageSeq),
+        mentionedUserIds: extra.mentionedUserIds ?? [],
+      },
     } as LiveEvent);
 
     beforeEach(() => {
@@ -719,7 +731,7 @@ describe("useRooms platform seams", () => {
       expect(result.current.rooms.map((r) => r.roomId)).toEqual([newer.roomId]);
     });
 
-    it("moves recency without unread when the hint is not a notify", async () => {
+    it("counts a plain channel message as unread even when it does not notify", async () => {
       const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
       await waitFor(() => expect(result.current.rooms).toHaveLength(2));
 
@@ -727,8 +739,57 @@ describe("useRooms platform seams", () => {
 
       const bumped = result.current.rooms.find((r) => r.roomId === older.roomId);
       expect(bumped).toMatchObject({
-        lastMessageSeq: 2, lastMessageAt: "2026-09-15T00:00:01Z", unreadCount: 0,
+        lastMessageSeq: 2, lastMessageAt: "2026-09-15T00:00:01Z", unreadCount: 1, mentionCount: 0,
       });
+    });
+
+    it("never counts my own top-level post, which marks the room read like the server does", async () => {
+      messaging.listRooms.mockResolvedValue({
+        rooms: [newer, { ...older, unreadCount: 3, mentionCount: 1 }], sections: [],
+      });
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+
+      act(() => { for (const handler of handlers) handler(available(2, false, { authorId: "user-a" })); });
+
+      expect(result.current.rooms.find((r) => r.roomId === older.roomId))
+        .toMatchObject({ lastMessageSeq: 2, lastReadSeq: 2, unreadCount: 0, mentionCount: 0 });
+    });
+
+    it("counts a mention in a thread reply but never the reply as unread", async () => {
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+
+      act(() => { for (const handler of handlers) handler(available(2, true, {
+        threadRootMessageId: "msg-root", mentionedUserIds: ["user-a"],
+      })); });
+
+      expect(result.current.rooms.find((r) => r.roomId === older.roomId))
+        .toMatchObject({ lastMessageSeq: 2, unreadCount: 0, mentionCount: 1 });
+    });
+
+    it("caps both counts at 99", async () => {
+      messaging.listRooms.mockResolvedValue({
+        rooms: [newer, { ...older, unreadCount: 99, mentionCount: 99 }], sections: [],
+      });
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+
+      act(() => { for (const handler of handlers) handler(available(2, true, { mentionedUserIds: ["user-a"] })); });
+
+      expect(result.current.rooms.find((r) => r.roomId === older.roomId))
+        .toMatchObject({ unreadCount: 99, mentionCount: 99 });
+    });
+
+    it("does not count a message at or below my read cursor", async () => {
+      messaging.listRooms.mockResolvedValue({ rooms: [newer, { ...older, lastReadSeq: 5 }], sections: [] });
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+
+      act(() => { for (const handler of handlers) handler(available(2, true, { mentionedUserIds: ["user-a"] })); });
+
+      expect(result.current.rooms.find((r) => r.roomId === older.roomId))
+        .toMatchObject({ lastMessageSeq: 2, unreadCount: 0 });
     });
 
     it("never moves a room or its preview for a thread reply", async () => {

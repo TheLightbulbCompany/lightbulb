@@ -211,7 +211,11 @@ class RoomSummary(ContractModel):
     # room list is sorted on it (newest first, ties by roomId).
     last_message_at: datetime | None
     last_message: LastMessage | None = None
+    # Top-level messages above the caller's read floor, never their own, capped
+    # at 99 (a deleted one still counts until read). The list is the reconcile point.
     unread_count: int = Field(ge=0)
+    # Messages @mentioning the caller above that floor, thread replies included, capped at 99.
+    mention_count: int = Field(ge=0, default=0)
     updated_at: datetime
     starred: bool = False
     muted: bool = False
@@ -1264,9 +1268,15 @@ def _room_member(item: dict[str, Any]) -> RoomMember:
     )
 
 
-def _room_summary_fields(meta: dict, member: dict, last_read: int) -> dict[str, Any]:
+async def _mention_count(meta: dict, member: dict, read: dict | None, user_id: str) -> int:
+    floor = messaging_repo.read_floor(member, read)
+    if floor >= int(meta["lastSeq"]):
+        return 0  # a read room costs no query
+    return await messaging_repo.mention_count(meta["roomId"], user_id, floor)
+
+
+def _room_summary_fields(meta: dict, member: dict, read: dict | None, mention_count: int = 0) -> dict[str, Any]:
     """The RoomSummary half of a room projection — RoomDetail extends it."""
-    floor = max(last_read, int(member.get("joinedSeq", 0)))
     return {
         "room_id": meta["roomId"],
         "name": meta.get("name"),
@@ -1275,7 +1285,9 @@ def _room_summary_fields(meta: dict, member: dict, last_read: int) -> dict[str, 
         "last_message_seq": int(meta["lastSeq"]),
         "last_message_at": (meta.get("lastMessage") or {}).get("createdAt") or meta.get("createdAt"),
         "last_message": meta.get("lastMessage"),
-        "unread_count": max(0, int(meta["lastSeq"]) - floor),
+        "unread_count": messaging_repo.unread_count(meta, member, read),
+        "mention_count": mention_count,
+        "last_read_seq": int((read or {}).get("lastReadSeq", 0)),
         "updated_at": meta["updatedAt"],
         "starred": bool(member.get("starred")),
         "muted": bool(member.get("muted")),
@@ -1293,20 +1305,19 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
     member = member or await messaging_repo.get_member(meta["roomId"], "human", user_id)
     if member is None:
         raise ApiProblem("ROOM_FORBIDDEN", "You no longer have access to this room.")
-    members, last_read, open_runs = await asyncio.gather(
+    members, read, open_runs = await asyncio.gather(
         messaging_repo.list_members(meta["roomId"]),
-        messaging_repo.get_read_cursor(meta["roomId"], user_id),
+        messaging_repo.get_read_row(meta["roomId"], user_id),
         # The run ledger is partitioned by the ROOM's owner — the customer org
         # even on a room shared with the vendor workspace.
         messaging_repo.list_open_runs_for_room(meta["ownerId"], meta["roomId"]),
     )
-    emails = await human_emails(members)
+    emails, mentions = await asyncio.gather(human_emails(members), _mention_count(meta, member, read, user_id))
     agent_ids = {row["id"] for row in members if row["kind"] == "agent"}
     return RoomDetail(
-        **_room_summary_fields(meta, member, last_read),
+        **_room_summary_fields(meta, member, read, mentions),
         delivery_key=meta["deliveryKey"],
         members=[_room_member(row) for row in with_human_handles(members, emails)],
-        last_read_seq=last_read,
         created_at=meta["createdAt"],
         pinned_message_ids=[str(value) for value in meta.get("pinnedMessageIds", [])],
         # A run whose agent has left the room is as over as one that never
@@ -1335,7 +1346,8 @@ async def _user_sections(owner_id: str, user_id: str) -> list[RoomSection]:
 # workspace would flood it and leave every other request on the process queued
 # behind a single room list.
 #
-# Note this bounds ROOMS, and each one issues three calls concurrently — so the
+# Note this bounds ROOMS, and each one issues three calls concurrently (plus one
+# small mention COUNT query for a room with unread) — so the
 # real ceiling on submitted work is three times this number. That is deliberate:
 # the calls are IO-bound and mostly sit waiting on DynamoDB, so a modest queue
 # behind the pool costs nothing, whereas the serial version this replaced cost
@@ -1365,18 +1377,17 @@ async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
         meta = row["meta"]
         room_id = meta["roomId"]
         async with limit:
-            member, last_read, members = await asyncio.gather(
+            member, read, members = await asyncio.gather(
                 messaging_repo.get_member(room_id, "human", user_id),
-                messaging_repo.get_read_cursor(room_id, user_id),
+                messaging_repo.get_read_row(room_id, user_id),
                 messaging_repo.list_members(room_id),
             )
             if member is None:
                 return None
-            emails = await human_emails(members)
+            emails, mentions = await asyncio.gather(human_emails(members), _mention_count(meta, member, read, user_id))
         return RoomSummary(
-            **_room_summary_fields(meta, member, last_read),
+            **_room_summary_fields(meta, member, read, mentions),
             members=[_room_member(item) for item in with_human_handles(members, emails)],
-            last_read_seq=last_read,
         )
 
     settled = await asyncio.gather(*(summarise(row) for row in discovered))

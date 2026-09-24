@@ -44,6 +44,13 @@ interface BillingAccount {
   provider_choice: "chatgpt_oauth" | "byo_key" | "openrouter_managed" | null;
   byo_provider: "openai" | "anthropic" | null;
   /**
+   * Pricing tier ("base" | "standard" (Workspace) | "ultra_pro" (Ultra)); null
+   * for a trial_local row or one predating the plan field. Needed to match
+   * `provider_choice_from_row`'s (apps/backend/core/services/container_provision.py)
+   * managed-gate fallback for a paid row that never picked a provider.
+   */
+  plan?: string | null;
+  /**
    * Which channel took the money — "apple_iap", or absent for Stripe (every
    * pre-IAP row). Decides where Manage subscription sends the customer: the
    * two systems cannot see each other's subscriptions, so the wrong one shows
@@ -162,6 +169,18 @@ function trialDaysLeft(trialEndSec: number): number {
   return Math.max(0, Math.ceil((trialEndSec * 1000 - Date.now()) / 86_400_000));
 }
 
+/** Matches the web's free-tier window (`FREE_TIER_DAYS`, apps/frontend/src/lib/planLabel.ts). */
+const FREE_TIER_DAYS = 30;
+
+/**
+ * Whole days left in the free-tier (`trial_local`) window, clamped to
+ * FREE_TIER_DAYS like the web's `freeTierDaysLeft` — a client clock a few
+ * minutes slow must not round a 30-day trial up to 31.
+ */
+function freeTierDaysLeft(trialEndSec: number): number {
+  return Math.min(FREE_TIER_DAYS, trialDaysLeft(trialEndSec));
+}
+
 function trialEndLabel(trialEndSec: number): string {
   return new Date(trialEndSec * 1000).toLocaleDateString(undefined, {
     month: "short",
@@ -180,9 +199,15 @@ export function statusChipLabel(account: BillingAccount): string | null {
     return `Trial · ${days} ${days === 1 ? "day" : "days"} left`;
   }
   if (status === "active") return "Active";
-  // Card-less free tier: the plan row itself says "Free plan" — no chip
-  // (and never the raw "trial_local" string).
-  if (status === "trial_local") return null;
+  // Card-less free tier (never the raw "trial_local" string): mirror the
+  // web Billing page's TrialStatusCard title (settings/page.tsx) so the
+  // days-left/ended state isn't web-only.
+  if (status === "trial_local") {
+    if (account.trial_end == null) return "Free trial";
+    if (account.trial_end * 1000 < Date.now()) return "Free trial ended";
+    const days = freeTierDaysLeft(account.trial_end);
+    return `Free trial · ${days} ${days === 1 ? "day" : "days"} left`;
+  }
   // Anything else ("past_due", "unpaid", …) reads as words, not an enum.
   const words = status.replace(/_/g, " ");
   return words.charAt(0).toUpperCase() + words.slice(1);
@@ -193,11 +218,21 @@ export function providerLabel(
   account: BillingAccount,
   chatgpt: ChatGPTStatus | null,
 ): { title: string; detail: string | null } {
-  // Free tier stores no provider_choice (`bedrock_trial` is a config-path
-  // mode) but runs Claude Sonnet via Bedrock — "No provider selected"
-  // would wrongly tell a free user to go pick one.
-  if (account.subscription_status === "trial_local" && account.provider_choice == null) {
-    return { title: "Claude Sonnet", detail: "Included with the free plan" };
+  // No stored provider_choice: the managed-DeepSeek gate is a config-path
+  // fallback, never a `provider_choice` row value itself (see
+  // `provider_choice_from_row`, apps/backend/core/services/container_provision.py).
+  // A cardless free trial AND a paid Base/Workspace/Ultra row that never
+  // picked a provider both run there — "No provider selected" would wrongly
+  // tell either of them to go pick one. Matches the web's managed block
+  // (LLMPanel.tsx `ManagedAllowanceBlock`).
+  if (
+    account.provider_choice == null &&
+    (account.subscription_status === "trial_local" ||
+      account.plan === "base" ||
+      account.plan === "standard" ||
+      account.plan === "ultra_pro")
+  ) {
+    return { title: "Lightbulb-managed models", detail: "DeepSeek within a daily allowance" };
   }
   switch (account.provider_choice) {
     case "chatgpt_oauth": {
@@ -435,6 +470,8 @@ export default function Settings() {
     const { account, credits, chatgpt } = state;
     const chip = statusChipLabel(account);
     const isTrialLocal = account.subscription_status === "trial_local";
+    const isTrialLocalEnded =
+      isTrialLocal && account.trial_end != null && account.trial_end * 1000 < Date.now();
     const trialing =
       account.subscription_status === "trialing" && account.trial_end != null;
     const showCredits =
@@ -442,11 +479,13 @@ export default function Settings() {
       credits?.balance_dollars != null;
     const provider = providerLabel(account, chatgpt);
     const planName = isTrialLocal ? "Lightbulb Free plan" : "Lightbulb";
-    const planNote = isTrialLocal
-      ? "Includes a daily free usage allowance."
-      : trialing && account.trial_end != null
-        ? `Trial ends ${trialEndLabel(account.trial_end)}`
-        : null;
+    const planNote = isTrialLocalEnded
+      ? "Your free trial has ended."
+      : isTrialLocal
+        ? "Includes a daily free usage allowance."
+        : trialing && account.trial_end != null
+          ? `Trial ends ${trialEndLabel(account.trial_end)}`
+          : null;
 
     billingSections = (
       <>

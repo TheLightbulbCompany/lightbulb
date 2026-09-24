@@ -55,8 +55,11 @@ export function RoomHeader({
   const [nameDraft, setNameDraft] = useState(room?.name ?? "");
   const [leaving, setLeaving] = useState(false);
   const [archiving, setArchiving] = useState(false);
-  // The backend refuses #general and the shared channel (ROOM_NOT_ARCHIVABLE); don't offer them.
-  const canArchive = !!onSetArchived && canEditRoom && room?.kind === "channel" && !room.shared && !room.isDefault;
+  // The backend refuses #general, the shared channel and 1:1 DMs (ROOM_NOT_ARCHIVABLE); don't
+  // offer them. A group chat has no admins, so any member may archive it.
+  const canArchive = !!onSetArchived && (room?.kind === "group-dm"
+    || (canEditRoom && room?.kind === "channel" && !room.shared && !room.isDefault));
+  const noun = room?.kind === "group-dm" ? "group chat" : "channel";
   const { pending, error, run, reset } = useAsyncAction();
   const topicTrigger = useRef<HTMLButtonElement>(null);
   const optionsTrigger = useRef<HTMLButtonElement>(null);
@@ -135,8 +138,8 @@ export function RoomHeader({
           {onRenameRoom && canEditRoom && !room?.shared && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => onOpenDetails()}>Details</DropdownMenuItem>
           {canArchive && (room?.archivedAt
-            ? <DropdownMenuItem onSelect={() => void run(async () => { await onSetArchived!(false); }, "The channel could not be unarchived.")}><ArchiveRestore aria-hidden="true" />Unarchive channel</DropdownMenuItem>
-            : <DropdownMenuItem onSelect={() => { reset(); setArchiving(true); }}><Archive aria-hidden="true" />Archive channel</DropdownMenuItem>)}
+            ? <DropdownMenuItem onSelect={() => void run(async () => { await onSetArchived!(false); }, `The ${noun} could not be unarchived.`)}><ArchiveRestore aria-hidden="true" />Unarchive {noun}</DropdownMenuItem>
+            : <DropdownMenuItem onSelect={() => { reset(); setArchiving(true); }}><Archive aria-hidden="true" />Archive {noun}</DropdownMenuItem>)}
           {onLeaveRoom && canLeave && <><DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
         </DropdownMenuContent>
@@ -178,8 +181,8 @@ export function RoomHeader({
         <DialogFooter className="gap-2">
           <Button ref={leaveCancel} type="button" variant="outline" disabled={pending} onClick={() => { setLeaving(false); reset(); }}>Cancel</Button>
           <Button type="button" variant="destructive" disabled={!actionable || pending}
-            onClick={() => void run(async () => { await onLeaveRoom!(); }, "The channel could not be left.", () => setLeaving(false))}>
-            {pending ? "Leaving…" : "Leave channel"}
+            onClick={() => void run(async () => { await onLeaveRoom!(); }, `The ${noun} could not be left.`, () => setLeaving(false))}>
+            {pending ? "Leaving…" : `Leave ${noun}`}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -194,8 +197,8 @@ export function RoomHeader({
         <DialogFooter className="gap-2">
           <Button type="button" variant="outline" disabled={pending} onClick={() => { setArchiving(false); reset(); }}>Cancel</Button>
           <Button type="button" disabled={!actionable || pending}
-            onClick={() => void run(async () => { await onSetArchived!(true); }, "The channel could not be archived.", () => setArchiving(false))}>
-            {pending ? "Archiving…" : "Archive channel"}
+            onClick={() => void run(async () => { await onSetArchived!(true); }, `The ${noun} could not be archived.`, () => setArchiving(false))}>
+            {pending ? "Archiving…" : `Archive ${noun}`}
           </Button>
         </DialogFooter>
       </DialogContent>

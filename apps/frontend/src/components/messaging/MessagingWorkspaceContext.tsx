@@ -782,13 +782,15 @@ export function MessagingWorkspaceProvider({
     onSetPin: rooms.setPin,
     onMarkUnreadFrom: markUnreadFrom,
     onSetPrefs: async (prefs) => { if (rooms.activeRoomId) await rooms.setRoomPrefs(rooms.activeRoomId, prefs); },
-    onLeaveRoom: rooms.activeRoom?.kind === "channel" && viewerRole !== "owner"
+    // A group chat's creator holds no powers there, so anyone may leave or archive one.
+    onLeaveRoom: rooms.activeRoom?.kind === "group-dm" || (rooms.activeRoom?.kind === "channel" && viewerRole !== "owner")
       ? async () => { if (rooms.activeRoomId) await rooms.leaveRoom(rooms.activeRoomId); } : undefined,
+    ...(rooms.activeRoom?.kind === "group-dm" || (rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(viewerRole))
+      ? { onSetArchived: async (archived: boolean) => { await rooms.updateRoom({ archived }); } } : {}),
     ...(rooms.activeRoom && rooms.activeRoom.kind !== "dm" && ["owner", "admin"].includes(viewerRole) ? {
       onRenameRoom: async (name: string) => { await rooms.updateRoom({ name }); },
       onSetTopic: async (topic: string | null) => { await rooms.updateRoom({ topic }); },
       ...(rooms.activeRoom.kind === "channel" ? {
-        onSetArchived: async (archived: boolean) => { await rooms.updateRoom({ archived }); },
         addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some(
           (member) => member.kind === candidate.kind && member.id === candidate.id,
         )),

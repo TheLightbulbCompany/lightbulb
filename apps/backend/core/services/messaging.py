@@ -1755,8 +1755,13 @@ async def get_room(auth: AuthContext, room_id: str) -> RoomDetail:
 
 async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest) -> RoomDetail:
     owner_id = resolve_owner_id(auth)
-    meta, _ = await require_room_admin(owner_id, auth.user_id, room_id)
+    meta, member = await require_room_member(owner_id, auth.user_id, room_id)
     updates = request.named_updates()
+    # A group DM has no admins -- only its creator holds a role (owner); every other member
+    # is a plain member (both clients create it that way) -- and it is their shared
+    # conversation, so any member may archive/unarchive one. Everything else is owner/admin.
+    if member.get("role") not in {"owner", "admin"} and (updates or meta.get("kind") != "group-dm"):
+        raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
     # A DM's display name is derived from its counterpart; a stored name would
     # shadow it with nothing in the UI able to clear it. (Finding from #2483,
     # merged to main — this generalizes the same guard to updates-scoping.)
@@ -1781,9 +1786,10 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
 
 
 def _require_archivable(meta: dict) -> None:
-    """Only a plain channel archives. #general is where join_default_room seats every new
-    teammate and onboarding renders; the shared vendor channel is the customer's support line."""
-    if meta.get("kind") != "channel" or is_default_room(meta) or is_vendor_room(meta):
+    """A plain channel or a group DM archives; a 1:1 DM does not. #general is where
+    join_default_room seats every new teammate and onboarding renders; the shared vendor
+    channel is the customer's support line."""
+    if meta.get("kind") not in {"channel", "group-dm"} or is_default_room(meta) or is_vendor_room(meta):
         name = "#general" if is_default_room(meta) else "This room"
         raise ApiProblem("ROOM_NOT_ARCHIVABLE", f"{name} can't be archived.")
 
@@ -1877,12 +1883,13 @@ async def remove_member(auth: AuthContext, room_id: str, kind: str, member_id: s
 
 
 async def leave_room(auth: AuthContext, room_id: str) -> None:
-    """A member removes themselves. The owner must transfer or delete the room
-    first — room deletion is out of scope, so this is a hard refusal."""
+    """A member removes themselves. A channel's owner must transfer or delete the room
+    first — room deletion is out of scope, so this is a hard refusal. A group DM's
+    "owner" is just whoever started it and holds no powers there, so they may leave too."""
     owner_id = resolve_owner_id(auth)
     meta, member = await require_room_member(owner_id, auth.user_id, room_id)
     _deny_vendor_human_change(meta, "human")
-    if member.get("role") == "owner":
+    if member.get("role") == "owner" and meta.get("kind") != "group-dm":
         raise ApiProblem(
             "INVALID_REQUEST",
             "The room owner cannot leave. Make someone else an admin and transfer ownership first.",

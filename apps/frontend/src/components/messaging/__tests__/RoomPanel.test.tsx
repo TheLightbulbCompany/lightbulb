@@ -974,3 +974,12 @@ it("replaces the composer in an archived channel with an Unarchive action for ad
   expect(screen.getByText("This channel is archived.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Unarchive channel" })).not.toBeInTheDocument();
 });
+
+it("lets a plain member unarchive an archived group chat", async () => {
+  const archived = { ...props.room!, kind: "group-dm" as const, name: "Trio", archivedAt: "2026-09-23T00:00:00Z" };
+  const onSetArchived = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} room={archived} participants={[{ ...owner, role: "member" }, friday]} onSetArchived={onSetArchived} />);
+  expect(screen.getByText("This group chat is archived. Unarchive it to post.")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Unarchive group chat" }));
+  await waitFor(() => expect(onSetArchived).toHaveBeenCalledWith(false));
+});

@@ -23,6 +23,7 @@ interface RoomHeaderProps {
   actionable: boolean;
   pinnedCount: number; // shown beside the facepile; the affordance opens the Details panel's Pins tab
   search: ReactNode; // the shipped <RoomMessageSearch />
+  views?: ReactNode; // RoomPanel's conversation / details / tasks switch
   onOpenDetails: (tab?: "members" | "pins" | "files" | "links" | "about") => void;
   onSetPrefs?: (prefs: MemberPrefsRequest) => Promise<void>;
   onRenameRoom?: (name: string) => Promise<void>;
@@ -42,6 +43,7 @@ export function RoomHeader({
   actionable,
   pinnedCount,
   search,
+  views,
   onOpenDetails,
   onSetPrefs,
   onRenameRoom,
@@ -129,17 +131,16 @@ export function RoomHeader({
         {faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" showPresence={false} />)}
         {overflow > 0 && <span className="text-sm text-muted-foreground">+{overflow}</span>}
       </Button>
-      {onSetPrefs && <Button type="button" variant="ghost" size="icon" disabled={!actionable || pending}
-        aria-pressed={!!room?.starred} aria-label={room?.starred ? "Unstar this conversation" : "Star this conversation"}
-        onClick={() => void run(async () => { await onSetPrefs({ starred: !room?.starred }); }, "The star could not be saved.")}>
-        <Star aria-hidden="true" fill={room?.starred ? "currentColor" : "none"} /></Button>}
-      {onSetPrefs && <Button type="button" variant="ghost" size="icon" disabled={!actionable || pending}
-        aria-pressed={!!room?.muted} aria-label={room?.muted ? "Unmute this conversation" : "Mute this conversation"}
-        onClick={() => void run(async () => { await onSetPrefs({ muted: !room?.muted }); }, "The notification setting could not be saved.")}>
-        {room?.muted ? <BellOff aria-hidden="true" /> : <Bell aria-hidden="true" />}</Button>}
+      {views}
       <DropdownMenu>
         <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon" aria-label="Conversation options"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
+            onSelect={() => void run(async () => { await onSetPrefs({ starred: !room?.starred }); }, "The star could not be saved.")}>
+            <Star aria-hidden="true" fill={room?.starred ? "currentColor" : "none"} />{room?.starred ? "Unstar this conversation" : "Star this conversation"}</DropdownMenuItem>}
+          {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
+            onSelect={() => void run(async () => { await onSetPrefs({ muted: !room?.muted }); }, "The notification setting could not be saved.")}>
+            {room?.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room?.muted ? "Unmute this conversation" : "Mute this conversation"}</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => void copyText(roomPermalink(room?.roomId ?? ""))}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
           {onRenameRoom && canEditRoom && !room?.shared && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => onOpenDetails()}>Details</DropdownMenuItem>

@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import NextLink from "next/link";
-import { ArrowLeft, Check, Circle, CircleAlert, Link } from "lucide-react";
+import { ArrowLeft, Check, Circle, CircleAlert, Link, ListChecks, MessagesSquare, PanelRight } from "lucide-react";
 import type { Components } from "react-markdown";
 import { LISTEN_MODE_LABELS, listenModeOptions, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
@@ -10,6 +10,7 @@ import { QuietDisclosure } from "@/components/chat/QuietDisclosure";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { roomMarkdown as publicMarkdown } from "./roomMarkdown";
@@ -157,6 +158,14 @@ const roomMarkdown: Partial<Components> = {
 
 const narrowQuery = "(max-width: 859px)";
 const overlayQuery = "(min-width: 860px) and (max-width: 1179px)";
+/** One compact header view switch: an icon button named by aria-label, with the same label as its tooltip. */
+function ViewButton({ label, children, ...props }: { label: string } & ComponentProps<typeof Button>) {
+  return <Tooltip>
+    <TooltipTrigger asChild><Button type="button" variant="ghost" size="icon" className="room-view" aria-label={label} {...props}>{children}</Button></TooltipTrigger>
+    <TooltipContent>{label}</TooltipContent>
+  </Tooltip>;
+}
+
 function subscribeNarrow(callback: () => void) {
   const media = window.matchMedia(narrowQuery);
   media.addEventListener("change", callback);
@@ -611,24 +620,25 @@ function RoomContent({
           }} />}
         onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
         onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom}
-        onSetArchived={onSetArchived} onDeleteRoom={onDeleteRoom} />
-      <nav className="room-tabs" aria-label="Conversation views">
-        <button type="button" className="room-tab" aria-current={contextCollapsed && !showDetail ? "page" : undefined}
-          onClick={() => {
-            closeDetail();
-            // Same [contextCollapsed]-effect race as the search/Jump call
-            // sites above: this button closes the room details panel too,
-            // and the click itself should keep this button focused, not get
-            // yanked back onto the Details trigger.
-            contextWasOpen.current = false;
-            setContextCollapsed(true);
-          }}>{visibleRoom?.kind === "channel" ? "Channel" : "Conversation"}</button>
-        <button ref={contextTrigger} type="button" className="room-tab"
-          aria-expanded={!contextCollapsed} aria-current={!contextCollapsed && !showDetail ? "page" : undefined}
-          onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Details{pinnedMessageIds.length > 0 && <span className="room-count">{pinnedMessageIds.length}</span>}</button>
-        {onLinkToWork && <button type="button" className="room-tab" aria-current={showTasks ? "page" : undefined}
-          onClick={event => openDetail("tasks", "tasks", event.currentTarget)}>Tasks{roomTasks.length > 0 && ` · ${roomTasks.length}`}</button>}
-      </nav>
+        onSetArchived={onSetArchived} onDeleteRoom={onDeleteRoom}
+        views={<nav className="room-views" aria-label="Conversation views">
+          <ViewButton label={visibleRoom?.kind === "channel" ? "Channel" : "Conversation"} aria-current={contextCollapsed && !showDetail ? "page" : undefined}
+            onClick={() => {
+              closeDetail();
+              // Same [contextCollapsed]-effect race as the search/Jump call
+              // sites above: this button closes the room details panel too,
+              // and the click itself should keep this button focused, not get
+              // yanked back onto the Details trigger.
+              contextWasOpen.current = false;
+              setContextCollapsed(true);
+            }}><MessagesSquare aria-hidden="true" /></ViewButton>
+          {/* The pinned count lives on the header's pin button only; this one stays an icon. */}
+          <ViewButton ref={contextTrigger} label="Details"
+            aria-expanded={!contextCollapsed} aria-current={!contextCollapsed && !showDetail ? "page" : undefined}
+            onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}><PanelRight aria-hidden="true" /></ViewButton>
+          {onLinkToWork && <ViewButton label={roomTasks.length > 0 ? `Tasks · ${roomTasks.length}` : "Tasks"} aria-current={showTasks ? "page" : undefined}
+            onClick={event => openDetail("tasks", "tasks", event.currentTarget)}><ListChecks aria-hidden="true" />{roomTasks.length > 0 && <span aria-hidden="true">{roomTasks.length}</span>}</ViewButton>}
+        </nav>} />
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
       <div ref={historyRef} className="contents">
@@ -650,7 +660,7 @@ function RoomContent({
           {runs.filter((run) => !run.threadRootMessageId).map(renderRun)}
         </RoomTimeline>
       </div>
-      <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
+      <p className="room-typing room-typing-live text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-sm text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}

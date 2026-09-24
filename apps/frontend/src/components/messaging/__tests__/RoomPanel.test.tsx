@@ -785,10 +785,14 @@ it("opens exactly one edit form when the ArrowUp target is also the open thread'
   expect(screen.getAllByRole("textbox", { name: "Edit message" })).toHaveLength(1);
 });
 
-it("labels the details tab and shows the pinned count on it", () => {
+it("labels the details view switch and shows the pinned count once, on the header's pin button", () => {
   render(<RoomPanel {...props} room={{ ...props.room!, topic: null, starred: false, muted: false, sectionId: null }}
     pinnedMessageIds={["m-1", "m-2"]} />);
-  expect(screen.getByRole("button", { name: /^Details/ })).toHaveTextContent("2");
+  const views = screen.getByRole("navigation", { name: "Conversation views" });
+  // The view switches sit in the header row, not in a bar of their own.
+  expect(views.closest(".room-header")).not.toBeNull();
+  expect(within(views).getByRole("button", { name: "Details" })).not.toHaveTextContent("2");
+  expect(screen.getByRole("button", { name: "2 pinned messages" })).toHaveTextContent("2");
   expect(screen.queryByRole("button", { name: "Context" })).not.toBeInTheDocument();
 });
 

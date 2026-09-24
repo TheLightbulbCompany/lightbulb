@@ -10,15 +10,8 @@ type Link = { kind: "issue"; companyId: string; issueId: string } | { kind: "wor
 type Work = { state: "empty" | "linked" | "unavailable"; link: Link | null; revision: string | null; title?: string };
 type Props = { sessionId: string };
 
+/** Mounted only while its dialog is open, so protected work is fetched on explicit open and dropped on close. */
 export function LocalSessionWork(props: Props) {
-  const [open, setOpen] = useState(false);
-  return <section className="space-y-2">
-    <Button variant="ghost" aria-expanded={open} onClick={() => setOpen(value => !value)}>Linked work</Button>
-    {open && <ViewerWork {...props} />}
-  </section>;
-}
-
-function ViewerWork(props: Props) {
   const { userId, orgId, isLoaded } = useAuth();
   // Auth/selection change unmounts all protected display and in-flight form state.
   return isLoaded && userId && orgId

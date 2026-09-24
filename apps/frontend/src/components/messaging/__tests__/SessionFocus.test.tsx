@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { ApiError, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { SessionFocus } from "../SessionFocus";
@@ -61,5 +62,35 @@ it("falls back to a direct fetch and renders an ended session with its real stat
 it("says 'your Mac' and 'your terminal', never \"You's\", for your own waiting session", async () => {
   focus({ session: { ...session, status: "waiting-approval" }, ownerName: "You", own: true });
   expect(await screen.findByText("You · Waiting for input on your Mac")).toBeInTheDocument();
-  expect(screen.getByText("Follow-ups queue on your Mac. Approvals stay in your terminal.")).toBeInTheDocument();
+  // The trust copy moved into About, behind the header's session menu.
+  expect(screen.queryByText("Follow-ups queue on your Mac. Approvals stay in your terminal.")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Session options" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "About this session" }));
+  const about = await screen.findByRole("dialog", { name: "About this session" });
+  expect(within(about).getByText("Follow-ups queue on your Mac. Approvals stay in your terminal.")).toBeInTheDocument();
+});
+
+it("shows the session title once, in the header, with one compact status line", async () => {
+  focus({ session: { ...session, cwdName: "lightbulb" }, ownerName: "Alice", own: false });
+  expect(await screen.findByRole("heading", { name: "Claude · Load test" })).toBeInTheDocument();
+  expect(screen.getAllByText("Claude · Load test")).toHaveLength(1);
+  expect(screen.getByText("~/lightbulb · Alice · Working")).toBeInTheDocument();
+});
+
+it("copies the session link from the session menu", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.assign(navigator, { clipboard: { writeText } });
+  focus({ session, ownerName: "Alice", own: false });
+  await userEvent.click(await screen.findByRole("button", { name: "Session options" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Copy session link" }));
+  expect(writeText).toHaveBeenCalledWith(expect.stringContaining("s1"));
+  expect(await screen.findByText("Session link copied.")).toBeInTheDocument();
+});
+
+it("keeps the follow-up composer compact: hidden label, short placeholder, icon send", async () => {
+  focus({ session, ownerName: "You", own: true });
+  const field = await screen.findByRole("textbox", { name: "Send to Claude · Load test" });
+  expect(field).toHaveAttribute("placeholder", "Send a follow-up…");
+  expect(screen.getByText("Send to Claude · Load test")).toHaveClass("sr-only");
+  expect(screen.getByRole("button", { name: "Send follow-up" })).toBeDisabled();
 });

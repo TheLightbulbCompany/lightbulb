@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { ApiError, sessionLabel, sessionViewKey, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { LocalSessionPanel } from "./LocalSessionPanel";
+import { LocalSessionPanel, SessionMenu } from "./LocalSessionPanel";
 import type { SidebarSession } from "./roomSections";
 
 export interface SessionFocusTarget { sessionId: string }
@@ -43,7 +43,10 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
     <div className="room-session-main">
       <header className="room-context-header">
         <h3 className="font-semibold room-wrap">{session ? sessionLabel(session) : "Shared session"}</h3>
-        <Button variant="ghost" size="icon-sm" aria-label="Close session" className="ml-auto" onClick={onClose}><X aria-hidden="true" /></Button>
+        <div className="ml-auto flex items-center gap-1">
+          {session && owner && <SessionMenu session={session} ownerName={owner.ownerName} own={owner.own} />}
+          <Button variant="ghost" size="icon-sm" aria-label="Close session" onClick={onClose}><X aria-hidden="true" /></Button>
+        </div>
       </header>
       {session && owner ? <LocalSessionPanel key={sessionViewKey(session)} session={session} ownerName={owner.ownerName} own={owner.own}
         client={client} revision={hintRevision} onAccessLost={onAccessLost} />

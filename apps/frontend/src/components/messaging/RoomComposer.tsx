@@ -557,10 +557,6 @@ function ComposerAttempt({
           submit(false, true);
         }
       }} />
-    {mentions.length > 0 && <p className="text-sm text-muted-foreground room-wrap">Mentioning {mentions.map((mention) => {
-      const member = members.find((candidate) => sameMember(candidate, mention));
-      return member ? member.mentionHandle ? `@${member.mentionHandle}` : member.displayName : "Unavailable member";
-    }).join(", ")}</p>}
     {attachments.length > 0 && <div className="room-attachment-previews">{attachments.map((item) => item.preview
       ? <div key={item.key} className="room-image-preview">
         {/* eslint-disable-next-line @next/next/no-img-element */}

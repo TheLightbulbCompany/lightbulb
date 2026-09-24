@@ -540,11 +540,10 @@ def _redact_activity(value: Any) -> Any:
 
 
 @router.get("/issues/{issue_id}/activity")
-async def list_issue_activity(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_activity(issue_id: CompanyIssueId, ctx: TeamsContext = Depends(_ctx)):
     """The issue's activity events (the ported ledger's interleaved rows and
     write-denial notices). Maps to upstream ``GET /api/issues/{id}/activity``,
     which takes no query params; the newest ``_ISSUE_ACTIVITY_MAX`` are kept."""
-    await _require_company_issue(issue_id, ctx)
     payload = await _agents._admin().list_issue_activity(issue_id=issue_id, session_cookie=ctx.session_cookie)
     events = payload if isinstance(payload, list) else []
     return [_redact_activity(e) for e in events[:_ISSUE_ACTIVITY_MAX] if isinstance(e, dict)]

@@ -14,32 +14,22 @@ import pytest
 from fastapi.testclient import TestClient
 
 from main import app
-from routers.teams import agents, approvals, issues, router
+from routers.teams import agents, approvals, issues, router, runs
 from routers.teams.deps import TeamsContext
 
 FENCES = {issues._company_issue, agents._company_agent, approvals._company_approval}
-try:  # #3150 adds the run fence
-    from routers.teams import runs as _runs
-
-    FENCES.add(_runs._company_run)
-except AttributeError:
-    pass
+FENCES.add(runs._company_run)
 
 _INLINE = "fetches the entity itself and 404s a foreign companyId inline (behaviour-tested)"
-_RUNS = "run fence: #3150"
 _WORK = "goal/project/routine fence: sweep PR 2"
 _SWEEP3 = "attachment content / bare work-product / local-session fence: sweep PR 3"
 
 ALLOWLIST = {
     ("GET", "/teams/agents/{agent_id}"): _INLINE,
     ("GET", "/teams/agents/{agent_id}/runs"): _INLINE,
+    ("GET", "/teams/heartbeat-runs/{run_id}"): _INLINE,
+    ("GET", "/teams/runs/{run_id}"): _INLINE,
     ("GET", "/teams/routines/{routine_id}/activity"): _INLINE,
-    ("GET", "/teams/runs/{run_id}"): _RUNS,
-    ("GET", "/teams/heartbeat-runs/{run_id}"): _RUNS,
-    ("GET", "/teams/heartbeat-runs/{run_id}/events"): _RUNS,
-    ("GET", "/teams/heartbeat-runs/{run_id}/log"): _RUNS,
-    ("POST", "/teams/heartbeat-runs/{run_id}/cancel"): _RUNS,
-    ("POST", "/teams/heartbeat-runs/{run_id}/watchdog-decisions"): _RUNS,
     ("GET", "/teams/goals/{goal_id}"): _WORK,
     ("PATCH", "/teams/goals/{goal_id}"): _WORK,
     ("DELETE", "/teams/goals/{goal_id}"): _WORK,

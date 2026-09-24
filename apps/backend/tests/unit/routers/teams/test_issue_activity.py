@@ -59,6 +59,7 @@ def test_forwards_to_the_fixed_upstream_route_without_params(admin):
     admin.list_issue_activity.assert_awaited_once_with(issue_id=ISSUE, session_cookie="cookie")
 
 
+@pytest.mark.real_fences
 def test_another_companys_issue_is_404_and_never_forwarded(admin):
     admin.get_issue.return_value = {"id": ISSUE, "companyId": "co_OTHER"}
     assert client.get(URL, headers=H).status_code == 404

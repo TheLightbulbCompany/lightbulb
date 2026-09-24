@@ -35,6 +35,9 @@ export function activityHrefs(target: Navigate): Href[] {
       return [{ pathname: "/(app)/teams/run/[runId]", params: { runId: target.id } }];
     case "approval":
       return ["/(app)/teams"];
+    default:
+      // A link kind a newer server sends that this build doesn't know: stay put.
+      return [];
   }
 }
 

@@ -196,3 +196,11 @@ it("reports a load failure in plain words", async () => {
   await fireEvent.press(screen.getByRole("button", { name: "Retry" }));
   expect(mockRefresh).toHaveBeenCalled();
 });
+
+describe("activity links", () => {
+  // A newer server may send a link kind this build predates: tapping must not crash.
+  it("gives no screens for an unknown link kind", () => {
+    const { activityHrefs } = jest.requireActual("../../../../lib/activity");
+    expect(activityHrefs({ kind: "someday", id: "x" })).toEqual([]);
+  });
+});

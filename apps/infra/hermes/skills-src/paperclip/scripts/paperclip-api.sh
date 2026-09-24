@@ -775,6 +775,7 @@ cmd_confirm() {
       --argjson rejectRequiresReason "$( [[ "$reject_requires_reason" == "1" ]] && echo true || echo false )" '
       {
         kind: "request_confirmation",
+        resolverPolicy: "board_only",
         continuationPolicy: $continuationPolicy,
         payload: (
           {version: 1, prompt: $prompt}

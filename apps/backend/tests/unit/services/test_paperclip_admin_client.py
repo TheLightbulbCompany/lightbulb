@@ -828,3 +828,30 @@ async def test_a_malformed_or_non_positive_hint_is_treated_as_absent(client_fact
         await client.sign_in_user(email="a@b.test", password="pw")
 
     assert err.value.retry_after is None
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [({}, False), ({"can_create_agents": True}, True)],
+)
+async def test_create_agent_pins_can_create_agents(client_factory, kwargs, expected):
+    """Paperclip v2026.916 defaults ``canCreateAgents`` to TRUE for a new
+    agent, so the one funnel sends an explicit value: false unless a caller
+    opts in (only the starter CEO does)."""
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["body"] = _json.loads(req.read().decode())
+        return httpx.Response(201, json={"id": "agent_1"})
+
+    client = client_factory(handler)
+    await client.create_agent(
+        session_cookie="sess",
+        company_id="co_abc",
+        name="A",
+        role="engineer",
+        adapter_type="hermes_gateway",
+        adapter_config={},
+        **kwargs,
+    )
+    assert captured["body"]["permissions"] == {"canCreateAgents": expected}

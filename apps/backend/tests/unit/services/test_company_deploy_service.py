@@ -889,3 +889,36 @@ async def test_creating_nothing_does_not_burn_the_company_slot(monkeypatch):
     await svc.run_company_deploy(owner_id=OWNER, listing={"listing_id": "l1", "name": "Acme"}, tar_bytes=b"")
 
     assert h.deployed_markers == []
+
+
+@pytest.mark.asyncio
+async def test_company_deploy_creates_every_agent_with_can_create_agents_false(monkeypatch):
+    """Paperclip 916 defaults a new agent's canCreateAgents to TRUE. An imported company's
+    agents -- its role=ceo included -- reach Paperclip with an explicit false through the
+    real admin-client funnel."""
+    import json
+
+    import httpx
+
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+
+    bodies: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.method == "GET":
+            return httpx.Response(200, json=[{"id": FRIDAY_ID, "role": "ceo", "name": "Friday"}])
+        body = json.loads(req.read().decode())
+        bodies.append(body)
+        return httpx.Response(201, json={"id": f"pc_{len(bodies)}", "name": body["name"]})
+
+    h = Harness()
+    h.admin = PaperclipAdminClient(
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://pc.test")
+    )
+    _install(monkeypatch, h, plan=_simple_plan())
+    _wire_agentcore_profile(monkeypatch)
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert len(bodies) == 3
+    assert all(b["permissions"] == {"canCreateAgents": False} for b in bodies)

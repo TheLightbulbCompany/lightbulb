@@ -180,6 +180,37 @@ def test_create_agent_on_agentcore_owner_gets_the_native_hermes_adapter(client, 
     write_profile.assert_awaited_once()
 
 
+def test_create_agent_sends_can_create_agents_false(client, monkeypatch):
+    """Paperclip 916 defaults a new agent's canCreateAgents to TRUE; a Teams-created agent must
+    reach Paperclip with an explicit false (through the real admin-client funnel)."""
+    import json
+
+    import httpx
+
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+    from routers.teams import agents as agents_mod
+
+    bodies: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.read().decode()))
+        return httpx.Response(201, json={"id": "a_new"})
+
+    admin = PaperclipAdminClient(
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://pc.test")
+    )
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"hook_token": "h"}))
+    monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", AsyncMock())
+    monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value={"plan": "standard"}))
+
+    r = client.post(
+        "/api/v1/teams/agents", json={"name": "Helper", "role": "ceo"}, headers={"Authorization": "Bearer t"}
+    )
+    assert r.status_code == 200
+    assert bodies[0]["permissions"] == {"canCreateAgents": False}
+
+
 def test_create_agent_response_redacts_device_private_key(client, monkeypatch):
     """The create response MUST NOT leak adapterConfig. Paperclip echoes the
     full config back on create — including the freshly-minted devicePrivateKeyPem

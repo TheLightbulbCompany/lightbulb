@@ -713,6 +713,9 @@ class PaperclipProvisioning:
                         adapter_config=adapter_config,
                         session_cookie=new_user_session_cookie,
                         idempotency_key=f"seed:starter:{starter_key}:v1",
+                        # The CEO keeps the hire authority Paperclip 813 gave role=ceo by
+                        # default; every other agent gets the funnel's False.
+                        can_create_agents=starter_key == "ceo",
                     )
                     if isinstance(agent, dict) and agent.get("id"):
                         starter_agent_ids[starter_key] = agent["id"]

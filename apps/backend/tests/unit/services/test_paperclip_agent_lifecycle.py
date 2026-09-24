@@ -203,3 +203,52 @@ async def test_sync_raises_on_a_failed_patch(monkeypatch):
 
     with pytest.raises(RuntimeError, match="paperclip 503"):
         await lifecycle.sync_agent_adapter_config("org_1")
+
+
+# ---------------------------------------------------------------------------
+# canCreateAgents -- Paperclip 916 defaults a new agent to TRUE; the chat and
+# marketplace doors (runtime_rpc agents.create, catalog deploy, marketplace
+# hire, listing builder) must reach Paperclip with an explicit false.
+# ---------------------------------------------------------------------------
+
+
+def _wire_real_create(monkeypatch):
+    import json
+
+    import httpx
+
+    bodies: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.read().decode()))
+        return httpx.Response(201, json={"id": "new-agent"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        lifecycle.httpx,
+        "AsyncClient",
+        lambda **_kw: real_client(transport=httpx.MockTransport(handler), base_url="http://pc.test"),
+    )
+    monkeypatch.setattr(lifecycle, "PaperclipRepo", lambda table_name: MagicMock())
+    monkeypatch.setattr(lifecycle, "resolve_company_id_for_owner", AsyncMock(return_value="company"))
+    monkeypatch.setattr(lifecycle, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
+    monkeypatch.setattr(lifecycle, "resolve_agent_adapter", AsyncMock(return_value=("hermes_gateway", {})))
+    return bodies
+
+
+@pytest.mark.asyncio
+async def test_chat_create_sends_can_create_agents_false(monkeypatch):
+    bodies = _wire_real_create(monkeypatch)
+    await lifecycle.create_paperclip_for_chat(
+        creator_user_id="u", owner_id="owner", name="Helper", role="ceo", model=None
+    )
+    assert bodies[0]["permissions"] == {"canCreateAgents": False}
+
+
+@pytest.mark.asyncio
+async def test_marketplace_create_sends_can_create_agents_false(monkeypatch):
+    bodies = _wire_real_create(monkeypatch)
+    await lifecycle.create_paperclip_for_marketplace(
+        buyer_user_id="u", owner_id="owner", name="Hire", role=None, idempotency_key="k"
+    )
+    assert bodies[0]["permissions"] == {"canCreateAgents": False}

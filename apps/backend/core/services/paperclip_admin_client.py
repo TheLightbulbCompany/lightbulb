@@ -710,6 +710,7 @@ class PaperclipAdminClient:
         budget_monthly_cents: int = 0,
         idempotency_key: Optional[str] = None,
         idempotency_replay_only: bool = False,
+        can_create_agents: bool = False,
     ) -> dict:
         """Create an agent (employee) inside a company.
 
@@ -718,12 +719,18 @@ class PaperclipAdminClient:
         ``adapterConfig`` are sibling fields on the request body per
         ``createAgentSchema`` in
         ``packages/shared/src/validators/agent.ts``.
+
+        ``permissions.canCreateAgents`` is ALWAYS sent: Paperclip v2026.916
+        defaults an omitted value to TRUE, which would let every new agent hire
+        agents with its own key. Only the starter CEO passes True. This method
+        is the one door every Lightbulb agent-create path goes through.
         """
         body: dict[str, Any] = {
             "name": name,
             "role": role,
             "adapterType": adapter_type,
             "adapterConfig": adapter_config,
+            "permissions": {"canCreateAgents": can_create_agents},
         }
         if title is not None:
             body["title"] = title

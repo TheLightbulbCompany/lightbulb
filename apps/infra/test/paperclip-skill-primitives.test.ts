@@ -135,6 +135,19 @@ describe("bundled Paperclip operating primitives", () => {
     });
   });
 
+  it("asks for a confirmation only a human may resolve", () => {
+    // Paperclip 916 defaults an interaction's resolverPolicy to "anyone" (agents
+    // included), so a board decision must name board_only explicitly (human_only on 916; board_only is the alias both 813 and 916 accept).
+    const result = runHelper(["confirm", "issue-1", "--prompt", "Ship it?", "--dry-run"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).resolverPolicy).toBe("board_only");
+    for (const block of apiReferenceMd.split("```json").slice(1)) {
+      if (/"kind": "request_(checkbox_)?confirmation"/.test(block.split("```")[0])) {
+        expect(block.split("```")[0]).toContain('"resolverPolicy": "board_only"');
+      }
+    }
+  });
+
   it("rejects dynamic-looking or missing decision rule keys", () => {
     const spec = JSON.stringify({ body: "Evidence", options: [{ id: "ok", label: "OK", effects: [] }] });
     const missing = runHelper([

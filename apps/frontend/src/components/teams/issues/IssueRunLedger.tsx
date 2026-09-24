@@ -375,8 +375,14 @@ function mergeRuns(
   });
 }
 
-function statusLabel(status: string) {
-  return status.replace(/_/g, " ");
+// Rows are BFF-forwarded upstream JSON; a drifted row may omit status.
+function statusLabel(status: string | null | undefined) {
+  return (status ?? "unknown").replace(/_/g, " ");
+}
+
+// The BFF forwards upstream bodies verbatim; only a row carrying a run id is a run.
+function isRunRow<T extends { id?: unknown }>(row: unknown): row is T {
+  return typeof (row as { id?: unknown } | null)?.id === "string";
 }
 
 function isActiveRun(run: { status: string; isLive?: boolean }) {
@@ -545,9 +551,9 @@ export function IssueRunLedger({
 
   return (
     <IssueRunLedgerContent
-      runs={runsResp?.runs ?? []}
-      liveRuns={Array.isArray(liveRuns) ? liveRuns : undefined}
-      activeRun={activeRun ?? null}
+      runs={(Array.isArray(runsResp?.runs) ? runsResp.runs : []).filter((r) => typeof r?.runId === "string")}
+      liveRuns={Array.isArray(liveRuns) ? liveRuns.filter((r) => isRunRow<IssueLiveRun>(r)) : undefined}
+      activeRun={isRunRow<IssueLiveRun>(activeRun) ? activeRun : null}
       issueStatus={issueStatus}
       childIssues={childrenResp?.issues ?? []}
       agentMap={agentMap}

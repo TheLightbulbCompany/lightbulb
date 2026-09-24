@@ -382,6 +382,16 @@ describe("IssueRunLedger container", () => {
     await vi.waitFor(() => expect(mutateSpy).toHaveBeenCalledWith("/teams/issues/iss_1/active-run"));
   });
 
+  it("tolerates drifted BFF bodies: a non-run active-run body and a status-less run row", () => {
+    readSpy.mockImplementation((path: string) => {
+      if (path.endsWith("/runs")) return { data: { runs: [{ runId: "run-odd", agentId: "agent-1" }] } };
+      if (path.endsWith("/active-run")) return { data: {} };
+      return { data: { issues: [] } };
+    });
+    const result = rtlRender(<IssueRunLedger issueId="iss_1" issueStatus="todo" agents={[]} />);
+    expect(result.container.textContent).toContain("unknown by agent-1");
+  });
+
   it("shows the board-only copy when Paperclip refuses the decision", async () => {
     vi.useRealTimers();
     stubReads(createActiveRun());

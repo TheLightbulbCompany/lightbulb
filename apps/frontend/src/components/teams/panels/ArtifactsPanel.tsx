@@ -38,7 +38,6 @@
 // loading — the BFF route already forwards those params.
 
 import { useEffect, useState } from "react";
-import { useSWRConfig } from "swr";
 import { ArrowLeft, Images } from "lucide-react";
 import { PanelMasthead, PanelNotice, PanelTabs, PanelToolbar } from "@/components/teams/shell";
 import { EditorialDialog } from "@/components/teams/shell/EditorialDialog";
@@ -112,12 +111,11 @@ function SortControl({
 }
 
 export function ArtifactsPanel() {
-  const { read, del, download } = useTeamsApi();
+  const { read, del, download, mutate } = useTeamsApi();
   // The gallery and the issue-detail sections keep SEPARATE SWR caches; deleting
   // here must also invalidate the issue-scoped list (documents/attachments/
   // work-products) or the removed artifact lingers in the task detail. Both
-  // gallery keys go through this global cache mutate — see `confirmDelete`.
-  const { mutate: mutateCache } = useSWRConfig();
+  // gallery keys go through useTeamsApi's scoped mutate — see `confirmDelete`.
 
   // View state: null = the stack list; an issue id = that expanded stack. Upstream
   // holds this in a URL param (`groupIssueId`); we keep it in component state.
@@ -238,22 +236,22 @@ export function ArtifactsPanel() {
     // it. A revalidation hiccup must not reopen the dialog — the delete
     // succeeded.
     //
-    // The gallery goes through the GLOBAL cache mutate, not each read's bound
-    // one: only the active view is keyed (the other is null-keyed), and a bound
-    // mutate on a null-keyed hook is a no-op — so the inactive view would keep
-    // serving the deleted deliverable for the read layer's 15s dedupe window.
-    // It is SWR's key-filter form rather than the two exact keys, because every
-    // `q` is its own key: deleting under a search and then clearing the box
-    // would otherwise still list the deleted deliverable. The issue-scoped list
-    // is a different resource and stays an exact key.
+    // The gallery goes through useTeamsApi's scoped mutate, not each read's
+    // bound one: only the active view is keyed (the other is null-keyed), and a
+    // bound mutate on a null-keyed hook is a no-op — so the inactive view would
+    // keep serving the deleted deliverable for the read layer's 15s dedupe
+    // window. It is a key-filter form rather than the two exact keys, because
+    // every `q` is its own key: deleting under a search and then clearing the
+    // box would otherwise still list the deleted deliverable. The issue-scoped
+    // list is a different resource and stays an exact key.
     setViewing((cur) => (cur && cur.id === artifact.id ? null : cur));
     setPendingDelete(null);
     setDeleting(false);
     const issueListPath = issueListPathForArtifact(artifact);
     void Promise.all([
-      mutateCache((key) => typeof key === "string" && key.startsWith("/teams/artifacts?")),
+      mutate((path) => path.startsWith("/teams/artifacts?")),
       expandedIssueId ? expanded.mutate() : Promise.resolve(undefined),
-      issueListPath ? mutateCache(`/teams${issueListPath}`) : Promise.resolve(undefined),
+      issueListPath ? mutate(`/teams${issueListPath}`) : Promise.resolve(undefined),
     ]).catch(() => {});
   }
 

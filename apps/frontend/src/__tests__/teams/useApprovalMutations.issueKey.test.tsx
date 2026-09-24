@@ -4,8 +4,9 @@ import { renderHook, act } from "@testing-library/react";
 
 const post = vi.fn();
 const swrMutate = vi.fn();
-vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({ post }) }));
-vi.mock("swr", async (orig) => ({ ...(await orig<object>()), useSWRConfig: () => ({ mutate: swrMutate }) }));
+// Revalidation goes through useTeamsApi's scoped mutate (not useSWRConfig's,
+// whose plain-string keys never matched useTeamsApi's [path, user, org] keys).
+vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({ post, mutate: swrMutate }) }));
 
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 

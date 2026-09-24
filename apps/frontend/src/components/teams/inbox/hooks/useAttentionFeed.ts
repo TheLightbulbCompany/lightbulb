@@ -2,7 +2,6 @@
 "use client";
 
 import { useMemo } from "react";
-import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import type {
@@ -93,8 +92,7 @@ export interface UseAttentionFeedResult {
  * would quietly under-report the moment a company got busy.
  */
 export function useAttentionFeed(): UseAttentionFeedResult {
-  const { read } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { read, mutate } = useTeamsApi();
   const { data, isLoading, error } = read<AttentionFeedResponse>(
     teamsQueryKeys.attention(),
   );

@@ -24,6 +24,11 @@ const download = vi.fn();
 // reads that opt in, so an unstubbed path reads as "in flight", not as "empty".
 let keptData: unknown;
 
+// The panel invalidates issue-scoped SWR caches via useTeamsApi's scoped
+// mutate on delete; spy on it so tests can assert the kind-appropriate key is
+// refreshed. Distinct from `mutate` above (each read's own bound mutate).
+const teamsMutate = vi.fn().mockResolvedValue(undefined);
+
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
     read: (path: string | null, opts?: { keepPreviousData?: boolean }) => {
@@ -50,16 +55,9 @@ vi.mock("@/hooks/useTeamsApi", () => ({
     },
     del,
     download,
+    mutate: teamsMutate,
   }),
 }));
-
-// The panel invalidates issue-scoped SWR caches via useSWRConfig().mutate on
-// delete; spy on it so tests can assert the kind-appropriate key is refreshed.
-const globalMutate = vi.fn().mockResolvedValue(undefined);
-vi.mock("swr", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("swr")>();
-  return { ...actual, useSWRConfig: () => ({ mutate: globalMutate }) };
-});
 
 // Keep react-markdown out of the unit test — assert the raw body string reached
 // the renderer.
@@ -176,7 +174,7 @@ function expandStack() {
 // panel happens to be subscribed to. Pull the predicate off the spy so tests
 // assert on what it MATCHES, not on its identity.
 function galleryKeyFilter(): (key?: unknown) => boolean {
-  const call = globalMutate.mock.calls.find(([k]) => typeof k === "function");
+  const call = teamsMutate.mock.calls.find(([k]) => typeof k === "function");
   if (!call) throw new Error("no key-filter mutate call");
   return call[0] as (key?: unknown) => boolean;
 }
@@ -198,7 +196,7 @@ beforeEach(() => {
   readPaths.length = 0;
   mutate.mockClear();
   nullMutate.mockClear();
-  globalMutate.mockClear();
+  teamsMutate.mockClear();
   del.mockClear();
   del.mockResolvedValue({});
   download.mockReset();
@@ -609,7 +607,7 @@ describe("ArtifactsPanel — delete", () => {
     // list so the task detail drops the deleted artifact too.
     expect(mutate).toHaveBeenCalled();
     await waitFor(() =>
-      expect(globalMutate).toHaveBeenCalledWith("/teams/issues/iss_1/documents"),
+      expect(teamsMutate).toHaveBeenCalledWith("/teams/issues/iss_1/documents"),
     );
     // …and the OTHER view's key, which is null-keyed right now: its bound mutate
     // is dead, so the refresh has to go through the global cache or the deleted
@@ -626,7 +624,7 @@ describe("ArtifactsPanel — delete", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(del).toHaveBeenCalledWith("/issues/iss_1/documents/plan"));
-    await waitFor(() => expect(globalMutate).toHaveBeenCalledWith(expect.any(Function)));
+    await waitFor(() => expect(teamsMutate).toHaveBeenCalledWith(expect.any(Function)));
     expect(galleryKeyFilter()(`/teams${STACK_PATH}`)).toBe(true);
     expect(nullMutate).not.toHaveBeenCalled();
   });
@@ -642,7 +640,7 @@ describe("ArtifactsPanel — delete", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("/work-products/wp1"));
     await waitFor(() =>
-      expect(globalMutate).toHaveBeenCalledWith("/teams/issues/iss_1/work-products"),
+      expect(teamsMutate).toHaveBeenCalledWith("/teams/issues/iss_1/work-products"),
     );
   });
 
@@ -657,7 +655,7 @@ describe("ArtifactsPanel — delete", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("/issues/iss_1/attachments/att1"));
     await waitFor(() =>
-      expect(globalMutate).toHaveBeenCalledWith("/teams/issues/iss_1/attachments"),
+      expect(teamsMutate).toHaveBeenCalledWith("/teams/issues/iss_1/attachments"),
     );
   });
 
@@ -677,7 +675,7 @@ describe("ArtifactsPanel — delete", () => {
     ).toBeInTheDocument();
     // Dialog stays open (still asking to confirm), gallery not revalidated.
     expect(screen.getByText("Delete this deliverable?")).toBeInTheDocument();
-    expect(globalMutate).not.toHaveBeenCalled();
+    expect(teamsMutate).not.toHaveBeenCalled();
   });
 
   it("cancels without deleting", () => {
@@ -872,7 +870,7 @@ describe("ArtifactsPanel \u2014 search", () => {
     // subscribed to leaves the deleted deliverable listed under the bare feed
     // the owner sees the moment they clear the box — so one key filter covers
     // the whole gallery, and nothing else.
-    await waitFor(() => expect(globalMutate).toHaveBeenCalledWith(expect.any(Function)));
+    await waitFor(() => expect(teamsMutate).toHaveBeenCalledWith(expect.any(Function)));
     const matches = galleryKeyFilter();
     expect(matches(`/teams${RECENT_PATH}`)).toBe(true);
     expect(matches(`/teams${RECENT_PATH}&q=pricing`)).toBe(true);

@@ -74,7 +74,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     bullets: [
       "GPT-5.5 included via your ChatGPT account",
       "All channels (Telegram, Discord, WhatsApp)",
-      "Always-on container",
+      "Always-on workspace",
     ],
     cta: "Get started",
     href: "/sign-up?provider=chatgpt_oauth",
@@ -89,7 +89,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     bullets: [
       "OpenAI or Anthropic — your key, your billing",
       "All channels",
-      "Always-on container",
+      "Always-on workspace",
     ],
     cta: "Get started",
     href: "/sign-up?provider=byo_key",

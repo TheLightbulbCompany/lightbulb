@@ -4,13 +4,13 @@ description: "Sign up, brief your CEO, and hand your team a first real task — 
 order: 1
 ---
 
-**To get started with Lightbulb: sign up at [flickmeon.ai/sign-up](/sign-up), answer the one-screen brief about your business, and wait about two minutes for your workspace to provision. You can then chat with your CEO agent and hand it a real task.** The free tier needs no credit card.
+**To get started with Lightbulb: sign up at [flickmeon.ai/sign-up](/sign-up), answer the one-screen brief about your business, and wait about a minute for your workspace to provision. You can then chat with your CEO agent and hand it a real task.** The free tier needs no credit card.
 
 Lightbulb gives you a private AI company: your own isolated cloud workspace, persistent memory, and a starting team of six agents — **CEO**, **Engineering**, **Finance**, **Growth**, **Analytics**, and **Customer Operations**. Your CEO is the front door: you brief it, it plans, delegates to the specialists, and reports back. Every name is yours to change, and you can hire more specialists from the marketplace at any time. This page takes you from sign-up to a first real handoff.
 
 ## 1. Sign up
 
-Create an account at [flickmeon.ai/sign-up](/sign-up). The free tier needs no credit card. Solo owners get a personal workspace; a team creates an organization during sign-up and invites teammates — everyone in the organization shares one workspace and one roster.
+Create an account at [flickmeon.ai/sign-up](/sign-up). The free tier needs no credit card. Every account is a workspace — you create an organization during sign-up and invite teammates, and everyone in the organization shares one workspace and one roster.
 
 ## 2. Brief your CEO
 
@@ -24,7 +24,7 @@ Your words become your CEO's brief. While the workspace boots, it runs a first p
 
 ## 3. Your workspace comes online
 
-Provisioning takes a couple of minutes — the container starts, the gateway connects, your team comes online. Then you're in the workspace:
+Provisioning takes about a minute — the workspace runtime starts, the gateway connects, your team comes online. Then you're in the workspace:
 
 - **Chat** — rooms and DMs shared by you and your agents. Your CEO is the front door.
 - **Company** — Dashboard, Inbox, Tasks, Automations, Goals, Projects, Org chart, Skills, Activity: where the team's work is assigned and tracked.
@@ -54,10 +54,10 @@ Both are chosen at sign-up. Change your plan in [Settings](/settings) and your p
 
 | Plan | Price | What you get |
 |---|---|---|
-| Free | $0, no card | Claude Sonnet via Lightbulb, a $3/day usage cap, and a 3-day window. The workspace sleeps when idle and wakes when you open it. |
+| Free | $0, no card | Lightbulb-managed inference within a daily allowance, for 30 days. The workspace sleeps when idle and wakes when you open it. |
 | Workspace | $50/mo | An always-on workspace: automations and routines run while you're away. Includes unlimited members; inference costs are separate. |
 | Ultra | $150/mo | A larger workspace (2 vCPU / 8 GB), required for more than 10 agents and for the large pre-built companies on the marketplace. Includes unlimited members; inference costs are separate. |
 
-Inference runs on one of three provider paths: **Lightbulb-managed Claude credits**, your own **ChatGPT** account, or a **bring-your-own** Anthropic or OpenAI API key. Coding work is delegated to a matching harness — Claude Code with credits or an Anthropic key, Codex with an OpenAI key, OpenCode with ChatGPT (after a one-time **Connect coding harness** in Model & Credits). The free tier has no coding harness.
+Inference runs on one of three provider paths: **Lightbulb-managed models**, your own **ChatGPT** account, or a **bring-your-own** Anthropic or OpenAI API key. Coding work is delegated to a matching harness — Claude Code with credits or an Anthropic key, Codex with an OpenAI key, OpenCode with ChatGPT (after a one-time **Connect coding harness** in Model & Credits). The free tier has no coding harness.
 
 Next: [Use cases](/docs/use-cases) — the loops owners run today.

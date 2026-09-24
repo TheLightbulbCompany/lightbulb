@@ -447,8 +447,12 @@ async def test_two_workers_deliver_in_command_order_and_receipts_are_durable(tra
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("network_result", ["gone", "timeout", "delivered"])
-async def test_uncertain_delivery_never_replays_on_reconnect(transport, network_result):
+async def test_uncertain_delivery_never_replays_on_reconnect(transport, monkeypatch, network_result):
     sid = await start(transport)
+    # Frozen clock: the dispatch lease is 5 wall-clock seconds, and a slow CI runner spent
+    # it on moto round-trips -- the command was rejected before any post (0 calls).
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
     await service.submit_command(BOB, ROOM, sid, command(service))
     calls = []
 

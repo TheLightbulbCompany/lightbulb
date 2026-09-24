@@ -28,6 +28,8 @@ import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomIntro } from "./RoomIntro";
 import { OnboardingBand } from "./OnboardingBand";
+import { RoomLimitBar } from "./RoomLimitBar";
+import type { BillingAccount } from "@/hooks/useBilling";
 import { RoomMessageItem } from "./RoomMessageItem";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTasks } from "./RoomTasks";
@@ -75,6 +77,8 @@ export interface RoomPanelProps {
   onListenModeChange?: (agentId: string, mode: ListenMode) => void;
   // Listening is paid (backend `listening_available`): false locks the option and shows a stored Listening as Mentions.
   listeningAvailable?: boolean;
+  /** `/billing/account`; its `block_reason` pins the limit bar above the composer. */
+  billing?: BillingAccount | null;
   onSetReaction?: (messageId: string, emoji: string, active: boolean) => Promise<void>;
   onUpdateMessage?: (messageId: string, request: UpdateMessageRequest) => Promise<void>;
   addMemberCandidates?: readonly DirectoryParticipant[];
@@ -240,6 +244,7 @@ function RoomContent({
   onRetry,
   onListenModeChange,
   listeningAvailable = true,
+  billing,
   onSetReaction,
   onUpdateMessage,
   addMemberCandidates = [],
@@ -648,6 +653,7 @@ function RoomContent({
       <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-sm text-err">{messageActionError}</p>}
+      {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
       {visibleRoom?.archivedAt ? <div className="room-composer room-archived" role="status">
         <p className="text-sm text-muted-foreground">
           {canUnarchive ? `This ${roomNoun} is archived. Unarchive it to post.` : `This ${roomNoun} is archived.`}

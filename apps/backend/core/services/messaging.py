@@ -25,6 +25,7 @@ from pydantic.alias_generators import to_camel
 from core.auth import AuthContext, resolve_owner_id
 from core.auth import is_org_owner_id
 from core.config import settings
+from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event, schedule_trial_first_agent_response
 from core.dynamodb import run_in_thread
@@ -2518,7 +2519,8 @@ async def count_first_turn_failure(owner_id: str, error_kind: str | None) -> Non
 
 
 async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error_kind: str | None) -> None:
-    """Leave one durable agent-authored note in the run's room (and the trigger's thread).
+    """Leave one durable note in the run's room (and the trigger's thread): agent-authored
+    for a real run failure, a ``system`` notice when the owner is out of budget.
 
     Run frames are ephemeral, so without this a user who was not watching sees nothing.
     Silent by construction (no mentions, no dispatch targets), and keyed on the runId so a
@@ -2533,53 +2535,44 @@ async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error
             error_kind = None
         label = f"{outcome}: {error_kind}" if error_kind else outcome
         reason = RUN_ERROR_MESSAGES.get(error_kind or outcome) or "Agent run failed."
-        text = (
-            f"I couldn't finish that ({label}). {reason} "
-            "Try again, or check Settings → Model & Credits if this keeps happening."
-        )
+        text = f"Run didn't finish ({label}). {reason} Try again, or check Settings → Model & Credits if this keeps happening."
         # A capped/expired trial owner, or a paid owner out of credits, has their
         # run fail at the gate; say that instead of a generic model error (the
-        # bridge reports every failed turn as model_unavailable). Trial/cap
-        # reasons take priority — an owner cannot be both, but if that ever
-        # changes the trial state is the more specific one.
-        from core.repositories import billing_repo
-        from core.services.chat_gate import BUDGET_BLOCK_MESSAGES
-        from core.services.metronome_gate import is_owner_blocked
-        from core.services.trial_cap import trial_block_reason
+        # bridge reports every failed turn as model_unavailable). That is the
+        # platform talking, not the agent, so it is posted as a system notice.
+        from core.services.chat_gate import BUDGET_BLOCK_MESSAGES, budget_block_reason
 
         budget_reason: str | None = None
         if error_kind in (None, "model_unavailable"):  # the sweeper's own kinds are real infra failures
-            reason = await trial_block_reason(owner_id)
-            if reason:
-                text = BUDGET_BLOCK_MESSAGES.get(reason, text)
-                budget_reason = reason
-            else:
-                # Same predicate gate_chat's Layer 3 and the provision gate's
-                # Layer 3 use: only openrouter_managed owners draw against the
-                # Metronome credit balance.
-                account = await billing_repo.get_by_owner_id(owner_id) or {}
-                if account.get("provider_choice") == "openrouter_managed" and await is_owner_blocked(owner_id):
-                    text = BUDGET_BLOCK_MESSAGES["out_of_credits"]
-                    budget_reason = "out_of_credits"
-        link = BUDGET_BLOCK_LINKS.get(budget_reason) if budget_reason else None
-        if link:
-            path, label = link
-            text = f"{text} [{label}]({settings.FRONTEND_URL.rstrip('/')}{path})"
+            budget_reason = await budget_block_reason(owner_id, await billing_repo.get_by_owner_id(owner_id))
+        if budget_reason:
+            text = BUDGET_BLOCK_MESSAGES[budget_reason]
+            link = BUDGET_BLOCK_LINKS.get(budget_reason)
+            if link:
+                path, link_label = link
+                text = f"{text} [{link_label}]({settings.FRONTEND_URL.rstrip('/')}{path})"
         trigger = (
             await messaging_repo.get_message_by_id(room_id, row["triggerMessageId"])
             if row.get("triggerMessageId")
             else None
         )
         thread_root = (trigger or {}).get("threadRootMessageId")
-        roster = {agent["id"]: agent for agent in await load_agent_roster(owner_id)}
-        name = (roster.get(agent_id) or {}).get("name") or "Agent"
+        if budget_reason:
+            author = {"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"}
+        else:
+            roster = {agent["id"]: agent for agent in await load_agent_roster(owner_id)}
+            author = {
+                "kind": "agent",
+                "id": agent_id,
+                "displayName": (roster.get(agent_id) or {}).get("name") or "Agent",
+            }
         await messaging_repo.create_message(
             room_id=room_id,
             owner_id=owner_id,
             idemp_pk=messaging_repo.owner_pk(owner_id),
             idemp_sk=messaging_repo.agent_idemp_sk(f"run-failed:{run_id}"),
             req_hash=messaging_repo.request_hash(room_id, agent_id, text, None, thread_root),
-            author={"kind": "agent", "id": agent_id, "displayName": name},
+            author=author,
             text=text,
             mentions=[],
             reply_to_message_id=None,

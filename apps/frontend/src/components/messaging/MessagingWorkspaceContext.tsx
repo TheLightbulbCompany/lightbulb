@@ -476,7 +476,13 @@ export function MessagingWorkspaceProvider({
 
   const agentCounterparts = participants.filter((member) => member.kind === "agent");
   const runningAgentIds = rooms.runs.filter((run) => run.state === "running").map((run) => run.agentId);
-  const { account: billingAccount } = useBilling();
+  const { account: billingAccount, refresh: refreshBilling } = useBilling();
+  // A system notice is the platform reporting a budget block on a run; re-read
+  // the account so the limit bar appears with it (the read never polls).
+  const lastSystemNoticeId = rooms.messages.findLast((message) => message.author.kind === "system")?.messageId;
+  useEffect(() => {
+    if (lastSystemNoticeId) void refreshBilling();
+  }, [lastSystemNoticeId, refreshBilling]);
   // Listening is paid (backend `listening_available`). Assume it until the
   // billing row loads so a paid room never flashes the lock.
   const listeningAvailable = billingAccount?.is_subscribed ?? true;
@@ -715,6 +721,7 @@ export function MessagingWorkspaceProvider({
     onRetry: () => void rooms.refreshRoom(),
     ...(canManageResponses ? { onListenModeChange: (agentId: string, mode: ListenMode) => void changeListenMode(agentId, mode) } : {}),
     listeningAvailable,
+    billing: billingAccount,
     onSetReaction: rooms.setReaction,
     onUpdateMessage: rooms.updateMessage,
     pinnedMessageIds: rooms.activeRoom?.pinnedMessageIds,

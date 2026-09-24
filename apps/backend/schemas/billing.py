@@ -56,6 +56,10 @@ class BillingAccountResponse(BaseModel):
     capped_today: bool = False
     # Capped owners only: today's managed-model spend vs the key's daily limit, from OpenRouter.
     allowance: Allowance | None = None
+    # Why this owner's agents cannot run right now, or None: "trial_expired", "trial_daily_cap",
+    # "included_daily_cap" or "out_of_credits" (chat_gate.budget_block_reason). Drives the
+    # messaging shell's limit bar; a client never re-derives it from the fields above.
+    block_reason: str | None = None
 
 
 class PortalResponse(BaseModel):

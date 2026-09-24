@@ -22,6 +22,7 @@ from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
 from core.services import openrouter_keys, trial_cap
 from core.services.billing_service import BillingService
+from core.services.chat_gate import budget_block_reason
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
     is_paid_subscription,
@@ -72,6 +73,15 @@ async def _get_billing_account(auth: AuthContext) -> dict | None:
 # as the public `resolve_owner_account` along with the dispatch-table refactor of
 # handle_stripe_webhook (Tier 3A simplify audit). It had no callers outside the
 # webhook chain, so the move is a clean relocation.
+
+
+async def _block_reason(owner_id: str, account: dict | None) -> str | None:
+    """The limit bar's hint must never 500 the billing page: a failed credit read reads as unblocked."""
+    try:
+        return await budget_block_reason(owner_id, account)
+    except Exception:
+        logger.warning("billing account block_reason failed owner_id=%s", owner_id, exc_info=True)
+        return None
 
 
 @router.get(
@@ -132,6 +142,7 @@ async def get_billing_account(
         capped_today=bool(account) and account.get("openrouter_capped_day") == trial_cap.utc_today(),
         # Only capped owners have a daily allowance; omitted (None) when OpenRouter can't be read.
         allowance=await openrouter_keys.owner_allowance(owner_id) if trial_cap.is_managed_capped(account) else None,
+        block_reason=await _block_reason(owner_id, account),
     )
 
 

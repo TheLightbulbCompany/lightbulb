@@ -277,7 +277,7 @@ MEMBERS3 = [*MEMBERS, {"kind": "agent", "id": "a3", "displayName": "Analytics", 
 
 
 async def _dispatch(
-    monkeypatch, event_kind, *, agent="a1", message=MESSAGE, listening=True, route=None, follow_up=None
+    monkeypatch, event_kind, *, agent="a1", message=MESSAGE, listening=True, route=None, follow_up=None, meta=META
 ):
     posted: list = []
     created: list = []
@@ -326,7 +326,7 @@ async def _dispatch(
         return Answer()
 
     monkeypatch.setattr(worker, "_post", post)
-    await worker._dispatch_message(META, {"kind": "agent", "id": agent}, message, event_kind, follow_up=follow_up)
+    await worker._dispatch_message(meta, {"kind": "agent", "id": agent}, message, event_kind, follow_up=follow_up)
     return posted, created, [dims for name, dims in metrics if name == "messaging.jev.route"]
 
 
@@ -379,7 +379,7 @@ async def test_fallback_with_one_candidate_still_dispatches_it(monkeypatch, deci
         monkeypatch, "room_event", agent="a1", message=ONE, route=AsyncMock(return_value=decision)
     )
     assert len(posted) == 1 and len(created) == 1 and dims == [{"outcome": "fallback"}]
-    assert "routing" not in posted[0] and "replyThreadRootId" not in posted[0]
+    assert "routing" not in posted[0] and posted[0]["replyThreadRootId"] is None
 
 
 @pytest.mark.asyncio
@@ -396,7 +396,7 @@ async def test_fallback_with_two_candidates_dispatches_exactly_one(monkeypatch, 
         )
     posted_a1, created_a1, dims_a1 = outcomes["a1"]
     assert len(posted_a1) == 1 and len(created_a1) == 1 and dims_a1 == [{"outcome": "fallback_single"}]
-    assert "routing" not in posted_a1[0] and "replyThreadRootId" not in posted_a1[0]
+    assert "routing" not in posted_a1[0] and posted_a1[0]["replyThreadRootId"] is None
     posted_a2, created_a2, dims_a2 = outcomes["a2"]
     assert posted_a2 == [] and created_a2 == [] and dims_a2 == [{"outcome": "skipped"}]
 
@@ -646,3 +646,35 @@ async def test_a_keyless_task_finalizes_only_a_still_retry_row(monkeypatch, stor
     monkeypatch.setattr(jev.messaging_repo, "finalize_decision", claimed_first)
     got = await jev.route(META, "a2", MESSAGE, latest=MESSAGE, members=MEMBERS, history=HISTORY)
     assert got["who"] == "a1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_kind", "decision"),
+    [
+        ("user_request", None),  # an @mention, or the trial default-CEO responder
+        ("room_event", {"fallback": True}),  # Jev fallback, one candidate
+    ],
+)
+@pytest.mark.parametrize(("thread_root", "expected"), [(None, None), ("root-1", "root-1")])
+async def test_unrouted_channel_replies_go_where_the_message_is(
+    monkeypatch, event_kind, decision, thread_root, expected
+):
+    """Owner 2026-09-23: always-threading doesn't feel right. A top-level message is answered in
+    the main channel and a threaded one in its thread, on every path Jev didn't place."""
+    message = {**ONE, "threadRootMessageId": thread_root}
+    posted, _, _ = await _dispatch(monkeypatch, event_kind, message=message, route=AsyncMock(return_value=decision))
+    assert posted[0]["replyThreadRootId"] == expected
+
+
+@pytest.mark.asyncio
+async def test_a_dm_leaves_placement_to_the_bridge(monkeypatch):
+    posted, _, _ = await _dispatch(monkeypatch, "user_request", meta={**META, "kind": "dm"})
+    assert "replyThreadRootId" not in posted[0]
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_keeps_the_bridge_placement(monkeypatch):
+    follow_up = {"id": "11111111-1111-1111-1111-111111111111", "reason": "delegation_completed", "text": "done"}
+    posted, _, _ = await _dispatch(monkeypatch, "room_event", route=AsyncMock(), follow_up=follow_up)
+    assert "replyThreadRootId" not in posted[0]

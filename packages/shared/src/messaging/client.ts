@@ -1,6 +1,10 @@
 import type { ApiCallOptions, ApiMethods } from "../api/client";
 import type {
   AbortRunResponse,
+  ActivityActionRequest,
+  ActivityItem,
+  ActivityPage,
+  ActivitySeenResponse,
   CanonicalRoomMessage,
   CreateMessageRequest,
   UpdateMessageRequest,
@@ -89,6 +93,12 @@ export interface MessagingClient {
   abortRun(runId: string): Promise<AbortRunResponse>;
   steerRun(runId: string, request: SteerRunRequest): Promise<SteerRunResponse>;
   getRunStatus(runId: string): Promise<RunStatusResponse>;
+  /** The Activity feed, newest first; Paperclip items ride the first page only. */
+  listActivity(options?: { cursor?: string | null; limit?: number }): Promise<ActivityPage>;
+  /** Monotonic seen cursor; "mark all read" is `upTo: new Date().toISOString()`. */
+  markActivitySeen(upTo: string): Promise<ActivitySeenResponse>;
+  /** Run one of an item's non-navigate actions; resolves to the updated item. */
+  runActivityAction(itemId: string, actionId: string, request?: ActivityActionRequest): Promise<ActivityItem>;
 }
 
 export function createMessagingClient(api: ApiMethods): MessagingClient {
@@ -179,5 +189,17 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     abortRun: (runId) => api.post(`/messaging/runs/${encodeURIComponent(runId)}/abort`, {}) as Promise<AbortRunResponse>,
     steerRun: (runId, request) => api.post(`/messaging/runs/${encodeURIComponent(runId)}/steer`, request) as Promise<SteerRunResponse>,
     getRunStatus: (runId) => api.get(`/messaging/runs/${encodeURIComponent(runId)}`) as Promise<RunStatusResponse>,
+    listActivity: (options) => {
+      const query = new URLSearchParams();
+      if (options?.cursor) query.set("cursor", options.cursor);
+      if (options?.limit !== undefined) query.set("limit", String(options.limit));
+      const qs = query.toString();
+      return api.get(`/messaging/activity${qs ? `?${qs}` : ""}`) as Promise<ActivityPage>;
+    },
+    markActivitySeen: (upTo) => api.post("/messaging/activity/seen", { upTo }) as Promise<ActivitySeenResponse>,
+    runActivityAction: (itemId, actionId, request = {}) => api.post(
+      `/messaging/activity/${encodeURIComponent(itemId)}/actions/${encodeURIComponent(actionId)}`,
+      request,
+    ) as Promise<ActivityItem>,
   };
 }

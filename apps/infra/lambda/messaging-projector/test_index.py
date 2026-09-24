@@ -6,7 +6,7 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from boto3.dynamodb.types import TypeSerializer
+from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.credentials import Credentials
 from botocore.exceptions import ClientError
 
@@ -31,6 +31,7 @@ USERS_TABLE = "lightbulb-test-users"
 CREATED_AT = "2026-09-10T00:00:00Z"
 
 _serializer = TypeSerializer()
+_deserializer = TypeDeserializer()
 
 
 def av_map(item: dict) -> dict:
@@ -132,6 +133,20 @@ class FakeDdb:
                 "UpdateItem",
             )
         item["workspaceId"] = kwargs["ExpressionAttributeValues"][":ws"]["S"]
+
+    def put_item(self, **kwargs):
+        self.calls.append(kwargs)
+        item = {key: _deserializer.deserialize(value) for key, value in kwargs["Item"].items()}
+        lookup = (item["pk"], item["sk"])
+        if kwargs.get("ConditionExpression") == "attribute_not_exists(pk)" and lookup in self.items:
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "exists"}}, "PutItem"
+            )
+        self.items[lookup] = item
+
+    def activity(self) -> dict[str, dict]:
+        """``{pk: row}`` for every ACTIVITY# row written."""
+        return {pk: row for (pk, _sk), row in self.items.items() if pk.startswith("ACTIVITY#")}
 
 
 class ProjectorTests(unittest.TestCase):
@@ -306,6 +321,7 @@ class ProjectorTests(unittest.TestCase):
             root["author"]["id"] = recipient
             items[(f"ROOM#{ROOM_ID}", root["sk"])] = root
             message["threadRootMessageId"] = EVENT_ID if thread else None
+            message["threadRootSeq"] = 1 if thread else None
             index._ddb_client = FakeDdb(items)
             publish.reset_mock()
             index._project_message(message)
@@ -323,7 +339,7 @@ class ProjectorTests(unittest.TestCase):
                 self.assertEqual(push["body"], "hello")
                 self.assertEqual(push["data"]["messageId"], message["messageId"])
             self.assertNotIn("author", event["payload"])
-            self.assertTrue(all(call["ConsistentRead"] for call in index._ddb_client.calls))
+            self.assertTrue(all(call["ConsistentRead"] for call in index._ddb_client.calls if "Item" not in call))
 
         # A removed/rejoined member must not receive an earlier message.
         message["author"]["id"] = recipient
@@ -1024,3 +1040,179 @@ class ReplayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def activity_world(kind: str = "channel", members: tuple[str, ...] = (USER_ID, BOB_ID, CAROL_ID)) -> dict:
+    """A room whose humans are current members; only Bob has an active stream."""
+    items = {
+        (f"ROOM#{ROOM_ID}", "META"): {
+            "deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": kind, "name": "general",
+            "workspaceId": WORKSPACE_ID,
+        },
+        (f"OWNER#{OWNER_ID}", f"USERSTREAM#{BOB_ID}"): {"active": True, "channelKey": BOB_KEY},
+        (f"STREAM#{BOB_KEY}", "META"): {
+            "active": True, "ownerId": OWNER_ID, "userId": BOB_ID, "workspaceId": WORKSPACE_ID,
+        },
+    }
+    for user in members:
+        items[(f"ROOM#{ROOM_ID}", f"MEMBER#human#{user}")] = {"id": user, "ownerId": OWNER_ID, "joinedSeq": 0}
+    return items
+
+
+class ActivityTests(unittest.TestCase):
+    """ACTIVITY# pointer rows, written by this stream consumer after the message commits."""
+
+    def setUp(self):
+        self.saved = (index.MESSAGING_TABLE, index.USERS_TABLE, index._ddb_client)
+        index.MESSAGING_TABLE = "lightbulb-test-messaging"
+        index.USERS_TABLE = ""
+
+    def tearDown(self):
+        index.MESSAGING_TABLE, index.USERS_TABLE, index._ddb_client = self.saved
+
+    def project(self, items: dict, message: dict) -> FakeDdb:
+        index._ddb_client = FakeDdb(items)
+        with patch.object(index, "_publish"):
+            index._project_message(message)
+        return index._ddb_client
+
+    def test_dm_writes_one_pointer_row_for_the_other_human_never_the_author(self):
+        ddb = self.project(activity_world("dm", (USER_ID, BOB_ID)), message_item(sequence=2))
+        rows = ddb.activity()
+        self.assertEqual(list(rows), [f"ACTIVITY#{OWNER_ID}#{BOB_ID}"])
+        row = rows[f"ACTIVITY#{OWNER_ID}#{BOB_ID}"]
+        self.assertEqual(row["sk"], f"{CREATED_AT}#{MESSAGE_ID}")
+        self.assertEqual(
+            (row["kind"], row["roomId"], row["messageId"], int(row["seq"]), row["actor"], row["mentioned"]),
+            ("dm", ROOM_ID, MESSAGE_ID, 2, {"kind": "human", "id": USER_ID}, False),
+        )
+        # A pointer only: no message text or author name ever lands on the row.
+        self.assertNotIn("hello", json.dumps(row, default=str))
+        self.assertNotIn("Alice", json.dumps(row, default=str))
+        # 90-day TTL on the table's TTL attribute.
+        created = index._parse_rfc3339(CREATED_AT).timestamp()
+        self.assertEqual(int(row["expiresAt"]), int(created) + 90 * 24 * 3600)
+
+    def test_mention_reaches_only_the_mentioned_human(self):
+        message = message_item(sequence=2)
+        message["mentions"] = [{"kind": "human", "id": CAROL_ID}, {"kind": "agent", "id": "friday"}]
+        rows = self.project(activity_world(), message).activity()
+        self.assertEqual(list(rows), [f"ACTIVITY#{OWNER_ID}#{CAROL_ID}"])
+        self.assertEqual(rows[f"ACTIVITY#{OWNER_ID}#{CAROL_ID}"]["kind"], "mention")
+
+    def test_mention_inside_a_dm_is_a_dm_that_remembers_the_mention(self):
+        message = message_item(sequence=2)
+        message["mentions"] = [{"kind": "human", "id": BOB_ID}]
+        row = self.project(activity_world("dm", (USER_ID, BOB_ID)), message).activity()[f"ACTIVITY#{OWNER_ID}#{BOB_ID}"]
+        self.assertEqual((row["kind"], row["mentioned"]), ("dm", True))
+
+    def test_thread_reply_reaches_root_author_participants_and_root_mentions_without_a_scan(self):
+        root = message_item(message_id=EVENT_ID, sequence=1)
+        root["author"] = {"kind": "agent", "id": "friday", "displayName": "Friday"}
+        root["mentions"] = [{"kind": "human", "id": CAROL_ID}]
+        root["threadParticipants"] = {BOB_ID, USER_ID}
+        items = activity_world(members=(USER_ID, BOB_ID, CAROL_ID, "user_dan"))
+        items[(f"ROOM#{ROOM_ID}", "MEMBER#human#user_dan")] = {"id": "user_dan", "ownerId": OWNER_ID, "joinedSeq": 0}
+        items[(root["pk"], root["sk"])] = root
+        reply = message_item(sequence=3)
+        reply["threadRootMessageId"] = EVENT_ID
+        reply["threadRootSeq"] = 1
+        ddb = self.project(items, reply)
+        rows = ddb.activity()
+        self.assertEqual(sorted(rows), [f"ACTIVITY#{OWNER_ID}#{BOB_ID}", f"ACTIVITY#{OWNER_ID}#{CAROL_ID}"])
+        self.assertTrue(all(r["kind"] == "thread_reply" and r["threadRootMessageId"] == EVENT_ID for r in rows.values()))
+        # The root is found by its key, not by scanning the room's messages.
+        prefixes = [c["ExpressionAttributeValues"][":prefix"]["S"] for c in ddb.calls if "KeyConditionExpression" in c]
+        self.assertNotIn("MSG#", prefixes)
+
+    def test_thread_reply_notify_uses_the_participant_set(self):
+        root = message_item(message_id=EVENT_ID, sequence=1)
+        root["author"]["id"] = CAROL_ID
+        root["threadParticipants"] = {BOB_ID}
+        items = activity_world()
+        items[(root["pk"], root["sk"])] = root
+        reply = message_item(sequence=3)
+        reply["threadRootMessageId"] = EVENT_ID
+        reply["threadRootSeq"] = 1
+        index._ddb_client = FakeDdb(items)
+        with patch.object(index, "_publish") as publish:
+            index._project_message(reply)
+        bob_hint = next(c.args[1] for c in publish.call_args_list if c.args[0].endswith(BOB_KEY))
+        self.assertTrue(bob_hint["payload"]["notify"])
+
+    def test_replay_is_idempotent(self):
+        items = activity_world("dm", (USER_ID, BOB_ID))
+        message = message_item(sequence=2)
+        ddb = self.project(items, message)
+        before = dict(ddb.activity())
+        with patch.object(index, "_publish"):
+            index._project_message(message)  # the stream redelivers the same record
+        self.assertEqual(ddb.activity(), before)
+        puts = [c for c in ddb.calls if "Item" in c]
+        self.assertTrue(all(c["ConditionExpression"] == "attribute_not_exists(pk)" for c in puts))
+
+    def test_only_members_current_at_write_time_get_a_row(self):
+        items = activity_world("dm", (USER_ID, BOB_ID, CAROL_ID))
+        del items[(f"ROOM#{ROOM_ID}", f"MEMBER#human#{CAROL_ID}")]  # removed after discovery
+        items[(f"ROOM#{ROOM_ID}", f"MEMBER#human#{BOB_ID}")]["joinedSeq"] = 2  # joined at/after this message
+        discovered = [{"id": USER_ID}, {"id": BOB_ID}, {"id": CAROL_ID}]
+        index._ddb_client = FakeDdb(items)
+        with patch.object(index, "_publish"), patch.object(index, "_query_rows", return_value=discovered):
+            index._project_message(message_item(sequence=2))
+        self.assertEqual(index._ddb_client.activity(), {})
+
+    def test_member_without_a_live_stream_still_gets_activity(self):
+        # Carol has never opened a live connection (no USERSTREAM): her row is written anyway.
+        message = message_item(sequence=2)
+        message["mentions"] = [{"kind": "human", "id": CAROL_ID}]
+        rows = self.project(activity_world(), message).activity()
+        self.assertIn(f"ACTIVITY#{OWNER_ID}#{CAROL_ID}", rows)
+
+    def test_foreign_member_row_lands_in_their_home_workspace(self):
+        items = activity_world("dm", (USER_ID, BOB_ID))
+        items[(f"ROOM#{ROOM_ID}", f"MEMBER#human#{BOB_ID}")]["homeOwnerId"] = "org_vendor"
+        rows = self.project(items, message_item(sequence=2)).activity()
+        self.assertEqual(list(rows), [f"ACTIVITY#org_vendor#{BOB_ID}"])
+
+    def test_plain_channel_message_writes_nothing(self):
+        self.assertEqual(self.project(activity_world(), message_item(sequence=2)).activity(), {})
+
+
+class ThreadRootModifyTests(unittest.TestCase):
+    """A thread reply ADDs to its root's threadParticipants: that MODIFY is not an edit."""
+
+    def setUp(self):
+        self.saved = (index.MESSAGING_TABLE, index._ddb_client)
+        index.MESSAGING_TABLE = "lightbulb-test-messaging"
+        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {
+            "deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}})
+
+    def tearDown(self):
+        index.MESSAGING_TABLE, index._ddb_client = self.saved
+
+    def modify(self, item):
+        record = stream_record(item)
+        record["eventName"] = "MODIFY"
+        with patch.object(index, "_publish") as publish:
+            index.process_record(record)
+        return publish
+
+    def test_participant_add_on_an_edited_root_publishes_nothing(self):
+        root = {**message_item(), "messageRevision": 1, "editedText": "x", "editedAt": "2026-09-10T00:01:00Z",
+                "threadParticipants": {BOB_ID}, "threadTouchedAt": "2026-09-10T00:05:00Z"}
+        self.modify(root).assert_not_called()
+
+    def test_an_edit_after_a_participant_add_still_publishes(self):
+        # The edit REMOVEs threadTouchedAt, so its image never carries it.
+        root = {**message_item(), "messageRevision": 2, "editedText": "y", "editedAt": "2026-09-10T00:09:00Z",
+                "threadParticipants": {BOB_ID}}
+        publish = self.modify(root)
+        self.assertEqual(publish.call_args_list[0].args[1]["type"], "room.message.updated")
+
+    def test_an_edit_stamped_before_a_reply_but_committed_after_still_publishes(self):
+        # The clock race: the edit's editedAt is OLDER than the reply's touch, yet it
+        # committed last. Its image has no threadTouchedAt, so it is never skipped.
+        root = {**message_item(), "messageRevision": 2, "editedText": "", "deletedAt": "2026-09-10T00:04:59Z",
+                "editedAt": "2026-09-10T00:04:59Z", "threadParticipants": {BOB_ID}}
+        publish = self.modify(root)
+        self.assertEqual(publish.call_args_list[0].args[1]["type"], "room.message.updated")

@@ -20,6 +20,24 @@ const agentId = "22222222-2222-4222-8222-222222222222";
 const messageId = "33333333-3333-4333-8333-333333333333";
 
 describe("messaging HTTP client", () => {
+  it("reads Activity with an opaque cursor, marks it seen and runs one escaped action door", async () => {
+    const { client, methods } = setup();
+    await client.listActivity();
+    await client.listActivity({ cursor: "MjAyNi0wOS0yNA", limit: 50 });
+    await client.markActivitySeen("2026-09-24T10:00:00Z");
+    await client.runActivityAction("paperclip:approval:ap-1", "approve", { note: "go" });
+    await client.runActivityAction("mention:m:r:1", "mark_done");
+    expect(methods.get.mock.calls).toEqual([
+      ["/messaging/activity"],
+      ["/messaging/activity?cursor=MjAyNi0wOS0yNA&limit=50"],
+    ]);
+    expect(methods.post.mock.calls).toEqual([
+      ["/messaging/activity/seen", { upTo: "2026-09-24T10:00:00Z" }],
+      ["/messaging/activity/paperclip%3Aapproval%3Aap-1/actions/approve", { note: "go" }],
+      ["/messaging/activity/mention%3Am%3Ar%3A1/actions/mark_done", {}],
+    ]);
+  });
+
   it("uses workspace-scoped session routes and preserves command identity with escaped path segments", async () => {
     const { client, methods } = setup();
     const command = { requestId: "request-1", expectedGeneration: "generation-1", kind: "send" as const, text: "continue" };

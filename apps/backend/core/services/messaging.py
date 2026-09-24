@@ -3110,7 +3110,7 @@ class AgentPostRequest(ContractModel):
     room_id: uuid.UUID | None = None
     user_id: str | None = Field(default=None, min_length=1, max_length=256)
     handle: str | None = Field(default=None, min_length=1, max_length=64)
-    issue_id: str | None = Field(default=None, min_length=1, max_length=256)
+    issue_id: str | None = Field(default=None, min_length=1, max_length=256, pattern=r"^[A-Za-z0-9-]+$")
 
     @field_validator("event_id")
     @classmethod
@@ -3138,6 +3138,7 @@ async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str) -> str:
         if (
             meta.get("kind") == "dm"
             and not meta.get("deletedAt")
+            and await messaging_repo.get_member(meta["roomId"], "human", user_id) is not None
             and await messaging_repo.get_member(meta["roomId"], "agent", agent_id) is not None
         ):
             return meta["roomId"]
@@ -3229,6 +3230,9 @@ async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> s
         return str(request.room_id)
     user_id = request.user_id
     if user_id is not None:
+        # _validate_human_in_owner waves the owner id itself through; an org id is never a human.
+        if not user_id.startswith("user_") or user_id == owner_id:
+            raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
         await _validate_human_in_owner(owner_id, user_id)
     elif request.handle is not None:
         user_id = await _user_for_handle(owner_id, request.handle)

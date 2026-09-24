@@ -89,6 +89,30 @@ async def test_step2_user_outside_the_workspace_is_refused(created, dms, monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("user_id", [OWNER, "org_other"])
+async def test_step2_an_org_id_is_never_a_human(created, dms, user_id):  # noqa: F811
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await messaging.post_agent_message(OWNER, _post(userId=user_id))
+    assert exc.value.error.code == "MEMBER_NOT_FOUND"
+    dms[1].assert_not_called()
+    created.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_step2_a_dm_the_human_left_is_not_reused(created, dms, monkeypatch):  # noqa: F811
+    listed, create_room = dms
+    listed.return_value = [{"meta": {"roomId": ROOM, "kind": "dm"}}]
+    monkeypatch.setattr(
+        messaging.messaging_repo,
+        "get_member",
+        AsyncMock(side_effect=lambda room, kind, mid: None if kind == "human" else {"kind": kind, "id": mid}),
+    )
+    await messaging.post_agent_message(OWNER, _post(userId=USER))
+    assert _room_of(created) == DM
+    create_room.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_step2_handle_resolves_a_workspace_member(created, dms, monkeypatch):  # noqa: F811
     import core.services.clerk_admin as clerk_admin
 
@@ -129,7 +153,7 @@ def _paperclip(monkeypatch, issue: dict, members: dict[str, str]):
 @pytest.mark.asyncio
 async def test_step3_issue_creator_gets_the_dm(created, dms, monkeypatch):  # noqa: F811
     _paperclip(monkeypatch, {"companyId": "co_1", "createdByUserId": "pc_ann"}, {"user_bob": "pc_bob", USER: "pc_ann"})
-    await messaging.post_agent_message(OWNER, _post(issueId="iss_1"))
+    await messaging.post_agent_message(OWNER, _post(issueId="iss-1"))
     assert _room_of(created) == DM
     assert dms[0].call_args.args == (OWNER, "human", USER)
 
@@ -138,7 +162,7 @@ async def test_step3_issue_creator_gets_the_dm(created, dms, monkeypatch):  # no
 async def test_step3_agent_created_issue_falls_through_to_general(created, dms, monkeypatch):  # noqa: F811
     _paperclip(monkeypatch, {"companyId": "co_1", "createdByUserId": None}, {USER: "pc_ann"})
     monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": OWNER}))
-    await messaging.post_agent_message(OWNER, _post(issueId="iss_1"))
+    await messaging.post_agent_message(OWNER, _post(issueId="iss-1"))
     assert _room_of(created) == GENERAL
 
 
@@ -146,7 +170,7 @@ async def test_step3_agent_created_issue_falls_through_to_general(created, dms, 
 async def test_step3_another_companys_issue_is_refused(created, dms, monkeypatch):  # noqa: F811
     _paperclip(monkeypatch, {"companyId": "co_other", "createdByUserId": "pc_ann"}, {USER: "pc_ann"})
     with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.post_agent_message(OWNER, _post(issueId="iss_1"))
+        await messaging.post_agent_message(OWNER, _post(issueId="iss-1"))
     assert exc.value.error.code == "ROOM_FORBIDDEN"
 
 
@@ -178,4 +202,6 @@ def test_at_most_one_of_room_user_handle():
         _post(roomId=ROOM, userId=USER)
     with pytest.raises(ValidationError):
         _post(text="   ")
-    assert _post(roomId=ROOM, issueId="iss_1").room_id == uuid.UUID(ROOM)
+    with pytest.raises(ValidationError):
+        _post(issueId="../agents/x")
+    assert _post(roomId=ROOM, issueId="iss-1").room_id == uuid.UUID(ROOM)

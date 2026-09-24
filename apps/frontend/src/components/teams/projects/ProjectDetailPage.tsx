@@ -39,7 +39,6 @@ import { useProjectMutations } from "./hooks/useProjectMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
-import { useSWRConfig } from "swr";
 import type {
   CompanyAgent,
   Goal,
@@ -58,8 +57,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
     useProjectDetail(projectId);
   const mutations = useProjectMutations();
   const issueMutations = useIssueMutations();
-  const { read } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { read, mutate } = useTeamsApi();
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: projectsResp } = read<{ projects: IssueProject[] }>("/projects");
   // Company goals back the Goals row's "add" picker (id + title). Read

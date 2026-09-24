@@ -9,12 +9,8 @@ import { renderHook } from "@testing-library/react";
 
 const read = vi.fn();
 vi.mock("@/hooks/useTeamsApi", () => ({
-  useTeamsApi: () => ({ read, post: vi.fn(), patch: vi.fn(), del: vi.fn() }),
+  useTeamsApi: () => ({ read, post: vi.fn(), patch: vi.fn(), del: vi.fn(), mutate: vi.fn() }),
 }));
-vi.mock("swr", async () => {
-  const actual = await vi.importActual<typeof import("swr")>("swr");
-  return { ...actual, useSWRConfig: () => ({ mutate: vi.fn() }) };
-});
 
 import { useAttentionFeed } from "@/components/teams/inbox/hooks/useAttentionFeed";
 

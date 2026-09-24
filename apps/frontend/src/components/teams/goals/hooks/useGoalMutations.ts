@@ -8,7 +8,6 @@
 // GoalUpdateInput already use snake_case so they are forwarded verbatim.
 
 import { useCallback } from "react";
-import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import type {
@@ -27,8 +26,7 @@ export interface UseGoalMutationsResult {
 }
 
 export function useGoalMutations(): UseGoalMutationsResult {
-  const { post, patch, del } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { post, patch, del, mutate } = useTeamsApi();
 
   const create = useCallback(
     async (input: GoalCreateInput): Promise<Goal> => {

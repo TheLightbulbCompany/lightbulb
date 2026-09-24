@@ -17,7 +17,6 @@
 // ProjectUpdateInput already uses snake_case so it is forwarded verbatim.
 
 import { useCallback } from "react";
-import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import type { Project, ProjectUpdateInput } from "@/components/teams/shared/types";
@@ -30,8 +29,7 @@ export interface UseProjectMutationsResult {
 }
 
 export function useProjectMutations(): UseProjectMutationsResult {
-  const { patch } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { patch, mutate } = useTeamsApi();
 
   const update = useCallback(
     async (projectId: string, input: ProjectUpdateInput): Promise<Project> => {

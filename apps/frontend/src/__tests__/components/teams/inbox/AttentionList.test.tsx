@@ -10,15 +10,12 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 const read = vi.fn();
 const post = vi.fn().mockResolvedValue({});
-vi.mock("@/hooks/useTeamsApi", () => ({
-  useTeamsApi: () => ({ read, post, patch: vi.fn(), del: vi.fn(), mutate: vi.fn() }),
-}));
-
 const mutate = vi.fn();
-vi.mock("swr", async () => {
-  const actual = await vi.importActual<typeof import("swr")>("swr");
-  return { ...actual, useSWRConfig: () => ({ mutate }) };
-});
+// Revalidation (useAttentionFeed's refresh + useInteractionMutations) goes
+// through useTeamsApi's scoped mutate, not useSWRConfig's.
+vi.mock("@/hooks/useTeamsApi", () => ({
+  useTeamsApi: () => ({ read, post, patch: vi.fn(), del: vi.fn(), mutate }),
+}));
 
 import { AttentionList } from "@/components/teams/inbox/AttentionList";
 

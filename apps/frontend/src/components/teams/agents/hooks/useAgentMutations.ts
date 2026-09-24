@@ -2,7 +2,6 @@
 "use client";
 
 import { useCallback } from "react";
-import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 
@@ -14,8 +13,7 @@ import type { CompanyAgent } from "@/components/teams/shared/types";
 const AGENTS_KEY = "/teams/agents";
 
 export function useAgentMutations() {
-  const { patch, post, del } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { patch, post, del, mutate } = useTeamsApi();
 
   const revalidate = useCallback(
     (agentId: string) => {

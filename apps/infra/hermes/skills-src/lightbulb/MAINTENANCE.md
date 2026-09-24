@@ -27,6 +27,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- routers/teams/issues.py (add_issue_comment wake) + core/services/paperclip_adapter_config.py;
                                  routers/ses_inbound.py (email wake — allowlisted senders only);
                                  the image's gog binary (gmail settings watch = Pub/Sub)
+  - Send a file in chat ..... references/platform-primitives.md ("Send a file in chat" row)
+                              <- apps/infra/hermes/bridge/turn.py (MEDIA_PREFIX, MEDIA_CONTENT_TYPES,
+                                 OUTBOUND_MEDIA_MAX_BYTES, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, _within: own profile or
+                                 HERMES_HOME/outbox/, no dot parts).
   - App host for links ...... SKILL.md ("Links: use this workspace's own app host")
                               <- core/services/owner_facts.py (`app_url` = settings.FRONTEND_URL)
   - Workspace memory ........ references/platform-primitives.md ("Queryable company state" row)

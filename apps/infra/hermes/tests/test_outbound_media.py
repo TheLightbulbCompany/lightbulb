@@ -57,6 +57,48 @@ def test_a_symlink_out_of_the_profile_is_never_read(tmp_path):
     assert turn.extract_media(f"MEDIA:{link}", profile) == (f"MEDIA:{link}", [])
 
 
+_XLSX = b"PK\x03\x04" + b"\x00" * 10
+
+
+def test_a_file_in_the_outbox_goes_up(tmp_path):
+    # Observed on dev 2026-09-24: `MEDIA:/opt/data/sales.xlsx` was dropped (path) -- only the
+    # profile dir counted. The outbox is the one HOME folder an agent can send from.
+    profile = tmp_path / "profiles" / "ceo"
+    profile.mkdir(parents=True)
+    sheet = _shot(tmp_path / "outbox", "sales.xlsx", _XLSX)
+    nested = _shot(tmp_path / "outbox" / "q3", "chart.png")
+    text, attachments = turn.extract_media(f"Here.\nMEDIA:{sheet}\nMEDIA:{nested}", profile, tmp_path)
+    assert text == "Here."
+    assert _names(attachments) == ["sales.xlsx", "chart.png"]
+
+
+@pytest.mark.parametrize("rel", [
+    "sales.xlsx",                                   # loose in HOME: shared scratch between agents
+    "media/messaging/attachments/dm-room/a.png",    # another room's cached attachment
+    "profiles/cfo/books.xlsx",                      # a sibling agent's profile
+])
+def test_nothing_else_under_home_is_read(tmp_path, rel):
+    profile = tmp_path / "profiles" / "ceo"
+    profile.mkdir(parents=True)
+    target = tmp_path / rel
+    _shot(target.parent, target.name, _XLSX if rel.endswith(".xlsx") else _PNG)
+    link = _shot(tmp_path / "outbox", "x.txt", b"")  # a symlink out of the outbox is refused too
+    link.unlink()
+    link.symlink_to(target)
+    reply = f"MEDIA:{target}\nMEDIA:{link}"
+    assert turn.extract_media(reply, profile, tmp_path) == (reply, [])
+
+
+@pytest.mark.parametrize("where", ["outbox", "profile"])
+def test_dot_paths_are_never_read(tmp_path, where):
+    profile = tmp_path / "profiles" / "ceo"
+    profile.mkdir(parents=True)
+    base = tmp_path / "outbox" if where == "outbox" else profile
+    hidden = [_shot(base, ".secrets.txt", b"token=abc"), _shot(base / ".hermes", "notes.md", b"# keys")]
+    reply = "\n".join(f"MEDIA:{p}" for p in hidden)
+    assert turn.extract_media(reply, profile, tmp_path) == (reply, [])
+
+
 def test_over_cap_media_is_left_in_the_text(tmp_path):
     shots = [_shot(tmp_path, f"{i}.png") for i in range(turn.MAX_ATTACHMENTS + 1)]
     text, attachments = turn.extract_media("\n".join(f"MEDIA:{s}" for s in shots), tmp_path)

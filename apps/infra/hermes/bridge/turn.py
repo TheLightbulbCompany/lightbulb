@@ -18,7 +18,7 @@ import uuid as _uuid
 from collections import namedtuple
 from pathlib import Path
 
-from bridge import API, HOOK_TOKEN, OWNER, now
+from bridge import API, HOME, HOOK_TOKEN, OWNER, now
 from bridge import sync, browser_control
 from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
@@ -446,9 +446,24 @@ MEDIA_SIGNATURES = {"image/png": (b"\x89PNG\r\n\x1a\n",), "image/jpeg": (b"\xff\
 OUTBOUND_MEDIA_MAX_BYTES = 7 * 1024 * 1024
 
 
-def _attachable(line: str, root: Path, budget: int) -> dict | None:
+def _within(resolved: Path, root: Path, home: Path | None) -> bool:
+    """Inside the agent's own profile or the one send-a-file folder, `HERMES_HOME/outbox/`,
+    through no dot-named part (`.env`, `.hermes/`, `.run/`). Nothing else under HOME: its
+    `media/messaging/attachments/<room>/` caches EVERY room's files, so a wider rule would let
+    an injected agent re-post a private DM's attachment into a channel. This stops a one-line
+    injection, not a determined agent -- one with a shell can copy any file it can read into
+    either base first; that is not an isolation boundary."""
+    for base in [root] + ([home / "outbox"] if home is not None else []):
+        base = base.resolve()
+        if resolved.is_relative_to(base):
+            return not any(part.startswith(".") for part in resolved.relative_to(base).parts)
+    return False
+
+
+def _attachable(line: str, root: Path, budget: int, home: Path | None = None) -> dict | None:
     """The file a `MEDIA:` line names, ready to post, if it is safe to send: inside the agent's
-    own profile dir (resolved, so a symlink cannot point out of it), a type the room accepts
+    own profile dir or `HERMES_HOME/outbox/`, through no dot-named part (see `_within`;
+    resolved, so a symlink cannot point out of it), a type the room accepts
     whose BYTES agree with that type, and within both the per-type cap and what is left of the
     outbound budget. The read happens HERE, at the one place that decides whether the line is
     stripped -- a file that cannot be read keeps its path rather than vanishing, and nothing
@@ -465,7 +480,7 @@ def _attachable(line: str, root: Path, budget: int) -> dict | None:
         return None
     try:
         resolved = path.resolve()
-        if not resolved.is_relative_to(root.resolve()):
+        if not _within(resolved, root, home):
             log.warning("media dropped (path): %s", path)
             return None
         if not resolved.is_file():
@@ -502,7 +517,7 @@ def _attachable(line: str, root: Path, budget: int) -> dict | None:
             "dataBase64": base64.b64encode(data).decode()}
 
 
-def extract_media(reply: str, root: Path) -> tuple[str, list[dict]]:
+def extract_media(reply: str, root: Path, home: Path | None = None) -> tuple[str, list[dict]]:
     """Split the attachable `MEDIA:` files out of a reply, returning the text without them and
     the attachments as the backend's `AgentMessageRequest.attachments` wants them.
 
@@ -514,7 +529,7 @@ def extract_media(reply: str, root: Path) -> tuple[str, list[dict]]:
     lines: list[str] = []
     budget = OUTBOUND_MEDIA_MAX_BYTES
     for line in reply.splitlines():
-        item = _attachable(line, root, budget) if len(kept) < MAX_ATTACHMENTS else None
+        item = _attachable(line, root, budget, home) if len(kept) < MAX_ATTACHMENTS else None
         if item is None:
             lines.append(line)
         else:
@@ -720,7 +735,7 @@ def _post_reply(agent_id: str, body: dict, reply: str) -> None:
     screenshot beats losing the reply, and it is what lets this image ship without waiting on
     a prod backend promotion. The eventId is unchanged, so a re-post can only replay the
     stored message -- never create a second one."""
-    text, attachments = extract_media(reply, _profile_dir(agent_id))
+    text, attachments = extract_media(reply, _profile_dir(agent_id), HOME)
     if not attachments:
         _post_backend(f"agent-messages/{OWNER}", {**body, "text": reply})
         return

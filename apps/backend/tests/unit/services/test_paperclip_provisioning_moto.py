@@ -1254,18 +1254,6 @@ async def test_archive_member_reraises_paperclip_5xx_after_dropping_the_fence(re
     admin.archive_member.assert_awaited_once()
 
 
-async def test_remove_member_drops_only_the_ddb_membership(repo):
-    await _seed_member(repo)
-    admin = _make_admin_mock()
-    admin.list_members = AsyncMock()
-    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-
-    await prov.remove_member(user_id="user_member", org_id="org_acme")
-
-    assert (await repo.get_workspace("org_acme")).member_user_ids == {"user_owner"}
-    admin.list_members.assert_not_awaited()
-
-
 # ----------------------------------------------------------------------
 # disable_workspace + purge
 # ----------------------------------------------------------------------

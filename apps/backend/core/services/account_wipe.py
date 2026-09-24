@@ -99,7 +99,7 @@ problem on the same day org wipe does.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Literal
 
 import httpx
@@ -230,15 +230,17 @@ class WipeReport:
     owner_id: str
     steps: list[WipeStep]
     dry_run: bool
-    shared_company: dict | None = None
-    """``_shared_company``'s facts when the owner's Paperclip company is shared
+    workspaces: list[dict] = field(default_factory=list)
+    """``_workspace_memberships``: every workspace the human belongs to (whose
+    companies the wipe keeps). The UI asks for the first one's name before
+    executing.
     (the UI asks for the workspace name before executing), else None."""
 
     def to_dict(self) -> dict:
         return {
             "owner_id": self.owner_id,
             "dry_run": self.dry_run,
-            "shared_company": self.shared_company,
+            "workspaces": self.workspaces,
             "steps": [
                 {
                     "system": s.system,
@@ -345,43 +347,47 @@ def _org_hint_for_missing_container(workspaces: list[str]) -> str:
     return "no containers row"
 
 
-async def _shared_company(workspaces: list[str]) -> dict | None:
-    """The facts of the (first) workspace the human belongs to, else None —
-    for the report and the admin's workspace-name confirm. Its company is
-    kept whatever this returns: a human's wipe never deletes a company."""
-    if not workspaces:
-        return None
-    org_id = workspaces[0]
+async def _workspace_memberships(workspaces: list[str]) -> list[dict]:
+    """The facts of EVERY workspace the human belongs to, for the report and
+    the admin's workspace-name confirm. Each workspace's company is kept: a
+    human's wipe never deletes a company."""
     repo = PaperclipRepo(table_name="paperclip-companies")
-    ws = await repo.get_workspace(org_id)
-    provisioner = ws.provisioner_user_id if ws is not None else ""
-    identity = await repo.get_identity(provisioner) if provisioner else None
-    org = await clerk_admin.get_organization(org_id)
-    return {
-        "company_id": ws.company_id if ws is not None else "",
-        "org_id": org_id,
-        "workspace_name": (org or {}).get("name") or None,
-        "owner_user_id": provisioner or None,
-        "owner_email": (identity.paperclip_email or None) if identity is not None else None,
-        "member_count": len(ws.member_user_ids) if ws is not None else 0,
-    }
+    out: list[dict] = []
+    for org_id in workspaces:
+        ws = await repo.get_workspace(org_id)
+        provisioner = ws.provisioner_user_id if ws is not None else ""
+        identity = await repo.get_identity(provisioner) if provisioner else None
+        org = await clerk_admin.get_organization(org_id)
+        out.append(
+            {
+                "company_id": ws.company_id if ws is not None else "",
+                "org_id": org_id,
+                "workspace_name": (org or {}).get("name") or None,
+                "owner_user_id": provisioner or None,
+                "owner_email": (identity.paperclip_email or None) if identity is not None else None,
+                "member_count": len(ws.member_user_ids) if ws is not None else 0,
+            }
+        )
+    return out
 
 
-async def resolve_shared_company(owner_id: str) -> dict | None:
-    """``_shared_company`` for ``owner_id``'s workspaces — the admin router's
-    input for its workspace-name confirm."""
-    return await _shared_company(await _workspaces_of(owner_id))
+async def resolve_workspace_memberships(owner_id: str) -> list[dict]:
+    """``_workspace_memberships`` for ``owner_id`` — the admin router's input
+    for its workspace-name confirm."""
+    return await _workspace_memberships(await _workspaces_of(owner_id))
 
 
-def _refused_detail(shared: dict) -> str:
-    owner = shared["owner_user_id"] or "unknown"
-    if shared["owner_email"]:
-        owner += f" <{shared['owner_email']}>"
-    name = f'workspace "{shared["workspace_name"]}"' if shared["workspace_name"] else "a shared workspace"
-    return (
-        f"refused: company {shared['company_id']} belongs to {name} "
-        f"({shared['org_id']}, owner {owner}, {shared['member_count']} active member(s)) — kept"
-    )
+def _refused_detail(memberships: list[dict]) -> str:
+    parts = []
+    for m in memberships:
+        owner = m["owner_user_id"] or "unknown"
+        if m["owner_email"]:
+            owner += f" <{m['owner_email']}>"
+        name = f'workspace "{m["workspace_name"]}"' if m["workspace_name"] else "a workspace"
+        parts.append(
+            f"company {m['company_id'] or '-'} of {name} ({m['org_id']}, owner {owner}, {m['member_count']} member(s))"
+        )
+    return "refused: a human's wipe never deletes a company — kept: " + "; ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -539,11 +545,11 @@ async def preview_wipe(owner_id: str) -> WipeReport:
     _refuse_bootstrap_account(owner_id, await resolve_account_emails(owner_id))
 
     ids = await _read_identifiers(owner_id)
-    shared = await _shared_company(ids.workspaces)
+    memberships = await _workspace_memberships(ids.workspaces)
     steps: list[WipeStep] = []
 
-    if shared:
-        steps.append(WipeStep("paperclip_company", "delete_company", "refused", _refused_detail(shared)))
+    if memberships:
+        steps.append(WipeStep("paperclip_company", "delete_company", "refused", _refused_detail(memberships)))
         steps.append(
             WipeStep(
                 "paperclip_membership",
@@ -760,7 +766,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
 
     steps.append(WipeStep(system="clerk_user", action="delete_user", status="would_delete", detail=owner_id))
 
-    return WipeReport(owner_id=owner_id, steps=steps, dry_run=True, shared_company=shared)
+    return WipeReport(owner_id=owner_id, steps=steps, dry_run=True, workspaces=memberships)
 
 
 # ---------------------------------------------------------------------------
@@ -789,7 +795,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
 
     ids = await _read_identifiers(owner_id)
     # Before any step runs: a raise here stops the wipe with nothing deleted.
-    shared = await _shared_company(ids.workspaces)
+    memberships = await _workspace_memberships(ids.workspaces)
     steps: list[WipeStep] = []
 
     email = emails[0] if emails else ""
@@ -805,13 +811,13 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     # A company is its workspace's: a human's wipe never deletes one. Remove
     # only this human from each workspace's company (the Better Auth user
     # delete in step 2 is their own identity; its FKs only cascade sessions).
-    if shared:
+    if memberships:
         logger.warning(
             "account_wipe: owner=%s belongs to %s — delete_company REFUSED, archiving membership",
             owner_id,
             ids.workspaces,
         )
-        steps.append(WipeStep("paperclip_company", "delete_company", "refused", _refused_detail(shared)))
+        steps.append(WipeStep("paperclip_company", "delete_company", "refused", _refused_detail(memberships)))
 
         async def _s1m() -> str:
             for org_id in ids.workspaces:
@@ -1132,4 +1138,4 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         sum(1 for s in steps if s.status == "refused"),
     )
 
-    return WipeReport(owner_id=owner_id, steps=steps, dry_run=False, shared_company=shared)
+    return WipeReport(owner_id=owner_id, steps=steps, dry_run=False, workspaces=memberships)

@@ -56,7 +56,7 @@ def non_admin_env(app):
 @pytest.fixture(autouse=True)
 def shared_company():
     """Default: the target's Paperclip company is theirs alone (no workspace confirm)."""
-    with patch("routers.admin.resolve_shared_company", new=AsyncMock(return_value=None)) as mock:
+    with patch("routers.admin.resolve_workspace_memberships", new=AsyncMock(return_value=[])) as mock:
         yield mock
 
 
@@ -300,7 +300,7 @@ class TestWipeExecute:
     ):
         """A member's company is the whole workspace's: the admin must name the
         workspace as well as the account, or nothing runs."""
-        shared_company.return_value = {"org_id": "org_founder", "workspace_name": "Isol8"}
+        shared_company.return_value = [{"org_id": "org_founder", "workspace_name": "Isol8"}]
         body = {"confirm_email": "owner@example.com"}
         if confirm_workspace is not None:
             body["confirm_workspace"] = confirm_workspace
@@ -322,7 +322,7 @@ class TestWipeExecute:
     async def test_shared_company_with_the_workspace_name_executes(
         self, async_client, admin_env, mock_audit_repo, shared_company, workspace_name, typed
     ):
-        shared_company.return_value = {"org_id": "org_founder", "workspace_name": workspace_name}
+        shared_company.return_value = [{"org_id": "org_founder", "workspace_name": workspace_name}]
         report = _sample_report(dry_run=False)
         with (
             patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["owner@example.com"])),

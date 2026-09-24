@@ -501,7 +501,9 @@ async def _handle_organization_membership_deleted(
             # fence even when the upstream Paperclip archive is unavailable.
             try:
                 await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-                await provisioning.remove_member(user_id=user_id, org_id=org_id)
+                from core.repositories.paperclip_repo import PaperclipRepo
+
+                await PaperclipRepo(table_name="paperclip-companies").remove_member(org_id, user_id)
                 await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
             except MembershipLifecycleSuperseded:
                 raise

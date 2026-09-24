@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import {
   executeAccountWipe,
   previewAccountWipe,
-  type SharedCompany,
+  type WorkspaceMembership,
   type WipeStep,
 } from "@/app/admin/_actions/wipe";
 
@@ -53,15 +53,15 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
   const [previewSteps, setPreviewSteps] = React.useState<WipeStep[] | null>(null);
   const [previewError, setPreviewError] = React.useState<string | null>(null);
   const [typedEmail, setTypedEmail] = React.useState("");
-  // Set when the account is a workspace member: its Paperclip company is the
-  // whole workspace's, so the backend keeps it and demands the workspace name.
-  const [shared, setShared] = React.useState<SharedCompany | null>(null);
+  // Every workspace the account belongs to: their companies are kept, and the
+  // backend demands the first workspace's name.
+  const [workspaces, setWorkspaces] = React.useState<WorkspaceMembership[]>([]);
   const [typedWorkspace, setTypedWorkspace] = React.useState("");
   const [executing, setExecuting] = React.useState(false);
   const [resultSteps, setResultSteps] = React.useState<WipeStep[] | null>(null);
   const [executeError, setExecuteError] = React.useState<string | null>(null);
 
-  const workspacePhrase = shared ? shared.workspace_name || shared.org_id : null;
+  const workspacePhrase = workspaces.length ? workspaces[0].workspace_name || workspaces[0].org_id : null;
   const matches =
     email != null &&
     typedEmail === email &&
@@ -79,9 +79,9 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
         return;
       }
       const report = result.data as
-        | { steps?: WipeStep[]; shared_company?: SharedCompany | null }
+        | { steps?: WipeStep[]; workspaces?: WorkspaceMembership[] }
         | undefined;
-      setShared(report?.shared_company ?? null);
+      setWorkspaces(report?.workspaces ?? []);
       setPreviewSteps(report?.steps ?? []);
     } finally {
       setPreviewLoading(false);
@@ -96,7 +96,7 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
       setPreviewError(null);
       setPreviewSteps(null);
       setTypedEmail("");
-      setShared(null);
+      setWorkspaces([]);
       setTypedWorkspace("");
       setResultSteps(null);
       setExecuteError(null);
@@ -162,8 +162,8 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
           </div>
         ) : previewSteps ? (
           <div className="space-y-4">
-            {shared ? (
-              <ErrorBanner variant="info" error={sharedCompanyNotice(shared)} />
+            {workspaces.length ? (
+              <ErrorBanner variant="info" error={workspacesNotice(workspaces)} />
             ) : null}
             <div className="space-y-2">
               <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
@@ -215,16 +215,17 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
   );
 }
 
-function sharedCompanyNotice(shared: SharedCompany): string {
-  const workspace = shared.workspace_name
-    ? `workspace "${shared.workspace_name}"`
-    : "a shared workspace";
-  const owner = shared.owner_user_id ?? "unknown";
-  const ownerEmail = shared.owner_email ? ` <${shared.owner_email}>` : "";
-  const members = `${shared.member_count} active member${shared.member_count === 1 ? "" : "s"}`;
+function workspacesNotice(workspaces: WorkspaceMembership[]): string {
+  const described = workspaces.map((w) => {
+    const workspace = w.workspace_name ? `workspace "${w.workspace_name}"` : "a workspace";
+    const owner = w.owner_user_id ?? "unknown";
+    const ownerEmail = w.owner_email ? ` <${w.owner_email}>` : "";
+    const members = `${w.member_count} active member${w.member_count === 1 ? "" : "s"}`;
+    return `${workspace} (${w.org_id}, owner ${owner}${ownerEmail}, ${members})`;
+  });
   return (
-    `This account is a member of ${workspace} (${shared.org_id}, owner ${owner}${ownerEmail}, ${members}). ` +
-    "The workspace's Paperclip company will be kept; only this member's membership is archived."
+    `This account is a member of ${described.join("; ")}. ` +
+    "Every workspace's Paperclip company will be kept; only this member's membership is archived."
   );
 }
 

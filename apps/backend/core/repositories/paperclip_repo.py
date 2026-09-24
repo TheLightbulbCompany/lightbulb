@@ -434,7 +434,7 @@ class PaperclipRepo:
         by-org-id GSI, projection ALL). Workspace rows carry ``org_id``; so do
         pre-migration per-member rows — which is what makes this the guard
         against minting a SECOND company for an org whose rows still await
-        ``scripts/migrate_paperclip_org_rows``."""
+        the one-off migration (PR #3097; the script lives outside the repo)."""
         ids: set[str] = set()
         async for page in self._query_pages(IndexName="by-org-id", KeyConditionExpression=Key("org_id").eq(org_id)):
             ids.update(item["company_id"] for item in page.get("Items", []) if item.get("company_id"))
@@ -1536,7 +1536,7 @@ class PaperclipRepo:
             return 0
         return int(resp.get("Attributes", {}).get("attempts", 0))
 
-    async def fail_pending_brief(self, owner_id: str, *, reason: str, owner_broadcast_id: Optional[str] = None) -> None:
+    async def fail_pending_brief(self, owner_id: str, *, reason: str) -> None:
         """Give up on fulfilling this brief: ``brief_state -> failed``.
 
         This is what ENDS the retry loop, and it is deliberately visible to
@@ -1567,7 +1567,7 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return
         # The funnel is about to re-render for every tab on this company.
-        publish_status_changed(owner_broadcast_id or owner_id)
+        publish_status_changed(owner_id)
 
     async def delete_pending_brief(self, owner_id: str) -> bool:
         """Retire a pending answer once it has demonstrably been fulfilled.

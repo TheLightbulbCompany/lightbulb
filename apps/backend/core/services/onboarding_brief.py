@@ -437,7 +437,7 @@ async def _drain_until_settled(owner_id: str) -> None:
                     failures,
                     reason,
                 )
-                await repo.fail_pending_brief(owner_id, reason=reason, owner_broadcast_id=owner_id)
+                await repo.fail_pending_brief(owner_id, reason=reason)
                 return
         await asyncio.sleep(delay)
 
@@ -484,12 +484,19 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     # the way back out.
     try:
         email = await get_primary_email(submitted_by)
-        # Minted for the workspace's PROVISIONER, not the submitter: an org
-        # member who submitted the funnel may not have joined the company
-        # yet, and the provisioner is its first member. Both are members of
-        # the same company, so the goal/project land identically.
+        # Minted for a CURRENT member of the company — the provisioner while
+        # they still are one, else any other joined member (the session is not
+        # company-scoped, so it must be someone Paperclip still admits). Not
+        # the submitter: they may not have joined yet. Every member reaches the
+        # same company, so the goal/project land identically.
+        members = owner_row.member_user_ids
+        session_user = (
+            owner_row.provisioner_user_id
+            if owner_row.provisioner_user_id in members
+            else next(iter(sorted(members)), owner_row.provisioner_user_id)
+        )
         session_cookie = await get_user_session_cookie(
-            user_id=owner_row.provisioner_user_id,
+            user_id=session_user,
             repo=repo,
             admin_client=shared_admin_client(),
             clerk_email_resolver=get_primary_email,

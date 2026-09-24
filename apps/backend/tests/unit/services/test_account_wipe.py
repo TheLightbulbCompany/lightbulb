@@ -29,7 +29,7 @@ from core.services.account_wipe import (
     WipeStep,
     preview_wipe,
     resolve_account_emails,
-    resolve_shared_company,
+    resolve_workspace_memberships,
     wipe_account,
 )
 from core.services.paperclip_user_delete import BootstrapUserProtectedError
@@ -767,20 +767,22 @@ async def test_member_of_workspace_wipe_never_deletes_the_company_and_archives_m
         'workspace "Isol8"',
         ORG_ID,
         "user_owner <founder@example.com>",
-        "4 active member(s)",
+        "4 member(s)",
         "kept",
     ):
         assert fragment in refused.detail, refused.detail
     assert by_system["paperclip_membership"].status == "ok"
     assert by_system["clerk_user"].status == "ok"
-    assert report.shared_company == {
-        "company_id": "company_abc",
-        "org_id": ORG_ID,
-        "workspace_name": "Isol8",
-        "owner_user_id": "user_owner",
-        "owner_email": "founder@example.com",
-        "member_count": 4,
-    }
+    assert report.workspaces == [
+        {
+            "company_id": "company_abc",
+            "org_id": ORG_ID,
+            "workspace_name": "Isol8",
+            "owner_user_id": "user_owner",
+            "owner_email": "founder@example.com",
+            "member_count": 4,
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -807,6 +809,9 @@ async def test_membership_is_archived_in_every_workspace_the_human_belongs_to(wi
     assert by_system["paperclip_membership"].status == "ok"
     assert "org_b" in by_system["paperclip_membership"].detail
     assert ORG_ID in by_system["paperclip_membership"].detail
+    # Every workspace is reported, not just the first.
+    assert [w["org_id"] for w in report.workspaces] == ["org_b", ORG_ID]
+    assert "org_b" in by_system["paperclip_company"].detail and ORG_ID in by_system["paperclip_company"].detail
 
 
 @pytest.mark.asyncio
@@ -819,7 +824,7 @@ async def test_human_in_no_workspace_skips_the_company_step_and_archives_nothing
     step = {s.system: s for s in report.steps}["paperclip_company"]
     assert step.status == "skipped"
     assert "never deletes a Paperclip company" in step.detail
-    assert report.shared_company is None
+    assert report.workspaces == []
     wipe_mocks.paperclip_company_delete.assert_not_awaited()
     wipe_mocks.paperclip_archive_member.assert_not_awaited()
     wipe_mocks.clerk_get_organization.assert_not_awaited()
@@ -868,7 +873,7 @@ async def test_preview_marks_the_company_refused_and_exposes_the_workspace(wipe_
     assert by_system["paperclip_company"].status == "refused"
     assert by_system["paperclip_membership"].status == "would_delete"
     assert "only this member's membership" in by_system["paperclip_membership"].detail
-    assert report.to_dict()["shared_company"]["workspace_name"] == "Isol8"
+    assert report.to_dict()["workspaces"][0]["workspace_name"] == "Isol8"
     wipe_mocks.clerk_list_user_orgs.assert_awaited_once_with(OWNER_ID, strict=True)
     wipe_mocks.paperclip_company_delete.assert_not_awaited()
     wipe_mocks.paperclip_archive_member.assert_not_awaited()
@@ -883,52 +888,56 @@ async def test_preview_and_execute_agree(wipe_mocks):
     assert [(s.system, s.action) for s in preview.steps] == [(s.system, s.action) for s in executed.steps]
     assert preview.steps[0] == executed.steps[0]
     assert preview.steps[0].status == "refused"
-    assert preview.shared_company == executed.shared_company
+    assert preview.workspaces == executed.workspaces
 
 
 @pytest.mark.asyncio
-async def test_resolve_shared_company_feeds_the_admin_workspace_name_confirm(wipe_mocks):
+async def test_resolve_workspace_memberships_feeds_the_admin_workspace_name_confirm(wipe_mocks):
     """The admin router's workspace-name confirm reads these facts: the org,
     its name, the provisioner (+ its identity email) and the member count."""
-    shared = await resolve_shared_company(OWNER_ID)
+    shared = await resolve_workspace_memberships(OWNER_ID)
 
     wipe_mocks.clerk_list_user_orgs.assert_awaited_once_with(OWNER_ID, strict=True)
     wipe_mocks.paperclip_get_workspace.assert_awaited_once_with(ORG_ID)
     wipe_mocks.paperclip_get_identity.assert_awaited_once_with("user_owner")
-    assert shared == {
-        "company_id": "company_abc",
-        "org_id": ORG_ID,
-        "workspace_name": "Isol8",
-        "owner_user_id": "user_owner",
-        "owner_email": "founder@example.com",
-        "member_count": 4,
-    }
+    assert shared == [
+        {
+            "company_id": "company_abc",
+            "org_id": ORG_ID,
+            "workspace_name": "Isol8",
+            "owner_user_id": "user_owner",
+            "owner_email": "founder@example.com",
+            "member_count": 4,
+        }
+    ]
 
 
 @pytest.mark.asyncio
-async def test_resolve_shared_company_tolerates_clerk_name_and_row_gaps(wipe_mocks):
+async def test_resolve_workspace_memberships_tolerates_clerk_name_and_row_gaps(wipe_mocks):
     """Clerk name unavailable and no workspace row yet: the org is still named,
     everything else degrades to empty rather than raising."""
     wipe_mocks.clerk_get_organization.return_value = None
     wipe_mocks.workspaces.clear()
 
-    shared = await resolve_shared_company(OWNER_ID)
+    shared = await resolve_workspace_memberships(OWNER_ID)
 
-    assert shared == {
-        "company_id": "",
-        "org_id": ORG_ID,
-        "workspace_name": None,
-        "owner_user_id": None,
-        "owner_email": None,
-        "member_count": 0,
-    }
+    assert shared == [
+        {
+            "company_id": "",
+            "org_id": ORG_ID,
+            "workspace_name": None,
+            "owner_user_id": None,
+            "owner_email": None,
+            "member_count": 0,
+        }
+    ]
 
 
 @pytest.mark.asyncio
-async def test_resolve_shared_company_is_none_without_a_workspace(wipe_mocks):
+async def test_resolve_workspace_memberships_is_empty_without_a_workspace(wipe_mocks):
     wipe_mocks.clerk_list_user_orgs.return_value = []
 
-    assert await resolve_shared_company(OWNER_ID) is None
+    assert await resolve_workspace_memberships(OWNER_ID) == []
 
 
 # ---------------------------------------------------------------------------
@@ -1141,7 +1150,7 @@ def test_wipe_report_to_dict_shape():
     assert d == {
         "owner_id": OWNER_ID,
         "dry_run": True,
-        "shared_company": None,
+        "workspaces": [],
         "steps": [
             {
                 "system": "paperclip_company",

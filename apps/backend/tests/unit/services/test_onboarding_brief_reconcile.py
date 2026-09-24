@@ -56,6 +56,7 @@ def _owner_row(**overrides):
     base = dict(
         org_id="org_abc",
         provisioner_user_id="provisioner-user",
+        member_user_ids={"provisioner-user", "member-b"},
         company_id="comp-1",
         status="active",
         onboarding_generation="01GEN",
@@ -317,6 +318,18 @@ async def test_session_is_minted_for_the_provisioner_not_the_submitter(env, monk
     await reconcile_pending_brief("org_abc")
 
     assert mint.await_args.kwargs["user_id"] == "provisioner-user"
+
+
+async def test_session_falls_back_to_a_current_member_when_the_provisioner_left(env, monkeypatch):
+    """A provisioner who left the workspace can no longer act in its company;
+    the drain signs in as a member who still can."""
+    env.repo.resolve_owner_row.return_value = _owner_row(member_user_ids={"member-z", "member-b"})
+    mint = AsyncMock(return_value="cookie")
+    monkeypatch.setattr(session_mod, "get_user_session_cookie", mint)
+
+    await reconcile_pending_brief("org_abc")
+
+    assert mint.await_args.kwargs["user_id"] == "member-b"
 
 
 async def test_no_board_seeding_on_drain(env):

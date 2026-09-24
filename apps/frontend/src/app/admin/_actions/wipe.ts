@@ -18,9 +18,9 @@ import { adminPost, type ActionResult } from "./_shared";
  * (`core/services/account_wipe.py WipeReport.to_dict()`): preview steps carry
  * `status: "would_delete" | "skipped"`, execute steps carry
  * `status: "ok" | "skipped" | "failed"`, and either can carry `"refused"` —
- * a guard kept the resource (a workspace member's shared Paperclip company).
- * When `shared_company` is set, execute also needs `confirm_workspace` equal to
- * the workspace name (its org id when Clerk has no name). A 400 surfaces as
+ * a guard kept the resource (a human's wipe never deletes a Paperclip company).
+ * When `workspaces` is non-empty, execute also needs `confirm_workspace` equal to
+ * the first workspace's name (its org id when Clerk has no name). A 400 surfaces as
  * `result.error === "org_wipe_unsupported"` (org owners aren't supported by the
  * USER wipe — use the workspace wipe below), `"email_mismatch"`, or
  * `"workspace_mismatch"` (execute only).
@@ -53,7 +53,7 @@ export interface WipeStep {
   error: string | null;
 }
 
-export interface SharedCompany {
+export interface WorkspaceMembership {
   company_id: string;
   org_id: string;
   workspace_name: string | null;
@@ -65,7 +65,7 @@ export interface SharedCompany {
 export interface WipeReport {
   owner_id: string;
   dry_run: boolean;
-  shared_company: SharedCompany | null;
+  workspaces: WorkspaceMembership[];
   steps: WipeStep[];
 }
 

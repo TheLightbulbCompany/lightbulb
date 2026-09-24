@@ -659,7 +659,7 @@ class PaperclipProvisioning:
         member_password = (
             decrypt(identity.paperclip_password_encrypted) if adopting_existing else secrets.token_urlsafe(32)
         )
-        from core.services.paperclip_admin_session import get_admin_session_cookie
+        from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 
         try:
             # 1. The member's Better Auth account + session.
@@ -687,12 +687,19 @@ class PaperclipProvisioning:
             #    409 = "You already belong to this company": the join is
             #    already done — record it rather than failing forever.
             admin_cookie = await get_admin_session_cookie(self._admin._http)
-            invite = await self._admin.create_invite(
-                session_cookie=admin_cookie,
-                company_id=company_id,
-                email=email,
-                human_role="owner",
-            )
+            try:
+                invite = await self._admin.create_invite(
+                    session_cookie=admin_cookie, company_id=company_id, email=email, human_role="owner"
+                )
+            except PaperclipApiError as e:
+                if e.status_code != 401:
+                    raise
+                # Admin session expired; retry once with a fresh one.
+                invalidate_admin_session()
+                admin_cookie = await get_admin_session_cookie(self._admin._http)
+                invite = await self._admin.create_invite(
+                    session_cookie=admin_cookie, company_id=company_id, email=email, human_role="owner"
+                )
             try:
                 await self._accept_invite_and_ensure_approved(
                     member_session_cookie=member_session_cookie,
@@ -818,11 +825,6 @@ class PaperclipProvisioning:
             ws.company_id,
             member_id,
         )
-
-    async def remove_member(self, *, user_id: str, org_id: str) -> None:
-        """Drop the DDB membership only — the Teams fence when the Paperclip
-        archive itself is unavailable."""
-        await self._repo.remove_member(org_id, user_id)
 
     async def disable_workspace(self, *, org_id: str, grace_days: int = 30) -> None:
         """Mark a workspace row ``disabled`` with a purge timer (the Clerk org

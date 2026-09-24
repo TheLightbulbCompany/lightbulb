@@ -794,6 +794,25 @@ async def test_mark_failed_without_claim_or_org_writes_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_provision_member_retries_the_invite_once_on_an_expired_admin_session(monkeypatch):
+    import core.services.paperclip_admin_session as admin_session_mod
+
+    admin = _build_provision_member_doubles(monkeypatch)
+    invalidated = MagicMock()
+    monkeypatch.setattr(admin_session_mod, "invalidate_admin_session", invalidated)
+    admin.create_invite = AsyncMock(
+        side_effect=[PaperclipApiError("expired", status_code=401, body=None), {"token": "invtok"}]
+    )
+    repo = _member_repo(_ws(members={"user_owner"}))
+
+    await _svc(admin, repo).provision_member(owner_id="org_xyz", user_id="user_m", email="m@example.com")
+
+    assert admin.create_invite.await_count == 2
+    invalidated.assert_called_once()
+    repo.add_member.assert_awaited_once_with("org_xyz", "user_m")
+
+
+@pytest.mark.asyncio
 async def test_provision_member_joins_via_bootstrap_admin(monkeypatch):
     admin = _build_provision_member_doubles(monkeypatch)
     ws = _ws(members={"user_owner"})

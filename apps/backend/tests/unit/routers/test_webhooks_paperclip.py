@@ -76,6 +76,8 @@ async def test_membership_revocation_failure_redelivers_same_svix_and_still_deau
     provisioning = AsyncMock()
     if archive_failure:
         provisioning.archive_member.side_effect = PaperclipApiError("retry", 503, "")
+    remove_member = AsyncMock()
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
     monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
     monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
     enqueue = AsyncMock()
@@ -103,7 +105,7 @@ async def test_membership_revocation_failure_redelivers_same_svix_and_still_deau
             await webhooks.handle_clerk_webhook(request)
         provisioning.archive_member.assert_awaited_once_with(user_id="member", org_id="org_acme")
         if archive_failure:
-            provisioning.remove_member.assert_awaited_once_with(user_id="member", org_id="org_acme")
+            remove_member.assert_awaited_once_with("org_acme", "member")
             enqueue.assert_awaited_once()
         assert (
             webhook_dedup._table().get_item(Key={"event_id": "msg_test"}).get("Item", {}).get("state") == "processing"
@@ -356,7 +358,8 @@ async def test_membership_deleted_retryable_failure_enqueues(async_client, monke
     err = PaperclipApiError("server-down", 503, "")
     mock_provisioning = AsyncMock()
     mock_provisioning.archive_member = AsyncMock(side_effect=err)
-    mock_provisioning.remove_member = AsyncMock(return_value=None)
+    remove_member = AsyncMock(return_value=None)
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
 
     captured_create = AsyncMock(return_value={"update_id": "upd_archive"})
 
@@ -385,7 +388,7 @@ async def test_membership_deleted_retryable_failure_enqueues(async_client, monke
     assert resp.status_code == 200
     mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member", org_id="org_acme")
     # Auth-bypass guard: DDB membership must be dropped even on retryable.
-    mock_provisioning.remove_member.assert_awaited_once_with(user_id="user_member", org_id="org_acme")
+    remove_member.assert_awaited_once_with("org_acme", "user_member")
     captured_create.assert_awaited_once()
     kwargs = captured_create.call_args.kwargs
     assert kwargs["owner_id"] == "user_member"
@@ -412,7 +415,8 @@ async def test_membership_deleted_non_retryable_failure_swallowed(async_client, 
     err = PaperclipApiError("not-found", 404, "")
     mock_provisioning = AsyncMock()
     mock_provisioning.archive_member = AsyncMock(side_effect=err)
-    mock_provisioning.remove_member = AsyncMock(return_value=None)
+    remove_member = AsyncMock(return_value=None)
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
     captured_create = AsyncMock()
 
     payload = {
@@ -441,7 +445,7 @@ async def test_membership_deleted_non_retryable_failure_swallowed(async_client, 
     mock_provisioning.archive_member.assert_awaited_once()
     captured_create.assert_not_awaited()
     # Auth-bypass guard: DDB membership must be dropped.
-    mock_provisioning.remove_member.assert_awaited_once_with(user_id="user_member", org_id="org_acme")
+    remove_member.assert_awaited_once_with("org_acme", "user_member")
 
 
 @pytest.mark.asyncio
@@ -456,7 +460,8 @@ async def test_membership_deleted_non_retryable_fence_failure_is_swallowed(async
     err = PaperclipApiError("not-found", 404, "")
     mock_provisioning = AsyncMock()
     mock_provisioning.archive_member = AsyncMock(side_effect=err)
-    mock_provisioning.remove_member = AsyncMock(side_effect=RuntimeError("ddb-down"))
+    remove_member = AsyncMock(side_effect=RuntimeError("ddb-down"))
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
     captured_create = AsyncMock()
 
     payload = {
@@ -483,7 +488,7 @@ async def test_membership_deleted_non_retryable_fence_failure_is_swallowed(async
 
     assert resp.status_code == 200
     mock_provisioning.archive_member.assert_awaited_once()
-    mock_provisioning.remove_member.assert_awaited_once_with(user_id="user_member", org_id="org_acme")
+    remove_member.assert_awaited_once_with("org_acme", "user_member")
     captured_create.assert_not_awaited()
 
 
@@ -501,7 +506,8 @@ async def test_membership_deleted_retryable_fence_failure_is_swallowed(async_cli
     err = PaperclipApiError("server-down", 503, "")
     mock_provisioning = AsyncMock()
     mock_provisioning.archive_member = AsyncMock(side_effect=err)
-    mock_provisioning.remove_member = AsyncMock(side_effect=RuntimeError("ddb-down"))
+    remove_member = AsyncMock(side_effect=RuntimeError("ddb-down"))
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
     captured_create = AsyncMock(return_value={"update_id": "upd_archive"})
 
     payload = {
@@ -528,7 +534,7 @@ async def test_membership_deleted_retryable_fence_failure_is_swallowed(async_cli
 
     assert resp.status_code == 200
     mock_provisioning.archive_member.assert_awaited_once()
-    mock_provisioning.remove_member.assert_awaited_once_with(user_id="user_member", org_id="org_acme")
+    remove_member.assert_awaited_once_with("org_acme", "user_member")
     # Even when remove_member raises, the retry row is still enqueued so
     # the next worker pass re-attempts the Paperclip-side archive.
     captured_create.assert_awaited_once()

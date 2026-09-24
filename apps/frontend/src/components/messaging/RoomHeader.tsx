@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useRef, useState, type ReactNode } from "react";
-import { Archive, ArchiveRestore, Bell, BellOff, Hash, Link, LogOut, MessageCircle, MoreHorizontal, Pencil, Pin, Star, Users } from "lucide-react";
+import { Archive, ArchiveRestore, Bell, BellOff, Hash, Link, LogOut, MessageCircle, MoreHorizontal, Pencil, Pin, Star, Trash2, Users } from "lucide-react";
 import type { MemberPrefsRequest, RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -29,6 +29,7 @@ interface RoomHeaderProps {
   onSetTopic?: (topic: string | null) => Promise<void>;
   onLeaveRoom?: () => Promise<void>;
   onSetArchived?: (archived: boolean) => Promise<void>;
+  onDeleteRoom?: () => Promise<void>; // passed only to the channel's owner
 }
 
 export function RoomHeader({
@@ -47,6 +48,7 @@ export function RoomHeader({
   onSetTopic,
   onLeaveRoom,
   onSetArchived,
+  onDeleteRoom,
 }: RoomHeaderProps) {
   const id = useId();
   const [editingTopic, setEditingTopic] = useState(false);
@@ -55,6 +57,10 @@ export function RoomHeader({
   const [nameDraft, setNameDraft] = useState(room?.name ?? "");
   const [leaving, setLeaving] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteDraft, setDeleteDraft] = useState("");
+  // The backend refuses #general, the shared channel and DMs (ROOM_NOT_DELETABLE); don't offer them.
+  const canDelete = !!onDeleteRoom && room?.kind === "channel" && !room.shared && !room.isDefault;
   // The backend refuses #general, the shared channel and 1:1 DMs (ROOM_NOT_ARCHIVABLE); don't
   // offer them. A group chat has no admins, so any member may archive it.
   const canArchive = !!onSetArchived && (room?.kind === "group-dm"
@@ -142,10 +148,12 @@ export function RoomHeader({
             : <DropdownMenuItem onSelect={() => { reset(); setArchiving(true); }}><Archive aria-hidden="true" />Archive {noun}</DropdownMenuItem>)}
           {onLeaveRoom && canLeave && <><DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
+          {canDelete && <><DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete channel</DropdownMenuItem></>}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
-    {error && !renaming && !leaving && !archiving && <p role="alert" className="room-header-error text-sm text-err">{error}</p>}
+    {error && !renaming && !leaving && !archiving && !deleting && <p role="alert" className="room-header-error text-sm text-err">{error}</p>}
     <Dialog open={renaming} onOpenChange={(open) => { if (!open && !pending) { setRenaming(false); reset(); } }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onOpenAutoFocus={(event) => { event.preventDefault(); renameInput.current?.focus(); }}
@@ -201,6 +209,32 @@ export function RoomHeader({
             {pending ? "Archiving…" : `Archive ${noun}`}
           </Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={deleting} onOpenChange={(open) => { if (!open && !pending) { setDeleting(false); reset(); } }}>
+      <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
+        onCloseAutoFocus={(event) => { event.preventDefault(); restoreOptionsFocus(); }}>
+        <DialogHeader><DialogTitle className="break-words">Delete {roomName}?</DialogTitle>
+          <DialogDescription>The channel disappears for every member and agents stop responding in it. This can&apos;t be undone.</DialogDescription>
+        </DialogHeader>
+        <form className="grid gap-4" onSubmit={(event) => {
+          event.preventDefault();
+          if (deleteDraft !== roomName) return;
+          void run(async () => { await onDeleteRoom!(); }, "The channel could not be deleted.", () => setDeleting(false));
+        }}>
+          <div className="grid gap-2">
+            <label htmlFor={`${id}-delete`} className="text-sm font-medium">Type <strong className="break-words">{roomName}</strong> to confirm</label>
+            <input id={`${id}-delete`} className="room-input" autoComplete="off" value={deleteDraft} disabled={pending}
+              onChange={(event) => setDeleteDraft(event.target.value)} />
+          </div>
+          {error && <p role="alert" className="text-sm text-err break-words">{error}</p>}
+          <DialogFooter className="gap-2">
+            <Button type="button" variant="outline" disabled={pending} onClick={() => { setDeleting(false); reset(); }}>Cancel</Button>
+            <Button type="submit" variant="destructive" disabled={!actionable || pending || deleteDraft !== roomName}>
+              {pending ? "Deleting…" : "Delete channel"}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   </header>;

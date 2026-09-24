@@ -40,7 +40,7 @@ const messaging = {
   updateRoom: vi.fn(), upsertMember: vi.fn(), removeMember: vi.fn(), abortRun: vi.fn(),
   steerRun: vi.fn(), updateMessage: vi.fn(), setReaction: vi.fn(), downloadAttachment: vi.fn(),
   getLiveConfig: vi.fn(), listResources: vi.fn(),
-  setMemberPrefs: vi.fn(), putSections: vi.fn(), leaveRoom: vi.fn(), setPin: vi.fn(),
+  setMemberPrefs: vi.fn(), putSections: vi.fn(), leaveRoom: vi.fn(), deleteRoom: vi.fn(), setPin: vi.fn(),
 };
 
 let visible = true;
@@ -447,6 +447,31 @@ describe("useRooms platform seams", () => {
 
       expect(result.current.rooms.find((r) => r.roomId === older.roomId))
         .toMatchObject({ lastMessageSeq: 2, archivedAt });
+    });
+
+    it("drops a room whose access was removed even when it isn't the open one (a channel delete)", async () => {
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+      messaging.listRooms.mockResolvedValue({ rooms: [newer], sections: [] });
+
+      act(() => { for (const handler of handlers) handler({
+        schemaVersion: 1, eventId: "evt-gone", type: "room.access.removed", occurredAt: "2026-09-15T00:00:02Z",
+        roomId: older.roomId, payload: { roomId: older.roomId, roomRevision: 9 },
+      } as LiveEvent); });
+
+      await waitFor(() => expect(result.current.rooms.map((r) => r.roomId)).toEqual([newer.roomId]));
+    });
+
+    it("deleteRoom calls the command and refetches the list", async () => {
+      messaging.deleteRoom.mockResolvedValue(undefined);
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+      messaging.listRooms.mockResolvedValue({ rooms: [newer], sections: [] });
+
+      await act(async () => { await result.current.deleteRoom(older.roomId); });
+
+      expect(messaging.deleteRoom).toHaveBeenCalledWith(older.roomId);
+      expect(result.current.rooms.map((r) => r.roomId)).toEqual([newer.roomId]);
     });
 
     it("moves recency without unread when the hint is not a notify", async () => {

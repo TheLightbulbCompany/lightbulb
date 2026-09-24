@@ -638,8 +638,9 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       refreshRoomsSoon();
       return;
     }
-    if (event.type === "room.access.removed" && event.payload.roomId === activeRoomId) {
-      removeActiveAccess();
+    if (event.type === "room.access.removed") {
+      // Removal or a channel delete: drop it from the list even when it isn't on screen.
+      if (event.payload.roomId === activeRoomId) removeActiveAccess();
       void mutateRooms();
       return;
     }
@@ -985,6 +986,12 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     await mutateRooms();
   }, [activeRoomId, messaging, mutateRooms]);
 
+  const deleteRoom = useCallback(async (roomId: string) => {
+    await messaging.deleteRoom(roomId);
+    if (roomId === activeRoomId) setActiveRoomId(null);
+    await mutateRooms();
+  }, [activeRoomId, messaging, mutateRooms]);
+
   const setPin = useCallback(async (messageId: string, pinned: boolean) => {
     if (!activeRoomId) throw new Error("No room selected.");
     const updated = await messaging.setPin(activeRoomId, messageId, pinned);
@@ -1097,6 +1104,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     setRoomPrefs,
     saveSections,
     leaveRoom,
+    deleteRoom,
     setPin,
     upsertMember,
     removeMember,

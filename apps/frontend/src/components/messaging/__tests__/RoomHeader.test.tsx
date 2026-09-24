@@ -225,3 +225,30 @@ it("lets any member archive and leave a group chat", async () => {
   await userEvent.click(within(screen.getByRole("dialog", { name: "Leave Roadmap?" })).getByRole("button", { name: "Leave group chat" }));
   await waitFor(() => expect(onLeaveRoom).toHaveBeenCalled());
 });
+
+it("deletes a channel only once its name is typed exactly", async () => {
+  const onDeleteRoom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomHeader {...props} onDeleteRoom={onDeleteRoom} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Delete channel" }));
+  const dialog = screen.getByRole("dialog", { name: "Delete Roadmap?" });
+  const confirm = within(dialog).getByRole("button", { name: "Delete channel" });
+  const field = within(dialog).getByLabelText(/to confirm/);
+  expect(confirm).toBeDisabled();
+  await userEvent.type(field, "roadmap{Enter}");
+  expect(confirm).toBeDisabled();
+  expect(onDeleteRoom).not.toHaveBeenCalled();
+  await userEvent.clear(field);
+  await userEvent.type(field, "Roadmap");
+  expect(confirm).toBeEnabled();
+  await userEvent.click(confirm);
+  await waitFor(() => expect(onDeleteRoom).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+});
+
+it.each([{}, { isDefault: true }, { shared: true }, { kind: "group-dm" as const }, { kind: "dm" as const }])("offers no delete for %o without an owner handler or on a protected room", async (extra) => {
+  const onDeleteRoom = Object.keys(extra).length ? vi.fn() : undefined;
+  render(<RoomHeader {...props} room={{ ...room, ...extra }} onDeleteRoom={onDeleteRoom} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  expect(screen.queryByRole("menuitem", { name: "Delete channel" })).not.toBeInTheDocument();
+});

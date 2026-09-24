@@ -57,6 +57,8 @@ export interface RoomSummary {
   /** Set while the channel is archived: history stays readable, nothing new posts. */
   archivedAt?: string | null;
   archivedBy?: string | null;
+  /** Set once the channel's owner deleted it. The backend hides a deleted room, so clients rarely see it. */
+  deletedAt?: string | null;
 }
 
 export interface ActiveRoomRun {

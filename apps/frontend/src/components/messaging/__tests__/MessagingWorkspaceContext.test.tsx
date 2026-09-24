@@ -73,7 +73,7 @@ const state = {
   liveConnected: true, httpReady: true, selectRoom: vi.fn(), selectDm: vi.fn(), selectAgentDm: vi.fn(),
   directoryRoomDetails: new Map([[room.roomId, room]]),
   refreshRooms: vi.fn(), refreshRoom: vi.fn(), createRoom: vi.fn(), updateRoom: vi.fn(),
-  upsertMember: vi.fn(), removeMember: vi.fn(), sendMessage: vi.fn(), reconcileSend: vi.fn(),
+  upsertMember: vi.fn(), removeMember: vi.fn(), deleteRoom: vi.fn(), sendMessage: vi.fn(), reconcileSend: vi.fn(),
   sendState: () => "idle", setTyping: vi.fn(), abortRun: vi.fn(), steerRun: vi.fn(),
 };
 beforeEach(() => {
@@ -300,6 +300,17 @@ it.each(["channel", "dm", "group-dm"] as const)("lets room admins edit response 
   state.activeRoom = { ...room, kind, members: room.members.map((member) => member.id === "owner" ? { ...member, role: "admin" } : member) };
   compose();
   expect(panel.onListenModeChange).toBeTypeOf("function");
+});
+
+it.each([
+  ["owner", "channel", true], ["admin", "channel", false], ["member", "channel", false],
+  ["owner", "group-dm", false], ["owner", "dm", false],
+] as const)("offers channel delete to a %s of a %s: %s", async (role, kind, offered) => {
+  state.activeRoom = { ...room, kind, members: room.members.map((member) => member.id === "owner" ? { ...member, role } : member) };
+  compose();
+  expect(typeof panel.onDeleteRoom === "function").toBe(offered);
+  await act(async () => panel.onDeleteRoom?.());
+  if (offered) expect(state.deleteRoom).toHaveBeenCalledWith(room.roomId);
 });
 
 it.each(["owner", "admin"] as const)("connects channel %s management to existing commands", async (role) => {

@@ -80,14 +80,12 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
     without an email claim; passing it in avoids a redundant second lookup
     inside the helper.
 
-    After the seed, ``arm_nightly_ceo`` arms the nightly-CEO routine on the
-    freshly seeded CEO. It is gated INSIDE on ``should_arm_nightly_ceo`` — paid
+    After the seed, ``arm_nightly_ceo`` arms the CEO's timer heartbeat on the
+    freshly seeded company. It is gated INSIDE on ``should_arm_nightly_ceo`` — paid
     OR an unexpired ``trial_local``; an expired trial is a no-op — and arming
     here, not only on a UI poll, is what makes it deterministic for org
     first-provisions and trial→paid conversions, both of which reach this
     executor. Its failures classify exactly like the seed's.
-    ``trust_cache=False``: a retry of a run that died between the arm's claim
-    write and its routine create must not trust the claim cache.
     """
     from core.auth import is_org_owner_id
     from core.repositories.container_repo import classify_provision_error
@@ -120,7 +118,7 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
         # falls through to the JOIN path and no-ops on the creator's already
         # -active owner row.
         await _ensure_paperclip_for_org(org_id=owner_id, user_id=creator_user_id, email=owner_email, is_admin=True)
-        await arm_nightly_ceo(owner_id, trust_cache=False)
+        await arm_nightly_ceo(owner_id)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         logger.exception("seed step 0 (owner paperclip) failed for owner %s", owner_id)
         _, retryable = classify_provision_error(exc)

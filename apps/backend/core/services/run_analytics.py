@@ -36,10 +36,10 @@ import httpx
 
 from core.auth import is_org_owner_id, is_platform_admin_email
 from core.config import settings
+from core.repositories.paperclip_repo import PaperclipRepo
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
 from core.services import clerk_admin
-from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE, NIGHTLY_CEO_SENTINEL
 from core.services.inbound_triggers import automation_from_title
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
@@ -56,7 +56,7 @@ _CAPTURE_UUID_NS = uuid.uuid5(uuid.NAMESPACE_URL, "isol8:agent_run_completed")
 
 # North Star numerator sources. Everything else classified is human-initiated;
 # only an unresolved source stays "unknown".
-_AUTONOMOUS_SOURCES = frozenset({"routine_schedule", "routine_webhook", "cron"})
+_AUTONOMOUS_SOURCES = frozenset({"routine_schedule", "routine_webhook", "cron", "heartbeat_timer"})
 
 _ROUTINE_RUN_SOURCES = frozenset({"schedule", "webhook", "manual", "api"})
 
@@ -171,6 +171,9 @@ def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase:
         needs_enrichment = True
     elif source == "paperclip":
         props["run_source"] = "paperclip_other"
+        # An issue-less Paperclip run is keyed ``run:<paperclip run id>`` -- a timer
+        # heartbeat wake is one; the join reads the run's invocationSource.
+        needs_enrichment = bool(run_id and parsed.get("run_id"))
     else:
         props["run_source"] = "unknown"
 
@@ -182,9 +185,12 @@ async def _enrich_and_capture(*, owner_id: str, props: dict, needs_enrichment: b
     try:
         if needs_enrichment:
             try:
-                props.update(
-                    await asyncio.wait_for(_enrich_from_paperclip(props["issue_id"]), timeout=_ENRICH_TIMEOUT_S)
+                enrich = (
+                    _enrich_from_paperclip(props["issue_id"])
+                    if props.get("issue_id")
+                    else _enrich_from_heartbeat_run(owner_id, props["run_id"], props.get("agent_id"))
                 )
+                props.update(await asyncio.wait_for(enrich, timeout=_ENRICH_TIMEOUT_S))
             except Exception:
                 logger.warning(
                     "run_analytics: paperclip enrichment failed for owner %s issue %s — emitting degraded",
@@ -228,15 +234,8 @@ async def _enrich_from_paperclip(issue_id: str) -> dict:
         cookie = await get_admin_session_cookie(http)
 
         issue = await admin.get_issue(session_cookie=cookie, issue_id=issue_id)
-        # The execution issue interpolates the routine's title/description, so
-        # the seeded nightly-CEO sentinel + frozen title carry over verbatim.
         issue_title = issue.get("title")
-        delta: dict = {
-            "is_nightly_ceo": (
-                str(issue.get("description") or "").startswith(NIGHTLY_CEO_SENTINEL)
-                or issue_title == NIGHTLY_CEO_ROUTINE_TITLE
-            ),
-        }
+        delta: dict = {}
         if issue.get("originKind") != "routine_execution":
             delta["run_source"] = "issue_assignment"
             return delta
@@ -275,6 +274,21 @@ async def _enrich_from_paperclip(issue_id: str) -> dict:
         if automation:
             delta["trigger_provider"] = automation[0]
         return delta
+
+
+async def _enrich_from_heartbeat_run(owner_id: str, run_id: str, agent_id: str | None) -> dict:
+    """An issue-less Paperclip run: a timer heartbeat wake (``invocationSource ==
+    "timer"``) is autonomous, and the CEO's is the retention loop ``is_nightly_ceo``
+    counts. Any other issue-less run keeps ``paperclip_other``."""
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=_ENRICH_TIMEOUT_S) as http:
+        admin = PaperclipAdminClient(http_client=http)
+        cookie = await get_admin_session_cookie(http)
+        run = await admin.get_heartbeat_run(session_cookie=cookie, run_id=run_id)
+    if run.get("invocationSource") != "timer":
+        return {}
+    ws = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    ceo_id = (ws.starter_agent_ids or {}).get("ceo") if ws is not None else None
+    return {"run_source": "heartbeat_timer", "is_nightly_ceo": bool(ceo_id) and ceo_id == agent_id}
 
 
 def _match_dispatching_run(runs: list, issue_id: str) -> dict | None:

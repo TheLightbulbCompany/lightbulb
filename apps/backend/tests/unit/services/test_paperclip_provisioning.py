@@ -333,6 +333,30 @@ async def test_provision_org_only_the_starter_ceo_can_create_agents(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_provision_org_seeds_specialists_with_a_daily_timer_heartbeat(monkeypatch):
+    """Specialists wake once a day, skipped when idle; the CEO's heartbeat is the arm's."""
+    from core.repositories import container_repo
+    from core.services.paperclip_provisioning import SPECIALIST_HEARTBEAT, PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "h"}))
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(owner_id="org_x", owner_user_id="user_owner", owner_email="o@example.com")
+
+    configs = {call.kwargs["role"]: call.kwargs.get("runtime_config") for call in admin.create_agent.call_args_list}
+    assert configs.pop("ceo") is None
+    assert SPECIALIST_HEARTBEAT == {
+        "enabled": True,
+        "intervalSec": 86400,
+        "wakeOnDemand": True,
+        "skipTimerWhenNoActionableWork": True,
+    }
+    assert set(configs) == {"engineer", "cfo", "cmo", "researcher", "general"}
+    assert all(c == {"heartbeat": SPECIALIST_HEARTBEAT} for c in configs.values())
+
+
+@pytest.mark.asyncio
 async def test_provision_org_refuses_second_company_when_org_has_one_on_record(monkeypatch):
     """No workspace row but the by-org-id GSI already names a company (a
     pre-migration per-member row): 409 BEFORE any Paperclip side effect or

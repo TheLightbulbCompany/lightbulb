@@ -30,7 +30,7 @@ def _runtime():
         patch("core.billing.bedrock_aip.delete_owner_bedrock_role", AsyncMock()) as role,
         patch(
             "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
-            AsyncMock(return_value={"routines_paused": 1, "issues_cancelled": 2}),
+            AsyncMock(return_value={"heartbeats_disabled": 1, "issues_cancelled": 2}),
         ) as disarm,
     ):
         # Returns the containers row's ALL_OLD image — the only handle on the

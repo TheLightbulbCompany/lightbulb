@@ -1,12 +1,12 @@
 """``disarm_owner_nightly_automation`` — stop a de-entitled owner's Paperclip
 automation.
 
-Teardown deletes the container but the Paperclip scheduler fires a routine
-purely on ``routines.status='active'`` + ``routine_triggers.enabled`` (no
-company-disabled gate), and its heartbeat runner retry-loops ``in_progress``
-issues. So a cancelled owner whose routine stays active reproduces the storm
-where every fire hits the deleted container. This pauses the nightly CEO
-routine and cancels the in-progress issues that would loop.
+Teardown deletes the container but Paperclip's scheduler fires an agent's
+timer heartbeat while ``runtimeConfig.heartbeat.enabled`` holds on an active
+company, and its heartbeat runner retry-loops ``in_progress`` issues. So a
+cancelled owner left armed reproduces the storm where every wake hits the
+deleted container. This turns off every starter agent's heartbeat and cancels
+the in-progress issues that would loop.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,80 +14,73 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.services import paperclip_agent_lifecycle as lifecycle
-from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
 
 
-def _admin(*, routines, issue_pages):
+def _admin(*, issue_pages):
     admin = MagicMock()
-    admin.list_routines = AsyncMock(return_value=routines)
-    admin.patch_routine = AsyncMock(return_value={})
+    admin.set_agent_heartbeat = AsyncMock(return_value={})
     admin.list_issues = AsyncMock(side_effect=list(issue_pages))
     admin.patch_issue = AsyncMock(return_value={})
     return admin
 
 
-def _patches(admin):
+def _ws(starter_agent_ids=None, seeded_agent_ids=None):
+    return MagicMock(company_id="company", starter_agent_ids=starter_agent_ids, seeded_agent_ids=seeded_agent_ids)
+
+
+def _patches(admin, ws):
     http = MagicMock()
     http.aclose = AsyncMock()
-    # Stashed on ``admin`` (a MagicMock) purely as a handle for assertions —
-    # patch.object binds this same object onto billing_repo.
-    admin.release_nightly_arm = AsyncMock()
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(return_value=ws)
     return (
-        patch.object(lifecycle, "resolve_company_id_for_owner", new=AsyncMock(return_value="company")),
+        patch.object(lifecycle, "PaperclipRepo", return_value=repo),
         patch.object(lifecycle, "PaperclipAdminClient", return_value=admin),
         patch.object(lifecycle, "get_admin_session_cookie", new=AsyncMock(return_value="cookie")),
         patch.object(lifecycle.httpx, "AsyncClient", return_value=http),
-        patch.object(lifecycle.billing_repo, "release_nightly_arm", new=admin.release_nightly_arm),
     )
+
+
+async def _disarm(admin, ws=None, **extra):
+    ws = ws if ws is not None else _ws({"ceo": "ceo1", "engineering": "eng1"})
+    p1, p2, p3, p4 = _patches(admin, ws)
+    with p1, p2, p3, p4:
+        for p in extra.values():
+            p.start()
+        try:
+            return await lifecycle.disarm_owner_nightly_automation("owner")
+        finally:
+            for p in extra.values():
+                p.stop()
 
 
 @pytest.mark.asyncio
-async def test_pauses_active_nightly_routine_and_cancels_in_progress_issues():
-    admin = _admin(
-        routines=[
-            {"id": "nightly", "title": NIGHTLY_CEO_ROUTINE_TITLE, "status": "active"},
-        ],
-        issue_pages=[
-            [
-                {"id": "exec-issue", "status": "in_progress"},
-                {"id": "watchdog", "status": "in_progress"},
-            ]
-        ],
-    )
-    p1, p2, p3, p4, p5 = _patches(admin)
-    with p1, p2, p3, p4, p5:
-        result = await lifecycle.disarm_owner_nightly_automation("owner")
+async def test_disables_every_starter_heartbeat_and_cancels_in_progress_issues():
+    admin = _admin(issue_pages=[[{"id": "exec-issue", "status": "in_progress"}, {"id": "w", "status": "in_progress"}]])
+    result = await _disarm(admin)
 
-    assert result == {"routines_paused": 1, "issues_cancelled": 2}
-    admin.patch_routine.assert_awaited_once_with(
-        routine_id="nightly", body={"status": "paused"}, session_cookie="cookie"
-    )
-    assert [c.kwargs["issue_id"] for c in admin.patch_issue.await_args_list] == ["exec-issue", "watchdog"]
+    assert result == {"heartbeats_disabled": 2, "issues_cancelled": 2}
+    assert [(c.kwargs["agent_id"], c.kwargs["heartbeat"]) for c in admin.set_agent_heartbeat.await_args_list] == [
+        ("ceo1", {"enabled": False}),
+        ("eng1", {"enabled": False}),
+    ]
+    assert [c.kwargs["issue_id"] for c in admin.patch_issue.await_args_list] == ["exec-issue", "w"]
     assert all(c.kwargs["body"] == {"status": "cancelled"} for c in admin.patch_issue.await_args_list)
 
 
 @pytest.mark.asyncio
-async def test_skips_non_nightly_routines_and_already_paused_nightly():
-    admin = _admin(
-        routines=[
-            {"id": "custom", "title": "Weekly digest", "status": "active"},
-            {"id": "already", "title": NIGHTLY_CEO_ROUTINE_TITLE, "status": "paused"},
-            {"id": "archived", "title": NIGHTLY_CEO_ROUTINE_TITLE, "status": "archived"},
-        ],
-        issue_pages=[[]],
+async def test_legacy_roster_disables_the_first_seeded_agent():
+    admin = _admin(issue_pages=[[]])
+    result = await _disarm(admin, _ws(seeded_agent_ids=["friday1", "atlas1"]))
+    assert result == {"heartbeats_disabled": 1, "issues_cancelled": 0}
+    admin.set_agent_heartbeat.assert_awaited_once_with(
+        session_cookie="cookie", agent_id="friday1", heartbeat={"enabled": False}
     )
-    p1, p2, p3, p4, p5 = _patches(admin)
-    with p1, p2, p3, p4, p5:
-        result = await lifecycle.disarm_owner_nightly_automation("owner")
-
-    assert result == {"routines_paused": 0, "issues_cancelled": 0}
-    admin.patch_routine.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_leaves_terminal_issues_alone():
     admin = _admin(
-        routines=[],
         issue_pages=[
             [
                 {"id": "done", "status": "done"},
@@ -96,19 +89,19 @@ async def test_leaves_terminal_issues_alone():
             ]
         ],
     )
-    p1, p2, p3, p4, p5 = _patches(admin)
-    with p1, p2, p3, p4, p5:
-        result = await lifecycle.disarm_owner_nightly_automation("owner")
+    result = await _disarm(admin)
 
-    assert result == {"routines_paused": 0, "issues_cancelled": 1}
+    assert result["issues_cancelled"] == 1
     admin.patch_issue.assert_awaited_once_with(issue_id="live", body={"status": "cancelled"}, session_cookie="cookie")
 
 
 @pytest.mark.asyncio
 async def test_no_company_is_a_no_op():
-    with patch.object(lifecycle, "resolve_company_id_for_owner", new=AsyncMock(return_value=None)):
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(return_value=None)
+    with patch.object(lifecycle, "PaperclipRepo", return_value=repo):
         result = await lifecycle.disarm_owner_nightly_automation("owner")
-    assert result == {"routines_paused": 0, "issues_cancelled": 0}
+    assert result == {"heartbeats_disabled": 0, "issues_cancelled": 0}
 
 
 @pytest.mark.asyncio
@@ -116,49 +109,12 @@ async def test_snapshots_all_issue_pages_before_cancelling():
     # Two full pages then a short one: all in_progress issues must be collected
     # BEFORE any cancel, or offset paging skips rows as the filtered set shrinks.
     admin = _admin(
-        routines=[],
         issue_pages=[
             [{"id": "a", "status": "in_progress"}, {"id": "b", "status": "in_progress"}],
             [{"id": "c", "status": "in_progress"}],
         ],
     )
-    p1, p2, p3, p4, p5 = _patches(admin)
-    with p1, p2, p3, p4, p5, patch.object(lifecycle, "_ISSUE_PAGE_SIZE", 2):
-        result = await lifecycle.disarm_owner_nightly_automation("owner")
+    result = await _disarm(admin, page=patch.object(lifecycle, "_ISSUE_PAGE_SIZE", 2))
 
-    assert result == {"routines_paused": 0, "issues_cancelled": 3}
+    assert result["issues_cancelled"] == 3
     assert [c.kwargs["params"]["offset"] for c in admin.list_issues.await_args_list] == ["0", "2"]
-
-
-@pytest.mark.asyncio
-async def test_releases_the_arm_cache_so_a_resubscribe_reaches_the_reconcile():
-    # The poll-path arm short-circuits on nightly_ceo_armed_company; if teardown
-    # pauses the routine but leaves that cache set, a resubscribe whose container
-    # SURVIVED teardown's best-effort delete never reaches reconcile_paused and
-    # the routine stays paused. Disarm must release the cache for that company.
-    admin = _admin(
-        routines=[{"id": "nightly", "title": NIGHTLY_CEO_ROUTINE_TITLE, "status": "active"}],
-        issue_pages=[[]],
-    )
-    p1, p2, p3, p4, p5 = _patches(admin)
-    with p1, p2, p3, p4, p5:
-        await lifecycle.disarm_owner_nightly_automation("owner")
-
-    admin.release_nightly_arm.assert_awaited_once_with("owner", "company")
-
-
-@pytest.mark.asyncio
-async def test_arm_cache_release_failure_does_not_undo_the_pause():
-    # The routine pause and issue cancel are the storm-stoppers; a billing-write
-    # hiccup on the cache release must be swallowed, not lose them.
-    admin = _admin(
-        routines=[{"id": "nightly", "title": NIGHTLY_CEO_ROUTINE_TITLE, "status": "active"}],
-        issue_pages=[[{"id": "live", "status": "in_progress"}]],
-    )
-    p1, p2, p3, p4, p5 = _patches(admin)
-    admin.release_nightly_arm.side_effect = RuntimeError("ddb down")
-    with p1, p2, p3, p4, p5:
-        result = await lifecycle.disarm_owner_nightly_automation("owner")
-
-    assert result == {"routines_paused": 1, "issues_cancelled": 1}
-    admin.patch_routine.assert_awaited_once()

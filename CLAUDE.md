@@ -1127,8 +1127,9 @@ Clerk sign-up  ->  workspace (Clerk org) created or joined
                                  └─ CreateAgentRuntime (VPC mode, 4h idle / 8h max, no filesystem)
                                        └─ bounded poll to READY; a CREATE_FAILED runtime is deleted
                                           and its ARN cleared, never reused
-                            0b. arm_nightly_ceo — seeds the CEO's "Nightly CEO progress" routine for
-                                EVERY live owner: paid, OR an unexpired trial_local (see
+                            0b. arm_nightly_ceo — PATCHes the CEO's Paperclip timer heartbeat
+                                (8 h managed paid / 12 h trial / 24 h BYO or ChatGPT OAuth; the
+                                specialists wake daily, skipped when idle) for EVERY live owner: paid, OR an unexpired trial_local (see
                                 should_arm_nightly_ceo — only an EXPIRED trial is left unarmed);
                                 every path to provisioned runs this executor, so this is the one door
                   (the executor then creates the vendor room and seats every teammate in #general;

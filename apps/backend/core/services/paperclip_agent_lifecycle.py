@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 
 from core.config import settings
-from core.repositories import billing_repo, container_repo
+from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_agent_idempotency import (
@@ -142,64 +142,43 @@ def ensure_root_ceo_survives(*, target: dict, agents: list[dict]) -> None:
 
 
 async def disarm_owner_nightly_automation(owner_id: str) -> dict[str, int]:
-    """Pause a de-entitled owner's nightly CEO routine and cancel the
+    """Turn off a de-entitled owner's timer heartbeats and cancel the
     in-progress issues that would retry-loop against their deleted container.
 
-    Called from entitlement teardown after the container is gone. The Paperclip
-    scheduler fires a routine while ``routines.status='active'`` (no
-    company-disabled gate — fork ``tickScheduledTriggers``) and its heartbeat
-    runner retry-loops ``in_progress`` issues, so a cancelled owner whose
-    routine stays active reproduces the storm where every fire times out on the
-    dead container. Pauses the routine (the owner's chosen disarm) and cancels
-    the looping issues.
+    Called from entitlement teardown after the container is gone. Paperclip's
+    scheduler fires an agent's timer heartbeat while
+    ``runtimeConfig.heartbeat.enabled`` holds and the Paperclip company is
+    active (teardown leaves it active; fork ``heartbeat.ts`` timer tick), and
+    its heartbeat runner retry-loops ``in_progress`` issues, so a cancelled
+    owner left armed reproduces the storm where every wake fails on the dead
+    container. Sets ``enabled: false`` on every starter agent's heartbeat — the
+    CEO's AND the specialists', whose daily timers would otherwise wake on any
+    leftover todo — and cancels the looping issues. Assignment/on-demand wakes
+    are untouched.
 
-    RE-SUBSCRIBE: pausing self-heals on re-subscribe now that the arm path
-    reconciles a paused routine (``create_enabled_schedule_routine`` with
-    ``reconcile_paused=True``, re-enabling instead of title-skipping — safe
-    because an owner opt-out is filtered before the arm ever reaches the create).
-    Two arm paths reach it: the executor (container torn down, ``trust_cache=
-    False``) always does, and the poll-path self-heal (container survived a
-    best-effort ``delete_user_service``, ``trust_cache=True``) does BECAUSE this
-    function releases the arm cache below — otherwise its
-    ``nightly_ceo_armed_company`` short-circuit would return ``already_armed``
-    and never reach the reconcile. (Archiving instead of pausing would also
-    self-heal via the title-skip's ``archived`` exclusion, but it discards this
-    routine's run history and config; pausing keeps them, which is why it is the
-    chosen disarm.)
+    RE-SUBSCRIBE: self-heals. ``arm_nightly_ceo`` re-enables the heartbeats on
+    both re-entitlement paths (the provision executor, and the reconcile the
+    Stripe ``entering_live`` edge dispatches).
 
-    Idempotent: an already-paused/archived routine and terminal issues are
-    skipped. Scoped to the nightly CEO routine by title; issue cancellation
-    covers every in-progress issue for the company (nothing can progress once
-    the container is gone), which also stops the productivity-review watchdog
-    that amplifies the storm. May raise; its one caller (entitlement teardown)
-    runs it as a guarded best-effort step.
+    Idempotent: an already-disabled heartbeat is not re-PATCHed and terminal
+    issues are skipped. Issue cancellation covers every in-progress issue for
+    the company (nothing can progress once the container is gone). May raise;
+    its one caller (entitlement teardown) runs it as a guarded best-effort step.
     """
-    from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
-
     repo = PaperclipRepo(table_name="paperclip-companies")
-    company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    ws = await repo.resolve_owner_row(owner_id)
+    company_id = (ws.company_id or None) if ws is not None else None
     if company_id is None:
-        return {"routines_paused": 0, "issues_cancelled": 0}
+        return {"heartbeats_disabled": 0, "issues_cancelled": 0}
+    agent_ids = [a for a in (ws.starter_agent_ids or {}).values() if a] or list(ws.seeded_agent_ids or [])[:1]
 
     http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
     try:
         admin = PaperclipAdminClient(http_client=http)
         cookie = await get_admin_session_cookie(http)
 
-        routines = _rows(
-            await admin.list_routines(company_id=company_id, session_cookie=cookie),
-            "routines",
-        )
-        routines_paused = 0
-        for routine in routines:
-            if routine.get("title") != NIGHTLY_CEO_ROUTINE_TITLE or routine.get("status") != "active":
-                continue
-            await admin.patch_routine(
-                routine_id=routine["id"],
-                body={"status": "paused"},
-                session_cookie=cookie,
-            )
-            routines_paused += 1
+        for agent_id in agent_ids:
+            await admin.set_agent_heartbeat(session_cookie=cookie, agent_id=agent_id, heartbeat={"enabled": False})
 
         # Snapshot every page before mutating: cancelling shrinks the
         # status=in_progress result set, so offset paging interleaved with the
@@ -236,35 +215,14 @@ async def disarm_owner_nightly_automation(owner_id: str) -> dict[str, int]:
             )
             issues_cancelled += 1
 
-        # Release the arm cache so a resubscribe's poll-path re-arm reaches the
-        # reconcile. arm_nightly_ceo short-circuits on
-        # nightly_ceo_armed_company == company_id (trust_cache=True, the poll
-        # path), so leaving it set after a pause means a churn→resubscribe owner
-        # whose container SURVIVED teardown (delete_user_service is best-effort
-        # and swallowed) never re-runs the arm — reconcile_paused never fires and
-        # the routine stays paused. The executor path (container torn down,
-        # trust_cache=False) ignores the cache and is unaffected either way.
-        # release_nightly_arm is a conditional REMOVE (no-op unless it still
-        # equals company_id), and this is guarded on its own: the routine pause
-        # and issue cancel above are the storm-stoppers and must never be undone
-        # by a billing-write hiccup.
-        try:
-            await billing_repo.release_nightly_arm(owner_id, company_id)
-        except Exception:
-            logger.exception(
-                "paperclip nightly disarm: arm-cache release failed owner=%s company=%s",
-                owner_id,
-                company_id,
-            )
-
         logger.info(
-            "paperclip nightly disarm owner=%s company=%s routines_paused=%d issues_cancelled=%d",
+            "paperclip nightly disarm owner=%s company=%s heartbeats_disabled=%d issues_cancelled=%d",
             owner_id,
             company_id,
-            routines_paused,
+            len(agent_ids),
             issues_cancelled,
         )
-        return {"routines_paused": routines_paused, "issues_cancelled": issues_cancelled}
+        return {"heartbeats_disabled": len(agent_ids), "issues_cancelled": issues_cancelled}
     finally:
         await http.aclose()
 

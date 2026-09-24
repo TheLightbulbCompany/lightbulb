@@ -1087,66 +1087,6 @@ async def claim_oauth_connector(owner_id: str, *, connector_user_id: str) -> Non
         raise
 
 
-async def try_claim_nightly_arm(owner_id: str, company_id: str) -> bool:
-    """Conditional-write claim for the paid nightly CEO routine.
-
-    SET ``nightly_ceo_armed_company = company_id`` on the billing row IF the
-    attribute is absent OR currently points at a DIFFERENT company. Returns
-    True to exactly ONE concurrent caller — the winner seeds the routine; the
-    losers short-circuit. It closes the list-then-create race so two simultaneous ``/container/status`` polls
-    can never create two firing nightly routines.
-
-    The stored ``nightly_ceo_armed_company`` doubles as a cheap idempotency
-    cache — a normal re-poll where it already equals the current company never
-    reaches this write (the caller checks equality first). On a full
-    reprovision the company_id changes, so the ``<>`` clause lets a
-    never-opted-out owner re-arm their fresh Friday.
-
-    No phantom rows: guarded on ``attribute_exists(owner_id)`` — a missing
-    billing row (never a paid owner) simply returns False.
-    """
-    table = _get_table()
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET nightly_ceo_armed_company = :c, updated_at = :t",
-            ExpressionAttributeValues={":c": company_id, ":t": utc_now_iso()},
-            ConditionExpression=(
-                "attribute_exists(owner_id) AND "
-                "(attribute_not_exists(nightly_ceo_armed_company) OR nightly_ceo_armed_company <> :c)"
-            ),
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-    return True
-
-
-async def release_nightly_arm(owner_id: str, company_id: str) -> None:
-    """Release the nightly-arm claim if it still points at ``company_id``.
-
-    Called when the seed itself failed after the claim was won, so the next
-    poll retries. REMOVEs ``nightly_ceo_armed_company`` only when it still
-    equals ``company_id`` (a concurrent successful arm for a newer company must
-    not be clobbered). The no-match / no-row cases are silent no-ops.
-    """
-    table = _get_table()
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="REMOVE nightly_ceo_armed_company SET updated_at = :t",
-            ExpressionAttributeValues={":t": utc_now_iso(), ":c": company_id},
-            ConditionExpression="attribute_exists(owner_id) AND nightly_ceo_armed_company = :c",
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return
-        raise
-
-
 async def set_nightly_ceo_opted_out(owner_id: str, opted_out: bool) -> None:
     """Set/clear the durable nightly-CEO opt-out flag.
 

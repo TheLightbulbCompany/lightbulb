@@ -6,13 +6,14 @@
 // the child-work summary and the watchdog decisions are verbatim. Also carries
 // SourceResolvedFoldBadge + readSourceResolvedWatchdogFold
 // (ui/src/components/SourceResolvedFoldBadge.tsx, ui/src/lib/source-resolved-watchdog-fold.ts)
-// and ResponsibleUserDenialNotice + its copy contract
-// (ui/src/components/ResponsibleUserDenialNotice.tsx, packages/shared/src/responsible-user-denial.ts),
-// each inlined below as the ledger is their only user here.
+// and ResponsibleUserDenialNotice (ui/src/components/ResponsibleUserDenialNotice.tsx),
+// each inlined below as the ledger is their only user here. The responsible-user
+// copy contract lives in ./lib/responsible-user-denial (shared with the
+// issue-write-denial contract).
 //
 // Adaptations vs upstream (only what had to change):
 //   - react-query reads            -> useTeamsApi.read on the BFF's issue-scoped
-//                                     /runs, /live-runs, /active-run, /children
+//                                     /runs, /live-runs, /active-run, /children, /activity
 //                                     (the same keys TaskChatThread/SubIssuesSection
 //                                     read, so SWR dedupes them). No refetchInterval:
 //                                     TeamsEventsProvider refreshes these keys on run
@@ -37,11 +38,10 @@
 //     (providerTrace is never exposed through the BFF)
 //   - RunnerInspector dialog, the "Inspect run" button and ?inspectRun= deep link
 //     (the run id links to the run detail panel instead)
-//   - interleaved activity events (no issue-scoped activity feed in the BFF)
 
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { ShieldX, Sparkles, UserX } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -52,6 +52,7 @@ import type {
   CompanyAgent,
   CompanyMember,
   Issue,
+  IssueActivityEvent,
   IssueLiveRun,
   IssueRun,
   IssueRunOutputSilence,
@@ -59,6 +60,13 @@ import type {
   WatchdogDecisionInput,
 } from "@/components/teams/shared/types";
 import { describeRunRetryState } from "./lib/runRetryState";
+import {
+  describeResponsibleUserDenial,
+  isResponsibleUserDenialCode,
+  responsibleUserLabel,
+  type ResponsibleUserDenialCode,
+} from "./lib/responsible-user-denial";
+import { IssueActivityEventRow } from "./IssueActivityEventRow";
 
 /** Upstream's react-router Link, as an in-shell anchor (new-tab still works). */
 function Link({ to, className, children }: { to: string; className?: string; children: React.ReactNode }) {
@@ -67,49 +75,6 @@ function Link({ to, className, children }: { to: string; className?: string; chi
       {children}
     </a>
   );
-}
-
-// --- packages/shared/src/responsible-user-denial.ts ------------------------
-
-type ResponsibleUserDenialCode = "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE";
-
-function isResponsibleUserDenialCode(code: string | null | undefined): code is ResponsibleUserDenialCode {
-  return code === "RESPONSIBLE_USER_UNAUTHORIZED" || code === "RESPONSIBLE_USER_UNAVAILABLE";
-}
-
-function responsibleUserLabel(userName: string | null | undefined): string {
-  const trimmed = userName?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : "the responsible user";
-}
-
-function describeResponsibleUserDenial(code: ResponsibleUserDenialCode, options: { userName?: string | null } = {}) {
-  const who = responsibleUserLabel(options.userName);
-  if (code === "RESPONSIBLE_USER_UNAVAILABLE") {
-    return {
-      tone: "unavailable" as const,
-      title: "Responsible user unavailable",
-      description:
-        `This run acts on behalf of ${who}, but that account was removed or ` +
-        `deactivated, so its permissions can no longer be evaluated. The agent's ` +
-        `own permissions are not enough on their own — every action still requires ` +
-        `an active responsible user.`,
-      recommendedAction:
-        `Mark the work blocked and reassign a responsible user (or reactivate the ` +
-        `account) before the agent continues.`,
-    };
-  }
-  return {
-    tone: "unauthorized" as const,
-    title: "Responsible user not authorized",
-    description:
-      `This action was denied because ${who} — the user this run acts on behalf ` +
-      `of — does not have permission to perform it. The agent may be allowed, but ` +
-      `a run can never exceed the permissions of the user it acts for, so the ` +
-      `action is blocked.`,
-    recommendedAction:
-      `Grant ${who} the required permission, or have someone who is authorized ` +
-      `take this action instead.`,
-  };
 }
 
 // --- ui/src/components/ResponsibleUserDenialNotice.tsx ---------------------
@@ -176,6 +141,8 @@ type IssueRunLedgerContentProps = {
   issueStatus: Issue["status"];
   childIssues: Issue[];
   agentMap: AgentNameMap;
+  activityEvents?: IssueActivityEvent[];
+  renderActivityEvent?: (event: IssueActivityEvent) => ReactNode;
   resolveUserLabel?: (userId: string) => string | null | undefined;
   pendingWatchdogDecision?: WatchdogDecisionInput["decision"] | null;
   canRecordWatchdogDecisions?: boolean;
@@ -188,6 +155,10 @@ type LedgerRun = IssueRun & {
   agentName?: string | null;
   outputSilence?: IssueRunOutputSilence | null;
 };
+
+type LedgerFeedItem =
+  | { kind: "run"; id: string; timestamp: string; run: LedgerRun }
+  | { kind: "activity"; id: string; timestamp: string; event: IssueActivityEvent };
 
 type LivenessCopy = {
   label: string;
@@ -523,7 +494,12 @@ export function IssueRunLedger({
   const { data: liveRuns } = read<IssueLiveRun[]>(`/issues/${issueId}/live-runs`, { shouldRetryOnError: false });
   const { data: activeRun } = read<IssueLiveRun | null>(`/issues/${issueId}/active-run`, { shouldRetryOnError: false });
   const { data: childrenResp } = read<{ issues: Issue[] }>(`/issues/${issueId}/children`);
+  const { data: activity } = read<IssueActivityEvent[]>(`/issues/${issueId}/activity`);
   const agentMap = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
+  const resolveUserLabel = (userId: string) => {
+    const member = members.find((m) => m.userId === userId);
+    return member?.name ?? member?.email ?? null;
+  };
 
   const recordWatchdogDecision = (input: WatchdogDecisionInput) => {
     const { runId, ...body } = input;
@@ -557,10 +533,11 @@ export function IssueRunLedger({
       issueStatus={issueStatus}
       childIssues={childrenResp?.issues ?? []}
       agentMap={agentMap}
-      resolveUserLabel={(userId) => {
-        const member = members.find((m) => m.userId === userId);
-        return member?.name ?? member?.email ?? null;
-      }}
+      activityEvents={Array.isArray(activity) ? activity : []}
+      renderActivityEvent={(event) => (
+        <IssueActivityEventRow event={event} agentMap={agentMap} resolveUserLabel={resolveUserLabel} />
+      )}
+      resolveUserLabel={resolveUserLabel}
       pendingWatchdogDecision={pendingWatchdogDecision}
       watchdogDecisionError={watchdogDecisionError}
       onWatchdogDecision={recordWatchdogDecision}
@@ -575,6 +552,8 @@ export function IssueRunLedgerContent({
   issueStatus,
   childIssues,
   agentMap,
+  activityEvents,
+  renderActivityEvent,
   resolveUserLabel,
   pendingWatchdogDecision,
   canRecordWatchdogDecisions = true,
@@ -597,6 +576,25 @@ export function IssueRunLedgerContent({
     [ledgerRuns],
   );
   const children = childIssueSummary(childIssues);
+  const canRenderActivityEvents = Boolean(renderActivityEvent);
+  const feedItems = useMemo<LedgerFeedItem[]>(() => {
+    const items: LedgerFeedItem[] = [];
+    for (const run of ledgerRuns) {
+      items.push({ kind: "run", id: run.runId, timestamp: runTimestamp(run), run });
+    }
+    if (canRenderActivityEvents) {
+      for (const event of activityEvents ?? []) {
+        items.push({ kind: "activity", id: event.id, timestamp: String(event.createdAt), event });
+      }
+    }
+    return items.sort((a, b) => {
+      const aTime = new Date(a.timestamp).getTime();
+      const bTime = new Date(b.timestamp).getTime();
+      if (aTime !== bTime) return bTime - aTime;
+      if (a.kind !== b.kind) return a.kind === "run" ? -1 : 1;
+      return b.id.localeCompare(a.id);
+    });
+  }, [activityEvents, canRenderActivityEvents, ledgerRuns]);
   const evaluationIssueRef =
     latestSilentRun?.outputSilence?.evaluationIssueId ??
     latestSilentRun?.outputSilence?.evaluationIssueIdentifier ??
@@ -764,13 +762,19 @@ export function IssueRunLedgerContent({
         </div>
       ) : null}
 
-      {ledgerRuns.length === 0 ? (
+      {feedItems.length === 0 ? (
         <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
-          Historical runs without liveness metadata will appear here once linked to this task.
+          {renderActivityEvent
+            ? "Runs and activity will appear here once this task has history."
+            : "Historical runs without liveness metadata will appear here once linked to this task."}
         </div>
       ) : (
         <div className="space-y-1.5">
-          {ledgerRuns.slice(0, 20).map((run) => {
+          {feedItems.slice(0, 20).map((item) => {
+            if (item.kind === "activity") {
+              return <div key={`activity:${item.id}`}>{renderActivityEvent?.(item.event)}</div>;
+            }
+            const run = item.run;
             const timestamp = runTimestamp(run);
             const liveness = livenessCopyForRun(run);
             const stopReason = stopReasonLabel(run);
@@ -936,9 +940,9 @@ export function IssueRunLedgerContent({
               </article>
             );
           })}
-          {ledgerRuns.length > 20 ? (
+          {feedItems.length > 20 ? (
             <div className="px-3 py-2 text-xs text-muted-foreground">
-              {ledgerRuns.length - 20} older items not shown
+              {feedItems.length - 20} older items not shown
             </div>
           ) : null}
         </div>

@@ -8,6 +8,7 @@ boundary. No adapter synthesis here — issues are pure user data.
 from __future__ import annotations
 
 import logging
+import re
 import zlib
 from typing import Annotated, Any, Optional
 
@@ -507,6 +508,38 @@ async def list_issue_live_runs(issue_id: IssueId, ctx: TeamsContext = Depends(_c
         issue_id=issue_id,
         session_cookie=ctx.session_cookie,
     )
+
+
+# Activity ``details`` echo whatever the writer logged. Upstream already blanks
+# secret-named keys, but an issue event can still carry adapter overrides,
+# usage/cost numbers or provider traces, none of which the BFF exposes.
+_ACTIVITY_REDACT_KEY_RE = re.compile(
+    r"adapter|runtime[-_]?config|api[-_]?key|token|secret|passw|credential|private[-_]?key|cookie"
+    r"|authorization|bearer|jwt|provider[-_]?trace|budget|cost|join[-_]?request|instance[-_]?setting"
+    r"|config[-_]?rollback|plugin",
+    re.IGNORECASE,
+)
+# Stock renders at most 20 ledger items; upstream returns the whole log unpaged.
+_ISSUE_ACTIVITY_MAX = 200
+
+
+def _redact_activity(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _redact_activity(v) for k, v in value.items() if not _ACTIVITY_REDACT_KEY_RE.search(k)}
+    if isinstance(value, list):
+        return [_redact_activity(v) for v in value]
+    return value
+
+
+@router.get("/issues/{issue_id}/activity")
+async def list_issue_activity(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+    """The issue's activity events (the ported ledger's interleaved rows and
+    write-denial notices). Maps to upstream ``GET /api/issues/{id}/activity``,
+    which takes no query params; the newest ``_ISSUE_ACTIVITY_MAX`` are kept."""
+    await _require_company_issue(issue_id, ctx)
+    payload = await _agents._admin().list_issue_activity(issue_id=issue_id, session_cookie=ctx.session_cookie)
+    events = payload if isinstance(payload, list) else []
+    return [_redact_activity(e) for e in events[:_ISSUE_ACTIVITY_MAX] if isinstance(e, dict)]
 
 
 @router.get("/issues/{issue_id}/active-run")

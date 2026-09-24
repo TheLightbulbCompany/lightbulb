@@ -828,6 +828,17 @@ def _paperclip_hermes_status_or_lost(response: runtime_transport.RuntimeResponse
             "session_id": session_id,
             "error": "runtime_lost",
         }
+    body = response.json()
+    if (
+        isinstance(body, dict)
+        and body.get("status") == "failed"
+        and body.get("error") == service.PROVIDER_QUOTA_EXHAUSTED
+    ):
+        # Paperclip shows `error` verbatim as the run's errorMessage; give it the sentence the
+        # room note uses instead of the raw code.
+        detail = service.parse_quota_detail(body.pop("error_detail", None) or body.pop("errorDetail", None))
+        body["error"] = service.provider_quota_message(detail)
+        return body
     return Response(
         content=response.text,
         status_code=response.status_code,

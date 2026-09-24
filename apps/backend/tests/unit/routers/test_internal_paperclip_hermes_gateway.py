@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import pytest
 
 from core.config import settings
 from core.services import runtime_transport
@@ -212,6 +213,43 @@ def test_status_returns_real_terminal_result_and_lost_registry_fails_terminally(
         "session_id": SESSION,
         "error": "runtime_lost",
     }
+
+
+@pytest.mark.parametrize(
+    "detail,expected_start",
+    [
+        (
+            {"provider": "chatgpt", "resets_at": 1790565900},
+            "Your ChatGPT plan has hit its usage limit — it resets Sep 28, 03:25 UTC.",
+        ),
+        (None, "Your AI provider has hit its usage limit — it resets soon."),
+    ],
+)
+def test_a_provider_quota_failure_reaches_paperclip_as_a_sentence(client, detail, expected_start):
+    failed = {"run_id": RUN, "status": "failed", "session_id": SESSION, "error": "provider_quota_exhausted"}
+    if detail:
+        failed["error_detail"] = detail
+
+    async def fake_request(*_args, **_kwargs):
+        return _runtime_response(200, failed)
+
+    with _dependencies(), patch("routers.messaging.runtime_transport.request", fake_request):
+        response = client.get(f"{BASE}/{RUN}", headers=HEADERS)
+    body = response.json()
+    assert response.status_code == 200 and body["status"] == "failed"
+    assert body["error"].startswith(expected_start)
+    assert "error_detail" not in body
+
+
+def test_other_failure_codes_pass_through_unchanged(client):
+    failed = {"run_id": RUN, "status": "failed", "session_id": SESSION, "error": "model_unavailable"}
+
+    async def fake_request(*_args, **_kwargs):
+        return _runtime_response(200, failed)
+
+    with _dependencies(), patch("routers.messaging.runtime_transport.request", fake_request):
+        response = client.get(f"{BASE}/{RUN}", headers=HEADERS)
+    assert response.json() == failed
 
 
 def test_an_unreachable_paperclip_answers_a_retryable_503_not_an_unhandled_error(client):

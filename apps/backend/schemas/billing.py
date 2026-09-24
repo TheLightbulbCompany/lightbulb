@@ -60,6 +60,9 @@ class BillingAccountResponse(BaseModel):
     # "included_daily_cap" or "out_of_credits" (chat_gate.budget_block_reason). Drives the
     # messaging shell's limit bar; a client never re-derives it from the fields above.
     block_reason: str | None = None
+    # Epoch seconds the workspace's own provider plan (ChatGPT, BYO key) is back from a usage
+    # limit; null once passed. Display only -- the Model & Credits card says so until then.
+    provider_quota_until: int | None = None
 
 
 class PortalResponse(BaseModel):

@@ -574,6 +574,68 @@ class RunUsage(ContractModel):
     estimated_cost_usd: float | None = None
 
 
+PROVIDER_QUOTA_EXHAUSTED = "provider_quota_exhausted"
+QUOTA_PROVIDER_NAMES = {"chatgpt": "ChatGPT", "openai": "OpenAI", "anthropic": "Anthropic"}
+
+
+def _reset_epoch(value: Any) -> int | None:
+    """ISO-8601 or epoch seconds -> epoch seconds, or None for anything else (or implausible)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    if isinstance(value, (int, float)):
+        if value != value or value in (float("inf"), float("-inf")):  # NaN/Infinity parse as JSON
+            return None
+        epoch = int(value)
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.strip())
+        except ValueError:
+            return None
+        epoch = int((parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp())
+    else:
+        return None
+    return epoch if 1_000_000_000 <= epoch < 10_000_000_000 else None
+
+
+def parse_quota_detail(raw: Any) -> dict[str, Any] | None:
+    """The bridge's optional ``error_detail`` reduced to what we render: a short provider
+    identifier and ``resets_at`` as epoch seconds. Anything else is dropped. Bridge-supplied,
+    so never trusted as text: the provider only ever selects a display name."""
+    if not isinstance(raw, dict):
+        return None
+    detail: dict[str, Any] = {}
+    provider = raw.get("provider")
+    if isinstance(provider, str) and re.fullmatch(r"[a-z0-9_-]{1,32}", provider.lower()):
+        detail["provider"] = provider.lower()
+    resets_at = _reset_epoch(raw.get("resets_at", raw.get("resetsAt")))
+    if resets_at is not None:
+        detail["resets_at"] = resets_at
+    return detail or None
+
+
+def provider_quota_message(detail: dict[str, Any] | None) -> str:
+    """Plain sentence for an out-of-quota provider. Timezone-neutral: a stored message can't be
+    localized by the client, so the reset time is spelled in UTC."""
+    detail = detail or {}
+    name = QUOTA_PROVIDER_NAMES.get(detail.get("provider") or "")
+    resets_at = detail.get("resets_at")
+    if resets_at:
+        at = datetime.fromtimestamp(resets_at, timezone.utc)
+        when = f"{at:%b} {at.day}, {at:%H:%M} UTC"
+    else:
+        when = "soon"
+    if name:
+        subject, upgrade = f"Your {name} plan", f"Upgrade your {name} plan"
+    else:
+        subject, upgrade = "Your AI provider", "Upgrade your plan with them"
+    return (
+        f"{subject} has hit its usage limit — it resets {when}. {upgrade}, "
+        "or switch this workspace's model in Settings → Model & Credits."
+    )
+
+
 class RunEventRequest(ContractModel):
     run_id: uuid.UUID
     type: Literal["run.started", "run.heartbeat", "run.ended"]
@@ -581,7 +643,14 @@ class RunEventRequest(ContractModel):
     session_key: str | None = Field(default=None, max_length=512)
     outcome: Literal["completed", "error", "aborted", "ignored", "gate_error"] | None = None
     error_kind: str | None = Field(default=None, max_length=128)
+    # Only meaningful with error_kind="provider_quota_exhausted"; normalized, never a 422.
+    error_detail: dict[str, Any] | None = None
     usage: RunUsage | None = None
+
+    @field_validator("error_detail", mode="before")
+    @classmethod
+    def _normalize_error_detail(cls, value: Any) -> dict[str, Any] | None:
+        return parse_quota_detail(value)
 
     @model_validator(mode="after")
     def _ended_is_complete(self) -> "RunEventRequest":
@@ -2491,6 +2560,7 @@ RUN_ERROR_MESSAGES = {
     "agent_stopped_responding": "The agent stopped responding.",
     # Only a genuine outage reads this: a cap or credit block is re-worded below.
     "model_unavailable": "The AI model didn't answer, usually a brief provider hiccup.",
+    PROVIDER_QUOTA_EXHAUSTED: "Your AI provider's usage limit has been reached.",
 }
 # `gate_error` is deliberately absent: it is the ambient "should an `active` agent
 # answer this plain message?" classifier failing, not a run the user asked for. A
@@ -2529,7 +2599,9 @@ async def count_first_turn_failure(owner_id: str, error_kind: str | None) -> Non
         logger.warning("first-turn failure count failed owner=%s", owner_id, exc_info=True)
 
 
-async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error_kind: str | None) -> None:
+async def post_run_failure_message(
+    owner_id: str, row: dict, outcome: str, error_kind: str | None, error_detail: dict | None = None
+) -> None:
     """Leave one durable note in the run's room (and the trigger's thread): agent-authored
     for a real run failure, a ``system`` notice when the owner is out of budget.
 
@@ -2556,6 +2628,19 @@ async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error
         budget_reason: str | None = None
         if error_kind in (None, "model_unavailable"):  # the sweeper's own kinds are real infra failures
             budget_reason = await budget_block_reason(owner_id, await billing_repo.get_by_owner_id(owner_id))
+        system_notice = bool(budget_reason)
+        if error_kind == PROVIDER_QUOTA_EXHAUSTED:
+            # The workspace's own provider plan ran out: the platform talking, not the agent.
+            system_notice = True
+            text = (
+                f"{provider_quota_message(error_detail)} "
+                f"[Model & Credits]({settings.FRONTEND_URL.rstrip('/')}/settings?panel=providers)"
+            )
+            if error_detail and error_detail.get("resets_at"):
+                try:
+                    await billing_repo.set_provider_quota_until(owner_id, error_detail["resets_at"])
+                except Exception:
+                    logger.warning("provider quota stamp failed owner=%s", owner_id, exc_info=True)
         if budget_reason:
             text = BUDGET_BLOCK_MESSAGES[budget_reason]
             link = BUDGET_BLOCK_LINKS.get(budget_reason)
@@ -2568,7 +2653,7 @@ async def post_run_failure_message(owner_id: str, row: dict, outcome: str, error
             else None
         )
         thread_root = (trigger or {}).get("threadRootMessageId")
-        if budget_reason:
+        if system_notice:
             author = {"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"}
         else:
             roster = {agent["id"]: agent for agent in await load_agent_roster(owner_id)}
@@ -2651,7 +2736,7 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
                 except Exception:
                     logger.exception("run error frames failed")
             if event.outcome in RUN_FAILURE_OUTCOMES:
-                await post_run_failure_message(owner_id, row, event.outcome, event.error_kind)
+                await post_run_failure_message(owner_id, row, event.outcome, event.error_kind, event.error_detail)
             try:
                 await _after_run_ended(owner_id, row, event.outcome, event.usage)
             except Exception:

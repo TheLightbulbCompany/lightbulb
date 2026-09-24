@@ -98,10 +98,12 @@ function ChatGPTOAuthBlock({
   onDisconnected,
   onChangeProvider,
   dotColor,
+  quotaStatus,
 }: {
   onDisconnected: () => void;
   onChangeProvider: () => void;
   dotColor: DotColor;
+  quotaStatus: string | null;
 }) {
   const { disconnect } = useChatGPTOAuth();
   const [busy, setBusy] = useState(false);
@@ -122,8 +124,8 @@ function ChatGPTOAuthBlock({
         icon={<OpenAIIcon size={32} />}
         title="Sign in with ChatGPT"
         subtitle="Inference via your ChatGPT account"
-        status="Connected"
-        dotColor={dotColor}
+        status={quotaStatus ?? "Connected"}
+        dotColor={quotaStatus ? "amber" : dotColor}
       />
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>Account</span>
@@ -260,11 +262,13 @@ function ByoKeyBlock({
   onReplaced,
   onChangeProvider,
   dotColor,
+  quotaStatus,
 }: {
   byoProvider: ByoProvider;
   onReplaced: () => void;
   onChangeProvider: () => void;
   dotColor: DotColor;
+  quotaStatus: string | null;
 }) {
   const isOpenAI = byoProvider === "openai";
   const title = isOpenAI ? "Bring your own OpenAI key" : "Bring your own Anthropic key";
@@ -276,8 +280,8 @@ function ByoKeyBlock({
         icon={icon}
         title={title}
         subtitle="Your key, your billing"
-        status="Active"
-        dotColor={dotColor}
+        status={quotaStatus ?? "Active"}
+        dotColor={quotaStatus ? "amber" : dotColor}
       />
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>API key</span>
@@ -491,6 +495,16 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   const trial = status === "trial_local";
   // Mount snapshot: render must stay pure, and day granularity makes it fresh enough.
   const [nowMs] = useState(() => Date.now());
+  const quotaUntil = account?.provider_quota_until;
+  const quotaStatus =
+    quotaUntil && quotaUntil * 1000 > nowMs
+      ? `Usage limit reached — resets ${new Date(quotaUntil * 1000).toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        })}`
+      : null;
   // Mirrors backend is_managed_capped + TRIAL_EXPIRED for a row with no provider.
   // A null trial_end is NOT expired (it is stamped at first ready).
   const blocked = isFreeTierExpired(status, account?.trial_end, nowMs)
@@ -618,6 +632,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
             onDisconnected={() => mutate()}
             onChangeProvider={openModal}
             dotColor={dotColor}
+            quotaStatus={quotaStatus}
           />
           <CodingHarnessBlock />
         </>
@@ -629,6 +644,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
           onReplaced={() => mutate()}
           onChangeProvider={openModal}
           dotColor={dotColor}
+          quotaStatus={quotaStatus}
         />
       )}
 

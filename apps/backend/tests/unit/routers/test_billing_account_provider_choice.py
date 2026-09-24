@@ -183,3 +183,19 @@ async def test_account_survives_a_failed_credit_read(mock_repo, mock_get_summary
     )
     resp = await async_client.get("/api/v1/billing/account")
     assert resp.status_code == 200 and resp.json()["block_reason"] is None
+
+
+@pytest.mark.asyncio
+@patch("routers.billing.get_usage_summary")
+@patch("routers.billing.billing_repo")
+async def test_account_provider_quota_until_only_while_in_the_future(mock_repo, mock_get_summary, async_client):
+    import time
+
+    mock_get_summary.return_value = _summary_zero()
+    row = {"owner_id": "org_q", "subscription_status": "active", "provider_choice": "chatgpt_oauth"}
+    future = int(time.time()) + 3600
+    for stamp, expected in ((future, future), (1_000_000_000, None), (None, None)):
+        mock_repo.get_by_owner_id = AsyncMock(return_value={**row, "provider_quota_until": stamp})
+        resp = await async_client.get("/api/v1/billing/account")
+        assert resp.status_code == 200
+        assert resp.json()["provider_quota_until"] == expected

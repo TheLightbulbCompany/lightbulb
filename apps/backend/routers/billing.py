@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Literal
 from uuid import UUID
 
@@ -143,7 +144,12 @@ async def get_billing_account(
         # Only capped owners have a daily allowance; omitted (None) when OpenRouter can't be read.
         allowance=await openrouter_keys.owner_allowance(owner_id) if trial_cap.is_managed_capped(account) else None,
         block_reason=await _block_reason(owner_id, account),
+        provider_quota_until=_future_epoch(account.get("provider_quota_until") if account else None),
     )
+
+
+def _future_epoch(value) -> int | None:
+    return int(value) if value is not None and int(value) > time.time() else None
 
 
 @router.get(

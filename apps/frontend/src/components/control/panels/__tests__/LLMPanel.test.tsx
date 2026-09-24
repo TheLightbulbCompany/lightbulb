@@ -161,6 +161,19 @@ describe("LLMPanel", () => {
     expect(screen.getByRole("button", { name: /disconnect/i })).toBeInTheDocument();
   });
 
+  it("shows the provider's usage limit until it resets, then Connected again", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "chatgpt_oauth" });
+    accountFields = { provider_quota_until: Math.floor(Date.now() / 1000) + 3600 };
+    const { unmount } = render(<LLMPanel />);
+    expect(screen.getByText(/^Usage limit reached — resets /)).toBeInTheDocument();
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+    unmount();
+    accountFields = { provider_quota_until: Math.floor(Date.now() / 1000) - 60 };
+    render(<LLMPanel />);
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+    accountFields = {};
+  });
+
   it("calls disconnect, then revalidates SWR after it resolves", async () => {
     mockSWRData.mockReturnValue({ provider_choice: "chatgpt_oauth" });
     mockDisconnect.mockResolvedValueOnce(undefined);

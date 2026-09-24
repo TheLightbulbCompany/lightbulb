@@ -384,6 +384,125 @@ async def test_a_capped_owners_infra_failure_keeps_its_own_reason(metrics, _not_
     assert create.await_args.kwargs["author"]["kind"] == "agent"
 
 
+# The real ChatGPT OAuth 429 body the bridge classifies as provider_quota_exhausted.
+CHATGPT_429 = {
+    "error": {
+        "type": "usage_limit_reached",
+        "plan_type": "prolite",
+        "resets_at": 1790565911,
+        "resets_in_seconds": 311059,
+    }
+}  # verbatim prod body; resets 2026-09-28 03:25:11 UTC
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (
+            {"provider": "chatgpt", "resets_at": CHATGPT_429["error"]["resets_at"]},
+            {"provider": "chatgpt", "resets_at": 1790565911},
+        ),
+        ({"provider": "ChatGPT", "resetsAt": "2026-09-28T03:25:00Z"}, {"provider": "chatgpt", "resets_at": 1790565900}),
+        ({"provider": "openai", "resets_at": "1790565900"}, {"provider": "openai", "resets_at": 1790565900}),
+        ({"provider": "https://evil.example", "resets_at": "tomorrow", "x": 1}, None),
+        ({"resets_at": True}, None),
+        ({"resets_at": float("inf")}, None),
+        ({"resets_at": 1790565900000}, None),  # milliseconds: implausible, dropped
+        ("chatgpt", None),
+        (None, None),
+    ],
+)
+def test_error_detail_is_normalized_never_rejected(raw, expected):
+    event = _event(
+        type="run.ended", outcome="error", error_kind="provider_quota_exhausted", usage=USAGE, error_detail=raw
+    )
+    assert event.error_detail == expected
+
+
+def test_camel_case_error_detail_is_accepted():
+    event = RunEventRequest.model_validate(
+        {
+            "runId": RUN,
+            "type": "run.ended",
+            "at": "2026-09-12T03:15:00Z",
+            "outcome": "error",
+            "errorKind": "provider_quota_exhausted",
+            "errorDetail": {"provider": "chatgpt", "resets_at": CHATGPT_429["error"]["resets_at"]},
+            "usage": USAGE.model_dump(by_alias=True),
+        }
+    )
+    assert event.error_detail == {"provider": "chatgpt", "resets_at": 1790565911}
+
+
+@pytest.mark.parametrize(
+    "detail,expected",
+    [
+        (
+            {"provider": "chatgpt", "resets_at": 1790565900},
+            "Your ChatGPT plan has hit its usage limit — it resets Sep 28, 03:25 UTC. Upgrade your ChatGPT plan, "
+            "or switch this workspace's model in Settings → Model & Credits.",
+        ),
+        (
+            {"provider": "somecorp"},
+            "Your AI provider has hit its usage limit — it resets soon. Upgrade your plan with them, "
+            "or switch this workspace's model in Settings → Model & Credits.",
+        ),
+    ],
+)
+def test_provider_quota_message(detail, expected):
+    assert messaging.provider_quota_message(detail) == expected
+
+
+@pytest.mark.asyncio
+async def test_provider_quota_failure_is_a_system_notice_and_stamps_billing(metrics, _not_blocked):
+    from core.config import settings
+    from core.constants import SYSTEM_ACTOR_ID
+
+    create = AsyncMock(return_value=({"messageId": "x"}, False))
+    stamp = AsyncMock()
+    patches = _failure_patches(create)
+    with (
+        patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": "error"})),
+        patch.object(messaging.billing_repo, "set_provider_quota_until", stamp),
+    ):
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            await messaging.handle_run_event(
+                "o",
+                _event(
+                    type="run.ended",
+                    outcome="error",
+                    error_kind="provider_quota_exhausted",
+                    error_detail={"provider": "chatgpt", "resets_at": CHATGPT_429["error"]["resets_at"]},
+                    usage=USAGE,
+                ),
+            )
+    kw = create.await_args.kwargs
+    assert kw["text"].startswith("Your ChatGPT plan has hit its usage limit — it resets Sep 28, 03:25 UTC.")
+    assert kw["text"].endswith(f"[Model & Credits]({settings.FRONTEND_URL.rstrip('/')}/settings?panel=providers)")
+    assert "hiccup" not in kw["text"]
+    assert kw["author"] == {"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"}
+    assert kw["idemp_sk"] == messaging.messaging_repo.agent_idemp_sk(f"run-failed:{RUN}")
+    stamp.assert_awaited_once_with("o", 1790565911)
+    _not_blocked.assert_not_awaited()  # a quota failure is never re-read as a budget block
+
+
+@pytest.mark.asyncio
+async def test_old_bridge_quota_failure_without_detail_still_reads_well(metrics):
+    create = AsyncMock(return_value=({"messageId": "x"}, False))
+    stamp = AsyncMock()
+    patches = _failure_patches(create)
+    with (
+        patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": "error"})),
+        patch.object(messaging.billing_repo, "set_provider_quota_until", stamp),
+    ):
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            await messaging.handle_run_event(
+                "o", _event(type="run.ended", outcome="error", error_kind="provider_quota_exhausted", usage=USAGE)
+            )
+    assert "it resets soon" in create.await_args.kwargs["text"]
+    stamp.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "account,cap_reason,credits_blocked,expected",

@@ -388,12 +388,11 @@ async def test_a_capped_owners_infra_failure_keeps_its_own_reason(metrics, _not_
 CHATGPT_429 = {
     "error": {
         "type": "usage_limit_reached",
-        "message": "The usage limit has been reached",
-        "plan_type": "plus",
-        "resets_at": 1790565900,  # 2026-09-28 03:25 UTC
-        "resets_in_seconds": 312000,
+        "plan_type": "prolite",
+        "resets_at": 1790565911,
+        "resets_in_seconds": 311059,
     }
-}
+}  # verbatim prod body; resets 2026-09-28 03:25:11 UTC
 
 
 @pytest.mark.parametrize(
@@ -401,7 +400,7 @@ CHATGPT_429 = {
     [
         (
             {"provider": "chatgpt", "resets_at": CHATGPT_429["error"]["resets_at"]},
-            {"provider": "chatgpt", "resets_at": 1790565900},
+            {"provider": "chatgpt", "resets_at": 1790565911},
         ),
         ({"provider": "ChatGPT", "resetsAt": "2026-09-28T03:25:00Z"}, {"provider": "chatgpt", "resets_at": 1790565900}),
         ({"provider": "openai", "resets_at": "1790565900"}, {"provider": "openai", "resets_at": 1790565900}),
@@ -428,11 +427,11 @@ def test_camel_case_error_detail_is_accepted():
             "at": "2026-09-12T03:15:00Z",
             "outcome": "error",
             "errorKind": "provider_quota_exhausted",
-            "errorDetail": {"provider": "chatgpt"},
+            "errorDetail": {"provider": "chatgpt", "resets_at": CHATGPT_429["error"]["resets_at"]},
             "usage": USAGE.model_dump(by_alias=True),
         }
     )
-    assert event.error_detail == {"provider": "chatgpt"}
+    assert event.error_detail == {"provider": "chatgpt", "resets_at": 1790565911}
 
 
 @pytest.mark.parametrize(
@@ -483,7 +482,7 @@ async def test_provider_quota_failure_is_a_system_notice_and_stamps_billing(metr
     assert "hiccup" not in kw["text"]
     assert kw["author"] == {"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"}
     assert kw["idemp_sk"] == messaging.messaging_repo.agent_idemp_sk(f"run-failed:{RUN}")
-    stamp.assert_awaited_once_with("o", 1790565900)
+    stamp.assert_awaited_once_with("o", 1790565911)
     _not_blocked.assert_not_awaited()  # a quota failure is never re-read as a budget block
 
 

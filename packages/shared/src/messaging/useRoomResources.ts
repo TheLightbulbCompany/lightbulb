@@ -47,6 +47,8 @@ export function useRoomResources(
   // the in-flight fetch, silently dropping a toggle flip that arrived mid-fetch.
   const includeEndedRef = useRef(includeEnded);
   includeEndedRef.current = includeEnded;
+  const dataRef = useRef<RoomResources | null>(null);
+  dataRef.current = data;
   const invalidate = useCallback(() => {
     request.current += 1;
     refreshing.current = false;
@@ -105,7 +107,13 @@ export function useRoomResources(
     const unsubscribe = onEvent(event => {
       // Session changes arrive once per workspace on the viewer's own channel, not per room:
       // this pane refetches its own room's resources (and so its transcript revision).
-      if (event.type === "workspace.sessions.changed") { hinted(); return; }
+      if (event.type === "workspace.sessions.changed") {
+        // A transcript hint only changes an existing session's content: skip it unless its sharer
+        // has a session in this pane, or one streaming teammate refetches every open pane each second.
+        const sharer = event.payload.humanUserId;
+        if (!event.payload.transcript || dataRef.current?.sessions.some(s => s.humanUserId === sharer)) hinted();
+        return;
+      }
       if (!("roomId" in event.payload) || event.payload.roomId !== roomId) return;
       if (event.type === "room.access.removed") { revoke(); return; }
       if (event.type === "room.metadata.changed" || event.type === "room.subscription.rotated") {

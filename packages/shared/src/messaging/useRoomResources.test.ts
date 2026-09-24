@@ -132,7 +132,7 @@ function hintSource() {
     connectionRevision: 1,
   } as unknown as RoomResourceSource;
   const fire = () => {
-    for (const handler of handlers) handler({ type: "workspace.sessions.changed", payload: { humanUserId: "user-1", transcript: true }, schemaVersion: 1, eventId: "e", occurredAt: "now" } as never);
+    for (const handler of handlers) handler({ type: "workspace.sessions.changed", payload: { humanUserId: "user-1" }, schemaVersion: 1, eventId: "e", occurredAt: "now" } as never);
   };
   return { source, listResourcesHint, fire };
 }
@@ -363,5 +363,26 @@ describe("useLocalSessionHistory tail stability", () => {
     rerender({ pollMs: 0 });
     await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
     expect(listLocalSessionEvents).toHaveBeenCalledTimes(2); // idle: hints plus the safety poll only
+  });
+});
+
+describe("useRoomResources transcript hints", () => {
+  it("refetches for a transcript hint only when its sharer has a session in this pane", async () => {
+    const handlers = new Set<(event: unknown) => void>();
+    const listResources = vi.fn(async () => ({ devices: [], sessions: [{ sessionId: "s1", humanUserId: "alice" }], pairedNodes: [] }));
+    const source = {
+      client: { listResources, listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() },
+      onEvent: (handler: (event: unknown) => void) => { handlers.add(handler); return () => handlers.delete(handler); },
+      connectionRevision: 1,
+    } as unknown as RoomResourceSource;
+    const fire = (humanUserId: string) => {
+      for (const handler of handlers) handler({ type: "workspace.sessions.changed", payload: { humanUserId, transcript: true }, schemaVersion: 1, eventId: humanUserId, occurredAt: "now" } as never);
+    };
+    renderHook(() => useRoomResources("room-1", source));
+    await waitFor(() => expect(listResources).toHaveBeenCalledTimes(1));
+    act(() => fire("bob")); // streaming in someone else's session: not this pane's business
+    expect(listResources).toHaveBeenCalledTimes(1);
+    act(() => fire("alice"));
+    await waitFor(() => expect(listResources).toHaveBeenCalledTimes(2));
   });
 });

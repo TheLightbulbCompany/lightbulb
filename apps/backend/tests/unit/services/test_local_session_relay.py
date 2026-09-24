@@ -333,7 +333,7 @@ async def test_backend_local_admission_uses_canonical_mac_and_never_opens_gatewa
 
 
 @pytest.mark.asyncio
-async def test_ingestion_is_bounded_ordered_deduplicated_and_emits_only_room_hints(transport, db):
+async def test_ingestion_is_bounded_ordered_deduplicated_and_emits_only_workspace_hints(transport, db):
     sid = await start(transport)
     # Registration's own room + workspace hints are covered elsewhere; transcript
     # batches must emit room hints only.
@@ -1241,15 +1241,22 @@ async def test_event_batches_send_a_transcript_workspace_hint(transport, db):
 
 @pytest.mark.asyncio
 async def test_device_heartbeat_hints_once_per_frame(transport, monkeypatch):
+    """Two lapsed mirrors in one frame each need a hint; the frame sends one, not one per session."""
     from unittest.mock import AsyncMock
 
     from core.services import local_session_relay as module
 
     with patch("time.time", return_value=10000):
-        sid = await start(transport)
-    row = await repo.get_session(OWNER, sid)
+        first = await start(transport)
+        second = (await relay(transport).handle_message("conn-1", registration(nativeConversationId="thread-2")))[
+            "sessionId"
+        ]
+    lapsed = (await repo.get_session(OWNER, first))["onlineUntil"] + 1
+    frame = heartbeat(first, status="idle")
+    frame["sessions"].append({**heartbeat(second, status="idle")["sessions"][0]})
     hints = AsyncMock()
     monkeypatch.setattr(module, "publish_resources_changed", hints)
-    with patch("time.time", return_value=row["onlineUntil"] + 1):
-        await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle"))
+    with patch("time.time", return_value=lapsed):
+        response = await relay(transport).handle_message("conn-1", frame)
+    assert response["rejected"] == []
     assert hints.await_count == 1

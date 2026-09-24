@@ -167,6 +167,10 @@ async def publish_resources_changed(owner: str, human: str, *, transcript: bool 
         logger.warning("Workspace session hint failed")
 
 
+#: Heartbeat fields whose change counts as the user doing something (stamps lastEventAt).
+_PUBLIC_FIELDS = ("status", "activeTurnId", "title", "cwdName", "lastAssistantMessage", "controlUnavailableReason")
+
+
 class LocalSessionRelay:
     def __init__(self, connections: ConnectionService, management: ManagementApiClient):
         self.connections, self.management = connections, management
@@ -365,9 +369,9 @@ class LocalSessionRelay:
         # batch the reads if a device ever carries enough live mirrors for it to show.
         owner, now, started = connection.get("org_id") or connection["user_id"], int(time.time()), time.monotonic()
         rejected, reconcile = [], []
-        # One hint per frame, not per session: every session here is the same human's, and the
-        # hint fans out to each of their rooms. It still fires when the frame fails part-way,
-        # because the retry finds those rows already matching and would not hint again.
+        # One workspace hint per frame, not per session: every session here is the same human's.
+        # It still fires when the frame fails part-way, because the retry finds those rows already
+        # matching and would not hint again.
         hint = False
         try:
             for item in message.sessions:
@@ -391,14 +395,6 @@ class LocalSessionRelay:
                     )
                     if value is not None
                 }
-                public = (
-                    "status",
-                    "activeTurnId",
-                    "title",
-                    "cwdName",
-                    "lastAssistantMessage",
-                    "controlUnavailableReason",
-                )
                 updated = _revised(
                     row,
                     status=item.status,
@@ -414,7 +410,7 @@ class LocalSessionRelay:
                     updated.update(
                         capabilities=sessions.Capabilities().model_dump(by_alias=True), capabilitiesVerified=False
                     )
-                moved = any(row.get(field) != updated.get(field) for field in public)
+                moved = any(row.get(field) != updated.get(field) for field in _PUBLIC_FIELDS)
                 scanned = row.get("workspace") != updated.get("workspace")
                 if moved:
                     updated["lastEventAt"] = now

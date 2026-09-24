@@ -115,6 +115,27 @@ export interface IssueComment {
   /** BFF-enriched Clerk id of a human author — compare against the viewer's
    * Clerk id to render "You". */
   authorClerkUserId?: string | null;
+  /** Upstream authorship class ("user" | "agent" | "system"). */
+  authorType?: string | null;
+  /** Upstream tombstone stamp — a deleted comment stays in the list. */
+  deletedAt?: string | null;
+  /** Server-authored presentation contract (system notices). */
+  presentation?: { kind?: string | null } | null;
+}
+
+/** A queued/running run on an issue (upstream `GET /issues/{id}/live-runs`
+ *  row, and the `GET /issues/{id}/active-run` body). Optional-defensive. */
+export interface IssueLiveRun {
+  id: string;
+  status: string;
+  agentId?: string | null;
+  agentName?: string | null;
+  adapterType?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  createdAt?: string | null;
+  /** Upstream decorateActiveRunStatus: human copy for the current phase. */
+  currentStatusMessage?: string | null;
 }
 
 /** Thumbs up/down value for a feedback vote on an agent output. */
@@ -342,6 +363,8 @@ export interface Issue {
   hiddenAt?: string | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
+  /** Upstream issue.createdByAgentId — picks the task chat brief's side. */
+  createdByAgentId?: string | null;
   createdByUserId?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;

@@ -11,7 +11,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 const read = vi.fn();
 const post = vi.fn().mockResolvedValue({});
 vi.mock("@/hooks/useTeamsApi", () => ({
-  useTeamsApi: () => ({ read, post, patch: vi.fn(), del: vi.fn() }),
+  useTeamsApi: () => ({ read, post, patch: vi.fn(), del: vi.fn(), mutate: vi.fn() }),
 }));
 
 const mutate = vi.fn();

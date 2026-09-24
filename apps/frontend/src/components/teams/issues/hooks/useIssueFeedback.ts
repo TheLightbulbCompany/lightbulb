@@ -7,7 +7,6 @@
 // agents).
 
 import { useCallback } from "react";
-import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import type { FeedbackVote, FeedbackVoteValue } from "@/components/teams/shared/types";
@@ -34,8 +33,7 @@ export interface UseIssueFeedbackResult {
 }
 
 export function useIssueFeedback(issueId: string): UseIssueFeedbackResult {
-  const { read, post } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { read, post, mutate } = useTeamsApi();
 
   const votesKey = teamsQueryKeys.issues.feedbackVotes(issueId);
   const { data } = read<VotesResponse>(votesKey);

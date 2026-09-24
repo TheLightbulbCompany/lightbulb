@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import zlib
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
@@ -33,6 +33,11 @@ from .schemas import (
 )
 
 router = APIRouter()
+
+# Paperclip ids are UUIDs or LB-12-style identifiers (`_` admitted for test ids). Pinning keeps a
+# percent-decoded `?`/`&`/`/` in the path segment from rewriting the fixed
+# upstream path (e.g. `<id>%3Fmode=cancel%26` smuggling a query string).
+IssueId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 _ctx = _agents._ctx
 logger = logging.getLogger(__name__)
 
@@ -186,7 +191,7 @@ async def create_label(body: CreateIssueLabelBody, ctx: TeamsContext = Depends(_
 # registered ABOVE this handler — FastAPI's matcher would otherwise treat
 # the static word as a value for {issue_id} and 404 with a misleading shape.
 @router.get("/issues/{issue_id}")
-async def get_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def get_issue(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """Fetch a single issue by id."""
     return await _agents._admin().get_issue(
         issue_id=issue_id,
@@ -209,7 +214,7 @@ async def create_issue(
 
 @router.patch("/issues/{issue_id}")
 async def patch_issue(
-    issue_id: str,
+    issue_id: IssueId,
     body: PatchIssueBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -240,7 +245,7 @@ async def patch_issue(
 
 
 @router.delete("/issues/{issue_id}")
-async def delete_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def delete_issue(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """Delete an issue.
 
     Maps to upstream ``DELETE /api/issues/{id}``. The admin client's
@@ -254,7 +259,7 @@ async def delete_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.post("/issues/{issue_id}/archive")
-async def archive_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def archive_issue(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """Archive an issue from the inbox.
 
     Maps to upstream ``POST /api/issues/{id}/inbox-archive``. The Inbox
@@ -267,7 +272,7 @@ async def archive_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.post("/issues/{issue_id}/unarchive")
-async def unarchive_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def unarchive_issue(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """Restore an archived issue back to the inbox.
 
     Maps to upstream ``DELETE /api/issues/{id}/inbox-archive``. Drives the
@@ -280,7 +285,7 @@ async def unarchive_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.post("/issues/{issue_id}/monitor/check-now")
-async def monitor_check_now(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def monitor_check_now(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """Trigger an immediate monitor re-check. Maps to upstream
     POST /api/issues/{id}/monitor/check-now.
 
@@ -324,7 +329,7 @@ async def retry_scheduled_retry_now(issue_id: str, ctx: TeamsContext = Depends(_
 
 
 @router.get("/issues/{issue_id}/recovery-actions")
-async def list_issue_recovery_actions(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_recovery_actions(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """The issue's recovery action (``{active, actions}``), for the ported
     IssueRecoveryActionCard. Maps to upstream ``GET /api/issues/{id}/recovery-actions``."""
     await _require_company_issue(issue_id, ctx)
@@ -336,7 +341,7 @@ async def list_issue_recovery_actions(issue_id: str, ctx: TeamsContext = Depends
 
 @router.post("/issues/{issue_id}/recovery-actions/resolve")
 async def resolve_issue_recovery_action(
-    issue_id: str,
+    issue_id: IssueId,
     body: ResolveIssueRecoveryActionBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -354,7 +359,7 @@ async def resolve_issue_recovery_action(
 
 
 @router.post("/issues/{issue_id}/mark-read")
-async def mark_issue_read(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def mark_issue_read(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """Mark an issue as read for the signed-in user.
 
     Maps to upstream ``POST /api/issues/{id}/read``.
@@ -366,7 +371,7 @@ async def mark_issue_read(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.post("/issues/{issue_id}/mark-unread")
-async def mark_issue_unread(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def mark_issue_unread(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """Mark an issue as unread for the signed-in user.
 
     Maps to upstream ``DELETE /api/issues/{id}/read``.
@@ -435,7 +440,7 @@ async def _enrich_comment_authors(ctx: TeamsContext, payload: Any) -> None:
 
 
 @router.get("/issues/{issue_id}/comments")
-async def list_issue_comments(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_comments(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """List comments on an issue, with human authors resolved to names.
 
     Maps to upstream ``GET /api/issues/{id}/comments``; rows pass through
@@ -455,7 +460,7 @@ async def list_issue_comments(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 @router.post("/issues/{issue_id}/comments")
 async def add_issue_comment(
-    issue_id: str,
+    issue_id: IssueId,
     body: AddIssueCommentBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -475,8 +480,48 @@ async def add_issue_comment(
     )
 
 
+@router.delete("/issues/{issue_id}/comments/{comment_id}")
+async def delete_issue_comment(
+    issue_id: IssueId,
+    comment_id: str = Path(..., pattern=_UUID_RE),
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Delete (tombstone) the caller's own comment — the ported task chat's bubble
+    action. Maps to upstream ``DELETE /api/issues/{id}/comments/{commentId}``;
+    Paperclip itself 403s a non-author. ``?mode=cancel`` is deliberately not
+    forwarded (queued-comment cancel is a separate, unported surface)."""
+    await _require_company_issue(issue_id, ctx)
+    return await _agents._admin().delete_issue_comment(
+        issue_id=issue_id,
+        comment_id=comment_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.get("/issues/{issue_id}/live-runs")
+async def list_issue_live_runs(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+    """Queued/running runs on an issue — the ported task chat's live tail source.
+    Maps to upstream ``GET /api/issues/{id}/live-runs`` (a bare array)."""
+    await _require_company_issue(issue_id, ctx)
+    return await _agents._admin().list_issue_live_runs(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.get("/issues/{issue_id}/active-run")
+async def get_issue_active_run(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
+    """The issue's active run (or ``null``). Maps to upstream
+    ``GET /api/issues/{id}/active-run``."""
+    await _require_company_issue(issue_id, ctx)
+    return await _agents._admin().get_issue_active_run(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
 @router.get("/issues/{issue_id}/children")
-async def list_issue_children(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_children(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """List an issue's descendants (the Sub-issues section).
 
     Forwards upstream's ``descendantOf`` filter on the issues-list route —
@@ -493,7 +538,7 @@ async def list_issue_children(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 @router.post("/issues/{issue_id}/children")
 async def create_issue_child(
-    issue_id: str,
+    issue_id: IssueId,
     body: CreateIssueBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -511,7 +556,7 @@ async def create_issue_child(
 
 
 @router.get("/issues/{issue_id}/approvals")
-async def list_issue_approvals(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_approvals(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """List the approvals linked to an issue (the issue-detail Approvals section)."""
     rows = await _agents._admin().list_issue_approvals(
         issue_id=issue_id,
@@ -521,7 +566,7 @@ async def list_issue_approvals(issue_id: str, ctx: TeamsContext = Depends(_ctx))
 
 
 @router.get("/issues/{issue_id}/runs")
-async def list_issue_runs(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_runs(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """List the agent runs for an issue (the issue-detail Runs section)."""
     rows = await _agents._admin().list_issue_runs(
         issue_id=issue_id,
@@ -531,7 +576,7 @@ async def list_issue_runs(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.get("/issues/{issue_id}/documents")
-async def list_issue_documents(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_documents(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """List the documents attached to an issue (the issue-detail Documents section)."""
     rows = await _agents._admin().list_issue_documents(
         session_cookie=ctx.session_cookie,
@@ -552,7 +597,7 @@ async def list_issue_documents(issue_id: str, ctx: TeamsContext = Depends(_ctx))
 
 
 @router.get("/issues/{issue_id}/work-products")
-async def list_issue_work_products(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_work_products(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """List the work-products produced for an issue (the issue-detail Output section).
 
     Maps to upstream ``GET /api/issues/{id}/work-products`` (issue-scoped;
@@ -569,7 +614,7 @@ async def list_issue_work_products(issue_id: str, ctx: TeamsContext = Depends(_c
 
 @router.post("/issues/{issue_id}/work-products")
 async def create_issue_work_product(
-    issue_id: str,
+    issue_id: IssueId,
     body: CreateWorkProductBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -605,7 +650,7 @@ def _find_work_product(rows: Any, work_product_id: str) -> Optional[dict]:
 
 @router.patch("/issues/{issue_id}/work-products/{work_product_id}")
 async def patch_work_product(
-    issue_id: str,
+    issue_id: IssueId,
     work_product_id: str,
     body: PatchWorkProductBody,
     ctx: TeamsContext = Depends(_ctx),
@@ -721,7 +766,7 @@ async def list_company_artifacts(
 
 
 @router.get("/issues/{issue_id}/attachments")
-async def list_issue_attachments(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def list_issue_attachments(issue_id: IssueId, ctx: TeamsContext = Depends(_ctx)):
     """List the binary attachments on an issue (the issue-detail Attachments section).
 
     Maps to upstream ``GET /api/issues/{id}/attachments`` (issue-scoped, the
@@ -737,7 +782,7 @@ async def list_issue_attachments(issue_id: str, ctx: TeamsContext = Depends(_ctx
 
 @router.post("/issues/{issue_id}/attachments")
 async def upload_issue_attachment(
-    issue_id: str,
+    issue_id: IssueId,
     request: Request,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -855,7 +900,7 @@ async def get_attachment_content(attachment_id: str, ctx: TeamsContext = Depends
 
 @router.delete("/issues/{issue_id}/attachments/{attachment_id}")
 async def delete_issue_attachment(
-    issue_id: str,  # noqa: ARG001 — issue scoping is enforced upstream via the company cookie.
+    issue_id: IssueId,  # noqa: ARG001 — issue scoping is enforced upstream via the company cookie.
     attachment_id: str,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -933,7 +978,7 @@ def _require_thread_id(thread_id: str) -> str:
 
 @router.put("/issues/{issue_id}/documents/{key}")
 async def upsert_issue_document(
-    issue_id: str,
+    issue_id: IssueId,
     key: str,
     body: UpsertDocumentBody,
     ctx: TeamsContext = Depends(_ctx),
@@ -958,7 +1003,7 @@ async def upsert_issue_document(
 
 @router.get("/issues/{issue_id}/documents/{key}")
 async def get_issue_document(
-    issue_id: str,
+    issue_id: IssueId,
     key: str,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -982,7 +1027,7 @@ async def get_issue_document(
 
 @router.delete("/issues/{issue_id}/documents/{key}")
 async def delete_issue_document(
-    issue_id: str,
+    issue_id: IssueId,
     key: str,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -1006,7 +1051,7 @@ async def delete_issue_document(
 
 @router.get("/issues/{issue_id}/documents/{key}/revisions")
 async def list_issue_document_revisions(
-    issue_id: str,
+    issue_id: IssueId,
     key: str,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -1027,7 +1072,7 @@ async def list_issue_document_revisions(
 
 @router.post("/issues/{issue_id}/documents/{key}/revisions/{revision_id}/restore")
 async def restore_issue_document_revision(
-    issue_id: str,
+    issue_id: IssueId,
     key: str,
     revision_id: str,
     ctx: TeamsContext = Depends(_ctx),
@@ -1050,7 +1095,7 @@ async def restore_issue_document_revision(
 
 @router.get("/issues/{issue_id}/documents/{key}/annotations")
 async def list_document_annotations(
-    issue_id: str,
+    issue_id: IssueId,
     key: str,
     ctx: TeamsContext = Depends(_ctx),
     status: Optional[str] = Query(default=None, pattern=r"^(open|resolved|all)$"),
@@ -1076,7 +1121,7 @@ async def list_document_annotations(
 
 @router.post("/issues/{issue_id}/documents/{key}/annotations")
 async def create_document_annotation(
-    issue_id: str,
+    issue_id: IssueId,
     key: str,
     body: CreateDocumentAnnotationThreadBody,
     ctx: TeamsContext = Depends(_ctx),
@@ -1100,7 +1145,7 @@ async def create_document_annotation(
 
 @router.post("/issues/{issue_id}/documents/{key}/annotations/{thread_id}/comments")
 async def add_document_annotation_comment(
-    issue_id: str,
+    issue_id: IssueId,
     key: str,
     thread_id: str,
     body: AddDocumentAnnotationCommentBody,
@@ -1126,7 +1171,7 @@ async def add_document_annotation_comment(
 
 @router.patch("/issues/{issue_id}/documents/{key}/annotations/{thread_id}")
 async def update_document_annotation_thread(
-    issue_id: str,
+    issue_id: IssueId,
     key: str,
     thread_id: str,
     body: UpdateDocumentAnnotationThreadBody,

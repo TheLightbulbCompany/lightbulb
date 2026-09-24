@@ -2,14 +2,9 @@ import { describe, test, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: vi.fn() }));
-vi.mock("swr", async () => {
-  const actual = await vi.importActual<typeof import("swr")>("swr");
-  return { ...actual, useSWRConfig: vi.fn() };
-});
 
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { useSWRConfig } from "swr";
 
 const mockPost = vi.fn();
 const mockPatch = vi.fn();
@@ -23,11 +18,9 @@ beforeEach(() => {
     post: mockPost,
     patch: mockPatch,
     del: mockDel,
-  } as unknown as ReturnType<typeof useTeamsApi>);
-  vi.mocked(useSWRConfig).mockReturnValue({
-    cache: { get: vi.fn(), set: vi.fn(), delete: vi.fn(), keys: vi.fn() },
+    // Revalidation goes through useTeamsApi's scoped mutate.
     mutate: mockMutate,
-  } as unknown as ReturnType<typeof useSWRConfig>);
+  } as unknown as ReturnType<typeof useTeamsApi>);
 });
 
 describe("useIssueMutations", () => {

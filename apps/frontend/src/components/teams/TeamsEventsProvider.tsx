@@ -242,7 +242,8 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
       (key) =>
         typeof key === "string" &&
         key.startsWith("/teams/issues/") &&
-        key.endsWith("/runs"),
+        // `/live-runs` + `/active-run` feed the task chat's live tail.
+        (key.endsWith("/runs") || key.endsWith("/live-runs") || key.endsWith("/active-run")),
     );
   }, [mutate]);
 

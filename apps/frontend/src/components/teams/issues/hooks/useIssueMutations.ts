@@ -4,7 +4,6 @@
 // v1: create + update + addComment. Defers checkout/feedback/interactions/etc.
 
 import { useCallback } from "react";
-import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import type {
@@ -28,8 +27,7 @@ export interface UseIssueMutationsResult {
 }
 
 export function useIssueMutations(): UseIssueMutationsResult {
-  const { post, patch, del } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { post, patch, del, mutate } = useTeamsApi();
 
   const create = useCallback(async (input: IssueCreateInput): Promise<Issue> => {
     // The Teams BFF accepts camelCase aliases (Pydantic populate_by_name=True)

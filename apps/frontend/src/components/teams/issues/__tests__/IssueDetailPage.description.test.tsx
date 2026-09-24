@@ -85,8 +85,9 @@ describe("IssueDetailPage description editing + copy-as-markdown", () => {
 
     render(<IssueDetailPage issueId="iss_42" />);
 
-    // Click the read-only description to enter edit mode, replace, then blur.
-    await user.click(screen.getByText("Existing body"));
+    // The description is the thread's first bubble; its pencil opens the editor.
+    expect(screen.getByText("Existing body")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit description" }));
     const textarea = screen.getByRole("textbox", { name: /description/i });
     await user.clear(textarea);
     await user.type(textarea, "Rewritten body");
@@ -97,12 +98,12 @@ describe("IssueDetailPage description editing + copy-as-markdown", () => {
     });
   });
 
-  it("shows the 'Add a description…' affordance when description is null", () => {
+  it("shows the 'Add a description...' ghost row when description is null", () => {
     setIssue({ ...WITH_DESCRIPTION, description: null });
 
     render(<IssueDetailPage issueId="iss_42" />);
 
-    expect(screen.getByText("Add a description…")).toBeInTheDocument();
+    expect(screen.getByText("Add a description...")).toBeInTheDocument();
   });
 
   it("copies the issue as markdown from the … menu", async () => {

@@ -2134,6 +2134,45 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def delete_issue_comment(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        comment_id: str,
+    ) -> dict:
+        """Tombstone the caller's own comment. Maps to
+        ``DELETE /api/issues/{id}/comments/{commentId}`` (upstream 403s a
+        non-author; no ``?mode=cancel`` — queued-comment cancel is not exposed)."""
+        return await self._delete(
+            f"/api/issues/{issue_id}/comments/{comment_id}",
+            session_cookie=session_cookie,
+        )
+
+    async def list_issue_live_runs(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> list | dict:
+        """Queued/running runs for an issue. Maps to ``GET /api/issues/{id}/live-runs``."""
+        return await self._get(
+            f"/api/issues/{issue_id}/live-runs",
+            session_cookie=session_cookie,
+        )
+
+    async def get_issue_active_run(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict | None:
+        """The issue's active run or ``null``. Maps to ``GET /api/issues/{id}/active-run``."""
+        return await self._get(
+            f"/api/issues/{issue_id}/active-run",
+            session_cookie=session_cookie,
+        )
+
     # ------------------------------------------------------------------
     # Issue feedback votes (thumbs up/down on agent output)
     #

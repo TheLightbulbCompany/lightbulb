@@ -476,6 +476,12 @@ class OpenClawWorkWorker:
             sessions=sessions,
             history_through_seq=int(meta.get("lastSeq") or message["messageSeq"]) if follow_up is not None else None,
         )
+        if meta.get("kind") != "dm" and follow_up is None:
+            # Reply where the conversation is: a top-level message in the main channel, a
+            # threaded one in its thread. Without this the bridge threads every channel reply
+            # (its old default), which the owner rejected. Jev's explicit placement overrides it
+            # below; a DM stays linear in the bridge; a follow-up keeps the bridge's placement.
+            body["replyThreadRootId"] = message.get("threadRootMessageId")
         if event_kind == "room_event" and follow_up is None:
             # Jev picks at most one Listening responder per message (spec §3a/§5a). A follow-up is
             # deterministic (the agent asked for that result): never routed.

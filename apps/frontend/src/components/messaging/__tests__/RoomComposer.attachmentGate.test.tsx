@@ -89,6 +89,28 @@ it("never uploads a PDF past the 20 MiB document cap", async () => {
   expect(upload).not.toHaveBeenCalled();
 });
 
+// Text and Office types don't share the image tier -- the validation copy
+// must name the right kind and the right cap, not just reject the file.
+it("never uploads a CSV past the 5 MiB text cap, and does not call it an image", async () => {
+  const upload = vi.fn(async () => attachment);
+  render(<Harness onUploadAttachment={upload} />);
+  const big = new File(["x"], "big.csv", { type: "text/csv" });
+  Object.defineProperty(big, "size", { value: 5 * 1024 * 1024 + 1 });
+  drop(big);
+  await screen.findByText(/Files must be 5 MiB or smaller/);
+  expect(upload).not.toHaveBeenCalled();
+});
+
+it("never uploads an XLSX past the 20 MiB document cap, and does not call it an image", async () => {
+  const upload = vi.fn(async () => attachment);
+  render(<Harness onUploadAttachment={upload} />);
+  const big = new File(["x"], "big.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  Object.defineProperty(big, "size", { value: 20 * 1024 * 1024 + 1 });
+  drop(big);
+  await screen.findByText(/Files must be 20 MiB or smaller/);
+  expect(upload).not.toHaveBeenCalled();
+});
+
 // A dropped folder arrives as a File with an empty type and no extension.
 it("never uploads a dropped folder", async () => {
   const upload = vi.fn(async () => attachment);

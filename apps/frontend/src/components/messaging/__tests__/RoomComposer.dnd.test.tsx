@@ -127,7 +127,7 @@ it.each([
   fireEvent.drop(form, { dataTransfer: { types: ["Files"], files: [unsupported] } });
 
   expect(upload).not.toHaveBeenCalled();
-  expect(screen.getByText("Unsupported file type or mismatched filename. Attach PNG, JPEG, WebP, GIF, PDF, or ZIP files.")).toBeInTheDocument();
+  expect(screen.getByText("Unsupported file type or mismatched filename. Attach an image, PDF, ZIP, Office (XLSX/DOCX/PPTX), or text (CSV/TXT/MD) file.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: `Remove ${name}` })).toBeEnabled();
 });
 

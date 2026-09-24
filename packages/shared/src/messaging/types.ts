@@ -166,6 +166,16 @@ export const MESSAGE_ATTACHMENT_CONTENT_TYPES = [
   "image/gif",
   "application/pdf",
   "application/zip",
+  // Office (OOXML) documents -- zip containers under the hood, same as
+  // application/zip above; validated the same way (outer zip signature only,
+  // no internal structure check).
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation", // .pptx
+  // Plain text -- no fixed byte signature; validated as UTF-8 instead.
+  "text/csv",
+  "text/plain",
+  "text/markdown",
 ] as const;
 
 export type MessageAttachmentContentType = typeof MESSAGE_ATTACHMENT_CONTENT_TYPES[number];
@@ -188,8 +198,10 @@ export function resolveMessageAttachmentContentType(fileName: string, contentTyp
 
 /** Mirrors the backend's per-content-type cap (`ATTACHMENT_MAX_BYTES_BY_TYPE`
  *  in `core/services/messaging.py`) -- images keep the original 5 MiB limit;
- *  PDFs and opaque ZIP downloads get a bounded 20 MiB limit. ZIP contents are
- *  never extracted or previewed. */
+ *  PDFs, ZIPs and Office docs (all zip containers) get a bounded 20 MiB
+ *  limit; plain text reuses the image tier at 5 MiB (already generous for a
+ *  spreadsheet export or a long log). ZIP/Office contents are never
+ *  extracted or previewed. */
 export const MESSAGE_ATTACHMENT_MAX_BYTES: Record<MessageAttachmentContentType, number> = {
   "image/png": 5 * 1024 * 1024,
   "image/jpeg": 5 * 1024 * 1024,
@@ -197,6 +209,12 @@ export const MESSAGE_ATTACHMENT_MAX_BYTES: Record<MessageAttachmentContentType, 
   "image/gif": 5 * 1024 * 1024,
   "application/pdf": 20 * 1024 * 1024,
   "application/zip": 20 * 1024 * 1024,
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": 20 * 1024 * 1024,
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": 20 * 1024 * 1024,
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": 20 * 1024 * 1024,
+  "text/csv": 5 * 1024 * 1024,
+  "text/plain": 5 * 1024 * 1024,
+  "text/markdown": 5 * 1024 * 1024,
 };
 
 export interface CreateMessageRequest {

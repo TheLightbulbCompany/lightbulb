@@ -55,6 +55,13 @@ PDF_MAX_BYTES = 20 * 1024 * 1024
 # ZIPs are opaque downloads. The service only checks their container signature;
 # it never extracts, previews, or executes their contents.
 ZIP_MAX_BYTES = 20 * 1024 * 1024
+# xlsx/docx/pptx are zip containers under the hood (OOXML) -- same ceiling as
+# ZIP/PDF, same "signature-only, no archive parsing" posture (see
+# _ATTACHMENT_SIGNATURES below).
+OFFICE_MAX_BYTES = 20 * 1024 * 1024
+# Plain text has no byte signature to check; a spreadsheet export or a long
+# log is still generous at the image tier.
+TEXT_MAX_BYTES = IMAGE_MAX_BYTES
 ATTACHMENT_MAX_BYTES_BY_TYPE = {
     "image/png": IMAGE_MAX_BYTES,
     "image/jpeg": IMAGE_MAX_BYTES,
@@ -62,6 +69,12 @@ ATTACHMENT_MAX_BYTES_BY_TYPE = {
     "image/gif": IMAGE_MAX_BYTES,
     "application/pdf": PDF_MAX_BYTES,
     "application/zip": ZIP_MAX_BYTES,
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": OFFICE_MAX_BYTES,
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": OFFICE_MAX_BYTES,
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": OFFICE_MAX_BYTES,
+    "text/csv": TEXT_MAX_BYTES,
+    "text/plain": TEXT_MAX_BYTES,
+    "text/markdown": TEXT_MAX_BYTES,
 }
 ATTACHMENT_MAX_BYTES = max(ATTACHMENT_MAX_BYTES_BY_TYPE.values())
 # Base64 is exactly 4 characters per 3 bytes: the ENCODED ceiling for that largest cap.
@@ -371,7 +384,20 @@ class CanonicalMessage(ContractModel):
 class MessageAttachment(ContractModel):
     id: uuid.UUID
     file_name: str = Field(min_length=1, max_length=256)
-    content_type: Literal["image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf", "application/zip"]
+    content_type: Literal[
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "image/gif",
+        "application/pdf",
+        "application/zip",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "text/csv",
+        "text/plain",
+        "text/markdown",
+    ]
     size: int = Field(gt=0)
 
     @field_validator("file_name")
@@ -910,15 +936,27 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
     )
 
 
+# Local file, empty archive, and spanned archive signatures -- shared by
+# application/zip and the three Office types below, which are zip containers
+# (OOXML) under the hood. No archive parsing follows this bounded signature
+# check for ANY of the four: the same "outer container only" posture already
+# accepted for plain ZIP, not a new one introduced for Office docs.
+_ZIP_SIGNATURE = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 _ATTACHMENT_SIGNATURES = {
     "image/png": (b"\x89PNG\r\n\x1a\n", ".png"),
     "image/jpeg": (b"\xff\xd8\xff", ".jpg"),
     "image/gif": ((b"GIF87a", b"GIF89a"), ".gif"),
     "image/webp": (b"RIFF", ".webp"),
     "application/pdf": (b"%PDF-", ".pdf"),
-    # Local file, empty archive, and spanned archive signatures. No archive
-    # parsing follows this bounded signature check.
-    "application/zip": ((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"), ".zip"),
+    "application/zip": (_ZIP_SIGNATURE, ".zip"),
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": (_ZIP_SIGNATURE, ".xlsx"),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (_ZIP_SIGNATURE, ".docx"),
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": (_ZIP_SIGNATURE, ".pptx"),
+    # None signature = no fixed byte prefix to check; validate_attachment_bytes
+    # requires valid UTF-8 instead, the natural analog of a signature for text.
+    "text/csv": (None, ".csv"),
+    "text/plain": (None, ".txt"),
+    "text/markdown": (None, ".md"),
 }
 
 
@@ -941,9 +979,18 @@ def validate_attachment_bytes(content_type: str, data: bytes) -> str:
     cap = ATTACHMENT_MAX_BYTES_BY_TYPE.get(content_type)
     if not expected or not cap or not data or len(data) > cap:
         raise ValueError(
-            "attachment must be PNG, JPEG, WebP, GIF, PDF, or ZIP, and at most 5 MiB for images or 20 MiB for PDF/ZIP"
+            "attachment must be PNG, JPEG, WebP, GIF, PDF, ZIP, XLSX, DOCX, PPTX, CSV, TXT, or MD, and at most "
+            "5 MiB for images/text or 20 MiB for PDF/ZIP/Office documents"
         )
     signature, suffix = expected
+    if signature is None:
+        # Text types carry no fixed byte prefix -- the natural analog of a
+        # signature check is that the bytes are valid UTF-8 text at all.
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("attachment bytes do not match the declared content type") from exc
+        return suffix
     signatures = signature if isinstance(signature, tuple) else (signature,)
     valid = any(data.startswith(value) for value in signatures)
     if content_type == "image/webp":

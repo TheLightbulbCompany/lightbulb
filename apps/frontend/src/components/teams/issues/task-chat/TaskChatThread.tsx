@@ -22,9 +22,13 @@
 // active-run) and run queued/status events (plus the 20s board keeper) refresh
 // the per-issue run lists.
 //
+// Interactions (part B2): stock's pending-input takeover — pending interactions
+// (newest first) replace the composer with TaskChatInteractionCard's takeover
+// form, a new one reopens it, "N pending" cycles, X dismisses to the pending
+// indicator, and Skip calls the skip route; resolved ones collapse to receipt
+// rows in the timeline.
+//
 // Deferred to part B: queued comments (edit/reorder/steer/interrupt/discard),
-// interaction skip + item verdicts (TaskChatInteractionCard/QuestionForm — the
-// classic IssueThreadInteractionCard stays mounted in the thread meanwhile),
 // runtime-request resolve, the native paperclip_runner turn, attachments and
 // uploads, user mentions, the activity route + IssueWriteDenialNotice, and the
 // streamed transcript (TaskChatLiveTail/Thinking + transcript-adapter + the
@@ -32,11 +36,11 @@
 
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError } from "@/lib/notify";
-import { IssueThreadInteractionCard } from "../IssueThreadInteractionCard";
 import type { IssueThreadInteractionCardProps } from "../IssueThreadInteractionCard";
+import { interactionReplacesComposerSkip } from "../lib/issue-thread-interactions";
 import { buildTeamsThreadItems } from "../lib/teams-thread-items";
 import type {
   CompanyAgent,
@@ -52,6 +56,8 @@ import { TaskChatBubble } from "./TaskChatBubble";
 import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
 import { TaskChatDescriptionBubble } from "./TaskChatDescriptionBubble";
 import { TaskChatComposer } from "./TaskChatComposer";
+import { TaskChatInteractionCard } from "./TaskChatInteractionCard";
+import type { SubmitInteractionVerdicts } from "./TaskChatCompactInteractionCard";
 import { TaskChatLiveRunPill } from "./TaskChatLiveRunPill";
 
 type InteractionHandlers = Pick<
@@ -60,6 +66,8 @@ type InteractionHandlers = Pick<
 >;
 
 export interface TaskChatThreadProps extends InteractionHandlers {
+  onSkipInteraction?: (interaction: IssueThreadInteraction) => Promise<void>;
+  onSubmitInteractionVerdicts?: SubmitInteractionVerdicts;
   issue: Issue;
   comments: IssueComment[];
   interactions?: IssueThreadInteraction[];
@@ -84,6 +92,18 @@ function toMs(value: string | null | undefined): number | null {
   if (!value) return null;
   const ms = new Date(value).getTime();
   return Number.isNaN(ms) ? null : ms;
+}
+
+/** Upstream durableInputLabel, for the kinds we carry. */
+function durableInputLabel(interaction: IssueThreadInteraction): string {
+  if (interaction.kind === "ask_user_questions") return interaction.title ?? "Questions";
+  if (interaction.kind === "suggest_tasks") return interaction.title ?? "Suggested tasks";
+  if (interaction.kind === "request_checkbox_confirmation") return interaction.title ?? "Choose options";
+  if (interaction.kind === "request_item_verdicts") return interaction.title ?? "Review items";
+  if (interaction.payload.target?.type === "issue_document" && interaction.payload.target.key === "plan") {
+    return interaction.title ?? "Review plan";
+  }
+  return interaction.title ?? "Confirmation";
 }
 
 function asRuns(data: unknown): IssueLiveRun[] {
@@ -128,6 +148,8 @@ export function TaskChatThread({
   onRejectInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
+  onSkipInteraction,
+  onSubmitInteractionVerdicts,
 }: TaskChatThreadProps) {
   const { read, post, mutate } = useTeamsApi();
   const liveRunsResp = read<IssueLiveRun[]>(`/issues/${issue.id}/live-runs`, { shouldRetryOnError: false });
@@ -155,6 +177,64 @@ export function TaskChatThread({
   const createdByAgent = issue.createdByAgentId ? agentMap.get(issue.createdByAgentId) : undefined;
   const assigneeName = issue.assigneeAgentId ? agentMap.get(issue.assigneeAgentId)?.name : null;
 
+  // Upstream's pending composer inputs: open by default, reopened by any new one.
+  const pending = interactions
+    .filter((interaction) => interaction.status === "pending")
+    .sort((a, b) => (toMs(String(b.createdAt)) ?? 0) - (toMs(String(a.createdAt)) ?? 0));
+  const pendingKey = pending.map((interaction) => interaction.id).join(",");
+  const [takeoverOpen, setTakeoverOpen] = useState(true);
+  const [selectedPendingId, setSelectedPendingId] = useState<string | null>(null);
+  const [seenPendingKey, setSeenPendingKey] = useState(pendingKey);
+  if (pendingKey !== seenPendingKey) {
+    // Adjust-state-on-prop-change (no effect): a newly arrived input reopens the takeover.
+    const seen = new Set(seenPendingKey.split(","));
+    if (pending.some((interaction) => !seen.has(interaction.id))) setTakeoverOpen(true);
+    setSeenPendingKey(pendingKey);
+  }
+  const selectedPending = pending.find((interaction) => interaction.id === selectedPendingId) ?? pending[0] ?? null;
+  const interactionHandlers = {
+    agentMap,
+    currentUserId,
+    onAcceptInteraction,
+    onRejectInteraction,
+    onSubmitInteractionAnswers,
+    onCancelInteraction,
+    onSubmitInteractionVerdicts,
+  };
+  const takeover =
+    takeoverOpen && selectedPending
+      ? {
+          id: selectedPending.id,
+          label: durableInputLabel(selectedPending),
+          pendingCount: pending.length,
+          content: (
+            <TaskChatInteractionCard
+              key={selectedPending.id}
+              interaction={selectedPending}
+              presentation="takeover"
+              {...interactionHandlers}
+            />
+          ),
+          onDismiss: () => setTakeoverOpen(false),
+          onSkip: async () => {
+            if (!onSkipInteraction) throw new Error("Skipping this interaction is unavailable.");
+            await onSkipInteraction(selectedPending);
+            setTakeoverOpen(false);
+          },
+          onShowNext: () => {
+            const index = pending.findIndex((interaction) => interaction.id === selectedPending.id);
+            setSelectedPendingId(pending[(index + 1) % pending.length]?.id ?? null);
+          },
+          inlineSkip:
+            selectedPending.kind === "ask_user_questions" || selectedPending.kind === "request_item_verdicts",
+          hideSkip: interactionReplacesComposerSkip(selectedPending),
+        }
+      : null;
+  const pendingTakeover =
+    !takeover && selectedPending
+      ? { count: pending.length, label: durableInputLabel(selectedPending), onOpen: () => setTakeoverOpen(true) }
+      : null;
+
   const cancelRun = tailRun
     ? async () => {
         await post(`/heartbeat-runs/${tailRun.id}/cancel`, {});
@@ -165,19 +245,8 @@ export function TaskChatThread({
 
   const rows = threadItems.map((entry) => {
     if (entry.kind === "interaction") {
-      return (
-        <div key={`interaction-${entry.id}`}>
-          <IssueThreadInteractionCard
-            interaction={entry.interaction}
-            agentMap={agentMap}
-            currentUserId={currentUserId}
-            onAcceptInteraction={onAcceptInteraction}
-            onRejectInteraction={onRejectInteraction}
-            onSubmitInteractionAnswers={onSubmitInteractionAnswers}
-            onCancelInteraction={onCancelInteraction}
-          />
-        </div>
-      );
+      if (entry.interaction.status === "pending") return null;
+      return <TaskChatInteractionCard key={`interaction-${entry.id}`} interaction={entry.interaction} {...interactionHandlers} />;
     }
     const item = commentToTaskChatItem(entry.comment, { agentMap, currentUserId });
     if (!item) return null;
@@ -210,7 +279,7 @@ export function TaskChatThread({
         }
       />
     );
-  });
+  }).filter(Boolean);
 
   return (
     <div className="flex flex-col" data-testid="task-chat-thread">
@@ -245,6 +314,8 @@ export function TaskChatThread({
       >
         {composerAccessory}
         <TaskChatComposer
+          takeover={takeover}
+          pendingTakeover={pendingTakeover}
           onAdd={onAdd}
           onStop={cancelRun}
           agents={agents}

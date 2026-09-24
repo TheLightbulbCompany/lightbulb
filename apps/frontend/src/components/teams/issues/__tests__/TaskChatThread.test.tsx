@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TaskChatThread } from "@/components/teams/issues/task-chat/TaskChatThread";
+import { IssueThreadInteractionCard } from "@/components/teams/issues/IssueThreadInteractionCard";
 import type {
   CompanyAgent,
   Issue,
@@ -225,7 +226,7 @@ describe("TaskChatThread (ported stock task chat)", () => {
     expect(screen.getByText("Waiting to start...")).toBeInTheDocument();
   });
 
-  describe("interaction cards stay mounted in the thread", () => {
+  describe("classic interaction card actor labels (inbox + takeover body)", () => {
     function interaction(overrides: Partial<RequestConfirmationInteraction>): RequestConfirmationInteraction {
       return {
         id: "int_1",
@@ -243,18 +244,25 @@ describe("TaskChatThread (ported stock task chat)", () => {
     }
 
     it("shows the enriched email for a human resolver", () => {
-      renderThread({
-        interactions: [
-          interaction({ resolvedByUserId: "pcu_1", resolvedByEmail: "ada@example.com", resolvedByClerkUserId: "u_bob" }),
-        ],
-      });
+      render(
+        <IssueThreadInteractionCard
+          interaction={interaction({ resolvedByUserId: "pcu_1", resolvedByEmail: "ada@example.com", resolvedByClerkUserId: "u_bob" })}
+          currentUserId="u_ada"
+        />,
+      );
       expect(screen.getByText("ada@example.com")).toBeInTheDocument();
     });
 
     it('falls back to "User" (never an id prefix) for an unenriched resolver', () => {
-      renderThread({ interactions: [interaction({ resolvedByUserId: "user_abcdef123" })] });
+      render(<IssueThreadInteractionCard interaction={interaction({ resolvedByUserId: "user_abcdef123" })} />);
       expect(screen.getByText("User")).toBeInTheDocument();
       expect(screen.queryByText("user_")).not.toBeInTheDocument();
+    });
+
+    it("collapses a resolved interaction in the thread to one receipt row", () => {
+      renderThread({ interactions: [interaction({})] });
+      expect(screen.getByTestId("task-chat-interaction-receipt")).toHaveTextContent("Confirmed request");
+      expect(screen.queryByText("Ship it?")).not.toBeVisible();
     });
   });
 });

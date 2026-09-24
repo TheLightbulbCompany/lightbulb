@@ -22,23 +22,29 @@ interaction payload is rejected with 422 at the FastAPI boundary.
 from __future__ import annotations
 
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path
 
 
 from . import agents as _agents
 from ._guards import require_trial_runway
 from .issues import CompanyIssueId
 from .deps import TeamsContext, envelope_list
+from .issues import IssueId, _require_company_issue
 from .schemas import (
     AcceptInteractionBody,
     CancelInteractionBody,
     RejectInteractionBody,
     RespondInteractionBody,
+    SkipInteractionBody,
+    SubmitInteractionVerdictsBody,
 )
 
 router = APIRouter()
 _ctx = _agents._ctx
+# Same pin as issues.IssueId: a percent-decoded `?`/`&`/`/` must not rewrite the upstream path.
+InteractionId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 logger = logging.getLogger(__name__)
 
 
@@ -224,6 +230,51 @@ async def cancel_interaction(
     """
     await require_trial_runway(ctx.owner_id)
     return await _agents._admin().cancel_interaction(
+        issue_id=issue_id,
+        interaction_id=interaction_id,
+        body=body.model_dump(exclude_none=True, by_alias=True),
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/issues/{issue_id}/interactions/{interaction_id}/skip")
+async def skip_interaction(
+    issue_id: IssueId,
+    interaction_id: InteractionId,
+    body: SkipInteractionBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Skip a pending interaction (the task-chat composer's Skip).
+
+    NOT a spend door: upstream's skip route deliberately enqueues no
+    continuation ("a subsequent ordinary message uses the existing comment
+    steering path"), so no trial gate. Fenced to this workspace's company.
+    """
+    await _require_company_issue(issue_id, ctx)
+    return await _agents._admin().skip_interaction(
+        issue_id=issue_id,
+        interaction_id=interaction_id,
+        body=body.model_dump(exclude_none=True, by_alias=True),
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/issues/{issue_id}/interactions/{interaction_id}/verdicts")
+async def submit_interaction_verdicts(
+    issue_id: IssueId,
+    interaction_id: InteractionId,
+    body: SubmitInteractionVerdictsBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Submit per-item verdicts on a ``request_item_verdicts`` interaction.
+
+    A spend door: upstream calls ``queueResolvedInteractionContinuationWakeup``
+    whenever an item newly resolves, so the trial gate runs before the fence
+    and the proxy call, like accept/reject/respond/cancel.
+    """
+    await require_trial_runway(ctx.owner_id)
+    await _require_company_issue(issue_id, ctx)
+    return await _agents._admin().submit_interaction_verdicts(
         issue_id=issue_id,
         interaction_id=interaction_id,
         body=body.model_dump(exclude_none=True, by_alias=True),

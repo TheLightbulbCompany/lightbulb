@@ -3,6 +3,7 @@
 
 import { useCallback } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import type { SubmitIssueThreadInteractionVerdicts } from "@/components/teams/shared/types";
 
 /**
  * Resolve an issue thread interaction inline (mirrors useApprovalMutations).
@@ -12,6 +13,8 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
  *   reject   → POST /issues/{id}/interactions/{iid}/reject
  *   respond  → POST /issues/{id}/interactions/{iid}/respond  (ask_user_questions)
  *   cancel   → POST /issues/{id}/interactions/{iid}/cancel
+ *   skip     → POST /issues/{id}/interactions/{iid}/skip      (task-chat composer Skip)
+ *   verdicts → POST /issues/{id}/interactions/{iid}/verdicts  (request_item_verdicts)
  *
  * KEY GOTCHA: `post()` takes a path WITHOUT the `/teams` prefix (useTeamsApi
  * prepends it), but `mutate()` keys are the FULL `/teams/...` SWR cache keys.
@@ -72,5 +75,21 @@ export function useInteractionMutations() {
     [post, revalidate],
   );
 
-  return { accept, reject, respond, cancel };
+  const skip = useCallback(
+    async (issueId: string, interactionId: string) => {
+      await post(`/issues/${issueId}/interactions/${interactionId}/skip`, {});
+      revalidate(issueId);
+    },
+    [post, revalidate],
+  );
+
+  const submitVerdicts = useCallback(
+    async (issueId: string, interactionId: string, body: SubmitIssueThreadInteractionVerdicts) => {
+      await post(`/issues/${issueId}/interactions/${interactionId}/verdicts`, body);
+      revalidate(issueId);
+    },
+    [post, revalidate],
+  );
+
+  return { accept, reject, respond, cancel, skip, submitVerdicts };
 }

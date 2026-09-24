@@ -14,14 +14,38 @@
 // out of scope): user mentions (members are Clerk-keyed, Paperclip mentions need
 // principal ids), attachments/uploads, work modes, reassign, queued edits,
 // paused takeover, runner-goal commands, drafts.
+//
+// Part B2: the pending-input takeover (upstream `takeover` / `pendingTakeover`
+// props) — a pending interaction replaces the input with its form under a
+// shared top row (label or portalled title, "N pending", pagination slot,
+// dismiss X), Skip inline or below, and the "N pending" indicator above the
+// input once dismissed.
 
 "use client";
 
-import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Loader2, Square } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowUp, CircleHelp, Loader2, Square, X } from "lucide-react";
+import { EditorialButton } from "@/components/teams/shell";
+import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 import { Textarea } from "@/components/ui/textarea";
 import { notifyApiError } from "@/lib/notify";
 import type { CompanyAgent } from "@/components/teams/shared/types";
+
+/** Upstream TaskChatComposerTakeover. */
+export interface TaskChatComposerTakeover {
+  id: string;
+  label: string;
+  pendingCount: number;
+  content: ReactNode;
+  /** Hides the takeover without resolving it; the pending indicator can reopen it. */
+  onDismiss: () => void;
+  onSkip: () => Promise<void> | void;
+  onShowNext?: () => void;
+  /** Places Skip inside a structured form's action row. */
+  inlineSkip?: boolean;
+  /** Some decision surfaces already provide a non-accept path of their own. */
+  hideSkip?: boolean;
+}
 
 /** Upstream MarkdownEditor mentionMarkdown for an agent option. */
 export function agentMentionMarkdown(agent: Pick<CompanyAgent, "id" | "name">): string {
@@ -41,7 +65,11 @@ export function TaskChatComposer({
   agents,
   assigneeName,
   disabled = false,
+  takeover = null,
+  pendingTakeover = null,
 }: {
+  takeover?: TaskChatComposerTakeover | null;
+  pendingTakeover?: { count: number; label?: string; onOpen: () => void } | null;
   onAdd: (body: string) => Promise<void>;
   /** Present while a run is live; the empty-draft send button becomes Stop. */
   onStop?: () => Promise<void>;
@@ -118,6 +146,94 @@ export function TaskChatComposer({
     }
   };
 
+  const [takeoverBusy, setTakeoverBusy] = useState(false);
+  const [takeoverError, setTakeoverError] = useState<string | null>(null);
+  const [takeoverHeaderClaimed, setTakeoverHeaderClaimed] = useState(false);
+  const [takeoverHeaderSlot, setTakeoverHeaderSlot] = useState<HTMLElement | null>(null);
+  const [takeoverControlsSlot, setTakeoverControlsSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setTakeoverBusy(false);
+    setTakeoverError(null);
+  }, [takeover?.id]);
+
+  function skipTakeover() {
+    if (!takeover) return;
+    setTakeoverBusy(true);
+    setTakeoverError(null);
+    Promise.resolve(takeover.onSkip()).catch((cause) => {
+      setTakeoverBusy(false);
+      setTakeoverError(cause instanceof Error ? cause.message : "This request could not be skipped.");
+    });
+  }
+
+  const takeoverSkipButton = takeover ? (
+    <EditorialButton type="button" size="sm" variant="secondary" disabled={takeoverBusy} onClick={skipTakeover}>
+      {takeoverBusy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
+      Skip
+    </EditorialButton>
+  ) : null;
+
+  if (takeover && !submitting) {
+    return (
+      <section
+        className="relative rounded-2xl px-3 py-3"
+        style={{ border: "1px solid var(--edge)", background: "var(--cream)" }}
+        aria-label={takeover.label}
+        data-testid="task-chat-composer-takeover"
+      >
+        <div className="mb-3 flex min-w-0 items-center gap-2" data-testid="task-chat-composer-takeover-header">
+          <div className="min-w-0 flex-1">
+            {!takeoverHeaderClaimed ? (
+              <strong className="block truncate text-sm font-medium" style={{ color: "var(--midnight)" }}>
+                {takeover.label}
+              </strong>
+            ) : null}
+            <div ref={setTakeoverHeaderSlot} className="flex min-w-0 items-center" />
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            {takeover.pendingCount > 1 ? (
+              <EditorialButton type="button" size="sm" variant="ghost" onClick={takeover.onShowNext}>
+                {takeover.pendingCount} pending
+              </EditorialButton>
+            ) : null}
+            <div ref={setTakeoverControlsSlot} className="flex shrink-0 items-center" />
+            <EditorialButton
+              type="button"
+              size="icon"
+              variant="ghost"
+              aria-label={`Dismiss ${takeover.label}`}
+              disabled={takeoverBusy}
+              onClick={takeover.onDismiss}
+            >
+              <X aria-hidden className="h-4 w-4" />
+            </EditorialButton>
+          </div>
+        </div>
+        <div className="pr-1" data-testid="task-chat-composer-takeover-body">
+          <TaskChatComposerTakeoverActionsContext.Provider
+            value={{
+              skipButton: takeover.inlineSkip && !takeover.hideSkip ? takeoverSkipButton : null,
+              dismiss: takeover.onDismiss,
+              headerSlot: takeoverHeaderSlot,
+              controlsSlot: takeoverControlsSlot,
+              setHeaderClaimed: setTakeoverHeaderClaimed,
+            }}
+          >
+            {takeover.content}
+          </TaskChatComposerTakeoverActionsContext.Provider>
+        </div>
+        {takeoverError ? (
+          <p className="mt-2 text-sm" role="alert" style={{ color: "var(--err)" }}>
+            {takeoverError}
+          </p>
+        ) : null}
+        {!takeover.inlineSkip && !takeover.hideSkip ? (
+          <div className="mt-3 flex items-center justify-end gap-2">{takeoverSkipButton}</div>
+        ) : null}
+      </section>
+    );
+  }
+
   const showStop = !submitting && body.trim().length === 0 && Boolean(onStop || stopping);
   const agentName = assigneeName || "the agent";
 
@@ -127,6 +243,19 @@ export function TaskChatComposer({
       style={{ border: "1px solid var(--edge)", background: "var(--cream)" }}
       data-testid="task-chat-composer"
     >
+      {pendingTakeover ? (
+        <button
+          type="button"
+          className="mb-1 flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors hover:bg-[var(--cream-deeper)]"
+          style={{ background: "var(--cream-deep)", color: "var(--midnight-muted)" }}
+          onClick={pendingTakeover.onOpen}
+          data-testid="task-chat-pending-input-indicator"
+        >
+          <CircleHelp className="h-4 w-4 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">{pendingTakeover.label ?? "Pending input"}</span>
+          <span className="shrink-0 font-medium">{pendingTakeover.count} pending</span>
+        </button>
+      ) : null}
       {options.length > 0 ? (
         <ul
           id={listboxId}

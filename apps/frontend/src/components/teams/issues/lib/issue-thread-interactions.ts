@@ -1,7 +1,9 @@
 // apps/frontend/src/components/teams/issues/lib/issue-thread-interactions.ts
 
 // Ported VERBATIM (pure, zero-React) from upstream Paperclip's
-// ui/src/lib/issue-thread-interactions.ts (MIT, © 2025 Paperclip AI). Only the
+// ui/src/lib/issue-thread-interactions.ts (MIT, © 2025 Paperclip AI);
+// request_item_verdicts + interactionReplacesComposerSkip added from
+// v2026.916.1-isol8.2 (task chat part B2). Only the
 // type import source is re-pointed from `@paperclipai/shared` to our local
 // `shared/types.ts`. Re-exports the interaction types so the card can import
 // them from here (matching upstream's import structure).
@@ -27,6 +29,13 @@ export type {
   RequestConfirmationPayload,
   RequestConfirmationResult,
   RequestConfirmationTarget,
+  RequestItemVerdictsInteraction,
+  RequestItemVerdictsItem,
+  RequestItemVerdictsPayload,
+  RequestItemVerdictsResult,
+  RequestItemVerdictsResultItem,
+  RequestItemVerdictValue,
+  SubmitIssueThreadInteractionVerdicts,
   SuggestedTaskDraft,
   SuggestTasksInteraction,
   SuggestTasksPayload,
@@ -40,12 +49,26 @@ import type {
   RequestCheckboxConfirmationPayload,
   RequestCheckboxConfirmationResult,
   RequestConfirmationTarget,
+  RequestItemVerdictsInteraction,
   SuggestedTaskDraft,
 } from "@/components/teams/shared/types";
 
 export interface SuggestedTaskTreeNode {
   task: SuggestedTaskDraft;
   children: SuggestedTaskTreeNode[];
+}
+
+/**
+ * These takeovers already expose a deliberate non-accept path in their form.
+ * Showing the composer's generic Skip beside Reject/Revise duplicates that
+ * escape hatch and makes the action hierarchy ambiguous.
+ */
+export function interactionReplacesComposerSkip(
+  interaction: IssueThreadInteraction,
+): boolean {
+  return interaction.kind === "request_confirmation"
+    || interaction.kind === "request_checkbox_confirmation"
+    || interaction.kind === "suggest_tasks";
 }
 
 export function isIssueThreadInteraction(
@@ -61,7 +84,41 @@ export function isIssueThreadInteraction(
       || candidate.kind === "ask_user_questions"
       || candidate.kind === "request_confirmation"
       || candidate.kind === "request_checkbox_confirmation"
+      || candidate.kind === "request_item_verdicts"
     );
+}
+
+export function buildItemVerdictsSummary(
+  interaction: RequestItemVerdictsInteraction,
+): string {
+  // Upstream getItemVerdictProgress, folded in (its only caller here).
+  const resolved = new Map(
+    (interaction.result?.items ?? []).map((item) => [item.id, item.verdict] as const),
+  );
+  let approved = 0;
+  let rejected = 0;
+  let deferred = 0;
+  for (const item of interaction.payload.items) {
+    const verdict = resolved.get(item.id);
+    if (verdict === "approve") approved += 1;
+    else if (verdict === "reject") rejected += 1;
+    else if (verdict === "defer") deferred += 1;
+  }
+  const decided = approved + rejected + deferred;
+  if (interaction.status === "answered") {
+    const parts = [`${decided} decided`];
+    if (approved > 0) parts.push(`${approved} approved`);
+    if (rejected > 0) parts.push(`${rejected} rejected`);
+    if (deferred > 0) parts.push(`${deferred} deferred`);
+    return parts.join(" · ");
+  }
+  if (interaction.status === "expired") {
+    const outcome = interaction.result?.outcome;
+    if (outcome === "superseded_by_comment") return "Verdicts expired after comment";
+    if (outcome === "stale_target") return "Verdicts expired after target changed";
+    return "Verdicts expired";
+  }
+  return `${decided} of ${interaction.payload.items.length} decided`;
 }
 
 export function getCheckboxConfirmationSelectedLabels(args: {
@@ -168,6 +225,10 @@ export function buildIssueThreadInteractionSummary(
     return optionCount === 1
       ? "Requested a selection from 1 option"
       : `Requested a selection from ${optionCount} options`;
+  }
+
+  if (interaction.kind === "request_item_verdicts") {
+    return buildItemVerdictsSummary(interaction);
   }
 
   const count = interaction.payload.questions.length;

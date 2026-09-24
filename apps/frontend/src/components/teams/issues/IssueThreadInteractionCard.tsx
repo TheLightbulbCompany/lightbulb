@@ -4,7 +4,8 @@
 // (the lower-chrome "classic" variant — MIT, © 2025 Paperclip AI), re-themed
 // onto the Teams editorial cream/forest palette. All four interaction kinds
 // (suggest_tasks, ask_user_questions, request_confirmation,
-// request_checkbox_confirmation) with their pending + resolved states.
+// request_checkbox_confirmation) with their pending + resolved states;
+// request_item_verdicts shows only its prompt + progress (the task chat owns it).
 //
 // Re-theme notes vs upstream:
 //   - MarkdownBody          -> MarkdownView (shared editorial renderer)
@@ -44,6 +45,7 @@ import { formatAssigneeUserLabel } from "@/components/teams/shared/lib/assignees
 import { createIssueDetailPath } from "@/components/teams/shared/lib/issueDetailBreadcrumb";
 import { handleShellLinkClick } from "@/lib/shellNav";
 import {
+  buildIssueThreadInteractionSummary,
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
   countSuggestedTaskNodes,
@@ -155,6 +157,8 @@ function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
       return "Confirmation";
     case "request_checkbox_confirmation":
       return "Checkbox confirmation";
+    case "request_item_verdicts":
+      return "Review items";
     default:
       return kind;
   }
@@ -1910,7 +1914,9 @@ export function IssueThreadInteractionCard({
                   ? interaction.payload.title ?? "Questions for the operator"
                   : interaction.kind === "request_checkbox_confirmation"
                     ? "Checkbox confirmation requested"
-                    : "Confirmation requested")}
+                    : interaction.kind === "request_item_verdicts"
+                      ? "Review items"
+                      : "Confirmation requested")}
           </div>
           {interaction.summary ? (
             <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--midnight-muted)]">
@@ -1947,6 +1953,15 @@ export function IssueThreadInteractionCard({
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
           />
+        ) : interaction.kind === "request_item_verdicts" ? (
+          // Classic has no per-item verdict form; the task chat's ported
+          // ItemVerdictsCard (task-chat/TaskChatCompactInteractionCard) owns it.
+          <p className="text-sm leading-6 text-[var(--midnight)]">
+            {interaction.payload.prompt}{" "}
+            <span className="text-[var(--midnight-muted)]">
+              {buildIssueThreadInteractionSummary(interaction)} — open the task to review.
+            </span>
+          </p>
         ) : (
           <RequestConfirmationCard
             interaction={interaction}

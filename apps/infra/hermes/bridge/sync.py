@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -193,6 +194,12 @@ def is_lock_sidecar(rel: str) -> bool:
     return any(fnmatch.fnmatch(rel, pattern) for pattern in LOCK_SIDECAR_GLOBS)
 
 
+#: S3-only terminal records of native Paperclip runs, under the agent's own profile prefix so
+#: ``delete_profile_objects`` takes them with the agent. See put_paperclip_run_record.
+PAPERCLIP_RUNS_DIR = ".paperclip-runs"
+PAPERCLIP_RUN_RECORD_TTL_S = 24 * 3600
+_RUN_RECORD_ID = re.compile(r"^[A-Za-z0-9_-]+$")  # the poll route's own run-id charset
+
 EXCLUDE_GLOBS = (
     *_CREDENTIAL_GLOBS,
     "sessions/request_dump_*.json",
@@ -233,6 +240,10 @@ EXCLUDE_GLOBS = (
     # They are pulled by NAME instead (_pull_cli_credentials), which bypasses these globs.
     *(f"{_p}*" if _p.endswith("/") else _p for _p in CLI_CREDENTIAL_PREFIXES),
     *HOME_EXCLUDE_GLOBS,
+    # Native Paperclip terminal-run records (put_paperclip_run_record): written straight to S3
+    # by the bridge, never through the profile dir, so no save may push a local copy over one
+    # and no recency pull brings them down.
+    f"{PAPERCLIP_RUNS_DIR}/*",
 )
 
 
@@ -255,7 +266,11 @@ def is_reproducible(rel: str) -> bool:
 #: ``is_excluded``/``is_reproducible`` -- those name backend-owned files and migrated skills a cold
 #: start MUST pull -- and not all of ``home/.local``: the backend projects CLI credentials under
 #: ``home/.local/share/gogcli/``.
-_RESTORE_SKIP_PREFIXES = (*(f"{PROFILE_HOME}/{name}/" for name in _HOME_UNSYNCED), PNPM_STORE_PREFIX)
+_RESTORE_SKIP_PREFIXES = (
+    *(f"{PROFILE_HOME}/{name}/" for name in _HOME_UNSYNCED),
+    PNPM_STORE_PREFIX,
+    f"{PAPERCLIP_RUNS_DIR}/",  # read by key on a poll miss, never needed in the profile dir
+)
 
 #: Per-file S3 GET/PUT ran at ~10-16 objects/s sequentially (Forge: 92,139 objects in 5,749 s).
 #: boto3 clients are thread-safe, so the one shared ``_s3()`` client serves every worker.
@@ -983,6 +998,46 @@ def save_root_auth() -> None:
     _ROOT_AUTH_REVISION = new_revision
     _ROOT_AUTH_ETAG = new_etag
     _ROOT_AUTH_HASH = local_hash
+
+
+def _run_records_prefix(agent_id: str) -> str:
+    return f"{S3_PREFIX}/{agent_id}/{PAPERCLIP_RUNS_DIR}/"
+
+
+def put_paperclip_run_record(agent_id: str, run_id: str, record: dict) -> None:
+    """Persist a native Paperclip run's terminal result so a poll that lands on a FRESH process
+    (a roll's StopRuntimeSession, an idle park, an OOM right after the turn) still gets the real
+    outcome instead of a 404 the backend facade reads as ``runtime_lost``. Raises on a failed
+    PUT; the caller logs it. Also prunes this agent's records older than a day -- one listing of
+    a prefix that only ever holds a day of runs."""
+    if not S3_BUCKET or not _RUN_RECORD_ID.fullmatch(run_id):
+        return  # an id the poll route can never address has nothing to answer
+    s3, prefix = _s3(), _run_records_prefix(agent_id)
+    s3.put_object(Bucket=S3_BUCKET, Key=f"{prefix}{run_id}.json",
+                  Body=json.dumps(record, separators=(",", ":")).encode("utf-8"))
+    try:
+        cutoff = time.time() - PAPERCLIP_RUN_RECORD_TTL_S
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
+            stale = [{"Key": obj["Key"]} for obj in page.get("Contents", [])
+                     if (_modified_at(obj) or cutoff) < cutoff]
+            if stale:
+                s3.delete_objects(Bucket=S3_BUCKET, Delete={"Objects": stale})
+    except Exception:  # noqa: BLE001 -- retention is housekeeping; the next write retries it
+        log.warning("paperclip run record prune failed for %s", agent_id, exc_info=True)
+
+
+def get_paperclip_run_record(agent_id: str, run_id: str) -> dict | None:
+    """The record put_paperclip_run_record wrote, or None when there is none. Any other S3
+    failure raises: a throttle is "unknown", and answering "not found" would fail a live run."""
+    if not S3_BUCKET or not _RUN_RECORD_ID.fullmatch(run_id):
+        return None
+    try:
+        body = _s3().get_object(Bucket=S3_BUCKET, Key=f"{_run_records_prefix(agent_id)}{run_id}.json")["Body"].read()
+    except Exception as exc:  # noqa: BLE001
+        if _is_absent(exc):
+            return None
+        raise
+    return json.loads(body)
 
 
 def delete_profile_objects(agent_id: str) -> int:

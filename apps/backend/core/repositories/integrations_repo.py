@@ -49,6 +49,18 @@ async def put_status(
     await run_in_thread(_table().put_item, Item=item)
 
 
+async def set_status(owner_id: str, provider: str, status: str) -> None:
+    """Flip an existing row's status (e.g. ``reconnect_required``), keeping its identity,
+    tenant and connected_at -- unlike ``put_status``, which rewrites the whole row."""
+    await run_in_thread(
+        _table().update_item,
+        Key={"owner_id": owner_id, "provider": provider},
+        UpdateExpression="SET #s = :s, updated_at = :u",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":s": status, ":u": int(time.time())},
+    )
+
+
 async def get(owner_id: str, provider: str) -> dict | None:
     response = await run_in_thread(
         _table().get_item,

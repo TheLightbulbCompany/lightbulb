@@ -1535,6 +1535,11 @@ export class ServiceStack extends cdk.Stack {
       // DynamoDbOwnedTables wildcard statement, so no cross-stack export is
       // created.
       METRONOME_FAST_GATE_TABLE: tableName(env, "metronome-fast-gate"),
+      // owner_id -> Paperclip agent id that platform-failed, recovery-blocked issues
+      // escalate to (core/services/paperclip_escalation.py). Prod: founder org -> Forge.
+      PAPERCLIP_ESCALATION_AGENT_OVERRIDES: env === "prod"
+        ? JSON.stringify({ org_3H3viGAfq2SXc9dIdcatmGXg8Td: "f293693d-1ec4-4dc3-bd3c-e54109e324bf" })
+        : "{}",
       OPENROUTER_WORKSPACE_ID: env === "dev"
         ? (process.env.OPENROUTER_WORKSPACE_ID_DEV ?? "")
         : (process.env.OPENROUTER_WORKSPACE_ID_PROD ?? ""),

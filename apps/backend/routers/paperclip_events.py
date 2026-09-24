@@ -28,6 +28,7 @@ from fastapi import APIRouter, HTTPException, Request
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import PaperclipRepo
+from core.services import paperclip_escalation
 from core.services.push_service import send_push_to_user
 from core.services.webhook_dedup import WebhookDedupResult, delete_event, record_event_or_skip
 
@@ -187,6 +188,9 @@ async def receive_paperclip_event(request: Request):
             "paperclip.run.failed",
             dimensions={"error_code": code if code in _RUN_FAILED_CODES else "other"},
         )
+        # A platform-failed issue run may leave the issue recovery-blocked; look again
+        # later and hand it on (background task — this handler still returns now).
+        paperclip_escalation.schedule(event)
 
     decision = decide_push(event)
     if decision is None:

@@ -2640,6 +2640,26 @@ def handler(event, context):
       description:
         "PAGE: Paperclip logged 'Secret decryption failed' - its master key no longer decrypts stored company secrets, so every run that needs one fails at setup. Log-derived, independent of the plugin event path (see P30).",
     });
+
+    // P33: an issue blocked by a platform fault that nobody live could take.
+    //
+    // core/services/paperclip_escalation.py hands a recovery-blocked issue on
+    // (failed agent -> escalation agent -> root CEO). When the root CEO itself
+    // failed, or no rung is invokable, the work stays blocked and needs a human.
+    this.createAlarm({
+      id: "P33",
+      name: "paperclip-escalation-exhausted",
+      metricName: "paperclip.escalation.exhausted",
+      threshold: 1,
+      evaluationPeriods: 1,
+      periodMinutes: 5,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "page",
+      description:
+        "PAGE: a Paperclip issue blocked by a platform-failed run (setup_failed/process_lost/timeout) ran out of escalation rungs - the root CEO failed too, or no escalation agent is invokable. The issue stays blocked until a human moves it.",
+    });
   }
 
   // =========================================================================

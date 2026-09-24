@@ -345,3 +345,20 @@ async def test_run_failed_metric_counts_even_when_push_is_suppressed(async_clien
         "other",
     ]
     assert all(c.args == ("paperclip.run.failed",) for c in metric.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_run_failed_hands_the_event_to_escalation(async_client, secret_set):
+    """The router only schedules; paperclip_escalation.schedule filters codes and issueId."""
+    event = _event("agent.run.failed", {"errorCode": "setup_failed", "agentId": "pa-1", "issueId": "iss-1"})
+    with (
+        patch("routers.paperclip_events.paperclip_escalation.schedule") as schedule,
+        patch(
+            "routers.paperclip_events.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.ALREADY_SEEN),
+        ),
+        patch("routers.paperclip_events.put_metric"),
+    ):
+        resp = await async_client.post("/api/v1/webhooks/paperclip-events", json=event, headers=_AUTH)
+    assert resp.status_code == 200
+    schedule.assert_called_once_with(event)

@@ -54,7 +54,7 @@ export type { ChatIncomingMessage, LiveEvent, LiveEventOf } from "./live/types";
 export { createMessagingClient } from "./messaging/client";
 export { wrapSelection } from "./messaging/composerText";
 export type { MarkdownStyle } from "./messaging/composerText";
-export { LISTEN_MODE_LABELS, listenModeOptions, respondHint } from "./messaging/respondHint";
+export { canChangeListenMode, LISTEN_MODE_LABELS, listenModeOptions, respondHint } from "./messaging/respondHint";
 export {
   buildSetupSteps,
   isBandComplete,
@@ -159,6 +159,7 @@ export type {
   RoomSection,
   RoomSummary,
   RunStatusResponse,
+  UpsertRoomMemberRequest,
 } from "./messaging/types";
 export {
   MESSAGE_ATTACHMENT_ACCEPT,

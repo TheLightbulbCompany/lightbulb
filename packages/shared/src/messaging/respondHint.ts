@@ -17,6 +17,25 @@ export function listenModeOptions(listeningAvailable: boolean): { value: ListenM
   });
 }
 
+/**
+ * Who may change an agent's listen mode in a room (owner ruling 2026-09-23):
+ * a room owner/admin always, and on a paid workspace any member. `subscribed`
+ * is billing's `is_subscribed`; only `true` counts, so a trial member never
+ * flashes an enabled control while billing loads. Given the room, a DM is
+ * excluded (the mode is inert there) and so is the vendor-shared room's
+ * any-member path (a Lightbulb-side member would spend the customer's
+ * inference; the backend refuses it too). Web passes no room.
+ */
+export function canChangeListenMode(
+  viewerRole: string | null | undefined,
+  subscribed: boolean | null | undefined,
+  room?: { kind: RoomKind; shared?: boolean },
+): boolean {
+  if (room?.kind === "dm") return false;
+  const admin = viewerRole === "owner" || viewerRole === "admin";
+  return admin || (subscribed === true && !room?.shared);
+}
+
 export interface RespondTarget {
   kind: "human" | "agent";
   id: string;

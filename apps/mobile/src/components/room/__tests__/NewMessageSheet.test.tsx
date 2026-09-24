@@ -57,6 +57,13 @@ jest.mock("@lightbulb/shared", () => ({
   }),
 }));
 
+// The workspace's paid flag (billing's is_subscribed); undefined = not loaded.
+let mockSubscribed: boolean | undefined = undefined;
+jest.mock("../../../lib/subscription", () => ({
+  ...jest.requireActual("../../../lib/subscription"),
+  useSubscribed: () => mockSubscribed,
+}));
+
 import { NewMessageSheet } from "../NewMessageSheet";
 
 describe("NewMessageSheet", () => {
@@ -64,6 +71,7 @@ describe("NewMessageSheet", () => {
     mockSelectDm.mockClear();
     mockCreateRoom.mockClear();
     mockSelectDm.mockImplementation(async () => "room-dm");
+    mockSubscribed = undefined;
     // Reset every test to the two-person default roster — the cap test below
     // overrides this for its own run, and without a reset here that override
     // would leak into whichever test runs next.
@@ -218,6 +226,26 @@ describe("NewMessageSheet", () => {
       );
       await waitFor(() => expect(onOpenRoom).toHaveBeenCalledWith("room-group"));
       expect(mockSelectDm).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [true, "active"],
+      [false, "mentions"],
+      [undefined, "mentions"],
+    ] as const)("starts a channel's agents on the plan's default (subscribed=%s -> %s)", async (subscribed, listenMode) => {
+      mockSubscribed = subscribed;
+      await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
+      await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
+      await fireEvent.press(screen.getByText("Channel"));
+      await fireEvent.changeText(screen.getByLabelText("Channel name"), "launch");
+      await fireEvent.press(screen.getByText("Friday"));
+      await fireEvent.press(screen.getByLabelText("Start conversation"));
+      await waitFor(() =>
+        expect(mockCreateRoom).toHaveBeenCalledWith(
+          expect.objectContaining({ members: [{ kind: "agent", id: "agent-1", role: "member", listenMode }] }),
+          { activate: false },
+        ),
+      );
     });
 
     it("allows creating a channel with nobody picked yet", async () => {

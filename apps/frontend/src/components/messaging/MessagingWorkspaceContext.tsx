@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { resolveTypedMentions, runView, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, resolveTypedMentions, runView, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -645,8 +645,8 @@ export function MessagingWorkspaceProvider({
   const pending = rooms.optimisticMessages;
   const viewerRole = rooms.activeRoom?.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "";
   // On a paid workspace any member may change an agent's response (owner ruling 2026-09-23).
-  // `=== true`, not `listeningAvailable`: that one assumes paid while billing loads.
-  const canManageResponses = ["owner", "admin"].includes(viewerRole) || billingAccount?.is_subscribed === true;
+  // Shared with mobile; it reads `is_subscribed === true`, not `listeningAvailable` (which assumes paid while billing loads).
+  const canManageResponses = canChangeListenMode(viewerRole, billingAccount?.is_subscribed);
 
   const directoryProps: RoomDirectoryProps = {
     ownerScopeId: scope,

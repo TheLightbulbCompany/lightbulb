@@ -155,6 +155,7 @@ const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {
   "project-detail": "Project",
   "goal-detail": "Goal",
   "run-detail": "Run",
+  "approval-detail": "Approval",
 };
 
 // Legacy control keys kept for URL grammar parity (ChatErrorCard links to

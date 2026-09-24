@@ -1299,6 +1299,41 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def list_approval_comments(self, *, session_cookie: str, approval_id: str) -> list | dict:
+        """Maps to ``GET /api/approvals/{id}/comments``."""
+        return await self._get(f"/api/approvals/{approval_id}/comments", session_cookie=session_cookie)
+
+    async def add_approval_comment(self, *, session_cookie: str, approval_id: str, body: str) -> dict:
+        """Maps to ``POST /api/approvals/{id}/comments`` (``{body}``)."""
+        return await self._post(
+            f"/api/approvals/{approval_id}/comments",
+            json={"body": body},
+            session_cookie=session_cookie,
+        )
+
+    async def request_approval_revision(
+        self, *, session_cookie: str, approval_id: str, decision_note: Optional[str]
+    ) -> dict:
+        """Maps to ``POST /api/approvals/{id}/request-revision`` (board only upstream)."""
+        body: dict[str, Any] = {"decisionNote": decision_note} if decision_note else {}
+        return await self._post(
+            f"/api/approvals/{approval_id}/request-revision",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def resubmit_approval(self, *, session_cookie: str, approval_id: str) -> dict:
+        """Maps to ``POST /api/approvals/{id}/resubmit`` with no replacement payload."""
+        return await self._post(
+            f"/api/approvals/{approval_id}/resubmit",
+            json={},
+            session_cookie=session_cookie,
+        )
+
+    async def list_approval_issues(self, *, session_cookie: str, approval_id: str) -> list | dict:
+        """Maps to ``GET /api/approvals/{id}/issues`` (the linked tasks)."""
+        return await self._get(f"/api/approvals/{approval_id}/issues", session_cookie=session_cookie)
+
     # ------------------------------------------------------------------
     # Issues
     # ------------------------------------------------------------------

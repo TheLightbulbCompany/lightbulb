@@ -407,6 +407,26 @@ class RejectApprovalBody(_Strict):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+class AddApprovalCommentBody(_Strict):
+    """Mirrors upstream ``addApprovalCommentSchema`` (``{body}``, non-empty)."""
+
+    body: str = Field(min_length=1, max_length=20000)
+
+
+class RequestApprovalRevisionBody(_Strict):
+    """Mirrors upstream ``requestApprovalRevisionSchema``; ``decision_note``
+    aliases to ``decisionNote``."""
+
+    decision_note: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ResubmitApprovalBody(_Strict):
+    """Upstream ``resubmitApprovalSchema`` also takes a replacement ``payload``;
+    the BFF refuses it. A ``hire_agent`` payload carries ``adapterType``, the
+    same smuggling carrier the approve/reject bodies keep closed, and stock's
+    "Mark resubmitted" button sends none."""
+
+
 # ---------------------------------------------------------------------------
 # Issue-thread interactions (accept / reject / respond / cancel)
 #

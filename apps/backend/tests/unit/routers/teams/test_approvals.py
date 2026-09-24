@@ -107,6 +107,7 @@ def test_get_approval_detail(client, monkeypatch):
     admin.get_approval = AsyncMock(
         return_value={
             "id": "apv_1",
+            "companyId": "co_abc",
             "status": "pending",
             "type": "tool_call",
             "payload": {"tool": "shell", "args": "ls -la"},
@@ -129,3 +130,99 @@ def test_get_approval_detail(client, monkeypatch):
         approval_id="apv_1",
         session_cookie="cookie",
     )
+
+
+# --- approval detail pass-throughs (ported stock ApprovalDetail) --------------
+
+APV = "11111111-1111-1111-1111-111111111111"
+H = {"Authorization": "Bearer x"}
+
+
+@pytest.fixture
+def admin(client, monkeypatch):
+    from routers.teams import agents as agents_mod
+
+    fake = MagicMock()
+    fake.get_approval = AsyncMock(return_value={"id": APV, "companyId": "co_abc", "status": "pending"})
+    fake.list_approval_comments = AsyncMock(return_value=[{"id": "c1", "body": "hi"}])
+    fake.add_approval_comment = AsyncMock(return_value={"id": "c2", "body": "ok"})
+    fake.request_approval_revision = AsyncMock(return_value={"id": APV, "status": "revision_requested"})
+    fake.resubmit_approval = AsyncMock(return_value={"id": APV, "status": "pending"})
+    fake.list_approval_issues = AsyncMock(return_value=[{"id": "iss_1", "title": "T"}])
+    monkeypatch.setattr(agents_mod, "_admin", lambda: fake)
+    return fake
+
+
+_CALLS = {
+    "get": ("get", f"/api/v1/teams/approvals/{APV}", None),
+    "comments": ("get", f"/api/v1/teams/approvals/{APV}/comments", None),
+    "comment": ("post", f"/api/v1/teams/approvals/{APV}/comments", {"body": "ok"}),
+    "revision": ("post", f"/api/v1/teams/approvals/{APV}/request-revision", {"decisionNote": "fix"}),
+    "resubmit": ("post", f"/api/v1/teams/approvals/{APV}/resubmit", {}),
+    "issues": ("get", f"/api/v1/teams/approvals/{APV}/issues", None),
+}
+
+
+def _call(client, name, url=None):
+    method, default_url, body = _CALLS[name]
+    url = url or default_url
+    if method == "get":
+        return client.get(url, headers=H)
+    return client.post(url, json=body, headers=H)
+
+
+def test_detail_routes_forward_with_member_session(client, admin):
+    assert _call(client, "comments").json() == [{"id": "c1", "body": "hi"}]
+    admin.list_approval_comments.assert_awaited_once_with(approval_id=APV, session_cookie="cookie")
+
+    r = _call(client, "comment")
+    assert r.status_code == 201
+    admin.add_approval_comment.assert_awaited_once_with(approval_id=APV, body="ok", session_cookie="cookie")
+
+    assert _call(client, "revision").json()["status"] == "revision_requested"
+    admin.request_approval_revision.assert_awaited_once_with(
+        approval_id=APV, decision_note="fix", session_cookie="cookie"
+    )
+
+    assert _call(client, "resubmit").status_code == 200
+    admin.resubmit_approval.assert_awaited_once_with(approval_id=APV, session_cookie="cookie")
+
+    assert _call(client, "issues").json() == [{"id": "iss_1", "title": "T"}]
+    admin.list_approval_issues.assert_awaited_once_with(approval_id=APV, session_cookie="cookie")
+
+
+@pytest.mark.parametrize("name", list(_CALLS))
+def test_another_companys_approval_is_404_and_never_forwarded(client, admin, name):
+    admin.get_approval.return_value = {"id": APV, "companyId": "co_OTHER"}
+    assert _call(client, name).status_code == 404
+    for m in (
+        "list_approval_comments",
+        "add_approval_comment",
+        "request_approval_revision",
+        "resubmit_approval",
+        "list_approval_issues",
+    ):
+        getattr(admin, m).assert_not_awaited()
+
+
+@pytest.mark.parametrize("name", list(_CALLS))
+def test_bad_approval_id_is_422(client, admin, name):
+    url = _CALLS[name][1].replace(APV, "ap.x")
+    assert _call(client, name, url).status_code == 422
+    admin.get_approval.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [
+        ("comment", {}),
+        ("comment", {"body": ""}),
+        ("comment", {"body": "x", "authorAgentId": "a"}),
+        ("revision", {"decisionNote": "x", "status": "approved"}),
+        ("resubmit", {"payload": {"adapterType": "process"}}),
+    ],
+)
+def test_off_schema_bodies_are_422(client, admin, name, body):
+    r = client.post(_CALLS[name][1], json=body, headers=H)
+    assert r.status_code == 422
+    admin.get_approval.assert_not_awaited()

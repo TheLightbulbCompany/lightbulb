@@ -251,27 +251,27 @@ describe("PaperclipStack — Fargate service shape", () => {
     });
   });
 
-  test("autoscaling target is 1–4 and tracks CPU at 70%", () => {
-    template.hasResourceProperties(
-      "AWS::ApplicationAutoScaling::ScalableTarget",
-      {
-        MinCapacity: 1,
-        MaxCapacity: 4,
-        ServiceNamespace: "ecs",
-      },
-    );
-    template.hasResourceProperties(
-      "AWS::ApplicationAutoScaling::ScalingPolicy",
-      {
-        PolicyType: "TargetTrackingScaling",
-        TargetTrackingScalingPolicyConfiguration: Match.objectLike({
-          TargetValue: 70,
-          PredefinedMetricSpecification: Match.objectLike({
-            PredefinedMetricType: "ECSServiceAverageCPUUtilization",
-          }),
-        }),
-      },
-    );
+  test("server is pinned to one task (no autoscaling)", () => {
+    // The fork's orphan reaper is not task-aware: a second task reaps a
+    // sibling's in-flight runs as process_lost.
+    template.resourceCountIs("AWS::ApplicationAutoScaling::ScalableTarget", 0);
+    template.resourceCountIs("AWS::ApplicationAutoScaling::ScalingPolicy", 0);
+  });
+
+  test("run logs mirror to the attachments bucket under run-logs/", () => {
+    const tasks = template.findResources("AWS::ECS::TaskDefinition", {
+      Properties: { Family: "lightbulb-dev-paperclip-server" },
+    });
+    const td = Object.values(tasks)[0] as { Properties: any };
+    const envArr = td.Properties.ContainerDefinitions[0].Environment as Array<{
+      Name: string;
+      Value: unknown;
+    }>;
+    const envMap = Object.fromEntries(envArr.map((e) => [e.Name, e.Value]));
+    expect(envMap.RUN_LOG_S3_BUCKET).toBeDefined();
+    expect(envMap.RUN_LOG_S3_BUCKET).toEqual(envMap.PAPERCLIP_STORAGE_S3_BUCKET);
+    expect(envMap.RUN_LOG_S3_REGION).toEqual(envMap.PAPERCLIP_STORAGE_S3_REGION);
+    expect(envMap.RUN_LOG_S3_PREFIX).toBe("run-logs");
   });
 
   test("registers `paperclip` in Cloud Map exactly once with A records (10s TTL)", () => {

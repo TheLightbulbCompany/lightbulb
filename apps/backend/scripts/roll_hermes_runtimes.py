@@ -19,7 +19,11 @@ managed-model flip) its profiles were NOT rewritten, and the next cold start ref
 
 ``--dry-run`` is NOT read-only: it still runs the idempotent ensure calls a roll needs to
 compute the desired spec (the owner's Browser profile create-or-adopt, the memory IAM policy).
-It skips only ``UpdateAgentRuntime`` and the session stop, answering ``would-update``.
+It skips only ``UpdateAgentRuntime``, the session stop and the Paperclip adapter-config sync,
+answering ``would-update``.
+
+Each rolled owner also gets ``sync_paperclip_adapter_config`` (one PATCH per ``hermes_gateway``
+agent), so a fleet roll also converges every agent's adapterConfig onto today's builder.
 
 This is a SEQUENTIAL loop, and the idle wait is per owner: budget ~55-90 s extra for each parked
 owner (the probe cold-boots its microVM) and up to ~10.5 min for each busy one.
@@ -33,7 +37,7 @@ import logging
 import sys
 
 from core.repositories import container_repo
-from core.services.hermes_provisioning import roll_runtime_image
+from core.services.hermes_provisioning import roll_runtime_image, sync_paperclip_adapter_config
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,8 @@ async def main(argv: list[str] | None = None) -> int:
             failed += 1
             logger.error("roll: owner=%s FAILED: %s: %s", owner_id, type(exc).__name__, exc)
             continue
+        if not args.dry_run:
+            await sync_paperclip_adapter_config(owner_id)  # never raises; logged + metered
         print(f"{owner_id} {result}")
         # A busy owner may have a moved env but its old profile (an env drift, or --respec):
         # re-run it with --respec (the env no longer reads as drift) or it breaks on cold start.

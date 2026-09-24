@@ -109,7 +109,7 @@ async def repoint_agent_adapter(owner_id: str, agent: dict[str, Any]) -> bool:
 
 async def list_hermes_gateway_agents(owner_id: str) -> tuple[str | None, list[str]]:
     """The owner's active Paperclip company id and its ``hermes_gateway`` agent ids -- what
-    ``sync_agent_adapter_tokens`` would patch. ``(None, [])`` when no company exists yet."""
+    ``sync_agent_adapter_config`` would patch. ``(None, [])`` when no company exists yet."""
     company_id = await resolve_company_id_for_owner(
         owner_id=owner_id, repo=PaperclipRepo(table_name="paperclip-companies")
     )
@@ -122,8 +122,14 @@ async def list_hermes_gateway_agents(owner_id: str) -> tuple[str | None, list[st
     return company_id, [a["id"] for a in agents if a.get("adapterType") == HERMES_GATEWAY_TYPE and a.get("id")]
 
 
-async def sync_agent_adapter_tokens(owner_id: str) -> int:
-    """Re-snapshot the row's CURRENT ``hook_token`` into every ``hermes_gateway`` agent's apiKey.
+async def sync_agent_adapter_config(owner_id: str) -> int:
+    """Rewrite every ``hermes_gateway`` agent's FULL adapter config from today's builder.
+
+    ``build_hermes_gateway_adapter_config`` output (url, timeoutSec, pollIntervalMs,
+    paperclipApiUrl, apiKey = the row's CURRENT ``hook_token``) replaces the stored config
+    wholesale (``replaceAdapterConfig``), so any builder change -- e.g. #3065's timeoutSec
+    900 -> 3600 -- reaches existing agents on the next sync. ``reconcile_runtime`` runs it on
+    every reconcile; ``prepare_hermes_workspace`` also runs it when it mints a new hook token.
 
     The adapter config is a snapshot (Paperclip stores the apiKey as a managed company secret),
     and ``provision_org`` short-circuits on an already-active company -- so when an owner's
@@ -151,7 +157,7 @@ async def sync_agent_adapter_tokens(owner_id: str) -> int:
                 agent_id=agent_id,
                 body={"adapterConfig": adapter_config, "replaceAdapterConfig": True},
             )
-    logger.info("sync_agent_adapter_tokens: owner=%s company=%s patched=%d", owner_id, company_id, len(agent_ids))
+    logger.info("sync_agent_adapter_config: owner=%s company=%s patched=%d", owner_id, company_id, len(agent_ids))
     return len(agent_ids)
 
 

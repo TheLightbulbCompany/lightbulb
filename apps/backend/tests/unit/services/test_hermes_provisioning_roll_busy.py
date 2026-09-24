@@ -151,5 +151,8 @@ async def test_a_busy_owner_fails_the_script(monkeypatch):
         return "updated-session-busy"
 
     monkeypatch.setattr(roll_hermes_runtimes, "roll_runtime_image", _busy)
+    synced = AsyncMock()
+    monkeypatch.setattr(roll_hermes_runtimes, "sync_paperclip_adapter_config", synced)
     assert await roll_hermes_runtimes.main(["--owner-id", "org_a", "--respec"]) == 1
     assert await roll_hermes_runtimes.main(["--owner-id", "org_a"]) == 1
+    assert synced.await_count == 2  # a roll also converges the Paperclip adapter config

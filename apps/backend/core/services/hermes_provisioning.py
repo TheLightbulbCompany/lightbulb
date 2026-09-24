@@ -620,16 +620,22 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
     if not hook_token_reused:
         # A re-created row minted a NEW hook_token, but a surviving Paperclip company's agents
         # still carry the old one as their snapshotted apiKey -- every run would 401 silently.
-        # Best-effort: a no-op on a first provision (no company yet); on failure the metric fires
-        # and the repair is a one-shot sync_agent_adapter_tokens run (see the PR).
-        from core.services import paperclip_agent_lifecycle
-
-        try:
-            await paperclip_agent_lifecycle.sync_agent_adapter_tokens(owner_id)
-        except Exception:  # noqa: BLE001 -- never abort the provision over the adapter resync
-            logger.exception("hermes prepare owner=%s: paperclip adapter token resync FAILED", owner_id)
-            put_metric("paperclip.adapter_token_sync.error")
+        # A no-op on a first provision (no company yet).
+        await sync_paperclip_adapter_config(owner_id)
     return boot_changed
+
+
+async def sync_paperclip_adapter_config(owner_id: str) -> None:
+    """Best-effort ``paperclip_agent_lifecycle.sync_agent_adapter_config``: never raises, so an
+    adapter-config resync can never abort a provision or a reconcile. A failure is logged and
+    metered; the next reconcile retries it (the sync is idempotent)."""
+    from core.services import paperclip_agent_lifecycle
+
+    try:
+        await paperclip_agent_lifecycle.sync_agent_adapter_config(owner_id)
+    except Exception:  # noqa: BLE001 -- the metric is the signal; the old config keeps serving
+        logger.exception("owner=%s: paperclip adapter config sync FAILED", owner_id)
+        put_metric("paperclip.adapter_config_sync.error")
 
 
 async def _ensure_codex_auth_staged(owner_id: str) -> None:
@@ -924,7 +930,9 @@ async def reconcile_runtime(owner_id: str) -> str:
     2. ``write_profiles`` -- every roster profile from the billing provider (BYO key read back),
        each bumping ``.revision``, which the bridge re-reads on every turn. THAT is how a
        provider switch lands: no session stop, no idle wait.
-    3. ``roll_runtime_image`` -- UpdateAgentRuntime only when the image or env block differs,
+    3. ``sync_paperclip_adapter_config`` -- rewrite every Paperclip ``hermes_gateway`` agent's
+       adapterConfig from today's builder (best-effort: logged + metered, never fails this).
+    4. ``roll_runtime_image`` -- UpdateAgentRuntime only when the image or env block differs,
        and an idle-only session stop only for a boot-time change (spec, or step 1's secret).
 
     Overlapping reconciles: each renders from the billing it read at its start, so the one that
@@ -968,6 +976,9 @@ async def _reconcile_runtime_to_billing(owner_id: str) -> str:
                 break
             logger.info("reconcile_runtime: billing moved for owner=%s mid-reconcile -- rendering again", owner_id)
             inputs = fresh
+        # Paperclip's adapterConfig is a snapshot: converge it here so a builder change (URL,
+        # timeoutSec, ...) reaches existing agents. One PATCH per agent; never raises.
+        await sync_paperclip_adapter_config(owner_id)
         return await roll_runtime_image(owner_id, restart_session=boot_changed)
     except Exception:  # noqa: BLE001 -- the old runtime keeps serving; the metric pages
         logger.exception("reconcile_runtime failed for owner=%s", owner_id)

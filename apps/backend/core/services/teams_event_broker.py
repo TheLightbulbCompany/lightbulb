@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from time import monotonic
 from typing import Any, Awaitable, Callable
 
 from core.observability.metrics import gauge, put_metric
@@ -17,6 +18,9 @@ from core.services.messaging import make_live_event
 logger = logging.getLogger(__name__)
 
 _CLIENT_CLOSE_TIMEOUT = 3.0
+# Web clients re-fetch live-config every 5 min (useLiveEvents refreshInterval), so
+# 10 min tolerates one missed refresh before a user's upstream socket is released.
+_IDLE_RELEASE_S = 600.0
 _PAPERCLIP_EVENTS = frozenset(
     {
         "teams.activity.logged",
@@ -45,15 +49,17 @@ class TeamsEventBroker:
         self._resolve_cookie = resolve_session_cookie
         self._clients: dict[tuple[str, str], Any] = {}
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._last_seen: dict[tuple[str, str], float] = {}
 
     async def ensure_user(self, owner_id: str, user_id: str) -> bool:
         """Idempotently attach the user's Paperclip live stream.
 
-        AppSync has no disconnect callback, so clients remain until process
-        shutdown. This replaces browser presence with a bounded one-client-per-user
-        runtime resource rather than inventing another heartbeat protocol.
+        AppSync has no disconnect callback, so each call (every live-config fetch)
+        stamps a last-seen time and ``release_idle`` closes clients nobody has
+        refreshed within ``_IDLE_RELEASE_S``; the next call re-opens one.
         """
         key = (owner_id, user_id)
+        self._last_seen[key] = monotonic()
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             existing = self._clients.get(key)
@@ -89,6 +95,27 @@ class TeamsEventBroker:
             put_metric("teams.broker.subscribe", dimensions={"outcome": "ok"})
             gauge("teams.broker.users.active", len(self._clients))
             return True
+
+    async def release_idle(self) -> None:
+        """Close clients whose user has not refreshed live-config recently.
+
+        Called from main.py's 60 s gauge loop. Takes each key's lock so a
+        concurrent ``ensure_user`` either refreshes first (kept) or re-opens after.
+        """
+        cutoff = monotonic() - _IDLE_RELEASE_S
+        for key in [k for k, seen in self._last_seen.items() if seen <= cutoff]:
+            async with self._locks.setdefault(key, asyncio.Lock()):
+                if self._last_seen.get(key, cutoff + 1) > cutoff:
+                    continue
+                self._last_seen.pop(key, None)
+                client = self._clients.pop(key, None)
+            if client is not None:
+                try:
+                    await asyncio.wait_for(client.close(), timeout=_CLIENT_CLOSE_TIMEOUT)
+                except Exception:
+                    logger.warning("teams broker idle-client close failed", exc_info=True)
+                put_metric("teams.broker.released", dimensions={"reason": "idle"})
+        gauge("teams.broker.users.active", len(self._clients))
 
     async def _handle_event(self, owner_id: str, user_id: str, event: dict[str, Any]) -> None:
         event_name = f"teams.{event.get('type', 'unknown')}"

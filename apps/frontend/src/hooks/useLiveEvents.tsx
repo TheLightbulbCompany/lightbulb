@@ -56,7 +56,10 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const { data: config } = useSWR(
     httpReady ? ["messaging-live-config", userId, ownerScope] : null,
     () => messaging.getLiveConfig(),
-    { revalidateOnFocus: false },
+    // The refresh is the backend TeamsEventBroker's keep-alive: it releases a user's
+    // Paperclip socket after 10 min without a live-config fetch. SWR keeps the same
+    // object when the response is unchanged, so this does not resubscribe AppSync.
+    { revalidateOnFocus: false, refreshInterval: 5 * 60_000, refreshWhenHidden: true },
   );
   const [activeRoomState, setActiveRoomState] = useState<{
     ownerScope: string | null;

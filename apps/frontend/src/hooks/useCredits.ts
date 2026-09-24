@@ -26,6 +26,22 @@ export function isCreditsExhausted(balance: CreditsBalance | null | undefined): 
   );
 }
 
+/**
+ * Below $5 the balance reads as "running low". Same line as the backend's
+ * Metronome warn alert (`METRONOME_LOW_BALANCE_THRESHOLD_CENTS = 500`); the
+ * balance unit is 1e-6 dollars (`balance_dollars = balance_microcents / 1e6`).
+ */
+export const LOW_CREDITS_MICROCENTS = 5_000_000;
+
+export function isCreditsLow(balance: CreditsBalance | null | undefined): boolean {
+  return (
+    !!balance &&
+    balance.balance_microcents !== null &&
+    balance.balance_microcents < LOW_CREDITS_MICROCENTS &&
+    !isCreditsExhausted(balance)
+  );
+}
+
 export function isCreditsBlocked(
   balance: CreditsBalance | null | undefined,
   providerChoice: string | null | undefined,

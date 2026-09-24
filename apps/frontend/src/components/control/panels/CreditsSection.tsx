@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { RefreshCw, Wallet } from "lucide-react";
-import { useCredits } from "@/hooks/useCredits";
+import { useCredits, isCreditsExhausted, isCreditsLow } from "@/hooks/useCredits";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -75,12 +75,17 @@ export function CreditsSection() {
   };
 
   const display = balance?.balance_dollars === null || !balance ? "—" : `$${balance.balance_dollars}`;
+  const exhausted = isCreditsExhausted(balance);
+  const low = isCreditsLow(balance);
+  const balanceTone = exhausted ? "text-err" : low ? "text-warn" : "text-[var(--midnight)]";
   return (
     <div className="space-y-6">
       <div className={CARD}>
         <div className="flex items-center justify-between"><div className="flex items-center gap-2"><Wallet size={16} className="text-[var(--midnight-muted)]" /><span className={EYEBROW}>BALANCE</span></div>
           <button type="button" onClick={() => refresh()} aria-label="Refresh" className="text-[var(--midnight-muted)] hover:text-[var(--midnight)]"><RefreshCw size={16} /></button></div>
-        <div className="text-3xl font-semibold font-mono text-[var(--midnight)]">{display}</div>
+        <div className={`text-3xl font-semibold font-mono ${balanceTone}`}>{display}</div>
+        {exhausted && <p className="text-sm text-err">Out of credits — agents can&apos;t run until you top up.</p>}
+        {low && <p className="text-sm text-warn">Running low — top up to keep agents working.</p>}
         {balance?.balance_dollars === null && <p className="text-xs text-[var(--midnight-muted)]">Balance unavailable right now — try refreshing in a moment.</p>}
       </div>
       <div className={CARD}>

@@ -75,6 +75,13 @@ it("stays silent on a hint without a banner (not notifying, muted, own message)"
   expect(mocks.capture).not.toHaveBeenCalled();
 });
 
+it("ignores a malformed banner rather than showing half of it", async () => {
+  renderAway();
+  await act(async () => { emit({ ...event, payload: { ...event.payload, push: true } } as unknown as LiveEvent); });
+  expect(mocks.nativeNotify).not.toHaveBeenCalled();
+  expect(mocks.notifySuccess).not.toHaveBeenCalled();
+});
+
 it("suppresses a focused conversation but not an unopened thread in it", async () => {
   vi.mocked(document.hasFocus).mockReturnValue(true);
   const view = render(<MessageNotifications activeRoomId="room" threadId={null} roomVisible onOpen={vi.fn()} />);

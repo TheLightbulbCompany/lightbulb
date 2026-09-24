@@ -43,7 +43,7 @@ it("shows the projector's banner verbatim, once, with a conversation action", as
   expect(mocks.nativeNotify).toHaveBeenCalledTimes(1);
   const [title, body, opts] = mocks.nativeNotify.mock.calls[0];
   expect([title, body]).toEqual(["Alice", "Hello"]);
-  expect(opts).toMatchObject({ tag: "message", subtitle: "Direct message" });
+  expect(opts).toMatchObject({ tag: "message", subtitle: "Direct message", threadId: "room" });
   expect(mocks.capture).toHaveBeenCalledWith("notification_shown", { channel: "web", room_kind: "dm" });
   mocks.notifySuccess.mock.calls[0][1].action.onClick();
   expect(onOpen).toHaveBeenCalledWith("room", null);

@@ -73,7 +73,7 @@ export async function notificationPermission(request = false): Promise<Notificat
 export async function nativeNotify(
   title: string,
   body?: string,
-  opts?: { onClick?: () => void; tag?: string; subtitle?: string },
+  opts?: { onClick?: () => void; tag?: string; subtitle?: string; threadId?: string },
 ): Promise<boolean> {
   const tauri = getTauri();
   if (tauri) {
@@ -83,7 +83,7 @@ export async function nativeNotify(
       routeClicks(tauri);
     }
     try {
-      return (await tauri.invoke("native_notify", { title, body, tag: opts?.tag, subtitle: opts?.subtitle })) === true;
+      return (await tauri.invoke("native_notify", { title, body, tag: opts?.tag, subtitle: opts?.subtitle, threadId: opts?.threadId })) === true;
     } catch {
       return false;
     }

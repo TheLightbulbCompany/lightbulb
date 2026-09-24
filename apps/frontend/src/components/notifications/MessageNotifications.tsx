@@ -66,7 +66,7 @@ export function MessageNotifications(props: {
       const push = event.payload.push;
       if (!push || typeof push.title !== "string" || typeof push.body !== "string") return;
       const { roomId, messageId, threadRootMessageId } = event.payload;
-      const { title, subtitle, body, data } = push;
+      const { title, subtitle, body, threadId, data } = push;
       if (seen.has(messageId)) return;
       seen.add(messageId);
       if (seen.size > 1000) seen.delete(seen.values().next().value!);
@@ -80,7 +80,7 @@ export function MessageNotifications(props: {
         current.current.onOpen(roomId, threadRootMessageId);
       };
       // Native (desktop app, or web with permission) replaces the toast.
-      void nativeNotify(title, body, { onClick, tag: messageId, subtitle }).then((shown) => {
+      void nativeNotify(title, body, { onClick, tag: messageId, subtitle, threadId }).then((shown) => {
         if (shown || stopped) return;
         notifySuccess(`${title} · ${subtitle}: ${body}`, {
           dedupeKey: `message:${messageId}`,

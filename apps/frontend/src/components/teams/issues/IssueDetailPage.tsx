@@ -168,6 +168,10 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const { issue, comments, isLoading, isError, error } = useIssueDetail(issueId);
   const { interactions } = useIssueInteractions(issueId);
   const mutations = useIssueMutations();
+  // Property edits are fire-and-forget; a rejection (e.g. Paperclip's "Issue is blocked by
+  // unresolved blockers") must still reach the user rather than vanish.
+  const updateIssue = (input: Parameters<typeof mutations.update>[1]) =>
+    void mutations.update(issueId, input).catch((e) => notifyApiError(e, "Couldn't update the task."));
   const interactionMutations = useInteractionMutations();
   const { votesByTarget, castVote } = useIssueFeedback(issueId);
   const { user } = useUser();
@@ -449,32 +453,32 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           onAssigneeChange={(assigneeAgentId) => {
             // Agent and human assignees are mutually exclusive — picking an
             // agent clears any human assignee in the same PATCH.
-            void mutations.update(issueId, {
+            updateIssue({
               assigneeAgentId,
               assigneeUserId: null,
             });
           }}
           onAssigneeUserChange={(assigneeUserId) => {
             // Picking a human clears any agent assignee in the same PATCH.
-            void mutations.update(issueId, {
+            updateIssue({
               assigneeUserId,
               assigneeAgentId: null,
             });
           }}
           onProjectChange={(projectId) => {
-            void mutations.update(issueId, { projectId });
+            updateIssue({ projectId });
           }}
           onGoalChange={(goalId) => {
-            void mutations.update(issueId, { goalId });
+            updateIssue({ goalId });
           }}
           onBlockedByChange={(blockedByIssueIds) => {
-            void mutations.update(issueId, { blockedByIssueIds });
+            updateIssue({ blockedByIssueIds });
           }}
           onLabelsChange={(labelIds) => {
-            void mutations.update(issueId, { labelIds });
+            updateIssue({ labelIds });
           }}
           onParentChange={(parentId) => {
-            void mutations.update(issueId, { parentId });
+            updateIssue({ parentId });
           }}
           onMonitorChange={(monitor) => {
             // executionPolicy bundles monitor + reviewer/approver stages under
@@ -482,7 +486,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             // the WHOLE policy from the issue's current one — preserving any
             // stages — rather than sending a bare { monitor }. patchExecutionPolicy
             // is the single read-modify-write that guarantees this.
-            void mutations.update(issueId, {
+            updateIssue({
               executionPolicy: patchExecutionPolicy(issue.executionPolicy, {
                 monitor,
               }),
@@ -491,21 +495,21 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           onMonitorClear={() => {
             // Clearing the monitor preserves any reviewer/approver stages; the
             // helper returns null only when nothing else remains.
-            void mutations.update(issueId, {
+            updateIssue({
               executionPolicy: patchExecutionPolicy(issue.executionPolicy, {
                 monitor: null,
               }),
             });
           }}
           onReviewersChange={(reviewers) => {
-            void mutations.update(issueId, {
+            updateIssue({
               executionPolicy: patchExecutionPolicy(issue.executionPolicy, {
                 reviewers,
               }),
             });
           }}
           onApproversChange={(approvers) => {
-            void mutations.update(issueId, {
+            updateIssue({
               executionPolicy: patchExecutionPolicy(issue.executionPolicy, {
                 approvers,
               }),

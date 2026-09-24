@@ -53,8 +53,9 @@ async def test_4xx_detail_preserved():
 
 
 @pytest.mark.asyncio
-async def test_4xx_detail_excludes_upstream_body():
-    """str(exc) carries the upstream body for logs; the client must not see it."""
+async def test_4xx_detail_is_paperclips_reason_not_its_details():
+    """Paperclip's own ``error`` string is its user-facing reason and reaches the client
+    (audit 2026-09-24 F5); the rest of the body -- zod ``details``, paths -- does not."""
     exc = PaperclipApiError(
         "POST /api/companies/abc/agents -> 400",
         status_code=400,
@@ -65,8 +66,28 @@ async def test_4xx_detail_excludes_upstream_body():
     # ...but never reaches the browser.
     resp = await paperclip_api_error_handler(_Req(), exc)
     assert resp.status_code == 400
-    assert json.loads(resp.body)["detail"] == "POST /api/companies/abc/agents -> 400"
-    assert b"Validation error" not in resp.body
+    assert json.loads(resp.body)["detail"] == "Validation error"
+    assert b"path" not in resp.body and b"companies" not in resp.body
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_reassign_explains_itself():
+    exc = PaperclipApiError(
+        "PATCH /api/issues/iss_1 -> 422",
+        status_code=422,
+        body='{"error":"Issue is blocked by unresolved blockers"}',
+    )
+    resp = await paperclip_api_error_handler(_Req(), exc)
+    assert resp.status_code == 422
+    assert json.loads(resp.body) == {"detail": "Issue is blocked by unresolved blockers", "upstream_status": 422}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", ["", "not json", "[1]", '{"error": ""}', '{"message": "x"}'])
+async def test_a_4xx_without_a_reason_keeps_the_call_summary(body):
+    exc = PaperclipApiError("PATCH /api/issues/iss_1 -> 422", status_code=422, body=body)
+    resp = await paperclip_api_error_handler(_Req(), exc)
+    assert json.loads(resp.body)["detail"] == "PATCH /api/issues/iss_1 -> 422"
 
 
 def test_str_truncates_a_large_body():

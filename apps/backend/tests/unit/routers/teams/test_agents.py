@@ -313,7 +313,8 @@ def test_create_agent_returns_upstream_status_on_paperclip_error(client, monkeyp
     assert r.status_code == 403
     body = r.json()
     assert body["upstream_status"] == 403
-    assert "403" in body["detail"]
+    # Paperclip's own reason, not the call summary (audit 2026-09-24 F5).
+    assert body["detail"] == "Missing permission: agents:create"
 
 
 def test_list_agents_strips_adapter_config_per_item(client, monkeypatch):

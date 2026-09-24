@@ -8,10 +8,23 @@ would otherwise re-trigger itself indefinitely), and format the string handed
 to `/hooks/agent`.
 """
 
+import hashlib
 import logging
 from email.utils import parseaddr
 
 logger = logging.getLogger(__name__)
+
+# Open email lets any authenticated sender WAKE an agent, and a wake spends inference money. Senders
+# who are neither the owner nor allowlisted are therefore bounded per UTC day: this many wakes each,
+# and this many across all of them. Over a limit the mail is still stored, just not woken.
+STRANGER_WAKES_PER_SENDER_PER_DAY = 10
+STRANGER_WAKES_PER_OWNER_PER_DAY = 50
+
+
+def stranger_key(sender: str) -> str:
+    """Stable, address-free key for one sender's counter (it becomes a DynamoDB map key)."""
+    return hashlib.sha256((sender or "").strip().lower().encode()).hexdigest()[:16]
+
 
 # Manifest is capped so a mail bombed with dozens of attachments doesn't blow
 # out the agent's context window; the rest are simply not shown.

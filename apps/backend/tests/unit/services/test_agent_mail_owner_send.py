@@ -39,6 +39,7 @@ def wired(monkeypatch):
         sent_subject=None,
         sent_to=None,
         sent_from=None,
+        sent_headers=None,
     )
 
     monkeypatch.setattr(mod.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
@@ -88,6 +89,7 @@ def wired(monkeypatch):
         st.sent_subject = subject
         st.sent_to = to
         st.sent_from = from_addr
+        st.sent_headers = headers
         return st.ses_returns
 
     monkeypatch.setattr(mod.container_repo, "try_consume_daily_email_send", _cap)
@@ -130,6 +132,7 @@ async def test_happy_path_sends_and_settles_sent(wired):
     assert wired.settled == "sent"
     assert wired.sent_from == "friday@acme-robotics.isol8.co"
     assert wired.sent_to == "owner@example.com"
+    assert wired.sent_headers == {"Auto-Submitted": "auto-generated"}
 
 
 @pytest.mark.asyncio

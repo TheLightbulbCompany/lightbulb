@@ -124,7 +124,11 @@ async def test_send_reply_happy_path(monkeypatch):
     assert kwargs["to"] == "alice@x.com"
     assert kwargs["from_addr"] == "acme@agents.isol8.co"
     assert kwargs["subject"] == "Re: Need help"
-    assert kwargs["headers"] == {"In-Reply-To": "<m@x>", "References": "<m@x>"}
+    assert kwargs["headers"] == {
+        "Auto-Submitted": "auto-generated",
+        "In-Reply-To": "<m@x>",
+        "References": "<m@x>",
+    }
     assert kwargs["body_text"] == "thanks"
 
 
@@ -223,7 +227,8 @@ async def test_send_reply_first_contact_uses_subject_verbatim_no_re_prefix(monke
     assert result == "sent"
     _, kwargs = send_mock.call_args
     assert kwargs["subject"] == "Getting started with Acme"
-    assert kwargs["headers"] is None
+    # Even a first contact (nothing to thread on) is marked machine-generated.
+    assert kwargs["headers"] == {"Auto-Submitted": "auto-generated"}
 
 
 @pytest.mark.asyncio

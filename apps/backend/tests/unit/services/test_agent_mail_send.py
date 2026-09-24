@@ -114,6 +114,7 @@ async def test_free_path_sends_with_tenant_and_cap(wired):
     assert wired.free_kwargs["from_addr"] == "atlas@acme.isol8.co"
     assert wired.free_kwargs["tenant_name"] == "owner-user_1"
     assert wired.free_kwargs["kind"] == "agent_free_send"
+    assert wired.free_kwargs["headers"] == {"Auto-Submitted": "auto-generated"}
 
 
 @pytest.mark.asyncio

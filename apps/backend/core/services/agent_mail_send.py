@@ -34,7 +34,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
 from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_agent_address, resolve_from_address, sender_allowed
 from core.services.agent_mail_owner_send import DAILY_SEND_CAP, _env_subject, send_to_owner
-from core.services.agent_mail_reply import send_reply
+from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS, send_reply
 from core.services.agent_mail_tenant import ensure_tenant
 from core.services.paperclip_owner_email import lookup_owner_email
 
@@ -177,6 +177,7 @@ async def send(
             body_text=body_text,
             body_html=body_html,
             kind="agent_free_send",
+            headers=dict(AGENT_AUTHORED_HEADERS),
             tenant_name=tenant,
         )
         return _done(path, "sent" if message_id else "error")

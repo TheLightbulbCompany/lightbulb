@@ -44,6 +44,12 @@ def _header_safe(value: str) -> str:
 # from References[0] depends on. So drop from the middle, never the head.
 _MAX_REFERENCES = 20
 
+# RFC 3834: everything an agent writes is machine-generated. Compliant autoresponders (out-of-office,
+# helpdesk ticketing) do not answer such mail, which stops agent <-> autoresponder ping-pong now that
+# agents may email anyone, and our own inbound loop guard (`is_auto_submitted`) drops it if it ever
+# reaches another agent's address. Set on every agent-authored send: replies, `--to`, and owner mail.
+AGENT_AUTHORED_HEADERS = {"Auto-Submitted": "auto-generated"}
+
 
 def build_references(parent_refs: str, parent_message_id: str) -> str:
     """The reply's References: the parent's chain plus the parent's Message-ID.
@@ -83,7 +89,7 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None,
             return "no_address"
 
         in_reply_to = _header_safe(ctx.get("in_reply_to") or "")
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = dict(AGENT_AUTHORED_HEADERS)
         if in_reply_to:
             headers["In-Reply-To"] = in_reply_to
             # RFC 5322 §3.6.4: References is the PARENT'S References plus the

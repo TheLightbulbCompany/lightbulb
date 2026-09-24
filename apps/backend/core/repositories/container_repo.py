@@ -187,6 +187,79 @@ async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> 
         return True  # fail open — see docstring
 
 
+async def try_consume_stranger_wake(
+    owner_id: str, *, sender_key: str, day: str, owner_cap: int, sender_cap: int
+) -> bool:
+    """Admit one inbound email from a NON-allowlisted sender to WAKE the owner's agent for ``day``.
+
+    Open email lets any authenticated sender start an agent turn, and a turn costs real money
+    (a trial's daily allowance, a paid owner's credits), so strangers are bounded twice: at most
+    ``sender_cap`` wakes per sender AND ``owner_cap`` across all strangers, per UTC day. Both caps
+    are checked and both counters bumped in ONE conditional UpdateItem, so a wake is admitted under
+    both limits or under neither. ``sender_key`` is a hash, never the address (it becomes a map key).
+
+    DURABLE for the same reason as ``try_consume_daily_email_send``: several backend tasks run
+    behind one ALB. State lives on the owner's containers row: ``stranger_wake_day``, a total
+    ``stranger_wake_count`` and a ``stranger_wake_senders`` map (at most ``owner_cap`` keys a day).
+
+    Returns True when the wake is admitted. Unlike the send counter this **fails CLOSED**: a fault
+    or a missing container row returns False. The mail is already stored, so a false "no" costs one
+    wake, whereas a false "yes" spends inference money on an unbounded stranger.
+    """
+    table = _get_table()
+    key = {"owner_id": owner_id}
+
+    async def _bump() -> bool:
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key=key,
+                UpdateExpression=(
+                    "SET stranger_wake_count = if_not_exists(stranger_wake_count, :zero) + :one, "
+                    "stranger_wake_senders.#k = if_not_exists(stranger_wake_senders.#k, :zero) + :one"
+                ),
+                ConditionExpression=(
+                    "stranger_wake_day = :d"
+                    " AND (attribute_not_exists(stranger_wake_count) OR stranger_wake_count < :ocap)"
+                    " AND (attribute_not_exists(stranger_wake_senders.#k) OR stranger_wake_senders.#k < :scap)"
+                ),
+                ExpressionAttributeNames={"#k": sender_key},
+                ExpressionAttributeValues={":d": day, ":zero": 0, ":one": 1, ":ocap": owner_cap, ":scap": sender_cap},
+            )
+            return True
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
+    try:
+        if await _bump():
+            return True
+        # Refused: either a limit is reached, or the stored day is stale/absent (first stranger
+        # today). Roll the window over; if that write is refused too the day was current, so it
+        # was a limit.
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key=key,
+                UpdateExpression=(
+                    "SET stranger_wake_day = :d, stranger_wake_count = :zero, stranger_wake_senders = :empty"
+                ),
+                ConditionExpression=(
+                    "attribute_exists(owner_id) AND (attribute_not_exists(stranger_wake_day) OR stranger_wake_day <> :d)"
+                ),
+                ExpressionAttributeValues={":d": day, ":zero": 0, ":empty": {}},
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return await _bump()
+    except Exception:  # noqa: BLE001 — fail closed, see docstring
+        logger.warning("try_consume_stranger_wake failed for %s", owner_id, exc_info=True)
+        return False
+
+
 async def try_claim_daily_system_notice(owner_id: str, *, day: str, kind: str = "complaint") -> bool:
     """Claim the once-per-UTC-day slot for a ``kind`` platform notice to ``owner_id``.
 

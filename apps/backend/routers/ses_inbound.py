@@ -24,7 +24,8 @@ produce the identical drop again — so those stay 200, as does a successful
 either way; only WAKING the agent is gated, on the sender being allowlisted OR
 the address being open (``send_to_anyone``, the default), AND on that sender
 being authenticated — see ``sender_allowed`` and ``authenticated_sender``
-below). ``container_not_running`` also stays 200: it now
+below; an open-mode stranger past its daily wake limit is the same, reported as
+``stored_not_woken_rate_limited``). ``container_not_running`` also stays 200: it now
 only means the owner is OVER CAP (the cap gate below already normally
 intercepts that case before ``deliver_to_agent`` is even called; this is
 belt-and-suspenders for the same predicate) — waking a capped owner is
@@ -66,18 +67,21 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories.agent_email_repo import get_by_address, normalize, query_by_owner, update_settings
 from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
-from core.repositories.container_repo import try_claim_daily_system_notice
+from core.repositories.container_repo import try_claim_daily_system_notice, try_consume_stranger_wake
 from core.services.agent_email import sender_allowed
 from core.services.agent_mail_autoreply import send_cap_autoreply
 from core.services.agent_mail_thread import thread_session_key
 from core.services.agent_mail_delivery import deliver_to_agent
 from core.services.agent_mail_owner_send import send_to_owner
 from core.services.agent_mail_inbound import (
+    STRANGER_WAKES_PER_OWNER_PER_DAY,
+    STRANGER_WAKES_PER_SENDER_PER_DAY,
     authenticated_sender,
     build_attachment_manifest,
     build_delivered_message,
     is_auto_submitted,
     parse_from_address,
+    stranger_key,
 )
 from core.services.agent_mail_reply import reply_subject
 from core.services.trial_cap import trial_block_reason
@@ -90,7 +94,7 @@ router = APIRouter()
 # The outcomes worth counting individually. Everything else — every
 # deterministic drop, plus the transient `error` — collapses to `dropped` so
 # the dimension stays bounded.
-_METRIC_RESULTS = ("delivered", "capped_notified", "stored_not_woken")
+_METRIC_RESULTS = ("delivered", "capped_notified", "stored_not_woken", "stored_not_woken_rate_limited")
 
 
 def _final(status: str, *, code: int = 200):
@@ -305,6 +309,21 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
                 subject=reply_subject(body.subject or ""),
             )
             return _final("capped_notified" if notified else "dropped_over_cap")
+
+        # Open-mode strangers are bounded per sender and per owner per day: a wake spends the
+        # owner's inference budget, so an unbounded stranger could drain a trial's daily allowance
+        # or a paid owner's credits. Over the limit the mail stays stored but does not wake the
+        # agent, and nobody is answered. The owner and allowlisted senders are never limited.
+        # Placed after the cap block so mail that is refused anyway does not burn the counters; a
+        # 503 retry of the same message counts again, which only makes the limit slightly stricter.
+        if not allowlisted and not await try_consume_stranger_wake(
+            row["owner_id"],
+            sender_key=stranger_key(sender),
+            day=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            owner_cap=STRANGER_WAKES_PER_OWNER_PER_DAY,
+            sender_cap=STRANGER_WAKES_PER_SENDER_PER_DAY,
+        ):
+            return _final("stored_not_woken_rate_limited")
 
         # Attachment manifest — best-effort. A manifest-formatting bug must
         # not drop a real delivery: a working text delivery beats a dropped one.

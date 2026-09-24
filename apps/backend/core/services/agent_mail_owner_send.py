@@ -36,6 +36,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
 from core.services.agent_email import ensure_agent_address
 from core.services.agent_export import resolve_apex_ceo_agent_id
+from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS
 from core.services.owner_facts import write_owner_facts
 from core.services.paperclip_owner_email import lookup_owner_email
 
@@ -192,7 +193,7 @@ async def send_to_owner(
             subject=_env_subject(subject),
             body_text=body_text,
             body_html=body_html,
-            headers=None,
+            headers=dict(AGENT_AUTHORED_HEADERS),
             tenant_name=tenant_name,
         )
         if message_id is None:

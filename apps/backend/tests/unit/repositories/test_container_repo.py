@@ -2,10 +2,11 @@
 
 import os
 import uuid
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
@@ -606,6 +607,74 @@ async def test_daily_email_cap_allows_up_to_cap_then_blocks(dynamodb_table):
         assert await container_repo.try_consume_daily_email_send("user_a", day="2026-07-26", cap=3) is True
 
     assert await container_repo.try_consume_daily_email_send("user_a", day="2026-07-26", cap=3) is False
+
+
+_DAY = "2026-09-24"
+
+
+async def _wake(owner, sender, *, day=_DAY, owner_cap=50, sender_cap=10):
+    from core.repositories import container_repo
+
+    return await container_repo.try_consume_stranger_wake(
+        owner, sender_key=sender, day=day, owner_cap=owner_cap, sender_cap=sender_cap
+    )
+
+
+@pytest.mark.asyncio
+async def test_stranger_wake_is_capped_per_sender_and_a_new_sender_is_unaffected(dynamodb_table):
+    await _seed("owner_a", {"hook_token": "t"})
+
+    assert [await _wake("owner_a", "s1", sender_cap=3) for _ in range(4)] == [True, True, True, False]
+    assert await _wake("owner_a", "s2", sender_cap=3) is True
+
+
+@pytest.mark.asyncio
+async def test_stranger_wake_is_capped_per_owner_across_senders(dynamodb_table):
+    await _seed("owner_a", {"hook_token": "t"})
+
+    assert [await _wake("owner_a", f"s{i}", owner_cap=3) for i in range(4)] == [True, True, True, False]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_stranger_wake_burns_neither_counter(dynamodb_table):
+    """Both limits are one conditional write: refused under one, nothing is consumed under the other."""
+    from core.repositories import container_repo
+
+    await _seed("owner_a", {"hook_token": "t"})
+    assert await _wake("owner_a", "s1", owner_cap=10, sender_cap=1) is True
+    assert await _wake("owner_a", "s1", owner_cap=10, sender_cap=1) is False  # sender limit
+
+    row = await container_repo.get_by_owner_id("owner_a", consistent=True)
+    assert row["stranger_wake_count"] == 1 and row["stranger_wake_senders"] == {"s1": 1}
+
+
+@pytest.mark.asyncio
+async def test_stranger_wake_counters_reset_on_a_new_day_and_are_per_owner(dynamodb_table):
+    await _seed("owner_a", {"hook_token": "t"})
+    await _seed("owner_b", {"hook_token": "t"})
+
+    assert await _wake("owner_a", "s1", sender_cap=1) is True
+    assert await _wake("owner_a", "s1", sender_cap=1) is False
+    assert await _wake("owner_a", "s1", sender_cap=1, day="2026-09-25") is True
+    assert await _wake("owner_b", "s1", sender_cap=1) is True
+
+
+@pytest.mark.asyncio
+async def test_stranger_wake_fails_closed_without_a_container_row(dynamodb_table):
+    assert await _wake("owner_missing", "s1") is False
+
+
+@pytest.mark.asyncio
+async def test_stranger_wake_fails_closed_on_a_dynamodb_fault(monkeypatch):
+    from core.repositories import container_repo
+
+    table = MagicMock()
+    table.update_item.side_effect = ClientError(
+        {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+    )
+    monkeypatch.setattr(container_repo, "_get_table", lambda: table)
+
+    assert await _wake("owner_a", "s1") is False
 
 
 @pytest.mark.asyncio

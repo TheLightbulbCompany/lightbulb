@@ -34,6 +34,7 @@ attributes on that module — mirrors ``tests/unit/routers/test_agent_mail.py``'
 patch-target convention for the sibling Resend webhook.
 """
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -41,6 +42,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from core.services import trial_cap
+from core.services.agent_mail_inbound import stranger_key
 from core.services.webhook_dedup import WebhookDedupResult
 from routers import ses_inbound
 
@@ -423,7 +425,7 @@ def _open_row(**overrides):
     return dict(_row(verified_senders=["owner@x.y"]), send_to_anyone=True, **overrides)
 
 
-def _wire_open(monkeypatch, row=None, cap_reason=None):
+def _wire_open(monkeypatch, row=None, cap_reason=None, wake_allowed=True):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=row or _open_row()))
@@ -432,6 +434,7 @@ def _wire_open(monkeypatch, row=None, cap_reason=None):
     monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver)
     autoreply = AsyncMock(return_value=True)
     monkeypatch.setattr(ses_inbound, "send_cap_autoreply", autoreply)
+    monkeypatch.setattr(ses_inbound, "try_consume_stranger_wake", AsyncMock(return_value=wake_allowed))
     return deliver, autoreply
 
 
@@ -503,6 +506,50 @@ def test_open_mode_keeps_every_anti_abuse_drop(client, monkeypatch, overrides, e
     ses_inbound.put_message.assert_not_awaited()
     deliver.assert_not_awaited()
     autoreply.assert_not_awaited()
+
+
+def test_a_stranger_wake_consults_the_limiter_with_the_owner_a_hashed_sender_and_the_daily_caps(client, monkeypatch):
+    deliver, _ = _wire_open(monkeypatch)
+
+    r = _post(client, _body())
+
+    assert r.json()["status"] == "delivered"
+    kwargs = ses_inbound.try_consume_stranger_wake.call_args
+    assert kwargs.args == (OWNER_ID,)
+    assert kwargs.kwargs["sender_key"] == stranger_key(SENDER) and SENDER not in kwargs.kwargs["sender_key"]
+    assert kwargs.kwargs["owner_cap"] == 50 and kwargs.kwargs["sender_cap"] == 10
+    assert kwargs.kwargs["day"] == datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def test_a_stranger_over_the_wake_limit_is_stored_not_woken_and_not_answered(client, monkeypatch):
+    deliver, autoreply = _wire_open(monkeypatch, wake_allowed=False)
+
+    r = _post(client, _body())
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "stored_not_woken_rate_limited"
+    ses_inbound.put_message.assert_awaited_once()  # the mail is kept
+    deliver.assert_not_awaited()
+    autoreply.assert_not_awaited()
+
+
+def test_the_owner_and_allowlisted_senders_are_never_wake_limited(client, monkeypatch):
+    deliver, _ = _wire_open(monkeypatch, row=_open_row(verified_senders=[SENDER]), wake_allowed=False)
+
+    r = _post(client, _body())
+
+    assert r.json()["status"] == "delivered"
+    ses_inbound.try_consume_stranger_wake.assert_not_awaited()
+    deliver.assert_awaited_once()
+
+
+def test_over_cap_strangers_do_not_burn_the_wake_limiter(client, monkeypatch):
+    _wire_open(monkeypatch, cap_reason=trial_cap.DAILY_CAP)
+
+    r = _post(client, _body())
+
+    assert r.json()["status"] == "dropped_over_cap"
+    ses_inbound.try_consume_stranger_wake.assert_not_awaited()
 
 
 def test_over_cap_open_mode_stranger_is_dropped_without_any_reply(client, monkeypatch):

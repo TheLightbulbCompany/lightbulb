@@ -1197,13 +1197,74 @@ ZERO_USAGE = {"model": "", "inputTokens": 0, "outputTokens": 0,
               "cacheReadTokens": 0, "cacheWriteTokens": 0, "estimatedCostUsd": None}
 
 
-def run_ended_body(run_id, session_key, outcome, error_kind, usage) -> dict:
+QUOTA_EXHAUSTED = "provider_quota_exhausted"
+_OPENAI_QUOTA = {"usage_limit_reached", "insufficient_quota"}
+
+
+def provider_quota(exc, provider: str = "") -> dict | None:
+    """error_detail when ``exc`` is a well-identified provider quota wall, else None.
+
+    Conservative on purpose: a transient 429 (``rate_limit_exceeded``, Anthropic's per-minute
+    ``rate_limit_error``) and our own gates' ``gate_error`` bodies stay what they were."""
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        try:
+            body = exc.response.json()
+        except Exception:  # noqa: BLE001 -- no response, or not JSON: not identifiable
+            return None
+    if not isinstance(body, dict):
+        return None
+    # openai SDK hands over the inner error object; anthropic (and raw JSON) the wrapper.
+    err = body["error"] if isinstance(body.get("error"), dict) else body
+    status = getattr(exc, "status_code", None)
+    msg = str(err.get("message") or "").lower()
+    if err.get("type") in _OPENAI_QUOTA or err.get("code") in _OPENAI_QUOTA:
+        name = "chatgpt" if "codex" in (provider or "") else "openai"
+    elif (status == 429 and err.get("type") == "rate_limit_error" and ("quota" in msg or "credit" in msg)) \
+            or (status in (400, 403) and "credit balance is too low" in msg):
+        name = "anthropic"
+    else:
+        return None
+    detail = {"provider": name}
+    if isinstance(err.get("resets_at"), (int, float, str)) and err["resets_at"] != "":
+        detail["resets_at"] = err["resets_at"]  # epoch seconds or ISO, passed through as sent
+    return detail
+
+
+def _capture_api_errors(agent) -> None:
+    """Hermes collapses a terminal provider error to a one-line summary in its failed result
+    (type/code/resets_at are gone), but every terminal path summarizes the raw exception via
+    ``agent._summarize_api_error`` first -- remember (exception, summary) on the (per-turn)
+    agent. Retries and side tasks summarize too, so _failed_kind trusts the capture only when
+    the result's ``error`` IS that summary."""
+    summarize = getattr(agent, "_summarize_api_error", None)
+    if summarize is None:  # a renamed Hermes method degrades to model_unavailable, never a crash
+        return
+
+    def capture(error):
+        summary = summarize(error)
+        agent._lb_api_error = (error, summary)
+        return summary
+    agent._summarize_api_error = capture
+
+
+def _failed_kind(agent, result: dict) -> str:
+    """Kind for a Hermes ``failed`` result; parks the quota detail for this thread's run.ended."""
+    exc, summary = getattr(agent, "_lb_api_error", None) or (None, None)
+    terminal = summary is not None and result.get("error") == summary
+    _post_turn.error_detail = provider_quota(exc, getattr(agent, "provider", "")) if terminal else None
+    return "model_unavailable" if _post_turn.error_detail is None else QUOTA_EXHAUSTED
+
+
+def run_ended_body(run_id, session_key, outcome, error_kind, usage, error_detail=None) -> dict:
     """usage is REQUIRED on every outcome the bridge produces; the backend's RunEventRequest
     validator rejects a missing one with a 422."""
     body = {"runId": run_id, "type": "run.ended", "at": now(),
             "sessionKey": session_key, "outcome": outcome}
     if outcome == "error" and error_kind:
         body["errorKind"] = error_kind
+        if error_kind == QUOTA_EXHAUSTED and error_detail:
+            body["errorDetail"] = error_detail
     body["usage"] = usage
     return body
 
@@ -1684,7 +1745,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
         callbacks = {"tool_start_callback": frames.tool_start, "tool_complete_callback": frames.tool_complete,
                      "tool_progress_callback": frames.activity,
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
-    return AIAgent(
+    agent = AIAgent(
         model=model,
         provider=provider,
         quiet_mode=True,
@@ -1696,6 +1757,8 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
         gateway_session_key=session_key,
         **callbacks,
     )
+    _capture_api_errors(agent)
+    return agent
 
 
 def _run_hermes(agent_id: str, body: dict, frames) -> tuple[str, str | None, str, dict]:
@@ -1794,7 +1857,7 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
              "cacheWriteTokens": int(getattr(agent, "session_cache_write_tokens", 0) or 0)}
     reply = result.get("final_response") or ""
     if result.get("failed") is True:
-        return "error", "model_unavailable", "", usage
+        return "error", _failed_kind(agent, result), "", usage
     if not result.get("api_calls"):  # Hermes answers a dead model with apologetic prose; never post it
         return "error", "model_unavailable", "", usage
     if not reply:
@@ -1854,7 +1917,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
         return "cancelled", None, "", usage
     reply = result.get("final_response") or ""
     if result.get("failed") is True:
-        return "failed", "model_unavailable", "", usage
+        return "failed", _failed_kind(agent, result), "", usage
     if not result.get("api_calls"):
         return "failed", "model_unavailable", "", usage
     if not reply:
@@ -1953,7 +2016,8 @@ def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) ->
             if paperclip_run_aborted(run_id):
                 outcome, error = "cancelled", None
             else:
-                outcome, error = "failed", type(exc).__name__
+                provider = getattr((RUNS.get(run_id) or {}).get("agent"), "provider", "")
+                outcome, error = "failed", QUOTA_EXHAUSTED if provider_quota(exc, provider) is not None else type(exc).__name__
                 log.error("native Paperclip turn %s failed\n%s", run_id, traceback.format_exc())
         finish_paperclip_run(run_id, outcome, output=output, error=error, usage=usage)
         report_usage(
@@ -2009,6 +2073,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
     if not reserved:
         _busy_add(1)
     outcome, error_kind, reply, usage = "completed", None, "", ZERO_USAGE
+    _post_turn.error_detail = None
     t0 = time.time()
     done = threading.Event()
 
@@ -2081,7 +2146,10 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                     _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
                 clear_turn_context(_profile_dir(agent_id), turn_session_id)
         except Exception as exc:  # noqa: BLE001
-            outcome, error_kind, reply, usage = "error", type(exc).__name__, "", ZERO_USAGE
+            _post_turn.error_detail = provider_quota(  # the attached agent names chatgpt vs openai
+                exc, getattr((RUNS.get(run_id) or {}).get("agent"), "provider", ""))
+            error_kind = QUOTA_EXHAUSTED if _post_turn.error_detail is not None else type(exc).__name__
+            outcome, reply, usage = "error", "", ZERO_USAGE
             log.error("turn %s failed: %s\n%s", run_id, exc, traceback.format_exc())
         if has_run:
             finish_run(run_id, outcome)
@@ -2108,7 +2176,8 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                 reply,
             )
         if has_run:
-            _post_backend(f"runs/{OWNER}/events", run_ended_body(run_id, session_key, outcome, error_kind, usage))
+            _post_backend(f"runs/{OWNER}/events", run_ended_body(
+                run_id, session_key, outcome, error_kind, usage, getattr(_post_turn, "error_detail", None)))
         # A run-shaped turn correlates on its runId; agent_mail (Task 20) carries no run block
         # at all, so its own eventId is the closest thing to a correlation id for the usage
         # report.

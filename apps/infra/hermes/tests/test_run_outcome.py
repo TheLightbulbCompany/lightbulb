@@ -94,3 +94,94 @@ def test_native_paperclip_failed_result_is_not_completed_even_with_prose(monkeyp
         {"input": "hi", "instructions": "reply"},
     )
     assert (outcome, kind, reply) == ("failed", "model_unavailable", "")
+
+
+# ---- provider quota walls ----------------------------------------------------------------------
+class _ApiError(Exception):
+    """SDK-shaped: .status_code + .body (openai passes the inner error object, anthropic the wrapper)."""
+
+    def __init__(self, status, body=None):
+        super().__init__(f"HTTP {status}")
+        self.status_code, self.body = status, body
+
+
+# The real prod founder payload (openai-codex RateLimitError after Hermes's own retries).
+CHATGPT_PROLITE = {"error": {"type": "usage_limit_reached", "plan_type": "prolite",
+                             "resets_at": 1790565911, "resets_in_seconds": 311059}}
+
+
+@pytest.mark.parametrize("exc,provider,expect", [
+    (_ApiError(429, CHATGPT_PROLITE), "openai-codex", {"provider": "chatgpt", "resets_at": 1790565911}),
+    (_ApiError(429, CHATGPT_PROLITE["error"]), "openai-codex", {"provider": "chatgpt", "resets_at": 1790565911}),
+    (_ApiError(429, {"error": {"type": "usage_limit_reached", "resets_at": "2026-09-30T00:00:00Z"}}), "openai-codex",
+     {"provider": "chatgpt", "resets_at": "2026-09-30T00:00:00Z"}),
+    (_ApiError(429, {"message": "You exceeded your current quota", "type": "insufficient_quota",
+                     "code": "insufficient_quota"}), "openai", {"provider": "openai"}),
+    (_ApiError(429, {"type": "error", "error": {"type": "rate_limit_error",
+                                                "message": "Your account has run out of credits."}}),
+     "anthropic", {"provider": "anthropic"}),
+    (_ApiError(400, {"type": "error", "error": {"type": "invalid_request_error", "message":
+     "Your credit balance is too low to access the Anthropic API."}}), "anthropic", {"provider": "anthropic"}),
+    # transient rate limits stay as they are
+    (_ApiError(429, {"message": "Rate limit reached for requests", "type": "requests",
+                     "code": "rate_limit_exceeded"}), "openai", None),
+    (_ApiError(429, {"type": "error", "error": {"type": "rate_limit_error", "message":
+     "This request would exceed your organization's rate limit of 50,000 input tokens per minute."}}),
+     "anthropic", None),
+    # our own gates' limit bodies are not a provider quota
+    (_ApiError(429, {"error": {"type": "gate_error", "code": "trial_daily_cap",
+                               "message": "Lightbulb: daily limit reached"}}), "anthropic", None),
+    (_ApiError(429), "openai-codex", None),  # no body
+    (RuntimeError("boom"), "", None),
+    (None, "", None),
+])
+def test_provider_quota_classification(exc, provider, expect):
+    assert turn.provider_quota(exc, provider) == expect
+
+
+def test_quota_failed_result_reports_quota_kind_and_detail(monkeypatch):
+    class Agent(_FakeAgent):
+        provider = "openai-codex"
+        _lb_api_error = (_ApiError(429, CHATGPT_PROLITE), "HTTP 429")
+
+    monkeypatch.setattr(turn, "_construct_agent",
+                        lambda *a, **k: Agent(1, "HTTP 429", failed=True, error="HTTP 429"))
+    monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: None)
+    outcome, kind, reply, _usage = turn._run_hermes(
+        "ceo", {"message": {"text": "hi"}, "room": {"id": "x"}, "participants": []}, None)
+    assert (outcome, kind, reply) == ("error", "provider_quota_exhausted", "")
+    body = turn.run_ended_body("r1", "k", outcome, kind, turn.ZERO_USAGE, turn._post_turn.error_detail)
+    assert body["errorKind"] == "provider_quota_exhausted"
+    assert body["errorDetail"] == {"provider": "chatgpt", "resets_at": 1790565911}
+
+
+def test_capture_remembers_the_raw_error_hermes_summarizes():
+    class Agent:
+        @staticmethod
+        def _summarize_api_error(error):
+            return "HTTP 429"
+
+    agent, err = Agent(), _ApiError(429, CHATGPT_PROLITE)
+    turn._capture_api_errors(agent)
+    assert agent._summarize_api_error(err) == "HTTP 429" and agent._lb_api_error == (err, "HTTP 429")
+
+
+def test_a_stale_capture_does_not_label_a_later_unrelated_failure(monkeypatch):
+    """An early attempt captured a quota wall, a retry succeeded, then the turn failed on a
+    path that never summarizes (e.g. turn_response_check): that failure is not a quota wall."""
+    class Agent(_FakeAgent):
+        provider = "openai-codex"
+        _lb_api_error = (_ApiError(429, CHATGPT_PROLITE), "HTTP 429")
+
+    monkeypatch.setattr(turn, "_construct_agent",
+                        lambda *a, **k: Agent(2, "", failed=True, error="Turn abandoned: shutting down"))
+    monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: None)
+    outcome, kind, _reply, _usage = turn._run_hermes(
+        "ceo", {"message": {"text": "hi"}, "room": {"id": "x"}, "participants": []}, None)
+    assert (outcome, kind) == ("error", "model_unavailable")
+    assert turn._post_turn.error_detail is None
+
+
+def test_error_detail_is_only_sent_with_the_quota_kind():
+    assert "errorDetail" not in turn.run_ended_body(
+        "r1", "k", "error", "model_unavailable", turn.ZERO_USAGE, {"provider": "openai"})

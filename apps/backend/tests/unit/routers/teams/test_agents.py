@@ -287,6 +287,7 @@ def test_get_agent_strips_adapter_config(client, monkeypatch):
     admin.get_agent = AsyncMock(
         return_value={
             "id": "a1",
+            "companyId": "co_abc",
             "name": "Helper",
             "role": "engineer",
             "adapterType": "openclaw_gateway",
@@ -375,6 +376,7 @@ def test_patch_agent_forwards_explicit_null_reports_to(client, monkeypatch):
     null (exclude_unset, not exclude_none) so Paperclip makes the agent a root.
     Paperclip rejects "" (uuid().nullable())."""
     admin = MagicMock()
+    admin.get_agent = AsyncMock(return_value={"id": "a1", "companyId": "co_abc"})
     admin.patch_agent = AsyncMock(return_value={"id": "a1", "reportsTo": None})
     from routers.teams import agents as agents_mod
 
@@ -489,6 +491,9 @@ def test_delete_agent_maps_final_root_conflict_to_409(client, monkeypatch):
         side_effect=AgentLifecycleConflict("The final root CEO cannot be deleted or demoted.")
     )
     monkeypatch.setattr(agents_mod, "delete_agent_everywhere", delete_everywhere)
+    admin = MagicMock()
+    admin.get_agent = AsyncMock(return_value={"id": "x", "companyId": "co_abc"})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
 
     r = client.delete("/api/v1/teams/agents/friday_id", headers={"Authorization": "Bearer x"})
     assert r.status_code == 409
@@ -501,6 +506,9 @@ def test_delete_agent_allows_non_seeded(client, monkeypatch):
 
     delete_everywhere = AsyncMock(return_value={"deleted": True})
     monkeypatch.setattr(agents_mod, "delete_agent_everywhere", delete_everywhere)
+    admin = MagicMock()
+    admin.get_agent = AsyncMock(return_value={"id": "x", "companyId": "co_abc"})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
 
     r = client.delete("/api/v1/teams/agents/a_user", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200

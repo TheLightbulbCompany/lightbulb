@@ -17,7 +17,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories import container_repo
@@ -539,9 +541,29 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
     return _mark_seeded(_redact_agent(paperclip_agent), set())
 
 
+SafeId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
+
+
+async def _company_agent(agent_id: SafeId, ctx: TeamsContext = Depends(_ctx)) -> str:
+    """404 unless ``agent_id`` belongs to the caller's workspace company.
+
+    Paperclip authorizes by the member's session, and a Paperclip user can hold
+    memberships in more than one company, so the session alone does not pin an
+    agent to THIS workspace (a wake would pass this workspace's trial gate for
+    another's agent). Same fence as issues' ``_require_company_issue``.
+    """
+    agent = await _admin().get_agent(agent_id=agent_id, session_cookie=ctx.session_cookie)
+    if not isinstance(agent, dict) or agent.get("companyId") != ctx.company_id:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent_id
+
+
+CompanyAgentId = Annotated[str, Depends(_company_agent)]
+
+
 @router.get("/agents/{agent_id}")
-async def get_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
-    """Fetch a single agent by id.
+async def get_agent(agent_id: SafeId, ctx: TeamsContext = Depends(_ctx)):
+    """Fetch a single agent by id (404 outside the caller's workspace company).
 
     Redacts ``adapterConfig`` + ``adapterType`` before returning — see
     ``_redact_agent``.
@@ -550,6 +572,8 @@ async def get_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
         agent_id=agent_id,
         session_cookie=ctx.session_cookie,
     )
+    if not isinstance(upstream, dict) or upstream.get("companyId") != ctx.company_id:
+        raise HTTPException(status_code=404, detail="Agent not found")
     owner_id = _resolve_owner_id(ctx)
     repo = _repo()
     seeded_ids, starter_ids = await asyncio.gather(
@@ -562,7 +586,7 @@ async def get_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 @router.patch("/agents/{agent_id}")
 async def patch_agent(
-    agent_id: str,
+    agent_id: CompanyAgentId,
     body: PatchAgentBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -624,7 +648,7 @@ async def patch_agent(
 
 
 @router.delete("/agents/{agent_id}")
-async def delete_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def delete_agent(agent_id: CompanyAgentId, ctx: TeamsContext = Depends(_ctx)):
     """Delete an agent. Idempotent — 404 from upstream is swallowed.
 
     The shared lifecycle preserves a final root CEO while allowing any other
@@ -638,7 +662,7 @@ async def delete_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.post("/agents/{agent_id}/pause")
-async def pause_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def pause_agent(agent_id: CompanyAgentId, ctx: TeamsContext = Depends(_ctx)):
     """Pause an agent (stops it running on events)."""
     # Paperclip echoes the updated agent record, which can include
     # adapterConfig/adapterType (the OpenClaw service token). Redact for the
@@ -652,7 +676,7 @@ async def pause_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 
 @router.post("/agents/{agent_id}/resume")
-async def resume_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def resume_agent(agent_id: CompanyAgentId, ctx: TeamsContext = Depends(_ctx)):
     """Resume a paused agent."""
     return _redact_agent(
         await _admin().resume_agent(
@@ -664,7 +688,7 @@ async def resume_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 @router.post("/agents/{agent_id}/reset-session")
 async def reset_agent_session(
-    agent_id: str,
+    agent_id: CompanyAgentId,
     body: ResetAgentSessionBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -687,7 +711,7 @@ async def reset_agent_session(
 
 
 @router.post("/agents/{agent_id}/clear-error")
-async def clear_agent_error(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def clear_agent_error(agent_id: CompanyAgentId, ctx: TeamsContext = Depends(_ctx)):
     """Clear an agent's error status — recovery lever.
 
     Maps to upstream ``POST /api/agents/{id}/clear-error``. Upstream flips an
@@ -706,7 +730,7 @@ async def clear_agent_error(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 @router.post("/agents/{agent_id}/wakeup")
 async def wake_agent(
-    agent_id: str,
+    agent_id: CompanyAgentId,
     body: WakeAgentBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
@@ -731,7 +755,7 @@ async def wake_agent(
 
 
 @router.get("/runs/{run_id}")
-async def get_run(run_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def get_run(run_id: SafeId, ctx: TeamsContext = Depends(_ctx)):
     """Fetch a single run by id — legacy alias for ``/heartbeat-runs/{id}``.
 
     The frontend's RunDetailPanel still reads this path as a fallback next to

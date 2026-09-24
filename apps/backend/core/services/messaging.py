@@ -126,7 +126,6 @@ ROOM_LIVE_EVENT_TYPES = frozenset(
         "room.typing.changed",
         "room.run.frame",
         "room.metadata.changed",
-        "room.resources.changed",
     }
 )
 USER_LIVE_EVENT_TYPES = frozenset(

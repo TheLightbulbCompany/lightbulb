@@ -6,4 +6,8 @@ test("workspace session hints carry only humanUserId", () => {
     occurredAt: "2026-09-11T00:00:00Z", payload: { humanUserId: "u" } };
   expect(parseLiveEvent(event)).toEqual(event);
   expect(parseLiveEvent({ ...event, payload: { ...event.payload, extra: 1 } })).toBeNull();
+  // A streaming batch marks itself; anything but `true` is malformed.
+  const transcript = { ...event, payload: { humanUserId: "u", transcript: true } };
+  expect(parseLiveEvent(transcript)).toEqual(transcript);
+  expect(parseLiveEvent({ ...event, payload: { humanUserId: "u", transcript: false } })).toBeNull();
 });

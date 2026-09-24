@@ -120,7 +120,6 @@ export type LiveEventType =
   | "room.typing.changed"
   | "room.run.frame"
   | "room.metadata.changed"
-  | "room.resources.changed"
   | "workspace.sessions.changed"
   | "room.member.updated"
   | "room.subscription.rotated"
@@ -137,7 +136,6 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.typing.changed",
   "room.run.frame",
   "room.metadata.changed",
-  "room.resources.changed",
   "workspace.sessions.changed",
   "room.member.updated",
   "room.subscription.rotated",
@@ -191,8 +189,7 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.typing.changed", RoomTypingChanged>
   | LiveEventEnvelope<"room.run.frame", RoomRunFrame>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
-  | LiveEventEnvelope<"room.resources.changed", { roomId: string }>
-  | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string }>
+  | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true }>
   | LiveEventEnvelope<"room.member.updated", RoomMemberUpdated>
   | LiveEventEnvelope<"room.subscription.rotated", RoomSubscriptionRotated>
   | LiveEventEnvelope<"room.access.removed", RoomAccessRemoved>
@@ -283,10 +280,10 @@ function canonicalMessageValid(value: unknown): value is CanonicalRoomMessage {
 function payloadValid(type: LiveEventType, payload: unknown): boolean {
   if (!isObj(payload)) return false;
   switch (type) {
-    case "room.resources.changed":
-      return str(payload.roomId) && Object.keys(payload).length === 1;
     case "workspace.sessions.changed":
-      return str(payload.humanUserId) && Object.keys(payload).length === 1;
+      // `transcript: true` marks a streaming batch: open panes refetch, the sidebar list does not.
+      return str(payload.humanUserId) && (payload.transcript === undefined || payload.transcript === true)
+        && Object.keys(payload).every((key) => key === "humanUserId" || key === "transcript");
     case "room.message.updated":
       return str(payload.roomId) && str(payload.messageId) && Number.isInteger(payload.messageSeq) && (payload.messageSeq as number) > 0;
     case "room.message.created":

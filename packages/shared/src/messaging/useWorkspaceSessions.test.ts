@@ -29,13 +29,16 @@ describe("useWorkspaceSessions", () => {
     expect(listWorkspaceSessions).toHaveBeenCalledTimes(2);
   });
 
-  it("refetches on workspace.sessions.changed and ignores room hints", async () => {
+  it("refetches on workspace.sessions.changed and ignores other events", async () => {
     renderHook(() => useWorkspaceSessions(source));
     await waitFor(() => expect(listWorkspaceSessions).toHaveBeenCalledTimes(1));
-    act(() => handler?.({ eventId: "e1", type: "room.resources.changed", roomId: "r", payload: { roomId: "r" } } as unknown as LiveEvent));
+    act(() => handler?.({ eventId: "e1", type: "room.metadata.changed", roomId: "r", payload: { roomId: "r" } } as unknown as LiveEvent));
     expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
     act(() => handler?.({ eventId: "e2", type: "workspace.sessions.changed", payload: { humanUserId: "alice" } } as unknown as LiveEvent));
     await waitFor(() => expect(listWorkspaceSessions).toHaveBeenCalledTimes(2));
+    // A streaming batch changes an open session's content, not the list.
+    act(() => handler?.({ eventId: "e3", type: "workspace.sessions.changed", payload: { humanUserId: "alice", transcript: true } } as unknown as LiveEvent));
+    expect(listWorkspaceSessions).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the last snapshot and reports an error when a refresh fails", async () => {

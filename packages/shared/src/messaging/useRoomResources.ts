@@ -13,7 +13,7 @@ export interface RoomResourceSource {
 
 export const accessLost = (error: unknown) => error instanceof ApiError && (error.status === 403 || error.status === 404);
 
-/** Safety-net cadence for the resources poll. The push hint (`room.resources.changed`) is
+/** Safety-net cadence for the resources poll. The push hint (`workspace.sessions.changed`) is
  *  primary; this only covers a dropped hint. */
 const RESOURCES_POLL_MS = 30_000;
 
@@ -92,7 +92,20 @@ export function useRoomResources(
     if (!enabled) return;
     blocked.current = false;
     void refresh();
+    const hinted = () => {
+      void refresh();
+      // The backend throttles hints per session with no trailing edge, so a batch
+      // landing inside that window publishes none; a debounced trailing refresh
+      // past TRAILING_HINT_MS catches it instead of stranding the view until the
+      // safety poll. A new hint resets the timer, so a burst yields one trailing
+      // refresh after the last hint, not one per hint.
+      if (trailingHint.current) clearTimeout(trailingHint.current);
+      trailingHint.current = setTimeout(() => { trailingHint.current = null; void refresh(); }, TRAILING_HINT_MS);
+    };
     const unsubscribe = onEvent(event => {
+      // Session changes arrive once per workspace on the viewer's own channel, not per room:
+      // this pane refetches its own room's resources (and so its transcript revision).
+      if (event.type === "workspace.sessions.changed") { hinted(); return; }
       if (!("roomId" in event.payload) || event.payload.roomId !== roomId) return;
       if (event.type === "room.access.removed") { revoke(); return; }
       if (event.type === "room.metadata.changed" || event.type === "room.subscription.rotated") {
@@ -102,15 +115,6 @@ export function useRoomResources(
         setData(null);
         setAccessRevision(v => v + 1);
         void refresh();
-      } else if (event.type === "room.resources.changed") {
-        void refresh();
-        // The backend throttles hints per session with no trailing edge, so a batch
-        // landing inside that window publishes none; a debounced trailing refresh
-        // past TRAILING_HINT_MS catches it instead of stranding the view until the
-        // safety poll. A new hint resets the timer, so a burst yields one trailing
-        // refresh after the last hint, not one per hint.
-        if (trailingHint.current) clearTimeout(trailingHint.current);
-        trailingHint.current = setTimeout(() => { trailingHint.current = null; void refresh(); }, TRAILING_HINT_MS);
       }
     });
     // Reuses the room's existing live subscription. Poll only while this pane exists.
@@ -132,7 +136,7 @@ export function useRoomResources(
  * A recoverable window over canonical history, never an unbounded transcript cache.
  *
  * `revision` (from `useRoomResources`) is the primary tail signal, driven by the
- * relay's `room.resources.changed` hint. `pollMs` is the backstop: a quiet
+ * relay's `workspace.sessions.changed` hint. `pollMs` is the backstop: a quiet
  * newer-page poll on a steady cadence so an open transcript keeps advancing
  * through throttled or dropped hints (the relay throttles transcript hints to
  * one per second per session with no trailing edge). Pass 0 to disable.

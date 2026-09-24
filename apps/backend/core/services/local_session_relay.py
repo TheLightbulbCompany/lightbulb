@@ -21,15 +21,12 @@ from core.repositories import local_sessions_repo as repo, messaging_repo as sto
 from core.services import local_sessions as sessions
 from core.services.connection_service import ConnectionService
 from core.services.management_api_client import ManagementApiClient
-from core.services.messaging import ApiProblem, ContractModel, make_live_event, require_room_member
+from core.services.messaging import ApiProblem, ContractModel, make_live_event
 
 CLIENT_ID = "lightbulb-local-sessions"
 LIVENESS_SECONDS = 30
 CLAIM_SECONDS = 5
 logger = logging.getLogger(__name__)
-
-#: Sessions of one device heartbeat processed at once (the frame carries at most 24).
-HEARTBEAT_CONCURRENCY = 8
 
 
 class Descriptor(ContractModel):
@@ -146,32 +143,27 @@ async def _actor_label(command: dict) -> dict | None:
     }
 
 
-async def publish_resources_changed(owner: str, human: str, *, workspace: bool = True) -> None:
-    """``workspace=False`` for transcript batches: the sidebar lists liveness, not
-    content, so only register/heartbeat/ended make every member refetch it."""
-    from core.services.live_events import get_live_event_publisher, publish_owner_users
+async def publish_resources_changed(owner: str, human: str, *, transcript: bool = False) -> None:
+    """One ``workspace.sessions.changed`` per change, on each workspace member's own channel.
 
-    # GSI is discovery only; current membership/scope is checked before publishing.
+    Clients refetch their open room's resources (and so its transcript) from it. It used to
+    fan out a ``room.resources.changed`` to every room the human is in, one membership read and
+    publish at a time: ~28 round trips on every relay frame for the founder, which crossed the
+    desktop's 10 s ack deadline and looped reconnects (prod 2026-09-24). Owner ruling: one hint.
+    ``transcript`` marks a streaming batch: open panes refetch, the sidebar list ignores it (it
+    lists liveness, not content, and a streaming teammate would refetch it once a second).
+    """
+    from core.services.live_events import publish_owner_users
+
     try:
-        for candidate in await store.list_rooms_for_member(owner, "human", human):
-            room = candidate["meta"]["roomId"]
-            try:
-                await require_room_member(owner, human, room)
-            except ApiProblem:
-                continue
-            await get_live_event_publisher().publish_room(
-                room, make_live_event("room.resources.changed", {"roomId": room}, room_id=room)
-            )
+        await publish_owner_users(
+            owner,
+            make_live_event(
+                "workspace.sessions.changed", {"humanUserId": human, **({"transcript": True} if transcript else {})}
+            ),
+        )
     except Exception:
         # Hints are expendable; authorized HTTP polling repairs lost hints.
-        logger.warning("Local session resource hint failed")
-    if not workspace:
-        return
-    # Workspace-wide: the sidebar list is not room-scoped (spec §5). A failing room
-    # publish above must not suppress this -- each hint fails independently.
-    try:
-        await publish_owner_users(owner, make_live_event("workspace.sessions.changed", {"humanUserId": human}))
-    except Exception:
         logger.warning("Workspace session hint failed")
 
 
@@ -368,89 +360,89 @@ class LocalSessionRelay:
         }
 
     async def _device_heartbeat(self, cid: str, connection: dict, enrollment: dict, message: DeviceHeartbeat) -> dict:
-        """One frame per device renews every mirror it still owns; the rest come back rejected.
-
-        The desktop drops the connection if this ack takes over 10 s (transport.rs), and each
-        listed session costs ~8 network calls, so the sessions run concurrently: done one by one,
-        17 lapsed mirrors took long enough that every reconnect timed out again (prod 2026-09-24).
-        Each item touches only its own session row and commands.
-        """
-        # ponytail: bounded by the 24-session frame cap and this semaphore; no shared pool.
+        """One frame per device renews every mirror it still owns; the rest come back rejected."""
+        # ponytail: a read, a lease write and a delivery pass per listed session, capped at 24;
+        # batch the reads if a device ever carries enough live mirrors for it to show.
         owner, now, started = connection.get("org_id") or connection["user_id"], int(time.time()), time.monotonic()
-        gate = asyncio.Semaphore(HEARTBEAT_CONCURRENCY)
-
-        async def one(item: HeartbeatSession) -> tuple[str | None, dict | None]:
-            async with gate:
-                return await self._heartbeat_item(cid, connection, enrollment, owner, now, item)
-
-        results = await asyncio.gather(*(one(item) for item in message.sessions), return_exceptions=True)
-        logger.info(
-            "local device heartbeat",
-            extra={"cid": cid, "sessions": len(message.sessions), "ms": int((time.monotonic() - started) * 1000)},
-        )
-        # Every item ran to completion before a failure surfaces, so a retried frame never
-        # races an item still in flight from this one.
-        for result in results:
-            if isinstance(result, BaseException):
-                raise result
-        rejected = [sid for sid, _ in results if sid is not None]
-        reconcile = [pending for _, pending in results if pending is not None]
-        return {"type": "local.device.heartbeat.ack", "rejected": rejected, "reconcile": reconcile, "serverTime": now}
-
-    async def _heartbeat_item(
-        self, cid: str, connection: dict, enrollment: dict, owner: str, now: int, item: HeartbeatSession
-    ) -> tuple[str | None, dict | None]:
-        row = await repo.get_session(owner, item.session_id)
-        if (
-            row is None
-            or row["deviceId"] != connection["device_id"]
-            or row["generation"] != item.generation
-            or row.get("connectionId") != cid
-            or row.get("endedAt") is not None
-        ):
-            # Unknown, superseded or ended here: the desktop re-registers it.
-            return item.session_id, None
-        labels = {
-            key: value
-            for key, value in (
-                ("title", item.title),
-                ("cwdName", item.cwd_name),
-                ("lastAssistantMessage", item.last_assistant_message),
+        rejected, reconcile = [], []
+        # One hint per frame, not per session: every session here is the same human's, and the
+        # hint fans out to each of their rooms. It still fires when the frame fails part-way,
+        # because the retry finds those rows already matching and would not hint again.
+        hint = False
+        try:
+            for item in message.sessions:
+                row = await repo.get_session(owner, item.session_id)
+                if (
+                    row is None
+                    or row["deviceId"] != connection["device_id"]
+                    or row["generation"] != item.generation
+                    or row.get("connectionId") != cid
+                    or row.get("endedAt") is not None
+                ):
+                    # Unknown, superseded or ended here: the desktop re-registers it.
+                    rejected.append(item.session_id)
+                    continue
+                labels = {
+                    key: value
+                    for key, value in (
+                        ("title", item.title),
+                        ("cwdName", item.cwd_name),
+                        ("lastAssistantMessage", item.last_assistant_message),
+                    )
+                    if value is not None
+                }
+                public = (
+                    "status",
+                    "activeTurnId",
+                    "title",
+                    "cwdName",
+                    "lastAssistantMessage",
+                    "controlUnavailableReason",
+                )
+                updated = _revised(
+                    row,
+                    status=item.status,
+                    activeTurnId=item.active_turn_id,
+                    controlUnavailableReason=item.control_unavailable_reason,
+                    onlineUntil=now + LIVENESS_SECONDS,
+                    workspace=item.workspace.model_dump(by_alias=True),
+                    **labels,
+                )
+                # Heartbeats may withdraw authority. A fresh registration is
+                # required to restore it after runtime revalidation.
+                if item.control_unavailable_reason is not None:
+                    updated.update(
+                        capabilities=sessions.Capabilities().model_dump(by_alias=True), capabilitiesVerified=False
+                    )
+                moved = any(row.get(field) != updated.get(field) for field in public)
+                scanned = row.get("workspace") != updated.get("workspace")
+                if moved:
+                    updated["lastEventAt"] = now
+                await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
+                # A workspace scan is worth a refetch but is not the user doing something,
+                # so it hints without stamping lastEventAt. A lapsed lease reads as
+                # offline, so recovery must reach the room even when nothing else moved;
+                # renewal makes that fire once.
+                if moved or scanned or row["onlineUntil"] <= now:
+                    hint = True
+                # Reconcile after delivery: this heartbeat's own dispatch is part of what the journal must settle.
+                await self.dispatch_session(owner, item.session_id)
+                pending = await self._reconcile_for(owner, item.session_id, row["generation"])
+                if pending is not None:
+                    reconcile.append({"sessionId": item.session_id, **pending})
+            return {
+                "type": "local.device.heartbeat.ack",
+                "rejected": rejected,
+                "reconcile": reconcile,
+                "serverTime": now,
+            }
+        finally:
+            if hint:
+                await publish_resources_changed(owner, connection["user_id"])
+            logger.info(
+                "local device heartbeat",
+                extra={"cid": cid, "sessions": len(message.sessions), "ms": int((time.monotonic() - started) * 1000)},
             )
-            if value is not None
-        }
-        public = ("status", "activeTurnId", "title", "cwdName", "lastAssistantMessage", "controlUnavailableReason")
-        updated = _revised(
-            row,
-            status=item.status,
-            activeTurnId=item.active_turn_id,
-            controlUnavailableReason=item.control_unavailable_reason,
-            onlineUntil=now + LIVENESS_SECONDS,
-            workspace=item.workspace.model_dump(by_alias=True),
-            **labels,
-        )
-        # Heartbeats may withdraw authority. A fresh registration is
-        # required to restore it after runtime revalidation.
-        if item.control_unavailable_reason is not None:
-            updated.update(capabilities=sessions.Capabilities().model_dump(by_alias=True), capabilitiesVerified=False)
-        moved = any(row.get(field) != updated.get(field) for field in public)
-        scanned = row.get("workspace") != updated.get("workspace")
-        if moved:
-            updated["lastEventAt"] = now
-        await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
-        # Hint per session, never deferred to the end of the frame: a failure
-        # part-way retries the whole frame, and by then the rows already written
-        # match what the device sent, so a deferred hint would be dropped.
-        # A workspace scan is worth a refetch but is not the user doing something,
-        # so it hints without stamping lastEventAt. A lapsed lease reads as
-        # offline, so recovery must reach the room even when nothing else moved;
-        # renewal makes that fire once.
-        if moved or scanned or row["onlineUntil"] <= now:
-            await publish_resources_changed(owner, row["humanUserId"])
-        # Reconcile after delivery: this heartbeat's own dispatch is part of what the journal must settle.
-        await self.dispatch_session(owner, item.session_id)
-        pending = await self._reconcile_for(owner, item.session_id, row["generation"])
-        return None, ({"sessionId": item.session_id, **pending} if pending is not None else None)
 
     async def _ended(self, cid: str, connection: dict, enrollment: dict, message: Ended) -> dict:
         owner = connection.get("org_id") or connection["user_id"]
@@ -519,7 +511,7 @@ class LocalSessionRelay:
         )
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
         if hint:
-            await publish_resources_changed(row["ownerId"], row["humanUserId"], workspace=False)
+            await publish_resources_changed(row["ownerId"], row["humanUserId"], transcript=True)
         return {
             "type": "local.session.events.ack",
             "sessionId": row["sessionId"],

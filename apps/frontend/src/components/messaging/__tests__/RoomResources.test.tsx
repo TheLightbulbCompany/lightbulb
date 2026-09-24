@@ -48,8 +48,12 @@ function setup(roomId = "room") {
     state: "ready", httpReady: true, liveConnected: true, participants: people, messages: [], resourceSource: source,
     composer: { text: "Room draft stays here", onTextChange: vi.fn(), members: people, clientMessageId: "room-draft", sendState: "idle", onSubmit: vi.fn() },
   };
-  const emit = (type: "room.resources.changed" | "room.metadata.changed" | "room.access.removed") => {
-    for (const h of handlers) h({ type, payload: { roomId }, roomId, schemaVersion: 1, eventId: type, occurredAt: "now" } as LiveEvent);
+  const emit = (type: "workspace.sessions.changed" | "room.metadata.changed" | "room.access.removed") => {
+    // Session changes arrive as one workspace hint on the viewer's channel, not per room.
+    const event = type === "workspace.sessions.changed"
+      ? { type, payload: { humanUserId: "u" }, schemaVersion: 1, eventId: type, occurredAt: "now" }
+      : { type, payload: { roomId }, roomId, schemaVersion: 1, eventId: type, occurredAt: "now" };
+    for (const h of handlers) h(event as LiveEvent);
   };
   return { props, source, client, receipt, emit };
 }
@@ -146,7 +150,7 @@ it("applies continuing directory snapshots under frequent hints with bounded req
   f.client.listResources.mockImplementation(() => new Promise(resolve => pending.push(resolve)));
   const { result } = renderHook(() => useRoomResources("room", f.source));
   for (let round = 0; round < 4; round++) {
-    act(() => { for (let hint = 0; hint < 20; hint++) f.emit("room.resources.changed"); });
+    act(() => { for (let hint = 0; hint < 20; hint++) f.emit("workspace.sessions.changed"); });
     expect(f.client.listResources).toHaveBeenCalledTimes(round + 1);
     await act(async () => pending[round]({ ...resources, sessions: [{ ...session, providerVersion: `snapshot-${round}` }] }));
     expect(result.current.data?.sessions[0].providerVersion).toBe(`snapshot-${round}`);
@@ -164,10 +168,10 @@ it.each(["old-first", "new-first"])("starts a new authorized epoch without waiti
   const pending: Array<(value: RoomResources) => void> = [];
   f.client.listResources.mockImplementation(() => new Promise(resolve => pending.push(resolve)));
   const { result } = renderHook(() => useRoomResources("room", f.source));
-  act(() => { f.emit("room.resources.changed"); f.emit("room.metadata.changed"); });
+  act(() => { f.emit("workspace.sessions.changed"); f.emit("room.metadata.changed"); });
   expect(result.current.data).toBeNull();
   expect(f.client.listResources).toHaveBeenCalledTimes(2);
-  act(() => f.emit("room.resources.changed"));
+  act(() => f.emit("workspace.sessions.changed"));
   const authorized = { devices: [], sessions: [], pairedNodes: [] };
   if (order === "old-first") {
     await act(async () => pending[0](resources));
@@ -192,14 +196,14 @@ it("drops queued refreshes on revocation and unmount without blocking a reopened
   const pending: Array<(value: RoomResources) => void> = [];
   f.client.listResources.mockImplementation(() => new Promise(resolve => pending.push(resolve)));
   const first = renderHook(() => useRoomResources("room", f.source));
-  act(() => { f.emit("room.resources.changed"); f.emit("room.access.removed"); });
+  act(() => { f.emit("workspace.sessions.changed"); f.emit("room.access.removed"); });
   await act(async () => pending[0](resources));
   expect(first.result.current.data).toBeNull();
   expect(first.result.current.loading).toBe(false);
   expect(f.client.listResources).toHaveBeenCalledTimes(1);
   first.unmount();
   const second = renderHook(() => useRoomResources("room", f.source));
-  act(() => f.emit("room.resources.changed"));
+  act(() => f.emit("workspace.sessions.changed"));
   second.unmount();
   const reopened = renderHook(() => useRoomResources("room", f.source));
   await act(async () => pending[1](resources));
@@ -372,7 +376,7 @@ it.each([403,404])("still clears selected uncertain input when resources return 
   await userEvent.type(screen.getByRole("textbox", {name:/Send to Codex/}), "Private follow-up");
   await userEvent.click(screen.getByRole("button", {name:"Send follow-up"}));
   f.client.listResources.mockRejectedValueOnce(new ApiError(status, {}, "access removed"));
-  act(() => f.emit("room.resources.changed"));
+  act(() => f.emit("workspace.sessions.changed"));
   expect(await screen.findByText(/Access to these resources was removed/)).toBeInTheDocument();
   expect(screen.queryByRole("button", {name:"Retry same request"})).not.toBeInTheDocument();
   expect(screen.queryByDisplayValue("Private follow-up")).not.toBeInTheDocument();
@@ -468,9 +472,9 @@ it("does not reopen a removed session automatically when later hints restore it"
   await openSession();
   await screen.findByText("Native event 250");
   f.client.listResources.mockResolvedValueOnce({ ...resources, sessions: [] });
-  act(() => f.emit("room.resources.changed"));
+  act(() => f.emit("workspace.sessions.changed"));
   await waitFor(() => expect(screen.queryByText("Native event 250")).not.toBeInTheDocument());
-  act(() => f.emit("room.resources.changed"));
+  act(() => f.emit("workspace.sessions.changed"));
   expect(await screen.findByRole("button", { name: /Open Codex/ })).toBeInTheDocument();
   expect(screen.queryByRole("textbox", { name: /Send to Codex/ })).not.toBeInTheDocument();
 });

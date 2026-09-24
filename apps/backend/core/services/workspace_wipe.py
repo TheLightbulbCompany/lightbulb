@@ -42,6 +42,14 @@ refused. The managed OpenRouter key is retired (entitlement_teardown's path)
 and its row + secrets deleted only once the settlement worker has disabled it;
 until then that step fails and asks for a re-run.
 
+The Paperclip company is deleted only when it is this workspace's alone
+(``_company_refusal``, computed in the snapshot so preview and execute agree):
+if another org's active row names it, or this org's rows name two companies,
+the company step is ``"refused"`` and nothing in Aurora is deleted by it. The
+rest of the wipe runs; this org's paperclip-companies rows are still deleted
+(the other org's rows, which this wipe never touches, keep the company id,
+and the refusal detail records every id for the by-hand case).
+
 Billing/Stripe default PRESERVE: the billing layer runs only with
 ``include_billing=True`` AND ``confirm_billing="DELETE-BILLING"``. Anything
 else records its steps ``skipped`` with a "preserved by default" detail and a
@@ -221,6 +229,9 @@ class WorkspaceSnapshot:
     gate_hashes: list[str]
     join_link: dict | None = None
     openrouter_row: dict | None = None
+    #: Set when ``company_id`` is not this workspace's alone (``_company_refusal``):
+    #: the company step is then REFUSED in preview and execute alike.
+    company_refusal: str | None = None
     # The options this snapshot was taken FOR — part of the fingerprint, so a
     # preview binds exactly what executes.
     layers: tuple[str, ...] = ()
@@ -295,6 +306,8 @@ async def _read_workspace_snapshot(
     company_id = await paperclip_repo.get_org_company_id(org_id) or next(
         (r["company_id"] for r in member_rows if r.get("company_id")), None
     )
+    # Before any step: a read failure here stops preview/execute with nothing deleted.
+    company_refusal = await _company_refusal(paperclip_repo, org_id, member_rows, company_id)
     members = await _read_members(org_id, member_rows)
     room_ids = await messaging_repo.list_owner_room_ids(org_id)
     secret_names = await list_owner_secret_names(org_id)
@@ -325,12 +338,47 @@ async def _read_workspace_snapshot(
         gate_hashes=owner_gate_token_hashes(container),
         join_link=await workspace_join_repo.get_link(org_id),
         openrouter_row=await openrouter_key_repo.get(org_id),
+        company_refusal=company_refusal,
         layers=layers,
         include_billing=include_billing,
         delete_shared_members=delete_shared_members,
     )
     snapshot.fingerprint = snapshot_fingerprint(snapshot)
     return snapshot
+
+
+async def _company_refusal(
+    repo: PaperclipRepo, org_id: str, member_rows: list[dict], company_id: str | None
+) -> str | None:
+    """Why ``company_id`` must NOT be deleted by this workspace's wipe, else None.
+
+    The workspace twin of ``account_wipe._shared_company`` (2026-09-15: a wipe
+    hard-deleted the founder's shared company). paperclip-companies rows are per
+    USER, so a stale re-point can leave another org's row naming this company.
+    Unsafe when this org's rows name more than one company, or any active row
+    outside this org names ``company_id``. Reads propagate: never "safe" by default.
+    """
+    ids = sorted({r["company_id"] for r in member_rows if r.get("company_id")})
+    if len(ids) > 1:
+        return (
+            f"refused: workspace {org_id} rows name {len(ids)} different companies ({', '.join(ids)}) "
+            "— none deleted; resolve by hand"
+        )
+    if not company_id:
+        return None
+    own = {r["user_id"] for r in member_rows if r.get("user_id")}
+    others: dict[str, list[str]] = {}
+    for uid in await repo.get_user_ids_for_company(company_id):
+        if uid in own:
+            continue
+        row = await repo.get(uid)
+        if row is not None and row.org_id == org_id:
+            continue  # a member the by-org-id index has not caught up with yet
+        others.setdefault(row.org_id if row is not None else "unknown", []).append(uid)
+    if not others:
+        return None
+    named = ", ".join(f"{oid} ({', '.join(sorted(uids))})" for oid, uids in sorted(others.items()))
+    return f"refused: company {company_id} is also referenced by other workspace(s) {named} — kept"
 
 
 def snapshot_fingerprint(snapshot: WorkspaceSnapshot) -> str:
@@ -350,6 +398,8 @@ def snapshot_fingerprint(snapshot: WorkspaceSnapshot) -> str:
         },
         "billing_row": snapshot.billing is not None,
         "company_id": snapshot.company_id or "",
+        # A preview that showed "refused" must never execute as a delete.
+        "company_refusal": snapshot.company_refusal or "",
         "members": sorted([m["user_id"], sorted(m["other_orgs"])] for m in snapshot.members),
         "room_ids": sorted(snapshot.room_ids),
         "secret_names": sorted(snapshot.secret_names),
@@ -1061,6 +1111,10 @@ async def preview_workspace_wipe(
         if defn.layer not in selected_layers:
             _skip(steps, defn.system, defn.action, f"layer {defn.layer!r} not selected")
             continue
+        refusal = _refusal(defn, snap)
+        if refusal:
+            steps.append(WipeStep(defn.system, defn.action, "refused", refusal))
+            continue
         exists, detail = defn.preview(snap)
         _preview_step(
             steps,
@@ -1168,6 +1222,11 @@ async def wipe_workspace(
                 snap.unfinished |= {
                     f"step:{s.system}" for s in steps if s.status == "failed" and s.system in _MEMBER_KEYED_SYSTEMS
                 }
+            refusal = _refusal(defn, snap)
+            if refusal:
+                logger.warning("workspace_wipe: org=%s delete_company REFUSED: %s", org_id, refusal)
+                steps.append(WipeStep(defn.system, defn.action, "refused", refusal))
+                continue
             await _step(steps, system=defn.system, action=defn.action, fn=_bind(defn, snap))
     logger.warning(
         "workspace_wipe.wipe_workspace: billing %s for org=%s",
@@ -1199,6 +1258,11 @@ def _refuse_org(org_id: str) -> None:
         raise WorkspaceWipeError(f"{org_id!r} is not a workspace (Clerk organization) id.")
     if settings.VENDOR_ORG_ID and org_id == settings.VENDOR_ORG_ID:
         raise WorkspaceWipeError(f"{org_id} is the vendor (Lightbulb) org; refusing.")
+
+
+def _refusal(defn: WorkspaceStepDef, snap: WorkspaceSnapshot) -> str | None:
+    """The one refusal check preview and execute share."""
+    return snap.company_refusal if defn.system == "paperclip_company" else None
 
 
 def _bind(defn: WorkspaceStepDef, snap: WorkspaceSnapshot) -> Callable[[], Awaitable[str]]:

@@ -91,6 +91,7 @@ def ws_mocks():
     paperclip_instance = MagicMock()
     paperclip_instance.list_by_org_id = AsyncMock(return_value=_member_rows())
     paperclip_instance.get_org_company_id = AsyncMock(return_value="company_ws")
+    paperclip_instance.get_user_ids_for_company = AsyncMock(return_value=[MEMBER_A, MEMBER_B])
     paperclip_instance.get = AsyncMock(return_value=MagicMock(org_id=ORG_ID, user_id=MEMBER_A, company_id="company_ws"))
     paperclip_instance.delete = AsyncMock(return_value=None)
     paperclip_instance.delete_pending_brief = AsyncMock(return_value=True)
@@ -730,3 +731,79 @@ async def test_member_secret_failure_keeps_clerk_org(ws_mocks):
     assert _step(report, "owner_secrets").status == "failed"
     assert _step(report, "clerk_org").status == "failed"
     ws_mocks.clerk_delete_org.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Cross-workspace company guard (the workspace twin of account_wipe._shared_company)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sole_workspace_company_is_deleted(ws_mocks):
+    preview, report = await _preview_then_wipe()
+    assert _step(preview, "paperclip_company").status == "would_delete"
+    assert _step(report, "paperclip_company").status == "ok"
+    ws_mocks.paperclip_company_delete.assert_awaited_once_with("company_ws")
+    ws_mocks.paperclip_instance.get_user_ids_for_company.assert_awaited_with("company_ws")
+
+
+@pytest.mark.asyncio
+async def test_company_referenced_by_another_org_is_refused(ws_mocks):
+    ws_mocks.paperclip_instance.get_user_ids_for_company.return_value = [MEMBER_A, MEMBER_B, "user_founder"]
+    ws_mocks.paperclip_instance.get = AsyncMock(
+        return_value=MagicMock(org_id="org_founder", user_id="user_founder", company_id="company_ws")
+    )
+
+    preview, report = await _preview_then_wipe()
+
+    for r in (preview, report):
+        step = _step(r, "paperclip_company")
+        assert step.status == "refused"
+        assert "org_founder" in step.detail and "user_founder" in step.detail
+    ws_mocks.paperclip_company_delete.assert_not_awaited()
+    # The rest of the wipe still runs.
+    ws_mocks.delete_runtime.assert_awaited_once()
+    assert _step(report, "paperclip_row").status == "ok"
+    ws_mocks.clerk_delete_org.assert_awaited_once_with(ORG_ID)
+
+
+@pytest.mark.asyncio
+async def test_org_rows_naming_two_companies_are_refused(ws_mocks):
+    rows = _member_rows()
+    rows[1]["company_id"] = "company_other"
+    ws_mocks.paperclip_instance.list_by_org_id.return_value = rows
+
+    preview, report = await _preview_then_wipe()
+
+    for r in (preview, report):
+        step = _step(r, "paperclip_company")
+        assert step.status == "refused"
+        assert "company_ws" in step.detail and "company_other" in step.detail
+    ws_mocks.paperclip_company_delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_company_guard_read_failure_aborts_before_any_step(ws_mocks):
+    ws_mocks.paperclip_instance.get_user_ids_for_company.side_effect = RuntimeError("ddb 500")
+    with pytest.raises(RuntimeError):
+        await preview_workspace_wipe(ORG_ID)
+    with pytest.raises(RuntimeError):
+        await wipe_workspace(ORG_ID, actor_admin_id="admin_1", confirm_org=ORG_ID, expected_fingerprint="x")
+    ws_mocks.paperclip_company_delete.assert_not_awaited()
+    ws_mocks.delete_runtime.assert_not_awaited()
+    ws_mocks.gate_tokens_delete.assert_not_awaited()
+    ws_mocks.clerk_delete_org.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refusal_appearing_after_preview_is_stale(ws_mocks):
+    """A preview that showed a delete must not execute against a company that
+    has since become shared (and vice versa): the refusal is fingerprinted."""
+    preview = await preview_workspace_wipe(ORG_ID)
+    ws_mocks.paperclip_instance.get_user_ids_for_company.return_value = [MEMBER_A, "user_founder"]
+    ws_mocks.paperclip_instance.get = AsyncMock(return_value=MagicMock(org_id="org_founder"))
+    with pytest.raises(StaleWorkspacePreviewError):
+        await wipe_workspace(
+            ORG_ID, actor_admin_id="admin_1", confirm_org=ORG_ID, expected_fingerprint=preview.fingerprint
+        )
+    ws_mocks.paperclip_company_delete.assert_not_awaited()

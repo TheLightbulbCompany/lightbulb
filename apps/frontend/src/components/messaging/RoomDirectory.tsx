@@ -5,7 +5,7 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, GripVertical, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
-import { listenModeOptions, roomDisplayName, sessionLabel, sessionStatus, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
+import { listenModeOptions, roomDisplayName, sessionLabel, sessionStatus, sessionTitle, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import NextLink from "next/link";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -16,6 +16,7 @@ import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { groupRooms, type RoomGroup, type SidebarSession, type SidebarSort } from "./roomSections";
+import { SessionToolIcon } from "./SessionToolIcon";
 import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
@@ -385,9 +386,9 @@ function DirectoryContent({
           const who = own ? "your session" : ownerName;
           return <li key={session.sessionId} className="room-directory-row room-directory-row--roster">
             <button type="button" className="room-directory-entry" aria-label={`Open ${label}, ${who}, ${sessionStatus[session.status]}`} onClick={() => onSelectSession?.(session.sessionId)}>
-              <span className={`native-session-dot native-session-dot-${session.status}`} aria-hidden="true" />
+              <span className="session-tool-badge" aria-hidden="true"><SessionToolIcon provider={session.provider} /><span className={`native-session-dot native-session-dot-${session.status}`} /></span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate" title={label}>{label}</span>
+                <span className="block truncate" title={label}>{sessionTitle(session)}</span>
                 <span className="block truncate text-xs text-muted-foreground">{own ? "You" : ownerName} · {sessionStatus[session.status]}{session.lastEventAt ? ` · ${timeAgo(session.lastEventAt)}` : ""}</span>
               </span>
             </button>

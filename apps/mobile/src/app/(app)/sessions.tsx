@@ -1,10 +1,11 @@
 import { useAuth } from "@clerk/clerk-expo";
-import { sessionLabel, sessionStatus, useWorkspaceSessions, workspaceSections } from "@lightbulb/shared";
+import { sessionLabel, sessionStatus, sessionTitle, useWorkspaceSessions, workspaceSections } from "@lightbulb/shared";
 import { router, Stack, useIsFocused } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import { AppState, Pressable, SectionList, StyleSheet, Text, View } from "react-native";
 
 import { SessionStatusDot } from "../../components/session/SessionStatusDot";
+import { SessionToolIcon } from "../../components/session/SessionToolIcon";
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { memberName } from "../../lib/localSessions";
 import { relativeTime } from "../../lib/relativeTime";
@@ -84,9 +85,12 @@ export default function SharedSessionsScreen() {
             style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
             onPress={() => router.push(`/(app)/session/${item.sessionId}`)}
           >
-            <SessionStatusDot status={item.status} />
+            <View>
+              <SessionToolIcon provider={item.provider} />
+              <View style={styles.rowDot}><SessionStatusDot status={item.status} /></View>
+            </View>
             <View style={styles.rowText}>
-              <Text style={styles.rowLabel} numberOfLines={1}>{sessionLabel(item)}</Text>
+              <Text style={styles.rowLabel} numberOfLines={1}>{sessionTitle(item)}</Text>
               <Text style={styles.rowMeta} numberOfLines={1}>
                 {sessionStatus[item.status]}
                 {item.lastEventAt ? ` · ${relativeTime(Date.parse(item.lastEventAt))}` : ""}
@@ -113,6 +117,7 @@ const styles = StyleSheet.create({
   sectionTitle: { fontFamily: fonts.sansSemiBold, fontSize: 15, lineHeight: 20, color: colors.ink, marginTop: spacing.lg, marginBottom: spacing.sm },
   row: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm, borderRadius: radii.sm },
   rowPressed: { backgroundColor: colors.rowPressed },
+  rowDot: { position: "absolute", right: -3, bottom: -3, borderRadius: 6, borderWidth: 2, borderColor: colors.cream },
   rowText: { flex: 1 },
   rowLabel: { fontFamily: fonts.sansMedium, fontSize: 15, lineHeight: 20, color: colors.ink },
   rowMeta: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute },

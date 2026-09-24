@@ -61,7 +61,9 @@ describe("shared sessions screen", () => {
   it("opens a session on its roomless screen", async () => {
     mockListWorkspaceSessions.mockResolvedValue({ sessions: [bobSession] });
     await render(<SharedSessionsScreen />);
-    await waitFor(() => expect(screen.getByText("Claude · Fix bug")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Fix bug")).toBeTruthy());
+    expect(screen.queryByText("Claude · Fix bug")).toBeNull();
+    expect(screen.getByTestId("session-tool-claude", { includeHiddenElements: true })).toBeTruthy();
     await fireEvent.press(screen.getByLabelText("Open Claude · Fix bug"));
     expect(mockPush).toHaveBeenCalledWith("/(app)/session/sess-bob");
   });

@@ -24,7 +24,8 @@ function focus(entry: { session: LocalSession; ownerName: string; own: boolean }
 
 it("renders someone else's session alone, read-only, with no conversation column", async () => {
   focus({ session, ownerName: "Alice", own: false });
-  expect(await screen.findByRole("heading", { name: /Load test/ })).toBeInTheDocument();
+  const heading = await screen.findByRole("heading", { name: "Claude Load test" });
+  expect(heading).toHaveTextContent(/^Load test$/);
   expect(screen.queryByRole("complementary", { name: "Conversation" })).not.toBeInTheDocument();
   expect(screen.getByText("Only Alice can send to this session.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Send follow-up" })).not.toBeInTheDocument();
@@ -72,8 +73,9 @@ it("says 'your Mac' and 'your terminal', never \"You's\", for your own waiting s
 
 it("shows the session title once, in the header, with one compact status line", async () => {
   focus({ session: { ...session, cwdName: "lightbulb" }, ownerName: "Alice", own: false });
-  expect(await screen.findByRole("heading", { name: "Claude · Load test" })).toBeInTheDocument();
-  expect(screen.getAllByText("Claude · Load test")).toHaveLength(1);
+  const heading = await screen.findByRole("heading", { name: "Claude Load test" });
+  expect(heading).toHaveTextContent(/^Load test$/);
+  expect(screen.getAllByText("Load test")).toHaveLength(1);
   expect(screen.getByText("~/lightbulb · Alice · Working")).toBeInTheDocument();
 });
 

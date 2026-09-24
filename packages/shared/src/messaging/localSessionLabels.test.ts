@@ -1,10 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { canSendToSession, sessionStatus, workspaceSections } from "./localSessionLabels";
+import { canSendToSession, sessionLabel, sessionStatus, sessionTitle, sessionToolName, workspaceSections } from "./localSessionLabels";
 import type { LocalSession } from "./types";
 
 const base = { capabilities: { sendMode: "queue" }, controlUnavailableReason: null, capabilitiesVerified: true } as unknown as LocalSession;
 
 describe("session labels", () => {
+  it("splits the tool name from the title, falling back to the raw id for an unknown tool", () => {
+    const s = { ...base, provider: "claude", title: " Fix relay ", sessionId: "abcdef123" } as LocalSession;
+    expect(sessionTitle(s)).toBe("Fix relay");
+    expect(sessionTitle({ ...s, title: null })).toBe("abcdef12");
+    expect(sessionLabel(s)).toBe("Claude · Fix relay");
+    expect(sessionToolName("codex")).toBe("Codex");
+    expect(sessionToolName("gemini")).toBe("gemini");
+  });
+
   it("labels ended sessions and refuses to send to them", () => {
     expect(sessionStatus.ended).toBe("Ended");
     expect(canSendToSession({ ...base, status: "ended" })).toBe(false);

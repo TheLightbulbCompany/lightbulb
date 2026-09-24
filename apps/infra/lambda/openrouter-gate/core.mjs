@@ -137,17 +137,24 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       await ddb.updateItem({ TableName: env.REQUESTS_TABLE, Key: { request_id: { S: requestId } }, UpdateExpression: 'SET generation_id = :id', ConditionExpression: '#state = :pending', ExpressionAttributeNames: { '#state': 'state' }, ExpressionAttributeValues: { ':id': { S: id }, ':pending': { S: 'pending' } } });
       persistedId = id;
     };
-    // A capped owner's 402 is OpenRouter's per-key daily limit: answer with the
-    // daily-cap 429 the limit card renders instead of the upstream body.
-    let capHit = false;
+    // A capped owner's per-key daily limit: OpenRouter answers 403 "Key limit exceeded"
+    // (402 kept for safety). Answer with the daily-cap 429 the limit card renders. A 403
+    // is held until its body says why: a disabled key must surface as itself, not a cap.
+    let capHit = false, held403 = null;
     const result = await forwardImpl({ body, key: secret,
       writeHead: (upstreamStatus, headers) => {
         if (capped && upstreamStatus === 402) { capHit = true; return responder.writeHead(429, { 'content-type': 'application/json' }); }
+        if (capped && upstreamStatus === 403) { held403 = []; return; }
         return responder.writeHead(upstreamStatus, { 'content-type': headers['content-type']?.includes('text/event-stream') ? 'text/event-stream' : 'application/json' });
       },
-      write: chunk => capHit || responder.write(chunk),
+      write: chunk => capHit || (held403 ? held403.push(chunk) > 0 : responder.write(chunk)),
       waitForDrain: () => { if (!responder.waitForDrain) throw new Error('Client drain unavailable'); return responder.waitForDrain(); }, onGenerationId,
-      end: () => { if (capHit) responder.write(dailyCap().body()); responder.end(); },
+      end: (upstreamBody = '') => {
+        if (held403 && /key limit exceeded/i.test(upstreamBody)) { capHit = true; responder.writeHead(429, { 'content-type': 'application/json' }); }
+        else if (held403) { responder.writeHead(403, { 'content-type': 'application/json' }); held403.forEach(chunk => responder.write(chunk)); }
+        if (capHit) responder.write(dailyCap().body());
+        responder.end();
+      },
       abortSignal: responder.abortSignal });
     if (result.generationId) await onGenerationId(result.generationId);
     if (result.preGeneration === true && !persistedId) {

@@ -2457,6 +2457,8 @@ def parse_agent_mentions(text: str, members: list[dict]) -> tuple[list[dict], li
 RUN_ERROR_MESSAGES = {
     "agent_did_not_start": "The agent did not start this run.",
     "agent_stopped_responding": "The agent stopped responding.",
+    # Only a genuine outage reads this: a cap or credit block is re-worded below.
+    "model_unavailable": "The AI model didn't answer, usually a brief provider hiccup.",
 }
 # `gate_error` is deliberately absent: it is the ambient "should an `active` agent
 # answer this plain message?" classifier failing, not a run the user asked for. A

@@ -109,8 +109,8 @@ function useRetryNowMutation(issueId: string | null | undefined) {
     post<IssueRetryNowResponse>(`/issues/${issueId}/scheduled-retry/retry-now`, {})
       .then((response) => {
         setData(response);
-        void mutateKey(teamsQueryKeys.issues.detail(issueId));
-        void mutateKey(`/issues/${issueId}/runs`);
+        void mutateKey(`/teams${teamsQueryKeys.issues.detail(issueId)}`);
+        void mutateKey(`/teams/issues/${issueId}/runs`);
         if (response.outcome === "promoted") {
           notifySuccess(`${RETRY_NOW_OUTCOME_HEADLINE.promoted}: ${response.message}`);
         } else if (response.outcome === "gate_suppressed") {

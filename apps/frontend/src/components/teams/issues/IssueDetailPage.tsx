@@ -113,7 +113,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
       .monitorCheckNow(issueId)
       .then(() => {
         notifySuccess("Monitor check queued");
-        void mutate(teamsQueryKeys.issues.detail(issueId));
+        void mutate(`/teams${teamsQueryKeys.issues.detail(issueId)}`);
       })
       .catch((e) => notifyApiError(e, "Monitor check failed"))
       .finally(() => setCheckingMonitorNow(false));
@@ -138,7 +138,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
       .catch((e) => notifyApiError(e, "Unable to resolve recovery action"))
       .finally(() => {
         void recovery.mutate();
-        void mutate(teamsQueryKeys.issues.detail(issueId));
+        void mutate(`/teams${teamsQueryKeys.issues.detail(issueId)}`);
       });
   };
 

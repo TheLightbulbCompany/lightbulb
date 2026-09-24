@@ -216,7 +216,7 @@ async def test_repoint_refuses_an_agent_row_with_no_id(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# sync_agent_adapter_tokens -- a re-created containers row mints a new hook_token, but the
+# sync_agent_adapter_config -- a re-created containers row mints a new hook_token, but the
 # surviving company's hermes_gateway agents still carry the old one as their apiKey
 # ---------------------------------------------------------------------------
 
@@ -239,7 +239,7 @@ async def test_sync_repatches_every_hermes_agent_with_the_rows_current_token(mon
         ],
     )
 
-    assert await lifecycle.sync_agent_adapter_tokens("org_1") == 2
+    assert await lifecycle.sync_agent_adapter_config("org_1") == 2
 
     patched = {c.kwargs["agent_id"]: c.kwargs["body"] for c in admin.patch_agent.await_args_list}
     assert set(patched) == {"a1", "a2"}  # openclaw_gateway is repoint_agent_adapter's job
@@ -261,7 +261,7 @@ async def test_sync_reads_the_token_consistently_at_patch_time(monkeypatch):
 
     monkeypatch.setattr(lifecycle.container_repo, "get_by_owner_id", _get)
 
-    await lifecycle.sync_agent_adapter_tokens("org_1")
+    await lifecycle.sync_agent_adapter_config("org_1")
 
     assert reads == [True]
     assert admin.patch_agent.await_args.kwargs["body"]["adapterConfig"]["apiKey"] == "fresh-tok"
@@ -271,7 +271,7 @@ async def test_sync_reads_the_token_consistently_at_patch_time(monkeypatch):
 async def test_sync_is_a_noop_without_a_company(monkeypatch):
     admin = _wire_sync(monkeypatch, agents=[], company_id=None)
 
-    assert await lifecycle.sync_agent_adapter_tokens("org_1") == 0
+    assert await lifecycle.sync_agent_adapter_config("org_1") == 0
 
     admin.list_agents.assert_not_awaited()
     admin.patch_agent.assert_not_awaited()
@@ -283,4 +283,4 @@ async def test_sync_raises_on_a_failed_patch(monkeypatch):
     admin.patch_agent.side_effect = RuntimeError("paperclip 503")
 
     with pytest.raises(RuntimeError, match="paperclip 503"):
-        await lifecycle.sync_agent_adapter_tokens("org_1")
+        await lifecycle.sync_agent_adapter_config("org_1")

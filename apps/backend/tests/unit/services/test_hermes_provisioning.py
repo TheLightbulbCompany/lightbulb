@@ -622,7 +622,7 @@ async def test_a_reused_hook_token_does_not_resync(monkeypatch):
 
     _patch_owner_aws(monkeypatch, existing_row={"hook_token": "h", "gateway_token": "g"})
     monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _noop_async_returns("boot"))
-    monkeypatch.setattr(lifecycle, "sync_agent_adapter_tokens", _explode)
+    monkeypatch.setattr(lifecycle, "sync_agent_adapter_config", _explode)
 
     await hermes_provisioning.prepare_hermes_workspace("org_a")
 
@@ -637,13 +637,13 @@ async def test_a_failed_resync_does_not_abort_the_provision_and_emits_a_metric(m
     async def _boom(owner_id):
         raise RuntimeError("paperclip 503")
 
-    monkeypatch.setattr(lifecycle, "sync_agent_adapter_tokens", _boom)
+    monkeypatch.setattr(lifecycle, "sync_agent_adapter_config", _boom)
     metrics = []
     monkeypatch.setattr(hermes_provisioning, "put_metric", lambda name, **kw: metrics.append(name))
 
     await hermes_provisioning.prepare_hermes_workspace("org_a")
 
-    assert metrics == ["paperclip.adapter_token_sync.error"]
+    assert metrics == ["paperclip.adapter_config_sync.error"]
 
 
 # --- I3/M4-R37: freshness guard against rotating a live ECS owner's bearer -----------------

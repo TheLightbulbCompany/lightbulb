@@ -94,7 +94,8 @@ class World:
         mp.setattr(aip, "ensure_owner_bedrock_role", self.ensure_role)
         mp.setattr(gate, "mint_gate_token", self.mint)
         mp.setattr(hp, "ensure_agentcore_trust", AsyncMock(return_value=True))
-        mp.setattr("core.services.paperclip_agent_lifecycle.sync_agent_adapter_tokens", AsyncMock(return_value=0))
+        self.sync_config = AsyncMock(return_value=0)
+        mp.setattr("core.services.paperclip_agent_lifecycle.sync_agent_adapter_config", self.sync_config)
         self.ensure_or_key = AsyncMock(return_value="hash")
         mp.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", self.ensure_or_key)
         self.browser_profile = ""
@@ -346,6 +347,23 @@ async def test_superseded_bearers_expire_only_after_a_confirmed_session_stop(mon
     monkeypatch.setattr(hp, "_stop_runtime_session", _stop_fails)
     await hp.reconcile_runtime("org_a")
     assert world.expired == []  # an unconfirmed stop keeps every superseded bearer
+
+
+@pytest.mark.asyncio
+async def test_every_reconcile_syncs_the_paperclip_adapter_config(monkeypatch, boot_secrets):
+    # adapterConfig is a snapshot: without this a builder change (#3065's timeoutSec) never lands.
+    world = World(monkeypatch, billing=BILLING["byo_openai"], row={"hook_token": "h", "gateway_token": "g"})
+    await hp.reconcile_runtime("org_a")
+    await hp.reconcile_runtime("org_a")
+    assert world.sync_config.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_an_adapter_config_sync_failure_does_not_fail_the_reconcile(monkeypatch, boot_secrets):
+    world = World(monkeypatch, billing=BILLING["byo_openai"], row={"hook_token": "h", "gateway_token": "g"})
+    world.sync_config.side_effect = RuntimeError("paperclip 503")
+    assert await hp.reconcile_runtime("org_a") != "failed"
+    assert world.metrics == ["paperclip.adapter_config_sync.error"]
 
 
 @pytest.mark.asyncio

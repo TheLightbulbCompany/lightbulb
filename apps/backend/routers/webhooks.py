@@ -362,8 +362,15 @@ async def _handle_organization_created(data: dict) -> None:
         org_id,
         owner_user_id,
     )
+    # Hand the agent-email slug the owner held at "Create your workspace" to the workspace
+    # BEFORE provisioning (routers/company_slug.py). Idempotent, so a Svix redelivery is safe.
+    from core.repositories import company_slug_repo
     from core.services.user_provision import provision_new_workspace
 
+    # The page normally claims it first (a keyed, consistent write); this GSI-backed backstop is
+    # a no-op then, and a miss just means the owner chose no slug -- worth a log, not a retry.
+    if await company_slug_repo.claim_hold(user_id=owner_user_id, owner_id=org_id) is None:
+        logger.info("organization.created: no live slug hold for %s -> %s", owner_user_id, org_id)
     await provision_new_workspace(org_id)
 
 

@@ -104,19 +104,23 @@ async def test_allocate_slug_claims_the_plain_slug_when_free(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_allocate_slug_suffixes_on_collision(monkeypatch):
+async def test_allocate_slug_never_suffixes_a_taken_slug(monkeypatch):
+    """Owner ruling 2026-09-24: no `acme-2`. A taken derived slug means no address."""
+    attempts = []
+
     async def fake_reserve(*, slug, owner_id):
-        return slug == "acme-3"
+        attempts.append(slug)
+        return False
 
     monkeypatch.setattr(company_identity.company_slug_repo, "reserve", fake_reserve)
 
-    slug = await company_identity.allocate_company_slug(owner_id="user_1", name="Acme")
-    assert slug == "acme-3"
+    assert await company_identity.allocate_company_slug(owner_id="org_1", name="Acme") is None
+    assert attempts == ["acme"]
 
 
 @pytest.mark.asyncio
-async def test_allocate_slug_avoids_reserved_words(monkeypatch):
-    """Reserved local parts (support@, admin@…) must never be handed out."""
+async def test_allocate_slug_never_hands_out_a_reserved_word(monkeypatch):
+    """Reserved local parts (support@, admin@…) are never handed out, suffixed or not."""
     attempts = []
 
     async def fake_reserve(*, slug, owner_id):
@@ -125,9 +129,8 @@ async def test_allocate_slug_avoids_reserved_words(monkeypatch):
 
     monkeypatch.setattr(company_identity.company_slug_repo, "reserve", fake_reserve)
 
-    slug = await company_identity.allocate_company_slug(owner_id="user_1", name="Support")
-    assert slug != "support"
-    assert attempts[0] != "support"
+    assert await company_identity.allocate_company_slug(owner_id="org_1", name="Support") is None
+    assert attempts == []
 
 
 @pytest.mark.asyncio
@@ -152,26 +155,6 @@ async def test_allocate_slug_returns_none_when_repo_fails(monkeypatch):
     monkeypatch.setattr(company_identity.company_slug_repo, "reserve", boom)
 
     assert await company_identity.allocate_company_slug(owner_id="user_1", name="Acme") is None
-
-
-@pytest.mark.asyncio
-async def test_allocate_slug_suffix_never_exceeds_max_len(monkeypatch):
-    """A max-length base plus a numeric suffix must still fit within MAX_SLUG_LEN.
-
-    Regression for a 34-char slug (`f"{base}-{attempt}"` with no re-cap) when a
-    32-char base collides.
-    """
-
-    async def fake_reserve(*, slug, owner_id):
-        return slug != "a" * company_identity.MAX_SLUG_LEN
-
-    monkeypatch.setattr(company_identity.company_slug_repo, "reserve", fake_reserve)
-
-    slug = await company_identity.allocate_company_slug(owner_id="user_1", name="a" * 60)
-    assert slug is not None
-    assert len(slug) <= company_identity.MAX_SLUG_LEN
-    assert "--" not in slug
-    assert not slug.endswith("-")
 
 
 @pytest.mark.asyncio
@@ -255,3 +238,40 @@ async def test_generate_name_falls_back_when_clerk_name_is_not_a_string(monkeypa
 
     name = await company_identity.generate_company_name(org_id="org_123", owner_email="jane.doe@example.com")
     assert name == "Jane Doe"
+
+
+# -- the slug a new workspace picks at "Create your workspace" -------------------------
+
+
+def _slug_row(monkeypatch, row):
+    async def fake_get_by_slug(slug):
+        return row
+
+    monkeypatch.setattr(company_identity.company_slug_repo, "get_by_slug", fake_get_by_slug)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slug", ["", "Acme", "acme co", "acme_co", "-acme", "a" * 33])
+async def test_availability_rejects_what_slugify_would_change(monkeypatch, slug):
+    _slug_row(monkeypatch, None)
+    assert await company_identity.slug_unavailable_reason(slug, user_id="user_1") == "invalid"
+
+
+@pytest.mark.asyncio
+async def test_availability_reports_reserved_taken_and_free(monkeypatch):
+    _slug_row(monkeypatch, None)
+    assert await company_identity.slug_unavailable_reason("support", user_id="user_1") == "reserved"
+    assert await company_identity.slug_unavailable_reason("bench-club", user_id="user_1") is None
+    _slug_row(monkeypatch, {"slug": "bench-club", "owner_id": "org_other"})
+    assert await company_identity.slug_unavailable_reason("bench-club", user_id="user_1") == "taken"
+
+
+@pytest.mark.asyncio
+async def test_availability_treats_the_users_own_or_a_stale_hold_as_free(monkeypatch):
+    import time
+
+    _slug_row(monkeypatch, {"slug": "bench-club", "owner_id": "pending:user_1", "held_at": int(time.time())})
+    assert await company_identity.slug_unavailable_reason("bench-club", user_id="user_1") is None
+    assert await company_identity.slug_unavailable_reason("bench-club", user_id="user_2") == "taken"
+    _slug_row(monkeypatch, {"slug": "bench-club", "owner_id": "pending:user_1", "held_at": 0})
+    assert await company_identity.slug_unavailable_reason("bench-club", user_id="user_2") is None

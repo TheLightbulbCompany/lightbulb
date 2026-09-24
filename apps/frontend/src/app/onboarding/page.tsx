@@ -1,16 +1,108 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { CreateOrganization, OrganizationList, useAuth, useOrganization, useOrganizationList } from "@clerk/nextjs";
+import { OrganizationList, useAuth, useOrganization, useOrganizationList } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ACCENT_ATTR, THEME_ATTR } from "@/hooks/useChatTheme";
+import { ApiError, useApi } from "@/lib/api";
 
-// The page's own heading carries this step, so Clerk's card header would repeat
-// it; the logo is optional and can be set later in workspace settings.
-// Style objects, not the Tailwind `hidden` class: Clerk's own CSS-in-JS sets
-// `display` on these elements after Tailwind, so the class silently loses.
-const createAppearance = { elements: { header: { display: "none" }, organizationAvatarUploaderContainer: { display: "none" } } };
+/** Mirrors the backend's `company_identity.slugify`: the availability check rejects any
+ *  slug this would change, so the two must agree. */
+function slugify(value: string): string {
+  const trim = (s: string) => s.replace(/^-+|-+$/g, "");
+  return trim(trim(value.normalize("NFKD").replace(/[^\x00-\x7f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-")).slice(0, 32));
+}
+
+type SlugCheck = { slug: string; available: boolean; reason: "invalid" | "reserved" | "taken" | null; domain: string };
+
+const SLUG_PROBLEM: Record<NonNullable<SlugCheck["reason"]>, string> = {
+  invalid: "Use lowercase letters, numbers and hyphens, up to 32 characters.",
+  reserved: "That address is reserved. Try another.",
+  taken: "That address is taken. Try another.",
+};
+
+/** "Create your workspace": the name, plus the address its agents will email from. The slug
+ *  is HELD before the Clerk org exists, so a lost race never leaves a workspace without one;
+ *  the organization.created webhook then hands the hold to the workspace. */
+function CreateWorkspaceForm() {
+  const api = useApi();
+  const { createOrganization, setActive } = useOrganizationList();
+  const [name, setName] = useState("");
+  const [typedSlug, setTypedSlug] = useState<string | null>(null);
+  const [check, setCheck] = useState<SlugCheck | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const slug = typedSlug || slugify(name); // clearing the field goes back to the suggestion
+
+  useEffect(() => {
+    if (!slug) return;
+    let stale = false; // an answer for a slug the user has typed past must not land
+    const timer = setTimeout(() => {
+      api.get(`/company/slug-availability?slug=${encodeURIComponent(slug)}`)
+        .then((r) => { if (!stale) setCheck(r as SlugCheck); })
+        .catch(() => { if (!stale) setCheck(null); });
+    }, 300);
+    return () => { stale = true; clearTimeout(timer); };
+  }, [slug, api]);
+
+  const current = check?.slug === slug ? check : null;
+  const ready = !!name.trim() && !!current?.available && !busy;
+
+  async function create(event: FormEvent) {
+    event.preventDefault();
+    if (!ready || !createOrganization || !setActive) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post("/company/slug/hold", { slug });
+      const org = await createOrganization({ name: name.trim() });
+      await setActive({ organization: org.id });
+      // Hand the hold to the new workspace now (consistent, keyed); the organization.created
+      // webhook repeats it, so a failure here is not the user's problem.
+      await api.post("/company/slug/claim", { slug }).catch(() => undefined);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        setCheck({ slug, available: false, reason: "taken", domain: current?.domain ?? "" });
+      } else {
+        setError("We couldn't create your workspace. Please try again.");
+      }
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={create} className="flex w-full max-w-md flex-col gap-4 rounded-xl border border-border bg-card p-6 shadow-sm">
+      <label className="flex flex-col gap-1.5 text-sm font-medium">
+        Workspace name
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Workspace name" autoFocus maxLength={64} />
+      </label>
+      <label className="flex flex-col gap-1.5 text-sm font-medium">
+        Agent email address
+        <Input
+          value={slug}
+          onChange={(e) => setTypedSlug(e.target.value.toLowerCase())}
+          placeholder="your-team"
+          maxLength={32}
+          spellCheck={false}
+          autoCapitalize="none"
+          aria-describedby="slug-status"
+        />
+      </label>
+      <p id="slug-status" className="-mt-2 text-sm text-muted-foreground" aria-live="polite">
+        {!slug ? "Your agents' email address comes from this."
+          : current?.reason ? <span className="text-destructive">{SLUG_PROBLEM[current.reason]}</span>
+          : current ? <>Your CEO will email as <span className="font-mono text-foreground">ceo@{slug}.{current.domain}</span></>
+          : "Checking…"}
+      </p>
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      <Button type="submit" disabled={!ready} className="self-end">
+        {busy ? "Creating…" : "Create workspace"}
+      </Button>
+    </form>
+  );
+}
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -118,7 +210,7 @@ export default function OnboardingPage() {
         <>
           <h1 className="text-2xl font-bold">Create your workspace</h1>
           <p>Your workspace brings your agents, work, and billing together.</p>
-          <CreateOrganization appearance={createAppearance} afterCreateOrganizationUrl="/onboarding" skipInvitationScreen />
+          <CreateWorkspaceForm />
         </>
       )}
     </main>

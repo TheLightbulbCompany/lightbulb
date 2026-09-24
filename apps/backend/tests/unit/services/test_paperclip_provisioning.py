@@ -187,6 +187,26 @@ async def test_provision_org_seeds_every_starter_on_the_native_hermes_adapter(mo
 
 
 @pytest.mark.asyncio
+async def test_provision_org_only_the_starter_ceo_can_create_agents(monkeypatch):
+    """Paperclip v2026.813 defaulted a role=ceo agent to canCreateAgents=true and every other
+    role to false; v2026.916 defaults everyone to true. The CEO keeps its hire authority by
+    opting in explicitly; the five specialists take the funnel's false default."""
+    from core.repositories import container_repo
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "h"}))
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(owner_id="org_x", owner_user_id="user_owner", owner_email="o@example.com")
+
+    grants = {
+        call.kwargs["role"]: call.kwargs.get("can_create_agents", False) for call in admin.create_agent.call_args_list
+    }
+    assert grants == {"ceo": True, "engineer": False, "cfo": False, "cmo": False, "researcher": False, "general": False}
+
+
+@pytest.mark.asyncio
 async def test_provision_member_mints_service_token_with_owner_id(monkeypatch):
     """Member provisioning must mint the JWT with ``sub == owner_id``,
     NOT the joining member's ``user_id`` — same routing constraint as

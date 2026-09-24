@@ -545,7 +545,11 @@ export default function Settings() {
           title="Contact support"
           icon="envelope"
           link
-          onPress={() => void Linking.openURL("mailto:support@thelightbulb.company")}
+          onPress={() =>
+            Linking.openURL("mailto:support@thelightbulb.company").catch(() =>
+              Alert.alert("Contact support", "Email support@thelightbulb.company."),
+            )
+          }
         />
       </Section>
 

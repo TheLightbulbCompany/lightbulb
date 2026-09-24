@@ -2,7 +2,7 @@ import { SymbolView, type SFSymbol } from "expo-symbols";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
 import type { ComponentProps } from "react";
-import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { hapticSelection } from "../../lib/haptics";
@@ -105,7 +105,11 @@ export function MessageActionsSheet({
           {
             icon: "flag" as const,
             label: "Report",
-            run: () => Linking.openURL(reportMessageUrl(roomId, message)),
+            // No mail app configured: openURL rejects, so say where to write instead.
+            run: () =>
+              Linking.openURL(reportMessageUrl(roomId, message)).catch(() =>
+                Alert.alert("Report this message", "Email support@thelightbulb.company."),
+              ),
           },
         ]),
   ];

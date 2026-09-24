@@ -1651,6 +1651,26 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def ensure_work_product_review_document(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        work_product_id: str,
+    ) -> dict:
+        """Materialize (or return) a Markdown work product's review document.
+
+        Maps to ``POST /api/issues/{id}/work-products/{workProductId}/review-document``
+        (``server/src/routes/issues.ts``). Upstream 404s a work product that is
+        not on this issue/company; returns the ``artifact-review-<wpId>`` issue
+        document (201 created, 200 existing).
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/work-products/{work_product_id}/review-document",
+            json={},
+            session_cookie=session_cookie,
+        )
+
     async def create_issue_work_product(
         self,
         *,

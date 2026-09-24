@@ -3,6 +3,7 @@
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, IssueDocument } from "@/components/teams/shared/types";
 import { DocumentRow } from "./DocumentRow";
+import { isArtifactReviewDocumentKey } from "./lib/issue-output";
 
 function docTime(d: IssueDocument): number {
   const v = d.updatedAt ?? d.createdAt ?? null;
@@ -21,7 +22,11 @@ export function IssueDocumentsSection({
   const { data, error, isLoading } = read<{ documents: IssueDocument[] }>(
     `/issues/${issueId}/documents`,
   );
-  const documents = [...(data?.documents ?? [])].sort((a, b) => docTime(b) - docTime(a)); // newest first
+  // Stock (IssuePropertiesArtifactsTab): `artifact-review-*` proxy documents
+  // present only through their Markdown work-product row, never here.
+  const documents = (data?.documents ?? [])
+    .filter((d) => !isArtifactReviewDocumentKey(d.key))
+    .sort((a, b) => docTime(b) - docTime(a)); // newest first
   // Only render nothing when there's nothing to show AND nothing to report —
   // a fetch error or in-flight load earns an affordance.
   if (documents.length === 0 && !error && !isLoading) return null;

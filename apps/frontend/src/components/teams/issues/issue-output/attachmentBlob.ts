@@ -1,0 +1,96 @@
+// Lightbulb adaptation for the ported issue Output section (no stock twin).
+//
+// Stock renders `/api/attachments/{id}/content` straight into <img>/<video>
+// src and <a href>: same origin, cookie auth. Here those bytes only come
+// through the Teams BFF with a Clerk bearer, so every media src and every
+// Open/Download action fetches a Blob first.
+
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { attachmentPathFromHref } from "@/components/teams/shared/components/MarkdownView";
+
+// Types a new tab may render from our origin. Anything else (SVG, HTML, …) is
+// re-typed as octet-stream so the browser downloads it instead of running it:
+// a blob: URL carries our origin, and upstream's CSP/Content-Disposition do
+// not follow the bytes into it.
+const INLINE_SAFE_TYPE = /^(image\/(png|jpe?g|gif|webp|avif)|video\/[a-z0-9.+-]+|application\/pdf)$/;
+
+function saveBlob(url: string, name: string) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/** Object URL for an upstream attachment path, or null until loaded / on error. */
+export function useAttachmentObjectUrl(upstreamPath: string | null | undefined): string | null {
+  const { download } = useTeamsApi();
+  // `download` is a fresh function every render; capture it once so the fetch
+  // depends only on the path (same mount-ref as ArtifactCards' ImagePreview).
+  const downloadRef = useRef(download);
+  const [url, setUrl] = useState<string | null>(null);
+  const path = attachmentPathFromHref(upstreamPath);
+
+  useEffect(() => {
+    if (!path) return;
+    let cancelled = false;
+    let objectUrl: string | undefined;
+    downloadRef
+      .current(path)
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [path]);
+
+  return url;
+}
+
+/** Open (new tab) and Download actions for an upstream attachment path. */
+export function useAttachmentActions() {
+  const { download } = useTeamsApi();
+
+  const fetchBlob = async (upstreamPath: string) => {
+    const path = attachmentPathFromHref(upstreamPath);
+    if (!path) throw new Error("Not an attachment path");
+    return download(path);
+  };
+
+  return {
+    async open(upstreamPath: string, name: string, contentType?: string | null) {
+      // Open the tab inside the click so popup blockers allow it, then point it
+      // at the bytes once they arrive.
+      const tab = window.open("", "_blank");
+      try {
+        const blob = await fetchBlob(upstreamPath);
+        const type = (contentType ?? blob.type).toLowerCase().split(";")[0].trim();
+        const safe = new Blob([blob], { type: INLINE_SAFE_TYPE.test(type) ? type : "application/octet-stream" });
+        const url = URL.createObjectURL(safe);
+        if (tab) tab.location.href = url;
+        else saveBlob(url, name);
+        // ponytail: fixed revoke delay; the tab has loaded by then in practice.
+        window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      } catch {
+        tab?.close();
+      }
+    },
+    async download(upstreamPath: string, name: string) {
+      const url = URL.createObjectURL(await fetchBlob(upstreamPath));
+      try {
+        saveBlob(url, name);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    },
+  };
+}

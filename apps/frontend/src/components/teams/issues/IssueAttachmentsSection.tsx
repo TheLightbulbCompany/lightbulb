@@ -4,6 +4,8 @@ import { useRef, useState } from "react";
 import { Download, Paperclip, Trash2, Upload } from "lucide-react";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { useIssueAttachments } from "./hooks/useIssueAttachments";
+import { useIssueWorkProducts } from "./hooks/useIssueWorkProducts";
+import { getPromotedOutputAttachmentIds } from "./lib/issue-output";
 import type { IssueAttachment } from "@/components/teams/shared/types";
 import { formatBytes } from "@/lib/utils";
 
@@ -75,8 +77,12 @@ function AttachmentRow({
 }
 
 export function IssueAttachmentsSection({ issueId }: { issueId: string }) {
-  const { attachments, isLoading, isError, upload, remove, download } =
+  const { attachments: allAttachments, isLoading, isError, upload, remove, download } =
     useIssueAttachments(issueId);
+  // Stock IssueDetail: attachments promoted to Output cards are not listed twice.
+  const { workProducts } = useIssueWorkProducts(issueId);
+  const promoted = getPromotedOutputAttachmentIds(workProducts);
+  const attachments = allAttachments.filter((a) => !promoted.has(a.id));
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);

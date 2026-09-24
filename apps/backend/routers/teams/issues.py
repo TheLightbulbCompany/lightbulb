@@ -691,6 +691,27 @@ async def patch_work_product(
     )
 
 
+@router.post("/issues/{issue_id}/work-products/{work_product_id}/review-document")
+async def ensure_work_product_review_document(
+    issue_id: IssueId,
+    work_product_id: IssueId,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Materialize a Markdown work product's review document — the ported issue
+    Output section's expand-to-preview (stock ``issuesApi.ensureWorkProductReviewDocument``).
+
+    Maps to upstream ``POST /api/issues/{id}/work-products/{wpId}/review-document``,
+    a fixed issue-scoped path. The company fence pins the issue to THIS workspace;
+    upstream then 404s a work product that is not on that issue.
+    """
+    await _require_company_issue(issue_id, ctx)
+    return await _agents._admin().ensure_work_product_review_document(
+        session_cookie=ctx.session_cookie,
+        issue_id=issue_id,
+        work_product_id=work_product_id,
+    )
+
+
 @router.delete("/work-products/{work_product_id}")
 async def delete_work_product(
     work_product_id: str = Path(..., pattern=_UUID_RE),

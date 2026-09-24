@@ -30,22 +30,36 @@ pub fn install(app: &AppHandle) {
 /// Shows a native notification; `true` once the OS accepted it with permission
 /// to show it. `tag` is the request identifier (a repeat replaces the earlier
 /// banner, like the browser API) and comes back on `notification:clicked`.
+/// `subtitle` and `thread_id` mirror the phone push: the conversation kind line,
+/// and the key macOS groups one conversation's banners under.
 #[tauri::command]
-pub async fn native_notify(title: String, body: Option<String>, tag: Option<String>) -> bool {
+pub async fn native_notify(
+    title: String,
+    body: Option<String>,
+    tag: Option<String>,
+    subtitle: Option<String>,
+    thread_id: Option<String>,
+) -> bool {
     #[cfg(target_os = "macos")]
     {
         if notification_permission(false).await != "granted" {
             return false;
         }
         let identifier = tag.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        match macos::schedule(&title, body.as_deref(), &identifier) {
+        match macos::schedule(
+            &title,
+            body.as_deref(),
+            subtitle.as_deref(),
+            thread_id.as_deref(),
+            &identifier,
+        ) {
             Some(accepted) => accepted.await.unwrap_or(false),
             None => false,
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (title, body, tag);
+        let _ = (title, body, tag, subtitle, thread_id);
         false
     }
 }
@@ -236,6 +250,8 @@ mod macos {
     pub fn schedule(
         title: &str,
         body: Option<&str>,
+        subtitle: Option<&str>,
+        thread_id: Option<&str>,
         identifier: &str,
     ) -> Option<oneshot::Receiver<bool>> {
         if !bundled() {
@@ -245,6 +261,12 @@ mod macos {
         content.setTitle(&NSString::from_str(title));
         if let Some(body) = body {
             content.setBody(&NSString::from_str(body));
+        }
+        if let Some(subtitle) = subtitle {
+            content.setSubtitle(&NSString::from_str(subtitle));
+        }
+        if let Some(thread_id) = thread_id {
+            content.setThreadIdentifier(&NSString::from_str(thread_id));
         }
         content.setSound(Some(&UNNotificationSound::defaultSound()));
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(

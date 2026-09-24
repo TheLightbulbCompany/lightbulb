@@ -385,7 +385,7 @@ async fn handle_system_notify(
             "notification too large",
         ));
     }
-    if !crate::notify::native_notify(title, Some(body), Some(request.id.clone())).await {
+    if !crate::notify::native_notify(title, Some(body), Some(request.id.clone()), None, None).await {
         return Ok(error_result(
             request,
             "PERMISSION_DENIED",

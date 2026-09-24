@@ -129,3 +129,26 @@ async def test_list_user_organizations_strict_raises_on_http_error(strict):
                 await clerk_admin.list_user_organizations("user_x", strict=True)
         else:
             assert await clerk_admin.list_user_organizations("user_x") == []
+
+
+@pytest.mark.asyncio
+async def test_list_user_organizations_strict_refuses_a_truncated_page():
+    """Account deletion decides from this list; a page shorter than total_count
+    could hide a workspace the caller would orphan, so strict fails closed."""
+    page = {"data": [{"role": "org:admin", "organization": {"id": "org_1", "name": "One"}}], "total_count": 2}
+    resp = _MockResp(200)
+    resp.json = lambda: page
+    with (
+        patch.object(clerk_admin, "settings") as mock_settings,
+        patch("core.services.clerk_admin.httpx.AsyncClient") as mock_client_cls,
+    ):
+        mock_settings.CLERK_SECRET_KEY = "sk_test_123"
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.return_value = resp
+        mock_client_cls.return_value = mock_client
+
+        with pytest.raises(RuntimeError, match="truncated"):
+            await clerk_admin.list_user_organizations("user_x", strict=True)
+        assert [o["id"] for o in await clerk_admin.list_user_organizations("user_x")] == ["org_1"]

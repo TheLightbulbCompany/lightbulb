@@ -328,6 +328,12 @@ async def list_user_organizations(user_id: str, *, limit: int = 25, strict: bool
     memberships = payload.get("data") if isinstance(payload, dict) else payload
     if not isinstance(memberships, list):
         return []
+    total = payload.get("total_count") if isinstance(payload, dict) else None
+    if strict and isinstance(total, int) and total > len(memberships):
+        # ponytail: one page (≤100); a strict caller decides deletions from this
+        # list, so a truncated one must fail closed. Paginate if a user ever
+        # legitimately belongs to more than 100 workspaces.
+        raise RuntimeError(f"clerk_admin.list_user_organizations truncated: {len(memberships)} of {total}")
 
     result: list[dict] = []
     for m in memberships:

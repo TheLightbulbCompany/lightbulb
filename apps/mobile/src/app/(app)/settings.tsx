@@ -290,12 +290,20 @@ export default function Settings() {
 
   // Self-serve account deletion (App Store 5.1.1(v)): explain permanence,
   // then require the account email typed back (same guard as the backend),
-  // then run the server-side teardown and sign out. Org members get the
-  // backend's 403 message (workspace deletion is support-only).
+  // then run the server-side teardown and sign out. A server refusal (e.g.
+  // "make someone else an admin first") is shown verbatim.
+  // The sole member takes the workspace, and any paid subscription, with them.
+  const endsPaidSubscription =
+    organization?.membersCount === 1 &&
+    state.kind === "ready" &&
+    ["active", "trialing"].includes(state.account.subscription_status ?? "");
   const promptDeleteAccount = useCallback(() => {
     Alert.alert(
       "Delete account",
-      "This permanently deletes your account, agents, workspace, and data. It cannot be undone.",
+      "This permanently deletes your account, agents, workspace, and data. It cannot be undone." +
+        (endsPaidSubscription
+          ? "\n\nYour workspace and its subscription end immediately. There's no refund for the current billing period."
+          : ""),
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -343,7 +351,7 @@ export default function Settings() {
         },
       ],
     );
-  }, [api, email, signOut]);
+  }, [api, email, signOut, endsPaidSubscription]);
 
   const confirmDeleteAccount = useCallback(() => {
     // An Apple subscription OUTLIVES the account. `wipe_account` deletes the

@@ -833,3 +833,157 @@ def test_snapshot_carries_no_company_refusal():
     """The cross-org company refusal is gone with the per-user row shape: the
     workspace row names its one company."""
     assert "company_refusal" not in {f.name for f in fields(WorkspaceSnapshot)}
+
+
+# ---------------------------------------------------------------------------
+# Self-serve: the sole member deletes their account (App Store 5.1.1(v))
+# ---------------------------------------------------------------------------
+
+
+def _sole_member(ws_mocks) -> None:
+    ws_mocks.workspaces[ORG_ID] = _workspace(member_user_ids={MEMBER_A})
+    ws_mocks.clerk_org_members.return_value = [{"user_id": MEMBER_A}]
+
+
+@pytest.mark.asyncio
+async def test_self_serve_sole_member_wipes_workspace_and_cancels_stripe(ws_mocks):
+    from core.services.workspace_wipe import wipe_own_workspace
+
+    _sole_member(ws_mocks)
+    report = await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
+
+    assert not [s for s in report.steps if s.status == "failed"]
+    assert report.billing_preserved is False
+    ws_mocks.stripe_delete.assert_awaited_once_with(ORG_ID)  # cancels the subscription, then the customer
+    ws_mocks.delete_runtime.assert_awaited_once_with(ORG_ID, delete_profiles=True)
+    ws_mocks.paperclip_company_delete.assert_awaited_once_with("company_ws")
+    ws_mocks.clerk_delete_user.assert_awaited_once_with(MEMBER_A)
+    ws_mocks.clerk_delete_org.assert_awaited_once_with(ORG_ID)
+
+
+@pytest.mark.asyncio
+async def test_self_serve_account_in_another_org_is_still_deleted(ws_mocks):
+    """The caller asked to delete their ACCOUNT, not just leave this workspace."""
+    from core.services.workspace_wipe import wipe_own_workspace
+
+    _sole_member(ws_mocks)
+    ws_mocks.clerk_memberships.return_value = [{"id": ORG_ID}, {"id": "org_other"}]
+    await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
+
+    ws_mocks.clerk_delete_user.assert_awaited_once_with(MEMBER_A)
+
+
+@pytest.mark.asyncio
+async def test_self_serve_deletes_exactly_the_orgs_own_company(ws_mocks):
+    """#3097 guarantee (replaces the #3082 cross-org refusal): the org row names
+    one company, and the self-serve wipe deletes that company and only this
+    org's Paperclip rows, never another workspace's."""
+    from core.services.workspace_wipe import wipe_own_workspace
+
+    _sole_member(ws_mocks)
+    ws_mocks.workspaces["org_founder"] = _workspace(org_id="org_founder", company_id="company_founder")
+    await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
+
+    ws_mocks.paperclip_company_delete.assert_awaited_once_with("company_ws")
+    deleted_keys = [c.args[0] for c in ws_mocks.paperclip_instance.delete.await_args_list]
+    assert ORG_ID in deleted_keys
+    # Only this org's rows: its workspace row, the caller's identity, and any
+    # key scoped to this org id. Never another workspace's row.
+    assert all(k in (ORG_ID, MEMBER_A) or k.endswith(f":{ORG_ID}") for k in deleted_keys), deleted_keys
+    assert "org_founder" not in deleted_keys
+    ws_mocks.paperclip_instance.get_workspace.assert_any_await(ORG_ID)
+    assert all(c.args[0] == ORG_ID for c in ws_mocks.paperclip_instance.get_workspace.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_self_serve_other_clerk_members_means_leave_not_wipe(ws_mocks):
+    """Another Clerk member remains: nothing is deleted (join link included); the caller leaves instead."""
+    from core.services.workspace_wipe import OtherMembersRemainError, wipe_own_workspace
+
+    ws_mocks.clerk_org_members.return_value = [{"user_id": MEMBER_A}, {"user_id": MEMBER_B}]
+    with pytest.raises(OtherMembersRemainError):
+        await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
+    ws_mocks.join_link_delete.assert_not_awaited()
+    ws_mocks.delete_runtime.assert_not_awaited()
+    ws_mocks.stripe_delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_self_serve_leftover_row_is_a_plain_permanent_refusal(ws_mocks):
+    """A paperclip row for someone no longer in Clerk: one member source (the snapshot)
+    decides, and the error says retrying will not clear it."""
+    from core.services.workspace_wipe import SelfServeBlockedError, wipe_own_workspace
+
+    ws_mocks.clerk_org_members.return_value = [{"user_id": MEMBER_A}]  # B only has a leftover row
+    with pytest.raises(SelfServeBlockedError, match="won't fix"):
+        await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
+    ws_mocks.join_link_delete.assert_not_awaited()
+    ws_mocks.delete_runtime.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_self_serve_deletes_join_link_before_the_wipe_snapshot(ws_mocks):
+    """Nobody can join mid-wipe: the link goes before the snapshot the wipe executes from."""
+    from core.services.workspace_wipe import wipe_own_workspace
+
+    _sole_member(ws_mocks)
+    order: list[str] = []
+    ws_mocks.join_link_delete.side_effect = lambda *_: order.append("link")
+    ws_mocks.container_get.side_effect = lambda *_a, **_k: order.append("snapshot") or _container_row()
+    await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
+
+    # sole-member check, then the link, then the preview + execute snapshots
+    assert order[:3] == ["snapshot", "link", "snapshot"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing", ["stripe_delete", "metronome_archive"])
+async def test_failed_money_step_holds_back_billing_row_and_clerk(ws_mocks, failing):
+    """A live subscription must never outlive its billing row or its Clerk identities."""
+    getattr(ws_mocks, failing).side_effect = RuntimeError("stripe 500")
+    opts = {"layers": ["runtime", "paperclip", "messaging", "secrets", "identity", "billing"], "include_billing": True}
+    preview = await preview_workspace_wipe(ORG_ID, **opts)
+    report = await wipe_workspace(
+        ORG_ID,
+        actor_admin_id="admin_1",
+        confirm_org=ORG_ID,
+        confirm_billing="DELETE-BILLING",
+        expected_fingerprint=preview.fingerprint,
+        **opts,
+    )
+    for system in ("billing_row", "clerk_user", "clerk_org"):
+        assert _step(report, system).status == "failed"
+        assert "held back" in _step(report, system).error
+    ws_mocks.billing_delete.assert_not_awaited()
+    ws_mocks.clerk_delete_user.assert_not_awaited()
+    ws_mocks.clerk_delete_org.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_self_serve_refuses_bootstrap_account(ws_mocks):
+    from core.services.account_wipe import BootstrapAccountProtectedError
+    from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS
+    from core.services.workspace_wipe import wipe_own_workspace
+
+    _sole_member(ws_mocks)
+    ws_mocks.identities[MEMBER_A] = PaperclipIdentity(
+        user_id=MEMBER_A, paperclip_user_id="pc_a", paperclip_email=sorted(BOOTSTRAP_EMAILS)[0]
+    )
+    with pytest.raises(BootstrapAccountProtectedError):
+        await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
+    ws_mocks.delete_runtime.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_self_serve_retry_after_partial_wipe_does_not_fail(ws_mocks):
+    """A retry after the rows are gone (Clerk user delete failed last time) finishes cleanly."""
+    from core.services.workspace_wipe import wipe_own_workspace
+
+    _sole_member(ws_mocks)
+    ws_mocks.container_get.return_value = None
+    ws_mocks.billing_get.return_value = None
+    ws_mocks.workspaces.pop(ORG_ID)
+    report = await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
+
+    assert not [s for s in report.steps if s.status == "failed"]
+    ws_mocks.clerk_delete_user.assert_awaited_once_with(MEMBER_A)

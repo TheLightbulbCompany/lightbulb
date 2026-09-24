@@ -266,8 +266,10 @@ await fetch('https://api-dev.flickmeon.ai/api/v1/debug/provision', {method:'POST
 
 `DELETE /debug/provision` deliberately does **not** pass `delete_profiles` — it is
 a routine reprovision door, and destroying a workspace's memory / skills /
-`SOUL.md` / `auth.json` is `DELETE /debug/user-data`'s job (M6-R42). Exactly two
-callers ever pass `delete_profiles=True`: that endpoint and `account_wipe`.
+`SOUL.md` / `auth.json` is `DELETE /debug/user-data`'s job (M6-R42). Only the
+terminal teardowns pass `delete_profiles=True`: that endpoint, `account_wipe`
+(user-keyed), and `workspace_wipe` (org-keyed — the admin workspace wipe and the
+sole member's self-serve `POST /users/me/delete` via `wipe_own_workspace`).
 `POST` runs the **same** funnel production uses (the SFN execution +
 `scripts/provision_runner.py` in the provisioner Lambda), not a hand-rolled sequence, because the DELETE
 destroyed the owner's Bedrock AIPs along with the row that named them and only

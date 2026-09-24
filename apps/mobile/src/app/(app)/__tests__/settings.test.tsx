@@ -4,9 +4,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 // the closure reads this at request time, after each test assigns it). An
 // Error is served as a failed request.
 let mockAccountFixture: Record<string, unknown> | Error;
-const mockPost = jest.fn(async () => ({ status: "deleted" }));
+const mockPost = jest.fn(async (): Promise<unknown> => ({ status: "deleted" }));
 let mockMembershipCount = 1;
 const mockPush = jest.fn();
+// Per-test Clerk org context (null = no workspace).
+let mockOrg: { organization: unknown; membership: unknown } = { organization: null, membership: null };
 
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok"), signOut: jest.fn() }),
@@ -20,7 +22,7 @@ jest.mock("@clerk/clerk-expo", () => ({
       },
     },
   }),
-  useOrganization: () => ({ organization: null, membership: null }),
+  useOrganization: () => mockOrg,
 }));
 
 // Real useFocusEffect needs a navigation container; an effect is equivalent
@@ -312,5 +314,77 @@ describe("Settings Switch workspace", () => {
     await render(<Settings />);
     await fireEvent.press(screen.getByText("Switch workspace"));
     expect(mockPush).toHaveBeenCalledWith("/workspaces");
+  });
+});
+
+// Deleting as the SOLE member ends the workspace and its paid subscription
+// immediately (no refund); say so only when that is actually what happens.
+describe("delete-account confirmation copy", () => {
+  const NO_REFUND = "Your workspace and its subscription end immediately. There's no refund for the current billing period.";
+
+  afterEach(() => {
+    mockOrg = { organization: null, membership: null };
+  });
+
+  async function firstAlertBody(membersCount: number, status: string): Promise<string> {
+    const { Alert } = jest.requireActual("react-native");
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    mockOrg = { organization: { id: "org_1", name: "Acme", membersCount }, membership: { role: "org:admin" } };
+    mockAccountFixture = {
+      is_subscribed: true,
+      subscription_status: status,
+      subscription_source: "stripe",
+      trial_end: null,
+      provider_choice: null,
+      byo_provider: null,
+    };
+    await render(<Settings />);
+    await screen.findByText(/^Lightbulb( Free plan)?$/); // billing loaded
+    fireEvent.press(await screen.findByText("Delete account"));
+    const body = alertSpy.mock.calls[0][1] as string;
+    alertSpy.mockRestore();
+    return body;
+  }
+
+  it.each(["active", "trialing"])("warns the sole member of a %s workspace", async (status) => {
+    expect(await firstAlertBody(1, status)).toContain(NO_REFUND);
+  });
+
+  it("keeps the existing copy when other members remain", async () => {
+    expect(await firstAlertBody(3, "active")).not.toContain(NO_REFUND);
+  });
+
+  it("keeps the existing copy on the free plan", async () => {
+    expect(await firstAlertBody(1, "trial_local")).not.toContain(NO_REFUND);
+  });
+});
+
+describe("delete-account refusal", () => {
+  it("shows the server's 409 message verbatim", async () => {
+    const { Alert } = jest.requireActual("react-native");
+    const { ApiError } = jest.requireActual("@lightbulb/shared");
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const promptSpy = jest.spyOn(Alert, "prompt").mockImplementation(() => {});
+    const message = "You're the admin of Acme. Make someone else an admin, or delete the workspace first.";
+    mockPost.mockRejectedValueOnce(new ApiError(409, { detail: message }));
+    mockAccountFixture = {
+      is_subscribed: false,
+      subscription_status: null,
+      trial_end: null,
+      provider_choice: null,
+      byo_provider: null,
+    };
+    await render(<Settings />);
+    fireEvent.press(await screen.findByText("Delete account"));
+    (alertSpy.mock.calls[0][2] as { text: string; onPress?: () => void }[])
+      .find((b) => b.text === "Continue")
+      ?.onPress?.();
+    (promptSpy.mock.calls[0][2] as { text: string; onPress?: (v?: string) => void }[])
+      .find((b) => b.text === "Delete forever")
+      ?.onPress?.("me@x.co");
+
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith("Couldn't delete account", message));
+    alertSpy.mockRestore();
+    promptSpy.mockRestore();
   });
 });

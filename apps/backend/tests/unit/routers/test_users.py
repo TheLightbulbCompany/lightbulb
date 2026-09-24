@@ -323,7 +323,7 @@ class TestDeleteMyAccount:
 
     @pytest.fixture
     def mock_auth_context(self) -> AuthContext:
-        """Self-service account deletion is intentionally personal-only."""
+        """A caller with no workspace (the legacy personal shape)."""
         return AuthContext(user_id="user_test_123", email="person@example.com")
 
     @staticmethod
@@ -369,16 +369,212 @@ class TestDeleteMyAccount:
         assert response.json()["detail"] == "email_mismatch"
         mock_wipe.assert_not_awaited()
 
+    @pytest.fixture(autouse=True)
+    def clerk_orgs(self):
+        """The caller's other orgs (none by default) and their members."""
+        with (
+            patch("core.services.clerk_admin.list_user_organizations", new_callable=AsyncMock) as orgs,
+            patch("core.services.clerk_admin.list_organization_members", new_callable=AsyncMock) as members,
+        ):
+            orgs.return_value = []
+            members.return_value = []
+            yield orgs, members
+
     @pytest.mark.asyncio
+    @patch("routers.users.admin_actions_repo")
+    @patch("core.services.workspace_wipe.wipe_own_workspace", new_callable=AsyncMock)
     @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
-    async def test_org_context_refused(self, mock_wipe, async_client_org_admin):
-        """Org accounts can't self-delete (wipe orchestrator is personal-only)."""
+    @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
+    async def test_workspace_with_other_members_deletes_only_the_caller(
+        self, mock_emails, mock_wipe, mock_ws_wipe, mock_audit, async_client_org_admin
+    ):
+        """Others remain: the user-keyed wipe archives the caller's membership and
+        deletes their account; the workspace (runtime, company, billing) is untouched."""
+        from core.services.workspace_wipe import OtherMembersRemainError
+
+        mock_emails.return_value = ["person@example.com"]
+        mock_ws_wipe.side_effect = OtherMembersRemainError("others")
+        mock_wipe.return_value = self._report()
+        mock_audit.create = AsyncMock()
+
         response = await async_client_org_admin.post(
             "/api/v1/users/me/delete", json={"confirm_email": "person@example.com"}
         )
 
-        assert response.status_code == 403
+        assert response.status_code == 200
+        assert response.json() == {"status": "deleted"}
+        mock_ws_wipe.assert_awaited_once_with("org_test_456", user_id="user_test_123")
+        mock_wipe.assert_awaited_once_with(
+            "user_test_123", actor_admin_id="user_test_123", account_emails=["person@example.com"]
+        )
+
+    @pytest.mark.asyncio
+    @patch("routers.users.admin_actions_repo")
+    @patch("core.services.workspace_wipe.wipe_own_workspace", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
+    async def test_sole_member_wipes_the_workspace(
+        self, mock_emails, mock_wipe, mock_ws_wipe, mock_audit, async_client_org_admin, clerk_orgs
+    ):
+        mock_emails.return_value = ["person@example.com"]
+        clerk_orgs[0].return_value = [{"id": "org_test_456", "name": "Test"}]
+        mock_ws_wipe.return_value = self._report()
+        mock_audit.create = AsyncMock()
+
+        response = await async_client_org_admin.post(
+            "/api/v1/users/me/delete", json={"confirm_email": "person@example.com"}
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "deleted"}
+        mock_ws_wipe.assert_awaited_once_with("org_test_456", user_id="user_test_123")
         mock_wipe.assert_not_awaited()
+        clerk_orgs[0].assert_awaited_once_with("user_test_123", limit=100, strict=True)
+
+    @pytest.mark.asyncio
+    @patch("core.services.workspace_wipe.wipe_own_workspace", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
+    async def test_sole_member_of_another_org_is_refused(
+        self, mock_emails, mock_wipe, mock_ws_wipe, async_client_org_admin, clerk_orgs
+    ):
+        """Deleting the Clerk user would orphan org B, still billing: refuse, wipe nothing."""
+        mock_emails.return_value = ["person@example.com"]
+        clerk_orgs[0].return_value = [{"id": "org_test_456", "name": "Test"}, {"id": "org_b", "name": "Acme B"}]
+        clerk_orgs[1].return_value = [{"user_id": "user_test_123"}]
+
+        response = await async_client_org_admin.post(
+            "/api/v1/users/me/delete", json={"confirm_email": "person@example.com"}
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == (
+            "You're the only member of Acme B. Delete or hand over that workspace first."
+        )
+        clerk_orgs[1].assert_awaited_with("org_b", strict=True)
+        mock_ws_wipe.assert_not_awaited()
+        mock_wipe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("org_id", ["org_test_456", "org_b"])
+    @patch("core.services.workspace_wipe.wipe_own_workspace", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
+    async def test_last_admin_with_other_members_is_refused(
+        self, mock_emails, mock_wipe, mock_ws_wipe, async_client_org_admin, clerk_orgs, org_id
+    ):
+        """Refuse, don't orphan: the active org or any other org."""
+        mock_emails.return_value = ["person@example.com"]
+        clerk_orgs[0].return_value = [{"id": org_id, "name": "Acme", "role": "org:admin"}]
+        clerk_orgs[1].return_value = [
+            {"user_id": "user_test_123", "role": "org:admin"},
+            {"user_id": "user_other", "role": "org:member"},
+        ]
+
+        response = await async_client_org_admin.post(
+            "/api/v1/users/me/delete", json={"confirm_email": "person@example.com"}
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == (
+            "You're the admin of Acme. Make someone else an admin, or delete the workspace first."
+        )
+        mock_ws_wipe.assert_not_awaited()
+        mock_wipe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("routers.users.admin_actions_repo")
+    @patch("core.services.workspace_wipe.wipe_own_workspace", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
+    async def test_admin_with_another_admin_or_plain_member_leaves(
+        self, mock_emails, mock_wipe, mock_ws_wipe, mock_audit, async_client_org_admin, clerk_orgs
+    ):
+        """Another admin remains in the active org, plain member elsewhere: the caller just leaves."""
+        from core.services.workspace_wipe import OtherMembersRemainError
+
+        mock_emails.return_value = ["person@example.com"]
+        clerk_orgs[0].return_value = [
+            {"id": "org_test_456", "name": "Test", "role": "org:admin"},
+            {"id": "org_b", "name": "B", "role": "org:member"},
+        ]
+        clerk_orgs[1].return_value = [
+            {"user_id": "user_test_123", "role": "org:admin"},
+            {"user_id": "user_other", "role": "org:admin"},
+        ]
+        mock_ws_wipe.side_effect = OtherMembersRemainError("others")
+        mock_wipe.return_value = self._report()
+        mock_audit.create = AsyncMock()
+
+        response = await async_client_org_admin.post(
+            "/api/v1/users/me/delete", json={"confirm_email": "person@example.com"}
+        )
+
+        assert response.status_code == 200
+        mock_wipe.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("core.services.workspace_wipe.wipe_own_workspace", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
+    async def test_permanent_refusal_is_shown_as_is(self, mock_emails, mock_ws_wipe, async_client_org_admin):
+        from core.services.workspace_wipe import SelfServeBlockedError
+
+        mock_emails.return_value = ["person@example.com"]
+        mock_ws_wipe.side_effect = SelfServeBlockedError("Retrying won't fix this — contact support.")
+
+        response = await async_client_org_admin.post(
+            "/api/v1/users/me/delete", json={"confirm_email": "person@example.com"}
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Retrying won't fix this — contact support."
+
+    @pytest.mark.asyncio
+    @patch("routers.users.admin_actions_repo")
+    @patch("core.services.workspace_wipe.wipe_own_workspace", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
+    async def test_sole_member_refusal_asks_for_retry(
+        self, mock_emails, mock_ws_wipe, mock_audit, async_client_org_admin
+    ):
+        """A refusal before any step (e.g. a stale snapshot): 409, retryable."""
+        from core.services.workspace_wipe import WorkspaceWipeError
+
+        mock_emails.return_value = ["person@example.com"]
+        mock_ws_wipe.side_effect = WorkspaceWipeError("changed")
+
+        response = await async_client_org_admin.post(
+            "/api/v1/users/me/delete", json={"confirm_email": "person@example.com"}
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "deletion_incomplete"
+
+    @pytest.mark.asyncio
+    @patch("routers.users.admin_actions_repo")
+    @patch("core.services.workspace_wipe.wipe_own_workspace", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
+    async def test_retry_after_partial_success_reports_deleted(
+        self, mock_emails, mock_wipe, mock_ws_wipe, mock_audit, async_client_org_admin
+    ):
+        """Second attempt after rows were already removed: skipped steps are not failures."""
+        from unittest.mock import MagicMock
+
+        from core.services.workspace_wipe import OtherMembersRemainError
+
+        mock_emails.return_value = ["person@example.com"]
+        mock_ws_wipe.side_effect = OtherMembersRemainError("others")
+        report = MagicMock()
+        report.to_dict.return_value = {"steps": [{"status": "skipped"}, {"status": "ok"}]}
+        mock_wipe.return_value = report
+        mock_audit.create = AsyncMock()
+
+        response = await async_client_org_admin.post(
+            "/api/v1/users/me/delete", json={"confirm_email": "person@example.com"}
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "deleted"}
 
     @pytest.mark.asyncio
     async def test_requires_authentication(self, unauthenticated_async_client):

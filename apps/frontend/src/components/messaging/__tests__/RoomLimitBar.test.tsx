@@ -16,8 +16,6 @@ describe("RoomLimitBar", () => {
     [{ block_reason: "trial_daily_cap" as const }, "Daily free limit reached", "resets at 00:00 UTC", "Upgrade to keep going", "/settings?panel=billing"],
     [{ block_reason: "included_daily_cap" as const, is_subscribed: true, subscription_status: "active", plan: "base" as const },
       "Today's included usage is used up", "resets at 00:00 UTC", "Upgrade", "/settings?panel=billing"],
-    [{ block_reason: "out_of_credits" as const, is_subscribed: true, subscription_status: "active", provider_choice: "openrouter_managed" },
-      "Out of credits", "Agents are paused until you top up.", "Top up now", "/chat?panel=llm"],
   ])("pins the reason, what it means for agents and the CTA (%o)", (over, title, line, cta, href) => {
     render(<RoomLimitBar account={account(over)} />);
     const bar = screen.getByRole("status");
@@ -25,6 +23,10 @@ describe("RoomLimitBar", () => {
     expect(bar).toHaveTextContent(line);
     expect(bar).toHaveTextContent("Messages to people still send.");
     expect(screen.getByRole("link", { name: cta })).toHaveAttribute("href", href);
+  });
+
+  it("leaves out_of_credits to the shell's OutOfCreditsBanner", () => {
+    expect(render(<RoomLimitBar account={account({ block_reason: "out_of_credits" })} />).container).toBeEmptyDOMElement();
   });
 
   it("renders nothing while agents can run", () => {

@@ -260,7 +260,8 @@ async def _running_count_gauge_loop():
 
     Also piggybacks the OpenRouter account-balance check here (throttled to
     every ~15 min via a monotonic timestamp) rather than adding a second
-    scheduler -- see core.services.openrouter_keys.check_account_balance.
+    scheduler -- see core.services.openrouter_keys.check_account_balance --
+    and the TeamsEventBroker idle-client sweep (release_idle).
     """
     from core.observability.metrics import gauge
     from core.services.openrouter_keys import check_account_balance
@@ -278,6 +279,14 @@ async def _running_count_gauge_loop():
         if time.monotonic() - last_balance_check >= balance_check_interval_s:
             last_balance_check = time.monotonic()
             await check_account_balance()
+        try:
+            from core.services.teams_event_broker import get_broker
+
+            broker = get_broker()
+            if broker is not None:
+                await broker.release_idle()
+        except Exception:
+            logger.warning("teams broker idle sweep failed", exc_info=True)
         await asyncio.sleep(60)
 
 

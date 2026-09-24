@@ -174,6 +174,7 @@ def test_child_not_on_own_issue_is_404_and_never_forwarded(client, monkeypatch, 
     admin.get_issue = AsyncMock(return_value={"id": "iss1", "companyId": "co_abc"})
     admin.list_issue_attachments = AsyncMock(return_value=[{"id": "att_elsewhere"}])
     admin.list_issue_work_products = AsyncMock(return_value=[{"id": "22222222-2222-2222-2222-222222222222"}])
+    admin.list_issues = AsyncMock(return_value=[])
     setattr(admin, forward, AsyncMock())
     monkeypatch.setattr(agents, "_admin", lambda: admin)
     r = client.request(method.upper(), f"/api/v1/teams{url}", headers={"Authorization": "Bearer x"})
@@ -213,3 +214,75 @@ def test_own_issue_work_product_delete_forwards(client, monkeypatch):
     r = client.delete(f"/api/v1/teams/issues/iss1/work-products/{_WP}", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
     admin.delete_work_product.assert_awaited_once_with(session_cookie="cookie", work_product_id=_WP)
+
+
+# ---- content reads (only) also accept the parent or a direct child, each company-checked ----
+
+
+def _family_admin(monkeypatch, *, att_on, parent_company="co_abc", child_company="co_abc"):
+    """iss1 (co_abc) has parent `par` and children `kid` (direct) and `grand` (under kid)."""
+    issues_by_id = {
+        "iss1": {"id": "iss1", "companyId": "co_abc", "parentId": "par"},
+        "par": {"id": "par", "companyId": parent_company},
+    }
+    admin = MagicMock()
+    admin.get_issue = AsyncMock(side_effect=lambda issue_id, **_: issues_by_id.get(issue_id))
+    admin.list_issues = AsyncMock(
+        return_value=[
+            {"id": "kid", "companyId": child_company, "parentId": "iss1"},
+            {"id": "grand", "companyId": "co_abc", "parentId": "kid"},
+        ]
+    )
+    admin.list_issue_attachments = AsyncMock(
+        side_effect=lambda issue_id, **_: [{"id": "att1"}] if issue_id == att_on else [{"id": "other"}]
+    )
+    admin.open_attachment_stream = AsyncMock(return_value=_Upstream())
+    admin.delete_attachment = AsyncMock(return_value={})
+    monkeypatch.setattr(agents, "_admin", lambda: admin)
+    return admin
+
+
+_CONTENT = "/api/v1/teams/issues/iss1/attachments/att1/content"
+
+
+@pytest.mark.real_fences
+@pytest.mark.parametrize("att_on", ["par", "kid"])
+def test_content_on_parent_or_direct_child_streams(client, monkeypatch, att_on):
+    admin = _family_admin(monkeypatch, att_on=att_on)
+    r = client.get(_CONTENT, headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200 and r.content == b"pdf"
+    admin.open_attachment_stream.assert_awaited_once_with(session_cookie="cookie", attachment_id="att1")
+
+
+@pytest.mark.real_fences
+@pytest.mark.parametrize(
+    "att_on,parent_company,child_company",
+    [("par", "co_other", "co_abc"), ("kid", "co_abc", "co_other")],
+)
+def test_content_on_foreign_parent_or_child_is_404_and_never_forwarded(
+    client, monkeypatch, att_on, parent_company, child_company
+):
+    admin = _family_admin(monkeypatch, att_on=att_on, parent_company=parent_company, child_company=child_company)
+    r = client.get(_CONTENT, headers={"Authorization": "Bearer x"})
+    assert r.status_code == 404
+    admin.open_attachment_stream.assert_not_awaited()
+    listed = {c.kwargs["issue_id"] for c in admin.list_issue_attachments.await_args_list}
+    assert att_on not in listed, "a foreign candidate's attachment list must not count"
+
+
+@pytest.mark.real_fences
+@pytest.mark.parametrize("att_on", [None, "grand"])
+def test_content_on_neither_or_grandchild_is_404(client, monkeypatch, att_on):
+    admin = _family_admin(monkeypatch, att_on=att_on)
+    r = client.get(_CONTENT, headers={"Authorization": "Bearer x"})
+    assert r.status_code == 404
+    admin.open_attachment_stream.assert_not_awaited()
+
+
+@pytest.mark.real_fences
+@pytest.mark.parametrize("att_on", ["par", "kid"])
+def test_delete_stays_strict_for_parent_or_child_attachment(client, monkeypatch, att_on):
+    admin = _family_admin(monkeypatch, att_on=att_on)
+    r = client.delete("/api/v1/teams/issues/iss1/attachments/att1", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 404
+    admin.delete_attachment.assert_not_awaited()

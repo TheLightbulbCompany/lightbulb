@@ -909,11 +909,57 @@ async def _require_issue_attachment(issue_id: str, attachment_id: str, ctx: Team
     upstream has no attachment-metadata route. So the attachment must appear in
     the (company-fenced) issue's own list, or the request is never forwarded.
     """
+    if not await _attachment_on_issue(issue_id, attachment_id, ctx):
+        raise HTTPException(status_code=404, detail="Attachment not found on this issue")
+
+
+async def _attachment_on_issue(issue_id: str, attachment_id: str, ctx: TeamsContext) -> bool:
     rows = await _agents._admin().list_issue_attachments(session_cookie=ctx.session_cookie, issue_id=issue_id)
     if isinstance(rows, dict):
         rows = rows.get("attachments")
-    if not any(isinstance(r, dict) and r.get("id") == attachment_id for r in rows or []):
-        raise HTTPException(status_code=404, detail="Attachment not found on this issue")
+    return any(isinstance(r, dict) and r.get("id") == attachment_id for r in rows or [])
+
+
+async def _require_readable_attachment(issue_id: str, attachment_id: str, ctx: TeamsContext) -> None:
+    """READ-only widening of ``_require_issue_attachment`` (delete stays strict).
+
+    Agents upload to one task and paste the link into a related task's thread
+    (the upload helper takes ``--issue-id``), typically parent <-> subtask. So on
+    a miss, the attachment may also be on ``issue_id``'s parent or one of its
+    DIRECT children — each candidate itself company-checked, anything foreign
+    skipped. Bounded: one level up, one level down, children capped at one list
+    call. Grandchildren and siblings still 404.
+    """
+    if await _attachment_on_issue(issue_id, attachment_id, ctx):
+        return
+    admin = _agents._admin()
+    candidates: list[str] = []
+    issue = await admin.get_issue(issue_id=issue_id, session_cookie=ctx.session_cookie)
+    parent_id = issue.get("parentId") if isinstance(issue, dict) else None
+    if parent_id:
+        parent = await admin.get_issue(issue_id=parent_id, session_cookie=ctx.session_cookie)
+        if isinstance(parent, dict) and parent.get("companyId") == ctx.company_id:
+            candidates.append(parent_id)
+    rows = await admin.list_issues(
+        company_id=ctx.company_id,
+        session_cookie=ctx.session_cookie,
+        params={"descendantOf": issue_id},
+    )
+    if isinstance(rows, dict):
+        rows = rows.get("issues")
+    for row in rows if isinstance(rows, list) else []:
+        # descendantOf is the whole subtree; only DIRECT children count.
+        if (
+            isinstance(row, dict)
+            and row.get("parentId") == issue_id
+            and row.get("companyId") == ctx.company_id
+            and isinstance(row.get("id"), str)
+        ):
+            candidates.append(row["id"])
+    for candidate in candidates:
+        if await _attachment_on_issue(candidate, attachment_id, ctx):
+            return
+    raise HTTPException(status_code=404, detail="Attachment not found on this issue")
 
 
 @router.get("/issues/{issue_id}/attachments/{attachment_id}/content")
@@ -925,7 +971,8 @@ async def get_attachment_content(
     """Stream an attachment's bytes back to the browser.
 
     Proxies upstream ``GET /api/attachments/{id}/content`` once the attachment
-    is proven to be on ``issue_id`` (see ``_require_issue_attachment``).
+    is proven to be on ``issue_id`` or its company-checked parent / a direct
+    child (see ``_require_readable_attachment``).
 
     Streamed via ``StreamingResponse`` over the upstream
     ``aiter_bytes()`` so a large file never buffers in backend memory. The
@@ -933,7 +980,7 @@ async def get_attachment_content(
     are copied through; ``X-Content-Type-Options: nosniff`` is forwarded if
     present so the browser doesn't MIME-sniff an untrusted upload.
     """
-    await _require_issue_attachment(issue_id, attachment_id, ctx)
+    await _require_readable_attachment(issue_id, attachment_id, ctx)
     admin = _agents._admin()
 
     # Open the upstream stream ONCE. ``open_attachment_stream`` does the GET,

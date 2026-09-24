@@ -215,6 +215,8 @@ def test_get_content_not_on_the_issue_is_404_and_never_forwarded(client, monkeyp
     so an attachment that is not on the path issue is never streamed."""
     admin = MagicMock()
     admin.list_issue_attachments = AsyncMock(return_value={"attachments": [{"id": "att_other"}]})
+    admin.get_issue = AsyncMock(return_value={"id": "iss1", "companyId": "co_abc"})
+    admin.list_issues = AsyncMock(return_value=[])
     admin.open_attachment_stream = AsyncMock()
     _patch_admin(monkeypatch, admin)
 

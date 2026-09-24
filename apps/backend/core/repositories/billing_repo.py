@@ -1204,6 +1204,22 @@ async def clear_provider_choice(owner_id: str) -> None:
         raise
 
 
+async def set_provider_quota_until(owner_id: str, until: int) -> None:
+    """Stamp when the owner's own LLM provider plan (e.g. ChatGPT) comes back from a usage
+    limit. Display only -- nothing gates on it. No-op without a row."""
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET provider_quota_until = :until",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeValues={":until": int(until)},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
 async def clear_openrouter_capped_day(owner_id: str) -> None:
     """Remove the openrouter-gate's daily-cap marker. No-op without a row."""
     try:

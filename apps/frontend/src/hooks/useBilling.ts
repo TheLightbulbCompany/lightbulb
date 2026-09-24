@@ -39,6 +39,9 @@ export interface BillingAccount {
   ultra_price_usd: number;
   // The managed model's per-key daily limit tripped today (UTC); clears at the rollover.
   capped_today?: boolean;
+  // Epoch seconds the workspace's own provider plan (ChatGPT, BYO key) is back from a usage
+  // limit; null once passed. Display only.
+  provider_quota_until?: number | null;
   // Capped owners only: OpenRouter's own daily usage on the owner's key. Absent on a read failure.
   allowance?: { used_usd: number; limit_usd: number; resets_at: number } | null;
   // Why this owner's agents cannot run right now (backend chat_gate.budget_block_reason);

@@ -177,6 +177,8 @@ const persist = (store: RoomsStore) => {
 const forget = (store: RoomsStore, roomId: string) => {
   store.history.delete(roomId);
   if (store.rooms) store.rooms = { ...store.rooms, rooms: store.rooms.rooms.filter((room) => room.roomId !== roomId) };
+  // Before the first network list the snapshot IS what renders; trim it too.
+  if (store.fallback) store.fallback = { ...store.fallback, rooms: store.fallback.rooms.filter((room) => room.roomId !== roomId) };
   persist(store);
 };
 /** The newest sequence reachable from the first cached message with no hole. */
@@ -778,9 +780,12 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     }
     if (event.type === "room.access.removed") {
       // Removal or a channel delete: drop it from the list even when it isn't on screen.
-      forget(store, event.payload.roomId);
-      if (event.payload.roomId === activeRoomId) removeActiveAccess();
-      void mutateRooms();
+      const removedId = event.payload.roomId;
+      forget(store, removedId);
+      if (removedId === activeRoomId) removeActiveAccess();
+      // Before the first network list the (just trimmed) snapshot is what is
+      // on screen, so show it; either way the server list reconciles.
+      void mutateRooms((current) => current ?? store.fallback, { revalidate: true });
       return;
     }
     if (event.type === "room.subscription.rotated" && event.payload.roomId === activeRoomId) {

@@ -11,10 +11,11 @@ import { AppState } from "react-native";
 // the last-known conversations instantly and the network reconciles behind it
 // (useRooms' `persistence` seam; the web passes none).
 //
-// One JSON file per `userId:orgId` scope under the DOCUMENT directory — see
-// localStore.ts for why expo-file-system (already in the binary, OTA-safe) and
-// why not the evictable cache directory. Files get iOS's default data
-// protection (encrypted at rest until first unlock), same as the drafts store.
+// One JSON file per `userId:orgId` scope under the CACHE directory, via
+// expo-file-system (already in the binary, OTA-safe). Not Documents: that is in
+// iCloud/computer backups, which sign-out's delete can never reach. Eviction
+// only costs one network wait on the next launch. Files get iOS's default data
+// protection (encrypted at rest until first unlock).
 //
 // Security rules: a file is read only for the exact scope that wrote it, a
 // scope that is not a plain id pair is never touched, a file of another
@@ -29,7 +30,7 @@ const SCOPE = /^([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)$/;
 
 const fileFor = (scope: string): File | null => {
   const match = SCOPE.exec(scope);
-  return match ? new File(Paths.document, DIR, `${match[1]}__${match[2]}.json`) : null;
+  return match ? new File(Paths.cache, DIR, `${match[1]}__${match[2]}.json`) : null;
 };
 
 const pending = new Map<string, RoomsSnapshot>();
@@ -41,7 +42,7 @@ function flush(): void {
   timer = null;
   for (const [scope, snapshot] of pending) {
     try {
-      const directory = new Directory(Paths.document, DIR);
+      const directory = new Directory(Paths.cache, DIR);
       if (!directory.exists) directory.create({ intermediates: true });
       const file = fileFor(scope)!;
       if (!file.exists) file.create();
@@ -96,7 +97,7 @@ export function clearRoomsCache(): void {
   timer = null;
   pending.clear();
   try {
-    const directory = new Directory(Paths.document, DIR);
+    const directory = new Directory(Paths.cache, DIR);
     if (directory.exists) directory.delete();
   } catch {
     /* nothing to delete */

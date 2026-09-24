@@ -132,9 +132,21 @@ describe("useRooms persistence", () => {
       schemaVersion: 1, eventId: "evt-removed", type: "room.access.removed", occurredAt: "2026-09-15T00:00:01Z",
       roomId: "room-2", payload: { roomId: "room-2", roomRevision: 2 },
     } as LiveEvent); });
-    // The list refetch is held open: the snapshot must not wait for it.
+    // The list refetch is held open: neither the snapshot nor the screen waits for it.
     expect(savedIds(persistence)).toEqual({ rooms: ["room-1"], history: ["room-1"] });
+    await waitFor(() => expect(result.current.rooms.map((room) => room.roomId)).toEqual(["room-1"]));
+  });
+
+  it("drops a removed room from the painted snapshot list before the network answers", async () => {
+    messaging.listRooms.mockImplementation(never);
+    const persistence = fakeStore({ "user-a:org-a": snapshot(["room-1", "room-2"]) });
+    const { result } = renderHook(() => useRooms(platform(), { autoSelect: false, persistence }), { wrapper });
     expect(result.current.rooms).toHaveLength(2);
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-removed-early", type: "room.access.removed", occurredAt: "2026-09-15T00:00:01Z",
+      roomId: "room-2", payload: { roomId: "room-2", roomRevision: 2 },
+    } as LiveEvent); });
+    await waitFor(() => expect(result.current.rooms.map((room) => room.roomId)).toEqual(["room-1"]));
   });
 
   it("saves history as it loads, capped to the newest messages of the most recent rooms", async () => {

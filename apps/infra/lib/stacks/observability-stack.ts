@@ -1,6 +1,7 @@
 import * as cdk from "aws-cdk-lib";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
-import { resourcePrefix } from "../table-names";
+import { logGroupPath, resourcePrefix } from "../table-names";
+import * as logs from "aws-cdk-lib/aws-logs";
 import * as cloudwatch_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
 // GuardDuty + Access Analyzer already enabled at account level — not managed by CDK
@@ -2522,6 +2523,122 @@ def handler(event, context):
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       severity: "warn",
+    });
+
+    // P30/P31/W82/W83: Paperclip run failures, by error code.
+    //
+    // routers/paperclip_events.py emits paperclip.run.failed{error_code} for
+    // EVERY agent.run.failed the fork plugin forwards, BEFORE the push
+    // cooldown/dedupe (the bounded code set lives there as _RUN_FAILED_CODES).
+    // Until this existed, nothing watched a Paperclip-woken run failing: on
+    // 2026-09-23 every one failed setup_failed for 15 h with no alarm, because
+    // W67 watches run.completed, which only the bridge's usage report emits —
+    // and a run that dies in Paperclip setup never reaches the bridge.
+    //
+    // setup_failed and hermes_gateway_auth_failed are platform faults (secret
+    // decryption, hook-token drift), never model faults, so ONE pages.
+    this.createAlarm({
+      id: "P30",
+      name: "paperclip-run-setup-failed",
+      metricName: "paperclip.run.failed",
+      dimensions: { error_code: "setup_failed" },
+      threshold: 0,
+      evaluationPeriods: 1,
+      periodMinutes: 5,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "page",
+      description:
+        "PAGE: a Paperclip run failed with setup_failed - a platform fault before the agent ran (2026-09-23: secret decryption failed after a master-key change; every routine and issue run failed for 15 h). Check /lightbulb/{env}/paperclip for the setup error.",
+    });
+
+    this.createAlarm({
+      id: "P31",
+      name: "paperclip-run-gateway-auth-failed",
+      metricName: "paperclip.run.failed",
+      dimensions: { error_code: "hermes_gateway_auth_failed" },
+      threshold: 0,
+      evaluationPeriods: 1,
+      periodMinutes: 5,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "page",
+      description:
+        "PAGE: a Paperclip run failed with hermes_gateway_auth_failed - the agent's adapter apiKey no longer matches the owner's hook token (token rotated without repoint/sync). Every run for that owner fails until the adapter config is re-synced.",
+    });
+
+    this.createAlarm({
+      id: "W82",
+      name: "paperclip-run-process-lost",
+      metricName: "paperclip.run.failed",
+      dimensions: { error_code: "process_lost" },
+      threshold: 0,
+      evaluationPeriods: 1,
+      periodMinutes: 5,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
+      description:
+        "A Paperclip run failed with process_lost - usually a Paperclip task start/stop reaping in-flight runs (the fork orphan reaper is not task-aware).",
+    });
+
+    // No dimensions: reads the {env, service} rollup put_metric publishes
+    // alongside every coded datapoint, so it sums across all codes.
+    this.createAlarm({
+      id: "W83",
+      name: "paperclip-run-failed-rollup",
+      metricName: "paperclip.run.failed",
+      threshold: 10,
+      evaluationPeriods: 1,
+      periodMinutes: 15,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
+      description:
+        "10+ Paperclip runs failed in 15 min across all error codes - check paperclip.run.failed by error_code for the dominant cause.",
+    });
+
+    // P32: Paperclip secret decryption failures, straight from its logs.
+    //
+    // A backstop that does not depend on the fork plugin forwarding events.
+    // A text-term filter pattern cannot set dimensions (a metric filter's
+    // dimension values must be fields of a JSON/space-delimited pattern), so
+    // this metric CANNOT carry the {env, service} pair createAlarm injects for
+    // the LightbulbAI namespace — binding them would be the classic alarm on
+    // an identity nothing publishes. Dev and prod share one account, so the
+    // env goes into the namespace instead, and the alarm is built from the
+    // filter's own metric so the two can never disagree.
+    // The log group is owned by paperclip-stack (this stack depends on it).
+    const decryptFailed = new logs.MetricFilter(
+      this,
+      "PaperclipSecretDecryptFailedFilter",
+      {
+        logGroup: logs.LogGroup.fromLogGroupName(
+          this,
+          "PaperclipLogGroupRef",
+          logGroupPath(this.envName, "paperclip"),
+        ),
+        filterPattern: logs.FilterPattern.literal('"Secret decryption failed"'),
+        metricNamespace: `LightbulbAI/Paperclip/${this.envName}`,
+        metricName: "paperclip.secret.decrypt_failed",
+        metricValue: "1",
+      },
+    );
+    this.createAlarm({
+      id: "P32",
+      name: "paperclip-secret-decrypt-failed",
+      metric: decryptFailed.metric({
+        statistic: "Sum",
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 0,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "page",
+      description:
+        "PAGE: Paperclip logged 'Secret decryption failed' - its master key no longer decrypts stored company secrets, so every run that needs one fails at setup. Log-derived, independent of the plugin event path (see P30).",
     });
   }
 

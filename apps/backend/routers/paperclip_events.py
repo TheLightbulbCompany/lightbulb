@@ -57,6 +57,21 @@ _INTERACTION_KIND_BODY = {
 }
 _INTERACTION_FALLBACK_BODY = "A task is paused waiting for your input"
 
+# The bounded vocabulary for the paperclip.run.failed{error_code} dimension.
+# Paperclip's errorCode is free text as far as we are concerned, so anything
+# outside this set lands on "other" rather than minting a new metric identity.
+# P30/P31/W82 in observability-stack.ts bind three of these values literally.
+_RUN_FAILED_CODES = frozenset(
+    {
+        "setup_failed",
+        "process_lost",
+        "timeout",
+        "hermes_gateway_auth_failed",
+        "hermes_gateway_upstream_error",
+        "hermes_gateway_run_failed",
+    }
+)
+
 # Keys are Paperclip's APPROVAL_TYPES. Same intent as the interaction map: the
 # payload knows what is being asked, so the push should say it.
 _APPROVAL_TYPE_BODY = {
@@ -162,6 +177,16 @@ async def receive_paperclip_event(request: Request):
     company_id = event.get("companyId")
     if not event_id or not company_id:
         raise HTTPException(status_code=400, detail="Missing eventId/companyId")
+
+    # Count EVERY run failure before the push decision: the cooldown and
+    # dedupe below exist to spare phones, and they swallowed the 2026-09-23
+    # outage (15 h of setup_failed runs, no alarm). The alarms need the raw rate.
+    if event.get("eventType") == "agent.run.failed":
+        code = _payload_of(event).get("errorCode")
+        put_metric(
+            "paperclip.run.failed",
+            dimensions={"error_code": code if code in _RUN_FAILED_CODES else "other"},
+        )
 
     decision = decide_push(event)
     if decision is None:

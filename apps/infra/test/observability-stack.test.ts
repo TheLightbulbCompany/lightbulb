@@ -193,6 +193,9 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   // is a new identity per task per deploy (the _DENIED_DIMENSIONS class).
   "gateway.running.count": [[]],
   "marketplace.path_traversal_attempt": [[]],
+  // routers/paperclip_events.py receive_paperclip_event, before the push
+  // decision. P30/P31/W82 bind one error_code each; W83 binds the rollup.
+  "paperclip.run.failed": [["error_code"]],
   // routers/messaging.py _count_hook_auth_failure; P24 binds route=paperclip_run.
   "internal_hook.auth_failed": [["route"]],
   // core/services/jev.py decide(); P26 binds the rollup and outcome=error|timeout|rate_limited.
@@ -600,6 +603,29 @@ describe("ObservabilityStack", () => {
         Match.objectLike({ Name: "ClusterName" }),
         Match.objectLike({ Name: "ServiceName" }),
       ]),
+    });
+  });
+
+  // P32 reads a log-derived metric. A text-term filter publishes no
+  // dimensions, so the alarm must bind the filter's exact namespace/name and
+  // NO dimensions — anything else watches an identity nothing publishes.
+  test("P32 binds exactly the metric its Paperclip log filter publishes", () => {
+    template.hasResourceProperties("AWS::Logs::MetricFilter", {
+      LogGroupName: "/lightbulb/dev/paperclip",
+      FilterPattern: '"Secret decryption failed"',
+      MetricTransformations: [
+        Match.objectLike({
+          MetricNamespace: "LightbulbAI/Paperclip/dev",
+          MetricName: "paperclip.secret.decrypt_failed",
+        }),
+      ],
+    });
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-dev-P32-paperclip-secret-decrypt-failed",
+      Namespace: "LightbulbAI/Paperclip/dev",
+      MetricName: "paperclip.secret.decrypt_failed",
+      Dimensions: Match.absent(),
+      TreatMissingData: "notBreaching",
     });
   });
 

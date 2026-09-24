@@ -254,6 +254,41 @@ promoted backend and an un-rolled runtime image, so check what
 `get-agent-runtime` reports for `containerUri` against `hermes-version.json`
 before looking anywhere else.
 
+## P30 — paperclip-run-setup-failed
+
+A Paperclip-woken run (routine, issue, Teams Run) failed with `setup_failed`
+before the agent ever ran. Emitted by `routers/paperclip_events.py` as
+`paperclip.run.failed{error_code=setup_failed}` for every forwarded
+`agent.run.failed`, before the push cooldown, so it counts every failure.
+
+This is a platform fault, not a model fault, and it hits every run for the
+affected companies. On 2026-09-23 it was "Secret decryption failed" after a
+Paperclip master-key change: 15 h of failed runs with no alarm. Read the setup
+error in `/lightbulb/prod/paperclip`. If it is decryption, see P32.
+
+Related: W82 (`process_lost`) and W83 (all codes, 10 or more in 15 min) are the
+warn-tier alarms on the same metric.
+
+## P31 — paperclip-run-gateway-auth-failed
+
+A Paperclip run failed with `hermes_gateway_auth_failed`: the agent's
+`hermes_gateway` adapter `apiKey` no longer matches the owner's hook token.
+The adapter config is a snapshot, so rotating a hook token without re-syncing
+the adapter (`sync_agent_adapter_tokens` / `repoint_agent_adapter` in
+`core/services/paperclip_agent_lifecycle.py`) breaks every run for that
+owner. Re-sync the owner's agents. Room chat keeps working, so users may not
+report it.
+
+## P32 — paperclip-secret-decrypt-failed
+
+Paperclip logged `Secret decryption failed`. This comes from a CloudWatch Logs
+metric filter on `/lightbulb/{env}/paperclip` (namespace
+`LightbulbAI/Paperclip/{env}`), so it fires even if the plugin event path is
+down. Paperclip's master key no longer decrypts stored company secrets, and
+every run that needs one fails at setup (see P30). Check the Paperclip task's
+master-key secret and what changed it. The log line carries the master key
+fingerprint.
+
 ## provision-executions-failed / provision-executions-timedout
 
 A provisioning Step Functions execution failed or timed out. **New signups

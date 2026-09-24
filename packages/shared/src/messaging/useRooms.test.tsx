@@ -5,6 +5,7 @@ import { SWRConfig } from "swr";
 import type { ReactNode } from "react";
 import type { CanonicalRoomMessage, LiveEvent, MessagePage, RoomDetail, RoomSection, RunStatusResponse } from "../index";
 import type { ApiCallOptions } from "../api/client";
+import { ApiError } from "../api/error";
 import { useRooms as useSharedRooms, type RoomsLiveSource, type RoomsPlatform, type UseRoomsOptions } from "./useRooms";
 
 const useRooms = (platform: RoomsPlatform, options: UseRoomsOptions = {}) =>
@@ -84,6 +85,7 @@ beforeEach(() => {
   messaging.listRooms.mockResolvedValue({ rooms: [room], sections: [] });
   messaging.getRoom.mockResolvedValue(room);
   messaging.listMessages.mockResolvedValue({ messages: [message], nextAfterSeq: null, nextBeforeSeq: null });
+  messaging.markRead.mockResolvedValue({ roomId: room.roomId, lastReadSeq: 1 });
 });
 
 describe("useRooms platform seams", () => {
@@ -372,6 +374,135 @@ describe("useRooms platform seams", () => {
       await waitFor(() => expect(again.result.current.activeRoomId).toBe(room.roomId));
       expect(again.result.current.messages).toHaveLength(0);
       await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledWith(...cold));
+    });
+
+    const hold = () => messaging.listMessages.mockImplementation(() => new Promise(() => {}));
+    /** Load room-1 into `shared`'s store, then leave. */
+    const warm = async (shared: ReturnType<typeof oneCache>) => {
+      const first = renderHook(() => useRooms(platform()), { wrapper: shared });
+      await waitFor(() => expect(first.result.current.messages).toHaveLength(1));
+      first.unmount();
+    };
+    /** Open `roomId` on a fresh mount with every history read held open. */
+    const reopen = async (shared: ReturnType<typeof oneCache>, roomId = room.roomId) => {
+      messaging.listMessages.mockClear();
+      hold();
+      const next = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper: shared });
+      await waitFor(() => expect(next.result.current.rooms.length).toBeGreaterThan(0));
+      act(() => next.result.current.selectRoom(roomId));
+      await waitFor(() => expect(next.result.current.activeRoomId).toBe(roomId));
+      return next;
+    };
+
+    it("forgets a room on room.access.removed even when it is not the open one", async () => {
+      const shared = oneCache();
+      await warm(shared);
+      const bystander = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper: shared });
+      await waitFor(() => expect(bystander.result.current.rooms).toHaveLength(1));
+      act(() => { for (const handler of handlers) handler({
+        schemaVersion: 1, eventId: "evt-removed", type: "room.access.removed", occurredAt: "2026-09-15T00:00:01Z",
+        roomId: room.roomId, payload: { roomId: room.roomId, roomRevision: 2 },
+      } as LiveEvent); });
+      bystander.unmount();
+      const again = await reopen(shared);
+      expect(again.result.current.messages).toHaveLength(0);
+    });
+
+    it("forgets a room whose detail read answers 403", async () => {
+      const shared = oneCache();
+      await warm(shared);
+      messaging.getRoom.mockRejectedValueOnce(new ApiError(403, null));
+      const denied = await reopen(shared);
+      await waitFor(() => expect(denied.result.current.accessRemoved).toBe(true));
+      denied.unmount();
+      const again = await reopen(shared);
+      expect(again.result.current.messages).toHaveLength(0);
+    });
+
+    it("forgets a room a fresh room list no longer carries", async () => {
+      const shared = oneCache();
+      await warm(shared);
+      messaging.listRooms.mockClear();
+      messaging.listRooms.mockResolvedValueOnce({ rooms: [], sections: [] });
+      const gone = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper: shared });
+      await waitFor(() => expect(gone.result.current.rooms).toHaveLength(0));
+      gone.unmount();
+      const again = await reopen(shared);
+      expect(again.result.current.messages).toHaveLength(0);
+    });
+
+    it("paints cached history only for a room the current list carries", async () => {
+      const cache = new Map();
+      const shared = ({ children }: { children: ReactNode }) =>
+        <SWRConfig value={{ provider: () => cache, dedupingInterval: 0 }}>{children}</SWRConfig>;
+      await warm(shared);
+      // No list yet this time (cold, and held): nothing vouches for the room.
+      for (const key of [...cache.keys()]) if (String(key).includes("messaging-rooms")) cache.delete(key);
+      messaging.listRooms.mockImplementation(() => new Promise(() => {}));
+      hold();
+      const next = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper: shared });
+      act(() => next.result.current.selectRoom(room.roomId));
+      await waitFor(() => expect(next.result.current.activeRoomId).toBe(room.roomId));
+      expect(next.result.current.messages).toHaveLength(0);
+    });
+
+    it("reopens a room from its last contiguous sequence, not past a gap", async () => {
+      const shared = oneCache();
+      const first = renderHook(() => useRooms(platform()), { wrapper: shared });
+      await waitFor(() => expect(first.result.current.messages).toHaveLength(1));
+      hold(); // the gap fill for seq 2 never lands
+      act(() => { for (const handler of handlers) handler({
+        schemaVersion: 1, eventId: "evt-gap", type: "room.message.created", occurredAt: "2026-09-15T00:00:01Z",
+        roomId: room.roomId, messageSeq: 3, roomRevision: 1, payload: { ...message, messageId: "msg-3", messageSeq: 3 },
+      } as LiveEvent); });
+      await waitFor(() => expect(first.result.current.messages).toHaveLength(2));
+      first.unmount();
+      await reopen(shared);
+      await waitFor(() => expect(messaging.listMessages).toHaveBeenCalled());
+      expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 1, 100, { signal: expect.any(AbortSignal) });
+      expect(messaging.listMessages).not.toHaveBeenCalledWith(room.roomId, 3, 100, expect.anything());
+    });
+
+    it("merges two copies of one room instead of letting the staler one overwrite", async () => {
+      const shared = oneCache();
+      const second: CanonicalRoomMessage = { ...message, messageId: "msg-2", messageSeq: 2 };
+      let staleB: (page: MessagePage) => void = () => {};
+      // Echo the cursor: the fixed `1` would have the copy holding seq 2
+      // re-mark forever (a lower server cursor triggers a re-read).
+      messaging.markRead.mockImplementation(async (roomId, { lastReadSeq }) => ({ roomId, lastReadSeq }));
+      messaging.listMessages
+        .mockImplementationOnce(() => new Promise((resolve) => { staleB = resolve; }))
+        .mockImplementationOnce(async () => ({ messages: [message, second], nextAfterSeq: null, nextBeforeSeq: null }))
+        .mockImplementation(() => new Promise(() => {}));
+      const b = renderHook(() => useRooms(platform()), { wrapper: shared });
+      await waitFor(() => expect(messaging.listMessages).toHaveBeenCalledTimes(1));
+      const a = renderHook(() => useRooms(platform()), { wrapper: shared });
+      await waitFor(() => expect(a.result.current.messages).toHaveLength(2));
+      await act(async () => staleB({ messages: [message], nextAfterSeq: null, nextBeforeSeq: null }));
+      await waitFor(() => expect(b.result.current.messages).toHaveLength(1));
+      a.unmount();
+      b.unmount();
+      const again = await reopen(shared);
+      expect(again.result.current.messages.map((m) => m.messageId)).toEqual(["msg-1", "msg-2"]);
+    });
+
+    it("keeps at most 20 rooms, evicting the least recently written", async () => {
+      const shared = oneCache();
+      const many = Array.from({ length: 21 }, (_, i) => ({ ...room, roomId: `room-${i}`, deliveryKey: `key-${i}` }));
+      messaging.listRooms.mockResolvedValue({ rooms: many, sections: [] });
+      messaging.getRoom.mockImplementation(async (id: string) => many.find((r) => r.roomId === id)!);
+      messaging.listMessages.mockImplementation(async (roomId: string) => ({
+        messages: [{ ...message, roomId, messageId: `msg-${roomId}` }], nextAfterSeq: null, nextBeforeSeq: null,
+      }));
+      const visitor = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper: shared });
+      await waitFor(() => expect(visitor.result.current.rooms).toHaveLength(21));
+      for (const r of many) {
+        act(() => visitor.result.current.selectRoom(r.roomId));
+        await waitFor(() => expect(visitor.result.current.messages[0]?.roomId).toBe(r.roomId));
+      }
+      visitor.unmount();
+      expect((await reopen(shared, "room-0")).result.current.messages).toHaveLength(0);
+      expect((await reopen(shared, "room-20")).result.current.messages).toHaveLength(1);
     });
 
     it("drops cached history on sign-out", async () => {

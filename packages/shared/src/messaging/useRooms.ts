@@ -123,6 +123,17 @@ const storeFor = (cache: object, scope: string | null): RoomsStore => {
   }
   return store;
 };
+// ponytail: 20 rooms per scope, least-recently-written evicted; a byte budget if long rooms make memory matter.
+const HISTORY_ROOMS = 20;
+/** The newest sequence reachable from the first cached message with no hole. */
+const contiguousSequence = (messages: readonly CanonicalRoomMessage[]) => {
+  let end = messages[0]?.messageSeq ?? 0;
+  for (const message of messages) {
+    if (message.messageSeq > end + 1) break;
+    end = Math.max(end, message.messageSeq);
+  }
+  return end;
+};
 
 export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {}) {
   const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, boundedHistory = false } = options;
@@ -236,9 +247,32 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
    */
   const historyCache = store.history;
   const cacheRoom = useCallback((roomId: string, next: CanonicalRoomMessage[], complete?: boolean) => {
+    // Another mounted copy (room screen + thread) may hold more of this room:
+    // merge, never overwrite. Complete only while the merged set still starts
+    // where a complete source started.
     const previous = historyCache.get(roomId);
-    historyCache.set(roomId, { messages: next, complete: complete ?? previous?.complete ?? false });
+    const messages = previous ? mergeCanonicalMessages(previous.messages, next) : next;
+    const start = (list: readonly CanonicalRoomMessage[]) => list[0]?.messageSeq ?? Infinity;
+    const isComplete = (complete === true && start(next) === start(messages)) ||
+      (!!previous?.complete && start(previous.messages) === start(messages));
+    historyCache.delete(roomId);
+    historyCache.set(roomId, { messages, complete: isComplete });
+    if (historyCache.size > HISTORY_ROOMS) historyCache.delete(historyCache.keys().next().value!);
   }, [historyCache]);
+  // Cached history paints only for a room the current list vouches for; a room
+  // missing from it waits for the detail (and its 403/404) like a cold open.
+  const roomsRef = useRef(rooms);
+  roomsRef.current = rooms;
+  const cachedHistory = useCallback((roomId: string) =>
+    roomsRef.current.some((room) => room.roomId === roomId) ? historyCache.get(roomId) : undefined,
+  [historyCache]);
+  // A room the server stopped listing is one this reader may have lost; the
+  // removal event can be dropped, so the list is the backstop.
+  useEffect(() => {
+    if (!roomsData) return;
+    const listed = new Set(roomsData.rooms.map((room) => room.roomId));
+    for (const roomId of [...historyCache.keys()]) if (!listed.has(roomId)) historyCache.delete(roomId);
+  }, [roomsData, historyCache]);
   /** The ref, the rendered state and the cache always move together. */
   const applyMessages = useCallback((roomId: string, next: CanonicalRoomMessage[], complete?: boolean) => {
     messagesRef.current = next;
@@ -254,7 +288,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     editDuringInitial.current = false;
     pageAbort.current?.abort();
     pageAbort.current = null;
-    const cached = activeRoomId ? historyCache.get(activeRoomId) : undefined;
+    const cached = activeRoomId ? cachedHistory(activeRoomId) : undefined;
     messagesRef.current = cached?.messages ?? [];
     setMessages(cached?.messages ?? []);
     setHistoryLoading(false);
@@ -563,10 +597,13 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   useEffect(() => {
     if (!activeRoomId || accessRemoved) return;
     if (initialStarted.current === activeRoomId) return;
-    const cached = historyCache.get(activeRoomId);
-    if (cached?.messages.length) {
+    const cached = cachedHistory(activeRoomId);
+    if (cached?.messages.length && messagesRef.current.length) {
       initialStarted.current = activeRoomId;
-      void reconcile(lastSequence(cached.messages)).catch(() => {});
+      // From the last CONTIGUOUS sequence: a live event past a gap is cached
+      // before its gap fill lands, and reconciling from the newest would skip
+      // the hole for good.
+      void reconcile(contiguousSequence(cached.messages)).catch(() => {});
       return;
     }
     if (!boundedHistory) {
@@ -613,7 +650,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     // user or workspace change empties the cache above, and without re-running
     // this the timeline would stay empty until some unrelated event happened to
     // re-trigger it.
-  }, [scope, activeRoomId, accessRemoved, boundedHistory, reconcile, rooms, activeRoom?.lastMessageSeq, messaging, applyMessages]);
+  }, [scope, activeRoomId, accessRemoved, boundedHistory, reconcile, rooms, activeRoom?.lastMessageSeq, messaging, applyMessages, cachedHistory]);
 
   // Preserve socket/user-channel reconnect catch-up, including offline reads.
   useEffect(() => {
@@ -673,6 +710,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     }
     if (event.type === "room.access.removed") {
       // Removal or a channel delete: drop it from the list even when it isn't on screen.
+      historyCache.delete(event.payload.roomId);
       if (event.payload.roomId === activeRoomId) removeActiveAccess();
       void mutateRooms();
       return;
@@ -724,7 +762,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
         return new Map(current).set(key, next);
       });
     }
-  }), [activeRoomId, boundedHistory, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon, clearPersistedOptimistic, removeActiveAccess, isVisible]);
+  }), [activeRoomId, boundedHistory, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon, clearPersistedOptimistic, removeActiveAccess, isVisible, historyCache]);
 
   useEffect(() => {
     if (typing.size === 0) return;

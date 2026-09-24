@@ -130,15 +130,18 @@ describe("listing detail", () => {
     alert.mockRestore();
   });
 
-  it("sends a paid listing to the web app, with nothing to tap", async () => {
-    // Reachable by deep link even though search filters it out.
+  it("shows a paid listing as unavailable, with no price and no web mention", async () => {
+    // Reachable by deep link even though search filters it out. App Store
+    // 3.1.1: no price and no "hired from the web" pointer to a purchase.
     mockDetailListing = makeListing({
       listing_id: "l_paid",
       name: "Butler",
       price_cents: 1000,
     });
     await render(<ListingDetailScreen />);
-    expect(screen.getByText(/Paid agents are hired from the web app/)).toBeTruthy();
+    expect(screen.getByText("Not available in the app.")).toBeTruthy();
+    expect(screen.queryByText(/\$10\.00/)).toBeNull();
+    expect(screen.queryByText(/flickmeon\.ai/)).toBeNull();
     expect(screen.queryByLabelText("Deploy to my workspace")).toBeNull();
     expect(screen.queryByText("Get")).toBeNull();
     expect(mockDeploy).not.toHaveBeenCalled();

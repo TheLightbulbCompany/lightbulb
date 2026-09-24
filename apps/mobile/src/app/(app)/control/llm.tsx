@@ -438,10 +438,6 @@ export default function LlmPanel() {
     state.account.provider_choice === "openrouter_managed"
   ) {
     const credits = state.credits;
-    // Top-up itself is web-only (D1). Only offer it when the balance actually
-    // loaded — a failed fetch (credits == null) must not show a top-up link
-    // next to an unavailable balance.
-    const topUpAvailable = credits != null;
     creditsCard = (
       <Card>
         <Text style={styles.overline}>WORKSPACE CREDITS</Text>
@@ -453,7 +449,6 @@ export default function LlmPanel() {
             ? "Prepaid balance for managed inference."
             : "Balance unavailable right now."}
         </Text>
-        {topUpAvailable && <ManageLink label="Top up on flickmeon.ai" />}
       </Card>
     );
   }

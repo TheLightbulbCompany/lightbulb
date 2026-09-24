@@ -2,7 +2,6 @@ import { SymbolView } from "expo-symbols";
 import { Stack, useLocalSearchParams } from "expo-router";
 import {
   Animated,
-  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -20,7 +19,6 @@ import {
   type RunDetail,
 } from "../../../../lib/teamsRunDetail";
 import { useStackedRows } from "../../../../lib/textScale";
-import { teamsDetailUrl } from "../../../../lib/webLinks";
 
 // Run-detail screen (web RunDetailPanel parity): status + actions
 // (Cancel / Retry / Resume), error surfaces, transcript (bounded tail of the
@@ -157,16 +155,11 @@ export default function RunDetailScreen() {
           {isProvisioning
             ? "Setting up your workspace…"
             : isSubscription
-              ? "Teams requires an active subscription"
+              ? "Teams isn't available for this workspace right now."
               : "Couldn’t reach your workspace"}
         </Text>
         {state.message ? <Text style={styles.stateDetail}>{state.message}</Text> : null}
-        {isSubscription ? (
-          <ActionButton
-            label="Manage on flickmeon.ai"
-            onPress={() => void Linking.openURL(teamsDetailUrl("run", runId, "issues"))}
-          />
-        ) : (
+        {!isSubscription && (
           <ActionButton label="Retry" onPress={() => void retry()} />
         )}
       </View>

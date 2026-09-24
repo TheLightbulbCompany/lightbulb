@@ -4,7 +4,6 @@ import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useMemo, useState, type ReactElement, type ReactNode } from "react";
 import {
   Animated,
-  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -62,7 +61,6 @@ import {
   type TeamsApproval,
 } from "../../../../lib/teamsData";
 import { useStackedRows } from "../../../../lib/textScale";
-import { teamsDetailUrl } from "../../../../lib/webLinks";
 
 const UNASSIGNED_KEY = "__unassigned__";
 const AGENT_PREFIX = "agent:";
@@ -318,18 +316,7 @@ export default function IssueDetailScreen() {
         />
       );
     } else if (state.gate === "needs_subscription") {
-      body = (
-        <CenteredState
-          title="Teams requires an active subscription"
-          detail="Manage your subscription on flickmeon.ai to unlock your team workspace."
-          action={
-            <OutlineButton
-              label="Manage on flickmeon.ai"
-              onPress={() => void Linking.openURL(teamsDetailUrl("issue", id, "issues"))}
-            />
-          }
-        />
-      );
+      body = <CenteredState title="Teams isn't available for this workspace right now." />;
     } else {
       body = (
         <CenteredState

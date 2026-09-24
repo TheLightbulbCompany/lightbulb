@@ -551,7 +551,7 @@ export function IssueRunLedger({
 
   return (
     <IssueRunLedgerContent
-      runs={(Array.isArray(runsResp?.runs) ? runsResp.runs : []).filter((r) => typeof r?.runId === "string")}
+      runs={(Array.isArray(runsResp?.runs) ? runsResp?.runs ?? [] : []).filter((r) => typeof r?.runId === "string")}
       liveRuns={Array.isArray(liveRuns) ? liveRuns.filter((r) => isRunRow<IssueLiveRun>(r)) : undefined}
       activeRun={isRunRow<IssueLiveRun>(activeRun) ? activeRun : null}
       issueStatus={issueStatus}

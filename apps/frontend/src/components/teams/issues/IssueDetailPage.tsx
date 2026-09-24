@@ -6,8 +6,9 @@
 // ported TaskChatThread (./task-chat), whose thread header carries the
 // breadcrumb, title + actions and status cards; sub-tasks, documents, output
 // and attachments sit in the side panel under the properties, as stock's
-// properties pane does when the shell is on. Drops activity/related-work tabs
-// and plugin slots; the ported run ledger sits in the side panel. The ported
+// properties pane does when the shell is on. Drops the related-work tab and
+// plugin slots; the ported run ledger sits in the side panel and, like stock's
+// Activity tab, interleaves the issue's activity (with write-denial notices). The ported
 // status cards sit in the thread's slots: the monitor banner, recovery card and
 // execution-blocker notice in the header, the monitor strip above the composer
 // (composerAccessory), and the continuation handoff + scheduled-retry card in

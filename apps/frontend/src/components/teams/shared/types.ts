@@ -809,6 +809,22 @@ export interface RestoreRoutineRevisionResponse {
   secretMaterials?: Array<RoutineTriggerSecretMaterial & { triggerId: string }>;
 }
 
+/** One row of GET /teams/issues/{id}/activity (upstream ActivityEvent; the BFF
+ *  redacts adapter/secret/cost-shaped keys out of ``details``). */
+export interface IssueActivityEvent {
+  id: string;
+  actorType: "agent" | "user" | "system" | string;
+  actorId: string;
+  action: string;
+  entityType?: string;
+  entityId?: string;
+  agentId?: string | null;
+  runId?: string | null;
+  responsibleUserId?: string | null;
+  details?: Record<string, unknown> | null;
+  createdAt: string;
+}
+
 /** One row of GET /teams/routines/{id}/activity (upstream ActivityEvent subset). */
 export interface RoutineActivityEvent {
   id: string;

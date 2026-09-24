@@ -2181,6 +2181,18 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def list_issue_activity(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> list | dict:
+        """An issue's activity events, newest first. Maps to ``GET /api/issues/{id}/activity``."""
+        return await self._get(
+            f"/api/issues/{issue_id}/activity",
+            session_cookie=session_cookie,
+        )
+
     async def get_issue_active_run(
         self,
         *,

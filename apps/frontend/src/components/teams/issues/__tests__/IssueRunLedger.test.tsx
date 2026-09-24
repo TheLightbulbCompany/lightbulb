@@ -1,6 +1,5 @@
 // Adapted from upstream Paperclip's IssueRunLedger.test.tsx
 // (paperclip/ui/src/components/IssueRunLedger.test.tsx @ v2026.916.1-isol8.2).
-// Dropped: the activity-interleave case (no activity feed here).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render as rtlRender, fireEvent } from "@testing-library/react";
@@ -17,7 +16,7 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 vi.mock("@/lib/notify", () => ({ notifyError: vi.fn() }));
 
 import { IssueRunLedger, IssueRunLedgerContent } from "@/components/teams/issues/IssueRunLedger";
-import type { Issue, IssueLiveRun, IssueRun, RunLivenessState } from "@/components/teams/shared/types";
+import type { Issue, IssueActivityEvent, IssueLiveRun, IssueRun, RunLivenessState } from "@/components/teams/shared/types";
 
 let container: HTMLElement;
 
@@ -45,6 +44,22 @@ function createRun(overrides: Partial<IssueRun> = {}): IssueRun {
     continuationAttempt: 0,
     lastUsefulActionAt: "2026-04-18T19:59:00.000Z",
     nextAction: null,
+    ...overrides,
+  };
+}
+
+function createActivity(overrides: Partial<IssueActivityEvent> = {}): IssueActivityEvent {
+  return {
+    id: "activity-1",
+    actorType: "system",
+    actorId: "system",
+    action: "issue.updated",
+    entityType: "issue",
+    entityId: "issue-1",
+    agentId: null,
+    runId: null,
+    details: null,
+    createdAt: "2026-04-18T19:57:00.000Z",
     ...overrides,
   };
 }
@@ -89,6 +104,8 @@ function renderLedger(props: Partial<ComponentProps<typeof IssueRunLedgerContent
       issueStatus={props.issueStatus ?? "in_progress"}
       childIssues={props.childIssues ?? []}
       agentMap={props.agentMap ?? new Map([["agent-1", { name: "CodexCoder" }]])}
+      activityEvents={props.activityEvents}
+      renderActivityEvent={props.renderActivityEvent}
       resolveUserLabel={props.resolveUserLabel}
       pendingWatchdogDecision={props.pendingWatchdogDecision}
       canRecordWatchdogDecisions={props.canRecordWatchdogDecisions}
@@ -105,6 +122,40 @@ function buttonWithText(text: string) {
 }
 
 describe("IssueRunLedger (ported)", () => {
+  it("interleaves run rows and activity rows by timestamp", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-oldest",
+          startedAt: "2026-04-18T19:55:00.000Z",
+          createdAt: "2026-04-18T19:55:00.000Z",
+        }),
+        createRun({
+          runId: "run-newest",
+          startedAt: "2026-04-18T19:59:00.000Z",
+          createdAt: "2026-04-18T19:59:00.000Z",
+        }),
+      ],
+      activityEvents: [
+        createActivity({
+          id: "activity-middle",
+          action: "activity-middle",
+          createdAt: "2026-04-18T19:57:00.000Z",
+        }),
+      ],
+      renderActivityEvent: (event) => <div data-testid={`activity-${event.id}`}>{event.action}</div>,
+    });
+
+    const text = container.textContent ?? "";
+    const newestIndex = text.indexOf("run-newe");
+    const activityIndex = text.indexOf("activity-middle");
+    const oldestIndex = text.indexOf("run-olde");
+
+    expect(newestIndex).toBeGreaterThanOrEqual(0);
+    expect(activityIndex).toBeGreaterThan(newestIndex);
+    expect(oldestIndex).toBeGreaterThan(activityIndex);
+  });
+
   it("renders every liveness state with exhausted continuation context", () => {
     const states: RunLivenessState[] = [
       "advanced", "plan_only", "empty_response", "blocked", "failed", "completed", "needs_followup",
@@ -362,6 +413,38 @@ describe("IssueRunLedger container", () => {
       return { data: [] };
     });
   }
+
+  it("reads the issue's activity and renders a write denial with its notice", () => {
+    readSpy.mockImplementation((path: string) => {
+      if (path.endsWith("/activity")) {
+        return {
+          data: [
+            createActivity({
+              id: "activity-cap",
+              actorType: "agent",
+              actorId: "agent-1",
+              agentId: "agent-1",
+              action: "issue.cross_issue_influence_cap_rejected",
+              details: { identifier: "PAP-9", cap: 20, count: 21 },
+            }),
+          ],
+        };
+      }
+      if (path.endsWith("/runs")) return { data: { runs: [] } };
+      return { data: null };
+    });
+    const result = rtlRender(
+      <IssueRunLedger issueId="iss_1" issueStatus="todo" agents={[{ id: "agent-1", name: "CodexCoder" } as never]} />,
+    );
+    expect(readSpy.mock.calls.map((c) => c[0])).toContain("/issues/iss_1/activity");
+    const text = result.container.textContent ?? "";
+    expect(text).toContain("hit the per-run cross-task write cap");
+    expect(text).toContain("CodexCoder");
+    const notice = result.container.querySelector('[data-testid="issue-write-denial-notice"]');
+    expect(notice?.getAttribute("data-denial-code")).toBe("cross_issue_influence_cap_exceeded");
+    expect(notice?.textContent).toContain("attempt 21");
+    expect(notice?.textContent).toContain("PAP-9");
+  });
 
   it("reads the issue-scoped BFF keys and records watchdog decisions through the run route", async () => {
     vi.useRealTimers();

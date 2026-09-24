@@ -1,3 +1,5 @@
+# LOAD-BEARING, do not delete (owner ruling 2026-09-24): Paperclip's Better Auth session on
+# company[-env] depends on this proxy -- removing it broke Better Auth before, low traffic or not.
 """Reverse proxy for ``company.isol8.co`` → internal Paperclip server.
 
 Validates the Clerk session, signs the user in to Paperclip via Better

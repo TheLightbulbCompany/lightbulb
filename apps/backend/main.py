@@ -138,6 +138,8 @@ def _paperclip_dispatch_hosts() -> set[str]:
     return hosts
 
 
+# LOAD-BEARING, do not delete (owner ruling 2026-09-24): Paperclip's Better Auth session on
+# company[-env] depends on this dispatch -- removing it broke Better Auth before, low traffic or not.
 class HostDispatcherMiddleware:
     """Pure ASGI middleware that rewrites the request scope path with a
     sentinel prefix when the request arrives at a Paperclip-proxy host.

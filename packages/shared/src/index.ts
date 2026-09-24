@@ -110,6 +110,15 @@ export type {
   UseRoomsResult,
 } from "./messaging/useRooms";
 export {
+  activityActionRequest,
+  flattenActivityPages,
+  newestActivityAt,
+  replaceActivityItem,
+  unseenActivityCount,
+  useActivity,
+} from "./messaging/useActivity";
+export type { ActivityClient, ActivityPlatform, UseActivityOptions, UseActivityResult } from "./messaging/useActivity";
+export {
   GLYPH,
   buildRows,
   diffLines,

@@ -37,6 +37,8 @@ jest.mock("expo-router/unstable-native-tabs", () => {
   return { NativeTabs };
 });
 jest.mock("../../../../lib/rooms", () => ({ useMobileRooms: () => ({ rooms: [] }) }));
+let mockUnseen = 0;
+jest.mock("../../../../lib/activity", () => ({ useMobileActivity: () => ({ unseenCount: mockUnseen }) }));
 jest.mock("../../../../lib/unreadBadge", () => ({
   badgeCount: () => mockUnread,
 }));
@@ -49,6 +51,7 @@ import TabsLayout from "../_layout";
 
 beforeEach(() => {
   mockUnread = 0;
+  mockUnseen = 0;
   mockSetBadgeCountAsync.mockClear();
 });
 
@@ -82,4 +85,14 @@ it("mirrors the count onto the app icon", async () => {
   mockUnread = 3;
   await render(<TabsLayout />);
   expect(mockSetBadgeCountAsync).toHaveBeenCalledWith(3);
+});
+
+it("badges Activity with its unseen count, and nothing at zero", async () => {
+  await render(<TabsLayout />);
+  expect(screen.queryByTestId("tab-badge")).toBeNull();
+
+  mockUnseen = 4;
+  await render(<TabsLayout />);
+  expect(screen.getByTestId("tab-activity")).toHaveTextContent("Activity4");
+  expect(screen.getByTestId("tab-home")).not.toHaveTextContent(/\d/);
 });

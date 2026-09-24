@@ -100,3 +100,19 @@ def test_delete_surfaces_paperclips_non_author_403(admin):
     r = _call("delete")
     assert r.status_code == 403
     assert r.json()["detail"] == "Only the comment author can delete comments"
+
+
+def test_smuggled_query_in_issue_id_is_rejected_before_the_fence(admin):
+    # uvicorn decodes %3F/%26 into the path segment; without the id pattern this
+    # reached get_issue and forwarded DELETE /api/issues/<id>?mode=cancel&/comments/<cid>.
+    r = client.delete(f"/api/v1/teams/issues/{ISSUE}%3Fmode=cancel%26/comments/{COMMENT}", headers=H)
+    assert r.status_code == 422
+    admin.get_issue.assert_not_awaited()
+    admin.delete_issue_comment.assert_not_awaited()
+
+
+def test_smuggled_query_in_run_id_is_rejected(admin):
+    admin.cancel_run = AsyncMock()
+    r = client.post(f"/api/v1/teams/heartbeat-runs/{RUN}%3Fx=1%26/cancel", headers=H)
+    assert r.status_code == 422
+    admin.cancel_run.assert_not_awaited()

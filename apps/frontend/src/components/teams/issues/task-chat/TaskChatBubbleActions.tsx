@@ -82,7 +82,7 @@ export function TaskChatBubbleActions({
           open={deleteDialogOpen}
           onOpenChange={setDeleteDialogOpen}
           title="Delete comment?"
-          description="This will replace the comment with a deleted-comment marker."
+          description="The comment will be removed from this conversation."
           footer={
             <>
               <EditorialButton variant="secondary" size="sm" onClick={() => setDeleteDialogOpen(false)}>

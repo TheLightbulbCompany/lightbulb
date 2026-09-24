@@ -5,9 +5,9 @@
 // (MIT, (c) 2025 Paperclip AI) — stock 916's default task page, where "the chat
 // IS the page": the thread header, the description as the first bubble, the
 // author-typed comment bubbles with interaction cards interleaved, the live run
-// tail (TaskChatLiveRunPill + TaskChatLiveTail, the legacy-adapter branch that
-// hermes_gateway takes), and a sticky composer dock with `composerAccessory`
-// above it and `footer` below.
+// tail (TaskChatLiveRunPill + the empty-tail status copy of the legacy-adapter
+// branch that hermes_gateway takes), and a sticky composer dock with
+// `composerAccessory` above it and `footer` below.
 //
 // Upstream's orchestrator is 3k lines on top of IssueChatThread's 6.8k-line
 // prop surface, so this is a composition of the ported leaves, not a line port.
@@ -19,18 +19,20 @@
 // exposed. TeamsEventsProvider turns Paperclip's AppSync `paperclip.event`s into
 // SWR revalidation — `activity.logged` for this issue refreshes the whole
 // `/teams/issues/{id}/*` subtree (comments, interactions, live-runs,
-// active-run) and run queued/status events refresh the per-issue run lists —
-// while the tail's log is polled every 3s only while its run is live.
+// active-run) and run queued/status events (plus the 20s board keeper) refresh
+// the per-issue run lists.
 //
 // Deferred to part B: queued comments (edit/reorder/steer/interrupt/discard),
 // interaction skip + item verdicts (TaskChatInteractionCard/QuestionForm — the
 // classic IssueThreadInteractionCard stays mounted in the thread meanwhile),
 // runtime-request resolve, the native paperclip_runner turn, attachments and
-// uploads, user mentions, the activity route + IssueWriteDenialNotice.
+// uploads, user mentions, the activity route + IssueWriteDenialNotice, and the
+// streamed transcript (TaskChatLiveTail/Thinking + transcript-adapter + the
+// hermes_gateway stdout parser) once the Hermes facade serves a run events route.
 
 "use client";
 
-import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError } from "@/lib/notify";
 import { IssueThreadInteractionCard } from "../IssueThreadInteractionCard";
@@ -50,9 +52,7 @@ import { TaskChatBubble } from "./TaskChatBubble";
 import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
 import { TaskChatDescriptionBubble } from "./TaskChatDescriptionBubble";
 import { TaskChatComposer } from "./TaskChatComposer";
-import { TaskChatLiveRunPill, TaskChatLiveTail } from "./TaskChatLiveTail";
-import { transcriptToTaskChatItems } from "./transcript-adapter";
-import { useLiveRunTranscript } from "./useLiveRunTranscript";
+import { TaskChatLiveRunPill } from "./TaskChatLiveRunPill";
 
 type InteractionHandlers = Pick<
   IssueThreadInteractionCardProps,
@@ -90,19 +90,8 @@ function asRuns(data: unknown): IssueLiveRun[] {
   return Array.isArray(data) ? (data as IssueLiveRun[]) : [];
 }
 
-/** The live run tail: pill + streamed transcript for the newest live run. */
+/** The live run tail: stock's pill + empty-tail status copy for the newest live run. */
 function TaskChatRunTail({ run }: { run: IssueLiveRun }) {
-  const active = run.status === "queued" || run.status === "running";
-  const entries = useLiveRunTranscript(run.id, { active, logBytes: run.logBytes });
-  const items = useMemo(
-    () =>
-      transcriptToTaskChatItems(entries, {
-        runId: run.id,
-        agentName: run.agentName ?? undefined,
-        running: active,
-      }),
-    [entries, run.id, run.agentName, active],
-  );
   return (
     <div data-testid="task-chat-live-transcript">
       <TaskChatLiveRunPill
@@ -110,14 +99,11 @@ function TaskChatRunTail({ run }: { run: IssueLiveRun }) {
         startedAtMs={toMs(run.startedAt) ?? toMs(run.createdAt)}
         finishedAtMs={toMs(run.finishedAt)}
       />
-      <TaskChatLiveTail
-        items={items}
-        emptyMessage={
-          run.status === "queued"
-            ? "Waiting to start..."
-            : run.currentStatusMessage || "Waiting for transcript..."
-        }
-      />
+      <div className="px-1 py-1 text-xs" style={{ color: "var(--midnight-muted)" }}>
+        {run.status === "queued"
+          ? "Waiting to start..."
+          : run.currentStatusMessage || "Waiting for transcript..."}
+      </div>
     </div>
   );
 }
@@ -143,10 +129,9 @@ export function TaskChatThread({
   onSubmitInteractionAnswers,
   onCancelInteraction,
 }: TaskChatThreadProps) {
-  const { read, post } = useTeamsApi();
+  const { read, post, mutate } = useTeamsApi();
   const liveRunsResp = read<IssueLiveRun[]>(`/issues/${issue.id}/live-runs`, { shouldRetryOnError: false });
   const activeRunResp = read<IssueLiveRun | null>(`/issues/${issue.id}/active-run`, { shouldRetryOnError: false });
-  const commentsResp = read(`/issues/${issue.id}/comments`);
 
   // Upstream picks the tail from liveRuns (newest first), then activeRun.
   const liveRuns = asRuns(liveRunsResp.data);
@@ -155,7 +140,8 @@ export function TaskChatThread({
 
   // The run's reply lands as a comment when it settles; refetch once the tail clears.
   const hadTail = useRef(false);
-  const refetchComments = commentsResp.mutate;
+  const commentsKey = `/teams/issues/${issue.id}/comments`;
+  const refetchComments = useCallback(() => mutate(commentsKey), [mutate, commentsKey]);
   useEffect(() => {
     if (tailRun) hadTail.current = true;
     else if (hadTail.current) {
@@ -196,7 +182,7 @@ export function TaskChatThread({
     const item = commentToTaskChatItem(entry.comment, { agentMap, currentUserId });
     if (!item) return null;
     const feedback =
-      item.author === "agent" && onVote
+      item.author === "agent" && !item.unattributed && onVote
         ? {
             activeVote: feedbackVotes?.get(item.id)?.vote ?? null,
             onVote: (vote: FeedbackVoteValue, options?: { reason?: string }) => onVote(item.id, vote, options),
@@ -261,8 +247,10 @@ export function TaskChatThread({
         <TaskChatComposer
           onAdd={async (body) => {
             await onAdd(body);
+            // useIssueMutations.addComment revalidates with useSWRConfig's string
+            // key, which never matches useTeamsApi's scoped tuple key — so this
+            // is the one refetch that lands.
             void refetchComments();
-            void liveRunsResp.mutate();
           }}
           onStop={cancelRun}
           agents={agents}

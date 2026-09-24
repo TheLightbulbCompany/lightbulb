@@ -29,7 +29,7 @@ interface TaskChatBubbleProps {
   actions?: ReactNode;
 }
 
-export function TaskChatAgentIdentity({ agentName }: { agentName: string; agentIcon?: string | null }) {
+export function TaskChatAgentIdentity({ agentName }: { agentName: string }) {
   return (
     <span className="flex items-center gap-2 px-1" data-testid="task-chat-agent-identity">
       <Identity name={agentName} size="sm" avatarOnly />
@@ -41,11 +41,6 @@ export function TaskChatAgentIdentity({ agentName }: { agentName: string; agentI
 }
 
 export function TaskChatBubble({ item, actions }: TaskChatBubbleProps) {
-  if (item.interstitial) {
-    // Interstitial updates are ephemeral: never rendered as a bubble.
-    return null;
-  }
-
   if (item.author === "system") {
     return (
       <div
@@ -63,7 +58,7 @@ export function TaskChatBubble({ item, actions }: TaskChatBubbleProps) {
   return (
     <div className={cn("flex w-full flex-col gap-1", isHuman ? "items-end" : "items-start")}>
       {!isHuman && item.authorName ? (
-        <TaskChatAgentIdentity agentName={item.authorName} agentIcon={item.agentIcon} />
+        <TaskChatAgentIdentity agentName={item.authorName} />
       ) : null}
       {isHuman && item.authorName ? (
         <span className="px-1 text-xs" style={{ color: "var(--midnight-muted)" }}>

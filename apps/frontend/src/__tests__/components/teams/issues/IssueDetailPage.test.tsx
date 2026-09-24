@@ -162,7 +162,7 @@ describe("IssueDetailPage", () => {
       error: null,
     });
     render(<IssueDetailPage issueId="iss_1" />);
-    const textarea = screen.getByRole("textbox", { name: "Message" });
+    const textarea = screen.getByRole("combobox", { name: "Message" });
     fireEvent.change(textarea, { target: { value: "Hello" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() =>

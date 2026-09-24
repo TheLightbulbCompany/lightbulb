@@ -134,7 +134,6 @@ export interface IssueLiveRun {
   startedAt?: string | null;
   finishedAt?: string | null;
   createdAt?: string | null;
-  logBytes?: number | null;
   /** Upstream decorateActiveRunStatus: human copy for the current phase. */
   currentStatusMessage?: string | null;
 }

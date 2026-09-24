@@ -2,11 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TaskChatThread } from "@/components/teams/issues/task-chat/TaskChatThread";
-import {
-  buildTranscript,
-  parseRunLogContent,
-  transcriptToTaskChatItems,
-} from "@/components/teams/issues/task-chat/transcript-adapter";
 import type {
   CompanyAgent,
   Issue,
@@ -35,6 +30,7 @@ vi.mock("@/hooks/useTeamsApi", () => ({
       mutate: vi.fn(),
     }),
     post: postSpy,
+    mutate: vi.fn(),
   }),
 }));
 
@@ -51,10 +47,6 @@ const AGENTS: CompanyAgent[] = [{ id: "agt_friday", name: "Friday" }];
 
 function comment(overrides: Partial<IssueComment>): IssueComment {
   return { id: "cmt_1", body: "hello", createdAt: "2026-09-24T10:00:00Z", ...overrides };
-}
-
-function logLine(chunk: string, ts = "2026-09-24T10:00:05Z") {
-  return JSON.stringify({ ts, stream: "stdout", chunk });
 }
 
 function renderThread(props: Partial<Parameters<typeof TaskChatThread>[0]> = {}) {
@@ -119,7 +111,7 @@ describe("TaskChatThread (ported stock task chat)", () => {
     const user = userEvent.setup();
     const { onAdd } = renderThread();
     expect(screen.getByPlaceholderText("Message Friday — describe what you want done…")).toBeInTheDocument();
-    const box = screen.getByRole("textbox", { name: "Message" });
+    const box = screen.getByRole("combobox", { name: "Message" });
     await user.type(box, "hey @fri");
     await user.click(screen.getByRole("option", { name: "@Friday" }));
     await user.type(box, "please look{Meta>}{Enter}{/Meta}");
@@ -149,7 +141,7 @@ describe("TaskChatThread (ported stock task chat)", () => {
 
   it("sends on Ctrl+Enter, not on a plain Enter (newline)", async () => {
     const { onAdd } = renderThread();
-    const box = screen.getByRole("textbox", { name: "Message" });
+    const box = screen.getByRole("combobox", { name: "Message" });
     fireEvent.change(box, { target: { value: "  line  " } });
     fireEvent.keyDown(box, { key: "Enter" });
     expect(onAdd).not.toHaveBeenCalled();
@@ -161,9 +153,47 @@ describe("TaskChatThread (ported stock task chat)", () => {
   it("surfaces a failed post", async () => {
     const failure = new Error("server boom");
     renderThread({ onAdd: vi.fn().mockRejectedValue(failure) });
-    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "x" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Message" }), { target: { value: "x" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(mockNotifyApiError).toHaveBeenCalledWith(failure, "Failed to post comment"));
+  });
+
+  it("⌘+Enter sends even with the mention list open on a bare @", async () => {
+    const user = userEvent.setup();
+    const { onAdd } = renderThread();
+    const box = screen.getByRole("combobox", { name: "Message" });
+    await user.type(box, "ask @");
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    expect(box).toHaveAttribute("aria-expanded", "true");
+    expect(box).not.toHaveAttribute("aria-activedescendant");
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(onAdd).toHaveBeenCalledWith("ask @");
+  });
+
+  it("Esc closes the mention list without touching the draft", async () => {
+    const user = userEvent.setup();
+    renderThread();
+    const box = screen.getByRole("combobox", { name: "Message" });
+    await user.type(box, "hi @fri");
+    expect(box).toHaveAttribute("aria-activedescendant");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(box).toHaveAttribute("aria-expanded", "false");
+    expect(box).toHaveValue("hi @fri");
+  });
+
+  it('labels a comment with no author ids "Comment" and offers no feedback votes', () => {
+    renderThread({
+      onVote: vi.fn(),
+      comments: [
+        comment({ id: "c1", body: "orphan" }),
+        comment({ id: "c2", authorAgentId: "agt_friday", body: "from friday" }),
+      ],
+    });
+    expect(screen.getByText("Comment")).toBeInTheDocument();
+    expect(screen.queryByText("Agent")).not.toBeInTheDocument();
+    // Only Friday's comment carries the vote controls.
+    expect(screen.getAllByRole("button", { name: /Helpful/ })).toHaveLength(1);
   });
 
   it("drops tombstoned comments", () => {
@@ -171,21 +201,20 @@ describe("TaskChatThread (ported stock task chat)", () => {
     expect(screen.queryByText("gone")).not.toBeInTheDocument();
   });
 
-  it("shows the live run pill and the streamed hermes transcript, and Stop cancels the run", async () => {
+  it("shows the live run pill with the run's status copy, and Stop cancels the run", async () => {
     const user = userEvent.setup();
     reads.set("/issues/iss_42/live-runs", [
-      { id: "run_1", status: "running", agentName: "Friday", startedAt: "2026-09-24T10:00:00Z", logBytes: 100 },
+      {
+        id: "run_1",
+        status: "running",
+        agentName: "Friday",
+        startedAt: "2026-09-24T10:00:00Z",
+        currentStatusMessage: "Friday is working",
+      },
     ]);
-    reads.set("/heartbeat-runs/run_1/log", {
-      content: [
-        logLine('[hermes-gateway:event] run=r1 event=message.delta data={"delta":"Working on **it**"}\n'),
-        logLine("[hermes-gateway] status poll ok\n"),
-      ].join("\n"),
-    });
     renderThread();
     expect(screen.getByTestId("task-chat-live-run-pill")).toHaveTextContent("Working");
-    expect(screen.getByTestId("task-chat-live-text")).toHaveTextContent("Working on it");
-    expect(screen.queryByText(/status poll ok/)).not.toBeInTheDocument();
+    expect(screen.getByText("Friday is working")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Stop" }));
     expect(postSpy).toHaveBeenCalledWith("/heartbeat-runs/run_1/cancel", {});
   });
@@ -227,21 +256,5 @@ describe("TaskChatThread (ported stock task chat)", () => {
       expect(screen.getByText("User")).toBeInTheDocument();
       expect(screen.queryByText("user_")).not.toBeInTheDocument();
     });
-  });
-});
-
-describe("hermes_gateway transcript adapter (ported)", () => {
-  it("coalesces message.delta events into one streaming reply and keeps reasoning", () => {
-    const content = [
-      logLine('[hermes-gateway:event] run=r event=reasoning.available data={"reasoning":"Plan first"}\n'),
-      logLine('[hermes-gateway:event] run=r event=message.delta data={"delta":"Hel"}\n'),
-      logLine('[hermes-gateway:event] run=r event=message.delta data={"delta":"lo"}\n'),
-    ].join("\n");
-    const items = transcriptToTaskChatItems(buildTranscript(parseRunLogContent(content)), {
-      runId: "r",
-      running: true,
-    });
-    expect(items.map((i) => i.kind)).toEqual(["thinking", "message"]);
-    expect(items[1]).toMatchObject({ text: "Hello", streaming: true });
   });
 });

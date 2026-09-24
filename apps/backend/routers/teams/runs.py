@@ -18,6 +18,11 @@ from .deps import TeamsContext, envelope_list
 from .schemas import WatchdogDecisionBody
 
 router = APIRouter()
+
+# Paperclip ids are UUIDs or LB-12-style identifiers (`_` admitted for test ids). Pinning keeps a
+# percent-decoded `?`/`&`/`/` in the path segment from rewriting the fixed
+# upstream path (e.g. `<id>%3Fmode=cancel%26` smuggling a query string).
+RunId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 _ctx = _agents._ctx
 
 # Default tail size for the live-run transcript read. Kept small so the
@@ -59,7 +64,7 @@ async def list_agent_runs(
 
 
 @router.get("/heartbeat-runs/{run_id}")
-async def get_run(run_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def get_run(run_id: RunId, ctx: TeamsContext = Depends(_ctx)):
     """Fetch a single heartbeat-run by id.
 
     Maps to upstream ``GET /api/heartbeat-runs/{runId}``. Distinct from
@@ -74,7 +79,7 @@ async def get_run(run_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 @router.get("/heartbeat-runs/{run_id}/log")
 async def get_run_log(
-    run_id: str,
+    run_id: RunId,
     offset: int = Query(0, ge=0),
     limit_bytes: int = Query(
         RUN_LOG_DEFAULT_LIMIT_BYTES,
@@ -103,7 +108,7 @@ async def get_run_log(
 
 @router.get("/heartbeat-runs/{run_id}/events")
 async def get_run_events(
-    run_id: str,
+    run_id: RunId,
     after_seq: int = Query(0, ge=0, alias="afterSeq"),
     limit: int = Query(200, ge=1, le=1000),
     ctx: TeamsContext = Depends(_ctx),
@@ -124,7 +129,7 @@ async def get_run_events(
 
 
 @router.post("/heartbeat-runs/{run_id}/cancel")
-async def cancel_run(run_id: str, ctx: TeamsContext = Depends(_ctx)):
+async def cancel_run(run_id: RunId, ctx: TeamsContext = Depends(_ctx)):
     """Cancel a queued/running heartbeat run.
 
     Maps to upstream ``POST /api/heartbeat-runs/{runId}/cancel``. Stopping a
@@ -138,7 +143,7 @@ async def cancel_run(run_id: str, ctx: TeamsContext = Depends(_ctx)):
 
 @router.post("/heartbeat-runs/{run_id}/watchdog-decisions")
 async def record_watchdog_decision(
-    run_id: str,
+    run_id: RunId,
     body: WatchdogDecisionBody,
     ctx: TeamsContext = Depends(_ctx),
 ):

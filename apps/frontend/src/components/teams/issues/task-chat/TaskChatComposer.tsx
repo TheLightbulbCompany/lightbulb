@@ -17,7 +17,7 @@
 
 "use client";
 
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Loader2, Square } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { notifyApiError } from "@/lib/notify";
@@ -52,7 +52,11 @@ export function TaskChatComposer({
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [caret, setCaret] = useState(0);
-  const [highlight, setHighlight] = useState(0);
+  // -1 = nothing highlighted: a bare `@` shows the list without claiming Enter/Tab.
+  const [highlight, setHighlight] = useState(-1);
+  // Popup dismissed with Esc for the mention that starts at this offset.
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
+  const listboxId = useId();
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -69,10 +73,10 @@ export function TaskChatComposer({
   const mention = activeMention(body, caret);
   const options = useMemo(
     () =>
-      mention
+      mention && mention.start !== dismissedAt
         ? agents.filter((a) => a.name.toLowerCase().includes(mention.query)).slice(0, 6)
         : [],
-    [agents, mention],
+    [agents, mention, dismissedAt],
   );
 
   const pickMention = (agent: CompanyAgent) => {
@@ -82,7 +86,7 @@ export function TaskChatComposer({
     const nextCaret = mention.start + insert.length;
     setBody(next);
     setCaret(nextCaret);
-    setHighlight(0);
+    setHighlight(-1);
     pendingCaret.current = nextCaret;
   };
 
@@ -125,6 +129,7 @@ export function TaskChatComposer({
     >
       {options.length > 0 ? (
         <ul
+          id={listboxId}
           role="listbox"
           aria-label="Mention an agent"
           className="absolute bottom-full left-2 z-20 mb-1 min-w-48 overflow-hidden rounded-md py-1 text-sm shadow-md"
@@ -133,6 +138,7 @@ export function TaskChatComposer({
           {options.map((agent, i) => (
             <li
               key={agent.id}
+              id={`${listboxId}-${i}`}
               role="option"
               aria-selected={i === highlight}
               className="cursor-pointer px-3 py-1"
@@ -157,30 +163,47 @@ export function TaskChatComposer({
           value={body}
           disabled={disabled || submitting}
           aria-label="Message"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={options.length > 0}
+          aria-controls={options.length > 0 ? listboxId : undefined}
+          aria-activedescendant={
+            options.length > 0 && highlight >= 0 ? `${listboxId}-${highlight}` : undefined
+          }
           placeholder={`Message ${agentName} — describe what you want done…`}
           onChange={(e) => {
             setBody(e.target.value);
-            setCaret(e.target.selectionStart ?? e.target.value.length);
-            setHighlight(0);
+            const nextCaret = e.target.selectionStart ?? e.target.value.length;
+            setCaret(nextCaret);
+            // A typed query pre-highlights the first match; a bare `@` does not.
+            setHighlight(activeMention(e.target.value, nextCaret)?.query ? 0 : -1);
           }}
           onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
           onKeyDown={(e) => {
-            if (options.length > 0) {
-              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                e.preventDefault();
-                const step = e.key === "ArrowDown" ? 1 : -1;
-                setHighlight((h) => (h + step + options.length) % options.length);
-                return;
-              }
-              if (e.key === "Enter" || e.key === "Tab") {
-                e.preventDefault();
-                pickMention(options[highlight] ?? options[0]!);
-                return;
-              }
-            }
+            // Send always wins, even with the mention list open.
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               void submit();
+              return;
+            }
+            if (options.length === 0) return;
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setDismissedAt(mention?.start ?? null);
+              setHighlight(-1);
+              return;
+            }
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              const step = e.key === "ArrowDown" ? 1 : -1;
+              setHighlight((h) => (h < 0 ? (step > 0 ? 0 : options.length - 1) : (h + step + options.length) % options.length));
+              return;
+            }
+            // Enter/Tab pick only an actively highlighted option; otherwise Tab
+            // moves focus on and Enter inserts a newline as usual.
+            if ((e.key === "Enter" || e.key === "Tab") && highlight >= 0 && options[highlight]) {
+              e.preventDefault();
+              pickMention(options[highlight]);
             }
           }}
           className="max-h-[28dvh] min-h-12 resize-none border-none px-1 py-1 text-sm shadow-none focus-visible:ring-0"

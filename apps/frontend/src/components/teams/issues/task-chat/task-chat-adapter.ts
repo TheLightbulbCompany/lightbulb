@@ -8,6 +8,10 @@
 // replaces IssueChatComment; there are no optimistic echoes (SWR revalidates
 // after a post), session markers, cross-issue attribution chips or
 // verification caveats in part A.
+//
+// Deliberate deviation: stock files a comment with no author ids under
+// "agent". Ours labels it "Comment" (the pre-port label) and marks it
+// unattributed so it gets no feedback votes — there is no agent to reinforce.
 
 import type { CompanyAgent, IssueComment } from "@/components/teams/shared/types";
 import type { TaskChatAuthorKind, TaskChatMessageItem } from "./task-chat-model";
@@ -45,11 +49,10 @@ export function commentToTaskChatItem(
   if (comment.deletedAt) return null;
   const kind = authorKind(comment);
   let authorName: string | undefined;
-  let agentIcon: string | null | undefined;
+  const unattributed = kind === "agent" && !comment.authorAgentId && comment.authorKind !== "agent";
   if (kind === "agent") {
     const agentId = comment.authorAgentId ?? null;
-    authorName = (agentId && ctx.agentMap?.get(agentId)?.name) || "Agent";
-    agentIcon = agentId ? ctx.agentMap?.get(agentId)?.icon : undefined;
+    authorName = unattributed ? "Comment" : (agentId && ctx.agentMap?.get(agentId)?.name) || "Agent";
   }
   const ownedByViewer =
     kind === "human" && Boolean(ctx.currentUserId) && comment.authorClerkUserId === ctx.currentUserId;
@@ -66,7 +69,7 @@ export function commentToTaskChatItem(
     authorName,
     text: comment.body,
     timestamp: formatTaskChatTimestamp(comment.createdAt),
-    agentIcon,
     ownedByViewer,
+    unattributed: unattributed || undefined,
   };
 }

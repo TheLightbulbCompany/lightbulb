@@ -476,7 +476,8 @@ async def get_read_cursor(room_id: str, user_id: str) -> int:
 #
 # A missing ordinal reads as 0 and the count clamps at 0, so a room written
 # before ordinals existed shows 0 unread (never a crash or a negative) until
-# ``scripts/backfill_room_ordinals.py`` stamps it. No legacy read path.
+# the one-off 2026-09-24 room-ordinals backfill (run per env, not kept in the
+# repo) stamps it. No legacy read path.
 # ---------------------------------------------------------------------------
 
 COUNT_CAP = 99

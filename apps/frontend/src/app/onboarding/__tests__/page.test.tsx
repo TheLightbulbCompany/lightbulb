@@ -9,19 +9,23 @@ const clerk = vi.hoisted(() => ({
   invitations: [] as Array<{ id: string; publicOrganizationData: { id: string; name: string }; accept: () => Promise<unknown> }>,
   setActive: vi.fn().mockResolvedValue(undefined), replace: vi.fn(), update: vi.fn(),
   revalidateInvitations: vi.fn().mockResolvedValue(undefined), revalidateMemberships: vi.fn().mockResolvedValue(undefined),
-  createProps: vi.fn(), selectProps: vi.fn(),
+  selectProps: vi.fn(), createOrganization: vi.fn(),
+  apiGet: vi.fn(), apiPost: vi.fn(),
 }));
+vi.mock("@/lib/api", async () => {
+  const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
+  return { ApiError, useApi: () => ({ get: clerk.apiGet, post: clerk.apiPost }) };
+});
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: clerk.replace, push: clerk.replace }), useSearchParams: () => new URLSearchParams() }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: clerk.loaded, isSignedIn: true, orgId: clerk.orgId }),
   useUser: () => ({ user: { unsafeMetadata: {}, update: clerk.update } }),
   useOrganization: () => ({ isLoaded: clerk.loaded, organization: clerk.organization }),
-  useOrganizationList: () => ({ isLoaded: clerk.loaded, setActive: clerk.setActive,
+  useOrganizationList: () => ({ isLoaded: clerk.loaded, setActive: clerk.setActive, createOrganization: clerk.createOrganization,
     userMemberships: { data: clerk.listsPresent ? clerk.memberships : undefined, isLoading: false, revalidate: clerk.revalidateMemberships },
     userInvitations: { data: clerk.listsPresent ? clerk.invitations : undefined, isLoading: false, revalidate: clerk.revalidateInvitations },
   }),
-  CreateOrganization: (props: unknown) => { clerk.createProps(props); return null; },
   OrganizationList: (props: unknown) => { clerk.selectProps(props); return null; },
 }));
 beforeEach(() => {
@@ -36,22 +40,57 @@ describe("workspace onboarding", () => {
   it("does not offer creation until membership and invitation lists are available", () => {
     clerk.listsPresent = false;
     render(<OnboardingPage />);
-    expect(clerk.createProps).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Workspace name")).not.toBeInTheDocument();
     expect(clerk.replace).not.toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("Loading");
   });
-  it("offers workspace creation without requiring a signup intent", () => {
+  it("offers workspace creation under one heading, without requiring a signup intent", () => {
     render(<OnboardingPage />);
     expect(screen.getByRole("heading", { name: "Create your workspace" })).toBeInTheDocument();
-    expect(clerk.createProps).toHaveBeenCalledWith(expect.objectContaining({ afterCreateOrganizationUrl: "/onboarding", skipInvitationScreen: true }));
+    expect(screen.getAllByRole("heading")).toHaveLength(1);
+    expect(screen.getByLabelText("Workspace name")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create workspace" })).toBeDisabled();
     expect(clerk.replace).not.toHaveBeenCalled();
   });
-  it("creates the workspace under one heading, without Clerk's own header or logo step", () => {
-    render(<OnboardingPage />);
-    expect(screen.getAllByRole("heading")).toHaveLength(1);
-    expect(clerk.createProps).toHaveBeenCalledWith(expect.objectContaining({
-      appearance: { elements: expect.objectContaining({ header: { display: "none" }, organizationAvatarUploaderContainer: { display: "none" } }) },
+  it("previews the agents' address from the name, then holds the slug BEFORE creating the org", async () => {
+    clerk.apiGet.mockImplementation(async (path: string) => ({
+      slug: new URLSearchParams(path.split("?")[1]).get("slug"), available: true, reason: null, domain: "dev.thelightbulb.company",
     }));
+    clerk.apiPost.mockResolvedValue({ slug: "bench-club" });
+    clerk.createOrganization.mockResolvedValue({ id: "org_new" });
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "Bench Club!" } });
+    expect(screen.getByLabelText("Agent email address")).toHaveValue("bench-club");
+    await waitFor(() => expect(screen.getByText("ceo@bench-club.dev.thelightbulb.company")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Create workspace" }));
+    await waitFor(() => expect(clerk.setActive).toHaveBeenCalledWith({ organization: "org_new" }));
+    expect(clerk.apiPost).toHaveBeenCalledWith("/company/slug/hold", { slug: "bench-club" });
+    expect(clerk.apiPost.mock.invocationCallOrder[0]).toBeLessThan(clerk.createOrganization.mock.invocationCallOrder[0]);
+    expect(clerk.createOrganization).toHaveBeenCalledWith({ name: "Bench Club!" });
+  });
+  it("lets the owner edit the slug, and blocks creation while it is taken", async () => {
+    clerk.apiGet.mockImplementation(async (path: string) => {
+      const slug = new URLSearchParams(path.split("?")[1]).get("slug");
+      return { slug, available: slug !== "acme", reason: slug === "acme" ? "taken" : null, domain: "thelightbulb.company" };
+    });
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "Acme" } });
+    await waitFor(() => expect(screen.getByText("That address is taken. Try another.")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Create workspace" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Agent email address"), { target: { value: "acme-labs" } });
+    await waitFor(() => expect(screen.getByText("ceo@acme-labs.thelightbulb.company")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Create workspace" })).toBeEnabled();
+  });
+  it("a lost race says so and never creates the org", async () => {
+    const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
+    clerk.apiGet.mockImplementation(async () => ({ slug: "acme", available: true, reason: null, domain: "thelightbulb.company" }));
+    clerk.apiPost.mockRejectedValue(new ApiError(409, { detail: "slug_taken" }, "slug_taken"));
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "Acme" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create workspace" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Create workspace" }));
+    await waitFor(() => expect(screen.getByText("That address is taken. Try another.")).toBeInTheDocument());
+    expect(clerk.createOrganization).not.toHaveBeenCalled();
   });
   it("sits on the brand ground even after a client navigation from the themed chat", () => {
     const root = document.documentElement;
@@ -97,7 +136,7 @@ describe("workspace onboarding", () => {
     expect(accept).toHaveBeenCalledOnce();
     expect(clerk.revalidateInvitations).toHaveBeenCalled();
     expect(clerk.revalidateMemberships).toHaveBeenCalled();
-    expect(clerk.createProps).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Workspace name")).not.toBeInTheDocument();
     expect(clerk.update).not.toHaveBeenCalled();
   });
   it("shows an actionable error when invitation acceptance fails", async () => {

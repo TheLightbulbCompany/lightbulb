@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 _SLUG_STRIP_RE = re.compile(r"[^a-z0-9]+")
 MAX_SLUG_LEN = 32
-_MAX_SUFFIX_ATTEMPTS = 50
 _FALLBACK_SLUG = "company"
 _FALLBACK_COMPANY_NAME = "My Company"
 
@@ -172,64 +171,43 @@ async def generate_company_name(*, org_id: str | None, owner_email: str) -> str:
     return name if name.strip() else _FALLBACK_COMPANY_NAME
 
 
+async def slug_unavailable_reason(slug: str, *, user_id: str) -> str | None:
+    """Why ``slug`` cannot be this user's email slug -- ``invalid``, ``reserved`` or
+    ``taken`` -- or None when it is free (or already theirs). Read-only: the hold is the
+    atomic claim, so a later race is still possible and the hold reports it."""
+    if not slug or slugify(slug) != slug:
+        return "invalid"
+    if slug in RESERVED_SLUGS:
+        return "reserved"
+    row = await company_slug_repo.get_by_slug(slug)
+    if (
+        row
+        and row.get("owner_id") != company_slug_repo.pending_owner(user_id)
+        and not company_slug_repo.is_stale_hold(row)
+    ):
+        return "taken"
+    return None
+
+
 async def allocate_company_slug(*, owner_id: str, name: str) -> str | None:
-    """Reserve a unique slug derived from ``name``, or return the owner's
-    existing reservation if they already have one.
+    """The owner's email slug: the one they chose at "Create your workspace" (handed over
+    by the ``organization.created`` webhook), else -- only for workspaces created before
+    that choice existed -- ``slugify(name)`` if it is free.
 
-    ``provision_org`` can re-enter after a partial failure. If the org's
-    Clerk name changed in between, re-deriving and reserving a new slug from
-    scratch would leave the owner holding a SECOND slug row that never gets
-    released (``company_slug_repo`` has no delete path). So before deriving a
-    base slug, check whether this owner already holds a reservation and, if
-    so, return it unchanged — this makes re-entry stable.
-
-    Returns the reserved slug, or None if allocation failed. Collisions and
-    reserved words take a numeric suffix, with the base shortened as needed
-    so the suffixed candidate never exceeds ``MAX_SLUG_LEN``. Never raises.
+    There are NO numeric suffixes (owner ruling 2026-09-24): a derived slug that is taken
+    or reserved returns None, and the caller reports ``slug_allocation_failed`` rather than
+    minting ``name-2``. Never raises.
     """
     try:
-        # Best-effort reuse check: `get_by_owner` reads the `by-owner` GSI,
-        # which is eventually consistent. A re-entry that lands within the
-        # GSI's propagation window of the FIRST reservation's write can miss
-        # it here and fall through to deriving + reserving a base slug again
-        # — and if the derived base differs (e.g. the owner's Clerk org name
-        # changed between attempts), that reservation succeeds and the owner
-        # ends up holding a SECOND, never-released slug row
-        # (`company_slug_repo` has no delete path). When the derived base is
-        # stable across re-entries this is harmless: `company_slug_repo`'s
-        # base-table conditional put makes reservation of the SAME slug
-        # idempotent regardless of this check. A durable fix needs an
-        # authoritative per-owner slug value living on the (strongly
-        # consistent) company row itself, not a GSI lookup; that's an
-        # architectural change and out of scope here.
+        # `get_by_owner` reads the eventually consistent `by-owner` GSI; a same-slug re-entry
+        # is still idempotent because `reserve`'s conditional put accepts the same owner.
         existing = await company_slug_repo.get_by_owner(owner_id)
         if existing:
             return existing["slug"]
-
-        base = slugify(name) or _FALLBACK_SLUG
-        for attempt in range(1, _MAX_SUFFIX_ATTEMPTS + 1):
-            if attempt == 1:
-                candidate = base
-            else:
-                # Re-cap so `base + suffix` fits in MAX_SLUG_LEN — truncating
-                # `f"{base}-{attempt}"` directly would chop the suffix itself
-                # and reintroduce collisions. Strip a trailing hyphen left by
-                # the truncation so we don't produce "foo--2".
-                suffix = f"-{attempt}"
-                max_base_len = MAX_SLUG_LEN - len(suffix)
-                candidate = f"{base[:max_base_len].rstrip('-')}{suffix}"
-            # A reserved word is skipped, not failed: "support" becomes
-            # "support-2", which is a fine tenant slug.
-            if candidate in RESERVED_SLUGS:
-                continue
-            if await company_slug_repo.reserve(slug=candidate, owner_id=owner_id):
-                return candidate
-        logger.warning(
-            "company_identity: no free slug for owner %s after %d attempts (base=%s)",
-            owner_id,
-            _MAX_SUFFIX_ATTEMPTS,
-            base,
-        )
+        slug = slugify(name) or _FALLBACK_SLUG
+        if slug not in RESERVED_SLUGS and await company_slug_repo.reserve(slug=slug, owner_id=owner_id):
+            return slug
+        logger.warning("company_identity: derived slug %r unavailable for owner %s", slug, owner_id)
         return None
     except Exception as e:  # noqa: BLE001 — allocation must not block provisioning
         logger.warning("company_identity: slug allocation failed for %s: %s", owner_id, e)

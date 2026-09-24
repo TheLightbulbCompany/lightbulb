@@ -104,3 +104,47 @@ async def test_get_by_owner_returns_the_owners_slug(slug_table):
     assert row is not None
     assert row["slug"] == "acme"
     assert await company_slug_repo.get_by_owner("user_missing") is None
+
+
+# -- holds taken at "Create your workspace", handed to the org by organization.created ---
+
+
+@pytest.mark.asyncio
+async def test_a_hold_is_exclusive_until_it_goes_stale(slug_table):
+    from core.repositories import company_slug_repo
+
+    assert await company_slug_repo.hold(slug="bench-club", user_id="user_1") is True
+    assert await company_slug_repo.hold(slug="bench-club", user_id="user_1") is True  # re-hold is fine
+    assert await company_slug_repo.hold(slug="bench-club", user_id="user_2") is False
+    assert await company_slug_repo.reserve(slug="bench-club", owner_id="org_x") is False
+
+    slug_table.update_item(
+        Key={"slug": "bench-club"}, UpdateExpression="SET held_at = :z", ExpressionAttributeValues={":z": 0}
+    )
+    assert await company_slug_repo.hold(slug="bench-club", user_id="user_2") is True
+
+
+@pytest.mark.asyncio
+async def test_a_hold_never_takes_a_workspaces_slug(slug_table):
+    from core.repositories import company_slug_repo
+
+    assert await company_slug_repo.reserve(slug="acme", owner_id="org_1") is True
+    assert await company_slug_repo.hold(slug="acme", user_id="user_1") is False
+
+
+@pytest.mark.asyncio
+async def test_claim_hands_the_newest_hold_to_the_org_once(slug_table):
+    from core.repositories import company_slug_repo
+
+    assert await company_slug_repo.hold(slug="old-pick", user_id="user_1") is True
+    slug_table.update_item(
+        Key={"slug": "old-pick"}, UpdateExpression="SET held_at = :t", ExpressionAttributeValues={":t": 1}
+    )
+    assert await company_slug_repo.hold(slug="bench-club", user_id="user_1") is True
+
+    assert await company_slug_repo.claim_hold(user_id="user_1", owner_id="org_1") == "bench-club"
+    row = await company_slug_repo.get_by_slug("bench-club")
+    assert row["owner_id"] == "org_1" and "held_at" not in row
+    # The workspace's slug is now the one allocate_company_slug returns, and a replay is a no-op.
+    assert (await company_slug_repo.get_by_owner("org_1"))["slug"] == "bench-club"
+    assert await company_slug_repo.claim_hold(user_id="user_2", owner_id="org_2") is None

@@ -183,7 +183,9 @@ async def test_organization_created_dispatches_the_first_provision():
             new=AsyncMock(),
         ) as mock_retry,
         patch("core.services.user_provision.provision_new_workspace", new=AsyncMock()) as mock_provision,
+        patch("core.repositories.company_slug_repo.claim_hold", new=AsyncMock()) as mock_claim,
     ):
+        mock_provision.side_effect = lambda *_: mock_claim.assert_awaited_once()  # the slug lands first
         await _handle_organization_created(
             {
                 "id": "org_acme",
@@ -194,6 +196,8 @@ async def test_organization_created_dispatches_the_first_provision():
     mock_factory.assert_not_called()
     mock_retry.assert_not_awaited()
     mock_provision.assert_awaited_once_with("org_acme")
+    # The agent-email slug the owner held at "Create your workspace" moves to the workspace.
+    mock_claim.assert_awaited_once_with(user_id="user_owner", owner_id="org_acme")
 
 
 @pytest.mark.asyncio
@@ -212,6 +216,7 @@ async def test_a_failed_organization_created_rolls_back_its_dedup_row_so_svix_re
     monkeypatch.setattr(
         "core.services.user_provision.provision_new_workspace", AsyncMock(side_effect=RuntimeError("sfn down"))
     )
+    monkeypatch.setattr("core.repositories.company_slug_repo.claim_hold", AsyncMock())
     payload = {"type": "organization.created", "data": {"id": "org_acme", "created_by": "user_owner"}}
 
     with pytest.raises(RuntimeError):

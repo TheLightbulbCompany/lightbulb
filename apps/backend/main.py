@@ -959,8 +959,10 @@ app.include_router(company_leads.router, prefix="/api/v1/company", tags=["compan
 
 # The "paste your context" door: merges into the CEO's Hermes memories/USER.md.
 from routers import company_context  # noqa: E402
+from routers import company_slug  # noqa: E402
 
 app.include_router(company_context.router, prefix="/api/v1/company", tags=["company-context"])
+app.include_router(company_slug.router, prefix="/api/v1/company", tags=["company-slug"])
 
 # Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
 from routers import marketplace_admin  # noqa: E402

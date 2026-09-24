@@ -247,93 +247,6 @@ async def test_scan_purge_due_returns_overdue_disabled(repo):
 
 
 # ---------------------------------------------------------------------------
-# Per-org create claim (strongly-consistent cross-instance guard)
-# ---------------------------------------------------------------------------
-
-
-async def test_org_create_claim_fresh_wins_then_second_caller_loses(repo):
-    """First caller wins the fresh claim (gets a token); a second caller (fresh
-    holder) loses (None) while the first holder is non-stale."""
-    assert await repo.try_acquire_org_create_claim("org_x", holder="a")  # truthy token
-    assert await repo.try_acquire_org_create_claim("org_x", holder="b") is None
-
-
-async def test_org_create_claim_is_per_org(repo):
-    """Claims are independent per org_id."""
-    assert await repo.try_acquire_org_create_claim("org_x", holder="a")
-    assert await repo.try_acquire_org_create_claim("org_y", holder="a")
-
-
-async def test_org_create_claim_steals_when_stale(repo):
-    """A holder that has gone silent past stale_after_seconds can be stolen,
-    so a crash mid-create doesn't strand the org forever."""
-    assert await repo.try_acquire_org_create_claim("org_x", holder="a")
-    # Non-stale → loses.
-    assert await repo.try_acquire_org_create_claim("org_x", holder="b", stale_after_seconds=120) is None
-    # stale_after_seconds=0 → any existing claim is stale → steal succeeds.
-    assert await repo.try_acquire_org_create_claim("org_x", holder="b", stale_after_seconds=0)
-
-
-async def test_org_create_claim_release_allows_reacquire(repo):
-    """Releasing on failure (with the returned token) lets the next caller
-    re-acquire a fresh claim."""
-    token = await repo.try_acquire_org_create_claim("org_x", holder="a")
-    assert token
-    await repo.release_org_create_claim("org_x", token=token)
-    assert await repo.try_acquire_org_create_claim("org_x", holder="b")
-
-
-async def test_org_create_claim_release_wrong_token_is_noop(repo):
-    """A release fenced on a WRONG token cannot delete the live claim."""
-    assert await repo.try_acquire_org_create_claim("org_x", holder="a")
-    await repo.release_org_create_claim("org_x", token="not-the-token")
-    # Still held → a fresh caller loses.
-    assert await repo.try_acquire_org_create_claim("org_x", holder="b") is None
-
-
-async def test_org_create_claim_stale_straggler_cannot_release_newer_holder(repo):
-    """ABA guard: the SAME identity re-polls and steals its own stale claim
-    (fresh token), then the FIRST attempt's straggler tries to release with its
-    now-superseded token — it must be a no-op, not a deletion that reopens the
-    duplicate-create window."""
-    tok_first = await repo.try_acquire_org_create_claim("org_x", holder="a")
-    assert tok_first
-    # Same identity 'a' re-polls after the first attempt went stale and steals
-    # its own claim, minting a FRESH token.
-    tok_second = await repo.try_acquire_org_create_claim("org_x", holder="a", stale_after_seconds=0)
-    assert tok_second and tok_second != tok_first
-    # The first attempt's straggler releases with its stale token → no-op.
-    await repo.release_org_create_claim("org_x", token=tok_first)
-    # The live (second) claim must still hold → a fresh caller loses.
-    assert await repo.try_acquire_org_create_claim("org_x", holder="b") is None
-    # The real holder can still release with its own token.
-    await repo.release_org_create_claim("org_x", token=tok_second)
-    assert await repo.try_acquire_org_create_claim("org_x", holder="b")
-
-
-async def test_org_create_claim_legacy_holder_release_cannot_delete_tokenized_claim(repo):
-    """Rolling-deploy safety: an OLD worker still runs the pre-token release
-    (ConditionExpression ``holder = :h``). A tokenized claim stores NO ``holder``
-    attribute (identity is under ``claimed_by``), so that legacy release can't
-    match — it cannot delete a newer token-fenced claim for the same admin."""
-    from core.repositories.paperclip_repo import _org_create_claim_key
-
-    token = await repo.try_acquire_org_create_claim("org_x", holder="admin_a")
-    assert token
-    table = repo._table()
-    key = _org_create_claim_key("org_x")
-    # Emulate the OLD worker's holder-only release for the SAME admin id.
-    with pytest.raises(table.meta.client.exceptions.ConditionalCheckFailedException):
-        table.delete_item(
-            Key={"user_id": key},
-            ConditionExpression="holder = :h",
-            ExpressionAttributeValues={":h": "admin_a"},
-        )
-    # The claim survived → a fresh caller still loses (no reopened create window).
-    assert await repo.try_acquire_org_create_claim("org_x", holder="admin_b") is None
-
-
-# ---------------------------------------------------------------------------
 # Per-owner seed claim (provision_org's cross-instance fresh-create fence)
 # ---------------------------------------------------------------------------
 
@@ -469,7 +382,7 @@ async def test_company_lookups_resolve_the_active_workspace(repo):
     assert await repo.get_user_ids_for_company("co_2") == []
     assert await repo.org_company_ids("org_acme") == {"co_1"}
     # Sentinels carry no org_id and never show up.
-    await repo.try_acquire_org_create_claim("org_new", holder="a")
+    await repo.put_pending_brief("org_new", path="p", user_input=None, detail=None, brief_text=None, submitted_by="u")
     assert await repo.org_company_ids("org_new") == set()
 
 

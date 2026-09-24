@@ -218,7 +218,9 @@ async def test_provision_org_happy_path(repo, monkeypatch):
     cc_kwargs = admin.create_company.call_args.kwargs
     assert cc_kwargs["name"] == "Owner"
     assert cc_kwargs["session_cookie"] == "admin-cookie-test"
-    assert cc_kwargs["idempotency_key"] == "user_owner"
+    # One key per ORG: the fork scopes it to the creating principal (always
+    # the bootstrap admin), so every caller for this org replays one company.
+    assert cc_kwargs["idempotency_key"] == "lightbulb-company-create:org_acme"
 
     # The provisioner joins as a co-owner via invite/accept/approve.
     admin.create_invite.assert_awaited_once()
@@ -291,6 +293,64 @@ async def test_provision_org_idempotent_on_second_call(repo):
     assert admin.sign_up_user.await_count == 1
     assert admin.create_company.await_count == 1
     assert first.company_id == second.company_id == "co_acme"
+
+
+async def test_concurrent_provision_org_for_one_org_converges_on_one_company(repo, monkeypatch):
+    """Two admins of one org provision it at the same time, with no backend
+    claim or lock. Both reach company create before either returns; the fork
+    replays the per-org Idempotency-Key, so both land on ONE company and both
+    succeed."""
+    import asyncio
+
+    from core.services import company_identity
+
+    async def _no_clerk_org(org_id):
+        return None
+
+    monkeypatch.setattr(company_identity.clerk_admin, "get_organization", _no_clerk_org)
+
+    admin = _make_admin_mock()
+
+    async def _sign_up(*, email, password, name):
+        return {"user": {"id": f"pc_{email}"}, "_session_cookie": f"session-{email}"}
+
+    admin.sign_up_user = AsyncMock(side_effect=_sign_up)
+
+    # Fake Paperclip: company create keyed by Idempotency-Key (scope = the one
+    # bootstrap admin); a barrier holds both calls until both have arrived.
+    companies: dict[str, dict] = {}
+    arrived = asyncio.Event()
+    calls: list[str] = []
+
+    async def _create_company(*, name, description, session_cookie, idempotency_key):
+        calls.append(idempotency_key)
+        if len(calls) == 2:
+            arrived.set()
+        await asyncio.wait_for(arrived.wait(), timeout=5)
+        return companies.setdefault(idempotency_key, {"id": f"co_{len(companies) + 1}"})
+
+    admin.create_company = AsyncMock(side_effect=_create_company)
+
+    agents: dict[tuple[str, str], dict] = {}
+
+    async def _create_agent(*, company_id, idempotency_key, **_kwargs):
+        return agents.setdefault((company_id, idempotency_key), {"id": f"agent_{len(agents) + 1}"})
+
+    admin.create_agent = AsyncMock(side_effect=_create_agent)
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    a, b = await asyncio.gather(
+        prov.provision_org(owner_id="org_acme", owner_user_id="user_a", owner_email="a@acme.test"),
+        prov.provision_org(owner_id="org_acme", owner_user_id="user_b", owner_email="b@acme.test"),
+    )
+
+    assert calls == ["lightbulb-company-create:org_acme"] * 2
+    assert len(companies) == 1
+    assert a.company_id == b.company_id == "co_1"
+    assert a.status == b.status == "active"
+    assert a.starter_agent_ids == b.starter_agent_ids
+    stored = await repo.get_workspace("org_acme", consistent_read=True)
+    assert stored.company_id == "co_1" and stored.status == "active"
 
 
 async def test_reprovision_with_company_preserved_funnel_stays_complete_no_reprompt(repo):

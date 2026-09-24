@@ -769,8 +769,9 @@ you cannot guess from the filename:
   bedrock-gate still cap-gate it. Only an EXPIRED trial (and canceled/past_due/
   no-row) is left unarmed. On a FRESH provision the Paperclip seed runs
   **inside the provision executor** (step 0 of `scripts/provision_runner.py`,
-  fenced by the seed's own durable claims against the duplicate-company
-  race); `ensure_user_ready` seeds in-request only as reconcile for
+  converging at the source: company create replays under the per-org
+  `Idempotency-Key`, and the provisioner's Better Auth sign-up is fenced by
+  the seed claim on their identity row); `ensure_user_ready` seeds in-request only as reconcile for
   already-running rows.
 - `provision_dispatch.py` — `dispatch_provision`, the single provisioning
   funnel, and stateless: a RUNNING SFN execution named `provision-{owner}-…`
@@ -1108,7 +1109,7 @@ Clerk sign-up  ->  workspace (Clerk org) created or joined
                                 secret, and persist the tokens onto the row BEFORE step 0, so the
                                 native adapter's apiKey bakes in a real token (M4-R33). No-op once
                                 the row carries an agentcore_runtime_arn.
-                            0. _seed_owner_paperclip (seed + org-create claims;
+                            0. _seed_owner_paperclip (sign-up seed claim + per-org company key;
                                org-only — a non-org owner exits 10 before anything is seeded)
                                  └─ paperclip_provisioning.provision_org
                                       ├─ sign up Paperclip user (Better Auth)

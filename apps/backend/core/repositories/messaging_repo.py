@@ -4,7 +4,7 @@ Key registry (architecture spec §7; the ``by-member`` GSI is discovery ONLY —
 every protected operation rechecks the base ``MEMBER#`` row strongly):
 
     OWNER#<owner>   ROOM#<room>                        room directory projection
-    ROOM#<room>     META                               owner, fields, revision, lastSeq, deliveryKey
+    ROOM#<room>     META                               owner, fields, revision, lastSeq, deliveryKey, lastMessage (top-level preview)
     ROOM#<room>     MEMBER#<kind>#<id>                 role, listenMode, mentionHandle, joinedSeq, homeOwnerId (foreign members of a shared room; memberKey is keyed on it)
     ROOM#<room>     MSG#<20-digit seq>                 original request + public edit overlay + dispatchTargets
     ROOM#<room>     IDEMP#EDIT#<user>#<operationId>     durable edit/delete retry receipt
@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -602,6 +603,8 @@ async def create_room(
         "revision": 1,
         "lastSeq": 0,
         "lastMessageAt": None,
+        # Present-and-null, not absent: the room-list preview (see last_message_preview).
+        "lastMessage": None,
         "deliveryKey": str(uuid.uuid4()),
         "workspaceId": workspace_id,
         "createdAt": now,
@@ -687,6 +690,67 @@ def _work_message_item(table_name: str, owner_id: str, room_id: str, message_id:
     }
 
 
+# Markdown -> one plain line. A copy of the projector's ``_plain_preview``
+# (apps/infra/lambda/messaging-projector/index.py); keep the two identical —
+# tests/unit/services/test_messaging_last_message.py compares them.
+_PLAIN_RULES = (
+    (re.compile(r"^\s*```.*$", re.M), ""),
+    (re.compile(r"!?\[([^\]]*)\]\([^)]*\)"), r"\1"),
+    (re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$", re.M), ""),
+    (re.compile(r"^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)", re.M), ""),
+    (re.compile(r"\*\*|__|~~|`"), ""),
+    (re.compile(r"\s+"), " "),
+)
+PREVIEW_CHARS = 140
+_PREVIEW_SCAN_ROWS = 50
+
+
+def _plain_preview(text: str) -> str:
+    text = text[:1000]
+    for pattern, repl in _PLAIN_RULES:
+        text = pattern.sub(repl, text)
+    return text.strip()
+
+
+def last_message_preview(message: dict) -> dict:
+    """``META.lastMessage`` for a (non-deleted) message: its current public
+    text as one plain line of at most ``PREVIEW_CHARS``. ``@tokens`` stay as text."""
+    text = message.get("editedText") if int(message.get("messageRevision", 0)) else message.get("text")
+    author = message["author"]
+    return {
+        "messageId": message["messageId"],
+        "seq": int(message["messageSeq"]),
+        "authorId": author["id"],
+        "authorKind": author["kind"],
+        "authorName": author.get("displayName") or author["id"],
+        "textPreview": _plain_preview(text or "")[:PREVIEW_CHARS],
+        "hasAttachments": bool(message.get("attachments")),
+        "createdAt": message["createdAt"],
+        "threadRootMessageId": message.get("threadRootMessageId"),
+    }
+
+
+async def latest_preview_row(room_id: str, before_seq: int, limit: int | None = _PREVIEW_SCAN_ROWS) -> dict | None:
+    """The newest non-deleted top-level ``MSG`` below ``before_seq``, looking at
+    most ``limit`` rows back (``None`` = the whole room)."""
+    if before_seq <= 1:
+        return None
+    rows = await _query(room_pk(room_id), between=(msg_sk(1), msg_sk(before_seq - 1)), ascending=False, limit=limit)
+    return next((r for r in rows if not r.get("threadRootMessageId") and not r.get("deletedAt")), None)
+
+
+def _unchanged_message_check(table_name: str, room_id: str, row: dict) -> dict:
+    """Fence a preview built from ``row`` against a concurrent edit or delete of it."""
+    return {
+        "ConditionCheck": {
+            "TableName": table_name,
+            "Key": {"pk": room_pk(room_id), "sk": msg_sk(row["messageSeq"])},
+            "ConditionExpression": "attribute_not_exists(messageRevision) OR messageRevision = :rev",
+            "ExpressionAttributeValues": {":rev": int(row.get("messageRevision", 0))},
+        }
+    }
+
+
 async def create_message(
     *,
     room_id: str,
@@ -758,17 +822,24 @@ async def create_message(
             "requestHash": req_hash,
             "attachments": attachments or [],
         }
+        meta_values: dict[str, Any] = {":seq": seq, ":expected": expected, ":now": now}
+        meta_set = "SET lastSeq = :seq, lastMessageAt = :now, updatedAt = :now"
+        if thread_root_message_id is None:
+            # The room-list preview follows top-level messages only; thread replies
+            # change neither the preview nor the sidebar order.
+            meta_set += ", lastMessage = :preview"
+            meta_values[":preview"] = last_message_preview(message)
         items: list[dict] = [
             {
                 "Update": {
                     "TableName": table_name,
                     "Key": {"pk": room_pk(room_id), "sk": "META"},
-                    "UpdateExpression": "SET lastSeq = :seq, lastMessageAt = :now, updatedAt = :now",
+                    "UpdateExpression": meta_set,
                     # An archive or delete committing after the read above cancels this; the retry sees it.
                     "ConditionExpression": (
                         "lastSeq = :expected AND attribute_not_exists(archivedAt) AND attribute_not_exists(deletedAt)"
                     ),
-                    "ExpressionAttributeValues": {":seq": seq, ":expected": expected, ":now": now},
+                    "ExpressionAttributeValues": meta_values,
                 }
             },
             {
@@ -820,95 +891,128 @@ async def update_message(
     """Change the public projection, retaining the original request for runtime work.
 
     The durable receipt makes an uncertain retry safe, including after another edit.
-    Neither message sequence nor dispatch/work rows change.
+    Neither message sequence nor dispatch/work rows change. When the message is the
+    room's ``META.lastMessage`` the same transaction refreshes the preview (edit) or
+    replaces it with the newest live top-level message (delete), so a deleted
+    message's text is never readable from META. A newer message landing in between
+    cancels the transaction and it retries once against the fresh META.
     """
-    message = await get_message(room_id, seq)
-    meta = await get_room(room_id)
-    member = await get_member(room_id, "human", user_id)
-    if (
-        not message
-        or not meta
-        or meta.get("ownerId") != owner_id
-        or not member
-        or message.get("author", {}).get("kind") != "human"
-        or message["author"].get("id") != user_id
-    ):
-        raise MessageForbidden("Only the author, while a room member, can change this message.")
-    receipt_sk = f"IDEMP#EDIT#{user_id}#{operation_id}"
-    req_hash = request_hash(message["messageId"], expected_revision, text)
-    receipt = await _get(room_pk(room_id), receipt_sk)
-    if receipt:
-        return await _replay_or_conflict(receipt, req_hash)
-    if message.get("deletedAt") or int(message.get("messageRevision", 0)) != expected_revision:
-        raise MessageConflict("This message changed. Refresh the conversation and try again.")
-    now = utc_now_iso()
-    changes = {
-        "editedText": text,
-        "messageRevision": expected_revision + 1,
-        "editedAt": now,
-        "deletedAt": now if text is None else None,
-    }
-    try:
-        await _transact(
-            [
-                {
-                    "ConditionCheck": {
-                        "TableName": _table().name,
-                        "Key": {"pk": room_pk(room_id), "sk": "META"},
-                        "ConditionExpression": "ownerId = :owner",
-                        "ExpressionAttributeValues": {":owner": owner_id},
-                    }
-                },
-                {
-                    "ConditionCheck": {
-                        "TableName": _table().name,
-                        "Key": {"pk": room_pk(room_id), "sk": member_sk("human", user_id)},
-                        "ConditionExpression": "attribute_exists(sk)",
-                    }
-                },
-                {
-                    "Update": {
-                        "TableName": _table().name,
-                        "Key": {"pk": room_pk(room_id), "sk": msg_sk(seq)},
-                        "UpdateExpression": "SET editedText = :text, messageRevision = :next, editedAt = :now, deletedAt = :deleted",
-                        "ConditionExpression": "attribute_exists(sk) AND #author.#kind = :human AND #author.id = :user AND (attribute_not_exists(messageRevision) OR messageRevision = :expected)",
-                        "ExpressionAttributeNames": {"#author": "author", "#kind": "kind"},
-                        "ExpressionAttributeValues": {
-                            ":text": text,
-                            ":next": expected_revision + 1,
-                            ":now": now,
-                            ":deleted": changes["deletedAt"],
-                            ":human": "human",
-                            ":user": user_id,
-                            ":expected": expected_revision,
-                        },
-                    }
-                },
-                {
-                    "Put": {
-                        "TableName": _table().name,
-                        "Item": {
-                            "pk": room_pk(room_id),
-                            "sk": receipt_sk,
-                            "requestHash": req_hash,
-                            "roomId": room_id,
-                            "messageId": message["messageId"],
-                            "messageSeq": seq,
-                            "createdAt": now,
-                        },
-                        "ConditionExpression": "attribute_not_exists(sk)",
-                    }
-                },
-            ]
-        )
-    except ClientError as exc:
-        if not _is_cancelled(exc):
-            raise
+    for attempt in range(2):
+        message = await get_message(room_id, seq)
+        meta = await get_room(room_id)
+        member = await get_member(room_id, "human", user_id)
+        if (
+            not message
+            or not meta
+            or meta.get("ownerId") != owner_id
+            or not member
+            or message.get("author", {}).get("kind") != "human"
+            or message["author"].get("id") != user_id
+        ):
+            raise MessageForbidden("Only the author, while a room member, can change this message.")
+        receipt_sk = f"IDEMP#EDIT#{user_id}#{operation_id}"
+        req_hash = request_hash(message["messageId"], expected_revision, text)
         receipt = await _get(room_pk(room_id), receipt_sk)
         if receipt:
             return await _replay_or_conflict(receipt, req_hash)
-        raise MessageConflict("The message or room access changed. Refresh and try again.") from exc
-    return {**message, **changes}
+        if message.get("deletedAt") or int(message.get("messageRevision", 0)) != expected_revision:
+            raise MessageConflict("This message changed. Refresh the conversation and try again.")
+        now = utc_now_iso()
+        changes = {
+            "editedText": text,
+            "messageRevision": expected_revision + 1,
+            "editedAt": now,
+            "deletedAt": now if text is None else None,
+        }
+        table_name = _table().name
+        meta_item: dict = {
+            "ConditionCheck": {
+                "TableName": table_name,
+                "Key": {"pk": room_pk(room_id), "sk": "META"},
+                "ConditionExpression": "ownerId = :owner",
+                "ExpressionAttributeValues": {":owner": owner_id},
+            }
+        }
+        extra: list[dict] = []
+        if (meta.get("lastMessage") or {}).get("messageId") == message["messageId"]:
+            if text is None:
+                row = await latest_preview_row(room_id, seq)
+                preview = last_message_preview(row) if row else None
+                if row:
+                    extra.append(_unchanged_message_check(table_name, room_id, row))
+            else:
+                preview = last_message_preview({**message, **changes})
+            meta_item = {
+                "Update": {
+                    "TableName": table_name,
+                    "Key": {"pk": room_pk(room_id), "sk": "META"},
+                    "UpdateExpression": "SET lastMessage = :preview",
+                    "ConditionExpression": "ownerId = :owner AND lastMessage.messageId = :mid",
+                    "ExpressionAttributeValues": {
+                        ":owner": owner_id,
+                        ":mid": message["messageId"],
+                        ":preview": preview,
+                    },
+                }
+            }
+        try:
+            await _transact(
+                [
+                    meta_item,
+                    {
+                        "ConditionCheck": {
+                            "TableName": table_name,
+                            "Key": {"pk": room_pk(room_id), "sk": member_sk("human", user_id)},
+                            "ConditionExpression": "attribute_exists(sk)",
+                        }
+                    },
+                    {
+                        "Update": {
+                            "TableName": table_name,
+                            "Key": {"pk": room_pk(room_id), "sk": msg_sk(seq)},
+                            "UpdateExpression": "SET editedText = :text, messageRevision = :next, editedAt = :now, deletedAt = :deleted",
+                            "ConditionExpression": "attribute_exists(sk) AND #author.#kind = :human AND #author.id = :user AND (attribute_not_exists(messageRevision) OR messageRevision = :expected)",
+                            "ExpressionAttributeNames": {"#author": "author", "#kind": "kind"},
+                            "ExpressionAttributeValues": {
+                                ":text": text,
+                                ":next": expected_revision + 1,
+                                ":now": now,
+                                ":deleted": changes["deletedAt"],
+                                ":human": "human",
+                                ":user": user_id,
+                                ":expected": expected_revision,
+                            },
+                        }
+                    },
+                    {
+                        "Put": {
+                            "TableName": table_name,
+                            "Item": {
+                                "pk": room_pk(room_id),
+                                "sk": receipt_sk,
+                                "requestHash": req_hash,
+                                "roomId": room_id,
+                                "messageId": message["messageId"],
+                                "messageSeq": seq,
+                                "createdAt": now,
+                            },
+                            "ConditionExpression": "attribute_not_exists(sk)",
+                        }
+                    },
+                    *extra,
+                ]
+            )
+        except ClientError as exc:
+            if not _is_cancelled(exc):
+                raise
+            receipt = await _get(room_pk(room_id), receipt_sk)
+            if receipt:
+                return await _replay_or_conflict(receipt, req_hash)
+            if attempt == 0:
+                continue  # the preview moved (a newer message) or its replacement changed: reread once
+            raise MessageConflict("The message or room access changed. Refresh and try again.") from exc
+        return {**message, **changes}
+    raise AssertionError("unreachable: the second attempt returns or raises")
 
 
 async def set_reaction(owner_id: str, room_id: str, seq: int, user_id: str, emoji: str, active: bool) -> dict:

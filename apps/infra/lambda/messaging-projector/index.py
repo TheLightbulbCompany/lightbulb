@@ -48,6 +48,29 @@ def _plain_preview(text: str) -> str:
     return text.strip()
 
 
+PREVIEW_CHARS = 140
+MAX_MENTIONED_USERS = 32  # core.repositories.messaging_repo.MAX_ROOM_MEMBERS
+
+
+def _last_message(message: dict[str, Any]) -> dict[str, Any]:
+    """The room-list preview of one message. A copy of the backend's
+    ``messaging_repo.last_message_preview``, which writes ``META.lastMessage``;
+    the backend suite compares the two."""
+    text = message.get("editedText") if int(message.get("messageRevision", 0)) else message.get("text")
+    author = message["author"]
+    return {
+        "messageId": message["messageId"],
+        "seq": int(message["messageSeq"]),
+        "authorId": author["id"],
+        "authorKind": author["kind"],
+        "authorName": author.get("displayName") or author["id"],
+        "textPreview": _plain_preview(text or "")[:PREVIEW_CHARS],
+        "hasAttachments": bool(message.get("attachments")),
+        "createdAt": message["createdAt"],
+        "threadRootMessageId": message.get("threadRootMessageId"),
+    }
+
+
 HTTP_ENDPOINT = os.environ.get("APPSYNC_EVENTS_HTTP_ENDPOINT", "")
 REGION = os.environ.get("APPSYNC_EVENTS_REGION", os.environ.get("AWS_REGION", ""))
 MAX_EVENT_BYTES = 230 * 1024
@@ -495,6 +518,33 @@ def _send_push(
         _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "send_error"})
 
 
+def _member_streams(room_id: str, owner_id: str, after_seq: int | None = None):
+    """``(user_id, member, channel)`` for every CURRENT human member with an
+    active private stream. Membership is strong-read here, at publish time, never
+    taken from a cached list: a member removed before this read gets nothing.
+    ``after_seq`` also skips members who joined at or after that message."""
+    for candidate in _query_rows(f"ROOM#{room_id}", "MEMBER#human#"):
+        user_id = candidate["id"]
+        # Recheck membership after discovery, including remove/rejoin history floor.
+        member = _get_item(f"ROOM#{room_id}", f"MEMBER#human#{user_id}")
+        if not member or member.get("ownerId") != owner_id:
+            continue
+        if after_seq is not None and after_seq <= member.get("joinedSeq", 0):
+            continue
+        home = member.get("homeOwnerId") or owner_id
+        mapping = _get_item(f"OWNER#{home}", f"USERSTREAM#{user_id}")
+        if not mapping or mapping.get("active") is not True:
+            continue
+        key = _require_uuid(mapping.get("channelKey"), "channelKey")
+        reverse = _get_item(f"STREAM#{key}", "META")
+        if not reverse or reverse.get("active") is not True or reverse.get("ownerId") != home or reverse.get("userId") != user_id:
+            continue
+        workspace_id = _workspace_id_for_meta(f"STREAM#{key}", "META", reverse)
+        if workspace_id is None:
+            continue  # this reader's private hint is unresolvable; everyone else still gets theirs
+        yield user_id, member, f"/ws/{workspace_id}/users/{key}"
+
+
 def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[tuple[str, bool]]:
     room_id, seq = message["roomId"], message["messageSeq"]
     owner_id = meta["ownerId"]
@@ -509,25 +559,11 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[tuple
             and (row.get("messageId") == root or row.get("threadRootMessageId") == root)
         }
     mentioned = {ref["id"] for ref in message["mentions"] if ref["kind"] == "human"}
+    last_message = _last_message(message)
+    mentioned_ids = sorted(mentioned)[:MAX_MENTIONED_USERS]
     # (token, was this token's owner @mentioned) — the push title is per reader.
     recipients: list[tuple[str, bool]] = []
-    for candidate in _query_rows(f"ROOM#{room_id}", "MEMBER#human#"):
-        user_id = candidate["id"]
-        # Recheck membership after discovery, including remove/rejoin history floor.
-        member = _get_item(f"ROOM#{room_id}", f"MEMBER#human#{user_id}")
-        if not member or member.get("ownerId") != owner_id or seq <= member.get("joinedSeq", 0):
-            continue
-        home = member.get("homeOwnerId") or owner_id
-        mapping = _get_item(f"OWNER#{home}", f"USERSTREAM#{user_id}")
-        if not mapping or mapping.get("active") is not True:
-            continue
-        key = _require_uuid(mapping.get("channelKey"), "channelKey")
-        reverse = _get_item(f"STREAM#{key}", "META")
-        if not reverse or reverse.get("active") is not True or reverse.get("ownerId") != home or reverse.get("userId") != user_id:
-            continue
-        workspace_id = _workspace_id_for_meta(f"STREAM#{key}", "META", reverse)
-        if workspace_id is None:
-            continue  # this reader's private hint is unresolvable; everyone else still gets theirs
+    for user_id, member, channel in _member_streams(room_id, owner_id, after_seq=seq):
         read = _get_item(f"ROOM#{room_id}", f"READ#human#{user_id}") or {}
         notify = (
             not (message["author"]["kind"] == "human" and message["author"]["id"] == user_id)
@@ -542,16 +578,40 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[tuple
             else:
                 at_me = user_id in mentioned
                 recipients.extend((token, at_me) for token in _push_tokens(user_id))
-        # Content stays behind an authenticated HTTP read, even if access is
-        # removed between this membership check and the user's delivery.
-        _publish(f"/ws/{workspace_id}/users/{key}", {
+        # A <=140-char plain preview may ride the private user channel, to members
+        # current at publish time only (_member_streams strong-reads each one). The
+        # full message stays behind the authenticated HTTP read and the room
+        # channel, whose deliveryKey rotation remains the revocation boundary.
+        _publish(channel, {
             "schemaVersion": 1, "eventId": str(uuid5(UUID(message["messageId"]), f"notify:{user_id}")),
             "type": "room.message.available", "occurredAt": message["createdAt"],
             "roomId": room_id, "messageSeq": seq,
             "payload": {"roomId": room_id, "messageId": message["messageId"],
-                        "messageSeq": seq, "threadRootMessageId": root, "notify": notify},
+                        "messageSeq": seq, "threadRootMessageId": root, "notify": notify,
+                        "lastMessage": last_message, "mentionedUserIds": mentioned_ids},
         })
     return recipients
+
+
+def _publish_preview_change(item: dict[str, Any], meta: dict[str, Any], revision: int) -> None:
+    """An edit or delete of the room's current preview: hand members the new
+    ``META.lastMessage`` (the edit/delete transaction already rewrote it)."""
+    if item.get("threadRootMessageId") or "lastMessage" not in meta:
+        return  # replies never own the preview; a room without the field predates it
+    last = meta["lastMessage"]
+    seq = int(item["messageSeq"])
+    if last is not None and last.get("messageId") != item["messageId"] and int(last["seq"]) > seq:
+        return  # a newer message owns the preview; this edit changed nothing visible
+    room_id = item["roomId"]
+    for user_id, _member, channel in _member_streams(room_id, meta["ownerId"]):
+        _publish(channel, {
+            "schemaVersion": 1, "eventId": str(uuid5(UUID(item["messageId"]), f"preview:{revision}:{user_id}")),
+            "type": "room.message.available", "occurredAt": item["editedAt"],
+            "roomId": room_id, "messageSeq": seq,
+            "payload": {"roomId": room_id, "messageId": item["messageId"], "messageSeq": seq,
+                        "threadRootMessageId": None, "notify": False,
+                        "lastMessage": last, "mentionedUserIds": [], "previewOnly": True},
+        })
 
 
 def _current_credentials():
@@ -625,6 +685,7 @@ def _project_message_update(item: dict[str, Any]) -> None:
         "type": "room.message.updated", "occurredAt": item["editedAt"], "roomId": room_id,
         "payload": {"roomId": room_id, "messageId": message_id, "messageSeq": seq},
     })
+    _publish_preview_change(item, meta, revision)
 
 
 def _project_message(item: dict[str, Any]) -> None:

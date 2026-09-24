@@ -711,6 +711,7 @@ class PaperclipAdminClient:
         idempotency_key: Optional[str] = None,
         idempotency_replay_only: bool = False,
         can_create_agents: bool = False,
+        runtime_config: Optional[dict] = None,
     ) -> dict:
         """Create an agent (employee) inside a company.
 
@@ -742,6 +743,8 @@ class PaperclipAdminClient:
             body["reportsTo"] = reports_to
         if budget_monthly_cents:
             body["budgetMonthlyCents"] = budget_monthly_cents
+        if runtime_config is not None:
+            body["runtimeConfig"] = runtime_config
         if idempotency_replay_only:
             if not idempotency_key:
                 raise ValueError("idempotency_replay_only requires idempotency_key")
@@ -855,6 +858,26 @@ class PaperclipAdminClient:
             f"/api/agents/{agent_id}",
             json=body,
             session_cookie=session_cookie,
+        )
+
+    async def set_agent_heartbeat(self, *, session_cookie: str, agent_id: str, heartbeat: dict) -> dict:
+        """Merge ``heartbeat`` into the agent's ``runtimeConfig.heartbeat``.
+
+        Read-modify-write because ``PATCH /api/agents/{id}`` REPLACES
+        ``runtimeConfig`` wholesale (fork ``routes/agents.ts`` PATCH handler; only
+        ``aiConnection`` is carried over), so a bare heartbeat patch would drop
+        every other runtimeConfig key and the heartbeat keys we do not own
+        (``maxConcurrentRuns``). Skips the PATCH when nothing would change.
+        """
+        agent = await self.get_agent(session_cookie=session_cookie, agent_id=agent_id)
+        runtime_config = dict(agent.get("runtimeConfig") or {})
+        current = runtime_config.get("heartbeat") or {}
+        merged = {**current, **heartbeat}
+        if merged == current:
+            return agent
+        runtime_config["heartbeat"] = merged
+        return await self.patch_agent(
+            session_cookie=session_cookie, agent_id=agent_id, body={"runtimeConfig": runtime_config}
         )
 
     async def delete_agent(

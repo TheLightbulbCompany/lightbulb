@@ -340,10 +340,26 @@ def _org_hint_for_missing_container(workspaces: list[str]) -> str:
     return "no containers row"
 
 
-async def _workspace_memberships(workspaces: list[str]) -> list[dict]:
+#: What removing a workspace's LAST member sets off: Clerk keeps the empty org, and the
+#: ``organizationMembership.deleted`` webhook's last-member teardown (#3115,
+#: ``routers/webhooks._teardown_if_no_members_left``) runs the org-deletion path. The wipe
+#: itself deletes none of this -- which is exactly why the preview has to say so.
+LAST_MEMBER_TEARDOWN = (
+    "cancels the workspace's Stripe subscription",
+    "deletes the workspace's agent runtime",
+    "disables its Teams workspace, which stops every routine including the nightly CEO run",
+    "retires its managed AI key and revokes its join link",
+)
+
+
+async def _workspace_memberships(workspaces: list[str], owner_id: str) -> list[dict]:
     """The facts of EVERY workspace the human belongs to, for the report and
     the admin's workspace-name confirm. Each workspace's company is kept: a
-    human's wipe never deletes a company."""
+    human's wipe never deletes a company -- but when ``owner_id`` is a workspace's
+    LAST member, removing them tears that workspace down (``LAST_MEMBER_TEARDOWN``).
+
+    "Last" is Clerk's roster, read STRICT (the same read that decides the teardown):
+    a Clerk blip raises and stops the preview or wipe, rather than hiding a teardown."""
     repo = PaperclipRepo(table_name="paperclip-companies")
     out: list[dict] = []
     for org_id in workspaces:
@@ -351,6 +367,10 @@ async def _workspace_memberships(workspaces: list[str]) -> list[dict]:
         provisioner = ws.provisioner_user_id if ws is not None else ""
         identity = await repo.get_identity(provisioner) if provisioner else None
         org = await clerk_admin.get_organization(org_id)
+        # No Clerk key (tests, local dev): the webhook cannot read a roster either, so it tears
+        # nothing down -- unknown is not "empty", on both sides.
+        roster = await clerk_admin.list_organization_members(org_id, strict=True) if settings.CLERK_SECRET_KEY else None
+        last_member = roster is not None and all(m.get("user_id") == owner_id for m in roster)
         out.append(
             {
                 "company_id": ws.company_id if ws is not None else "",
@@ -359,6 +379,8 @@ async def _workspace_memberships(workspaces: list[str]) -> list[dict]:
                 "owner_user_id": provisioner or None,
                 "owner_email": (identity.paperclip_email or None) if identity is not None else None,
                 "member_count": len(ws.member_user_ids) if ws is not None else 0,
+                "last_member": last_member,
+                "teardown": list(LAST_MEMBER_TEARDOWN) if last_member else [],
             }
         )
     return out
@@ -367,7 +389,7 @@ async def _workspace_memberships(workspaces: list[str]) -> list[dict]:
 async def resolve_workspace_memberships(owner_id: str) -> list[dict]:
     """``_workspace_memberships`` for ``owner_id`` — the admin router's input
     for its workspace-name confirm."""
-    return await _workspace_memberships(await _workspaces_of(owner_id))
+    return await _workspace_memberships(await _workspaces_of(owner_id), owner_id)
 
 
 def _refused_detail(memberships: list[dict]) -> str:
@@ -538,7 +560,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
     _refuse_bootstrap_account(owner_id, await resolve_account_emails(owner_id))
 
     ids = await _read_identifiers(owner_id)
-    memberships = await _workspace_memberships(ids.workspaces)
+    memberships = await _workspace_memberships(ids.workspaces, owner_id)
     steps: list[WipeStep] = []
 
     if memberships:
@@ -788,7 +810,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
 
     ids = await _read_identifiers(owner_id)
     # Before any step runs: a raise here stops the wipe with nothing deleted.
-    memberships = await _workspace_memberships(ids.workspaces)
+    memberships = await _workspace_memberships(ids.workspaces, owner_id)
     steps: list[WipeStep] = []
 
     email = emails[0] if emails else ""

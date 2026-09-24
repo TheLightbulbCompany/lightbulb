@@ -151,3 +151,56 @@ async def list_all() -> list[dict]:
         if not last:
             return items
         kwargs["ExclusiveStartKey"] = last
+
+
+# --- per-human preferences (daily digest, and any other local-time job) ---
+DEFAULT_TIMEZONE = "America/New_York"
+
+
+def valid_timezone(name: str | None) -> bool:
+    """An IANA zone name ``zoneinfo`` can load (``Europe/Paris``, ``UTC``)."""
+    from zoneinfo import ZoneInfo
+
+    if not name or len(name) > 64:
+        return False
+    try:
+        ZoneInfo(name)
+    except (ValueError, KeyError):  # ZoneInfoNotFoundError is a KeyError; bad paths are ValueError
+        return False
+    return True
+
+
+def timezone_of(row: dict | None) -> str:
+    """The row's IANA ``timezone``, or ``DEFAULT_TIMEZONE`` when unset/unloadable."""
+    tz = (row or {}).get("timezone")
+    return tz if valid_timezone(tz) else DEFAULT_TIMEZONE
+
+
+async def get_timezone(user_id: str) -> str:
+    """The human's IANA timezone (``users.timezone``), default ``America/New_York``."""
+    return timezone_of(await get(user_id))
+
+
+def daily_summary_on(row: dict | None) -> bool:
+    """The "Daily summary" pref (``users.daily_summary``). Absent means ON."""
+    return (row or {}).get("daily_summary") is not False
+
+
+async def set_prefs(user_id: str, *, timezone: str | None = None, daily_summary: bool | None = None) -> None:
+    """Scoped SET of the given prefs on an existing row (no-op when the row is
+    absent or nothing is given). Callers validate ``timezone`` first."""
+    values = {k: v for k, v in (("timezone", timezone), ("daily_summary", daily_summary)) if v is not None}
+    if not values:
+        return
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"user_id": user_id},
+            UpdateExpression="SET " + ", ".join(f"#{k} = :{k}" for k in values),
+            ConditionExpression="attribute_exists(user_id)",
+            ExpressionAttributeNames={f"#{k}": k for k in values},
+            ExpressionAttributeValues={f":{k}": v for k, v in values.items()},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise

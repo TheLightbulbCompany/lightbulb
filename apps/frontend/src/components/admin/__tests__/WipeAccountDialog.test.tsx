@@ -140,7 +140,7 @@ describe("WipeAccountDialog", () => {
     await user.click(wipeButton);
 
     expect(await within(dialog).findByText("timeout contacting ECS")).toBeInTheDocument();
-    expect(mockExecute).toHaveBeenCalledWith(USER_ID, EMAIL, undefined);
+    expect(mockExecute).toHaveBeenCalledWith(USER_ID, EMAIL, undefined, []);
     expect(within(dialog).queryByRole("button", { name: /permanently wipe/i })).toBeNull();
   });
 
@@ -213,7 +213,46 @@ describe("WipeAccountDialog", () => {
     expect(wipeButton).toBeEnabled();
 
     await user.click(wipeButton);
-    expect(mockExecute).toHaveBeenCalledWith(USER_ID, EMAIL, "Isol8");
+    expect(mockExecute).toHaveBeenCalledWith(USER_ID, EMAIL, "Isol8", []);
+  });
+
+  it("says a last member's removal tears the workspace down, and makes the admin name it again", async () => {
+    mockPreview.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: {
+        owner_id: USER_ID,
+        dry_run: true,
+        workspaces: [
+          {
+            company_id: "company_blue",
+            org_id: "org_blue",
+            workspace_name: "Blue Caller",
+            owner_user_id: USER_ID,
+            owner_email: EMAIL,
+            member_count: 1,
+            last_member: true,
+            teardown: ["cancels the workspace's Stripe subscription", "deletes the workspace's agent runtime"],
+          },
+        ],
+        steps: [{ system: "clerk_user", action: "delete_user", status: "would_delete", detail: "", error: null }],
+      },
+    });
+    const { user, dialog } = await openDialog();
+    await within(dialog).findByText("delete_user");
+
+    expect(
+      within(dialog).getByText(/last member of "Blue Caller".*cancels the workspace's Stripe subscription; deletes the workspace's agent runtime/),
+    ).toBeInTheDocument();
+    const wipeButton = within(dialog).getByRole("button", { name: /permanently wipe/i });
+    await user.type(within(dialog).getByLabelText(new RegExp(`Type ${EMAIL}`, "i")), EMAIL);
+    await user.type(within(dialog).getByLabelText(/Type Blue Caller to confirm the workspace/i), "Blue Caller");
+    expect(wipeButton).toBeDisabled();
+
+    await user.type(within(dialog).getByLabelText(/Type Blue Caller to tear that workspace down/i), "Blue Caller");
+    expect(wipeButton).toBeEnabled();
+    await user.click(wipeButton);
+    expect(mockExecute).toHaveBeenCalledWith(USER_ID, EMAIL, "Blue Caller", ["Blue Caller"]);
   });
 
   it("disables the trigger when the account has no email on file", () => {

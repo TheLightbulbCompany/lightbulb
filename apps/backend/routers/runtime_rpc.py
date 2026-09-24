@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import httpx
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user
 from core.repositories import integrations_repo
-from core.services import owner_lifecycle
 from core.services import runtime_rpc as service
 from core.services import messaging
 from core.services.credentials import access_token, registry
@@ -20,6 +20,7 @@ from core.services.messaging import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class RuntimeCredentialRequest(BaseModel):
@@ -60,8 +61,18 @@ async def runtime_credentials(
         key = provider.mcp_remote.key if provider.mcp_remote else provider.key
         try:
             tokens[key] = await access_token.get(owner_id, provider.key)
-        except (access_token.ReconnectRequired, httpx.HTTPError, KeyError, owner_lifecycle.OwnerLifecycleBusyError):
-            # One provider's failure must not drop every other provider's token for the turn.
+        except access_token.ReconnectRequired:
+            unavailable.append(provider.key)  # not connected / no usable grant: the owner reconnects
+        except Exception as exc:  # noqa: BLE001
+            # One provider's failure must not drop every other provider's token for the turn --
+            # an unexpected error included (a missing repo function once 500'd the whole call).
+            logger.warning(
+                "runtime credential unavailable owner=%s provider=%s error=%s: %s",
+                owner_id,
+                provider.key,
+                type(exc).__name__,
+                exc,
+            )
             unavailable.append(provider.key)
     response.headers["Cache-Control"] = "no-store"
     return {"tokens": tokens, "unavailable": unavailable}

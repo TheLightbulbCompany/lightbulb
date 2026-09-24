@@ -993,7 +993,8 @@ async def _reconcile_entitlements(owner_id: str) -> bool:
     * Metronome customer: ``ensure_metronome_customer`` owns eligibility (a ``trial_local`` or
       canceled owner gets nothing). Skipped only on a POSITIVE ChatGPT/BYO choice -- inference
       we never bill -- never on absence: under-provisioning reopens uncredited managed spend.
-    * Nightly CEO: ``arm_nightly_ceo`` (paid or unexpired trial; cache-cheap once armed), so a
+    * Nightly CEO: ``arm_nightly_ceo`` (paid or unexpired trial) re-derives the CEO's timer
+      heartbeat interval from today's billing, so a plan or provider switch moves it and a
       re-subscribe whose runtime survived teardown is re-armed by this reconcile."""
     from core.billing.metronome_provisioning import ensure_metronome_customer
     from core.repositories import billing_repo

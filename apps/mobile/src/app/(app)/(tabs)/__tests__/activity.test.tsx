@@ -1,4 +1,4 @@
-import type { ActivityAction, ActivityItem } from "@lightbulb/shared";
+import { ApiError, type ActivityAction, type ActivityItem } from "@lightbulb/shared";
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
 import { Alert } from "react-native";
 
@@ -140,6 +140,16 @@ it("shows the server's message when an action fails", async () => {
   await render(<Activity />);
   await fireEvent.press(screen.getByRole("button", { name: "Approve" }));
   expect(await screen.findByText("You can't decide this approval.")).toBeTruthy();
+});
+
+it("shows local neutral copy, not the server's, for a purchase-gate action failure", async () => {
+  mockState = { items: [item()] };
+  const detail = { blocked: true, code: "subscription_required", message: "Pick a plan to keep your agent." };
+  mockRunAction.mockRejectedValue(new ApiError(402, { detail }, detail.message));
+  await render(<Activity />);
+  await fireEvent.press(screen.getByRole("button", { name: "Approve" }));
+  expect(await screen.findByText("This account doesn't have an active plan right now.")).toBeTruthy();
+  expect(screen.queryByText(/pick a plan/i)).toBeNull();
 });
 
 it("navigates: an issue action, a thread row, a run", async () => {

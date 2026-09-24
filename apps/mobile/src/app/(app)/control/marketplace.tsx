@@ -47,7 +47,6 @@ function ListingRow({ item }: { item: Listing }) {
   const summary = listingSummary(item.description_md);
   const byline = listingByline(item);
   const free = !item.price_cents || item.price_cents <= 0;
-  const price = formatPrice(item.price_cents);
 
   return (
     <Pressable
@@ -66,11 +65,11 @@ function ListingRow({ item }: { item: Listing }) {
           <Text style={styles.name} numberOfLines={1}>
             {item.name}
           </Text>
-          <View style={[styles.priceBadge, !free && styles.priceBadgePaid]}>
-            <Text style={styles.priceText}>
-              {price}
-            </Text>
-          </View>
+          {free && (
+            <View style={styles.priceBadge}>
+              <Text style={styles.priceText}>{formatPrice(item.price_cents)}</Text>
+            </View>
+          )}
         </View>
         {summary !== "" && (
           <Text style={styles.summary} numberOfLines={1}>
@@ -272,9 +271,7 @@ const styles = StyleSheet.create({
     color: colors.mute,
   },
 
-  // Price badge — one surface step for both; FREE takes the plain hairline,
-  // paid takes a brass rule. Brass is 2.94:1 on cream so it is the BORDER, not
-  // the type; the amount itself stays midnight.
+  // Price badge — FREE only (App Store 3.1.1: no price shown for paid rows).
   priceBadge: {
     paddingHorizontal: spacing.sm,
     paddingVertical: 2,
@@ -283,7 +280,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.edge,
   },
-  priceBadgePaid: { borderColor: colors.gold },
   priceText: {
     fontFamily: fonts.mono,
     fontSize: 9,

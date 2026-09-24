@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from core.auth import AuthContext, get_current_user
 from core.dynamodb import utc_now_iso
 from core.repositories import user_repo
+from core.repositories.user_repo import valid_timezone
 from schemas.user_schemas import DeviceRegisterRequest, DeviceRegisterResponse
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,9 @@ async def register_device(
         await user_repo.put(auth.user_id, auth.email)
     entry = {"token": body.token, "platform": body.platform, "updatedAt": utc_now_iso()}
     await user_repo.set_push_token(auth.user_id, body.deviceId, entry)
+    # Optional, and never a reason to fail registration: an unknown zone is dropped.
+    if valid_timezone(body.timezone):
+        await user_repo.set_prefs(auth.user_id, timezone=body.timezone)
     return {"status": "registered"}
 
 

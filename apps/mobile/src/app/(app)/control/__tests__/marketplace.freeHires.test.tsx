@@ -118,6 +118,21 @@ describe("marketplace search results", () => {
     await render(<MarketplacePanel />);
     expect(screen.getByText("Butler")).toBeTruthy();
   });
+
+  it("shows no dollar figure on the seller's own paid row (App Store 3.1.1)", async () => {
+    mockSearchItems = [
+      makeListing({
+        listing_id: "l_mine",
+        name: "Butler",
+        price_cents: 1000,
+        seller_id: "user_me",
+      }),
+    ];
+    await render(<MarketplacePanel />);
+    expect(screen.getByText("Butler")).toBeTruthy();
+    expect(screen.queryByText(/\$/)).toBeNull();
+    expect(screen.queryByText("FREE")).toBeNull();
+  });
 });
 
 describe("listing detail", () => {

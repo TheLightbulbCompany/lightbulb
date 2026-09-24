@@ -137,3 +137,21 @@ async def test_the_wipe_sweeps_the_namespaced_row(integrations_table):
     await integrations_repo.record_provider_resource("org_a", "posthog", _res())
     assert sorted(await integrations_repo.delete_all_for_owner("org_a")) == ["linear", "projects/posthog"]
     assert await integrations_repo.list_for_owner("org_a") == []
+
+
+@pytest.mark.asyncio
+async def test_set_status_flips_status_and_keeps_the_rest_of_the_row(integrations_table):
+    from core.repositories import integrations_repo
+
+    await integrations_repo.put_status(
+        "org_a", "microsoft365", "connected", identity="ada@contoso.com", tenant_id="t-1"
+    )
+    before = await integrations_repo.get("org_a", "microsoft365")
+    await integrations_repo.set_status("org_a", "microsoft365", "reconnect_required")
+    after = await integrations_repo.get("org_a", "microsoft365")
+    assert after["status"] == "reconnect_required"
+    assert (after["identity"], after["tenant_id"], after["connected_at"]) == (
+        before["identity"],
+        before["tenant_id"],
+        before["connected_at"],
+    )

@@ -164,6 +164,13 @@ describe("panelRegistry", () => {
     expect(durableParamsFor("browser")).toEqual(["panel"]);
   });
 
+  it("describes the activity feed as a paramless singleton", () => {
+    expect(describePanel("activity", {})).toEqual({
+      panelId: "activity", component: "activity", title: "Activity", params: {},
+    });
+    expect(durableParamsFor("activity")).toEqual(["panel"]);
+  });
+
   it("describes the money panel with a durable ?day deep link", () => {
     expect(describePanel("teams-money", { day: "2026-09-05" })).toEqual({
       panelId: "teams-money", component: "teams", title: "Money", params: { teamsKey: "money", day: "2026-09-05" },
@@ -277,7 +284,7 @@ describe("panelRegistry", () => {
 
   it("registers exactly the component keys the shell's components map will have", () => {
     expect([...PANEL_COMPONENT_KEYS].sort()).toEqual(
-      ["browser", "chat", "control", "file-viewer", "missing", "teams"].sort(),
+      ["activity", "browser", "chat", "control", "file-viewer", "missing", "teams"].sort(),
     );
   });
 

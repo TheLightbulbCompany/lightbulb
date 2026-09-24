@@ -57,15 +57,21 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
   // backend demands the first workspace's name.
   const [workspaces, setWorkspaces] = React.useState<WorkspaceMembership[]>([]);
   const [typedWorkspace, setTypedWorkspace] = React.useState("");
+  const [typedTeardown, setTypedTeardown] = React.useState<Record<string, string>>({});
   const [executing, setExecuting] = React.useState(false);
   const [resultSteps, setResultSteps] = React.useState<WipeStep[] | null>(null);
   const [executeError, setExecuteError] = React.useState<string | null>(null);
 
   const workspacePhrase = workspaces.length ? workspaces[0].workspace_name || workspaces[0].org_id : null;
+  // Removing a workspace's LAST member tears that workspace down (#3115): each one is
+  // named a second time, on its own, before the wipe can run.
+  const teardowns = workspaces.filter((w) => w.last_member);
+  const teardownPhrase = (w: WorkspaceMembership) => w.workspace_name || w.org_id;
   const matches =
     email != null &&
     typedEmail === email &&
-    (workspacePhrase === null || typedWorkspace === workspacePhrase);
+    (workspacePhrase === null || typedWorkspace === workspacePhrase) &&
+    teardowns.every((w) => typedTeardown[w.org_id] === teardownPhrase(w));
   const wipeDisabled = !matches || executing || previewSteps === null || resultSteps !== null;
 
   async function loadPreview() {
@@ -98,6 +104,7 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
       setTypedEmail("");
       setWorkspaces([]);
       setTypedWorkspace("");
+      setTypedTeardown({});
       setResultSteps(null);
       setExecuteError(null);
       void loadPreview();
@@ -114,6 +121,7 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
         userId,
         typedEmail,
         workspacePhrase === null ? undefined : typedWorkspace,
+        teardowns.map((w) => typedTeardown[w.org_id] ?? ""),
       );
       if (!result.ok) {
         setExecuteError(result.error ?? "wipe_failed");
@@ -189,6 +197,25 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
                 disabled={executing}
               />
             ) : null}
+            {teardowns.map((w) => (
+              <div key={w.org_id} className="space-y-2">
+                <ErrorBanner
+                  variant="error"
+                  error={
+                    `This account is the last member of ${w.workspace_name ? `"${w.workspace_name}"` : w.org_id}. ` +
+                    `Removing it tears that workspace down: it ${(w.teardown ?? []).join("; ")}.`
+                  }
+                />
+                <ConfirmInput
+                  id={`wipe-confirm-teardown-${w.org_id}`}
+                  phrase={teardownPhrase(w)}
+                  action="to tear that workspace down"
+                  value={typedTeardown[w.org_id] ?? ""}
+                  onChange={(value) => setTypedTeardown((prev) => ({ ...prev, [w.org_id]: value }))}
+                  disabled={executing}
+                />
+              </div>
+            ))}
           </div>
         ) : null}
 

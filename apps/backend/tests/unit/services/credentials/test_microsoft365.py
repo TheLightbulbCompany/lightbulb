@@ -212,3 +212,39 @@ async def test_disconnect_deletes_the_secret_and_the_row(mock_repo, mock_store, 
 def test_microsoft365_available_in_prod():
     # Both Entra apps and both platform secrets exist; the provider ships everywhere.
     assert registry.get_provider("microsoft365").environments is None
+
+
+@pytest.mark.asyncio
+async def test_a_connected_row_with_no_grant_flips_to_reconnect_required(monkeypatch):
+    # Prod 2026-09-24: a pre-brokering Stripe connect left a connected row and no token secret;
+    # this path called a repo function that did not exist and 500'd every turn's credential call.
+    set_status = AsyncMock()
+    monkeypatch.setattr(access_token.owner_lifecycle, "owner_lifecycle_guard", _no_lease)
+    monkeypatch.setattr(access_token.integrations_repo, "get", AsyncMock(return_value={"status": "connected"}))
+    monkeypatch.setattr(access_token.integration_secret_store, "get", AsyncMock(return_value=None))
+    monkeypatch.setattr(access_token.integrations_repo, "set_status", set_status)
+    with pytest.raises(access_token.ReconnectRequired):
+        await access_token.get("org_a", "microsoft365")
+    set_status.assert_awaited_once_with("org_a", "microsoft365", "reconnect_required")
+
+
+@pytest.mark.asyncio
+async def test_one_providers_unexpected_error_never_fails_the_whole_broker_call(async_client, monkeypatch):
+    from core.services import container_auth
+    from routers import runtime_rpc
+
+    monkeypatch.setattr(
+        container_auth.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "hook-a"})
+    )
+    monkeypatch.setattr(
+        runtime_rpc.integrations_repo,
+        "list_for_owner",
+        AsyncMock(return_value=[{"provider": "microsoft365", "status": "connected"}]),
+    )
+    monkeypatch.setattr(runtime_rpc.messaging, "load_agent_roster", AsyncMock(return_value=[{"id": "ceo"}]))
+    monkeypatch.setattr(runtime_rpc.access_token, "get", AsyncMock(side_effect=AttributeError("boom")))
+    r = await async_client.post(
+        "/api/v1/runtime/credentials/u/org_a", json={"agent_id": "ceo"}, headers={"Authorization": "Bearer hook-a"}
+    )
+    assert r.status_code == 200
+    assert r.json() == {"tokens": {}, "unavailable": ["microsoft365"]}

@@ -3,7 +3,7 @@
 // components map all derive from this file — nothing else may invent a
 // panel id or component name.
 
-export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "missing";
+export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "missing";
 
 export interface PanelDescriptor {
   panelId: string;
@@ -181,6 +181,7 @@ export const PANEL_COMPONENT_KEYS: ReadonlySet<string> = new Set([
   "control",
   "file-viewer",
   "browser",
+  "activity",
   "missing",
 ]);
 
@@ -252,6 +253,13 @@ export function describePanel(
     // panel watches whichever session is live on it — so a second open focuses
     // the existing panel rather than double-viewing the same stream.
     return { panelId: "browser", component: "browser", title: "Browser", params: {} };
+  }
+
+  // The viewer's Activity feed (mentions, DMs, thread replies, what Paperclip asks of
+  // them). Singleton: one feed per viewer. The old company-wide view stays the Teams
+  // Inbox, reachable from inside the feed.
+  if (key === "activity") {
+    return { panelId: "activity", component: "activity", title: "Activity", params: {} };
   }
 
   if (key === "agent-inspector") {

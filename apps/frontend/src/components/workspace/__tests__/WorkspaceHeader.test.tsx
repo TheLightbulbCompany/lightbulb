@@ -45,6 +45,8 @@ vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
   useMarketplaceDrawer: () => ({ open: openMarketplace }),
 }));
 
+const activityState = { unseenCount: 0 };
+vi.mock("@/hooks/useActivity", () => ({ useActivity: () => activityState }));
 vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), useWorkspaceState: () => ({ activePanelId }) }));
 
 import { trackTeamRunActivity } from "@/components/notifications/teamRunActivity";
@@ -65,7 +67,7 @@ describe("WorkspaceHeader", () => {
     expect(openPanel).not.toHaveBeenCalled();
   });
 
-  it.each([["Home", "teams-dashboard"], ["Activity", "teams-inbox"], ["Tasks", "teams-issues"]])("opens %s and marks the active destination", (label, panel) => {
+  it.each([["Home", "teams-dashboard"], ["Activity", "activity"], ["Tasks", "teams-issues"]])("opens %s and marks the active destination", (label, panel) => {
     activePanelId = panel;
     render(<WorkspaceHeader />);
     const button = screen.getByRole("button", { name: label });
@@ -109,16 +111,25 @@ describe("WorkspaceHeader", () => {
     shared.statusLoaded = false;
   });
 
-  it("shows active team runs on Activity without covering workspace content", () => {
+  it("shows active team runs on Tasks without covering workspace content", () => {
     act(() => trackTeamRunActivity("teams.heartbeat.run.queued", { runId: "run-1" }));
     render(<WorkspaceHeader />);
-    const activity = screen.getByRole("button", { name: "Activity, 1 active team run" });
-    expect(within(activity).getByText("1")).toBeInTheDocument();
-    fireEvent.click(activity);
-    expect(openPanel).toHaveBeenCalledWith("teams-inbox", {}, { pushUrl: true });
+    const tasks = screen.getByRole("button", { name: "Tasks, 1 active team run" });
+    expect(within(tasks).getByText("1")).toBeInTheDocument();
+    fireEvent.click(tasks);
+    expect(openPanel).toHaveBeenCalledWith("teams-issues", {}, { pushUrl: true });
 
     // Resolve the run so it doesn't leak into the next test's activity count.
     act(() => trackTeamRunActivity("teams.heartbeat.run.status", { runId: "run-1", status: "succeeded" }));
+  });
+  it("badges Activity with unseen items only", () => {
+    activityState.unseenCount = 3;
+    render(<WorkspaceHeader />);
+    const activity = screen.getByRole("button", { name: "Activity, 3 unseen" });
+    expect(within(activity).getByText("3")).toBeInTheDocument();
+    fireEvent.click(activity);
+    expect(openPanel).toHaveBeenCalledWith("activity", {}, { pushUrl: true });
+    activityState.unseenCount = 0;
   });
   it("returns to Messages and keeps settings accessible", () => {
     render(<WorkspaceHeader />);

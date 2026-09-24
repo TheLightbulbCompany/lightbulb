@@ -6,7 +6,7 @@ import { useRooms as useSharedRooms, type RoomsPlatform, type UseRoomsResult } f
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 
 // The browser's half of RoomsPlatform.isVisible: document visible, window focused.
-const pageVisible = () => document.visibilityState === "visible" && document.hasFocus();
+export const pageVisible = () => document.visibilityState === "visible" && document.hasFocus();
 
 /** `roomVisible` false: something covers the room (a session in focus), so it must not auto-read. */
 export function useRooms(initialAgentId?: string | null, subscribeToRoom = true, roomVisible = true) {

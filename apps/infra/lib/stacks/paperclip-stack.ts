@@ -504,6 +504,13 @@ export class PaperclipStack extends cdk.Stack {
         PAPERCLIP_STORAGE_PROVIDER: "s3",
         PAPERCLIP_STORAGE_S3_BUCKET: attachmentsBucket.bucketName,
         PAPERCLIP_STORAGE_S3_REGION: this.region,
+        // Mirror run logs to S3 (fork run-log-store.ts). Without these they
+        // live only on the task's local disk and vanish on replacement. Same
+        // bucket as attachments (task role already has grantReadWrite), under
+        // its own key prefix.
+        RUN_LOG_S3_BUCKET: attachmentsBucket.bucketName,
+        RUN_LOG_S3_REGION: this.region,
+        RUN_LOG_S3_PREFIX: "run-logs",
         // Drives the remote-agent heartbeat loop. Upstream sets this for
         // public ECS deploys; without it some scheduler-dependent flows
         // never fire.
@@ -612,6 +619,9 @@ export class PaperclipStack extends cdk.Stack {
       cluster: props.cluster,
       taskDefinition,
       serviceName: `lightbulb-${env}-paperclip-server`,
+      // Exactly one task, no autoscaling: the fork's orphan-run reaper is not
+      // task-aware, so a second task reaps a sibling's in-flight runs as
+      // process_lost, and live events + agent start locks are process-local.
       desiredCount: 1,
       securityGroups: [this.taskSecurityGroup],
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
@@ -626,20 +636,6 @@ export class PaperclipStack extends cdk.Stack {
         dnsRecordType: servicediscovery.DnsRecordType.A,
         dnsTtl: cdk.Duration.seconds(10),
       },
-    });
-
-    // Autoscale on CPU 70%, 1–4 tasks. Per spec §3.3.
-    const scaling = this.service.autoScaleTaskCount({
-      minCapacity: 1,
-      maxCapacity: 4,
-    });
-    scaling.scaleOnCpuUtilization("PaperclipCpuScaling", {
-      // Explicit: CDK would otherwise derive the name from the construct path,
-      // which embeds the stack's construct id.
-      policyName: `lightbulb-${env}-paperclip-cpu`,
-      targetUtilizationPercent: 70,
-      scaleInCooldown: cdk.Duration.minutes(5),
-      scaleOutCooldown: cdk.Duration.minutes(2),
     });
 
     // ─────────────────────────────────────────────────────────────────

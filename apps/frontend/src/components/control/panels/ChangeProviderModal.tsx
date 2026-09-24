@@ -474,7 +474,7 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
       />
 
       <p className="text-xs text-[var(--midnight-muted)]">
-        Stored encrypted in AWS Secrets Manager. We validate the key against the
+        Stored encrypted. We validate the key against the
         provider before saving — invalid keys are rejected here, not at chat time.
       </p>
 

@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, groupRows, sessionLabel, sessionStatus, sessionViewKey, unavailableReason, useLocalSessionHistory, useSessionCommand, useWorkspaceSessions,
+  ApiError, buildRows, groupRows, sessionLabel, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, useSessionCommand, useWorkspaceSessions,
   type LocalSession, type SessionSource, type TranscriptItem,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -16,8 +16,9 @@ import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
 import { SessionPromptRow } from "../../../components/session/SessionPromptRow";
 import { SessionStatusDot } from "../../../components/session/SessionStatusDot";
+import { SessionToolIcon } from "../../../components/session/SessionToolIcon";
 import { TranscriptRowView, WorkingRow } from "../../../components/session/TranscriptRow";
-import { colors, fonts, spacing } from "../../../config/theme";
+import { colors, fonts, spacing, type } from "../../../config/theme";
 import { memberName } from "../../../lib/localSessions";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
 import { useMobileRooms } from "../../../lib/rooms";
@@ -92,7 +93,14 @@ export default function SessionScreen() {
 
   const headerOptions = {
     // The back button is the (app) Stack's own: this is a pushed screen.
-    title: session ? sessionLabel(session) : "Session",
+    title: session ? sessionTitle(session) : "Session",
+    // The tool's logo before the title; the label keeps its name for VoiceOver.
+    headerTitle: session ? () => (
+      <View style={styles.headerTitle} accessible accessibilityRole="header" accessibilityLabel={sessionLabel(session)}>
+        <SessionToolIcon provider={session.provider} />
+        <Text style={styles.headerName} numberOfLines={1} maxFontSizeMultiplier={1}>{sessionTitle(session)}</Text>
+      </View>
+    ) : undefined,
     // Only when someone ELSE is sharing this session -- no "message yourself".
     headerRight: session && session.humanUserId !== userId ? () => (
       <Pressable
@@ -278,6 +286,8 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.cream },
+  headerTitle: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 },
+  headerName: { ...type.navTitle, flexShrink: 1 },
   centered: { flex: 1, padding: spacing.lg, gap: spacing.sm },
   summary: {
     paddingHorizontal: spacing.lg,

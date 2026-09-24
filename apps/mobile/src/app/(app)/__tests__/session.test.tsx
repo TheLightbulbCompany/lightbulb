@@ -12,8 +12,10 @@ jest.mock("expo-router", () => {
     // header; this mock is the whole navigator here, so it has to do that
     // itself or the DM button would never mount at all -- see conversation.test.tsx.
     Stack: {
-      Screen: ({ options }: { options?: { headerRight?: () => ReactNode } }) =>
-        options?.headerRight ? options.headerRight() : null,
+      Screen: ({ options }: { options?: { headerTitle?: () => ReactNode; headerRight?: () => ReactNode } }) => {
+        const { createElement, Fragment } = require("react");
+        return createElement(Fragment, null, options?.headerTitle?.() ?? null, options?.headerRight?.() ?? null);
+      },
     },
     useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(() => cb(), [cb]),
     useIsFocused: () => true,
@@ -116,6 +118,14 @@ describe("session screen", () => {
     mockSubmit.mockReset();
     mockSubmit.mockImplementation(async (_s: string, request: LocalSessionCommand) => receipt(request));
     mockGetCommand.mockReset();
+  });
+
+  it("titles the screen with the tool's logo and the bare title, naming the tool for VoiceOver", async () => {
+    await render(<SessionScreen />);
+    const header = await screen.findByLabelText("Claude · Fix relay");
+    expect(header.props.accessibilityRole).toBe("header");
+    expect(screen.getByText("Fix relay")).toBeTruthy();
+    expect(screen.getByTestId("session-tool-claude", { includeHiddenElements: true })).toBeTruthy();
   });
 
   it("renders the transcript in the Claude grammar with the owner's attribution", async () => {

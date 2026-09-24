@@ -13,6 +13,7 @@ export const PROVIDER_BRAND = {
   // literal #FFFFFF that was invisible on the cream popover.
   amazonWordmark: "var(--foreground)",
   anthropic: "#D4A574",
+  claude: "#D97757",
   cohere: "#39594D",
   cohereViolet: "#D18EE2",
   cohereCoral: "#FF7759",

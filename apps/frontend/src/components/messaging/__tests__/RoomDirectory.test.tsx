@@ -711,7 +711,11 @@ it("lists live sessions above the room groups, hides the section when empty, and
     sessions={[{ session, ownerName: "Alice", own: false }]} onSelectSession={onSelectSession} />);
   const section = screen.getByRole("region", { name: "Sessions" });
   expect(section.compareDocumentPosition(screen.getByRole("region", { name: "Channels" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  await userEvent.click(within(section).getByRole("button", { name: /Open Claude · Fix login, Alice, Working/ }));
+  const row = within(section).getByRole("button", { name: /Open Claude · Fix login, Alice, Working/ });
+  expect(row).not.toHaveTextContent("Claude ·");
+  expect(within(row).getByText("Fix login")).toBeInTheDocument();
+  expect(row.querySelector(".session-tool-badge .native-session-dot-busy")).not.toBeNull();
+  await userEvent.click(row);
   expect(onSelectSession).toHaveBeenCalledWith("s1");
   rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} sessions={[]} />);
   expect(screen.queryByRole("region", { name: "Sessions" })).not.toBeInTheDocument();

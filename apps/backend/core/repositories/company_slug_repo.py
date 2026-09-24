@@ -42,8 +42,8 @@ async def reserve(*, slug: str, owner_id: str) -> bool:
         await run_in_thread(
             table.put_item,
             Item=item,
-            ConditionExpression="attribute_not_exists(slug) OR owner_id = :owner",
-            ExpressionAttributeValues={":owner": owner_id},
+            ConditionExpression=_FREE_FOR_OWNER,
+            ExpressionAttributeValues=_free_values(owner_id),
         )
         return True
     except ClientError as e:
@@ -69,21 +69,71 @@ def is_stale_hold(row: dict) -> bool:
     )
 
 
+#: A put succeeds when the slug is free, already this owner's, or an abandoned hold. The
+#: stale clause lives on EVERY claim (``hold`` and ``reserve``) -- otherwise a hold nobody
+#: claimed would block that slug forever.
+_FREE_FOR_OWNER = (
+    "attribute_not_exists(slug) OR owner_id = :owner OR (begins_with(owner_id, :pending) AND held_at < :cutoff)"
+)
+
+
+def _free_values(owner_id: str) -> dict:
+    return {":owner": owner_id, ":pending": PENDING_PREFIX, ":cutoff": int(time.time() - HOLD_TTL_S)}
+
+
+async def _pending_rows(user_id: str) -> list[dict]:
+    response = await run_in_thread(
+        _get_table().query, IndexName="by-owner", KeyConditionExpression=Key("owner_id").eq(pending_owner(user_id))
+    )
+    return response.get("Items", [])
+
+
 async def hold(*, slug: str, user_id: str) -> bool:
     """Hold ``slug`` for ``user_id`` ahead of workspace creation. True when this user now
-    holds it (free, already theirs, or a stale hold); False when someone else holds it."""
+    holds it; False when someone else does. A user keeps ONE hold: taking a new one drops
+    their others, so one account cannot sit on many names."""
     owner = pending_owner(user_id)
+    slug = normalize(slug)
+    table = _get_table()
     try:
         await run_in_thread(
-            _get_table().put_item,
-            Item={"slug": normalize(slug), "owner_id": owner, "created_at": utc_now_iso(), "held_at": int(time.time())},
-            ConditionExpression=(
-                "attribute_not_exists(slug) OR owner_id = :owner"
-                " OR (begins_with(owner_id, :pending) AND held_at < :cutoff)"
-            ),
+            table.put_item,
+            Item={"slug": slug, "owner_id": owner, "created_at": utc_now_iso(), "held_at": int(time.time())},
+            ConditionExpression=_FREE_FOR_OWNER,
+            ExpressionAttributeValues=_free_values(owner),
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+    for row in await _pending_rows(user_id):
+        if row["slug"] != slug:
+            try:
+                await run_in_thread(
+                    table.delete_item,
+                    Key={"slug": row["slug"]},
+                    ConditionExpression="owner_id = :owner",
+                    ExpressionAttributeValues={":owner": owner},
+                )
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+    return True
+
+
+async def claim(*, slug: str, user_id: str, owner_id: str) -> bool:
+    """Hand ``user_id``'s live hold on ``slug`` to the workspace ``owner_id`` -- a strongly
+    consistent keyed update. True when the workspace now owns it (including a replay)."""
+    pending = pending_owner(user_id)
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"slug": normalize(slug)},
+            UpdateExpression="SET owner_id = :owner REMOVE held_at",
+            ConditionExpression="owner_id = :owner OR (owner_id = :pending AND held_at >= :cutoff)",
             ExpressionAttributeValues={
-                ":owner": owner,
-                ":pending": PENDING_PREFIX,
+                ":owner": owner_id,
+                ":pending": pending,
                 ":cutoff": int(time.time() - HOLD_TTL_S),
             },
         )
@@ -95,31 +145,12 @@ async def hold(*, slug: str, user_id: str) -> bool:
 
 
 async def claim_hold(*, user_id: str, owner_id: str) -> str | None:
-    """Hand ``user_id``'s newest hold to the workspace ``owner_id``. Returns the slug, or
-    None when the user holds nothing (or lost it). Idempotent: a replay after the hand-over
-    finds no pending row and changes nothing."""
-    table = _get_table()
-    pending = pending_owner(user_id)
-    response = await run_in_thread(
-        table.query, IndexName="by-owner", KeyConditionExpression=Key("owner_id").eq(pending)
-    )
-    rows = sorted(response.get("Items", []), key=lambda r: int(r.get("held_at", 0)), reverse=True)
-    if not rows:
-        return None
-    slug = rows[0]["slug"]
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"slug": slug},
-            UpdateExpression="SET owner_id = :owner REMOVE held_at",
-            ConditionExpression="owner_id = :pending",
-            ExpressionAttributeValues={":owner": owner_id, ":pending": pending},
-        )
-    except ClientError as e:
-        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return None
-        raise
-    return slug
+    """The ``organization.created`` backstop: claim the user's live hold, found through the
+    eventually consistent ``by-owner`` GSI. Returns the slug, or None (no live hold)."""
+    for row in await _pending_rows(user_id):
+        if not is_stale_hold(row) and await claim(slug=row["slug"], user_id=user_id, owner_id=owner_id):
+            return row["slug"]
+    return None
 
 
 async def get_by_slug(slug: str) -> dict | None:

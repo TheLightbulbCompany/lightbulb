@@ -34,14 +34,17 @@ function CreateWorkspaceForm() {
   const [check, setCheck] = useState<SlugCheck | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const slug = typedSlug ?? slugify(name);
+  const slug = typedSlug || slugify(name); // clearing the field goes back to the suggestion
 
   useEffect(() => {
     if (!slug) return;
+    let stale = false; // an answer for a slug the user has typed past must not land
     const timer = setTimeout(() => {
-      api.get(`/company/slug-availability?slug=${encodeURIComponent(slug)}`).then((r) => setCheck(r as SlugCheck)).catch(() => setCheck(null));
+      api.get(`/company/slug-availability?slug=${encodeURIComponent(slug)}`)
+        .then((r) => { if (!stale) setCheck(r as SlugCheck); })
+        .catch(() => { if (!stale) setCheck(null); });
     }, 300);
-    return () => clearTimeout(timer);
+    return () => { stale = true; clearTimeout(timer); };
   }, [slug, api]);
 
   const current = check?.slug === slug ? check : null;
@@ -56,6 +59,9 @@ function CreateWorkspaceForm() {
       await api.post("/company/slug/hold", { slug });
       const org = await createOrganization({ name: name.trim() });
       await setActive({ organization: org.id });
+      // Hand the hold to the new workspace now (consistent, keyed); the organization.created
+      // webhook repeats it, so a failure here is not the user's problem.
+      await api.post("/company/slug/claim", { slug }).catch(() => undefined);
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         setCheck({ slug, available: false, reason: "taken", domain: current?.domain ?? "" });

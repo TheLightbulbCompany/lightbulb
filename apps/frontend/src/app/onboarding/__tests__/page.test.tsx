@@ -65,6 +65,7 @@ describe("workspace onboarding", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create workspace" }));
     await waitFor(() => expect(clerk.setActive).toHaveBeenCalledWith({ organization: "org_new" }));
     expect(clerk.apiPost).toHaveBeenCalledWith("/company/slug/hold", { slug: "bench-club" });
+    await waitFor(() => expect(clerk.apiPost).toHaveBeenCalledWith("/company/slug/claim", { slug: "bench-club" }));
     expect(clerk.apiPost.mock.invocationCallOrder[0]).toBeLessThan(clerk.createOrganization.mock.invocationCallOrder[0]);
     expect(clerk.createOrganization).toHaveBeenCalledWith({ name: "Bench Club!" });
   });
@@ -80,6 +81,25 @@ describe("workspace onboarding", () => {
     fireEvent.change(screen.getByLabelText("Agent email address"), { target: { value: "acme-labs" } });
     await waitFor(() => expect(screen.getByText("ceo@acme-labs.thelightbulb.company")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Create workspace" })).toBeEnabled();
+    // Clearing the field goes back to the name's suggestion.
+    fireEvent.change(screen.getByLabelText("Agent email address"), { target: { value: "" } });
+    expect(screen.getByLabelText("Agent email address")).toHaveValue("acme");
+  });
+  it("ignores an availability answer for a slug the user has already typed past", async () => {
+    let answerFirst: (v: unknown) => void = () => {};
+    clerk.apiGet.mockImplementation((path: string) => {
+      const slug = new URLSearchParams(path.split("?")[1]).get("slug");
+      const answer = { slug, available: true, reason: null, domain: "thelightbulb.company" };
+      return slug === "ab" ? new Promise((resolve) => { answerFirst = () => resolve(answer); }) : Promise.resolve(answer);
+    });
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "ab" } });
+    await waitFor(() => expect(clerk.apiGet).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "abc" } });
+    await waitFor(() => expect(screen.getByText("ceo@abc.thelightbulb.company")).toBeInTheDocument());
+    answerFirst(undefined);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByText("ceo@abc.thelightbulb.company")).toBeInTheDocument();
   });
   it("a lost race says so and never creates the org", async () => {
     const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");

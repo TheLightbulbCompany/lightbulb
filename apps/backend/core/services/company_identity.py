@@ -171,14 +171,20 @@ async def generate_company_name(*, org_id: str | None, owner_email: str) -> str:
     return name if name.strip() else _FALLBACK_COMPANY_NAME
 
 
+def slug_format_problem(slug: str) -> str | None:
+    """``invalid`` or ``reserved`` -- the reasons that need no lookup."""
+    if not slug or slugify(slug) != slug:
+        return "invalid"
+    return "reserved" if slug in RESERVED_SLUGS else None
+
+
 async def slug_unavailable_reason(slug: str, *, user_id: str) -> str | None:
     """Why ``slug`` cannot be this user's email slug -- ``invalid``, ``reserved`` or
     ``taken`` -- or None when it is free (or already theirs). Read-only: the hold is the
     atomic claim, so a later race is still possible and the hold reports it."""
-    if not slug or slugify(slug) != slug:
-        return "invalid"
-    if slug in RESERVED_SLUGS:
-        return "reserved"
+    problem = slug_format_problem(slug)
+    if problem:
+        return problem
     row = await company_slug_repo.get_by_slug(slug)
     if (
         row

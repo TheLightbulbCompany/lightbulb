@@ -38,18 +38,16 @@ def test_availability_says_why_not(client, monkeypatch):
     assert client.get("/api/v1/company/slug-availability", params={"slug": "acme"}).json()["reason"] == "taken"
 
 
-@pytest.mark.parametrize("reason", ["invalid", "reserved"])
-def test_hold_refuses_a_slug_that_can_never_be_used(client, monkeypatch, reason):
-    _reason(monkeypatch, reason)
+@pytest.mark.parametrize(("slug", "detail"), [("Acme Co", "slug_invalid"), ("support", "slug_reserved")])
+def test_hold_refuses_a_slug_that_can_never_be_used(client, monkeypatch, slug, detail):
     hold = AsyncMock(return_value=True)
     monkeypatch.setattr(mod.company_slug_repo, "hold", hold)
-    r = client.post("/api/v1/company/slug/hold", json={"slug": "support"})
-    assert r.status_code == 400 and r.json()["detail"] == f"slug_{reason}"
+    r = client.post("/api/v1/company/slug/hold", json={"slug": slug})
+    assert r.status_code == 400 and r.json()["detail"] == detail
     hold.assert_not_awaited()
 
 
 def test_hold_409s_a_lost_race_and_holds_a_free_slug(client, monkeypatch):
-    _reason(monkeypatch, None)
     monkeypatch.setattr(mod.company_slug_repo, "hold", AsyncMock(return_value=False))
     r = client.post("/api/v1/company/slug/hold", json={"slug": "bench-club"})
     assert r.status_code == 409 and r.json()["detail"] == "slug_taken"
@@ -58,3 +56,17 @@ def test_hold_409s_a_lost_race_and_holds_a_free_slug(client, monkeypatch):
     monkeypatch.setattr(mod.company_slug_repo, "hold", hold)
     assert client.post("/api/v1/company/slug/hold", json={"slug": "bench-club"}).json() == {"slug": "bench-club"}
     hold.assert_awaited_once_with(slug="bench-club", user_id="user_new")
+
+
+def test_claim_hands_the_hold_to_the_callers_new_workspace(monkeypatch):
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_new", org_id="org_new")
+    try:
+        claim = AsyncMock(return_value=True)
+        monkeypatch.setattr(mod.company_slug_repo, "claim", claim)
+        c = TestClient(app)
+        assert c.post("/api/v1/company/slug/claim", json={"slug": "bench-club"}).status_code == 200
+        claim.assert_awaited_once_with(slug="bench-club", user_id="user_new", owner_id="org_new")
+        claim.return_value = False
+        assert c.post("/api/v1/company/slug/claim", json={"slug": "bench-club"}).status_code == 409
+    finally:
+        app.dependency_overrides.clear()

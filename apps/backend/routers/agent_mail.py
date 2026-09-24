@@ -159,8 +159,10 @@ class AddressSettings(BaseModel):
 async def patch_address(agent_id: str, body: AddressSettings, auth: AuthContext = Depends(get_current_user)) -> dict:
     owner_id = resolve_owner_id(auth)
     address = await resolve_from_address(owner_id, agent_id)
+    owner_email: str | None = None
+    owner_email_read = False
     if not address:
-        owner_email = await _owner_email(owner_id)
+        owner_email, owner_email_read = await _owner_email(owner_id), True
         address, reason = await ensure_agent_address(
             owner_id=owner_id, agent_id=agent_id, owner_email=owner_email or ""
         )
@@ -169,9 +171,21 @@ async def patch_address(agent_id: str, body: AddressSettings, auth: AuthContext 
     kwargs: dict = {}
     if body.verified_senders is not None:
         try:
-            kwargs["verified_senders"] = _validate_senders(body.verified_senders)
+            senders = _validate_senders(body.verified_senders)
         except ValueError as e:
             raise HTTPException(status_code=400, detail={"status": "bad_sender", "entry": str(e)}) from e
+        # The panel tells the owner "You are always allowed", and sender_allowed has no owner
+        # special case, so the server keeps that promise: the owner's own address is re-added to
+        # whatever list is saved (an empty or edited list can never lock them out of waking their agent).
+        if not owner_email_read:
+            try:
+                owner_email = await _owner_email(owner_id)
+            except Exception:  # noqa: BLE001 — a failed lookup must not block saving the list
+                owner_email = None
+        owner = agent_email_repo.normalize(owner_email) if owner_email else None
+        if owner and owner not in senders:
+            senders.append(owner)
+        kwargs["verified_senders"] = senders
     if body.send_to_anyone is not None:
         kwargs["send_to_anyone"] = body.send_to_anyone
     if "outbound_disabled" in body.model_fields_set:

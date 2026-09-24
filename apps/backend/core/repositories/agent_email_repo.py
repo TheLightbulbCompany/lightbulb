@@ -48,12 +48,19 @@ async def put(
     a row to ``status="alias"`` without resetting ``created_at`` (the
     deterministic tie-break `owner_facts._lookup_email_address` sorts on)
     must add a dedicated update primitive rather than calling this.
+
+    New rows are OPEN by default (``send_to_anyone=True``, owner ruling
+    2026-09-24): anyone whose mail is authenticated may wake the agent and the
+    agent may email anyone. The owner can turn it off per agent with
+    ``update_settings``; rows minted before the ruling are switched by a
+    one-off repair script, not by read-time logic.
     """
     item = {
         "address": normalize(address),
         "owner_id": owner_id,
         "agent_id": agent_id,
         "verified_senders": [normalize(s) for s in verified_senders],
+        "send_to_anyone": True,
         "status": "active",
         "created_at": utc_now_iso(),
     }

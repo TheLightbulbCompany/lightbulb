@@ -63,6 +63,17 @@ async def test_put_normalizes_and_get_by_address(agent_email_table):
 
 
 @pytest.mark.asyncio
+async def test_put_mints_open_rows_and_the_owner_can_close_them(agent_email_table):
+    """Owner ruling 2026-09-24: agent email is open by default in both directions."""
+    await repo.put(address="acme@agents.isol8.co", owner_id="user_1", agent_id="agent_friday", verified_senders=[])
+
+    assert (await repo.get_by_address("acme@agents.isol8.co"))["send_to_anyone"] is True
+
+    await repo.update_settings("acme@agents.isol8.co", send_to_anyone=False)
+    assert (await repo.get_by_address("acme@agents.isol8.co"))["send_to_anyone"] is False
+
+
+@pytest.mark.asyncio
 async def test_get_by_address_missing_returns_none(agent_email_table):
     from core.repositories import agent_email_repo
 

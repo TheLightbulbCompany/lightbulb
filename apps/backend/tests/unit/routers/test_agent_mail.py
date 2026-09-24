@@ -247,7 +247,50 @@ def test_patch_address_lowercases_and_mints_when_missing(client):
     assert r.status_code == 200 and r.json()["send_to_anyone"] is True
     assert mint.call_args.kwargs["agent_id"] == "agent_f" and mint.call_args.kwargs["owner_id"] == "org_test_456"
     assert upd.call_args.args == ("f@acme.isol8.co",)
-    assert upd.call_args.kwargs == {"verified_senders": ["bob@x.y", "@clientco.com"], "send_to_anyone": True}
+    # The owner's own address ("o@x.y") is always kept in the saved list.
+    assert upd.call_args.kwargs == {"verified_senders": ["bob@x.y", "@clientco.com", "o@x.y"], "send_to_anyone": True}
+
+
+@pytest.mark.parametrize(
+    "saved,expected",
+    [
+        ([], ["owner@x.y"]),  # an emptied list can never lock the owner out
+        (["Bob@x.y"], ["bob@x.y", "owner@x.y"]),
+        (["OWNER@x.y", "bob@x.y"], ["owner@x.y", "bob@x.y"]),  # already there (any case): no duplicate
+    ],
+)
+def test_patch_address_always_keeps_the_owner_allowed(client, saved, expected):
+    with (
+        patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value="f@acme.isol8.co")),
+        patch.object(agent_mail, "_owner_email", AsyncMock(return_value="Owner@X.y")),
+        patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock(return_value={})) as upd,
+    ):
+        r = client.patch("/api/v1/agent-mail/addresses/agent_f", json={"verified_senders": saved})
+    assert r.status_code == 200
+    assert upd.call_args.kwargs == {"verified_senders": expected}
+
+
+def test_patch_address_saves_the_list_even_if_the_owner_lookup_fails(client):
+    with (
+        patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value="f@acme.isol8.co")),
+        patch.object(agent_mail, "_owner_email", AsyncMock(side_effect=RuntimeError("clerk down"))),
+        patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock(return_value={})) as upd,
+    ):
+        r = client.patch("/api/v1/agent-mail/addresses/agent_f", json={"verified_senders": ["bob@x.y"]})
+    assert r.status_code == 200
+    assert upd.call_args.kwargs == {"verified_senders": ["bob@x.y"]}
+
+
+def test_patch_address_without_a_list_does_not_look_up_the_owner(client):
+    owner_lookup = AsyncMock(return_value="owner@x.y")
+    with (
+        patch.object(agent_mail, "resolve_from_address", AsyncMock(return_value="f@acme.isol8.co")),
+        patch.object(agent_mail, "_owner_email", owner_lookup),
+        patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock(return_value={})) as upd,
+    ):
+        client.patch("/api/v1/agent-mail/addresses/agent_f", json={"send_to_anyone": False})
+    owner_lookup.assert_not_called()
+    assert upd.call_args.kwargs == {"send_to_anyone": False}
 
 
 def test_patch_address_bad_sender_400(client):

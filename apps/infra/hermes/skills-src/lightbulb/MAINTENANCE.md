@@ -25,7 +25,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   demand. Each anchor below names the file that now carries the claim.
   - Capability inventory .... references/platform-primitives.md
                               <- routers/teams/issues.py (add_issue_comment wake) + core/services/paperclip_adapter_config.py;
-                                 routers/ses_inbound.py (email wake — allowlisted senders only);
+                                 routers/ses_inbound.py (email wake — any authenticated sender while the row's
+                                 `send_to_anyone` is on, the default; else allowlisted senders only) and
+                                 core/services/agent_mail_send.py (the same flag gates `--to`/`--reply`);
                                  the image's gog binary (gmail settings watch = Pub/Sub)
   - Send a file in chat ..... references/platform-primitives.md ("Send a file in chat" row)
                               <- apps/infra/hermes/bridge/turn.py (MEDIA_PREFIX, MEDIA_CONTENT_TYPES,

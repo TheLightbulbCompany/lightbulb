@@ -9,6 +9,14 @@ passes can widen it:
 | ``reply_key`` (stored inbound)  | row not ``outbound_disabled``; key is owner's; sender is owner/allowlisted, OR ``send_to_anyone`` |
 | arbitrary ``to``                | row ``send_to_anyone`` and not ``outbound_disabled`` |
 
+``send_to_anyone`` is the ONE "open email" switch: new rows are minted with it ON
+(owner ruling 2026-09-24), and ``routers/ses_inbound.py`` reads the same flag to
+let any authenticated sender WAKE the agent. Turning it off (Control → Agents →
+Email) restores the closed policy in both directions: only the owner and the
+``verified_senders`` allowlist may wake the agent, the agent can email only the
+owner and reply (``reply_key``) to those senders, and an arbitrary ``to`` is
+refused. Rows minted before the ruling were switched on by a one-off repair script.
+
 All paths share the per-owner durable daily cap and are stamped with the
 owner's SES tenant. Never raises — the router returns the result string.
 """
@@ -26,7 +34,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
 from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_agent_address, resolve_from_address, sender_allowed
 from core.services.agent_mail_owner_send import DAILY_SEND_CAP, _env_subject, send_to_owner
-from core.services.agent_mail_reply import send_reply
+from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS, send_reply
 from core.services.agent_mail_tenant import ensure_tenant
 from core.services.paperclip_owner_email import lookup_owner_email
 
@@ -121,9 +129,9 @@ async def send(
             row = await agent_email_repo.get_by_address(from_addr) or {}
             if row.get("outbound_disabled"):
                 return _done(path, "outbound_disabled")
-            # A stranger who emailed first (stored_not_woken) does not thereby
-            # earn a reply — only the owner/allowlist or an explicit
-            # send_to_anyone opt-in may receive agent-authored mail.
+            # A stranger who emailed first does not thereby earn a reply — only
+            # the owner/allowlist, or a row with ``send_to_anyone`` on (the
+            # default), may receive agent-authored mail.
             sender = msg.get("from_addr") or ""
             if not sender_allowed(row, sender) and not row.get("send_to_anyone"):
                 return _done(path, "forbidden_recipient")
@@ -169,6 +177,7 @@ async def send(
             body_text=body_text,
             body_html=body_html,
             kind="agent_free_send",
+            headers=dict(AGENT_AUTHORED_HEADERS),
             tenant_name=tenant,
         )
         return _done(path, "sent" if message_id else "error")

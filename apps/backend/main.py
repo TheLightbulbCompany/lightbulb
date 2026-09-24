@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -614,8 +615,20 @@ async def paperclip_api_error_handler(request, exc: PaperclipApiError):
         )
     return JSONResponse(
         status_code=status,
-        content={"detail": exc.message, "upstream_status": exc.status_code},
+        content={"detail": _paperclip_reason(exc), "upstream_status": exc.status_code},
     )
+
+
+def _paperclip_reason(exc: PaperclipApiError) -> str:
+    """Paperclip's own user-facing 4xx reason ("Issue is blocked by unresolved blockers",
+    "Missing permission: tasks:assign.") from its ``{"error": ...}`` body; ``exc.message``
+    only says WHICH call failed (Paperclip audit 2026-09-24 F5). 5xx never reaches here."""
+    try:
+        body = exc.body if isinstance(exc.body, dict) else json.loads(exc.body or "{}")
+        reason = body.get("error")
+    except (ValueError, AttributeError):
+        reason = None
+    return reason[:300] if isinstance(reason, str) and reason.strip() else exc.message
 
 
 # Request-ID middleware — generates/propagates X-Request-ID for log correlation.

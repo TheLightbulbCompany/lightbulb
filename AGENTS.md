@@ -398,8 +398,17 @@ drop it from the required contexts — never leave the branch unprotected.
 
 ### CI/CD Monitoring
 
+**Every session shares ONE GitHub identity** (the owner's user token), so all agents draw
+on one budget: 5,000 REST requests/hour plus GitHub's *secondary* limits (≤100 concurrent,
+≤900 points/minute per endpoint, ≤80 content-creating requests/minute). A 403/429 saying
+"API rate limit exceeded" while `gh api rate_limit` still shows headroom is the secondary
+limit. `gh run watch` polls every **3 s** by default, so always pass `--interval 60`; poll PRs
+and runs no faster than once a minute; and to learn whether a deploy LANDED, prefer AWS
+(`aws ecs describe-services` task definition) over GitHub. On a 403/429, back off until
+`x-ratelimit-reset` / `retry-after` instead of retrying.
+
 ```bash
-gh run watch <run-id> --repo TheLightbulbCompany/lightbulb --exit-status
+gh run watch <run-id> --repo TheLightbulbCompany/lightbulb --exit-status --interval 60
 gh run view <run-id> --repo TheLightbulbCompany/lightbulb --json status,jobs
 ```
 

@@ -53,12 +53,12 @@ describe("LlmPanel workspace credits", () => {
     expect(screen.getByText("Manage provider on flickmeon.ai")).toBeTruthy();
   });
 
-  it("shows the used daily allowance with an Upgrade link", async () => {
+  it("shows the used daily allowance with no Upgrade link", async () => {
     mockAccountFixture = { provider_choice: null, byo_provider: null, capped_today: true };
     await render(<LlmPanel />);
 
     expect(await screen.findByText("Daily allowance used — resets at 00:00 UTC")).toBeTruthy();
-    expect(screen.getByText("Upgrade")).toBeTruthy();
+    expect(screen.queryByText("Upgrade")).toBeNull();
   });
 
   it("labels a free-trial owner's null provider as managed, not unset", async () => {
@@ -94,6 +94,6 @@ describe("LlmPanel workspace credits", () => {
 
     expect(await screen.findByText("Lightbulb-managed models")).toBeTruthy();
     expect(screen.getByText("Daily allowance used — resets at 00:00 UTC")).toBeTruthy();
-    expect(screen.getByText("Upgrade")).toBeTruthy();
+    expect(screen.queryByText("Upgrade")).toBeNull();
   });
 });

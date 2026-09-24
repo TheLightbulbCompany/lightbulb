@@ -38,6 +38,7 @@ import {
 
 import { colors } from "../config/theme";
 import { makeAdapter } from "./adapter";
+import { purchaseSafeMessage } from "./purchaseCta";
 
 // ---------------------------------------------------------------------------
 // Contract shapes (w4 contract §2). Kept to the fields the mobile surfaces
@@ -501,7 +502,7 @@ export function useTeamsInbox(tab: InboxTab, search: string) {
         setState({
           kind: "gate",
           gate: gate ?? "unavailable",
-          message: err instanceof Error ? err.message : "Request failed",
+          message: purchaseSafeMessage(err, "Request failed"),
         });
       } finally {
         if (loadSeq.current === seq && isRefresh) setRefreshing(false);
@@ -535,7 +536,7 @@ export function useTeamsInbox(tab: InboxTab, search: string) {
       } catch (err) {
         Alert.alert(
           "Couldn’t retry run",
-          err instanceof Error ? err.message : "The retry failed. Please try again.",
+          purchaseSafeMessage(err, "The retry failed. Please try again."),
         );
       } finally {
         retryingRef.current.delete(run.id);
@@ -731,7 +732,7 @@ export function useTeamsIssue(issueId: string | undefined) {
       } else {
         setState({
           kind: "error",
-          message: err instanceof Error ? err.message : "Request failed",
+          message: purchaseSafeMessage(err, "Request failed"),
         });
       }
     }
@@ -769,7 +770,7 @@ export function useTeamsIssue(issueId: string | undefined) {
         );
         Alert.alert(
           "Couldn’t update issue",
-          err instanceof Error ? err.message : "The change failed. Please try again.",
+          purchaseSafeMessage(err, "The change failed. Please try again."),
         );
       } finally {
         writingRef.current.delete(fieldKey);
@@ -865,7 +866,7 @@ export function useTeamsIssue(issueId: string | undefined) {
         );
         Alert.alert(
           "Couldn’t post comment",
-          err instanceof Error ? err.message : "The comment failed to send.",
+          purchaseSafeMessage(err, "The comment failed to send."),
         );
         return false;
       } finally {
@@ -887,7 +888,7 @@ export function useTeamsIssue(issueId: string | undefined) {
       } catch (err) {
         Alert.alert(
           "Couldn’t create sub-issue",
-          err instanceof Error ? err.message : "The sub-issue could not be created.",
+          purchaseSafeMessage(err, "The sub-issue could not be created."),
         );
         return false;
       } finally {
@@ -932,7 +933,7 @@ export function useTeamsIssue(issueId: string | undefined) {
         );
         Alert.alert(
           "Couldn’t update approval",
-          err instanceof Error ? err.message : "The decision failed. Please try again.",
+          purchaseSafeMessage(err, "The decision failed. Please try again."),
         );
       } finally {
         decidingRef.current.delete(approvalId);
@@ -1016,7 +1017,7 @@ export function useTeamsIssue(issueId: string | undefined) {
         );
         Alert.alert(
           "Couldn’t resolve request",
-          err instanceof Error ? err.message : "The response failed. Please try again.",
+          purchaseSafeMessage(err, "The response failed. Please try again."),
         );
       } finally {
         resolvingRef.current.delete(interactionId);
@@ -1097,7 +1098,7 @@ export function useTeamsIssue(issueId: string | undefined) {
         );
         Alert.alert(
           "Couldn’t submit review",
-          err instanceof Error ? err.message : "The review failed. Please try again.",
+          purchaseSafeMessage(err, "The review failed. Please try again."),
         );
       } finally {
         reviewingRef.current.delete(workProductId);
@@ -1430,7 +1431,7 @@ export function useTeamsBoard() {
         setState({
           kind: "gate",
           gate: gate ?? "unavailable",
-          message: err instanceof Error ? err.message : "Request failed",
+          message: purchaseSafeMessage(err, "Request failed"),
         });
       } finally {
         if (loadSeq.current === seq && isRefresh) setRefreshing(false);
@@ -1486,7 +1487,7 @@ export function useTeamsBoard() {
         );
         Alert.alert(
           "Couldn’t move issue",
-          err instanceof Error ? err.message : "The status change failed. Please try again.",
+          purchaseSafeMessage(err, "The status change failed. Please try again."),
         );
       } finally {
         movingRef.current.delete(id);
@@ -1509,7 +1510,7 @@ export function useTeamsBoard() {
       } catch (err) {
         Alert.alert(
           "Couldn’t create issue",
-          err instanceof Error ? err.message : "The issue could not be created.",
+          purchaseSafeMessage(err, "The issue could not be created."),
         );
         return null;
       } finally {
@@ -1550,7 +1551,7 @@ export function useCreateTeamIssue() {
       } catch (err) {
         Alert.alert(
           "Couldn’t create issue",
-          err instanceof Error ? err.message : "The issue could not be created.",
+          purchaseSafeMessage(err, "The issue could not be created."),
         );
         return null;
       } finally {
@@ -1811,7 +1812,7 @@ export function useTeamsApprovals() {
         setState({
           kind: "gate",
           gate: gate ?? "unavailable",
-          message: err instanceof Error ? err.message : "Request failed",
+          message: purchaseSafeMessage(err, "Request failed"),
         });
       } finally {
         if (loadSeq.current === seq && isRefresh) setRefreshing(false);
@@ -1850,7 +1851,7 @@ export function useTeamsApprovals() {
         );
         Alert.alert(
           "Couldn’t update approval",
-          err instanceof Error ? err.message : "The decision failed. Please try again.",
+          purchaseSafeMessage(err, "The decision failed. Please try again."),
         );
       } finally {
         decidingRef.current.delete(id);
@@ -1993,7 +1994,7 @@ export function useTeamsDashboard() {
         setState({
           kind: "gate",
           gate: gate ?? "unavailable",
-          message: err instanceof Error ? err.message : "Request failed",
+          message: purchaseSafeMessage(err, "Request failed"),
         });
       } finally {
         if (loadSeq.current === seq && isRefresh) setRefreshing(false);
@@ -2063,14 +2064,12 @@ export type RoutinesState =
 
 /**
  * Human copy for a blocked-gate 402 (e.g. routines_require_subscription): the
- * shared client keeps the parsed body, whose structured detail carries the
- * actual upgrade prompt (web RoutinesPanel gateMessage parity).
+ * shared client promotes the structured detail's message onto `err.message`
+ * (web RoutinesPanel gateMessage parity), but that promoted text IS the
+ * purchase CTA on iOS — `purchaseSafeMessage` swaps it for local neutral copy.
  */
 function blockedMessage(err: unknown): string {
-  const body = (err as { body?: { detail?: { message?: unknown } } } | null)?.body;
-  const msg = body?.detail?.message;
-  if (typeof msg === "string" && msg) return msg;
-  return err instanceof Error ? err.message : "Request failed";
+  return purchaseSafeMessage(err, "Request failed");
 }
 
 export function useTeamsRoutines() {
@@ -2107,7 +2106,7 @@ export function useTeamsRoutines() {
         setState({
           kind: "gate",
           gate: gate ?? "unavailable",
-          message: err instanceof Error ? err.message : "Request failed",
+          message: purchaseSafeMessage(err, "Request failed"),
         });
       } finally {
         if (loadSeq.current === seq && isRefresh) setRefreshing(false);

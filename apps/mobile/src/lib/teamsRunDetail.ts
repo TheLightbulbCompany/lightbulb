@@ -18,6 +18,7 @@ import {
   type PlatformAdapter,
 } from "@lightbulb/shared";
 
+import { purchaseSafeMessage } from "./purchaseCta";
 import {
   gateFromError,
   gateFromSuccess,
@@ -253,7 +254,7 @@ export function useRunDetail(runId: string | undefined) {
       } else {
         setState({
           kind: "error",
-          message: err instanceof Error ? err.message : "Request failed",
+          message: purchaseSafeMessage(err, "Request failed"),
         });
       }
     }
@@ -317,7 +318,7 @@ export function useRunDetail(runId: string | undefined) {
         }
         await load();
       } catch (err) {
-        setActionError(err instanceof Error ? err.message : "Action failed.");
+        setActionError(purchaseSafeMessage(err, "Action failed."));
       } finally {
         actingRef.current = false;
         setActing(null);

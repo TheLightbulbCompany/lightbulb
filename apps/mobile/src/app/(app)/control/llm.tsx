@@ -43,7 +43,6 @@ import { useLiveEvents } from "../../../providers/live-events";
 // (OAuth sign-in, BYO key entry, Stripe top-up). Per D1 the mobile app renders
 // current state read-only and deep-links out to the web for any change.
 const MANAGE_LLM_URL = `${WEB_ORIGIN}/chat?panel=llm`;
-const UPGRADE_URL = `${WEB_ORIGIN}/settings?panel=billing`;
 
 // ---------------------------------------------------------------------------
 // Contract shapes (w3-control-contract §7 + w2-billing-contract §2)
@@ -440,10 +439,7 @@ export default function LlmPanel() {
           <Text style={styles.captionText}>{provider.detail}</Text>
         )}
         {account.capped_today === true && (
-          <>
-            <Text style={styles.bodyText}>Daily allowance used — resets at 00:00 UTC</Text>
-            <ManageLink label="Upgrade" url={UPGRADE_URL} />
-          </>
+          <Text style={styles.bodyText}>Daily allowance used — resets at 00:00 UTC</Text>
         )}
         <ManageLink label="Manage provider on flickmeon.ai" />
       </Card>

@@ -17,13 +17,28 @@ export interface RoomMember extends MemberRef {
   joinedSeq: number;
 }
 
+/** `META.lastMessage`: the newest live top-level message as a <=140-char plain preview. */
+export interface RoomLastMessage {
+  messageId: string;
+  seq: number;
+  authorId: string;
+  authorKind: "human" | "agent" | "system";
+  authorName: string;
+  textPreview: string;
+  hasAttachments: boolean;
+  createdAt: string;
+  threadRootMessageId: string | null;
+}
+
 export interface RoomSummary {
   roomId: string;
   name: string | null;
   kind: RoomKind;
   roomRevision: number;
   lastMessageSeq: number;
+  /** The latest live top-level message's time, else the room's createdAt; the list is sorted on it. */
   lastMessageAt: string | null;
+  lastMessage?: RoomLastMessage | null;
   unreadCount: number;
   updatedAt: string;
   topic: string | null;

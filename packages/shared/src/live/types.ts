@@ -8,7 +8,7 @@
  * existing stream/tool/run reducers keep working on the same variants.
  */
 
-import type { CanonicalRoomMessage, MessageAttachment } from "../messaging/types";
+import type { CanonicalRoomMessage, MessageAttachment, RoomLastMessage } from "../messaging/types";
 import { MESSAGE_ATTACHMENT_MAX_BYTES } from "../messaging/types";
 
 /** OpenClaw tool result content blocks — text blocks or image refs. Image
@@ -184,7 +184,15 @@ export type PaperclipEvent = { eventName: PaperclipEventName; payload: unknown }
 export type LiveEvent =
   | LiveEventEnvelope<"room.message.created", CanonicalRoomMessage>
   | LiveEventEnvelope<"room.message.updated", { roomId: string; messageId: string; messageSeq: number }>
-  | LiveEventEnvelope<"room.message.available", { roomId: string; messageId: string; messageSeq: number; threadRootMessageId: string | null; notify: boolean }>
+  | LiveEventEnvelope<"room.message.available", {
+      roomId: string; messageId: string; messageSeq: number; threadRootMessageId: string | null; notify: boolean;
+      /** This message's preview; `previewOnly` carries the room's replacement preview (or null) instead. */
+      lastMessage?: RoomLastMessage | null;
+      /** Humans @mentioned in this message, at most 32. */
+      mentionedUserIds?: string[];
+      /** An edit/delete of the room's current preview: update the preview, leave counts alone. */
+      previewOnly?: true;
+    }>
   | LiveEventEnvelope<"room.message.reactions.changed", CanonicalRoomMessage>
   | LiveEventEnvelope<"room.typing.changed", RoomTypingChanged>
   | LiveEventEnvelope<"room.run.frame", RoomRunFrame>

@@ -185,13 +185,31 @@ class RoomMember(MemberRef):
     joined_seq: int = Field(ge=0)
 
 
+class LastMessage(ContractModel):
+    """``META.lastMessage``: the newest live top-level message, as a <=140-char
+    plain preview. Thread replies never change it."""
+
+    message_id: str
+    seq: int = Field(ge=1)
+    author_id: str
+    author_kind: AuthorKind
+    author_name: str
+    text_preview: str
+    has_attachments: bool = False
+    created_at: datetime
+    thread_root_message_id: str | None = None
+
+
 class RoomSummary(ContractModel):
     room_id: uuid.UUID
     name: str | None
     kind: RoomKind
     room_revision: int = Field(ge=1)
     last_message_seq: int = Field(ge=0)
+    # The latest live top-level message's time, else the room's createdAt. The
+    # room list is sorted on it (newest first, ties by roomId).
     last_message_at: datetime | None
+    last_message: LastMessage | None = None
     unread_count: int = Field(ge=0)
     updated_at: datetime
     starred: bool = False
@@ -1254,7 +1272,8 @@ def _room_summary_fields(meta: dict, member: dict, last_read: int) -> dict[str, 
         "kind": meta["kind"],
         "room_revision": int(meta["revision"]),
         "last_message_seq": int(meta["lastSeq"]),
-        "last_message_at": meta.get("lastMessageAt"),
+        "last_message_at": (meta.get("lastMessage") or {}).get("createdAt") or meta.get("createdAt"),
+        "last_message": meta.get("lastMessage"),
         "unread_count": max(0, int(meta["lastSeq"]) - floor),
         "updated_at": meta["updatedAt"],
         "starred": bool(member.get("starred")),
@@ -1361,7 +1380,8 @@ async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
 
     settled = await asyncio.gather(*(summarise(row) for row in discovered))
     summaries = [summary for summary in settled if summary is not None]
-    summaries.sort(key=lambda room: room.updated_at, reverse=True)
+    summaries.sort(key=lambda room: str(room.room_id))
+    summaries.sort(key=lambda room: room.last_message_at or room.updated_at, reverse=True)
     return summaries
 
 

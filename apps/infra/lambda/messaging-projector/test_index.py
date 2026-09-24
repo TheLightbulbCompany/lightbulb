@@ -281,7 +281,7 @@ class ProjectorTests(unittest.TestCase):
         publish.assert_not_called()
 
     @patch("index._publish")
-    def test_private_message_hint_targets_and_rechecks_access_without_content(self, publish):
+    def test_private_message_hint_targets_and_rechecks_access_with_only_a_preview(self, publish):
         recipient = "user_bob"
         member = {"id": recipient, "ownerId": OWNER_ID, "joinedSeq": 0}
         items = {
@@ -313,7 +313,9 @@ class ProjectorTests(unittest.TestCase):
             self.assertEqual(channel, f"/ws/{WORKSPACE_ID}/users/{CHANNEL_KEY}")
             self.assertEqual(event["payload"]["notify"], expected)
             self.assertNotEqual(event["eventId"], message["messageId"])
-            self.assertNotIn("hello", json.dumps(event))
+            # Only the <=140-char preview rides the user channel, never the message body.
+            self.assertEqual(event["payload"]["lastMessage"]["textPreview"], "hello")
+            self.assertNotIn("text", event["payload"])
             self.assertNotIn("author", event["payload"])
             self.assertTrue(all(call["ConsistentRead"] for call in index._ddb_client.calls))
 
@@ -349,6 +351,102 @@ class ProjectorTests(unittest.TestCase):
         index._notify_members(message_item(), meta)
         self.assertEqual([c.args[0] for c in publish.call_args_list], [f"/ws/{WORKSPACE_ID}/users/{BOB_KEY}"])
         self.assertTrue(publish.call_args_list[0].args[1]["payload"]["notify"])
+
+    def _one_member_room(self, recipient=BOB_ID, **meta):
+        items = {
+            (f"ROOM#{ROOM_ID}", "META"): {
+                "deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": "channel", "workspaceId": WORKSPACE_ID,
+                **meta,
+            },
+            (f"ROOM#{ROOM_ID}", f"MEMBER#human#{recipient}"): {"id": recipient, "ownerId": OWNER_ID, "joinedSeq": 0},
+            (f"OWNER#{OWNER_ID}", f"USERSTREAM#{recipient}"): {"active": True, "channelKey": BOB_KEY},
+            (f"STREAM#{BOB_KEY}", "META"): {
+                "active": True, "ownerId": OWNER_ID, "userId": recipient, "workspaceId": WORKSPACE_ID,
+            },
+        }
+        index._ddb_client = FakeDdb(items)
+        return items
+
+    @patch("index._publish")
+    def test_message_hint_carries_the_preview_and_mentioned_humans(self, publish):
+        self._one_member_room()
+        message = message_item()
+        message["text"] = "**Ship** it @bob " + "z" * 300
+        message["mentions"] = [{"kind": "human", "id": BOB_ID}, {"kind": "agent", "id": "friday"},
+                               {"kind": "human", "id": CAROL_ID}]
+        index._project_message(message)
+        channel, event = publish.call_args_list[0].args
+        self.assertEqual(channel, f"/ws/{WORKSPACE_ID}/users/{BOB_KEY}")
+        payload = event["payload"]
+        self.assertEqual(payload["mentionedUserIds"], [BOB_ID, CAROL_ID])
+        self.assertNotIn("previewOnly", payload)
+        self.assertEqual(payload["lastMessage"], {
+            "messageId": MESSAGE_ID, "seq": 1, "authorId": USER_ID, "authorKind": "human",
+            "authorName": "Alice", "textPreview": ("Ship it @bob " + "z" * 300)[:140],
+            "hasAttachments": False, "createdAt": CREATED_AT, "threadRootMessageId": None,
+        })
+
+    @patch("index._publish")
+    def test_message_hint_preview_flags_attachments(self, publish):
+        # An attachment-only message still has a preview that says so.
+        self._one_member_room()
+        message = message_item()
+        message["text"] = ""
+        message["attachments"] = [{"id": "att-1", "fileName": "report.pdf", "contentType": "application/pdf", "size": 10}]
+        index._project_message(message)
+        _channel, event = publish.call_args_list[0].args
+        self.assertTrue(event["payload"]["lastMessage"]["hasAttachments"])
+
+    @patch("index._publish")
+    def test_member_removed_before_publish_receives_nothing(self, publish):
+        # Discovery (the MEMBER# query) still lists Bob, but his MEMBER row is gone
+        # by the strong per-member read at publish time: no preview reaches him.
+        items = self._one_member_room()
+        del items[(f"ROOM#{ROOM_ID}", f"MEMBER#human#{BOB_ID}")]
+        with patch.object(index, "_query_rows", return_value=[{"id": BOB_ID}]):
+            index._project_message(message_item())
+        channels = [c.args[0] for c in publish.call_args_list]
+        self.assertEqual(channels, [f"/ws/{WORKSPACE_ID}/rooms/{ROOM_ID}/{DELIVERY_KEY}"])
+
+    def _edit(self, item):
+        record = stream_record(item)
+        record["eventName"] = "MODIFY"
+        index.process_record(record)
+
+    @patch("index._publish")
+    def test_editing_the_current_preview_republishes_it_preview_only(self, publish):
+        preview = {"messageId": MESSAGE_ID, "seq": 1, "textPreview": "changed"}
+        self._one_member_room(lastMessage=preview)
+        self._edit({**message_item(), "messageRevision": 1, "editedText": "changed", "editedAt": CREATED_AT})
+        room_event, user_event = (c.args for c in publish.call_args_list)
+        self.assertEqual(room_event[1]["type"], "room.message.updated")
+        self.assertEqual(user_event[0], f"/ws/{WORKSPACE_ID}/users/{BOB_KEY}")
+        payload = user_event[1]["payload"]
+        self.assertEqual((payload["previewOnly"], payload["notify"], payload["lastMessage"]), (True, False, preview))
+
+    @patch("index._publish")
+    def test_deleting_the_preview_publishes_its_replacement_or_null(self, publish):
+        older = {"messageId": EVENT_ID, "seq": 1, "textPreview": "older"}
+        for replacement in (older, None):
+            publish.reset_mock()
+            self._one_member_room(lastMessage=replacement)
+            self._edit({**message_item(sequence=2), "messageRevision": 1, "editedText": None,
+                        "editedAt": CREATED_AT, "deletedAt": CREATED_AT})
+            self.assertEqual(publish.call_args_list[1].args[1]["payload"]["lastMessage"], replacement)
+
+    @patch("index._publish")
+    def test_edits_that_do_not_touch_the_preview_publish_no_preview(self, publish):
+        newer = {"messageId": EVENT_ID, "seq": 5, "textPreview": "newer"}
+        edited = {**message_item(), "messageRevision": 1, "editedText": "x", "editedAt": CREATED_AT}
+        for meta, item in (
+            ({"lastMessage": newer}, edited),  # an older message
+            ({"lastMessage": None}, {**edited, "threadRootMessageId": EVENT_ID}),  # a thread reply
+            ({}, edited),  # a room from before META.lastMessage existed
+        ):
+            publish.reset_mock()
+            self._one_member_room(**meta)
+            self._edit(item)
+            self.assertEqual([c.args[1]["type"] for c in publish.call_args_list], ["room.message.updated"])
 
     @patch("index._publish")
     def test_active_user_stream_projects_stored_frozen_event(self, publish):

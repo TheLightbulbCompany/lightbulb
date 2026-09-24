@@ -197,8 +197,10 @@ impl Host {
                 if mirror.ended_at.is_some() {
                     // The session is over: a hook or its own pid said so, and a
                     // listing cannot argue. Only a new process on the same identity
-                    // (a resume) brings it back.
-                    if mirror.generation == generation {
+                    // (a resume) brings it back. The same process under a generation
+                    // minted by an older formula is not a resume: reviving it would
+                    // register an "ended" status the relay rejects (INVALID_REQUEST).
+                    if mirror.generation == generation || mirror.native.process == native.process {
                         continue;
                     }
                     mirror.ended_at = None;
@@ -678,7 +680,9 @@ impl Host {
                         self.mirrors.len()
                     ));
                     let started = Instant::now();
-                    let outcome = self.connection(&mut socket, &mut rx).await;
+                    let outcome = self
+                        .connection(&mut socket, &mut rx, &enrollment.human_user_id)
+                        .await;
                     lived = started.elapsed();
                     outcome
                 }
@@ -750,6 +754,7 @@ impl Host {
         &mut self,
         socket: &mut Socket,
         updates: &mut tokio::sync::mpsc::Receiver<Vec<NativeSession>>,
+        human: &str,
     ) -> Result<()> {
         let mut registered = BTreeSet::<String>::new();
         let mut quarantined = BTreeMap::<String, Instant>::new();
@@ -1078,7 +1083,7 @@ impl Host {
                             quarantine(&mut quarantined, &mut registered, &mut sent_batches, &key, &format!("relay rejected a frame: {code}"));
                         },
                         Some("local.session.command") => {
-                            let command = parse_command(&body)?;
+                            let command = parse_command(&body, human)?;
                             if deferred.len() >= 32 {return Err("too many deferred commands".into());}
                             if anchor.is_none() && pending_rpc.is_none() {return Err("command without authenticated time".into());}
                             deferred.push_back(command);
@@ -1282,10 +1287,11 @@ impl Host {
     }
 }
 
-fn parse_command(body: &Value) -> Result<Command> {
+fn parse_command(body: &Value, human: &str) -> Result<Command> {
     let mut command: Command =
         serde_json::from_value(body["command"].clone()).map_err(|_| "invalid native command")?;
     command.label = serde_json::from_value::<ActorLabel>(body["actor"].clone()).ok();
+    command.own = command.actor.is_none() && command.actor_user_id.as_deref() == Some(human);
     Ok(command)
 }
 
@@ -1823,6 +1829,27 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_an_ended_mirror_with_a_legacy_generation_stays_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = test_native(SID);
+        let key = native_key(&native);
+        // Stored under a generation an older formula minted; the process is unchanged.
+        let mut mirror = test_mirror(SID, "legacy-generation");
+        mirror.native = native.clone();
+        mirror.native.status = "ended".into();
+        mirror.ended_at = Some(epoch_secs());
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        host.observe(vec![]).unwrap();
+        host.observe(vec![native]).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_some());
+        assert_eq!(
+            registration_due(&host.mirrors, &BTreeSet::new(), &BTreeMap::new()),
+            None,
+            "an ended session is never registered"
+        );
+    }
+
+    #[test]
     fn local_sessions_reaping_clears_the_per_key_state_a_connection_holds() {
         let dir = tempfile::tempdir().unwrap();
         let mut ended = test_mirror(SID, "gen-1");
@@ -2030,18 +2057,23 @@ mod tests {
         let frame = json!({"type":"local.session.command","command":{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello",
             "expectedTurnId":null,"sessionId":"s1","roomId":"room","actorUserId":"alice","commandSeq":1,"state":"dispatched","createdAt":100,"deliverBy":130,"held":false,"providerMessageId":null},
             "actor":{"kind":"human","handle":"aden","displayName":"Aden Kim"}});
-        let cmd = parse_command(&frame).unwrap();
+        let cmd = parse_command(&frame, "bob").unwrap();
         assert_eq!(
             cmd.label.as_ref().and_then(|l| l.handle.as_deref()),
             Some("aden")
         );
         assert_eq!(cmd.actor_user_id.as_deref(), Some("alice"));
+        assert!(!cmd.own);
+        assert!(
+            parse_command(&frame, "alice").unwrap().own,
+            "the enrolled human's own prompt"
+        );
         let mut bare = frame.clone();
         bare.as_object_mut().unwrap().remove("actor");
-        assert!(parse_command(&bare).unwrap().label.is_none());
+        assert!(parse_command(&bare, "bob").unwrap().label.is_none());
         let mut forged = frame;
         forged["actor"] = json!("not-an-object");
-        assert!(parse_command(&forged).unwrap().label.is_none());
+        assert!(parse_command(&forged, "bob").unwrap().label.is_none());
     }
     #[test]
     fn local_sessions_failed_observation_write_retries_identical_snapshot() {
@@ -2471,7 +2503,7 @@ mod tests {
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
-        let _ = host.connection(&mut socket, &mut rx).await;
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
         server.await.unwrap();
     }
     #[test]
@@ -2645,7 +2677,7 @@ mod tests {
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
-        let _ = host.connection(&mut socket, &mut rx).await;
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
         server.await.unwrap();
         let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
         assert_eq!(stored.after_seq, 1);
@@ -2687,7 +2719,7 @@ mod tests {
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
-        let _ = host.connection(&mut socket, &mut rx).await;
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
         server.await.unwrap();
         assert_ne!(host.mirrors[&key].generation, "g1");
         assert!(host.mirrors[&key].registration.successor.is_none());
@@ -2723,7 +2755,7 @@ mod tests {
         let mut host = test_host(dir.path(), vec![("local", mirror)]);
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
-        let _ = host.connection(&mut socket, &mut rx).await;
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
         server.await.unwrap();
         let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
         assert_eq!(stored.after_seq, 383);
@@ -2780,7 +2812,7 @@ mod tests {
         let mut host = test_host(dir.path(), vec![("local", mirror)]);
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
-        let _ = host.connection(&mut socket, &mut rx).await;
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
         server.await.unwrap();
         let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
         assert_eq!(stored.after_seq, 401);
@@ -2814,7 +2846,7 @@ mod tests {
         ]);
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
-        let _ = host.connection(&mut socket, &mut rx).await;
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
         server.await.unwrap();
         let a: Mirror = private_read(&dir.path().join("a-session.json")).unwrap();
         let b: Mirror = private_read(&dir.path().join("b-session.json")).unwrap();
@@ -2845,7 +2877,7 @@ mod tests {
         ]);
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
-        let _ = host.connection(&mut socket, &mut rx).await;
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
         server.await.unwrap();
         let b: Mirror = private_read(&dir.path().join("b-session.json")).unwrap();
         assert_eq!(b.session_id.as_deref(), Some(SID_B));
@@ -2877,7 +2909,7 @@ mod tests {
         let mut host = test_host(dir.path(), vec![("local", mirror)]);
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
-        let _ = host.connection(&mut socket, &mut rx).await;
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
         server.await.unwrap();
         let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
         assert!(stored.pending.is_some(), "the rejected batch stays pending for the next connection's reconciliation");
@@ -2916,7 +2948,7 @@ mod tests {
         let mut host = test_host(dir.path(), vec![("local", mirror)]);
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
-        let _ = host.connection(&mut socket, &mut rx).await;
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
         server.await.unwrap();
         let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
         assert_eq!(stored.after_seq, 1);
@@ -3003,7 +3035,7 @@ mod tests {
         let mut host = test_host(dir.path(), vec![("local", mirror)]);
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
-        let _ = host.connection(&mut socket, &mut rx).await;
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
         let batch2_id = server.await.unwrap();
 
         let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
@@ -3037,7 +3069,7 @@ mod tests {
         let mut host = test_host(dir.path(), vec![("a-session", a), ("b-session", test_mirror("native-b", "g-b"))]);
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
-        let _ = host.connection(&mut socket, &mut rx).await;
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
         server.await.unwrap();
         let b: Mirror = private_read(&dir.path().join("b-session.json")).unwrap();
         assert_eq!(b.session_id.as_deref(), Some(SID_B));
@@ -3174,7 +3206,7 @@ mod tests {
         let mut host = test_host(dir.path(), vec![("local", mirror)]);
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
-        let _ = host.connection(&mut socket, &mut rx).await;
+        let _ = host.connection(&mut socket, &mut rx, "alice").await;
         server.await.unwrap();
         let stored: Mirror = private_read(&dir.path().join("local.json")).unwrap();
         assert_eq!(stored.after_seq, 380);
@@ -3276,7 +3308,7 @@ mod tests {
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx))
+        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx, "alice"))
             .await;
         server.await.unwrap();
     }
@@ -3348,7 +3380,7 @@ mod tests {
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx))
+        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx, "alice"))
             .await;
         server.await.unwrap();
         let stored: Mirror = private_read(&persisted).unwrap();
@@ -3397,7 +3429,7 @@ mod tests {
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx))
+        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx, "alice"))
             .await;
         server.await.unwrap();
         let reported: Mirror = private_read(&dir.path().join("a-session.json")).unwrap();
@@ -3460,7 +3492,7 @@ mod tests {
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx))
+        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx, "alice"))
             .await;
         server.await.unwrap();
     }
@@ -3533,7 +3565,7 @@ mod tests {
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx))
+        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx, "alice"))
             .await;
         server.await.unwrap();
         let stored: Mirror = private_read(&persisted).unwrap();
@@ -3590,7 +3622,7 @@ mod tests {
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx))
+        let _ = tokio::time::timeout(Duration::from_secs(5), host.connection(&mut socket, &mut rx, "alice"))
             .await;
         server.await.unwrap();
         assert!(
@@ -3656,7 +3688,7 @@ mod tests {
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(8), host.connection(&mut socket, &mut rx))
+        let _ = tokio::time::timeout(Duration::from_secs(8), host.connection(&mut socket, &mut rx, "alice"))
             .await;
         server.await.unwrap();
     }

@@ -95,6 +95,8 @@ The backend verifies session readiness and profile ownership before issuing a fi
 
 The CLI does not save the profile before closing, so v1 does not provide cross-session website-login persistence. Its native provider also lacks attach-by-existing-session-id. Browser v2 must prove save/restore and human/agent session ownership before promising seamless handoff.
 
+Browser v2 control rules (`browser_control.py`): watching (`GET /browser/live-view`) never takes or renews the controller lease. Only an explicit Take control gives a person the lease; it lapses after `HUMAN_IDLE_SECONDS` (240 s) without input, which the panel reports as a throttled `renew` heartbeat on pointer/keyboard/wheel activity in the viewer. An agent acquire against a live human lease (or a Done in flight) polls for up to `ACQUIRE_WAIT_SECONDS` (25 s, under API Gateway's 30 s integration timeout) before returning 409; after a lapse the agent claims the browser and the panel shows "Agent took over".
+
 Source: [browser authorization](../../apps/backend/core/services/browser_sessions.py), [panel](../../apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx), [verification runbook](../runbooks/local-dev-browser-verification.md).
 
 ## What remains on ECS, and what happened to EFS

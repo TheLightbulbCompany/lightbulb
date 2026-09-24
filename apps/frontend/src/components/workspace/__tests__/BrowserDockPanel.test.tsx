@@ -43,7 +43,7 @@ vi.mock("../panels/DirectDcvLiveView", () => ({
 }));
 
 import { ApiError } from "@/lib/api";
-import { BrowserDockPanel } from "../panels/BrowserDockPanel";
+import { BrowserDockPanel, RENEW_THROTTLE_MS } from "../panels/BrowserDockPanel";
 
 // RTL's waitFor/findBy* only detect JEST fake timers (`typeof jest !== 'undefined'`
 // in @testing-library/dom 10.4), so under vitest's they hang on a faked
@@ -135,13 +135,73 @@ describe("BrowserDockPanel", () => {
     expect(screen.getByRole("button", { name: /done & stop/i })).toBeInTheDocument();
   });
 
-  it("takes an idle session for the viewer automatically", async () => {
-    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle", canControl: true });
-    post.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true });
+  it("never takes an idle session by watching; Take control and Done are explicit", async () => {
+    const idle = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle", canControl: true };
+    const mine = { ...idle, mode: "human", isController: true, controllerId: "human" };
+    get.mockResolvedValue(idle);
+    render(<BrowserDockPanel />);
+    await flush(30_000);
+    expect(post).not.toHaveBeenCalled();
+    expect(screen.getByText(/no one controls it/i)).toBeInTheDocument();
+    post.mockResolvedValue(mine);
+    get.mockResolvedValue(mine);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /take control/i })); });
+    expect(post).toHaveBeenCalledWith("/browser/control", { action: "take", generation: "g1" });
+    post.mockResolvedValue(idle);
+    get.mockResolvedValue(idle);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /done & hand back/i })); });
+    expect(post).toHaveBeenLastCalledWith("/browser/control", { action: "release", generation: "g1" });
+    await flush();
+    expect(screen.queryByText(/agent took over/i)).toBeNull();
+  });
+
+  it("renews control on viewer input at most once per throttle window", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true });
+    post.mockResolvedValue({ ok: true });
     render(<BrowserDockPanel />);
     await flush();
-    expect(post).toHaveBeenCalledWith("/browser/control", { action: "take", generation: "g1" });
-    expect(screen.getByRole("button", { name: /done & stop/i })).toBeInTheDocument();
+    const viewer = screen.getByTestId("browser-viewer");
+    fireEvent.pointerDown(viewer);
+    fireEvent.pointerMove(viewer);
+    fireEvent.keyDown(viewer, { key: "a" });
+    fireEvent.wheel(viewer);
+    const renews = () => post.mock.calls.filter(([, body]) => body?.action === "renew");
+    expect(renews()).toEqual([["/browser/control", { action: "renew", generation: "g1" }]]);
+    await flush(RENEW_THROTTLE_MS);
+    fireEvent.keyDown(viewer, { key: "b" });
+    expect(renews()).toHaveLength(2);
+  });
+
+  it("sends no renew for a watcher's input", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "agent", canControl: true });
+    render(<BrowserDockPanel />);
+    await flush();
+    fireEvent.pointerDown(screen.getByTestId("browser-viewer"));
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("shows Agent took over when a lapsed lease is claimed by the agent", async () => {
+    const mine = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true, controllerId: "human" };
+    get.mockResolvedValue(mine);
+    render(<BrowserDockPanel />);
+    await flush();
+    expect(screen.queryByText(/agent took over/i)).toBeNull();
+    get.mockResolvedValue({ ...mine, generation: "g2", mode: "agent", isController: false, controllerId: "run" });
+    await flush(5_000);
+    expect(screen.getByRole("status")).toHaveTextContent(/agent took over/i);
+    expect(screen.getByRole("button", { name: /take control/i })).toBeInTheDocument();
+    post.mockResolvedValue({ ...mine, generation: "g3" });
+    get.mockResolvedValue({ ...mine, generation: "g3" });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /take control/i })); });
+    expect(screen.queryByText(/agent took over/i)).toBeNull();
+  });
+
+  it("labels the viewer's own lapsed lease and offers Take control", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: false, canControl: true, controllerId: "human" });
+    render(<BrowserDockPanel />);
+    await flush();
+    expect(screen.getByText(/your control lapsed/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /take control/i })).toBeInTheDocument();
   });
 
   it("merges fresh control metadata while retaining the current signed URL", async () => {

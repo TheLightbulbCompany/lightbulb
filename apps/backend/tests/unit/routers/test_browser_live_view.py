@@ -133,3 +133,17 @@ async def test_navigation_rejects_embedded_credentials(async_client_org_admin):
         )
     assert response.status_code == 422
     navigate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_renew_heartbeat_skips_the_provision_gate(async_client_org_admin):
+    with (
+        patch("routers.container._assert_provision_allowed") as gate,
+        patch("routers.container.browser_control.renew", return_value={"ok": True}) as renew,
+    ):
+        response = await async_client_org_admin.post(
+            "/api/v1/browser/control", json={"action": "renew", "generation": "g1"}
+        )
+    assert response.status_code == 200
+    assert renew.await_args.args[2] == "g1"
+    gate.assert_not_called()

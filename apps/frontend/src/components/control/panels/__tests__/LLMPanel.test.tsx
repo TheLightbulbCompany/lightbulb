@@ -277,6 +277,16 @@ describe("LLMPanel", () => {
     expect(mockApiPost).not.toHaveBeenCalled();
   });
 
+  it("shows the used daily allowance with an Upgrade link in place of Active", () => {
+    accountFields = { subscription_status: "active", plan: "base", capped_today: true };
+    mockSWRData.mockReturnValue({ provider_choice: null });
+    render(<LLMPanel />);
+    expect(screen.queryByText("Active")).toBeNull();
+    expect(screen.getByText("Daily allowance used")).toBeInTheDocument();
+    expect(screen.getByText(/resets at 00:00 UTC/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Upgrade" })).toHaveAttribute("href", "/settings?panel=billing");
+  });
+
   it("tells a Workspace owner prepaid credits are coming soon", () => {
     accountFields = { subscription_status: "active", plan: "standard" };
     mockSWRData.mockReturnValue({ provider_choice: null });

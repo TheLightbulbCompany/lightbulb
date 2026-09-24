@@ -117,3 +117,19 @@ async def test_account_plan_is_null_for_a_trial(mock_repo, mock_get_summary, asy
     assert body["plan"] == plan
     if row and row.get("trial_end"):
         assert body["trial_end"] == row["trial_end"]
+
+
+@pytest.mark.asyncio
+@patch("routers.billing.get_usage_summary")
+@patch("routers.billing.billing_repo")
+async def test_account_capped_today_only_for_todays_stamp(mock_repo, mock_get_summary, async_client):
+    from core.services import trial_cap
+
+    mock_get_summary.return_value = _summary_zero()
+    row = {"owner_id": "org_c", "subscription_status": "trial_local"}
+
+    for stamp, expected in ((trial_cap.utc_today(), True), ("2000-01-01", False), (None, False)):
+        mock_repo.get_by_owner_id = AsyncMock(return_value={**row, "openrouter_capped_day": stamp})
+        resp = await async_client.get("/api/v1/billing/account")
+        assert resp.status_code == 200
+        assert resp.json()["capped_today"] is expected

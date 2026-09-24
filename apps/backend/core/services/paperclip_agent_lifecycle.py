@@ -59,54 +59,6 @@ async def resolve_agent_adapter(owner_id: str) -> tuple[str, dict]:
     )
 
 
-async def repoint_agent_adapter(owner_id: str, agent: dict[str, Any]) -> bool:
-    """Move ONE **existing** agent's Paperclip adapter onto the native Hermes transport.
-
-    ``resolve_agent_adapter`` above picks the adapter at agent-CREATE time and nothing had ever
-    re-picked it, so a workspace that MOVED between runtimes kept whatever its agents were
-    created with (M6 task-14 row 1, the founder blocker): every migrated workspace's agents went
-    on dialling an operator WebSocket at an address that no longer resolves, so each routine
-    fire, issue run and Teams Run/Retry died while room chat -- which rides the WORK bus, not the
-    adapter -- kept working. Nothing looked broken.
-
-    Deliberately the SAME resolver a fresh create uses.
-
-    ZERO CALLERS TODAY -- the migration job that drove it is deleted, and every prod and dev
-    workspace is migrated. Kept because it is the only repair path for an agent row still
-    carrying ``openclaw_gateway``: that agent's routines, issue runs and Teams Run/Retry all
-    fail silently while room chat (which rides the WORK bus, not the adapter) keeps working, so
-    nothing looks broken. Re-deriving it from scratch mid-incident is the expensive option.
-
-    Returns True when a patch landed, False when the agent was already on the target adapter --
-    i.e. idempotent, so a re-entered migration tail re-points only what is still wrong.
-    **Raises** on any failure: a half-re-pointed workspace looks healthy, which is the entire
-    defect this closes.
-    """
-    agent_id = agent.get("id")
-    if not agent_id:
-        raise ValueError(f"repoint_agent_adapter: agent row for owner={owner_id} has no id")
-    if agent.get("adapterType") == HERMES_GATEWAY_TYPE:
-        return False
-    # The empty-hook-token guard lives INSIDE build_hermes_gateway_adapter_config, which raises
-    # AdapterConfigError before the PATCH: every door onto the native adapter (seed, /teams
-    # create, this re-point) gets the same refusal.
-    _, adapter_config = await resolve_agent_adapter(owner_id)
-    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
-        admin = PaperclipAdminClient(http_client=http)
-        cookie = await get_admin_session_cookie(http)
-        await admin.patch_agent(
-            session_cookie=cookie,
-            agent_id=agent_id,
-            body={
-                "adapterType": HERMES_GATEWAY_TYPE,
-                "adapterConfig": adapter_config,
-                "replaceAdapterConfig": True,
-            },
-        )
-    logger.info("repoint_agent_adapter: owner=%s agent=%s -> %s", owner_id, agent_id, HERMES_GATEWAY_TYPE)
-    return True
-
-
 async def list_hermes_gateway_agents(owner_id: str) -> tuple[str | None, list[str]]:
     """The owner's active Paperclip company id and its ``hermes_gateway`` agent ids -- what
     ``sync_agent_adapter_config`` would patch. ``(None, [])`` when no company exists yet."""
@@ -135,8 +87,7 @@ async def sync_agent_adapter_config(owner_id: str) -> int:
     and ``provision_org`` short-circuits on an already-active company -- so when an owner's
     containers row is re-created and ``prepare_hermes_workspace`` mints a new hook_token, the
     surviving company's agents keep the OLD one and every run 401s at the facade while room
-    chat keeps working. ``repoint_agent_adapter`` skips agents already on ``hermes_gateway``,
-    so it cannot fix this; ``openclaw_gateway`` agents stay its job.
+    chat keeps working. This is the repair path for that.
 
     The token is read CONSISTENTLY here, right before the PATCHes, so two concurrent provisions
     converge on the row's latest token (last writer wins with the current value, never a stale

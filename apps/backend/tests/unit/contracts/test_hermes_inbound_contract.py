@@ -1,12 +1,12 @@
 """Cross-lane conformance test (final-review Important 5 / I5).
 
-C2, C3 and I1 were each invisible to a green suite because the two doors that build an
-AgentCore ingress body (agent_mail_delivery.py, routers/messaging.py::post_paperclip_run) are
-tested against a MOCKED runtime_transport.request -- nothing ever fed the body they build
-through the bridge's own `bridge.turn.parse_ingress`, and nothing ever checked which of the
-container's two tokens (`hook_token` vs `gateway_token`) rode the Authorization header. This
-test drives the REAL backend call sites and the REAL bridge parser together, so a wire mismatch
-on either side fails here first.
+C2, C3 and I1 were each invisible to a green suite because the door that builds an
+AgentCore ingress body (agent_mail_delivery.py) is tested against a MOCKED
+runtime_transport.request -- nothing ever fed the body it builds through the bridge's own
+`bridge.turn.parse_ingress`, and nothing ever checked which of the container's two tokens
+(`hook_token` vs `gateway_token`) rode the Authorization header. This test drives the REAL
+backend call sites and the REAL bridge parser together, so a wire mismatch on either side
+fails here first.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -100,36 +100,5 @@ async def test_agent_mail_with_no_thread_key_is_still_a_conformant_ingress(monke
 
     assert result == "delivered"
     assert "sessionKey" not in captured["json_body"]
-    assert bridge_turn.parse_ingress(dict(captured["json_body"]))
-    assert captured["headers"] == {"Authorization": f"Bearer {GATEWAY_TOKEN}"}
-
-
-def test_paperclip_run_is_a_conformant_gateway_authed_ingress(client, monkeypatch):
-    captured = _patch_capturing_request(monkeypatch, runtime_transport)
-    body = {
-        "runId": "run_1",
-        "agentId": AGENT,
-        "companyId": "company_1",
-        "context": {"taskId": "task_1", "wakeReason": "New comment on your task"},
-    }
-
-    with patch(
-        "routers.messaging.container_repo.get_by_owner_id",
-        AsyncMock(
-            return_value={
-                "owner_id": OWNER,
-                "hook_token": HOOK_TOKEN,
-                "gateway_token": GATEWAY_TOKEN,
-                "runtime_host": "agentcore",
-            }
-        ),
-    ):
-        r = client.post(
-            f"/api/v1/internal/paperclip/runs/{OWNER}",
-            json=body,
-            headers={"Authorization": f"Bearer {HOOK_TOKEN}"},
-        )
-
-    assert r.status_code == 202
     assert bridge_turn.parse_ingress(dict(captured["json_body"]))
     assert captured["headers"] == {"Authorization": f"Bearer {GATEWAY_TOKEN}"}

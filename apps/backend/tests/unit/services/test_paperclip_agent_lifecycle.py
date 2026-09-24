@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 
 from core.services import paperclip_agent_lifecycle as lifecycle
-from core.services.paperclip_adapter_config import AdapterConfigError
 
 
 def _wire_prepare(monkeypatch, agents):
@@ -116,12 +115,13 @@ async def test_paperclip_delete_conditionally_removes_starter_uuid(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# M6 task-15 item 1 — repoint_agent_adapter (task-14 row 1, the founder blocker)
+# sync_agent_adapter_config -- a re-created containers row mints a new hook_token, but the
+# surviving company's hermes_gateway agents still carry the old one as their apiKey
 # ---------------------------------------------------------------------------
 
 
 def _wire_repoint(monkeypatch, *, hook_token="hook-tok"):
-    """Paperclip admin behind a real async context manager (``repoint_agent_adapter`` uses
+    """Paperclip admin behind a real async context manager (``sync_agent_adapter_config`` uses
     ``async with httpx.AsyncClient(...)``), plus the container row the adapter builder reads."""
     admin = MagicMock()
     admin.patch_agent = AsyncMock(return_value={})
@@ -138,87 +138,6 @@ def _wire_repoint(monkeypatch, *, hook_token="hook-tok"):
     monkeypatch.setattr(lifecycle, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
     monkeypatch.setattr(lifecycle.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": hook_token}))
     return admin
-
-
-@pytest.mark.asyncio
-async def test_repoint_moves_an_existing_agent_onto_the_native_adapter(monkeypatch):
-    """The whole point: an agent CREATED on the old runtime keeps ``openclaw_gateway`` forever,
-    and nothing re-picks the adapter, so a migrated workspace dials an operator WebSocket at an
-    address that no longer resolves -- for every routine fire, issue run and Teams Run/Retry,
-    while room chat (which rides the WORK bus, not the adapter) keeps working. Nothing looks
-    broken."""
-    admin = _wire_repoint(monkeypatch)
-    agent = {"id": "agent-1", "name": "Ada", "adapterType": "openclaw_gateway"}
-
-    assert await lifecycle.repoint_agent_adapter("org_1", agent) is True
-
-    body = admin.patch_agent.await_args.kwargs["body"]
-    assert body["adapterType"] == lifecycle.HERMES_GATEWAY_TYPE
-    # replaceAdapterConfig, not a merge: the old config carries a device private key and a
-    # relay URL, and a merged result would keep both alongside the new fields.
-    assert body["replaceAdapterConfig"] is True
-    assert body["adapterConfig"]["apiBaseUrl"].endswith("/api/v1/internal/paperclip/hermes/org_1")
-    assert body["adapterConfig"]["apiKey"] == "hook-tok"
-    assert body["adapterConfig"]["sessionKeyStrategy"] == "issue"
-
-
-@pytest.mark.asyncio
-async def test_repoint_is_idempotent_on_an_agent_already_on_the_target(monkeypatch):
-    """It is the only repair path for a stray `openclaw_gateway` row, so it has to be safe to run
-    across a whole roster: an agent already on the native adapter is left alone."""
-    admin = _wire_repoint(monkeypatch)
-    agent = {"id": "agent-1", "adapterType": lifecycle.HERMES_GATEWAY_TYPE}
-
-    assert await lifecycle.repoint_agent_adapter("org_1", agent) is False
-
-    admin.patch_agent.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_repoint_refuses_to_write_a_native_adapter_with_no_hook_token(monkeypatch):
-    """An empty token mints an adapter whose every run 401s at the facade -- and Paperclip
-    reports that per RUN (``hermes_gateway_auth_failed``), not as a broken agent, so a
-    half-re-pointed workspace looks healthy. The guard lives in the shared builder
-    (``AdapterConfigError``), so the seed and ``/teams`` create refuse it identically rather than
-    this door alone having a private check."""
-    admin = _wire_repoint(monkeypatch, hook_token="")
-    agent = {"id": "agent-1", "adapterType": "openclaw_gateway"}
-
-    with pytest.raises(AdapterConfigError):
-        await lifecycle.repoint_agent_adapter("org_1", agent)
-
-    admin.patch_agent.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_repoint_raises_rather_than_reporting_a_partial_success(monkeypatch):
-    """A half-re-pointed workspace looks healthy, which is the entire defect this closes -- so a
-    failed PATCH must raise, and the same call must converge on a retry."""
-    admin = _wire_repoint(monkeypatch)
-    admin.patch_agent.side_effect = [RuntimeError("paperclip 503"), {}]
-    agent = {"id": "agent-1", "adapterType": "openclaw_gateway"}
-
-    with pytest.raises(RuntimeError, match="paperclip 503"):
-        await lifecycle.repoint_agent_adapter("org_1", agent)
-
-    assert await lifecycle.repoint_agent_adapter("org_1", agent) is True
-    assert admin.patch_agent.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_repoint_refuses_an_agent_row_with_no_id(monkeypatch):
-    admin = _wire_repoint(monkeypatch)
-
-    with pytest.raises(ValueError, match="no id"):
-        await lifecycle.repoint_agent_adapter("org_1", {"adapterType": "openclaw_gateway"})
-
-    admin.patch_agent.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# sync_agent_adapter_config -- a re-created containers row mints a new hook_token, but the
-# surviving company's hermes_gateway agents still carry the old one as their apiKey
-# ---------------------------------------------------------------------------
 
 
 def _wire_sync(monkeypatch, *, agents, company_id="co-1", hook_token="new-tok"):
@@ -242,7 +161,7 @@ async def test_sync_repatches_every_hermes_agent_with_the_rows_current_token(mon
     assert await lifecycle.sync_agent_adapter_config("org_1") == 2
 
     patched = {c.kwargs["agent_id"]: c.kwargs["body"] for c in admin.patch_agent.await_args_list}
-    assert set(patched) == {"a1", "a2"}  # openclaw_gateway is repoint_agent_adapter's job
+    assert set(patched) == {"a1", "a2"}  # only hermes_gateway agents carry this apiKey snapshot
     for body in patched.values():
         assert body["adapterConfig"]["apiKey"] == "new-tok"
         assert body["replaceAdapterConfig"] is True

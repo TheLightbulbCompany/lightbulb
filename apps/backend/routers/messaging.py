@@ -27,7 +27,6 @@ from core.services import local_sessions
 from core.services import local_session_grants
 from core.services import container_rpc, runtime_transport
 from core.services.live_events import get_live_event_publisher
-from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S
 from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.messaging import (
@@ -52,7 +51,6 @@ from core.services.messaging import (
     RoomDetail,
     RoomListResponse,
     MessageAttachment,
-    PaperclipRunRequest,
     RunEventRequest,
     RunEventResponse,
     RunStatusResponse,
@@ -831,51 +829,6 @@ def _paperclip_hermes_status_or_lost(response: runtime_transport.RuntimeResponse
             "session_id": session_id,
             "error": "runtime_lost",
         }
-    return Response(
-        content=response.text,
-        status_code=response.status_code,
-        media_type=response.headers.get("content-type", "application/json"),
-    )
-
-
-@router.post("/internal/paperclip/runs/{owner_id}")
-async def post_paperclip_run(owner_id: str, body: PaperclipRunRequest, request: Request):
-    """Legacy generic-webhook compatibility while existing agents are repointed.
-
-    New AgentCore agents use the native ``hermes_gateway`` facade above. This old shape remains
-    temporarily so an already-seeded ``http`` adapter does not go dark before the migration tail
-    patches it; unlike the native route, its 202 receipt cannot represent terminal completion.
-    """
-    container = await _require_hook_token(owner_id, request)
-    context = body.context or {}
-    # Free-form record straight off Paperclip's run row -- read defensively, never assume a
-    # type: a non-string here must not turn a run trigger into a 500.
-    wake_reason = str(context.get("wakeReason") or "")
-    task_id = str(context.get("taskId") or "")
-    text = wake_reason or (f"Paperclip task {task_id}" if task_id else "Paperclip triggered a run.")
-    try:
-        response = await runtime_transport.request(
-            container,
-            f"/plugins/lightbulb-channel/inbound/{body.agent_id}",
-            json_body={
-                "version": 1,
-                "eventId": body.run_id,
-                "eventKind": "paperclip_run",
-                "targetAgentId": body.agent_id,
-                "sessionKey": f"agent:{body.agent_id}:paperclip:{body.run_id}",
-                "message": {"text": text},
-            },
-            # The bridge's inbound door is gated on the GATEWAY token (server.py's
-            # _authorized), never the hook token -- the hook token is for backend-side
-            # routes the bridge itself calls back into (final-review C2).
-            headers={"Authorization": f"Bearer {(container or {}).get('gateway_token') or ''}"},
-            # AgentCore holds the invoke through a cold microVM start -- same ~90s budget as
-            # the canonical ingress caller (openclaw_work._post); a Paperclip wake can hit a
-            # parked workspace exactly like a room message can.
-            timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
-        )
-    except httpx.HTTPError as exc:
-        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not reach the runtime.", retryable=True, retry_after=3) from exc
     return Response(
         content=response.text,
         status_code=response.status_code,

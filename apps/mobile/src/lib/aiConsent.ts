@@ -29,7 +29,9 @@ import * as SecureStore from "expo-secure-store";
  * whole mechanism — old entries are simply never read again.
  */
 // v2 (2026-09-23): OpenRouter, model hosts, Vercel/TypeSafe added — everyone re-asked.
-const KEY_PREFIX = "lightbulb.aiConsent.v2.";
+// v3 (2026-09-24): AWS is hosting + workspace memory (no Bedrock inference any more), and
+// Anthropic only with the owner's own key — everyone re-asked on the corrected list.
+const KEY_PREFIX = "lightbulb.aiConsent.v3.";
 
 /** SecureStore keys accept [A-Za-z0-9._-]; Clerk ids (`user_2ab…`) comply. */
 const keyFor = (userId: string) => `${KEY_PREFIX}${userId}`;

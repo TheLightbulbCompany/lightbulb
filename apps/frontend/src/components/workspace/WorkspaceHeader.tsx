@@ -8,6 +8,7 @@ import Link from "next/link";
 import { useStatusLoaded } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
+import { useActivity } from "@/hooks/useActivity";
 import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
@@ -32,6 +33,7 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
   const { open: openMarketplace } = useMarketplaceDrawer();
   const { activePanelId } = useWorkspaceState();
   const activeTeamRunCount = useActiveTeamRunCount();
+  const { unseenCount } = useActivity();
   // The Browser panel watches an AgentCore Browser session, so the rail offers
   // it only once a status body has landed for this workspace — `false` hides
   // it rather than offering a panel that can only render its empty state.
@@ -48,10 +50,12 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
         // registry so the active marker follows the id the dock actually uses.
         const panelId = describePanel(panel, {})?.panelId ?? panel;
         // Team runs are team work, so their count rides on Tasks; Activity badges unseen items.
-        const showsActivity = panel === "teams-issues" && activeTeamRunCount > 0;
-        const accessibleLabel = showsActivity
-          ? `${label}, ${activeTeamRunCount} active team ${activeTeamRunCount === 1 ? "run" : "runs"}`
-          : label;
+        const runs = panel === "teams-issues" ? activeTeamRunCount : 0;
+        const unseen = panel === "activity" ? unseenCount : 0;
+        const badge = runs || unseen;
+        const accessibleLabel = runs
+          ? `${label}, ${runs} active team ${runs === 1 ? "run" : "runs"}`
+          : unseen ? `${label}, ${unseen} unseen` : label;
         // Messaging never needs the container; the other destinations do.
         return <Fragment key={panel}><button type="button" aria-label={accessibleLabel} title={accessibleLabel}
           disabled={!chatReady && panel !== MESSAGES_PANEL_ID}
@@ -63,7 +67,7 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
             else openPanel(panel, {}, { pushUrl: true });
           }}>
           <span className="workspace-rail__icon"><Icon size={20} aria-hidden="true" />
-            {showsActivity && <span className="workspace-rail__activity-badge" aria-hidden="true">{activeTeamRunCount > 9 ? "9+" : activeTeamRunCount}</span>}
+            {badge > 0 && <span className="workspace-rail__activity-badge" aria-hidden="true">{badge > 9 ? "9+" : badge}</span>}
           </span>
           {label !== "Browse workspace files" && <span>{label}</span>}
         </button>

@@ -831,6 +831,10 @@ export interface IssueWorkProduct {
   reviewState: IssueWorkProductReviewState | string;
   isPrimary?: boolean;
   summary?: string | null;
+  externalId?: string | null;
+  healthStatus?: "unknown" | "healthy" | "unhealthy" | string;
+  /** Provider metadata; attachment-backed artifacts carry the attachment paths here. */
+  metadata?: Record<string, unknown> | null;
   createdByRunId?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;

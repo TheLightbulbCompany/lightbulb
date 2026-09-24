@@ -29,6 +29,7 @@ from .schemas import (
     CreateWorkProductBody,
     PatchIssueBody,
     PatchWorkProductBody,
+    ResolveIssueRecoveryActionBody,
 )
 
 router = APIRouter()
@@ -285,6 +286,48 @@ async def monitor_check_now(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
     await require_trial_runway(ctx.owner_id)
     return await _agents._admin().monitor_check_now(
         issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+async def _require_company_issue(issue_id: str, ctx: TeamsContext) -> None:
+    """404 unless ``issue_id`` belongs to the caller's workspace company.
+
+    Paperclip authorizes by the member's session, and a Paperclip user can hold
+    memberships in more than one company — so the session alone does not pin an
+    issue to THIS workspace. Same check as ``session_work``'s linked-issue fence.
+    """
+    issue = await _agents._admin().get_issue(issue_id=issue_id, session_cookie=ctx.session_cookie)
+    if not isinstance(issue, dict) or issue.get("companyId") != ctx.company_id:
+        raise HTTPException(status_code=404, detail="Issue not found")
+
+
+@router.get("/issues/{issue_id}/recovery-actions")
+async def list_issue_recovery_actions(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """The issue's recovery action (``{active, actions}``), for the ported
+    IssueRecoveryActionCard. Maps to upstream ``GET /api/issues/{id}/recovery-actions``."""
+    await _require_company_issue(issue_id, ctx)
+    return await _agents._admin().list_issue_recovery_actions(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/issues/{issue_id}/recovery-actions/resolve")
+async def resolve_issue_recovery_action(
+    issue_id: str,
+    body: ResolveIssueRecoveryActionBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Record the human's decision on a boarded recovery (Try again / Mark done /
+    Send for review / False positive). Maps to upstream
+    ``POST /api/issues/{id}/recovery-actions/resolve``; Paperclip's own 4xx reason
+    (stale action, board-only outcome) reaches the caller via main.py's
+    ``PaperclipApiError`` handler."""
+    await _require_company_issue(issue_id, ctx)
+    return await _agents._admin().resolve_issue_recovery_action(
+        issue_id=issue_id,
+        body=body.model_dump(exclude_none=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 

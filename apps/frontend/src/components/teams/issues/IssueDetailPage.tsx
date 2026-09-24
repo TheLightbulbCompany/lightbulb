@@ -24,6 +24,10 @@ import { IssueWorkProductsSection } from "./IssueWorkProductsSection";
 import { IssueAttachmentsSection } from "./IssueAttachmentsSection";
 import { hideIssueWithUndo } from "./lib/hideIssue";
 import { IssueParentBreadcrumb } from "./IssueParentBreadcrumb";
+import {
+  IssueRecoveryActionCard,
+  type RecoveryResolveOutcome,
+} from "./IssueRecoveryActionCard";
 import { useIssueDetail } from "./hooks/useIssueDetail";
 import { useIssueMutations } from "./hooks/useIssueMutations";
 import { useIssueInteractions } from "./hooks/useIssueInteractions";
@@ -45,7 +49,22 @@ import type {
   CompanyAgent,
   CompanyMember,
   IssueProject,
+  IssueRecoveryActionsResponse,
 } from "@/components/teams/shared/types";
+import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
+
+// Upstream IssueDetail.handleResolveRecoveryAction: each card menu outcome is one
+// (outcome, sourceIssueStatus) pair on POST /issues/:id/recovery-actions/resolve.
+const RECOVERY_RESOLVE_REQUEST: Record<
+  RecoveryResolveOutcome,
+  { outcome: "restored" | "false_positive"; sourceIssueStatus: "todo" | "done" | "in_review" }
+> = {
+  todo: { outcome: "restored", sourceIssueStatus: "todo" },
+  done: { outcome: "restored", sourceIssueStatus: "done" },
+  in_review: { outcome: "restored", sourceIssueStatus: "in_review" },
+  false_positive_done: { outcome: "false_positive", sourceIssueStatus: "done" },
+  false_positive_in_review: { outcome: "false_positive", sourceIssueStatus: "in_review" },
+};
 
 export interface IssueDetailPageProps {
   issueId: string;
@@ -175,7 +194,9 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const interactionMutations = useInteractionMutations();
   const { votesByTarget, castVote } = useIssueFeedback(issueId);
   const { user } = useUser();
-  const { read } = useTeamsApi();
+  const { read, post, mutate } = useTeamsApi();
+  const recovery = read<IssueRecoveryActionsResponse>(`/issues/${issueId}/recovery-actions`);
+  const recoveryAction = recovery.data?.active ?? null;
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: projectsResp } = read<{ projects: IssueProject[] }>("/projects");
   // Company members power the human-user side of the assignee picker. Mirrors
@@ -184,6 +205,21 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const agents = agentsResp?.agents ?? [];
   const projects = projectsResp?.projects ?? [];
   const members = membersResp?.members ?? [];
+
+  const agentMap = new Map(agents.map((a) => [a.id, a]));
+
+  const resolveRecoveryAction = (outcome: RecoveryResolveOutcome) => {
+    if (!recoveryAction) return;
+    void post(`/issues/${issueId}/recovery-actions/resolve`, {
+      actionId: recoveryAction.id,
+      ...RECOVERY_RESOLVE_REQUEST[outcome],
+    })
+      .catch((e) => notifyApiError(e, "Unable to resolve recovery action"))
+      .finally(() => {
+        void recovery.mutate();
+        void mutate(teamsQueryKeys.issues.detail(issueId));
+      });
+  };
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -399,6 +435,16 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           <h2 className="section-label mb-3">
             <b>Conversation</b>
           </h2>
+          {recoveryAction ? (
+            <IssueRecoveryActionCard
+              className="mb-4"
+              action={recoveryAction}
+              agentMap={agentMap}
+              scheduledRetry={issue.scheduledRetry ?? null}
+              onResolve={resolveRecoveryAction}
+              canFalsePositive
+            />
+          ) : null}
           <IssueComments
             comments={comments}
             agents={agents}

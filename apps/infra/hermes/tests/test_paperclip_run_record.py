@@ -172,3 +172,40 @@ def test_a_record_write_prunes_this_agents_records_older_than_a_day(home, s3):
     assert _key("recent-run") in s3.objects
     assert _key() in s3.objects
     assert f"{sync.S3_PREFIX}/agent-1/memories/MEMORY.md" in s3.objects
+
+
+# ---- the create path and the poll path on a fresh process ------------------------------------
+from bridge import server  # noqa: E402
+
+AUTH = {"authorization": "Bearer gw-test"}
+CREATE = "/internal/paperclip/v1/runs"
+
+
+def test_a_repost_of_a_finished_run_on_a_fresh_process_replays_instead_of_rerunning(home, s3, monkeypatch):
+    _finish()
+    turn.RUNS.clear()
+    started = []
+    monkeypatch.setattr(server.threading, "Thread", lambda *a, **k: started.append(k) or pytest.fail("reran"))
+
+    code, body = server.handle_plugin(CREATE, "POST", AUTH, {"identity": IDENTITY, "request": REQUEST})
+
+    assert (code, body["status"]) == (200, "completed")  # the in-memory duplicate's answer
+    assert started == []
+    assert server.handle_plugin(f"{CREATE}/{RUN}", "GET", AUTH, {"identity": IDENTITY})[1]["output"] == "all done"
+
+
+def test_a_repost_with_a_different_request_conflicts_like_the_in_memory_path(home, s3):
+    _finish()
+    turn.RUNS.clear()
+    code, body = server.handle_plugin(CREATE, "POST", AUTH,
+                                      {"identity": IDENTITY, "request": {**REQUEST, "input": "other"}})
+    assert (code, body) == (409, {"error": "idempotency_conflict"})
+
+
+def test_an_s3_read_failure_on_a_poll_miss_is_a_5xx_never_the_404_the_facade_calls_lost(home, s3, monkeypatch):
+    def throttled(**_kw):
+        raise RuntimeError("SlowDown")
+
+    monkeypatch.setattr(s3, "get_object", throttled)
+    code, _body = server.handle_plugin(f"{CREATE}/{RUN}", "GET", AUTH, {"identity": IDENTITY})
+    assert code == 503

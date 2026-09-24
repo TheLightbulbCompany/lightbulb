@@ -128,7 +128,13 @@ def _handle_paperclip_run(path: str, method: str, headers: dict, body) -> tuple[
     if parsed is None:
         return 400, {"error": "invalid_paperclip_identity"}
     identity, _request = parsed
-    status = turn.paperclip_run_status(run_id, identity)
+    try:
+        status = turn.paperclip_run_status(run_id, identity)
+    except Exception:  # noqa: BLE001 -- the durable-record read failed (an S3 blip)
+        # Never 404: the backend facade reads 404 as "the microVM lost this run" and fails it.
+        # A 5xx makes the adapter log "status poll failed" and poll again.
+        log.warning("paperclip run status lookup failed run=%s", run_id, exc_info=True)
+        return 503, {"error": "run_status_unavailable"}
     if status is None:
         return 404, {"error": "run_not_found"}
     if not stop or status["status"] in ("completed", "failed", "cancelled"):

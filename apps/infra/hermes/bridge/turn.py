@@ -146,6 +146,16 @@ def register_paperclip_run(identity: dict, request: dict) -> str:
     """Atomically register a native run, or classify an idempotent replay/conflict."""
     run_id = identity["runId"]
     fingerprint = _paperclip_fingerprint(identity, request)
+    # A run that finished on a process that is gone is still this Idempotency-Key's run: its
+    # durable record classifies the replay exactly as the in-memory entry would have. Read
+    # outside the lock (an S3 GET); only consulted when this process has no entry.
+    if run_id not in RUNS:
+        record = sync.get_paperclip_run_record(identity["agentId"], run_id)
+        if record is not None:
+            finished = {**record, "kind": "paperclip"}
+            if _paperclip_identity_matches(finished, identity) and record.get("requestHash") == fingerprint:
+                return "replayed"
+            return "conflict"
     with _RUNS_LOCK:
         existing = RUNS.get(run_id)
         if existing is not None:
@@ -185,10 +195,12 @@ def finish_paperclip_run(run_id: str, outcome: str, *, output: str, error: str |
     with _RUNS_LOCK:
         entry = RUNS.get(run_id)
         identity = dict((entry or {}).get("identity") or {})
+        request_hash = (entry or {}).get("requestHash")
     if identity:
         try:
             sync.put_paperclip_run_record(identity["agentId"], run_id, {
                 "identity": identity,
+                "requestHash": request_hash,
                 "outcome": outcome,
                 "output": output[:RUN_RECORD_OUTPUT_CAP],
                 "error": error,

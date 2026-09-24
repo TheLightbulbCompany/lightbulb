@@ -3,7 +3,8 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { installStoragePolyfill } from "@/test-utils/storagePolyfill";
 
 const syncUser = vi.fn();
-vi.mock("@/lib/api", () => ({ useApi: () => ({ syncUser }) }));
+const put = vi.fn();
+vi.mock("@/lib/api", () => ({ useApi: () => ({ syncUser, put }) }));
 
 import { useUserSyncOnce } from "../useUserSyncOnce";
 
@@ -11,6 +12,8 @@ const restore = installStoragePolyfill();
 afterAll(restore);
 beforeEach(() => {
   syncUser.mockReset();
+  put.mockReset();
+  put.mockResolvedValue({});
   window.sessionStorage.clear();
 });
 
@@ -29,6 +32,13 @@ describe("useUserSyncOnce", () => {
     rerender({ on: true });
     await waitFor(() => expect(window.sessionStorage.getItem("isol8:user-synced")).toBe("1"));
     expect(syncUser).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the browser's IANA timezone once the sync lands", async () => {
+    syncUser.mockResolvedValue(undefined);
+    renderHook(() => useUserSyncOnce(true));
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    await waitFor(() => expect(put).toHaveBeenCalledWith("/users/me/prefs", { timezone }));
   });
 
   it("skips when the session marker is already set", () => {

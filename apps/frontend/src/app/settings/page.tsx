@@ -13,6 +13,7 @@ import { useApi, ApiError } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { WorkspaceMembersSection } from "@/components/settings/WorkspaceMembersSection";
+import { DailySummaryCard } from "@/components/settings/DailySummaryCard";
 import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
 import { DesktopOpenAtLogin } from "@/components/desktop/DesktopOpenAtLogin";
 import { LocalSessions } from "@/components/desktop/LocalSessions";
@@ -222,6 +223,8 @@ function ProfilePanel() {
           To update your name, email, or password, use the account menu in the top-right corner of the app.
         </div>
       </div>
+
+      <DailySummaryCard />
 
       <DeleteAccountCard />
     </div>

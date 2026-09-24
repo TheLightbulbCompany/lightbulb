@@ -48,6 +48,14 @@ export function useUserSyncOnce(enabled: boolean): void {
         } catch {
           // best effort
         }
+        // The daily digest fires at 08:00 in this zone. Best effort: a
+        // failure leaves the stored zone (or America/New_York) in place.
+        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (timezone) {
+          void Promise.resolve()
+            .then(() => api.put("/users/me/prefs", { timezone }))
+            .catch(() => undefined);
+        }
       })
       .catch((err: unknown) => {
         // Release the latch so the next render can retry — the session

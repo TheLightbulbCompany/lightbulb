@@ -410,7 +410,12 @@ function RoomContent({
   const isRoomAdmin = viewer?.role === "owner" || viewer?.role === "admin";
   const canManageMembers = visibleRoom?.kind === "channel" && isRoomAdmin;
   const canEditRoom = visibleRoom?.kind !== "dm" && isRoomAdmin;
-  const canLeaveRoom = visibleRoom?.kind === "channel" && viewer?.role !== "owner" && !visibleRoom?.shared;
+  // A group chat's creator holds no powers there, so anyone may leave one; a channel owner may not.
+  const canLeaveRoom = !visibleRoom?.shared
+    && (visibleRoom?.kind === "group-dm" || (visibleRoom?.kind === "channel" && viewer?.role !== "owner"));
+  // A group chat has no admins: any member archives and unarchives it.
+  const canUnarchive = !!onSetArchived && (visibleRoom?.kind === "group-dm" || isRoomAdmin);
+  const roomNoun = visibleRoom?.kind === "group-dm" ? "group chat" : "channel";
   const removalTarget = management
     ? participants.find((member) => member.kind === management.kind && member.id === management.id && member.role !== "owner")
     : undefined;
@@ -679,10 +684,10 @@ function RoomContent({
       {messageActionError && <p role="alert" className="room-typing text-sm text-err">{messageActionError}</p>}
       {visibleRoom?.archivedAt ? <div className="room-composer room-archived" role="status">
         <p className="text-sm text-muted-foreground">
-          {isRoomAdmin && onSetArchived ? "This channel is archived. Unarchive it to post." : "This channel is archived."}
+          {canUnarchive ? `This ${roomNoun} is archived. Unarchive it to post.` : `This ${roomNoun} is archived.`}
         </p>
-        {isRoomAdmin && onSetArchived && <Button type="button" size="sm" variant="outline" disabled={!actionable || messageActionPending}
-          onClick={() => void runMessageAction(() => onSetArchived(false), "The channel could not be unarchived.")}>Unarchive channel</Button>}
+        {canUnarchive && <Button type="button" size="sm" variant="outline" disabled={!actionable || messageActionPending}
+          onClick={() => void runMessageAction(() => onSetArchived!(false), `The ${roomNoun} could not be unarchived.`)}>Unarchive {roomNoun}</Button>}
       </div> : <RoomComposer {...composer}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}

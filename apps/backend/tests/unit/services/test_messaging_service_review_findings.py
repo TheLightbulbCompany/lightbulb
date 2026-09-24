@@ -466,7 +466,7 @@ async def test_patch_room_sets_topic_alone_and_rejects_renaming_a_dm(monkeypatch
     group_meta = {"roomId": "group", "ownerId": "org_1", "kind": "group-dm", "revision": 2}
     require_admin = AsyncMock(return_value=(group_meta, {"role": "admin"}))
     patch_meta = AsyncMock(return_value={**group_meta, "topic": "Ship v2"})
-    monkeypatch.setattr(messaging, "require_room_admin", require_admin)
+    monkeypatch.setattr(messaging, "require_room_member", require_admin)
     monkeypatch.setattr(messaging.messaging_repo, "patch_room_meta", patch_meta)
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
     monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
@@ -485,15 +485,16 @@ async def test_patch_room_sets_topic_alone_and_rejects_renaming_a_dm(monkeypatch
 @pytest.mark.asyncio
 async def test_patch_room_keeps_the_admin_check_in_front_of_persistence(monkeypatch):
     auth = AuthContext(user_id="member", org_id="org_1")
-    monkeypatch.setattr(
-        messaging,
-        "require_room_admin",
-        AsyncMock(side_effect=ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")),
-    )
+    group_meta = {"roomId": "group", "ownerId": "org_1", "kind": "group-dm", "revision": 1}
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(group_meta, {"role": "member"})))
     patch_meta = AsyncMock()
     monkeypatch.setattr(messaging.messaging_repo, "patch_room_meta", patch_meta)
-    with pytest.raises(ApiProblem):
+    with pytest.raises(ApiProblem) as exc:
         await messaging.patch_room(auth, "group", messaging.PatchRoomRequest(name="Denied"))
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    # Archive + rename together is still a rename: the member exemption is archive-only.
+    with pytest.raises(ApiProblem):
+        await messaging.patch_room(auth, "group", messaging.PatchRoomRequest(name="Denied", archived=True))
     patch_meta.assert_not_awaited()
 
 
@@ -529,6 +530,17 @@ async def test_leave_room_removes_a_non_owner_human_and_refuses_the_owner(monkey
         await messaging.leave_room(auth, "room-1")
     assert exc.value.error.code == "INVALID_REQUEST"
     assert remove.await_count == 1
+
+    # A group DM's creator holds no powers there, so they may leave it -- through the same
+    # rotating removal path as everyone else.
+    group = {**meta, "kind": "group-dm"}
+    monkeypatch.setattr(
+        messaging,
+        "require_room_member",
+        AsyncMock(return_value=(group, {"kind": "human", "id": "member", "role": "owner"})),
+    )
+    await messaging.leave_room(auth, "room-1")
+    remove.assert_awaited_with(group, "human", "member")
 
 
 @pytest.mark.asyncio
@@ -630,11 +642,11 @@ def test_mark_unread_request_rejects_a_non_positive_sequence():
         messaging.MarkUnreadRequest(from_seq=0)
 
 
-def _archive_fixture(monkeypatch, meta):
-    require_admin = AsyncMock(return_value=(meta, {"role": "admin"}))
+def _archive_fixture(monkeypatch, meta, role="admin"):
+    require_member = AsyncMock(return_value=(meta, {"role": role}))
     patch_meta = AsyncMock(side_effect=lambda room_id, updates: {**meta, **updates})
     publish = AsyncMock()
-    monkeypatch.setattr(messaging, "require_room_admin", require_admin)
+    monkeypatch.setattr(messaging, "require_room_member", require_member)
     monkeypatch.setattr(messaging.messaging_repo, "patch_room_meta", patch_meta)
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
     monkeypatch.setattr(messaging, "_publish_room_metadata", publish)
@@ -661,11 +673,28 @@ async def test_patch_room_archives_and_unarchives_a_channel_idempotently(monkeyp
     assert patch_meta.await_args.args[1] == {"archivedAt": None, "archivedBy": None}
 
 
-@pytest.mark.parametrize("kind", ["dm", "group-dm"])
 @pytest.mark.asyncio
-async def test_patch_room_refuses_to_archive_a_dm(monkeypatch, kind):
+async def test_any_group_dm_member_archives_and_unarchives_it(monkeypatch):
+    auth = AuthContext(user_id="member", org_id="org_1")
+    meta = {"roomId": "group", "ownerId": "org_1", "kind": "group-dm", "revision": 2}
+    patch_meta, publish = _archive_fixture(monkeypatch, meta, role="member")
+
+    assert await messaging.patch_room(auth, "group", messaging.PatchRoomRequest(archived=True)) == "detail"
+    updates = patch_meta.await_args.args[1]
+    assert updates["archivedBy"] == "member" and updates["archivedAt"]
+    publish.assert_awaited_once()
+
+    meta["archivedAt"] = updates["archivedAt"]
+    await messaging.patch_room(auth, "group", messaging.PatchRoomRequest(archived=False))
+    assert patch_meta.await_args.args[1] == {"archivedAt": None, "archivedBy": None}
+
+
+@pytest.mark.asyncio
+async def test_patch_room_refuses_to_archive_a_dm(monkeypatch):
     auth = AuthContext(user_id="admin", org_id="org_1")
-    patch_meta, _ = _archive_fixture(monkeypatch, {"roomId": "r", "ownerId": "org_1", "kind": kind, "revision": 1})
+    patch_meta, _ = _archive_fixture(
+        monkeypatch, {"roomId": "r", "ownerId": "org_1", "kind": "dm", "revision": 1}, "owner"
+    )
     with pytest.raises(ApiProblem) as exc:
         await messaging.patch_room(auth, "r", messaging.PatchRoomRequest(archived=True))
     assert exc.value.error.code == "ROOM_NOT_ARCHIVABLE" and exc.value.status_code == 409
@@ -693,13 +722,7 @@ async def test_patch_room_refuses_to_archive_general_and_the_shared_vendor_chann
 @pytest.mark.asyncio
 async def test_patch_room_archive_keeps_the_admin_check_in_front(monkeypatch):
     auth = AuthContext(user_id="member", org_id="org_1")
-    monkeypatch.setattr(
-        messaging,
-        "require_room_admin",
-        AsyncMock(side_effect=ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")),
-    )
-    patch_meta = AsyncMock()
-    monkeypatch.setattr(messaging.messaging_repo, "patch_room_meta", patch_meta)
+    patch_meta, _ = _archive_fixture(monkeypatch, {"roomId": "chan", "ownerId": "org_1", "kind": "channel"}, "member")
     with pytest.raises(ApiProblem) as exc:
         await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(archived=True))
     assert exc.value.error.code == "ROOM_FORBIDDEN"

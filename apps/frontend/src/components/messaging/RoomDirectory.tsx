@@ -126,6 +126,7 @@ function DirectoryContent({
   const [newSection, setNewSection] = useState("");
   const [deleting, setDeleting] = useState<RoomSection | null>(null);
   const [leaving, setLeaving] = useState<DirectoryRoom | null>(null);
+  const leavingNoun = leaving?.kind === "group-dm" ? "group chat" : "channel";
   // The order shown while a drag is being saved; cleared either way, so a
   // failed save falls back to the server's order and a successful one lands
   // on the list the save returned.
@@ -443,7 +444,7 @@ function DirectoryContent({
             onMarkUnread={onMarkUnread && (() => void markRoomUnread(room.roomId, label))}
             onMoveToSection={onSetPrefs && sections.length > 0
               ? (sectionId) => setRoomPrefs(room.roomId, { sectionId }, `Could not move ${label}.`) : undefined}
-            onLeave={onLeaveRoom && room.kind === "channel" && !room.shared ? (trigger) => { leave.reset(); leaveTrigger.current = trigger; setLeaving(room); } : undefined}
+            onLeave={onLeaveRoom && (room.kind === "channel" || room.kind === "group-dm") && !room.shared ? (trigger) => { leave.reset(); leaveTrigger.current = trigger; setLeaving(room); } : undefined}
             onCopyLink={() => void copyText(roomPermalink(room.roomId))} />;
         })}</ul>
       </>;
@@ -578,14 +579,14 @@ function DirectoryContent({
         onOpenAutoFocus={(event) => { event.preventDefault(); leaveCancel.current?.focus(); }}
         onCloseAutoFocus={(event) => { if (leaveTrigger.current?.isConnected) { event.preventDefault(); leaveTrigger.current.focus(); } }}>
         <DialogHeader><DialogTitle className="break-words">Leave {leaving ? roomDisplayName(leaving, leaving.participants) : ""}?</DialogTitle>
-          <DialogDescription>You will stop receiving its messages and lose access to its history. An admin can add you back.</DialogDescription>
+          <DialogDescription>You will stop receiving its messages and lose access to its history.{leaving?.kind === "group-dm" ? "" : " An admin can add you back."}</DialogDescription>
         </DialogHeader>
         {leave.error && <p role="alert" className="text-sm text-err break-words">{leave.error}</p>}
         <DialogFooter className="gap-2">
           <Button ref={leaveCancel} type="button" variant="outline" disabled={leave.pending} onClick={() => { setLeaving(null); leave.reset(); }}>Cancel</Button>
           <Button type="button" variant="destructive" disabled={leave.pending}
-            onClick={() => void leave.run(() => onLeaveRoom!(leaving!.roomId), "The channel could not be left.", () => setLeaving(null))}>
-            {leave.pending ? "Leaving…" : "Leave channel"}</Button>
+            onClick={() => void leave.run(() => onLeaveRoom!(leaving!.roomId), `The ${leavingNoun} could not be left.`, () => setLeaving(null))}>
+            {leave.pending ? "Leaving…" : `Leave ${leavingNoun}`}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

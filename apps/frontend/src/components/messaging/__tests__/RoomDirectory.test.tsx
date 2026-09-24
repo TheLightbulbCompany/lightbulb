@@ -604,6 +604,18 @@ it("offers Leave on a channel only, and confirms before leaving", async () => {
   expect(onLeaveRoom).toHaveBeenCalledWith("chan");
 });
 
+it("offers Leave on a group chat too", async () => {
+  const onLeaveRoom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomDirectory {...sectionProps} onLeaveRoom={onLeaveRoom} sections={[]} rooms={[
+    { ...base, roomId: "trio", kind: "group-dm", name: "Trio", participants: [alice] },
+  ]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Trio" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Leave group chat" }));
+  const confirm = await screen.findByRole("dialog", { name: "Leave Trio?" });
+  await userEvent.click(within(confirm).getByRole("button", { name: "Leave group chat" }));
+  expect(onLeaveRoom).toHaveBeenCalledWith("trio");
+});
+
 it("surfaces a failed section save without losing the edit", async () => {
   const onSaveSections = vi.fn().mockRejectedValue(new Error("Sections could not be saved."));
   render(<RoomDirectory {...sectionProps} onSaveSections={onSaveSections} sections={[]} rooms={[]} />);

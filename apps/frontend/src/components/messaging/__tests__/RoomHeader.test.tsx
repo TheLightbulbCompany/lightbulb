@@ -204,8 +204,24 @@ it("archives a channel only after confirming, and unarchives an archived one dir
   await waitFor(() => expect(onSetArchived).toHaveBeenCalledWith(false));
 });
 
-it.each([{ isDefault: true }, { shared: true }, { kind: "group-dm" as const }])("offers no archive for %o", async (extra) => {
-  render(<RoomHeader {...props} room={{ ...room, ...extra }} onSetArchived={vi.fn()} />);
+it.each([{ isDefault: true }, { shared: true }, { kind: "dm" as const }, { canEditRoom: false }])("offers no archive for %o", async (extra) => {
+  const { canEditRoom = true, ...roomExtra } = extra as { canEditRoom?: boolean };
+  render(<RoomHeader {...props} canEditRoom={canEditRoom} room={{ ...room, ...roomExtra }} onSetArchived={vi.fn()} />);
   await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
-  expect(screen.queryByRole("menuitem", { name: "Archive channel" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: /Archive/ })).not.toBeInTheDocument();
+});
+
+it("lets any member archive and leave a group chat", async () => {
+  const onSetArchived = vi.fn().mockResolvedValue(undefined);
+  const onLeaveRoom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomHeader {...props} canEditRoom={false} room={{ ...room, kind: "group-dm" }} onSetArchived={onSetArchived} onLeaveRoom={onLeaveRoom} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Archive group chat" }));
+  await userEvent.click(within(screen.getByRole("dialog", { name: "Archive Roadmap?" })).getByRole("button", { name: "Archive group chat" }));
+  await waitFor(() => expect(onSetArchived).toHaveBeenCalledWith(true));
+
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
+  await userEvent.click(within(screen.getByRole("dialog", { name: "Leave Roadmap?" })).getByRole("button", { name: "Leave group chat" }));
+  await waitFor(() => expect(onLeaveRoom).toHaveBeenCalled());
 });

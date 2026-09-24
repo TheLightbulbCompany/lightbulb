@@ -72,6 +72,7 @@ export function RoomDetailsPanel({
 }: RoomDetailsPanelProps) {
   const id = useId();
   const [confirmLeave, setConfirmLeave] = useState(false);
+  const noun = room?.kind === "group-dm" ? "group chat" : "channel";
   const [unpinning, setUnpinning] = useState<string | null>(null);
   const leaveCancel = useRef<HTMLButtonElement>(null);
   const { pending, error, run, reset } = useAsyncAction();
@@ -202,10 +203,10 @@ export function RoomDetailsPanel({
             <Button ref={leaveCancel} type="button" variant="outline" disabled={pending}
               onClick={() => setConfirmLeave(false)}>Cancel</Button>
             <Button type="button" variant="destructive" disabled={!actionable || pending}
-              onClick={() => void run(onLeaveRoom, "The channel could not be left.")}>{pending ? "Leaving…" : "Leave channel"}</Button>
+              onClick={() => void run(onLeaveRoom, `The ${noun} could not be left.`)}>{pending ? "Leaving…" : `Leave ${noun}`}</Button>
           </div>
           : <Button type="button" variant="outline" className="mt-4" disabled={!actionable}
-            onClick={() => { reset(); setConfirmLeave(true); }}>Leave channel</Button>)}
+            onClick={() => { reset(); setConfirmLeave(true); }}>Leave {noun}</Button>)}
       </>}
 
       {error && <p role="alert" className="text-sm text-err">{error}</p>}

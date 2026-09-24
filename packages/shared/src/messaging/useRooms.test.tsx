@@ -435,6 +435,20 @@ describe("useRooms platform seams", () => {
       expect(messaging.listRooms).not.toHaveBeenCalled();
     });
 
+    it("keeps an archived room archived when a late hint bumps it", async () => {
+      // An archived room refuses posts, but a racing write can still emit a hint; the
+      // sidebar sections on archivedAt, so the bump must carry it through untouched.
+      const archivedAt = "2026-09-14T12:00:00Z";
+      messaging.listRooms.mockResolvedValue({ rooms: [newer, { ...older, archivedAt }], sections: [] });
+      const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+      await waitFor(() => expect(result.current.rooms).toHaveLength(2));
+
+      act(() => { for (const handler of handlers) handler(available()); });
+
+      expect(result.current.rooms.find((r) => r.roomId === older.roomId))
+        .toMatchObject({ lastMessageSeq: 2, archivedAt });
+    });
+
     it("moves recency without unread when the hint is not a notify", async () => {
       const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
       await waitFor(() => expect(result.current.rooms).toHaveLength(2));

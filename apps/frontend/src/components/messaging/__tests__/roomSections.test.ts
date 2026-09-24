@@ -86,4 +86,14 @@ describe("archived rooms", () => {
     expect(groups.map((group) => group.label)).toEqual(["Channels", "Archived"]);
     expect(groups[1].rooms.map((value) => value.roomId)).toEqual(["fav", "kept", "old"]);
   });
+
+  it("move an archived group chat out of Direct messages", () => {
+    const groups = groupRooms(
+      [room("dm-1", { kind: "dm" }), room("trio", { kind: "group-dm", archivedAt: "2026-09-23T00:00:00Z" })],
+      [],
+      { sort: "alpha", nameOf },
+    );
+    expect(groups.map((group) => [group.label, group.rooms.map((value) => value.roomId)]))
+      .toEqual([["Direct messages", ["dm-1"]], ["Archived", ["trio"]]]);
+  });
 });

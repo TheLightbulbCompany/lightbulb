@@ -76,7 +76,7 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
         </>}
         {onLeave && <>
           <DropdownMenuSeparator />
-          <DropdownMenuItem variant="destructive" onSelect={() => onLeave(actionsTrigger.current)}><LogOut aria-hidden="true" />Leave channel</DropdownMenuItem>
+          <DropdownMenuItem variant="destructive" onSelect={() => onLeave(actionsTrigger.current)}><LogOut aria-hidden="true" />{room.kind === "group-dm" ? "Leave group chat" : "Leave channel"}</DropdownMenuItem>
         </>}
       </DropdownMenuContent>
     </DropdownMenu>

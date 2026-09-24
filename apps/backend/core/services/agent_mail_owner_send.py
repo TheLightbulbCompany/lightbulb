@@ -102,7 +102,6 @@ async def send_to_owner(
         repo = PaperclipRepo(table_name="paperclip-companies")
         onboarding = await repo.get_onboarding_state(owner_id) or {}
         generation = onboarding.get("onboarding_generation") or ""
-        row_user_id = onboarding.get("user_id") or owner_id
         company_id = onboarding.get("company_id")
         fallback_ceo_agent_id = onboarding.get("friday_agent_id")
         state = onboarding.get("first_contact_state") or "not_started"
@@ -111,7 +110,7 @@ async def send_to_owner(
         # A platform notice is never first contact regardless of state.
         is_first_contact = not system_notice and state in _FIRST_CONTACT_PENDING
         if is_first_contact:
-            if not await repo.claim_first_contact(row_user_id, onboarding_generation=generation):
+            if not await repo.claim_first_contact(owner_id, onboarding_generation=generation):
                 put_metric(
                     "agent_email.owner_send",
                     dimensions={"purpose": purpose, "result": "already_sent"},
@@ -127,7 +126,7 @@ async def send_to_owner(
             """
             if is_first_contact:
                 await repo.settle_first_contact(
-                    row_user_id,
+                    owner_id,
                     onboarding_generation=generation,
                     state="failed",
                     reason=reason,
@@ -157,7 +156,7 @@ async def send_to_owner(
 
         owner_email = await lookup_owner_email(
             org_id=owner_id if is_org_owner_id(owner_id) else None,
-            fallback_user_id=row_user_id,
+            fallback_user_id=onboarding.get("user_id") or owner_id,
         )
         if not owner_email:
             return await _fail("no_owner_email", "error")
@@ -200,7 +199,7 @@ async def send_to_owner(
             return await _fail("ses_send_failed", "error")
 
         if is_first_contact:
-            await repo.settle_first_contact(row_user_id, onboarding_generation=generation, state="sent")
+            await repo.settle_first_contact(owner_id, onboarding_generation=generation, state="sent")
         put_metric(
             "agent_email.owner_send",
             dimensions={

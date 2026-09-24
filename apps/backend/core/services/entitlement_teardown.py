@@ -162,24 +162,9 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
         logger.exception("entitlement.teardown nightly disarm failed for owner %s", owner_id)
         put_metric("nightly_ceo.disarm", dimensions={"trigger": trigger, "outcome": "error"})
 
-    # Disable Paperclip with a 30-day grace window — the cleanup cron purges the
-    # Paperclip-side artifacts after the grace elapses. Only THIS owner is
-    # disabled; in a multi-member org the others keep access until their own
-    # subscriptions end (or the org is deleted in Clerk).
-    from core.services.paperclip_provisioning import (
-        build_paperclip_provisioning,
-        close_paperclip_provisioning,
-    )
-
-    provisioning = None
-    try:
-        provisioning = await build_paperclip_provisioning()
-        await provisioning.disable(user_id=owner_id)
-        put_metric("paperclip.webhook.disable", dimensions={"trigger": trigger})
-    except Exception:
-        logger.exception("entitlement.teardown Paperclip disable failed for owner %s", owner_id)
-    finally:
-        if provisioning is not None:
-            await close_paperclip_provisioning(provisioning)
+    # No Paperclip disable here: the company belongs to the workspace, and a
+    # lapsed entitlement is not a deleted workspace (``organization.deleted``
+    # disables the workspace row). The old per-user ``disable(owner_id)`` found
+    # no row under an org id and was a no-op for every workspace.
 
     return True

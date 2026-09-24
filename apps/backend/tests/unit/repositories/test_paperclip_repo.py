@@ -16,8 +16,9 @@ from moto import mock_aws
 
 from core.repositories.paperclip_repo import (
     FunnelClaimResult,
-    PaperclipCompany,
+    PaperclipIdentity,
     PaperclipRepo,
+    PaperclipWorkspace,
 )
 
 TABLE_NAME = "test-paperclip-companies"
@@ -48,9 +49,7 @@ def repo():
                     "Projection": {"ProjectionType": "KEYS_ONLY"},
                 },
                 {
-                    # Used by get_org_company_id() to find any existing
-                    # row for an org so members joining a known org
-                    # reuse the shared company_id.
+                    # Used by org_company_ids() (the duplicate-company guard).
                     "IndexName": "by-org-id",
                     "KeySchema": [
                         {"AttributeName": "org_id", "KeyType": "HASH"},
@@ -84,18 +83,17 @@ def repo():
 
 
 def _make_company(user_id="u1", status="active", **kwargs):
+    """A WORKSPACE row keyed ``user_id`` (the key an org row carries under the
+    ``user_id`` attribute)."""
     now = datetime.now(timezone.utc)
-    return PaperclipCompany(
-        user_id=user_id,
-        org_id=kwargs.get("org_id", f"org_{user_id}"),
+    return PaperclipWorkspace(
+        org_id=kwargs.get("org_id", user_id),
         company_id=kwargs.get("company_id", f"co_{user_id}"),
-        paperclip_user_id=kwargs.get("paperclip_user_id", f"pc_user_{user_id}"),
-        paperclip_password_encrypted=kwargs.get("paperclip_password_encrypted", "enc_pwd"),
-        paperclip_email=kwargs.get("paperclip_email", ""),
-        service_token_encrypted="enc_token",
         status=status,
         created_at=kwargs.get("created_at", now),
         updated_at=kwargs.get("updated_at", now),
+        provisioner_user_id=kwargs.get("provisioner_user_id", ""),
+        member_user_ids=kwargs.get("member_user_ids", set()),
         last_error=kwargs.get("last_error"),
         scheduled_purge_at=kwargs.get("scheduled_purge_at"),
         seeded_agent_ids=kwargs.get("seeded_agent_ids"),
@@ -110,14 +108,14 @@ def _make_company(user_id="u1", status="active", **kwargs):
 
 
 async def test_seeded_agent_ids_round_trip(repo):
-    await repo.put(_make_company(user_id="user_seed", seeded_agent_ids=["friday_id", "atlas_id"]))
-    retrieved = await repo.get("user_seed")
+    await repo.put_workspace(_make_company(user_id="user_seed", seeded_agent_ids=["friday_id", "atlas_id"]))
+    retrieved = await repo.get_workspace("user_seed")
     assert retrieved.seeded_agent_ids == ["friday_id", "atlas_id"]
 
 
 async def test_seeded_agent_ids_absent_round_trips_as_none(repo):
-    await repo.put(_make_company(user_id="user_noseed"))
-    retrieved = await repo.get("user_noseed")
+    await repo.put_workspace(_make_company(user_id="user_noseed"))
+    retrieved = await repo.get_workspace("user_noseed")
     assert retrieved.seeded_agent_ids is None
 
 
@@ -127,20 +125,20 @@ async def test_put_condition_passes_when_generation_absent_or_matching(repo):
     succeed on a genuinely fresh row (attribute absent) and on a self-retry with the SAME
     generation it already holds."""
     company = _make_company(user_id="user_cond", onboarding_generation="gen-a")
-    await repo.put(
+    await repo.put_workspace(
         company,
         condition="attribute_not_exists(onboarding_generation) OR onboarding_generation = :g",
         condition_values={":g": "gen-a"},
     )
-    assert (await repo.get("user_cond")).onboarding_generation == "gen-a"
+    assert (await repo.get_workspace("user_cond")).onboarding_generation == "gen-a"
 
     # Self-retry with the identical generation still satisfies the condition.
-    await repo.put(
+    await repo.put_workspace(
         company,
         condition="attribute_not_exists(onboarding_generation) OR onboarding_generation = :g",
         condition_values={":g": "gen-a"},
     )
-    assert (await repo.get("user_cond")).onboarding_generation == "gen-a"
+    assert (await repo.get_workspace("user_cond")).onboarding_generation == "gen-a"
 
 
 async def test_put_condition_raises_when_a_different_generation_already_won(repo):
@@ -148,17 +146,17 @@ async def test_put_condition_raises_when_a_different_generation_already_won(repo
     fail (ClientError/ConditionalCheckFailedException), not silently clobber the winner."""
     from botocore.exceptions import ClientError
 
-    await repo.put(_make_company(user_id="user_race", onboarding_generation="gen-winner"))
+    await repo.put_workspace(_make_company(user_id="user_race", onboarding_generation="gen-winner"))
 
     losing_company = _make_company(user_id="user_race", onboarding_generation="gen-loser")
     with pytest.raises(ClientError) as exc_info:
-        await repo.put(
+        await repo.put_workspace(
             losing_company,
             condition="attribute_not_exists(onboarding_generation) OR onboarding_generation = :g",
             condition_values={":g": "gen-loser"},
         )
     assert exc_info.value.response["Error"]["Code"] == "ConditionalCheckFailedException"
-    assert (await repo.get("user_race")).onboarding_generation == "gen-winner"
+    assert (await repo.get_workspace("user_race")).onboarding_generation == "gen-winner"
 
 
 async def test_starter_agent_ids_round_trip(repo):
@@ -170,69 +168,36 @@ async def test_starter_agent_ids_round_trip(repo):
         "analytics": "agent-analytics",
         "customer_operations": "agent-cx",
     }
-    await repo.put(_make_company(user_id="user_starter", starter_agent_ids=starter_ids))
+    await repo.put_workspace(_make_company(user_id="user_starter", starter_agent_ids=starter_ids))
 
-    assert (await repo.get("user_starter")).starter_agent_ids == starter_ids
+    assert (await repo.get_workspace("user_starter")).starter_agent_ids == starter_ids
 
 
 async def test_legacy_seeded_row_reads_without_starter_ids(repo):
-    await repo.put(_make_company(user_id="user_legacy", seeded_agent_ids=["friday_id", "atlas_id"]))
+    await repo.put_workspace(_make_company(user_id="user_legacy", seeded_agent_ids=["friday_id", "atlas_id"]))
 
-    retrieved = await repo.get("user_legacy")
+    retrieved = await repo.get_workspace("user_legacy")
     assert retrieved.seeded_agent_ids == ["friday_id", "atlas_id"]
     assert retrieved.starter_agent_ids is None
 
 
-async def test_paperclip_email_round_trips(repo):
-    await repo.put(_make_company(user_id="user_email", paperclip_email="alice@isol8.co"))
-    retrieved = await repo.get("user_email")
-    assert retrieved.paperclip_email == "alice@isol8.co"
-
-
-async def test_paperclip_email_absent_round_trips_as_empty(repo):
-    """Rows written before the field existed must still read back — the
-    sign-in doors treat "" as "fall back to the live Clerk address"."""
-    table = repo._table()
-    company = _make_company(user_id="user_legacy")
-    await repo.put(company)
-    await asyncio.to_thread(
-        table.update_item,
-        Key={"user_id": "user_legacy"},
-        UpdateExpression="REMOVE paperclip_email",
-    )
-    retrieved = await repo.get("user_legacy")
-    assert retrieved.paperclip_email == ""
-
-
-async def test_put_and_get_round_trips(repo):
-    company = _make_company(user_id="user_123", org_id="org_42")
-    await repo.put(company)
-    retrieved = await repo.get("user_123")
-    assert retrieved is not None
-    assert retrieved.org_id == "org_42"
-    assert retrieved.company_id == "co_user_123"
-    assert retrieved.paperclip_user_id == "pc_user_user_123"
-    assert retrieved.paperclip_password_encrypted == "enc_pwd"
-    assert retrieved.status == "active"
-
-
 async def test_get_returns_none_for_missing(repo):
-    assert await repo.get("user_does_not_exist") is None
+    assert await repo.get_workspace("user_does_not_exist") is None
 
 
 async def test_update_status_transitions_to_disabled(repo):
-    await repo.put(_make_company(user_id="user_456"))
+    await repo.put_workspace(_make_company(user_id="user_456"))
     purge_at = datetime(2026, 5, 27, tzinfo=timezone.utc)
     await repo.update_status("user_456", status="disabled", scheduled_purge_at=purge_at)
-    retrieved = await repo.get("user_456")
+    retrieved = await repo.get_workspace("user_456")
     assert retrieved.status == "disabled"
     assert retrieved.scheduled_purge_at == purge_at
 
 
 async def test_update_status_records_last_error(repo):
-    await repo.put(_make_company(user_id="user_x"))
+    await repo.put_workspace(_make_company(user_id="user_x"))
     await repo.update_status("user_x", status="failed", last_error="api timeout")
-    retrieved = await repo.get("user_x")
+    retrieved = await repo.get_workspace("user_x")
     assert retrieved.status == "failed"
     assert retrieved.last_error == "api timeout"
 
@@ -241,10 +206,10 @@ async def test_update_status_not_if_status_skips_when_guarded(repo):
     """``not_if_status`` must SKIP the write (return False) when the row is
     already in that status — used so a losing concurrent provision attempt
     can't downgrade an already-``active`` row to ``failed``."""
-    await repo.put(_make_company(user_id="user_active", status="active"))
+    await repo.put_workspace(_make_company(user_id="user_active", status="active"))
     landed = await repo.update_status("user_active", status="failed", last_error="late error", not_if_status="active")
     assert landed is False
-    retrieved = await repo.get("user_active")
+    retrieved = await repo.get_workspace("user_active")
     assert retrieved.status == "active"  # NOT downgraded
     assert retrieved.last_error is None
 
@@ -252,56 +217,18 @@ async def test_update_status_not_if_status_skips_when_guarded(repo):
 async def test_update_status_not_if_status_applies_when_not_guarded(repo):
     """``not_if_status`` allows the write (return True) when the row is in any
     OTHER status — e.g. a genuinely ``provisioning`` row may still fail."""
-    await repo.put(_make_company(user_id="user_prov", status="provisioning"))
+    await repo.put_workspace(_make_company(user_id="user_prov", status="provisioning"))
     landed = await repo.update_status("user_prov", status="failed", last_error="boom", not_if_status="active")
     assert landed is True
-    retrieved = await repo.get("user_prov")
+    retrieved = await repo.get_workspace("user_prov")
     assert retrieved.status == "failed"
     assert retrieved.last_error == "boom"
 
 
-async def test_update_status_seeding_claim_fence_blocks_stale_holder(repo):
-    """A stale seed holder must not downgrade a NEWER holder's live seeding row.
-
-    The bare seeding row carries the winner's ``seeding_claim_id``; after a
-    stale steal it carries the NEW holder's id. The old holder's failure path
-    (``require_seeding_claim_id`` = its now-superseded id) must SKIP."""
-    # Holder "old" wins the bare claim.
-    assert await repo.try_acquire_seed_claim("u_seed", org_id="u_seed", claim_id="old") is True
-    # Holder "new" steals it (stale window 0) → row now carries claim_id "new".
-    assert await repo.try_acquire_seed_claim("u_seed", org_id="u_seed", claim_id="new", stale_after_seconds=0) is True
-
-    # The OLD holder's downgrade is fenced out → no-op, row stays seeding.
-    landed = await repo.update_status(
-        "u_seed", status="failed", last_error="old holder late error", require_seeding_claim_id="old"
-    )
-    assert landed is False
-    assert (await repo.get("u_seed")).status == "seeding"
-
-    # The current holder CAN downgrade with its own id.
-    landed = await repo.update_status(
-        "u_seed", status="failed", last_error="new holder gave up", require_seeding_claim_id="new"
-    )
-    assert landed is True
-    assert (await repo.get("u_seed")).status == "failed"
-
-
-async def test_update_status_seeding_claim_fence_allows_advanced_row(repo):
-    """Once a row advances past the bare claim it drops ``seeding_claim_id``, so
-    the fence's ``attribute_not_exists`` branch lets the write through — a real
-    failure on a provisioning row must still be recordable."""
-    await repo.put(_make_company(user_id="u_prov2", status="provisioning"))  # no seeding_claim_id
-    landed = await repo.update_status(
-        "u_prov2", status="failed", last_error="boom", require_seeding_claim_id="whatever"
-    )
-    assert landed is True
-    assert (await repo.get("u_prov2")).status == "failed"
-
-
 async def test_delete_removes_row(repo):
-    await repo.put(_make_company(user_id="user_789"))
+    await repo.put_workspace(_make_company(user_id="user_789"))
     await repo.delete("user_789")
-    assert await repo.get("user_789") is None
+    assert await repo.get_workspace("user_789") is None
 
 
 async def test_scan_purge_due_returns_overdue_disabled(repo):
@@ -309,73 +236,14 @@ async def test_scan_purge_due_returns_overdue_disabled(repo):
     past = now - timedelta(days=1)
     future = now + timedelta(days=10)
     # disabled and overdue -> should be returned
-    await repo.put(_make_company(user_id="overdue", status="disabled", scheduled_purge_at=past))
+    await repo.put_workspace(_make_company(user_id="overdue", status="disabled", scheduled_purge_at=past))
     # disabled but not yet due -> should NOT be returned
-    await repo.put(_make_company(user_id="not_yet", status="disabled", scheduled_purge_at=future))
+    await repo.put_workspace(_make_company(user_id="not_yet", status="disabled", scheduled_purge_at=future))
     # active -> should NOT be returned (different status)
-    await repo.put(_make_company(user_id="still_active", status="active"))
+    await repo.put_workspace(_make_company(user_id="still_active", status="active"))
     due = await repo.scan_purge_due(now)
-    user_ids = {c.user_id for c in due}
+    user_ids = {c.org_id for c in due}
     assert user_ids == {"overdue"}
-
-
-async def test_get_org_company_id_returns_shared_company_id(repo):
-    """Two users in the same org both carry the same company_id and a
-    lookup by org_id returns it (regardless of which row we hit).
-    """
-    shared_company_id = "co_shared_123"
-    await repo.put(
-        _make_company(
-            user_id="user_a",
-            org_id="org_alpha",
-            company_id=shared_company_id,
-        )
-    )
-    await repo.put(
-        _make_company(
-            user_id="user_b",
-            org_id="org_alpha",
-            company_id=shared_company_id,
-        )
-    )
-    found = await repo.get_org_company_id("org_alpha")
-    assert found == shared_company_id
-
-
-async def test_get_org_company_id_returns_none_for_missing_org(repo):
-    """An org with no provisioned rows yet returns None — caller will
-    treat this as "first member, create company"."""
-    found = await repo.get_org_company_id("org_does_not_exist")
-    assert found is None
-
-
-async def test_count_org_members_returns_zero_for_missing_org(repo):
-    """No rows for an org should count as 0 — used by purge() to detect
-    last-member archive eligibility."""
-    assert await repo.count_org_members("org_phantom") == 0
-
-
-async def test_count_org_members_counts_all_rows_for_org(repo):
-    """All rows sharing an ``org_id`` are counted via the by-org-id GSI."""
-    await repo.put(_make_company(user_id="u1", org_id="org_acme"))
-    await repo.put(_make_company(user_id="u2", org_id="org_acme"))
-    await repo.put(_make_company(user_id="u3", org_id="org_acme"))
-    # Different org — must NOT be counted toward org_acme.
-    await repo.put(_make_company(user_id="u4", org_id="org_other"))
-    assert await repo.count_org_members("org_acme") == 3
-    assert await repo.count_org_members("org_other") == 1
-
-
-async def test_count_org_members_post_delete_reflects_remaining(repo):
-    """After deleting a row, count drops accordingly. This is the
-    contract purge() relies on (delete first, then count)."""
-    await repo.put(_make_company(user_id="u1", org_id="org_acme"))
-    await repo.put(_make_company(user_id="u2", org_id="org_acme"))
-    assert await repo.count_org_members("org_acme") == 2
-    await repo.delete("u1")
-    assert await repo.count_org_members("org_acme") == 1
-    await repo.delete("u2")
-    assert await repo.count_org_members("org_acme") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -465,20 +333,6 @@ async def test_org_create_claim_legacy_holder_release_cannot_delete_tokenized_cl
     assert await repo.try_acquire_org_create_claim("org_x", holder="admin_b") is None
 
 
-async def test_org_create_claim_sentinel_invisible_to_org_gsi_queries(repo):
-    """The claim sentinel must NOT appear in any by-org-id GSI query — it omits
-    org_id so it's never indexed. Otherwise it would corrupt find_org_owner /
-    get_org_company_id / count_org_members / list_by_org_id."""
-    await repo.try_acquire_org_create_claim("org_acme", holder="a")
-    assert await repo.get_org_company_id("org_acme") is None
-    assert await repo.count_org_members("org_acme") == 0
-    assert await repo.list_by_org_id("org_acme") == []
-    # A real row for the same org is still found normally.
-    await repo.put(_make_company(user_id="u1", org_id="org_acme"))
-    assert await repo.count_org_members("org_acme") == 1
-    assert await repo.get_org_company_id("org_acme") is not None
-
-
 # ---------------------------------------------------------------------------
 # Per-owner seed claim (provision_org's cross-instance fresh-create fence)
 # ---------------------------------------------------------------------------
@@ -488,57 +342,19 @@ async def test_seed_claim_fresh_wins_then_second_caller_loses(repo):
     """First caller wins the put-if-absent; a concurrent second caller loses
     while the claim is non-stale — the fence that stops two backend
     instances from both running the full Paperclip seed."""
-    assert await repo.try_acquire_seed_claim("u1", org_id="u1", claim_id="a") is True
-    assert await repo.try_acquire_seed_claim("u1", org_id="u1", claim_id="b") is False
-
-
-async def test_seed_claim_row_reads_back_as_bare_seeding_row(repo):
-    """The claim row must be readable via get() — the loser polls it and the
-    status readers surface it — so _item_to_company must tolerate the bare
-    shape (status="seeding", NO company_id, NO credential attributes —
-    get() hydrates the absent company_id back to "")."""
-    await repo.try_acquire_seed_claim("u1", org_id="org_a", claim_id="a")
-    row = await repo.get("u1")
-    assert row is not None
-    assert row.status == "seeding"
-    assert row.company_id == ""
-    assert row.paperclip_user_id == ""
-    # Credentials are ABSENT (not ""), same discipline as the failed marker.
-    raw = repo._table().get_item(Key={"user_id": "u1"})["Item"]
-    assert "paperclip_user_id" not in raw
-
-
-async def test_seed_claim_never_overwrites_a_real_row(repo):
-    """provisioning/active/failed rows are real state — never claimable nor
-    stealable, even with a stale threshold of 0. Only a bare seeding claim
-    can ever be replaced."""
-    for status in ("provisioning", "active", "failed"):
-        user = f"user_{status}"
-        await repo.put(_make_company(user_id=user, status=status))
-        won = await repo.try_acquire_seed_claim(user, org_id=f"org_{user}", claim_id="x", stale_after_seconds=0)
-        assert won is False
-        assert (await repo.get(user)).status == status  # untouched
+    assert await repo.try_acquire_seed_claim("u1", claim_id="a") is True
+    assert await repo.try_acquire_seed_claim("u1", claim_id="b") is False
 
 
 async def test_seed_claim_steals_only_when_stale(repo):
     """A holder that crashed hard before any durable progress leaves a bare
     seeding row; once claimed_at is past the stale window it is re-claimable
     so the owner isn't stranded forever."""
-    assert await repo.try_acquire_seed_claim("u1", org_id="u1", claim_id="a") is True
+    assert await repo.try_acquire_seed_claim("u1", claim_id="a") is True
     # Non-stale → loses.
-    assert await repo.try_acquire_seed_claim("u1", org_id="u1", claim_id="b", stale_after_seconds=120) is False
+    assert await repo.try_acquire_seed_claim("u1", claim_id="b", stale_after_seconds=120) is False
     # stale_after_seconds=0 → any existing claim is stale → steal succeeds.
-    assert await repo.try_acquire_seed_claim("u1", org_id="u1", claim_id="b", stale_after_seconds=0) is True
-
-
-async def test_seed_claim_visible_to_status_reader_but_not_signin_resolver(repo):
-    """Unlike the org-create sentinel (synthetic PK, invisible everywhere),
-    the seed claim IS the real row: the active-only sign-in resolver must
-    skip it, while the status reader surfaces the in-flight state."""
-    await repo.try_acquire_seed_claim("creator", org_id="org_x", claim_id="a")
-    assert await repo.find_owner_row("org_x") is None  # not sign-in-able
-    state = await repo.get_onboarding_state("org_x")
-    assert state["teams_state"] == "seeding"
+    assert await repo.try_acquire_seed_claim("u1", claim_id="b", stale_after_seconds=0) is True
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +364,7 @@ async def test_seed_claim_visible_to_status_reader_but_not_signin_resolver(repo)
 
 async def test_onboarding_fields_round_trip(repo):
     now = datetime.now(timezone.utc)
-    await repo.put(
+    await repo.put_workspace(
         _make_company(
             user_id="user_onb",
             onboarding_generation="01ONB",
@@ -558,7 +374,7 @@ async def test_onboarding_fields_round_trip(repo):
             onboarding_project_id="proj-1",
         )
     )
-    fetched = await repo.get("user_onb")
+    fetched = await repo.get_workspace("user_onb")
     assert fetched.onboarding_generation == "01ONB"
     assert fetched.funnel_state == "submitted"
     assert fetched.funnel_submitted_at == now
@@ -567,8 +383,8 @@ async def test_onboarding_fields_round_trip(repo):
 
 
 async def test_onboarding_fields_absent_round_trip_as_none(repo):
-    await repo.put(_make_company(user_id="user_no_onb"))
-    fetched = await repo.get("user_no_onb")
+    await repo.put_workspace(_make_company(user_id="user_no_onb"))
+    fetched = await repo.get_workspace("user_no_onb")
     assert fetched.onboarding_generation is None
     assert fetched.funnel_state is None
 
@@ -576,86 +392,159 @@ async def test_onboarding_fields_absent_round_trip_as_none(repo):
 async def test_put_without_onboarding_kwargs_wipes_previously_set_fields(repo):
     """Documents the exact hazard the writer-safety fix in
     paperclip_provisioning.py guards against: put() is a raw PutItem, so a
-    PaperclipCompany built without onboarding fields SILENTLY WIPES them on
+    workspace built without onboarding fields SILENTLY WIPES them on
     a row that previously had them. This is why every put site in
     provisioning must read-merge or deliberately mint."""
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01ONB", funnel_state="complete"))
-    assert (await repo.get("u1")).funnel_state == "complete"
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01ONB", funnel_state="complete"))
+    assert (await repo.get_workspace("u1")).funnel_state == "complete"
 
     # A put that forgot to carry onboarding fields forward...
-    await repo.put(_make_company(user_id="u1", status="provisioning"))
+    await repo.put_workspace(_make_company(user_id="u1", status="provisioning"))
     # ...wipes them. (This is the exact bug the provisioning module's
     # _carry_forward_onboarding_fields helper exists to prevent at every
     # call site — see tests/unit/services/test_paperclip_provisioning_moto.py for the
     # end-to-end proof that provision_org's real puts do NOT do this.)
-    fetched = await repo.get("u1")
+    fetched = await repo.get_workspace("u1")
     assert fetched.onboarding_generation is None
     assert fetched.funnel_state is None
 
 
 # ---------------------------------------------------------------------------
-# resolve_owner_row / find_owner_row
+# resolve_owner_row, members, identity rows, company lookups
 # ---------------------------------------------------------------------------
 
 
-async def test_resolve_owner_row_personal_is_direct_get(repo):
-    """A personal owner_id IS the row's PK — no GSI query needed."""
-    await repo.put(_make_company(user_id="user_solo", org_id="user_solo", onboarding_generation="01G"))
-    resolved = await repo.resolve_owner_row("user_solo")
-    assert resolved is not None
-    assert resolved.onboarding_generation == "01G"
+async def test_workspace_round_trips_with_members_and_provisioner(repo):
+    await repo.put_workspace(
+        _make_company(user_id="org_acme", provisioner_user_id="user_a", member_user_ids={"user_a", "user_b"})
+    )
+    ws = await repo.get_workspace("org_acme")
+    assert ws.org_id == "org_acme" and ws.company_id == "co_org_acme"
+    assert ws.provisioner_user_id == "user_a"
+    assert ws.member_user_ids == {"user_a", "user_b"}
+    raw = repo._table().get_item(Key={"user_id": "org_acme"})["Item"]
+    # Company facts only: no credential ever lands on a workspace row.
+    assert raw["org_id"] == "org_acme"
+    assert not {"paperclip_user_id", "paperclip_password_encrypted", "service_token_encrypted"} & set(raw)
 
 
-async def test_resolve_owner_row_org_finds_creator_row_via_gsi(repo):
-    """For an org, owner_id (org_xxx) is NOT the row's PK — the row
-    provision_org wrote is keyed by the CREATOR's user_id. resolve_owner_row
-    must find it via the by-org-id GSI (oldest active row), matching
-    PaperclipProvisioning.find_org_owner's selection."""
-    now = datetime.now(timezone.utc)
-    await repo.put(
-        _make_company(
-            user_id="user_creator",
-            org_id="org_acme",
-            created_at=now,
-            onboarding_generation="01CREATOR",
-        )
-    )
-    # A member who joined later — must NOT be selected over the creator.
-    await repo.put(
-        _make_company(
-            user_id="user_member",
-            org_id="org_acme",
-            created_at=now + timedelta(seconds=5),
-        )
-    )
+async def test_resolve_owner_row_is_one_get_of_the_org_row(repo):
+    await repo.put_workspace(_make_company(user_id="org_acme", onboarding_generation="01G"))
     resolved = await repo.resolve_owner_row("org_acme")
-    assert resolved is not None
-    assert resolved.user_id == "user_creator"
-    assert resolved.onboarding_generation == "01CREATOR"
+    assert resolved is not None and resolved.onboarding_generation == "01G"
 
 
-async def test_resolve_owner_row_prefers_row_with_starter_ids(repo):
-    """A member row may be older, but starter identity lives only on the
-    authoritative owner row."""
-    now = datetime.now(timezone.utc)
-    await repo.put(_make_company(user_id="user_member", org_id="org_acme", created_at=now))
-    await repo.put(
-        _make_company(
-            user_id="user_owner",
-            org_id="org_acme",
-            created_at=now + timedelta(seconds=5),
-            starter_agent_ids={"ceo": "agent-ceo"},
+async def test_resolve_owner_row_hides_non_active_unless_asked(repo):
+    await repo.put_workspace(_make_company(user_id="org_y", status="failed"))
+    assert await repo.resolve_owner_row("org_y") is None
+    row = await repo.resolve_owner_row("org_y", include_inactive=True)
+    assert row is not None and row.status == "failed"
+
+
+async def test_add_and_remove_member_edit_only_the_set(repo):
+    await repo.put_workspace(_make_company(user_id="org_acme", member_user_ids={"user_a"}))
+    await repo.add_member("org_acme", "user_b")
+    await repo.add_member("org_acme", "user_b")  # idempotent
+    assert (await repo.get_workspace("org_acme")).member_user_ids == {"user_a", "user_b"}
+    await repo.remove_member("org_acme", "user_a")
+    await repo.remove_member("org_acme", "user_a")  # idempotent
+    assert (await repo.get_workspace("org_acme")).member_user_ids == {"user_b"}
+
+
+async def test_member_writes_never_create_a_workspace_row(repo):
+    from botocore.exceptions import ClientError
+
+    with pytest.raises(ClientError):
+        await repo.add_member("org_ghost", "user_a")
+    await repo.remove_member("org_ghost", "user_a")  # no-op, no raise
+    assert await repo.get_workspace("org_ghost") is None
+
+
+async def test_company_lookups_resolve_the_active_workspace(repo):
+    await repo.put_workspace(_make_company(user_id="org_acme", company_id="co_1", member_user_ids={"user_b", "user_a"}))
+    await repo.put_workspace(_make_company(user_id="org_gone", company_id="co_2", status="disabled"))
+    assert (await repo.find_workspace_by_company("co_1")).org_id == "org_acme"
+    assert await repo.get_user_ids_for_company("co_1") == ["user_a", "user_b"]
+    assert await repo.find_workspace_by_company("co_2") is None
+    assert await repo.get_user_ids_for_company("co_2") == []
+    assert await repo.org_company_ids("org_acme") == {"co_1"}
+    # Sentinels carry no org_id and never show up.
+    await repo.try_acquire_org_create_claim("org_new", holder="a")
+    assert await repo.org_company_ids("org_new") == set()
+
+
+async def test_identity_round_trips_and_names_no_company(repo):
+    await repo.put_identity(
+        PaperclipIdentity(
+            user_id="user_a",
+            paperclip_user_id="pc_a",
+            paperclip_password_encrypted="enc",
+            paperclip_email="alice@example.com",
         )
     )
+    identity = await repo.get_identity("user_a")
+    assert (identity.paperclip_user_id, identity.paperclip_email, identity.status) == (
+        "pc_a",
+        "alice@example.com",
+        None,
+    )
+    raw = repo._table().get_item(Key={"user_id": "user_a"})["Item"]
+    assert not {"company_id", "org_id", "status", "service_token_encrypted"} & set(raw)
+    assert await repo.get_identity("user_missing") is None
+    # An identity row is never mistaken for a workspace.
+    assert await repo.get_workspace("user_a") is None
 
-    resolved = await repo.resolve_owner_row("org_acme")
-    assert resolved is not None
-    assert resolved.user_id == "user_owner"
-    assert resolved.starter_agent_ids == {"ceo": "agent-ceo"}
+
+async def test_put_identity_settles_a_seed_claim(repo):
+    assert await repo.try_acquire_seed_claim("user_a", claim_id="c1")
+    assert (await repo.get_identity("user_a")).status == "seeding"
+    await repo.put_identity(PaperclipIdentity(user_id="user_a", paperclip_user_id="pc_a", paperclip_email="a@x"))
+    raw = repo._table().get_item(Key={"user_id": "user_a"})["Item"]
+    assert "status" not in raw and "seeding_claim_id" not in raw
+
+
+async def test_seed_claim_is_identity_only(repo):
+    """The claim names no org and no company, so it never enters the by-org-id
+    or by-company-id indexes."""
+    assert await repo.try_acquire_seed_claim("user_a", claim_id="c1")
+    raw = repo._table().get_item(Key={"user_id": "user_a"}, ConsistentRead=True)["Item"]
+    assert raw["status"] == "seeding" and "org_id" not in raw and "company_id" not in raw
+
+
+async def test_seed_claim_never_overwrites_a_confirmed_identity(repo):
+    await repo.put_identity(PaperclipIdentity(user_id="user_a", paperclip_user_id="pc_a", paperclip_email="a@x"))
+    assert not await repo.try_acquire_seed_claim("user_a", claim_id="x", stale_after_seconds=0)
+    assert (await repo.get_identity("user_a")).paperclip_user_id == "pc_a"
+
+
+async def test_fail_signup_claim_is_fenced_on_the_holder(repo):
+    """A stale holder must not downgrade a NEWER holder's stolen claim."""
+    assert await repo.try_acquire_seed_claim("u_seed", claim_id="old")
+    assert await repo.try_acquire_seed_claim("u_seed", claim_id="new", stale_after_seconds=0)
+    assert not await repo.fail_signup_claim("u_seed", reason="late", claim_id="old")
+    assert (await repo.get_identity("u_seed")).status == "seeding"
+    assert await repo.fail_signup_claim("u_seed", reason="gave up", claim_id="new")
+    assert (await repo.get_identity("u_seed")).status == "failed"
+    # ...and the credential-less failed claim is reclaimable.
+    assert await repo.try_acquire_seed_claim("u_seed", claim_id="retry")
+
+
+async def test_fail_signup_claim_never_touches_a_confirmed_identity(repo):
+    await repo.put_identity(PaperclipIdentity(user_id="user_a", paperclip_user_id="pc_a", paperclip_email="a@x"))
+    assert not await repo.fail_signup_claim("user_a", reason="boom", claim_id=None)
+    assert (await repo.get_identity("user_a")).status is None
+
+
+async def test_failed_marker_is_a_company_less_workspace_row(repo):
+    assert await repo.put_failed_marker_if_absent(org_id="org_x", reason="boom")
+    ws = await repo.get_workspace("org_x")
+    assert ws.status == "failed" and ws.company_id == "" and ws.last_error == "boom"
+    # Never overwrites a real row.
+    assert not await repo.put_failed_marker_if_absent(org_id="org_x", reason="again")
 
 
 async def test_remove_starter_agent_id_removes_only_matching_entry(repo):
-    await repo.put(
+    await repo.put_workspace(
         _make_company(
             user_id="user_owner",
             org_id="org_acme",
@@ -665,50 +554,16 @@ async def test_remove_starter_agent_id_removes_only_matching_entry(repo):
 
     await repo.remove_starter_agent_id("org_acme", "agent-fin")
 
-    assert (await repo.get("user_owner")).starter_agent_ids == {"ceo": "agent-ceo"}
+    assert (await repo.get_workspace("org_acme")).starter_agent_ids == {"ceo": "agent-ceo"}
 
 
 async def test_remove_unknown_starter_agent_id_is_a_no_op(repo):
     starter_ids = {"ceo": "agent-ceo", "finance": "agent-fin"}
-    await repo.put(_make_company(user_id="user_owner", starter_agent_ids=starter_ids))
+    await repo.put_workspace(_make_company(user_id="user_owner", starter_agent_ids=starter_ids))
 
     await repo.remove_starter_agent_id("user_owner", "agent-other")
 
-    assert (await repo.get("user_owner")).starter_agent_ids == starter_ids
-
-
-async def test_find_owner_row_hydrates_from_gsi_without_a_second_get(repo):
-    """The by-org-id GSI is ProjectionType.ALL, so find_owner_row must build the
-    row from the query item -- NOT do a second base-table get() -- keeping the
-    hot /container/status org poll to a single physical read."""
-    from unittest.mock import patch
-
-    now = datetime.now(timezone.utc)
-    await repo.put(_make_company(user_id="user_creator", org_id="org_acme", created_at=now))
-
-    with patch.object(repo, "get", side_effect=AssertionError("find_owner_row must not call get()")) as spy:
-        resolved = await repo.find_owner_row("org_acme")
-    spy.assert_not_called()
-    assert resolved is not None and resolved.user_id == "user_creator"
-
-
-async def test_resolve_owner_row_org_skips_non_active_rows(repo):
-    """A provisioning/failed/disabled row is not sign-in-able and must never
-    be picked over a genuinely active one, even if it's older."""
-    now = datetime.now(timezone.utc)
-    await repo.put(_make_company(user_id="user_failed", org_id="org_acme", status="failed", created_at=now))
-    await repo.put(
-        _make_company(
-            user_id="user_active",
-            org_id="org_acme",
-            status="active",
-            created_at=now + timedelta(seconds=5),
-            onboarding_generation="01ACTIVE",
-        )
-    )
-    resolved = await repo.resolve_owner_row("org_acme")
-    assert resolved is not None
-    assert resolved.user_id == "user_active"
+    assert (await repo.get_workspace("user_owner")).starter_agent_ids == starter_ids
 
 
 async def test_resolve_owner_row_returns_none_for_unprovisioned_org(repo):
@@ -721,10 +576,10 @@ async def test_resolve_owner_row_returns_none_for_unprovisioned_org(repo):
 
 
 async def test_claim_funnel_submission_wins_fresh(repo):
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
     result = await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
     assert result is FunnelClaimResult.WON
-    fetched = await repo.get("u1")
+    fetched = await repo.get_workspace("u1")
     assert fetched.funnel_state == "submitted"
     assert fetched.funnel_submitted_at is not None
     assert fetched.onboarding_submitted_by == "member_1"
@@ -735,33 +590,35 @@ async def test_claim_funnel_submission_submitted_by_can_differ_from_row_user_id(
     submitting member can be a DIFFERENT org member entirely -- the whole
     point of this field (see paperclip_repo.claim_funnel_submission's
     docstring)."""
-    await repo.put(_make_company(user_id="creator_1", onboarding_generation="01G", funnel_state="not_started"))
+    await repo.put_workspace(
+        _make_company(user_id="creator_1", onboarding_generation="01G", funnel_state="not_started")
+    )
     result = await repo.claim_funnel_submission(
         "creator_1", onboarding_generation="01G", submitted_by="member_not_the_creator"
     )
     assert result is FunnelClaimResult.WON
-    fetched = await repo.get("creator_1")
-    assert fetched.user_id == "creator_1"
+    fetched = await repo.get_workspace("creator_1")
+    assert fetched.org_id == "creator_1"
     assert fetched.onboarding_submitted_by == "member_not_the_creator"
 
 
 async def test_revert_funnel_submission_clears_onboarding_submitted_by(repo):
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
     await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
     await repo.revert_funnel_submission("u1", onboarding_generation="01G")
-    fetched = await repo.get("u1")
+    fetched = await repo.get_workspace("u1")
     assert fetched.onboarding_submitted_by is None
     # A fresh claim by a DIFFERENT member can now win and re-stamp it.
     result = await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_2")
     assert result is FunnelClaimResult.WON
-    assert (await repo.get("u1")).onboarding_submitted_by == "member_2"
+    assert (await repo.get_workspace("u1")).onboarding_submitted_by == "member_2"
 
 
 async def test_claim_funnel_submission_persists_brief_text(repo):
     """The user's brief is stamped on the SAME CAS write as the claim, so a
     winning claim always carries it (never a separate write that could persist
     a brief for a claim that lost)."""
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
     result = await repo.claim_funnel_submission(
         "u1",
         onboarding_generation="01G",
@@ -769,7 +626,7 @@ async def test_claim_funnel_submission_persists_brief_text(repo):
         brief_text="a social media agency for small restaurants",
     )
     assert result is FunnelClaimResult.WON
-    fetched = await repo.get("u1")
+    fetched = await repo.get_workspace("u1")
     assert fetched.onboarding_brief_text == "a social media agency for small restaurants"
     # And it surfaces on the get_onboarding_state bridge dict the dispatcher reads.
     state = await repo.get_onboarding_state("u1")
@@ -779,26 +636,26 @@ async def test_claim_funnel_submission_persists_brief_text(repo):
 async def test_claim_funnel_submission_without_brief_text_leaves_field_absent(repo):
     """The "you pick" path supplies no brief -- the attribute is simply not
     set, and reads back as None (the builder then falls back to its default)."""
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
     result = await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
     assert result is FunnelClaimResult.WON
-    assert (await repo.get("u1")).onboarding_brief_text is None
+    assert (await repo.get_workspace("u1")).onboarding_brief_text is None
     assert (await repo.get_onboarding_state("u1"))["onboarding_brief_text"] is None
 
 
 async def test_revert_funnel_submission_clears_brief_text(repo):
     """A reverted claim must not leave a stale brief behind for the next
     submitter -- revert drops it alongside the other claim-scoped fields."""
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
     await repo.claim_funnel_submission(
         "u1", onboarding_generation="01G", submitted_by="member_1", brief_text="a coffee subscription box"
     )
     await repo.revert_funnel_submission("u1", onboarding_generation="01G")
-    assert (await repo.get("u1")).onboarding_brief_text is None
+    assert (await repo.get_workspace("u1")).onboarding_brief_text is None
 
 
 async def test_claim_funnel_submission_second_caller_gets_already_submitted(repo):
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
     assert (
         await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
         is FunnelClaimResult.WON
@@ -818,22 +675,24 @@ async def test_claim_funnel_submission_retries_when_peer_reverts(repo):
     simulates the peer's revert (flips the real row back to ``not_started``)
     so the bounded retry's next CAS wins.
     """
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="submitted"))
-    real_get = repo.get
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="submitted"))
+    real_get = repo.get_workspace
     flipped = {"done": False}
 
     async def flipping_get(user_id, *, consistent_read=False):
         if not flipped["done"]:
             flipped["done"] = True
             # The peer reverts its failed claim between our CAS failure and re-read.
-            await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+            await repo.put_workspace(
+                _make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started")
+            )
         return await real_get(user_id, consistent_read=consistent_read)
 
-    with patch.object(repo, "get", flipping_get):
+    with patch.object(repo, "get_workspace", flipping_get):
         result = await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
 
     assert result is FunnelClaimResult.WON
-    assert (await repo.get("u1")).funnel_state == "submitted"
+    assert (await repo.get_workspace("u1")).funnel_state == "submitted"
 
 
 async def test_claim_funnel_submission_concurrent_leaves_row_consistent(repo):
@@ -851,14 +710,14 @@ async def test_claim_funnel_submission_concurrent_leaves_row_consistent(repo):
     above. Here we assert only the invariants moto DOES model faithfully:
     at least one caller wins, and the row converges to a single consistent
     ``submitted`` state (no lost update, never stuck at not_started)."""
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
     results = await asyncio.gather(
         repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1"),
         repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1"),
     )
     assert FunnelClaimResult.WON in results
     assert set(results) <= {FunnelClaimResult.WON, FunnelClaimResult.ALREADY_SUBMITTED}
-    row = await repo.get("u1")
+    row = await repo.get_workspace("u1")
     assert row.funnel_state == "submitted"
     assert row.funnel_submitted_at is not None
 
@@ -868,7 +727,7 @@ async def test_get_onboarding_state_surfaces_failed_org_seed(repo):
     status="failed" owner row. get_onboarding_state must still resolve it (via
     include_inactive) so teams_state="failed" surfaces -- the active-only
     sign-in resolver would drop it and hide the Teams-degraded affordance."""
-    await repo.put(
+    await repo.put_workspace(
         _make_company(
             user_id="creator",
             org_id="org_x",
@@ -883,42 +742,10 @@ async def test_get_onboarding_state_surfaces_failed_org_seed(repo):
     assert state["onboarding_generation"] == "01G"
 
 
-async def test_get_onboarding_state_surfaces_row_user_id_and_submitted_by(repo):
-    """The bridge dict must carry the resolved row's OWN PK (user_id --
-    the org creator for an org owner, distinct from owner_id/org_id) and
-    onboarding_submitted_by, so a caller (bootstrap_dispatcher, threaded
-    through readiness_state.resolve_onboarding_state) can address a write
-    at the correct row and the correct gateway session without a second
-    read."""
-    await repo.put(
-        _make_company(
-            user_id="creator_2",
-            org_id="org_z",
-            seeded_agent_ids=["friday_id"],
-            onboarding_generation="01G",
-            funnel_state="not_started",
-        )
-    )
-    await repo.claim_funnel_submission("creator_2", onboarding_generation="01G", submitted_by="member_x")
-
-    state = await repo.get_onboarding_state("org_z")
-    assert state["user_id"] == "creator_2"
-    assert state["onboarding_submitted_by"] == "member_x"
-
-
 async def test_get_onboarding_state_defaults_user_id_and_submitted_by_to_none(repo):
     state = await repo.get_onboarding_state("org_never_provisioned")
     assert state["user_id"] is None
     assert state["onboarding_submitted_by"] is None
-
-
-async def test_find_owner_row_include_inactive_returns_failed_provisioner(repo):
-    await repo.put(_make_company(user_id="creator", org_id="org_y", status="failed", seeded_agent_ids=["friday_id"]))
-    # Default (sign-in) resolver hides the non-active row...
-    assert await repo.find_owner_row("org_y") is None
-    # ...but the status reader can still resolve it.
-    row = await repo.find_owner_row("org_y", include_inactive=True)
-    assert row is not None and row.status == "failed"
 
 
 async def test_claim_funnel_submission_stale_generation_is_a_silent_no_op(repo):
@@ -926,11 +753,11 @@ async def test_claim_funnel_submission_stale_generation_is_a_silent_no_op(repo):
     reprovisioned underneath it) gets STALE_GENERATION, not
     ALREADY_SUBMITTED -- INV-4: superseded writes are a no-op, not a
     duplicate-submit report."""
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01NEW", funnel_state="not_started"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01NEW", funnel_state="not_started"))
     result = await repo.claim_funnel_submission("u1", onboarding_generation="01OLD", submitted_by="member_1")
     assert result is FunnelClaimResult.STALE_GENERATION
     # The row itself is untouched.
-    assert (await repo.get("u1")).funnel_state == "not_started"
+    assert (await repo.get_workspace("u1")).funnel_state == "not_started"
 
 
 async def test_claim_funnel_submission_missing_row_is_stale_generation(repo):
@@ -941,10 +768,10 @@ async def test_claim_funnel_submission_missing_row_is_stale_generation(repo):
 
 
 async def test_record_onboarding_ids_then_read_back(repo):
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
     await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
     await repo.record_onboarding_ids("u1", onboarding_generation="01G", goal_id="goal-1", project_id="proj-1")
-    fetched = await repo.get("u1")
+    fetched = await repo.get_workspace("u1")
     assert fetched.onboarding_goal_id == "goal-1"
     assert fetched.onboarding_project_id == "proj-1"
 
@@ -952,16 +779,16 @@ async def test_record_onboarding_ids_then_read_back(repo):
 async def test_record_onboarding_ids_without_claim_raises(repo):
     """record_onboarding_ids requires funnel_state=="submitted" -- calling it
     against a still-not_started row must fail loudly, not fabricate state."""
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
     with pytest.raises(repo._table().meta.client.exceptions.ConditionalCheckFailedException):
         await repo.record_onboarding_ids("u1", onboarding_generation="01G", goal_id="goal-1", project_id="proj-1")
 
 
 async def test_revert_funnel_submission_allows_reclaim(repo):
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
     await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
     await repo.revert_funnel_submission("u1", onboarding_generation="01G")
-    fetched = await repo.get("u1")
+    fetched = await repo.get_workspace("u1")
     assert fetched.funnel_state == "not_started"
     assert fetched.funnel_submitted_at is None
     # A fresh claim can now win again.
@@ -973,11 +800,11 @@ async def test_revert_funnel_submission_is_a_noop_against_a_superseded_generatio
     """A caller that stalled, got reprovisioned out from under it (new
     generation minted), and only then tries to revert its OWN old claim must
     not touch the new generation's fresh row."""
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01OLD", funnel_state="submitted"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01OLD", funnel_state="submitted"))
     # Company reprovisioned: new generation, fresh not_started state.
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01NEW", funnel_state="not_started"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01NEW", funnel_state="not_started"))
     await repo.revert_funnel_submission("u1", onboarding_generation="01OLD")
-    fetched = await repo.get("u1")
+    fetched = await repo.get_workspace("u1")
     assert fetched.onboarding_generation == "01NEW"
     assert fetched.funnel_state == "not_started"
 
@@ -987,9 +814,9 @@ async def test_revert_funnel_submission_does_not_downgrade_complete(repo):
     downgrade a funnel that has already advanced to "complete" (e.g. a
     concurrent bootstrap dispatch observed chat.final between this caller's
     failure and its revert call)."""
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="complete"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="complete"))
     await repo.revert_funnel_submission("u1", onboarding_generation="01G")
-    assert (await repo.get("u1")).funnel_state == "complete"
+    assert (await repo.get_workspace("u1")).funnel_state == "complete"
 
 
 # ---------------------------------------------------------------------------
@@ -1002,13 +829,13 @@ async def test_revert_funnel_submission_does_not_downgrade_complete(repo):
 
 
 async def test_claim_first_contact_wins_fresh(repo):
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G"))
     assert await repo.claim_first_contact("u1", onboarding_generation="01G") is True
-    assert (await repo.get("u1")).first_contact_state == "sending"
+    assert (await repo.get_workspace("u1")).first_contact_state == "sending"
 
 
 async def test_claim_first_contact_exactly_once(repo):
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G"))
     first = await repo.claim_first_contact("u1", onboarding_generation="01G")
     second = await repo.claim_first_contact("u1", onboarding_generation="01G")
     assert first is True
@@ -1016,20 +843,20 @@ async def test_claim_first_contact_exactly_once(repo):
 
 
 async def test_claim_first_contact_is_generation_fenced(repo):
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G"))
     assert await repo.claim_first_contact("u1", onboarding_generation="WRONG") is False
 
 
 async def test_settle_first_contact_marks_sent(repo):
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G"))
     await repo.claim_first_contact("u1", onboarding_generation="01G")
     await repo.settle_first_contact("u1", onboarding_generation="01G", state="sent")
-    assert (await repo.get("u1")).first_contact_state == "sent"
+    assert (await repo.get_workspace("u1")).first_contact_state == "sent"
 
 
 async def test_failed_first_contact_is_reclaimable(repo):
     """A failed mint or SES send must not make the first failure terminal."""
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G"))
     await repo.claim_first_contact("u1", onboarding_generation="01G")
     await repo.settle_first_contact("u1", onboarding_generation="01G", state="failed", reason="ses_send_failed")
     assert await repo.claim_first_contact("u1", onboarding_generation="01G") is True
@@ -1037,7 +864,7 @@ async def test_failed_first_contact_is_reclaimable(repo):
 
 async def test_sent_first_contact_is_not_reclaimable(repo):
     """`sent` is terminal -- reclaiming it would double-send."""
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
+    await repo.put_workspace(_make_company(user_id="u1", onboarding_generation="01G"))
     await repo.claim_first_contact("u1", onboarding_generation="01G")
     await repo.settle_first_contact("u1", onboarding_generation="01G", state="sent")
     assert await repo.claim_first_contact("u1", onboarding_generation="01G") is False
@@ -1045,7 +872,7 @@ async def test_sent_first_contact_is_not_reclaimable(repo):
 
 async def test_onboarding_state_projects_first_contact_and_friday(repo):
     """send_to_owner reads these from the SAME single read compute_status does."""
-    await repo.put(
+    await repo.put_workspace(
         _make_company(
             user_id="u1",
             org_id="u1",
@@ -1061,7 +888,7 @@ async def test_onboarding_state_projects_first_contact_and_friday(repo):
 
 
 async def test_onboarding_state_prefers_starter_ceo_over_legacy_friday(repo):
-    await repo.put(
+    await repo.put_workspace(
         _make_company(
             user_id="u1",
             org_id="u1",
@@ -1157,18 +984,6 @@ async def test_pending_brief_overwrite_true_bypasses_the_still_pending_guard(rep
     assert item["attempts"] == 0
 
 
-async def test_pending_brief_is_invisible_to_the_org_gsi(repo):
-    """The sentinel item deliberately carries no org_id, so it can never be
-    mistaken for a company row by find_owner_row / get_org_company_id."""
-    await repo.put(_make_company(user_id="u1", org_id="org_x", onboarding_generation="01G"))
-    await repo.put_pending_brief(
-        "org_x", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="u1"
-    )
-
-    rows = await repo.list_by_org_id("org_x")
-    assert [r["user_id"] for r in rows] == ["u1"]
-
-
 async def test_onboarding_state_reports_a_pending_brief_before_the_row_exists(repo):
     """The first-run case: the funnel is answered while provisioning is still
     running, so there is no owner row yet. compute_status turns this into
@@ -1186,7 +1001,7 @@ async def test_onboarding_state_reports_a_pending_brief_before_the_row_exists(re
 
 
 async def test_onboarding_state_reports_a_pending_brief_against_an_unclaimed_row(repo):
-    await repo.put(_make_company(user_id="u1", org_id="u1", onboarding_generation="01G"))
+    await repo.put_workspace(_make_company(user_id="u1", org_id="u1", onboarding_generation="01G"))
     await repo.put_pending_brief(
         "u1", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="u1"
     )
@@ -1201,7 +1016,9 @@ async def test_onboarding_state_stops_reading_only_once_the_funnel_is_COMPLETE(r
     and was wrong: a claim that landed and then died mid-seed leaves the row at
     "submitted" forever, and gating there made the still-undrained brief
     invisible to the drain permanently."""
-    await repo.put(_make_company(user_id="u1", org_id="u1", onboarding_generation="01G", funnel_state="complete"))
+    await repo.put_workspace(
+        _make_company(user_id="u1", org_id="u1", onboarding_generation="01G", funnel_state="complete")
+    )
     await repo.put_pending_brief(
         "u1", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="u1"
     )
@@ -1214,7 +1031,9 @@ async def test_onboarding_state_stops_reading_only_once_the_funnel_is_COMPLETE(r
 async def test_onboarding_state_still_reports_a_pending_brief_under_a_stuck_claim(repo):
     """funnel_state "submitted" with nothing seeded behind it is the stuck-claim
     case -- the drain has to stay able to see the brief and recover it."""
-    await repo.put(_make_company(user_id="u1", org_id="u1", onboarding_generation="01G", funnel_state="submitted"))
+    await repo.put_workspace(
+        _make_company(user_id="u1", org_id="u1", onboarding_generation="01G", funnel_state="submitted")
+    )
     await repo.put_pending_brief(
         "u1", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="u1"
     )
@@ -1311,46 +1130,6 @@ async def test_fail_pending_brief_on_a_deleted_item_is_a_noop(repo):
     assert await repo.get_pending_brief("user_abc") is None
 
 
-async def test_get_org_company_id_skips_bare_seed_claim_rows(repo):
-    """A bare seed-claim row (try_acquire_seed_claim) sits in the by-org-id GSI
-    with NO company_id. A member joining an org that already has a company must
-    still resolve it — the claim must never shadow the real row, whatever
-    order the GSI hands them back in."""
-    assert await repo.try_acquire_seed_claim("user_member", org_id="org_alpha", claim_id="c1")
-    assert await repo.try_acquire_seed_claim("user_member_2", org_id="org_alpha", claim_id="c2")
-    await repo.put(_make_company(user_id="user_owner", org_id="org_alpha", company_id="co_shared"))
-    assert await repo.get_org_company_id("org_alpha") == "co_shared"
-    # Claims alone (owner still seeding, no company yet) resolve to None.
-    assert await repo.try_acquire_seed_claim("user_solo", org_id="org_beta", claim_id="c3")
-    assert await repo.get_org_company_id("org_beta") is None
-
-
-async def test_seed_claim_reclaims_credential_less_failed_marker(repo):
-    """A failed marker with no paperclip_user_id (pre-sign-up failure) is
-    reclaimed atomically — its retry re-runs the sign-up, so concurrent
-    retries must be fenced exactly like a fresh row."""
-    assert await repo.put_failed_marker_if_absent(
-        user_id="user_m", org_id="org_alpha", reason="boom", company_id="co_1"
-    )
-    assert await repo.try_acquire_seed_claim("user_m", org_id="org_alpha", claim_id="c1")
-    raw = repo._table().get_item(Key={"user_id": "user_m"}, ConsistentRead=True)["Item"]
-    assert raw["status"] == "seeding" and raw["seeding_claim_id"] == "c1"
-    assert "paperclip_user_id" not in raw
-    # Now a bare live claim: a second claimant loses.
-    assert not await repo.try_acquire_seed_claim("user_m", org_id="org_alpha", claim_id="c2")
-
-
-async def test_seed_claim_leaves_failed_row_with_credentials_alone(repo):
-    """A failed row that carries paperclip_user_id is adopted (signed in), not
-    re-signed-up — no fence needed, and it must never be overwritten."""
-    row = _make_company(user_id="user_k", org_id="org_alpha", company_id="co_1")
-    row.status = "failed"
-    await repo.put(row)
-    assert not await repo.try_acquire_seed_claim("user_k", org_id="org_alpha", claim_id="c1")
-    after = await repo.get("user_k", consistent_read=True)
-    assert after.status == "failed" and after.paperclip_user_id == row.paperclip_user_id
-
-
 async def test_seed_claim_reclaims_legacy_failed_marker_with_empty_paperclip_user_id(repo):
     """Older failed markers stored ``paperclip_user_id = ""`` explicitly.
     ``attribute_not_exists`` is FALSE for an attribute that exists as "", so
@@ -1370,28 +1149,9 @@ async def test_seed_claim_reclaims_legacy_failed_marker_with_empty_paperclip_use
             "updated_at": now,
         }
     )
-    assert await repo.try_acquire_seed_claim("user_legacy", org_id="org_alpha", claim_id="c1")
+    assert await repo.try_acquire_seed_claim("user_legacy", claim_id="c1")
     raw = repo._table().get_item(Key={"user_id": "user_legacy"}, ConsistentRead=True)["Item"]
     assert raw["status"] == "seeding" and raw["seeding_claim_id"] == "c1"
-
-
-async def test_member_seed_claim_carries_company_id_and_keeps_it_through_reclaim(repo):
-    """A member claim carries the org's known company_id (an owner claim has
-    none yet) so archive_member can list the company if the membership is
-    removed mid-claim. The failed-marker reclaim writes the same item, so the
-    id survives a failed → reclaimed cycle too."""
-    assert await repo.try_acquire_seed_claim("user_m", org_id="org_alpha", claim_id="c1", company_id="co_1")
-    raw = repo._table().get_item(Key={"user_id": "user_m"}, ConsistentRead=True)["Item"]
-    assert raw["status"] == "seeding" and raw["company_id"] == "co_1" and "paperclip_user_id" not in raw
-    assert (await repo.get("user_m", consistent_read=True)).company_id == "co_1"
-    # Downgrade to a credential-less failed marker, then reclaim: still carries co_1.
-    assert await repo.update_status("user_m", status="failed", last_error="boom", require_seeding_claim_id="c1")
-    assert await repo.try_acquire_seed_claim("user_m", org_id="org_alpha", claim_id="c2", company_id="co_1")
-    raw = repo._table().get_item(Key={"user_id": "user_m"}, ConsistentRead=True)["Item"]
-    assert raw["status"] == "seeding" and raw["seeding_claim_id"] == "c2" and raw["company_id"] == "co_1"
-    # Owner-shaped claim: no company_id attribute at all (never "").
-    assert await repo.try_acquire_seed_claim("user_o", org_id="org_beta", claim_id="c3")
-    assert "company_id" not in repo._table().get_item(Key={"user_id": "user_o"}, ConsistentRead=True)["Item"]
 
 
 async def test_signup_credentials_converge_regardless_of_which_claim_stages_them(repo):
@@ -1401,11 +1161,11 @@ async def test_signup_credentials_converge_regardless_of_which_claim_stages_them
     ConditionalCheckFailedException. ``if_not_exists`` + read-back is the
     convergence primitive — first writer's values win, every caller reads
     them back regardless of which claim_id is doing the staging."""
-    await repo.try_acquire_seed_claim("user_new", org_id="org_a", claim_id="first")
+    await repo.try_acquire_seed_claim("user_new", claim_id="first")
     assert await repo.stage_signup_credentials(
         "user_new", email="first@example.com", password_encrypted="first-secret"
     ) == ("first@example.com", "first-secret")
-    await repo.try_acquire_seed_claim("user_new", org_id="org_a", claim_id="second", stale_after_seconds=0)
+    await repo.try_acquire_seed_claim("user_new", claim_id="second", stale_after_seconds=0)
     # The ORIGINAL claim staging again (e.g. a slow holder that wasn't really
     # dead) must still succeed and read back the converged values.
     assert await repo.stage_signup_credentials(
@@ -1419,7 +1179,7 @@ async def test_signup_credentials_converge_regardless_of_which_claim_stages_them
 async def test_seed_takeover_does_not_erase_credentials_staged_after_its_read(repo, monkeypatch):
     import core.repositories.paperclip_repo as mod
 
-    await repo.try_acquire_seed_claim("user_race", org_id="org_a", claim_id="original")
+    await repo.try_acquire_seed_claim("user_race", claim_id="original")
     run_in_thread = mod.run_in_thread
     staged = False
 
@@ -1433,14 +1193,12 @@ async def test_seed_takeover_does_not_erase_credentials_staged_after_its_read(re
         return await run_in_thread(func, *args, **kwargs)
 
     monkeypatch.setattr(mod, "run_in_thread", stage_before_takeover_write)
-    won = await repo.try_acquire_seed_claim("user_race", org_id="org_a", claim_id="takeover", stale_after_seconds=0)
+    won = await repo.try_acquire_seed_claim("user_race", claim_id="takeover", stale_after_seconds=0)
     assert staged
     # A credential CAS may defer this takeover; its next read must keep the
     # original secret just as an atomic in-place takeover would.
     if not won:
-        assert await repo.try_acquire_seed_claim(
-            "user_race", org_id="org_a", claim_id="takeover", stale_after_seconds=0
-        )
+        assert await repo.try_acquire_seed_claim("user_race", claim_id="takeover", stale_after_seconds=0)
     assert await repo.stage_signup_credentials(
         "user_race", email="replacement@example.com", password_encrypted="replacement-secret"
     ) == ("original@example.com", "original-secret")

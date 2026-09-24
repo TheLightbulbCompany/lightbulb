@@ -118,7 +118,6 @@ import httpx
 import jwt
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from core.auth import is_org_owner_id
 from core.config import settings
 from core.repositories import billing_repo, integrations_repo
 from core.repositories.paperclip_repo import PaperclipRepo
@@ -272,11 +271,8 @@ def _normalize_stripe_signature(header: str) -> tuple[str | None, str | None]:
 
 
 async def _company_id_for_owner(owner_id: str) -> str | None:
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    if is_org_owner_id(owner_id):
-        return await repo.get_org_company_id(owner_id)
-    row = await repo.get(owner_id)
-    return row.company_id if row is not None and row.status == "active" else None
+    ws = await PaperclipRepo(table_name="paperclip-companies").get_workspace(owner_id)
+    return (ws.company_id or None) if ws is not None else None
 
 
 async def _lookup_trigger_detail(owner_id: str, public_id: str) -> dict | None:

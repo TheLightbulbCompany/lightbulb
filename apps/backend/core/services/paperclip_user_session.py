@@ -15,7 +15,7 @@ import logging
 from typing import Awaitable, Callable, Protocol
 
 from core.encryption import decrypt
-from core.repositories.paperclip_repo import PaperclipCompany
+from core.repositories.paperclip_repo import PaperclipIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class UserSessionError(Exception):
 
 
 class _Repo(Protocol):
-    async def get(self, user_id: str, *, consistent_read: bool = False) -> PaperclipCompany | None: ...
+    async def get_identity(self, user_id: str, *, consistent_read: bool = False) -> PaperclipIdentity | None: ...
 
 
 class _AdminClient(Protocol):
@@ -42,26 +42,24 @@ async def get_user_session_cookie(
     """Sign in to Paperclip as the user and return the Set-Cookie value.
 
     Raises ``UserSessionError`` if:
-      - the user has no provisioned company
-      - the company exists but ``status != "active"``
+      - the user has no confirmed Better Auth identity
       - the upstream sign-in returns no Set-Cookie
-    """
-    # Strongly consistent: the brief drain calls this right after the company
-    # row flips to active, and a replica-lagged read here raises
-    # UserSessionError -- which the drain counts as a FAILED attempt, burning
-    # the retry budget on pure timing.
-    company = await repo.get(user_id, consistent_read=True)
-    if company is None:
-        raise UserSessionError(f"team workspace not provisioned for user {user_id}")
-    if company.status != "active":
-        raise UserSessionError(f"team workspace not active for user {user_id} (status={company.status})")
 
-    # Better Auth's ``user.email`` is written once at provision time and never
-    # updated, so the row's recorded address — not the live Clerk one — is the
-    # sign-in truth. Fall back to Clerk only for rows written before
-    # ``paperclip_email`` existed (or not yet backfilled).
-    email = company.paperclip_email or await clerk_email_resolver(user_id)
-    password = decrypt(company.paperclip_password_encrypted)
+    A Better Auth session is not scoped to a company: which workspace the
+    caller may act in is the caller's check (``resolve_teams_context``, the
+    brief drain's active-workspace read).
+    """
+    # Strongly consistent: the drain can call this right after a sign-up
+    # settles, and a replica-lagged miss would burn a retry on pure timing.
+    identity = await repo.get_identity(user_id, consistent_read=True)
+    if identity is None or not identity.paperclip_user_id:
+        raise UserSessionError(f"no Paperclip identity for user {user_id}")
+
+    # Better Auth's ``user.email`` is written once at sign-up and never
+    # updated, so the recorded address — not the live Clerk one — is the
+    # sign-in truth. Fall back to Clerk only when it is empty.
+    email = identity.paperclip_email or await clerk_email_resolver(user_id)
+    password = decrypt(identity.paperclip_password_encrypted)
 
     resp = await admin_client.sign_in_user(email=email, password=password)
     cookie = resp.get("_session_cookie") if isinstance(resp, dict) else None

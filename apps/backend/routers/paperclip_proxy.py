@@ -33,7 +33,7 @@ Reading the custom header directly is the supported path.
 Every proxied request signs the user in to Paperclip from scratch:
 
 1. Validate the Clerk JWT (standard ``get_current_user`` dep).
-2. Look up the user's ``PaperclipCompany`` row, decrypt the stored
+2. Look up the user's Paperclip identity row, decrypt the stored
    password.
 3. Call ``admin_client.sign_in_user(email, password)`` to get a
    fresh Better Auth session cookie (``_session_cookie`` field on the
@@ -895,11 +895,7 @@ async def handshake(request: Request) -> Response:
     # (its provision execution seeds Paperclip).
     if email:
         container = await container_repo.get_by_owner_id(resolve_owner_id(auth))
-        repo = PaperclipRepo(table_name="paperclip-companies")
-        existing = await repo.get(user_id)
-        if container is not None and (
-            existing is None or existing.status != "active" or existing.org_id != resolve_owner_id(auth)
-        ):
+        if container is not None and not await _joined(resolve_owner_id(auth), user_id):
             from routers.container import _dispatch_watched
 
             _dispatch_watched(ensure_user_ready(auth))
@@ -1074,19 +1070,9 @@ async def proxy(path: str, request: Request) -> Response:
         # container already exists (checked above); ensure_user_ready never
         # dispatches a provision, so the running box is never force-redeployed
         # from here.
-        repo = PaperclipRepo(table_name="paperclip-companies")
-        existing = await repo.get(auth.user_id)
-        # "Already provisioned" must be org-scoped, not status-only — the
-        # same idempotency predicate provision_org's short-circuit uses.
-        # Rows are keyed per-user, so an org member whose row still points
-        # at a personal (or a previous org's) company IS "active", just not
-        # for THIS owner context; a status-only check would suppress the
-        # dispatch, and the cookie minted below would sign them into the
-        # stale workspace with nothing ever repairing the row from this
-        # path. ensure_user_ready is idempotent (provision_org short-
-        # circuits on an active row whose org_id matches), so dispatching
-        # on a mismatched-but-active row is safe.
-        if existing is None or existing.status != "active" or existing.org_id != owner_id:
+        # "Already provisioned" is org-scoped: this human JOINED this
+        # workspace's active company. ensure_user_ready is idempotent.
+        if not await _joined(owner_id, auth.user_id):
             # Watched dispatch (same wrapper as /container/status): a bare
             # create_task swallows exceptions raised before the coroutine's
             # own logging (gate/billing/DDB failures) as "Task exception
@@ -1114,63 +1100,38 @@ async def proxy(path: str, request: Request) -> Response:
         return response
 
     # ---- Established-session path: forward request to Paperclip ----
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    company = await repo.get(auth.user_id)
-    if company is not None and auth.org_id is None and company.org_id not in (None, auth.user_id):
-        # The row belongs to an ORG owner context but this session carries
-        # no org claims. Two ways here: a legacy cookie minted before
-        # org_id rode the session (an org member's live session for up to
-        # the cookie TTL after deploy), or a genuinely personal session
-        # whose row still points at an org (ex-member). Either way this
-        # process cannot know the user's real context — a stub would spin
-        # with no repair in flight (the personal-context dispatch is
-        # correctly fenced from adopting org rows), so bounce out to /chat:
-        # a fresh Teams entry re-handshakes with real Clerk claims, and
-        # /chat's canonical /container/status trigger repairs the row.
+    if auth.org_id is None:
+        # A session with no org claim (a legacy cookie minted before org_id
+        # rode the session) cannot name a workspace. Bounce out to /chat: a
+        # fresh Teams entry re-handshakes with real Clerk claims.
         from fastapi.responses import RedirectResponse
 
-        logger.info(
-            "paperclip_proxy: org-less session for user=%s over org row %s; redirecting for re-handshake",
-            auth.user_id,
-            company.org_id,
-        )
+        logger.info("paperclip_proxy: org-less session for user=%s; redirecting for re-handshake", auth.user_id)
         return RedirectResponse(
             f"{_frontend_url()}/chat?from=teams",
             status_code=302,
         )
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    company = await repo.get_workspace(resolve_owner_id(auth))
+    identity = await repo.get_identity(auth.user_id)
     # "seeding" = provision_org's pre-side-effect seed-claim row — an
     # in-flight provision exactly like "provisioning" for this check.
-    if company is None or company.status in ("seeding", "provisioning") or company.org_id != resolve_owner_id(auth):
-        # Either: (a) handshake just spawned ensure_user_ready and the row
-        # hasn't been written yet (typical first visit), or (b) it's
-        # actively in-flight, or (c) the row belongs to a DIFFERENT owner
-        # context than this session's (org member whose row still points
-        # at a personal/previous-org company — the handshake that minted
-        # this session's cookie dispatched the join/repair, and the row
-        # re-points when it lands). All three converge via the
-        # auto-refresh stub; forwarding on (c) would drop the user into
-        # the WRONG workspace mid-repair. (c) deliberately ignores the
-        # stale row's status: a "failed"/"disabled" verdict recorded for
-        # ANOTHER workspace says nothing about THIS owner's provision, so
-        # it must read as repair-pending here, not fall through to the
-        # terminal-status redirect below and abort the handoff. If no
-        # repair is in flight for (c) — a long-lived cookie navigating
-        # here directly — the app's canonical /container/status trigger
-        # repairs the row the next time /chat is open; a setting-up stub
-        # is strictly better than silently browsing the wrong company. Do
-        # NOT re-spawn from this path — the stub reloads every 2s and a
-        # re-spawn each cycle would queue duplicate concurrent provision
-        # runs that race against each other (provision_org is only safely
-        # idempotent for already-active rows; concurrent failed retries
-        # can flip a successful row back to "failed"). If the initial
-        # spawn somehow died silently, the user will eventually close the
-        # tab and re-handshake — that's the recovery path, NOT
-        # auto-respawn.
+    if (
+        company is None
+        or company.status in ("seeding", "provisioning")
+        or (company.status == "active" and auth.user_id not in company.member_user_ids)
+        or identity is None
+        or not identity.paperclip_user_id
+    ):
+        # Either the handshake just spawned ensure_user_ready and the rows
+        # haven't landed yet (typical first visit), or it is in flight, or
+        # this human has not joined THIS workspace's company yet (the
+        # handshake dispatched the join). All converge via the auto-refresh
+        # stub. Do NOT re-spawn from this path — the stub reloads every 2s
+        # and a re-spawn each cycle would queue duplicate concurrent runs.
         return _provisioning_in_progress_response()
     if company.status != "active":
-        # status="failed" or status="disabled" — and, per the org-scope
-        # check above, recorded for THIS owner context (a mismatched
-        # terminal row already returned the stub). Both require user to
+        # status="failed" or status="disabled". Both require user to
         # re-enter via /chat: failed needs an explicit retry trigger
         # (re-handshake spawns a fresh provision attempt with no
         # concurrent races), disabled requires admin/billing to clear.
@@ -1213,7 +1174,7 @@ async def proxy(path: str, request: Request) -> Response:
 
         async def _sign_in() -> str:
             # Cold-mint a fresh Better Auth session cookie for this user.
-            # Email comes from the company row (``paperclip_email``) — the
+            # Email comes from the identity row (``paperclip_email``) — the
             # address Better Auth actually holds, written once at provision
             # time and never updated, so it survives a Clerk primary-email
             # change that would otherwise 401 every sign-in. The Clerk JWT's
@@ -1221,7 +1182,7 @@ async def proxy(path: str, request: Request) -> Response:
             # field existed; the Isol8 ``users`` row has no email column. The
             # password is the per-user random one we encrypted at
             # provisioning time.
-            email = company.paperclip_email or (auth.email or "").strip()
+            email = identity.paperclip_email or (auth.email or "").strip()
             if not email:
                 logger.warning(
                     "paperclip_proxy: user %s has no email claim on JWT; cannot sign in to Paperclip",
@@ -1229,7 +1190,7 @@ async def proxy(path: str, request: Request) -> Response:
                 )
                 raise HTTPException(status_code=400, detail="Email claim missing from auth token")
             try:
-                password = decrypt(company.paperclip_password_encrypted)
+                password = decrypt(identity.paperclip_password_encrypted)
             except ValueError as e:
                 # Encryption key rotated, or row was written under a
                 # different key. The user needs reprovisioning — surface a
@@ -1473,7 +1434,7 @@ async def proxy(path: str, request: Request) -> Response:
 # Auth flow (mirrors the HTTP path's sign-in):
 #   1. Read ``__session`` cookie (Clerk's default JWT cookie name).
 #   2. Decode + validate with ``_decode_token`` → extract ``sub`` + ``email``.
-#   3. Look up the user's PaperclipCompany row, decrypt the password.
+#   3. Look up the user's Paperclip identity row, decrypt the password.
 #   4. Sign in to Paperclip (Better Auth) → session token.
 #   5. Open paired upstream WS with ``Authorization: Bearer <token>``.
 #   6. asyncio.gather two relay coroutines (browser→upstream and
@@ -1560,25 +1521,16 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
         await websocket.close(code=4400, reason="Email claim missing")
         return
 
-    # ---- Step 2: Look up Paperclip company + decrypt password ----
-    # The paperclip-companies table is keyed per-USER (not per-org): every
-    # member, including org owners, gets their own row with their own
-    # Better Auth password. The HTTP path keys lookup on
-    # ``auth.user_id`` for the same reason. An earlier draft of this WS
-    # handler tried to resolve an ``owner_id`` from the org claim and
-    # query that — that key never exists in the table, so any user in an
-    # org context was getting closed with 4503 on every WS upgrade.
-    # Pass the short name; ``get_table`` adds the env prefix exactly once.
+    # ---- Step 2: Look up the human's Paperclip identity + decrypt password ----
+    # Identity only: Paperclip's own membership scopes what this session sees.
     repo = PaperclipRepo(table_name="paperclip-companies")
-    company = await repo.get(user_id)
-    if company is None or company.status != "active":
+    company = await repo.get_identity(user_id)
+    if company is None or not company.paperclip_user_id:
         await websocket.close(code=4503, reason="Paperclip not provisioned")
         return
 
-    # The email extracted above (from the ``isol8_paperclip`` cookie JWT, else
-    # Clerk's) is the user's LIVE address; Better Auth's is frozen at provision
-    # time. Prefer what the row records, and keep the live claim only as the
-    # fallback for a row written before ``paperclip_email`` existed.
+    # The email extracted above is the user's LIVE address; Better Auth's is
+    # frozen at sign-up. Prefer what the identity row records.
     email = company.paperclip_email or email
 
     try:
@@ -1716,3 +1668,9 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
             await websocket.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+async def _joined(owner_id: str, user_id: str) -> bool:
+    """Whether ``user_id`` has joined workspace ``owner_id``'s ACTIVE company."""
+    ws = await PaperclipRepo(table_name="paperclip-companies").get_workspace(owner_id)
+    return ws is not None and ws.status == "active" and user_id in ws.member_user_ids

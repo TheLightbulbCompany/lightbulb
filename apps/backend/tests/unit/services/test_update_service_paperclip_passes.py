@@ -2,8 +2,8 @@
 T13 Paperclip passes.
 
 Coverage:
-* ``_paperclip_purge_pass`` calls ``provisioning.purge`` for every
-  due row and swallows per-row errors.
+* ``_paperclip_purge_pass`` calls ``provisioning.purge(org_id=...)`` for
+  every due workspace row and swallows per-row errors.
 * ``_paperclip_provision_retry_pass`` dispatches ``op="archive_member"``
   (the only live op after Tasks 6+7 stripped eager provisioning),
   marks rows applied on success, marks rows failed on non-retryable
@@ -86,9 +86,9 @@ async def test_purge_pass_calls_purge_for_each_due_row():
     prov = _make_provisioning_mock()
     http = _make_http_mock()
     rows = [
-        MagicMock(user_id="user_a"),
-        MagicMock(user_id="user_b"),
-        MagicMock(user_id="user_c"),
+        MagicMock(org_id="org_a"),
+        MagicMock(org_id="org_b"),
+        MagicMock(org_id="org_c"),
     ]
     repo = _make_repo_mock(due_rows=rows)
 
@@ -96,8 +96,8 @@ async def test_purge_pass_calls_purge_for_each_due_row():
         await update_service._paperclip_purge_pass()
 
     assert prov.purge.await_count == 3
-    awaited = [c.kwargs["user_id"] for c in prov.purge.await_args_list]
-    assert awaited == ["user_a", "user_b", "user_c"]
+    awaited = [c.kwargs["org_id"] for c in prov.purge.await_args_list]
+    assert awaited == ["org_a", "org_b", "org_c"]
     http.aclose.assert_awaited_once()
 
 
@@ -107,9 +107,9 @@ async def test_purge_pass_swallows_per_row_failure_and_continues():
     prov.purge = AsyncMock(side_effect=[RuntimeError("boom"), None, None])
     http = _make_http_mock()
     rows = [
-        MagicMock(user_id="user_a"),
-        MagicMock(user_id="user_b"),
-        MagicMock(user_id="user_c"),
+        MagicMock(org_id="org_a"),
+        MagicMock(org_id="org_b"),
+        MagicMock(org_id="org_c"),
     ]
     repo = _make_repo_mock(due_rows=rows)
 
@@ -173,7 +173,7 @@ async def test_retry_pass_dispatches_archive_member_on_success():
         {
             "owner_id": "user_a",
             "update_id": "u_archive",
-            "changes": {"op": "archive_member", "user_id": "user_a"},
+            "changes": {"op": "archive_member", "user_id": "user_a", "org_id": "org_acme"},
         }
     ]
 
@@ -185,7 +185,7 @@ async def test_retry_pass_dispatches_archive_member_on_success():
     ):
         await update_service._paperclip_provision_retry_pass()
 
-    prov.archive_member.assert_awaited_once_with(user_id="user_a")
+    prov.archive_member.assert_awaited_once_with(user_id="user_a", org_id="org_acme")
     mark_applied.assert_awaited_once_with("user_a", "u_archive")
     mark_failed.assert_not_awaited()
     http.aclose.assert_awaited_once()
@@ -230,7 +230,7 @@ async def test_retry_pass_retryable_failure_leaves_row_pending():
         {
             "owner_id": "user_a",
             "update_id": "u5",
-            "changes": {"op": "archive_member", "user_id": "user_a"},
+            "changes": {"op": "archive_member", "user_id": "user_a", "org_id": "org_acme"},
         }
     ]
 
@@ -255,7 +255,7 @@ async def test_retry_pass_nonretryable_failure_marks_failed():
         {
             "owner_id": "user_a",
             "update_id": "u6",
-            "changes": {"op": "archive_member", "user_id": "user_a"},
+            "changes": {"op": "archive_member", "user_id": "user_a", "org_id": "org_acme"},
         }
     ]
 
@@ -274,6 +274,35 @@ async def test_retry_pass_nonretryable_failure_marks_failed():
     assert args[1] == "u6"
 
 
+async def test_retry_pass_legacy_payload_without_org_id_marks_failed():
+    """A payload queued before archive_member became org-scoped carries no
+    org_id. It must be marked failed (non-retryable) and never archive the
+    user from an arbitrary workspace."""
+    prov = _make_provisioning_mock()
+    http = _make_http_mock()
+    rows = [
+        {
+            "owner_id": "user_a",
+            "update_id": "u_legacy",
+            "changes": {"op": "archive_member", "user_id": "user_a"},
+        }
+    ]
+
+    with (
+        patch.object(update_service.update_repo, "list_pending_by_type", new=AsyncMock(return_value=rows)),
+        patch.object(update_service.update_repo, "mark_applied", new=AsyncMock(return_value=True)) as mark_applied,
+        patch.object(update_service.update_repo, "mark_failed", new=AsyncMock(return_value=True)) as mark_failed,
+        patch.object(update_service, "_build_paperclip_provisioning", return_value=(prov, http, MagicMock())),
+    ):
+        await update_service._paperclip_provision_retry_pass()
+
+    prov.archive_member.assert_not_awaited()
+    mark_applied.assert_not_awaited()
+    mark_failed.assert_awaited_once()
+    args, _kwargs = mark_failed.call_args
+    assert args[:2] == ("user_a", "u_legacy")
+
+
 async def test_retry_pass_processes_multiple_rows_independently():
     """Mix of success / retryable / non-retryable in a single batch."""
     prov = _make_provisioning_mock()
@@ -284,7 +313,7 @@ async def test_retry_pass_processes_multiple_rows_independently():
         {
             "owner_id": f"user_{i}",
             "update_id": f"u_{i}",
-            "changes": {"op": "archive_member", "user_id": f"user_{i}"},
+            "changes": {"op": "archive_member", "user_id": f"user_{i}", "org_id": "org_acme"},
         }
         for i in range(3)
     ]

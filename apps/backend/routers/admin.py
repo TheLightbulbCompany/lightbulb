@@ -37,7 +37,7 @@ from core.services.account_wipe import (
     OrgWipeUnsupportedError,
     preview_wipe,
     resolve_account_emails,
-    resolve_shared_company,
+    resolve_workspace_memberships,
     wipe_account,
 )
 from core.services.workspace_wipe import (
@@ -96,8 +96,8 @@ class WipeConfirmRequest(BaseModel):
     confirm_workspace: str | None = Field(
         None,
         description=(
-            "Required when the account's Paperclip company is shared with a workspace: must match "
-            "the workspace name (its org id when Clerk has no name), checked server-side."
+            "Required when the account belongs to a workspace: must match the (first) workspace's "
+            "name (its org id when Clerk has no name), checked server-side."
         ),
     )
 
@@ -607,10 +607,10 @@ async def admin_wipe_preview(
         "to match one of the account's email addresses — looked up server-side "
         "from Clerk (the account's email addresses), matched case-insensitively, "
         "never trusted from the client — else 400 email_mismatch and nothing is "
-        "deleted. When the account's Paperclip company is shared with a "
-        "workspace, `confirm_workspace` must also match the workspace name, else "
-        "400 workspace_mismatch; the wipe then keeps the company and archives "
-        "only this member. Partial-failure-tolerant: a "
+        "deleted. When the account belongs to a workspace, `confirm_workspace` "
+        "must also match the (first) workspace's name, else 400 "
+        "workspace_mismatch; the wipe keeps every company and archives only "
+        "this member's memberships. Partial-failure-tolerant: a "
         "step failing does not abort the others or fail this request; the "
         "returned report is the source of truth for what remains and what to "
         "re-run. Writes an admin-actions audit row with the full report. "
@@ -643,9 +643,10 @@ async def admin_wipe_execute(
     # A member's company is the whole workspace's. The wipe keeps it regardless;
     # this makes the admin name the workspace they are touching, the way they
     # already name the account.
-    shared = await resolve_shared_company(owner_id)
-    if shared:
-        expected = (shared["workspace_name"] or shared["org_id"]).strip().lower()
+    memberships = await resolve_workspace_memberships(owner_id)
+    if memberships:
+        first = memberships[0]
+        expected = (first["workspace_name"] or first["org_id"]).strip().lower()
         if (body.confirm_workspace or "").strip().lower() != expected:
             raise HTTPException(status_code=400, detail="workspace_mismatch")
 

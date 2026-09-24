@@ -182,7 +182,7 @@ def _resolver_env(routines: list[dict], details: dict[str, dict]):
     """Patch the resolver's collaborators: repo → company c_1, cached admin
     cookie, and an admin client serving the given list/detail payloads."""
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=MagicMock(company_id="c_1", status="active"))
+    repo.get_workspace = AsyncMock(return_value=MagicMock(company_id="c_1"))
     admin = MagicMock()
     admin.list_routines = AsyncMock(return_value=routines)
     admin.get_routine = AsyncMock(side_effect=lambda *, session_cookie, routine_id: details[routine_id])
@@ -243,19 +243,21 @@ async def test_resolver_returns_false_without_company_row():
     from routers import paperclip_trigger_proxy as mod
 
     repo = MagicMock()
-    repo.get = AsyncMock(return_value=None)
+    repo.get_workspace = AsyncMock(return_value=None)
     with patch("routers.paperclip_trigger_proxy.PaperclipRepo", return_value=repo):
-        assert await mod._resolve_trigger_binding("u_nobody", PUBLIC_ID) is False
+        assert await mod._resolve_trigger_binding("org_nobody", PUBLIC_ID) is False
+    repo.get_workspace.assert_awaited_once_with("org_nobody")
 
 
-async def test_resolver_uses_org_lookup_for_org_owner():
+async def test_resolver_returns_false_for_workspace_row_without_company():
+    """A workspace row still seeding (no company_id yet) resolves to no company."""
     from routers import paperclip_trigger_proxy as mod
 
     repo = MagicMock()
-    repo.get_org_company_id = AsyncMock(return_value=None)
+    repo.get_workspace = AsyncMock(return_value=MagicMock(company_id=""))
     with patch("routers.paperclip_trigger_proxy.PaperclipRepo", return_value=repo):
         assert await mod._resolve_trigger_binding("org_1", PUBLIC_ID) is False
-    repo.get_org_company_id.assert_awaited_once_with("org_1")
+    repo.get_workspace.assert_awaited_once_with("org_1")
 
 
 # ---------------------------------------------------------------------------

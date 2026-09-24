@@ -52,6 +52,18 @@ def client(teams_ctx, monkeypatch):
         app.dependency_overrides.pop(get_current_user, None)
 
 
+def _member_repo(members: dict[str, str]):
+    """A repo whose workspace lists ``members`` (Clerk id -> Paperclip id)."""
+    from types import SimpleNamespace
+
+    repo = MagicMock()
+    repo.get_workspace = AsyncMock(return_value=SimpleNamespace(member_user_ids=set(members)))
+    repo.get_identity = AsyncMock(
+        side_effect=lambda uid: SimpleNamespace(paperclip_user_id=members[uid]) if uid in members else None
+    )
+    return repo
+
+
 def test_list_activity(client, monkeypatch):
     admin = MagicMock()
     admin.list_activity = AsyncMock(return_value={"events": []})
@@ -125,8 +137,7 @@ def test_list_activity_enriches_user_actor_email_and_name(client, monkeypatch):
             ]
         }
     )
-    repo = MagicMock()
-    repo.list_by_org_id = AsyncMock(return_value=[{"user_id": "clerk_aaa", "paperclip_user_id": "pcu_aaa"}])
+    repo = _member_repo({"clerk_aaa": "pcu_aaa"})
 
     resolve_calls: list[str] = []
 
@@ -155,7 +166,7 @@ def test_list_activity_enriches_user_actor_email_and_name(client, monkeypatch):
     assert "actorEmail" not in events[2]
     # Resolved with the CLERK id, never the Paperclip principal.
     assert resolve_calls == ["clerk_aaa"]
-    repo.list_by_org_id.assert_awaited_once_with("o1")
+    repo.get_workspace.assert_awaited_once_with("o1")
 
 
 def test_list_activity_resolves_each_unique_actor_once(client, monkeypatch):
@@ -170,8 +181,7 @@ def test_list_activity_resolves_each_unique_actor_once(client, monkeypatch):
             ]
         }
     )
-    repo = MagicMock()
-    repo.list_by_org_id = AsyncMock(return_value=[{"user_id": "clerk_aaa", "paperclip_user_id": "pcu_aaa"}])
+    repo = _member_repo({"clerk_aaa": "pcu_aaa"})
 
     resolve_calls: list[str] = []
 
@@ -204,8 +214,7 @@ def test_list_activity_leaves_id_when_actor_unmapped(client, monkeypatch):
             ]
         }
     )
-    repo = MagicMock()
-    repo.list_by_org_id = AsyncMock(return_value=[{"user_id": "clerk_aaa", "paperclip_user_id": "pcu_aaa"}])
+    repo = _member_repo({"clerk_aaa": "pcu_aaa"})
 
     resolve_calls: list[str] = []
 
@@ -240,8 +249,7 @@ def test_list_activity_tolerates_clerk_failure(client, monkeypatch):
             ]
         }
     )
-    repo = MagicMock()
-    repo.list_by_org_id = AsyncMock(return_value=[{"user_id": "clerk_aaa", "paperclip_user_id": "pcu_aaa"}])
+    repo = _member_repo({"clerk_aaa": "pcu_aaa"})
 
     async def fake_resolve(user_id: str) -> str:
         raise RuntimeError("clerk down")
@@ -270,8 +278,7 @@ def test_list_activity_no_user_actors_skips_org_lookup(client, monkeypatch):
             ]
         }
     )
-    repo = MagicMock()
-    repo.list_by_org_id = AsyncMock(return_value=[])
+    repo = _member_repo({})
 
     from routers.teams import agents as agents_mod
 
@@ -280,7 +287,7 @@ def test_list_activity_no_user_actors_skips_org_lookup(client, monkeypatch):
 
     r = client.get("/api/v1/teams/activity", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
-    repo.list_by_org_id.assert_not_called()
+    repo.get_workspace.assert_not_called()
 
 
 def test_list_activity_enriches_bare_list_payload(client, monkeypatch):
@@ -291,8 +298,7 @@ def test_list_activity_enriches_bare_list_payload(client, monkeypatch):
             {"id": "e1", "actorType": "user", "actorId": "pcu_aaa", "action": "issue.created"},
         ]
     )
-    repo = MagicMock()
-    repo.list_by_org_id = AsyncMock(return_value=[{"user_id": "clerk_aaa", "paperclip_user_id": "pcu_aaa"}])
+    repo = _member_repo({"clerk_aaa": "pcu_aaa"})
 
     async def fake_resolve(user_id: str) -> str:
         return f"{user_id}@example.com"
@@ -337,8 +343,7 @@ def test_list_activity_personal_context_uses_self_pairing(client, monkeypatch):
                 ]
             }
         )
-        repo = MagicMock()
-        repo.list_by_org_id = AsyncMock(return_value=[])
+        repo = _member_repo({})
 
         async def fake_resolve(user_id: str) -> str:
             return f"{user_id}@example.com"
@@ -351,8 +356,8 @@ def test_list_activity_personal_context_uses_self_pairing(client, monkeypatch):
         assert r.status_code == 200
         events = r.json()["events"]
         assert events[0]["actorEmail"] == "clerk_solo@example.com"
-        # Personal context never queries the org GSI.
-        repo.list_by_org_id.assert_not_called()
+        # Personal context never reads a workspace row.
+        repo.get_workspace.assert_not_called()
     finally:
         app.dependency_overrides.pop(agents_mod._ctx, None)
 

@@ -13,17 +13,21 @@ the one shared registry.
 from __future__ import annotations
 
 from contextlib import ExitStack
+from dataclasses import fields
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo, PaperclipWorkspace
 from core.services.workspace_wipe import (
     AmbiguousWorkspaceError,
     BillingPreservedError,
     StaleWorkspacePreviewError,
     WORKSPACE_STEP_ORDER,
     WorkspaceConfirmMismatchError,
+    WorkspaceSnapshot,
     WorkspaceWipeError,
     normalize_layers,
     preview_workspace_wipe,
@@ -48,25 +52,26 @@ def _container_row(**overrides) -> dict:
     return defaults
 
 
-def _member_rows() -> list[dict]:
-    return [
-        {
-            "user_id": MEMBER_A,
-            "org_id": ORG_ID,
-            "company_id": "company_ws",
-            "paperclip_user_id": "pc_a",
-            "paperclip_email": "a@example.com",
-            "status": "active",
-        },
-        {
-            "user_id": MEMBER_B,
-            "org_id": ORG_ID,
-            "company_id": "company_ws",
-            "paperclip_user_id": "pc_b",
-            "paperclip_email": "b@example.com",
-            "status": "active",
-        },
-    ]
+def _workspace(**overrides) -> PaperclipWorkspace:
+    now = datetime.now(timezone.utc)
+    defaults = dict(
+        org_id=ORG_ID,
+        company_id="company_ws",
+        status="active",
+        created_at=now,
+        updated_at=now,
+        provisioner_user_id=MEMBER_A,
+        member_user_ids={MEMBER_A, MEMBER_B},
+    )
+    defaults.update(overrides)
+    return PaperclipWorkspace(**defaults)
+
+
+def _identities() -> dict[str, PaperclipIdentity]:
+    return {
+        MEMBER_A: PaperclipIdentity(user_id=MEMBER_A, paperclip_user_id="pc_a", paperclip_email="a@example.com"),
+        MEMBER_B: PaperclipIdentity(user_id=MEMBER_B, paperclip_user_id="pc_b", paperclip_email="b@example.com"),
+    }
 
 
 def _billing_row(**overrides) -> dict:
@@ -88,11 +93,13 @@ def ws_mocks():
     billing_get = AsyncMock(return_value=_billing_row())
     billing_delete = AsyncMock(return_value=None)
 
-    paperclip_instance = MagicMock()
-    paperclip_instance.list_by_org_id = AsyncMock(return_value=_member_rows())
-    paperclip_instance.get_org_company_id = AsyncMock(return_value="company_ws")
-    paperclip_instance.get_user_ids_for_company = AsyncMock(return_value=[MEMBER_A, MEMBER_B])
-    paperclip_instance.get = AsyncMock(return_value=MagicMock(org_id=ORG_ID, user_id=MEMBER_A, company_id="company_ws"))
+    # Workspace rows by org id; identity rows by Clerk user id. Tests mutate
+    # these dicts rather than re-stubbing the repo.
+    workspaces = {ORG_ID: _workspace()}
+    identities = _identities()
+    paperclip_instance = MagicMock(spec=PaperclipRepo)
+    paperclip_instance.get_workspace = AsyncMock(side_effect=lambda oid, **_: workspaces.get(oid))
+    paperclip_instance.get_identity = AsyncMock(side_effect=lambda uid, **_: identities.get(uid))
     paperclip_instance.delete = AsyncMock(return_value=None)
     paperclip_instance.delete_pending_brief = AsyncMock(return_value=True)
     paperclip_repo_cls = MagicMock(return_value=paperclip_instance)
@@ -197,6 +204,8 @@ def ws_mocks():
             billing_get=billing_get,
             billing_delete=billing_delete,
             paperclip_instance=paperclip_instance,
+            workspaces=workspaces,
+            identities=identities,
             user_delete=user_delete,
             messaging_list_rooms=messaging_list_rooms,
             messaging_delete_room=messaging_delete_room,
@@ -448,10 +457,10 @@ def _step(report, system, action=None):
 
 @pytest.mark.asyncio
 async def test_members_come_from_clerk_when_paperclip_rows_are_gone(ws_mocks):
-    """A prior user-keyed half-wipe deleted the paperclip rows: Clerk still
+    """A prior half-wipe deleted the workspace + identity rows: Clerk still
     names the members, so their accounts are still found and deleted."""
-    ws_mocks.paperclip_instance.list_by_org_id.return_value = []
-    ws_mocks.paperclip_instance.get_org_company_id.return_value = None
+    ws_mocks.workspaces.clear()
+    ws_mocks.identities.clear()
     ws_mocks.clerk_org_members.return_value = [{"user_id": MEMBER_A, "email": "a@example.com"}]
 
     _, report = await _preview_then_wipe()
@@ -477,8 +486,8 @@ async def test_rerun_after_clerk_user_failure_finishes(ws_mocks):
     assert _step(first, "clerk_org").status == "failed"
     ws_mocks.clerk_delete_org.assert_not_awaited()
 
-    # Second run: paperclip rows are gone; Clerk still lists B.
-    ws_mocks.paperclip_instance.list_by_org_id.return_value = []
+    # Second run: the workspace row is gone; Clerk still lists B.
+    ws_mocks.workspaces.clear()
     ws_mocks.clerk_org_members.return_value = [{"user_id": MEMBER_B}]
     ws_mocks.clerk_delete_user.side_effect = None
     ws_mocks.clerk_delete_user.reset_mock()
@@ -511,13 +520,19 @@ async def test_shared_member_keeps_account_unless_opted_in(ws_mocks):
     ws_mocks.paperclip_user_delete_fn.assert_awaited_once()
     assert ws_mocks.paperclip_user_delete_fn.await_args.kwargs["paperclip_user_id"] == "pc_a"
     assert all(c.args != (MEMBER_B,) for c in ws_mocks.secrets_delete.await_args_list)
-    # B's org-scoped paperclip row still goes.
-    ws_mocks.paperclip_instance.delete.assert_any_await(MEMBER_B)
+    # B keeps their account, so B keeps their Paperclip identity row too (it is
+    # their Better Auth login in org_other's company); A's and the workspace
+    # row go.
+    deleted_keys = [c.args[0] for c in ws_mocks.paperclip_instance.delete.await_args_list]
+    assert MEMBER_B not in deleted_keys
+    assert ORG_ID in deleted_keys and MEMBER_A in deleted_keys
     ws_mocks.clerk_delete_org.assert_awaited_once_with(ORG_ID)
 
     ws_mocks.clerk_delete_user.reset_mock()
+    ws_mocks.paperclip_instance.delete.reset_mock()
     await _preview_then_wipe(delete_shared_members=True)
     assert {c.args[0] for c in ws_mocks.clerk_delete_user.await_args_list} == {MEMBER_A, MEMBER_B}
+    ws_mocks.paperclip_instance.delete.assert_any_await(MEMBER_B)
 
 
 @pytest.mark.asyncio
@@ -628,9 +643,10 @@ async def test_preview_and_execute_enumerate_the_same_steps(ws_mocks):
 def test_workspace_registry_covers_user_path_systems():
     """The shared registry covers every system the user-keyed path emits
     (plus clerk_org, which only a workspace wipe has) — the two paths cannot
-    silently diverge."""
+    silently diverge. ``paperclip_membership`` is the user path's alternative
+    to deleting the company, which the workspace wipe does outright."""
     registry_systems = {system for system, _ in WORKSPACE_STEP_ORDER}
-    assert set(EXPECTED_ORDER) <= registry_systems
+    assert set(EXPECTED_ORDER) - {"paperclip_membership"} <= registry_systems
     assert "clerk_org" in registry_systems
 
 
@@ -655,8 +671,19 @@ async def test_resolve_requires_explicit_org_when_memberships_differ(ws_mocks):
 
 @pytest.mark.asyncio
 async def test_resolve_single_workspace_needs_no_confirmation(ws_mocks):
-    ws_mocks.clerk_memberships.return_value = []
+    ws_mocks.clerk_memberships.return_value = [{"id": ORG_ID}]
     assert await resolve_workspace_org(MEMBER_A) == ORG_ID
+
+
+@pytest.mark.asyncio
+async def test_resolve_with_no_clerk_membership_requires_explicit_org(ws_mocks):
+    """Clerk is the only source now (no per-user paperclip row names an org)."""
+    ws_mocks.clerk_memberships.return_value = []
+    with pytest.raises(AmbiguousWorkspaceError):
+        await resolve_workspace_org(MEMBER_A)
+    assert await resolve_workspace_org(MEMBER_A, confirm_org=ORG_ID) == ORG_ID
+    ws_mocks.paperclip_instance.get_workspace.assert_not_awaited()
+    ws_mocks.paperclip_instance.get_identity.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -675,14 +702,11 @@ async def test_user_wipe_names_workspace_when_container_missing():
 
     from core.services import account_wipe as _mod
 
-    paperclip_instance = _MagicMock()
-    paperclip_instance.get = _AsyncMock(
-        return_value=_MagicMock(user_id=MEMBER_A, org_id=ORG_ID, company_id="company_ws", paperclip_user_id="pc_a")
-    )
+    paperclip_instance = _MagicMock(spec=PaperclipRepo)
+    paperclip_instance.get_identity = _AsyncMock(return_value=_identities()[MEMBER_A])
+    paperclip_instance.get_workspace = _AsyncMock(return_value=_workspace())
     paperclip_instance.get_pending_brief = _AsyncMock(return_value=None)
     paperclip_instance.delete_pending_brief = _AsyncMock(return_value=False)
-    paperclip_instance.get_user_ids_for_company = _AsyncMock(return_value=[MEMBER_A])
-    paperclip_instance.find_owner_row = _AsyncMock(return_value=None)
 
     with ExitStack() as stack:
         stack.enter_context(_patch.object(_mod.user_repo, "get", new=_AsyncMock(return_value=None)))
@@ -690,6 +714,12 @@ async def test_user_wipe_names_workspace_when_container_missing():
         stack.enter_context(_patch.object(_mod, "PaperclipRepo", new=_MagicMock(return_value=paperclip_instance)))
         stack.enter_context(_patch.object(_mod.billing_repo, "get_by_owner_id", new=_AsyncMock(return_value=None)))
         stack.enter_context(_patch.object(_mod.clerk_admin, "get_user", new=_AsyncMock(return_value=None)))
+        stack.enter_context(
+            _patch.object(_mod.clerk_admin, "list_user_organizations", new=_AsyncMock(return_value=[{"id": ORG_ID}]))
+        )
+        stack.enter_context(
+            _patch.object(_mod.clerk_admin, "get_organization", new=_AsyncMock(return_value={"name": "Acme"}))
+        )
         stack.enter_context(_patch.object(_mod.messaging_repo, "list_owner_room_ids", new=_AsyncMock(return_value=[])))
         stack.enter_context(
             _patch.object(_mod.provisioning_workflow_repo, "list_for_owner", new=_AsyncMock(return_value=[]))
@@ -734,76 +764,74 @@ async def test_member_secret_failure_keeps_clerk_org(ws_mocks):
 
 
 # ---------------------------------------------------------------------------
-# Cross-workspace company guard (the workspace twin of account_wipe._shared_company)
+# Paperclip: one workspace = one company, named on the ORG row
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_sole_workspace_company_is_deleted(ws_mocks):
+async def test_workspace_company_and_row_are_deleted(ws_mocks):
     preview, report = await _preview_then_wipe()
     assert _step(preview, "paperclip_company").status == "would_delete"
     assert _step(report, "paperclip_company").status == "ok"
     ws_mocks.paperclip_company_delete.assert_awaited_once_with("company_ws")
-    ws_mocks.paperclip_instance.get_user_ids_for_company.assert_awaited_with("company_ws")
-
-
-@pytest.mark.asyncio
-async def test_company_referenced_by_another_org_is_refused(ws_mocks):
-    ws_mocks.paperclip_instance.get_user_ids_for_company.return_value = [MEMBER_A, MEMBER_B, "user_founder"]
-    ws_mocks.paperclip_instance.get = AsyncMock(
-        return_value=MagicMock(org_id="org_founder", user_id="user_founder", company_id="company_ws")
-    )
-
-    preview, report = await _preview_then_wipe()
-
-    for r in (preview, report):
-        step = _step(r, "paperclip_company")
-        assert step.status == "refused"
-        assert "org_founder" in step.detail and "user_founder" in step.detail
-    ws_mocks.paperclip_company_delete.assert_not_awaited()
-    # The rest of the wipe still runs.
-    ws_mocks.delete_runtime.assert_awaited_once()
+    ws_mocks.paperclip_instance.get_workspace.assert_awaited_with(ORG_ID)
+    # The org row, both deletable members' identity rows and the org-create
+    # claim all go.
+    deleted_keys = [c.args[0] for c in ws_mocks.paperclip_instance.delete.await_args_list]
+    assert deleted_keys == [ORG_ID, MEMBER_A, MEMBER_B, f"__org_create_claim__:{ORG_ID}"]
     assert _step(report, "paperclip_row").status == "ok"
-    ws_mocks.clerk_delete_org.assert_awaited_once_with(ORG_ID)
+    assert f"{ORG_ID}: workspace row" in _step(report, "paperclip_row").detail
 
 
 @pytest.mark.asyncio
-async def test_org_rows_naming_two_companies_are_refused(ws_mocks):
-    rows = _member_rows()
-    rows[1]["company_id"] = "company_other"
-    ws_mocks.paperclip_instance.list_by_org_id.return_value = rows
+async def test_members_are_the_union_of_clerk_and_the_workspace_row(ws_mocks):
+    """A human who joined the company but left Clerk, and a Clerk member who
+    never joined the company, are both members; identity comes from
+    ``get_identity``."""
+    ws_mocks.workspaces[ORG_ID] = _workspace(member_user_ids={MEMBER_A})
+    ws_mocks.clerk_org_members.return_value = [{"user_id": MEMBER_B, "email": "b-clerk@example.com"}]
+    ws_mocks.identities.pop(MEMBER_B)
 
-    preview, report = await _preview_then_wipe()
+    preview = await preview_workspace_wipe(ORG_ID)
 
-    for r in (preview, report):
-        step = _step(r, "paperclip_company")
-        assert step.status == "refused"
-        assert "company_ws" in step.detail and "company_other" in step.detail
-    ws_mocks.paperclip_company_delete.assert_not_awaited()
+    assert [m["user_id"] for m in preview.members] == [MEMBER_A, MEMBER_B]
+    assert {c.args[0] for c in ws_mocks.paperclip_instance.get_identity.await_args_list} == {MEMBER_A, MEMBER_B}
+    by_uid = {m["user_id"]: m for m in preview.members}
+    assert by_uid[MEMBER_A]["email"] == "a@example.com"
+    assert by_uid[MEMBER_B]["email"] == "b-clerk@example.com"
+    # Only A has a Better Auth user to delete.
+    assert "pc_a" in _step(preview, "paperclip_aurora_user").detail
+    assert "pc_b" not in _step(preview, "paperclip_aurora_user").detail
 
 
 @pytest.mark.asyncio
-async def test_company_guard_read_failure_aborts_before_any_step(ws_mocks):
-    ws_mocks.paperclip_instance.get_user_ids_for_company.side_effect = RuntimeError("ddb 500")
+async def test_workspace_row_read_failure_aborts_before_any_step(ws_mocks):
+    ws_mocks.paperclip_instance.get_workspace.side_effect = RuntimeError("ddb 500")
     with pytest.raises(RuntimeError):
         await preview_workspace_wipe(ORG_ID)
     with pytest.raises(RuntimeError):
         await wipe_workspace(ORG_ID, actor_admin_id="admin_1", confirm_org=ORG_ID, expected_fingerprint="x")
     ws_mocks.paperclip_company_delete.assert_not_awaited()
+    ws_mocks.paperclip_instance.delete.assert_not_awaited()
     ws_mocks.delete_runtime.assert_not_awaited()
     ws_mocks.gate_tokens_delete.assert_not_awaited()
     ws_mocks.clerk_delete_org.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_refusal_appearing_after_preview_is_stale(ws_mocks):
-    """A preview that showed a delete must not execute against a company that
-    has since become shared (and vice versa): the refusal is fingerprinted."""
+async def test_company_change_after_preview_is_stale(ws_mocks):
+    """The company id is fingerprinted: a preview that named one company
+    never executes against another."""
     preview = await preview_workspace_wipe(ORG_ID)
-    ws_mocks.paperclip_instance.get_user_ids_for_company.return_value = [MEMBER_A, "user_founder"]
-    ws_mocks.paperclip_instance.get = AsyncMock(return_value=MagicMock(org_id="org_founder"))
+    ws_mocks.workspaces[ORG_ID] = _workspace(company_id="company_new")
     with pytest.raises(StaleWorkspacePreviewError):
         await wipe_workspace(
             ORG_ID, actor_admin_id="admin_1", confirm_org=ORG_ID, expected_fingerprint=preview.fingerprint
         )
     ws_mocks.paperclip_company_delete.assert_not_awaited()
+
+
+def test_snapshot_carries_no_company_refusal():
+    """The cross-org company refusal is gone with the per-user row shape: the
+    workspace row names its one company."""
+    assert "company_refusal" not in {f.name for f in fields(WorkspaceSnapshot)}

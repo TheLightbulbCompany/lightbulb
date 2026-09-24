@@ -260,23 +260,25 @@ async def test_paperclip_rejects_forged_run_and_never_infers_member_authority():
         ),
         get_agent=AsyncMock(return_value={"id": "agent_1", "companyId": "company_1"}),
     )
+    ws = SimpleNamespace(org_id="org_1", company_id="company_1", status="active", member_user_ids={"user_1"})
+    resolve = AsyncMock(return_value=ws)
     with (
-        patch.object(PaperclipRepo, "resolve_owner_row", AsyncMock(return_value=SimpleNamespace(user_id="user_1"))),
-        patch.object(
-            PaperclipRepo,
-            "get",
-            AsyncMock(
-                return_value=SimpleNamespace(user_id="user_1", org_id="", company_id="company_1", status="active")
-            ),
-        ),
+        patch.object(PaperclipRepo, "resolve_owner_row", resolve),
         patch.object(paperclip_admin_client, "shared_admin_client", lambda: admin),
         patch.object(paperclip_admin_session, "get_admin_session_cookie", AsyncMock(return_value="cookie")),
     ):
         with pytest.raises(service.DesktopError, match="run_forbidden"):
-            await service.authorize_run("user_1", "run_1", "agent_1", "paperclip", active=True)
+            await service.authorize_run("org_1", "run_1", "agent_1", "paperclip", active=True)
+        # The owner's ACTIVE workspace row is read strongly consistent.
+        resolve.assert_awaited_with("org_1", consistent_read=True)
         admin.get_heartbeat_run.return_value["agentId"] = "agent_1"
-        auth = await service.authorize_run("user_1", "run_1", "agent_1", "paperclip", active=True)
+        auth = await service.authorize_run("org_1", "run_1", "agent_1", "paperclip", active=True)
         assert auth["companyId"] == "company_1" and "memberId" not in auth
+        # No active workspace, or a row for another org, is forbidden.
+        for row in (None, SimpleNamespace(org_id="org_other", company_id="company_1")):
+            resolve.return_value = row
+            with pytest.raises(service.DesktopError, match="run_forbidden"):
+                await service.authorize_run("org_1", "run_1", "agent_1", "paperclip", active=True)
 
 
 async def test_public_submit_rejects_bypass_fields_and_internal_caller_addresses(app):

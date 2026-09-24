@@ -55,14 +55,13 @@ class _RaisingClient:
 
 @pytest.mark.asyncio
 async def test_proxy_upstream_unreachable_emits_metric():
-    auth = AuthContext(user_id="human_x", org_id="user_x", org_role="org:admin", email="u@isol8.co")
-    # org_id is a required field on PaperclipCompany (paperclip_repo.py) and the
-    # proxy reads it to gate the established-session forward path
-    # (``company.org_id != resolve_owner_id(auth)``). For this org-less personal
-    # session resolve_owner_id(auth) == auth.user_id == "user_x", so pin org_id
-    # to "user_x" — otherwise the proxy takes the provisioning-stub / re-handshake
-    # branch instead of forwarding to the (raising) upstream client.
-    company = SimpleNamespace(status="active", org_id="user_x", paperclip_password_encrypted="enc")
+    auth = AuthContext(user_id="human_x", org_id="org_x", org_role="org:admin", email="u@isol8.co")
+    # The established-session forward path needs THIS workspace's active row
+    # with the caller in ``member_user_ids`` plus a confirmed identity row —
+    # otherwise the proxy takes the setting-up stub instead of forwarding to
+    # the (raising) upstream client.
+    ws = SimpleNamespace(org_id="org_x", company_id="co_x", status="active", member_user_ids={"human_x"})
+    identity = SimpleNamespace(paperclip_user_id="pcu_x", paperclip_email="", paperclip_password_encrypted="enc")
 
     with (
         patch("routers.paperclip_proxy.put_metric") as mock_put,
@@ -71,12 +70,14 @@ async def test_proxy_upstream_unreachable_emits_metric():
             "routers.paperclip_proxy._get_paperclip_user",
             new=AsyncMock(return_value=auth),
         ),
-        # Established-session path: active company row + a trusted reused
+        # Established-session path: joined active workspace + a trusted reused
         # cookie so the proxy forwards immediately (skips _sign_in) and the
         # raising client trips the except httpx.HTTPError handler.
         patch(
             "routers.paperclip_proxy.PaperclipRepo",
-            return_value=SimpleNamespace(get=AsyncMock(return_value=company)),
+            return_value=SimpleNamespace(
+                get_workspace=AsyncMock(return_value=ws), get_identity=AsyncMock(return_value=identity)
+            ),
         ),
         patch("routers.paperclip_proxy.is_trusted", return_value="reused-cookie"),
         patch("routers.paperclip_proxy.httpx.AsyncClient", return_value=_RaisingClient()),

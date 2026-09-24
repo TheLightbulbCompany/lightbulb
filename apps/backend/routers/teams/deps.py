@@ -1,6 +1,6 @@
 """Shared FastAPI deps for the Teams BFF routers.
 
-Centralizes the (auth -> paperclip-companies row -> user-session cookie)
+Centralizes the (auth -> workspace row + identity row -> user-session cookie)
 chain that every Teams endpoint runs at the top of its handler. Lives
 as a class + a resolver so we can unit-test without a FastAPI request.
 """
@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable, Optional, Protocol
 from fastapi import HTTPException
 
 from core.auth import AuthContext, resolve_owner_id
-from core.repositories.paperclip_repo import PaperclipCompany
+from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipWorkspace
 from core.services.paperclip_session_cookie import SessionRateLimited, resolve_session_cookie
 
 
@@ -56,7 +56,8 @@ class TeamsContext:
 
 
 class _Repo(Protocol):
-    async def get(self, user_id: str) -> PaperclipCompany | None: ...
+    async def get_workspace(self, org_id: str) -> PaperclipWorkspace | None: ...
+    async def get_identity(self, user_id: str) -> PaperclipIdentity | None: ...
 
 
 SessionFactory = Callable[[str], Awaitable[str]]
@@ -80,9 +81,11 @@ async def resolve_teams_context(
     """Build a ``TeamsContext`` for the current request, or raise.
 
     Status codes follow spec §9 error handling:
-      - 202 if there's no DDB row yet, or the row exists but
-        ``status != "active"``. The UI polls until it goes active.
-      - 503 if the row is ``status="failed"`` (operator-resolved).
+      - 202 while the workspace (or this human's sign-up) is still
+        provisioning, and — with ``reconcile`` — when this human has not
+        joined the workspace's company yet (the reconcile joins them).
+      - 503 if the workspace or this human's sign-up is ``failed``.
+      - 409 when not joined and no ``reconcile`` is wired.
 
     **Self-healing provisioning.** ``/teams`` is a read surface — it never
     polled ``GET /container/status`` — so historically a member whose
@@ -106,33 +109,38 @@ async def resolve_teams_context(
     workspace still raises 202/503 before any mint can happen — the
     provisioning fence is unchanged.
     """
-    company = await repo.get(auth.user_id)
-    if company is None:
+    owner_id = resolve_owner_id(auth)
+    ws = await repo.get_workspace(owner_id)
+    identity = await repo.get_identity(auth.user_id)
+    # "seeding" is the pre-side-effect claim provision_org/provision_member
+    # write (see PaperclipRepo.try_acquire_seed_claim): same "keep polling"
+    # verdict as a mid-chain "provisioning" workspace.
+    if (ws is not None and ws.status in ("seeding", "provisioning")) or (
+        identity is not None and identity.status == "seeding"
+    ):
+        raise TeamsContextError(status_code=202, detail="team workspace provisioning")
+    if (ws is not None and ws.status == "failed") or (identity is not None and identity.status == "failed"):
+        raise TeamsContextError(status_code=503, detail="team workspace provisioning failed")
+    if ws is not None and ws.status != "active":
+        raise TeamsContextError(status_code=503, detail=f"team workspace status={ws.status}")
+    joined = (
+        ws is not None
+        and auth.user_id in ws.member_user_ids
+        and identity is not None
+        and bool(identity.paperclip_user_id)
+    )
+    if not joined:
         if reconcile is not None:
             # Self-heal: drive provisioning. reconcile() evaluates the provision
             # gate and, if clear, launches ensure_user_ready (idempotent +
             # gate-first) and returns None → 202 "keep polling". If a gate is
-            # UP (no subscription / credits / provider) it returns the blocked
-            # payload → 402 so the UI shows the subscribe/setup CTA instead of
-            # spinning forever on a workspace that can never become active.
+            # UP it returns the blocked payload → 402 so the UI shows the
+            # subscribe/setup CTA instead of spinning forever.
             blocked = await reconcile()
             if blocked is not None:
                 raise TeamsContextError(status_code=402, detail=blocked)
             raise TeamsContextError(status_code=202, detail="team workspace provisioning")
         raise TeamsContextError(status_code=409, detail="team workspace not provisioned")
-    # "seeding" is the pre-side-effect claim row provision_org's
-    # cross-instance fence writes (see PaperclipRepo.try_acquire_seed_claim)
-    # — same "keep polling" verdict as mid-chain "provisioning".
-    if company.status in ("seeding", "provisioning"):
-        raise TeamsContextError(status_code=202, detail="team workspace provisioning")
-    if company.status == "failed":
-        raise TeamsContextError(status_code=503, detail="team workspace provisioning failed")
-    if company.status != "active":
-        raise TeamsContextError(status_code=503, detail=f"team workspace status={company.status}")
-
-    owner_id = resolve_owner_id(auth)
-    if company.org_id != owner_id:
-        raise TeamsContextError(status_code=403, detail="team workspace unavailable in this workspace")
 
     try:
         cookie = await resolve_session_cookie(
@@ -157,7 +165,7 @@ async def resolve_teams_context(
         user_id=auth.user_id,
         org_id=auth.org_id,
         owner_id=owner_id,
-        company_id=company.company_id,
-        paperclip_user_id=company.paperclip_user_id,
+        company_id=ws.company_id,
+        paperclip_user_id=identity.paperclip_user_id,
         session_cookie=cookie,
     )

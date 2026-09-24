@@ -135,8 +135,7 @@ async def test_set_provider_choice_publishes_status_changed(billing_table):
 
 
 # ---------------------------------------------------------------------------
-# paperclip-companies table -- PaperclipRepo.put / update_status /
-# claim_funnel_submission
+# paperclip-companies table -- PaperclipRepo workspace / identity writes
 # ---------------------------------------------------------------------------
 
 
@@ -159,57 +158,69 @@ def paperclip_repo():
             yield PaperclipRepo(table_name="test-paperclip-companies", region="us-east-1")
 
 
-def _make_company(**overrides):
-    from core.repositories.paperclip_repo import PaperclipCompany
+def _make_workspace(**overrides):
+    from core.repositories.paperclip_repo import PaperclipWorkspace
 
     now = datetime.now(timezone.utc)
     fields = dict(
-        user_id="owner_1",
-        org_id="org_owner_1",
+        org_id="org_acme",
         company_id="co_1",
-        paperclip_user_id="pc_1",
-        paperclip_password_encrypted="enc",
-        service_token_encrypted="enc",
         status="active",
         created_at=now,
         updated_at=now,
+        provisioner_user_id="creator_1",
+        member_user_ids={"creator_1"},
     )
     fields.update(overrides)
-    return PaperclipCompany(**fields)
+    return PaperclipWorkspace(**fields)
+
+
+# The WORKSPACE row is keyed by the org id, and the org id is also where the
+# org's tabs register -- so every workspace-row write nudges the org id.
 
 
 @pytest.mark.asyncio
-async def test_paperclip_put_org_publishes_org_owner_key(paperclip_repo):
-    """An org row's PK user_id is the CREATOR's personal id; the org's tabs
-    register under org_id, so the nudge must ride the org_id, not the PK."""
+async def test_paperclip_put_workspace_publishes_org_id(paperclip_repo):
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        await paperclip_repo.put(_make_company(user_id="creator_1", org_id="org_acme"))
+        await paperclip_repo.put_workspace(_make_workspace())
     mocked.assert_called_once_with("org_acme")
 
 
 @pytest.mark.asyncio
-async def test_paperclip_put_personal_publishes_user_id(paperclip_repo):
-    """A personal row (org_id echoes the user_id) nudges the user_id --
-    is_org_owner_id keeps a non-org org_id from being mistaken for the owner key."""
+async def test_paperclip_put_identity_does_not_publish(paperclip_repo):
+    """An identity row (keyed by the Clerk user id) is not a status fact --
+    no tab registers under a user id, so it never nudges."""
+    from core.repositories.paperclip_repo import PaperclipIdentity
+
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        await paperclip_repo.put(_make_company(user_id="user_solo", org_id="user_solo"))
-    mocked.assert_called_once_with("user_solo")
+        await paperclip_repo.put_identity(
+            PaperclipIdentity(user_id="creator_1", paperclip_user_id="pc_1", paperclip_password_encrypted="enc")
+        )
+    mocked.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_paperclip_add_member_publishes_org_id(paperclip_repo):
+    await paperclip_repo.put_workspace(_make_workspace())
+    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
+        await paperclip_repo.add_member("org_acme", "member_2")
+    mocked.assert_called_once_with("org_acme")
 
 
 @pytest.mark.asyncio
 async def test_paperclip_update_status_publishes_on_success(paperclip_repo):
-    await paperclip_repo.put(_make_company(status="provisioning"))
+    await paperclip_repo.put_workspace(_make_workspace(status="provisioning"))
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        landed = await paperclip_repo.update_status("owner_1", status="active")
+        landed = await paperclip_repo.update_status("org_acme", status="active")
     assert landed is True
-    mocked.assert_called_once_with("owner_1")
+    mocked.assert_called_once_with("org_acme")
 
 
 @pytest.mark.asyncio
 async def test_paperclip_update_status_does_not_publish_on_guard_failure(paperclip_repo):
-    await paperclip_repo.put(_make_company(status="active"))
+    await paperclip_repo.put_workspace(_make_workspace(status="active"))
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        landed = await paperclip_repo.update_status("owner_1", status="failed", not_if_status="active")
+        landed = await paperclip_repo.update_status("org_acme", status="failed", not_if_status="active")
     assert landed is False
     mocked.assert_not_called()
 
@@ -218,23 +229,23 @@ async def test_paperclip_update_status_does_not_publish_on_guard_failure(papercl
 async def test_claim_funnel_submission_publishes_on_win(paperclip_repo):
     from core.repositories.paperclip_repo import FunnelClaimResult
 
-    await paperclip_repo.put(_make_company(onboarding_generation="01G", funnel_state="not_started"))
+    await paperclip_repo.put_workspace(_make_workspace(onboarding_generation="01G", funnel_state="not_started"))
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
         result = await paperclip_repo.claim_funnel_submission(
-            "owner_1", onboarding_generation="01G", submitted_by="owner_1"
+            "org_acme", onboarding_generation="01G", submitted_by="creator_1"
         )
     assert result is FunnelClaimResult.WON
-    mocked.assert_called_once_with("owner_1")
+    mocked.assert_called_once_with("org_acme")
 
 
 @pytest.mark.asyncio
 async def test_claim_funnel_submission_does_not_publish_when_already_submitted(paperclip_repo):
     from core.repositories.paperclip_repo import FunnelClaimResult
 
-    await paperclip_repo.put(_make_company(onboarding_generation="01G", funnel_state="submitted"))
+    await paperclip_repo.put_workspace(_make_workspace(onboarding_generation="01G", funnel_state="submitted"))
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
         result = await paperclip_repo.claim_funnel_submission(
-            "owner_1", onboarding_generation="01G", submitted_by="owner_1"
+            "org_acme", onboarding_generation="01G", submitted_by="creator_1"
         )
     assert result is FunnelClaimResult.ALREADY_SUBMITTED
     mocked.assert_not_called()
@@ -246,12 +257,12 @@ async def test_record_onboarding_ids_publishes_status_changed(paperclip_repo):
     themselves composed by compute_status -- so this later write must nudge
     again, or a tab that revalidated off the early 'submitted' event sits on a
     contract missing the ids."""
-    await paperclip_repo.put(_make_company(onboarding_generation="01G", funnel_state="submitted"))
+    await paperclip_repo.put_workspace(_make_workspace(onboarding_generation="01G", funnel_state="submitted"))
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
         await paperclip_repo.record_onboarding_ids(
-            "owner_1", onboarding_generation="01G", goal_id="goal_1", project_id="proj_1"
+            "org_acme", onboarding_generation="01G", goal_id="goal_1", project_id="proj_1"
         )
-    mocked.assert_called_once_with("owner_1")
+    mocked.assert_called_once_with("org_acme")
 
 
 @pytest.mark.asyncio
@@ -259,71 +270,17 @@ async def test_revert_funnel_submission_publishes_on_landed_revert(paperclip_rep
     """A landed rollback moves funnel_state back and drops the ids -- all
     composed facts -- so the tab that saw the optimistic 'submitted' gets a
     nudge to re-fetch the reverted contract."""
-    await paperclip_repo.put(_make_company(onboarding_generation="01G", funnel_state="submitted"))
+    await paperclip_repo.put_workspace(_make_workspace(onboarding_generation="01G", funnel_state="submitted"))
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        await paperclip_repo.revert_funnel_submission("owner_1", onboarding_generation="01G")
-    mocked.assert_called_once_with("owner_1")
+        await paperclip_repo.revert_funnel_submission("org_acme", onboarding_generation="01G")
+    mocked.assert_called_once_with("org_acme")
 
 
 @pytest.mark.asyncio
 async def test_revert_funnel_submission_does_not_publish_on_guard_failure(paperclip_repo):
     """No standing claim (funnel already advanced/reverted) -> swallowed guard
     failure -> no write -> no nudge."""
-    await paperclip_repo.put(_make_company(onboarding_generation="01G", funnel_state="complete"))
+    await paperclip_repo.put_workspace(_make_workspace(onboarding_generation="01G", funnel_state="complete"))
     with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        await paperclip_repo.revert_funnel_submission("owner_1", onboarding_generation="01G")
+        await paperclip_repo.revert_funnel_submission("org_acme", onboarding_generation="01G")
     mocked.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# org owner-key threading -- the brief-flow + status writers key their nudge on
-# the caller-supplied owner_id (org_id for orgs), NOT the row PK (user_id, which
-# for an org is the creator's personal id where no org tabs are registered).
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_claim_funnel_submission_publishes_org_owner_key(paperclip_repo):
-    from core.repositories.paperclip_repo import FunnelClaimResult
-
-    # Row PK is the creator's personal id; the org's tabs are under org_acme.
-    await paperclip_repo.put(
-        _make_company(user_id="creator_1", org_id="org_acme", onboarding_generation="01G", funnel_state="not_started")
-    )
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        result = await paperclip_repo.claim_funnel_submission(
-            "creator_1", onboarding_generation="01G", submitted_by="creator_1", owner_id="org_acme"
-        )
-    assert result is FunnelClaimResult.WON
-    mocked.assert_called_once_with("org_acme")
-
-
-@pytest.mark.asyncio
-async def test_record_onboarding_ids_publishes_org_owner_key(paperclip_repo):
-    await paperclip_repo.put(
-        _make_company(user_id="creator_1", org_id="org_acme", onboarding_generation="01G", funnel_state="submitted")
-    )
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        await paperclip_repo.record_onboarding_ids(
-            "creator_1", onboarding_generation="01G", goal_id="g", project_id="p", owner_id="org_acme"
-        )
-    mocked.assert_called_once_with("org_acme")
-
-
-@pytest.mark.asyncio
-async def test_revert_funnel_submission_publishes_org_owner_key(paperclip_repo):
-    await paperclip_repo.put(
-        _make_company(user_id="creator_1", org_id="org_acme", onboarding_generation="01G", funnel_state="submitted")
-    )
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        await paperclip_repo.revert_funnel_submission("creator_1", onboarding_generation="01G", owner_id="org_acme")
-    mocked.assert_called_once_with("org_acme")
-
-
-@pytest.mark.asyncio
-async def test_update_status_publishes_org_owner_key_when_supplied(paperclip_repo):
-    await paperclip_repo.put(_make_company(user_id="creator_1", org_id="org_acme", status="provisioning"))
-    with patch("core.repositories.paperclip_repo.publish_status_changed") as mocked:
-        landed = await paperclip_repo.update_status("creator_1", status="active", owner_id="org_acme")
-    assert landed is True
-    mocked.assert_called_once_with("org_acme")

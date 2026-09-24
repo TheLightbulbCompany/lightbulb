@@ -20,9 +20,9 @@ fail-closed path is the only one that runs off a laptop.
   * ``organizationMembership.created`` -> log + idempotent Paperclip JOIN via
     ``_ensure_paperclip_for_member`` (join-only: never creates a company; a
     still-provisioning org self-heals on the member's next /teams request)
-  * ``organizationMembership.deleted`` -> ``disable`` for that user
-  * ``organization.deleted``           -> ``disable`` for every member of the org
-  * ``user.deleted``                   -> ``disable`` for that user
+  * ``organizationMembership.deleted`` -> ``archive_member`` from THAT org's company only
+  * ``organization.deleted``           -> ``disable_workspace`` (purged after the grace window)
+  * ``user.deleted``                   -> delete that user's Paperclip identity row
 
 Retry semantics: if provisioning raises an exception with
 ``retryable=True`` (``OrgNotProvisionedError`` always; ``PaperclipApiError``
@@ -480,7 +480,7 @@ async def _handle_organization_membership_deleted(
     try:
         try:
             await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-            await provisioning.archive_member(user_id=user_id)
+            await provisioning.archive_member(user_id=user_id, org_id=org_id)
             await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
             put_metric(
                 "paperclip.webhook.archive_member",
@@ -497,21 +497,23 @@ async def _handle_organization_membership_deleted(
                     "result": "retryable" if retryable else "error",
                 },
             )
-            # DDB disable is the immediate Teams authorization fence even when
-            # upstream Paperclip archive is unavailable.
+            # Dropping the DDB membership is the immediate Teams authorization
+            # fence even when the upstream Paperclip archive is unavailable.
             try:
                 await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-                await provisioning.disable(user_id=user_id)
+                from core.repositories.paperclip_repo import PaperclipRepo
+
+                await PaperclipRepo(table_name="paperclip-companies").remove_member(org_id, user_id)
                 await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
             except MembershipLifecycleSuperseded:
                 raise
             except Exception:
-                logger.exception("Paperclip disable fallback failed for user=%s", user_id)
+                logger.exception("Paperclip membership fence failed for user=%s org=%s", user_id, org_id)
             if retryable:
                 await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
                 await _enqueue_paperclip_retry(
                     op="archive_member",
-                    payload={"user_id": user_id},
+                    payload={"user_id": user_id, "org_id": org_id},
                     owner_id=user_id,
                 )
     finally:
@@ -536,16 +538,12 @@ async def _handle_organization_deleted(data: dict) -> None:
     teardown. Best-effort -- a Stripe error must not break this webhook,
     which still has to return 200 to Clerk.
 
-    This runs BEFORE the member-disable sweep below, and in its own
-    independent try/except, so that a failure in the sweep (e.g. the
-    GSI ``table.query`` pagination call throwing on a DynamoDB
-    throttle/error) can never prevent the billing-critical cancel from
-    running. The sweep is Paperclip cleanup, not billing-critical --
-    it must not be able to block the Stripe cancel.
+    This runs BEFORE the workspace disable below, and in its own
+    independent try/except, so a DynamoDB failure there can never prevent
+    the billing-critical cancel from running.
 
-    Clerk also fires ``organizationMembership.deleted`` for each
-    member, but we belt-and-braces against missed events by sweeping
-    the org-id GSI. ``disable`` is idempotent so a double-fire is safe.
+    The workspace's ONE row goes ``disabled`` with a purge timer; the
+    cleanup cron deletes it after the grace window. Idempotent.
     """
     org_id = data.get("id", "")
     if not org_id:
@@ -587,67 +585,26 @@ async def _handle_organization_deleted(data: dict) -> None:
             org_id,
         )
 
-    from boto3.dynamodb.conditions import Key
-
-    from core.dynamodb import run_in_thread
-
     provisioning = await build_paperclip_provisioning()
     try:
-        # Reach through the repo to the underlying GSI to enumerate members.
-        # We could promote this into the repo, but for v1 the only caller
-        # is this webhook handler and adding a public method now would
-        # outgrow its single use site.
-        table = provisioning._repo._table()  # noqa: SLF001 — same package, single call site
-        last_key = None
-        disabled = 0
-        while True:
-            kwargs: dict = {
-                "IndexName": "by-org-id",
-                "KeyConditionExpression": Key("org_id").eq(org_id),
-            }
-            if last_key is not None:
-                kwargs["ExclusiveStartKey"] = last_key
-            resp = await run_in_thread(table.query, **kwargs)
-            for item in resp.get("Items", []):
-                uid = item.get("user_id")
-                if not uid:
-                    continue
-                try:
-                    await provisioning.disable(user_id=uid)
-                    disabled += 1
-                except Exception:
-                    logger.exception(
-                        "disable on organization.deleted failed for user=%s org=%s",
-                        uid,
-                        org_id,
-                    )
-            last_key = resp.get("LastEvaluatedKey")
-            if not last_key:
-                break
-        put_metric(
-            "paperclip.webhook.disable",
-            value=disabled,
-            dimensions={"trigger": "organization_deleted"},
-        )
-        logger.info(
-            "Clerk organization.deleted: disabled %d member rows for org %s",
-            disabled,
-            org_id,
-        )
+        await provisioning.disable_workspace(org_id=org_id)
+        put_metric("paperclip.webhook.disable", dimensions={"trigger": "organization_deleted"})
+    except Exception:
+        logger.exception("disable_workspace on organization.deleted failed for org=%s", org_id)
     finally:
         await close_paperclip_provisioning(provisioning)
 
 
 async def _handle_user_deleted_paperclip(user_id: str) -> None:
-    """Disable Paperclip for a deleted Clerk user."""
-    provisioning = await build_paperclip_provisioning()
+    """Forget a deleted Clerk user's Paperclip identity row. Their company
+    memberships go with each org's ``organizationMembership.deleted``."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+
     try:
-        await provisioning.disable(user_id=user_id)
+        await PaperclipRepo(table_name="paperclip-companies").delete(user_id)
         put_metric("paperclip.webhook.disable", dimensions={"trigger": "user_deleted"})
     except Exception:
-        logger.exception("disable on user_deleted failed for user=%s", user_id)
-    finally:
-        await close_paperclip_provisioning(provisioning)
+        logger.exception("identity delete on user_deleted failed for user=%s", user_id)
 
 
 # ----------------------------------------------------------------------

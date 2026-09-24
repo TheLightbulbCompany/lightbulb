@@ -168,14 +168,16 @@ describe("WipeAccountDialog", () => {
       data: {
         owner_id: USER_ID,
         dry_run: true,
-        shared_company: {
-          company_id: "company_abc",
-          org_id: "org_founder",
-          workspace_name: "Isol8",
-          owner_user_id: "user_owner",
-          owner_email: "founder@example.com",
-          member_count: 4,
-        },
+        workspaces: [
+          {
+            company_id: "company_abc",
+            org_id: "org_founder",
+            workspace_name: "Isol8",
+            owner_user_id: "user_owner",
+            owner_email: "founder@example.com",
+            member_count: 4,
+          },
+        ],
         steps: [
           {
             system: "paperclip_company",

@@ -76,6 +76,8 @@ async def test_membership_revocation_failure_redelivers_same_svix_and_still_deau
     provisioning = AsyncMock()
     if archive_failure:
         provisioning.archive_member.side_effect = PaperclipApiError("retry", 503, "")
+    remove_member = AsyncMock()
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
     monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
     monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
     enqueue = AsyncMock()
@@ -101,9 +103,9 @@ async def test_membership_revocation_failure_redelivers_same_svix_and_still_deau
         monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "clerk-dedup-test")
         with pytest.raises(RuntimeError, match="canonical revocation failed"):
             await webhooks.handle_clerk_webhook(request)
-        provisioning.archive_member.assert_awaited_once_with(user_id="member")
+        provisioning.archive_member.assert_awaited_once_with(user_id="member", org_id="org_acme")
         if archive_failure:
-            provisioning.disable.assert_awaited_once_with(user_id="member")
+            remove_member.assert_awaited_once_with("org_acme", "member")
             enqueue.assert_awaited_once()
         assert (
             webhook_dedup._table().get_item(Key={"event_id": "msg_test"}).get("Item", {}).get("state") == "processing"
@@ -300,9 +302,8 @@ async def test_membership_created_join_error_still_acks_webhook_2xx(lifecycle_io
 @pytest.mark.asyncio
 async def test_membership_deleted_calls_archive_member(async_client, monkeypatch):
     """``organizationMembership.deleted`` should drive
-    ``PaperclipProvisioning.archive_member`` (which both calls
-    Paperclip's archive endpoint AND marks the DDB row disabled),
-    not the bare ``disable`` shortcut.
+    ``PaperclipProvisioning.archive_member`` scoped to THAT org, so a
+    human in two workspaces keeps the other one.
     """
     _bypass_svix(monkeypatch)
 
@@ -337,7 +338,7 @@ async def test_membership_deleted_calls_archive_member(async_client, monkeypatch
 
     assert resp.status_code == 200
     durable_revoke.assert_awaited_once()
-    mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member")
+    mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member", org_id="org_acme")
 
 
 @pytest.mark.asyncio
@@ -345,19 +346,20 @@ async def test_membership_deleted_retryable_failure_enqueues(async_client, monke
     """Paperclip 5xx during ``archive_member`` should enqueue a
     pending-updates retry row keyed on ``op="archive_member"``.
 
-    Auth-bypass guard: the handler MUST also call ``disable`` BEFORE
-    enqueueing the retry so the DDB row is flipped to
-    ``status="disabled"`` immediately. Otherwise
-    ``resolve_teams_context`` would keep authorizing the removed user
-    against ``/api/v1/teams/*`` for the entire retry window (minutes
-    to hours).
+    Auth-bypass guard: the handler MUST also call ``remove_member`` BEFORE
+    enqueueing the retry so the user leaves the workspace row's
+    ``member_user_ids`` immediately. Otherwise ``resolve_teams_context``
+    would keep authorizing the removed user against ``/api/v1/teams/*``
+    for the entire retry window (minutes to hours). The retry payload
+    carries the org id so the later archive stays org-scoped.
     """
     _bypass_svix(monkeypatch)
 
     err = PaperclipApiError("server-down", 503, "")
     mock_provisioning = AsyncMock()
     mock_provisioning.archive_member = AsyncMock(side_effect=err)
-    mock_provisioning.disable = AsyncMock(return_value=None)
+    remove_member = AsyncMock(return_value=None)
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
 
     captured_create = AsyncMock(return_value={"update_id": "upd_archive"})
 
@@ -384,15 +386,16 @@ async def test_membership_deleted_retryable_failure_enqueues(async_client, monke
         )
 
     assert resp.status_code == 200
-    mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member")
-    # Auth-bypass guard: DDB row must be flipped to disabled even on retryable.
-    mock_provisioning.disable.assert_awaited_once_with(user_id="user_member")
+    mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member", org_id="org_acme")
+    # Auth-bypass guard: DDB membership must be dropped even on retryable.
+    remove_member.assert_awaited_once_with("org_acme", "user_member")
     captured_create.assert_awaited_once()
     kwargs = captured_create.call_args.kwargs
     assert kwargs["owner_id"] == "user_member"
     assert kwargs["update_type"] == "paperclip_provision"
     assert kwargs["changes"]["op"] == "archive_member"
     assert kwargs["changes"]["user_id"] == "user_member"
+    assert kwargs["changes"]["org_id"] == "org_acme"
 
 
 @pytest.mark.asyncio
@@ -402,7 +405,7 @@ async def test_membership_deleted_non_retryable_failure_swallowed(async_client, 
     just hit the same 4xx. We still return 200 so Clerk stops retrying.
 
     Critically (auth-bypass guard): the handler MUST also call
-    ``disable`` to mark the DDB row ``status="disabled"`` even when
+    ``remove_member`` to drop the DDB membership even when
     Paperclip archive failed non-retryably — otherwise the removed
     Clerk-org member can still hit ``/api/v1/teams/*`` because
     ``resolve_teams_context`` only checks DDB state.
@@ -412,7 +415,8 @@ async def test_membership_deleted_non_retryable_failure_swallowed(async_client, 
     err = PaperclipApiError("not-found", 404, "")
     mock_provisioning = AsyncMock()
     mock_provisioning.archive_member = AsyncMock(side_effect=err)
-    mock_provisioning.disable = AsyncMock(return_value=None)
+    remove_member = AsyncMock(return_value=None)
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
     captured_create = AsyncMock()
 
     payload = {
@@ -440,13 +444,13 @@ async def test_membership_deleted_non_retryable_failure_swallowed(async_client, 
     assert resp.status_code == 200
     mock_provisioning.archive_member.assert_awaited_once()
     captured_create.assert_not_awaited()
-    # Auth-bypass guard: DDB row must be flipped to disabled.
-    mock_provisioning.disable.assert_awaited_once_with(user_id="user_member")
+    # Auth-bypass guard: DDB membership must be dropped.
+    remove_member.assert_awaited_once_with("org_acme", "user_member")
 
 
 @pytest.mark.asyncio
-async def test_membership_deleted_non_retryable_disable_failure_is_swallowed(async_client, monkeypatch):
-    """If the defensive ``disable`` call after a non-retryable archive
+async def test_membership_deleted_non_retryable_fence_failure_is_swallowed(async_client, monkeypatch):
+    """If the defensive ``remove_member`` call after a non-retryable archive
     failure itself raises, we still return 200 — the webhook must not
     bubble exceptions back to Clerk, which would just redeliver the
     same event. The exception is logged for ops to investigate.
@@ -456,7 +460,8 @@ async def test_membership_deleted_non_retryable_disable_failure_is_swallowed(asy
     err = PaperclipApiError("not-found", 404, "")
     mock_provisioning = AsyncMock()
     mock_provisioning.archive_member = AsyncMock(side_effect=err)
-    mock_provisioning.disable = AsyncMock(side_effect=RuntimeError("ddb-down"))
+    remove_member = AsyncMock(side_effect=RuntimeError("ddb-down"))
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
     captured_create = AsyncMock()
 
     payload = {
@@ -483,15 +488,15 @@ async def test_membership_deleted_non_retryable_disable_failure_is_swallowed(asy
 
     assert resp.status_code == 200
     mock_provisioning.archive_member.assert_awaited_once()
-    mock_provisioning.disable.assert_awaited_once_with(user_id="user_member")
+    remove_member.assert_awaited_once_with("org_acme", "user_member")
     captured_create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_membership_deleted_retryable_disable_failure_is_swallowed(async_client, monkeypatch):
-    """On retryable archive failure, the handler tries ``disable``
+async def test_membership_deleted_retryable_fence_failure_is_swallowed(async_client, monkeypatch):
+    """On retryable archive failure, the handler tries ``remove_member``
     BEFORE enqueueing the retry to close the auth-bypass window. If
-    that defensive ``disable`` itself raises (e.g. DDB transient), we
+    that defensive ``remove_member`` itself raises (e.g. DDB transient), we
     must still enqueue the retry and return 200 — the webhook must not
     bubble exceptions back to Clerk, and we still want the retry
     pending so the next pass re-attempts archive.
@@ -501,7 +506,8 @@ async def test_membership_deleted_retryable_disable_failure_is_swallowed(async_c
     err = PaperclipApiError("server-down", 503, "")
     mock_provisioning = AsyncMock()
     mock_provisioning.archive_member = AsyncMock(side_effect=err)
-    mock_provisioning.disable = AsyncMock(side_effect=RuntimeError("ddb-down"))
+    remove_member = AsyncMock(side_effect=RuntimeError("ddb-down"))
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo.remove_member", remove_member)
     captured_create = AsyncMock(return_value={"update_id": "upd_archive"})
 
     payload = {
@@ -528,35 +534,34 @@ async def test_membership_deleted_retryable_disable_failure_is_swallowed(async_c
 
     assert resp.status_code == 200
     mock_provisioning.archive_member.assert_awaited_once()
-    mock_provisioning.disable.assert_awaited_once_with(user_id="user_member")
-    # Even when disable raises, the retry row is still enqueued so
+    remove_member.assert_awaited_once_with("org_acme", "user_member")
+    # Even when remove_member raises, the retry row is still enqueued so
     # the next worker pass re-attempts the Paperclip-side archive.
     captured_create.assert_awaited_once()
 
 
 # ----------------------------------------------------------------------
-# user.deleted -> disable
+# user.deleted -> delete the identity row
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_user_deleted_calls_disable(async_client, monkeypatch):
-    """``user.deleted`` continues to sweep channel_links AND now
-    additionally calls ``PaperclipProvisioning.disable``.
+async def test_user_deleted_deletes_identity_row(async_client, monkeypatch):
+    """``user.deleted`` sweeps channel_links AND deletes the user's
+    Paperclip identity row; no provisioning/company call is made (their
+    memberships leave with each org's ``organizationMembership.deleted``).
     """
     _bypass_svix(monkeypatch)
 
-    mock_provisioning = AsyncMock()
-    mock_provisioning.disable = AsyncMock(return_value=None)
     sweep = AsyncMock(return_value=0)
+    repo_delete = AsyncMock(return_value=None)
+    factory = AsyncMock()
 
     payload = {"type": "user.deleted", "data": {"id": "user_x", "deleted": True}}
 
     with (
-        patch(
-            "routers.webhooks.build_paperclip_provisioning",
-            new=AsyncMock(return_value=mock_provisioning),
-        ),
+        patch("routers.webhooks.build_paperclip_provisioning", new=factory),
+        patch("core.repositories.paperclip_repo.PaperclipRepo.delete", new=repo_delete),
         patch(
             "core.repositories.channel_link_repo.sweep_by_member",
             new=sweep,
@@ -570,11 +575,12 @@ async def test_user_deleted_calls_disable(async_client, monkeypatch):
 
     assert resp.status_code == 200
     sweep.assert_awaited_once_with("user_x")
-    mock_provisioning.disable.assert_awaited_once_with(user_id="user_x")
+    repo_delete.assert_awaited_once_with("user_x")
+    factory.assert_not_awaited()
 
 
 # ----------------------------------------------------------------------
-# Stripe customer.subscription.deleted -> disable
+# Stripe customer.subscription.deleted -> no Paperclip call
 # ----------------------------------------------------------------------
 
 
@@ -713,10 +719,11 @@ async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypatch):
-    """``customer.subscription.deleted`` should call
-    ``PaperclipProvisioning.disable`` for the affected owner with the
-    standard 30-day grace.
+async def test_stripe_subscription_deleted_makes_no_paperclip_call(async_client, monkeypatch):
+    """``customer.subscription.deleted`` runs entitlement teardown but no
+    longer touches Paperclip: the company belongs to the workspace, and a
+    lapsed entitlement is not a deleted workspace (``organization.deleted``
+    disables the workspace row).
     """
     # Bypass Stripe signature verification: the Stripe webhook constructs
     # the event from the raw body via ``stripe.Webhook.construct_event``,
@@ -739,8 +746,7 @@ async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypat
         lambda body, sig, secret: fake_event,
     )
 
-    mock_provisioning = AsyncMock()
-    mock_provisioning.disable = AsyncMock(return_value=None)
+    factory = AsyncMock()
 
     fake_account = {
         "owner_id": "user_owner",
@@ -766,11 +772,11 @@ async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypat
         ),
         patch(
             "core.services.paperclip_provisioning.build_paperclip_provisioning",
-            new=AsyncMock(return_value=mock_provisioning),
+            new=factory,
         ),
         # Teardown now asks whether ANY provider still pays before running —
         # Stripe ending is no longer the same question as the entitlement
-        # ending. Nothing else pays here, so it proceeds and disable is called.
+        # ending. Nothing else pays here, so teardown proceeds.
         patch(
             "core.services.entitlement_teardown.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"owner_id": "user_owner", "subscription_status": "canceled"}),
@@ -783,7 +789,7 @@ async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypat
         )
 
     assert resp.status_code == 200
-    mock_provisioning.disable.assert_awaited_once_with(user_id="user_owner")
+    factory.assert_not_awaited()
 
 
 # ----------------------------------------------------------------------

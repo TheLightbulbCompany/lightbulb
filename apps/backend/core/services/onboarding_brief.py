@@ -437,7 +437,7 @@ async def _drain_until_settled(owner_id: str) -> None:
                     failures,
                     reason,
                 )
-                await repo.fail_pending_brief(owner_id, reason=reason, owner_broadcast_id=owner_id)
+                await repo.fail_pending_brief(owner_id, reason=reason)
                 return
         await asyncio.sleep(delay)
 
@@ -472,7 +472,7 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         return DrainOutcome.NOT_READY
     generation = owner_row.onboarding_generation
 
-    submitted_by = pending.get("submitted_by") or owner_row.user_id
+    submitted_by = pending.get("submitted_by") or owner_row.provisioner_user_id
     path = pending.get("path") or "new"
     user_input = pending.get("input")
     detail = pending.get("detail")
@@ -484,13 +484,19 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     # the way back out.
     try:
         email = await get_primary_email(submitted_by)
-        # Minted for the OWNER row's user (the org creator / provisioner),
-        # not the submitter: an org member who submitted the funnel may not
-        # have a Paperclip row of their own yet, and the creator is
-        # guaranteed to -- it is the row we just resolved. Both are members
-        # of the same company, so the goal/project land identically.
+        # Minted for a CURRENT member of the company — the provisioner while
+        # they still are one, else any other joined member (the session is not
+        # company-scoped, so it must be someone Paperclip still admits). Not
+        # the submitter: they may not have joined yet. Every member reaches the
+        # same company, so the goal/project land identically.
+        members = owner_row.member_user_ids
+        session_user = (
+            owner_row.provisioner_user_id
+            if owner_row.provisioner_user_id in members
+            else next(iter(sorted(members)), owner_row.provisioner_user_id)
+        )
         session_cookie = await get_user_session_cookie(
-            user_id=owner_row.user_id,
+            user_id=session_user,
             repo=repo,
             admin_client=shared_admin_client(),
             clerk_email_resolver=get_primary_email,
@@ -526,10 +532,9 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     assigned_agent_id = target_agent["id"]
 
     claim_result = await repo.claim_funnel_submission(
-        owner_row.user_id,
+        owner_id,
         onboarding_generation=generation,
         submitted_by=submitted_by,
-        owner_id=owner_id,
         brief_text=brief_text,
     )
     if claim_result is FunnelClaimResult.STALE_GENERATION:
@@ -559,11 +564,10 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         # reprovision (generation moved on) and staging ran first anyway, the
         # agent could boot against dead goal/project ids.
         await repo.record_onboarding_ids(
-            owner_row.user_id,
+            owner_id,
             onboarding_generation=generation,
             goal_id=goal_id,
             project_id=project_id,
-            owner_id=owner_id,
         )
         await stage_first_run_files(
             owner_id=owner_id,
@@ -577,9 +581,8 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
             ),
         )
         completed = await repo.complete_funnel_submission(
-            owner_row.user_id,
+            owner_id,
             onboarding_generation=generation,
-            owner_id=owner_id,
         )
         if not completed:
             raise RuntimeError("onboarding generation changed before completion")
@@ -609,7 +612,7 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
             except Exception as cleanup_err:
                 logger.error("reconcile_brief: failed to roll back goal %s for %s: %s", goal_id, owner_id, cleanup_err)
         try:
-            await repo.revert_funnel_submission(owner_row.user_id, onboarding_generation=generation, owner_id=owner_id)
+            await repo.revert_funnel_submission(owner_id, onboarding_generation=generation)
         except Exception as cleanup_err:
             logger.error("reconcile_brief: failed to revert funnel claim for %s: %s", owner_id, cleanup_err)
         raise
@@ -682,7 +685,7 @@ async def _settle_lost_claim(repo, owner_id: str, owner_row, generation: str) ->
         owner_id,
         int(age_s) if age_s is not None else "unknown",
     )
-    await repo.revert_funnel_submission(fresh.user_id, onboarding_generation=generation, owner_id=owner_id)
+    await repo.revert_funnel_submission(owner_id, onboarding_generation=generation)
     # Reverted, not fulfilled -- come back and claim it properly.
     return DrainOutcome.NOT_READY
 

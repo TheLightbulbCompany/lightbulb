@@ -37,8 +37,22 @@ def boundary(db, monkeypatch):
     async def problem(_request, exc):
         return JSONResponse(status_code=exc.status_code, content=exc.body())
 
-    company = SimpleNamespace(org_id=OWNER, status="active", company_id=COMPANY, paperclip_user_id="pc-bob")
-    monkeypatch.setattr(agents, "_repo", lambda: SimpleNamespace(get=AsyncMock(return_value=company)))
+    # The workspace row (Teams fence: member_user_ids) + per-human identity rows.
+    company = SimpleNamespace(
+        org_id=OWNER, status="active", company_id=COMPANY, member_user_ids={ALICE.user_id, BOB.user_id}
+    )
+
+    async def get_identity(user_id):
+        return SimpleNamespace(user_id=user_id, status=None, paperclip_user_id=f"pc-{user_id}")
+
+    monkeypatch.setattr(
+        agents,
+        "_repo",
+        lambda: SimpleNamespace(
+            get_workspace=AsyncMock(side_effect=lambda org_id: company if org_id == OWNER else None),
+            get_identity=AsyncMock(side_effect=get_identity),
+        ),
+    )
     # Only external sign-in is replaced; per-user resolver/cookie binding remains real.
     import core.services.paperclip_session_cookie as cookie
 
@@ -259,7 +273,8 @@ async def test_each_viewer_uses_own_cookie_and_invalid_link_cannot_leak_upstream
         assert shown.status_code == 200 and shown.json()["state"] == "unavailable"
         assert "PRIVATE" not in shown.text
         assert minted == [ALICE.user_id, BOB.user_id]
-        company.org_id = "org_stale"
+        # Removed from the workspace's company: no context, no upstream read.
+        company.member_user_ids.discard(BOB.user_id)
         admin.get_issue.reset_mock()
         assert (await client.get(path(sid))).json()["state"] == "unavailable"
         admin.get_issue.assert_not_called()

@@ -140,23 +140,39 @@ def test_ddb_failed_rows_paginates_across_pages():
     """The DDB scan MUST follow LastEvaluatedKey — a failed row on page 2 must
     be seen, or the disambiguation guard could be bypassed (Codex P2)."""
 
-    def _item(uid, status, org):
-        return {"user_id": {"S": uid}, "status": {"S": status}, "org_id": {"S": org}}
+    def _item(uid, status):
+        return {"user_id": {"S": uid}, "status": {"S": status}}
 
     fake_ddb = MagicMock()
     fake_ddb.scan.side_effect = [
-        {"Items": [_item("user_a", "failed", "org_x")], "LastEvaluatedKey": {"user_id": {"S": "user_a"}}},
-        {"Items": [_item("user_b", "failed", "org_x"), _item("user_c", "active", "org_x")]},
+        {"Items": [_item("user_a", "failed")], "LastEvaluatedKey": {"user_id": {"S": "user_a"}}},
+        {"Items": [_item("user_b", "failed"), _item("user_c", "active")]},
     ]
 
     with patch("scripts.recover_orphan_paperclip_member.boto3.client", return_value=fake_ddb):
-        rows = _ddb_failed_rows("prod", owner_id="org_x")
+        rows = _ddb_failed_rows("prod")
 
     # Both failed rows across both pages are returned; the active row is dropped.
     assert {r["user_id"] for r in rows} == {"user_a", "user_b"}
     # Second scan used the ExclusiveStartKey from page 1.
     assert fake_ddb.scan.call_count == 2
     assert fake_ddb.scan.call_args_list[1].kwargs.get("ExclusiveStartKey") == {"user_id": {"S": "user_a"}}
+
+
+def test_ddb_failed_rows_never_returns_a_failed_workspace_row():
+    """A failed WORKSPACE row (org-keyed) carries the company — never a candidate."""
+    fake_ddb = MagicMock()
+    fake_ddb.scan.return_value = {
+        "Items": [
+            {"user_id": {"S": "org_x"}, "status": {"S": "failed"}},
+            {"user_id": {"S": "user_a"}, "status": {"S": "failed"}},
+        ]
+    }
+
+    with patch("scripts.recover_orphan_paperclip_member.boto3.client", return_value=fake_ddb):
+        rows = _ddb_failed_rows("prod")
+
+    assert [r["user_id"] for r in rows] == ["user_a"]
 
 
 def test_secret_arn_paginates_secrets_manager():

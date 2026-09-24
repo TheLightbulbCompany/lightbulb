@@ -55,6 +55,7 @@ describe("CreditsSection", () => {
     const mounted = render(<CreditsSection />);
     fireEvent.click(screen.getByRole("button", { name: "$50" }));
     fireEvent.click(screen.getByRole("button", { name: "Add $50" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     expect(screen.getByRole("button", { name: "Loading…" })).toBeDisabled();
 
     mockUseCredits.mockReturnValue({ ...credits, scopeKey: "user_B:org_B" });
@@ -62,6 +63,7 @@ describe("CreditsSection", () => {
     expect(screen.getByRole("button", { name: "Add $20" })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "$50" })).not.toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Add $20" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     await act(async () => { finishA(); });
     expect(screen.getByRole("button", { name: "Loading…" })).toBeDisabled();
     expect(screen.queryByText("A payment error")).toBeNull();
@@ -73,7 +75,8 @@ describe("CreditsSection", () => {
     const credits = { ...mockUseCredits(), scopeKey: "user_A:org_A", startTopUp: vi.fn().mockRejectedValue(new Error("A payment error")) };
     mockUseCredits.mockReturnValue(credits);
     const mounted = render(<CreditsSection />);
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Add $20" })); });
+    fireEvent.click(screen.getByRole("button", { name: "Add $20" }));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Confirm" })); });
     expect(screen.getByText("A payment error")).toBeInTheDocument();
     mockUseCredits.mockReturnValue({ ...credits, scopeKey: "user_A:org_B" });
     mounted.rerender(<CreditsSection />);
@@ -109,7 +112,31 @@ describe("CreditsSection", () => {
     const retry = await screen.findByRole("button", { name: "Retry $20" });
     expect(retry).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "$50" })).toBeDisabled();
-    await act(async () => { fireEvent.click(retry); });
+    fireEvent.click(retry);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Confirm" })); });
+    expect(startTopUp).toHaveBeenCalledWith(2000);
+  });
+
+  it("confirms the amount before charging, and Cancel does not charge", async () => {
+    const startTopUp = vi.fn().mockResolvedValue({ status: "requested", amount_cents: 2000 });
+    mockUseCredits.mockReturnValue({
+      balance: { balance_microcents: 3_952_000_000, balance_dollars: "39.52" },
+      refresh: vi.fn(),
+      startTopUp,
+      openBilling: vi.fn(),
+      canManageCredits: true,
+      pendingTopUp: null,
+    });
+    render(<CreditsSection />);
+    fireEvent.click(screen.getByRole("button", { name: "Add $20" }));
+    expect(screen.getByRole("heading", { name: "Add $20 in credits?" })).toBeInTheDocument();
+    expect(screen.getByText("Charged to your saved payment method.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(startTopUp).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add $20" }));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Confirm" })); });
     expect(startTopUp).toHaveBeenCalledWith(2000);
   });
 

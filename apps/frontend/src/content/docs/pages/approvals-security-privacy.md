@@ -21,7 +21,7 @@ Your company runs in its own container — one per workspace, never shared. File
 
 ## Keys and credentials
 
-- Bring-your-own API keys are stored in AWS Secrets Manager, scoped to your workspace, and never in the application database.
+- Bring-your-own API keys are stored encrypted, scoped to your workspace, and never in the application database.
 - ChatGPT sign-in tokens are encrypted at rest.
 - Agents reach integration credentials only through the tool, CLI, or skill that needs them.
 

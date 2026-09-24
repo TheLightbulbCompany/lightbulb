@@ -282,7 +282,7 @@ function ByoKeyBlock({
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>API key</span>
         <p className="text-xs text-[var(--midnight-muted)]">
-          Stored encrypted in AWS Secrets Manager. Paste a new key to rotate.
+          Stored encrypted. Paste a new key to rotate.
         </p>
         <ReplaceKeyForm currentProvider={byoProvider} onReplaced={onReplaced} />
         <button

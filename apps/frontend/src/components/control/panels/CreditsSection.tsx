@@ -3,6 +3,16 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { RefreshCw, Wallet } from "lucide-react";
 import { useCredits } from "@/hooks/useCredits";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 
 const CARD = "rounded-lg border border-[var(--edge)] bg-cream p-4 space-y-3";
 const EYEBROW = "label-caps";
@@ -16,6 +26,7 @@ export function CreditsSection() {
   const [requested, setRequested] = useState<number | null>(null);
   const [lockedAmount, setLockedAmount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const scopeGeneration = useRef(0);
 
   useLayoutEffect(() => {
@@ -25,6 +36,7 @@ export function CreditsSection() {
     setRequested(null);
     setLockedAmount(null);
     setError(null);
+    setConfirmOpen(false);
     return () => { scopeGeneration.current += 1; };
   }, [scopeKey]);
 
@@ -82,12 +94,24 @@ export function CreditsSection() {
           ? <p className="text-sm text-err">Payment needs attention. Update your payment method in billing.</p>
           : requested !== null && <p className="text-sm text-ok">Top-up of ${requested / 100} requested — credits can take a few minutes to land.</p>}
         {pendingTopUp?.state === "action_required" && <button type="button" onClick={() => void openBilling()} className="text-sm font-medium underline text-[var(--midnight)]">Open billing</button>}
-        <button onClick={topUp} disabled={submitting || requested !== null || amount < 500} className="rounded-full bg-[var(--midnight)] hover:opacity-90 text-cream px-4 py-2 text-sm disabled:opacity-50">
+        <button onClick={() => setConfirmOpen(true)} disabled={submitting || requested !== null || amount < 500} className="rounded-full bg-[var(--midnight)] hover:opacity-90 text-cream px-4 py-2 text-sm disabled:opacity-50">
           {submitting ? "Loading…" : requested !== null ? "Top-up requested" : `${lockedAmount !== null ? "Retry" : "Add"} $${amount / 100}`}
         </button>
         </>}
-        <p className="text-xs text-[var(--midnight-muted)]">Metronome charges the workspace&apos;s saved payment method and releases credits after collection.</p>
+        <p className="text-xs text-[var(--midnight-muted)]">Charged to your saved payment method; credits land within a few minutes of collection.</p>
       </div>
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Add ${amount / 100} in credits?</AlertDialogTitle>
+            <AlertDialogDescription>Charged to your saved payment method.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <Button onClick={() => { setConfirmOpen(false); void topUp(); }}>Confirm</Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

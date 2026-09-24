@@ -45,6 +45,9 @@ class BillingAccountResponse(BaseModel):
     # the former; getting this backwards strands a paying customer trying to
     # cancel, which is the complaint that generates refunds and 1-star reviews.
     subscription_source: str | None = None
+    # True while the openrouter-gate's per-key daily limit has tripped today (UTC); clears at the
+    # rollover. Lets the Model & Credits screen say "Daily allowance used" instead of "Active".
+    capped_today: bool = False
 
 
 class PortalResponse(BaseModel):

@@ -37,6 +37,8 @@ export interface BillingAccount {
   workspace_price_usd: number;
   base_price_usd: number;
   ultra_price_usd: number;
+  // The managed model's per-key daily limit tripped today (UTC); clears at the rollover.
+  capped_today?: boolean;
 }
 
 export interface MemberUsage {

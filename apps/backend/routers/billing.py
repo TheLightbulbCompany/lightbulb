@@ -20,6 +20,7 @@ from core.auth import (
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
+from core.services import trial_cap
 from core.services.billing_service import BillingService
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
@@ -128,6 +129,7 @@ async def get_billing_account(
         base_price_usd=settings.BASE_PRICE_USD,
         ultra_price_usd=settings.ULTRA_PRICE_USD,
         subscription_source=(account.get("subscription_source") if account else None),
+        capped_today=bool(account) and account.get("openrouter_capped_day") == trial_cap.utc_today(),
     )
 
 

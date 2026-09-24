@@ -396,11 +396,13 @@ function ManagedAllowanceBlock({
   trial,
   blocked,
   prepaidSoon,
+  cappedToday,
 }: {
   onPick: (choice: CredentialProviderChoice) => void;
   trial: boolean;
   blocked: string | null;
   prepaidSoon: boolean;
+  cappedToday: boolean;
 }) {
   const plansLink = (
     <Link href="/settings?panel=billing" className="underline">
@@ -413,9 +415,17 @@ function ManagedAllowanceBlock({
         icon={<span className="text-xl font-semibold">✦</span>}
         title="Lightbulb-managed models"
         subtitle="DeepSeek within a daily allowance"
-        status={blocked ? "Paused" : "Active"}
-        dotColor={blocked ? "red" : "green"}
+        status={blocked ? "Paused" : cappedToday ? "Daily allowance used" : "Active"}
+        dotColor={blocked ? "red" : cappedToday ? "amber" : "green"}
       />
+      {cappedToday && !blocked && (
+        <p className="text-sm text-[var(--midnight)]">
+          Daily allowance used — resets at 00:00 UTC.{" "}
+          <Link href="/settings?panel=billing" className="underline">
+            Upgrade
+          </Link>
+        </p>
+      )}
       {blocked && (
         <p className="text-sm text-err">
           {blocked} {plansLink}
@@ -619,7 +629,13 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
       )}
 
       {!user.provider_choice && (
-        <ManagedAllowanceBlock onPick={handlePick} trial={trial} blocked={blocked} prepaidSoon={prepaidSoon} />
+        <ManagedAllowanceBlock
+          onPick={handlePick}
+          trial={trial}
+          blocked={blocked}
+          prepaidSoon={prepaidSoon}
+          cappedToday={account?.capped_today === true}
+        />
       )}
 
       {/* Credits live inline for managed owners — the former Credits panel.

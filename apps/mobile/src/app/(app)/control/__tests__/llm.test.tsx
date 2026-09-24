@@ -52,4 +52,12 @@ describe("LlmPanel workspace credits", () => {
     // unaffected by the 3.1.3(f) fix and expected to remain.
     expect(screen.getByText("Manage provider on flickmeon.ai")).toBeTruthy();
   });
+
+  it("shows the used daily allowance with an Upgrade link", async () => {
+    mockAccountFixture = { provider_choice: null, byo_provider: null, capped_today: true };
+    await render(<LlmPanel />);
+
+    expect(await screen.findByText("Daily allowance used — resets at 00:00 UTC")).toBeTruthy();
+    expect(screen.getByText("Upgrade")).toBeTruthy();
+  });
 });

@@ -42,6 +42,7 @@ import { useLiveEvents } from "../../../providers/live-events";
 // (OAuth sign-in, BYO key entry, Stripe top-up). Per D1 the mobile app renders
 // current state read-only and deep-links out to the web for any change.
 const MANAGE_LLM_URL = `${WEB_ORIGIN}/chat?panel=llm`;
+const UPGRADE_URL = `${WEB_ORIGIN}/settings?panel=billing`;
 
 // ---------------------------------------------------------------------------
 // Contract shapes (w3-control-contract §7 + w2-billing-contract §2)
@@ -50,6 +51,8 @@ const MANAGE_LLM_URL = `${WEB_ORIGIN}/chat?panel=llm`;
 interface BillingAccount {
   provider_choice: ProviderChoice | null;
   byo_provider: ByoProvider | null;
+  /** The managed model's daily limit tripped today (UTC); clears at the rollover. */
+  capped_today?: boolean;
 }
 
 interface CreditsBalance {
@@ -278,11 +281,11 @@ function Card({ children }: { children: ReactNode }) {
   return <View style={styles.card}>{children}</View>;
 }
 
-function ManageLink({ label }: { label: string }) {
+function ManageLink({ label, url = MANAGE_LLM_URL }: { label: string; url?: string }) {
   return (
     <Pressable
       style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
-      onPress={() => void Linking.openURL(MANAGE_LLM_URL)}
+      onPress={() => void Linking.openURL(url)}
       accessibilityRole="link"
     >
       <Text style={styles.linkText}>{label}</Text>
@@ -424,6 +427,12 @@ export default function LlmPanel() {
         )}
         {provider.detail != null && (
           <Text style={styles.captionText}>{provider.detail}</Text>
+        )}
+        {account.capped_today === true && (
+          <>
+            <Text style={styles.bodyText}>Daily allowance used — resets at 00:00 UTC</Text>
+            <ManageLink label="Upgrade" url={UPGRADE_URL} />
+          </>
         )}
         <ManageLink label="Manage provider on flickmeon.ai" />
       </Card>

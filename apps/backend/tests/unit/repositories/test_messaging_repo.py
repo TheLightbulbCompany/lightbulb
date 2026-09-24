@@ -635,7 +635,8 @@ async def test_mark_unread_races_with_read_and_new_message_without_clearing_unre
     await asyncio.gather(
         repo.mark_unread(room_id, USER_A, joined_seq=0),
         repo.set_read_cursor(room_id, USER_A, 4),
-        _post(room_id, client_id="race-new"),
+        # Someone else's message: Ann's own top-level post would mark the room read for her.
+        _post(room_id, client_id="race-new", author={"kind": "agent", "id": FRIDAY, "displayName": "Friday"}),
     )
 
     cursor = await repo.get_read_cursor(room_id, USER_A)
@@ -1084,8 +1085,8 @@ def test_vendor_room_id_is_deterministic_per_customer():
 
 def test_member_item_carries_the_mode_marker_only_when_set():
     base = {"kind": "agent", "id": "a1", "role": "member", "listenMode": "mentions"}
-    assert "modeSetBy" not in repo._member_item("r", "o", base, 1, "t")
-    assert repo._member_item("r", "o", {**base, "modeSetBy": "user"}, 1, "t")["modeSetBy"] == "user"
+    assert "modeSetBy" not in repo._member_item("r", "o", base, 1, 1, "t")
+    assert repo._member_item("r", "o", {**base, "modeSetBy": "user"}, 1, 1, "t")["modeSetBy"] == "user"
 
 
 @pytest.mark.asyncio

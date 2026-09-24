@@ -745,12 +745,14 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       // listRooms refetch (~400ms + a round trip) lands. Guarded by messageSeq
       // so a stale or replayed event never moves a room backwards or
       // double-counts unread; the trailing refresh reconciles with server
-      // truth. Unread bumps only when the event says to notify AND the room
-      // isn't the one on screen (markVisibleRead owns that case).
+      // truth. The counts mirror the server's (the list GET stays exact): unread
+      // is a top-level message by someone else above my cursor, a mention is any
+      // message naming me above it, and my own top-level post marks the room read.
+      // The room on screen is left to markVisibleRead.
       // A thread reply never moves the room or its preview (the server's order ignores
       // replies too), and `previewOnly` -- an edit/delete of the current preview -- only
       // swaps the preview.
-      const { roomId, messageSeq, notify, threadRootMessageId, lastMessage, previewOnly } = event.payload;
+      const { roomId, messageSeq, threadRootMessageId, lastMessage, mentionedUserIds, previewOnly } = event.payload;
       void mutateRooms((current) => {
         if (!current) return current;
         let changed = false;
@@ -762,15 +764,23 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
           }
           if (messageSeq <= room.lastMessageSeq) return room;
           changed = true;
-          const bump = notify && !(roomId === activeRoomId && isVisible()) ? 1 : 0;
+          const top = !threadRootMessageId;
+          const mine = lastMessage?.authorKind === "human" && lastMessage.authorId === userId;
+          const counts = mine && top
+            ? { lastReadSeq: messageSeq, unreadCount: 0, mentionCount: 0 }
+            : (roomId === activeRoomId && isVisible()) || messageSeq <= room.lastReadSeq ? {} : {
+              unreadCount: Math.min(99, room.unreadCount + (top && lastMessage ? 1 : 0)),
+              mentionCount: Math.min(99, (room.mentionCount ?? 0)
+                + (userId && mentionedUserIds?.includes(userId) ? 1 : 0)),
+            };
           return {
             ...room,
             lastMessageSeq: messageSeq,
-            ...(threadRootMessageId ? {} : {
+            ...(top ? {
               lastMessageAt: event.occurredAt,
               ...(lastMessage !== undefined ? { lastMessage } : {}),
-            }),
-            unreadCount: room.unreadCount + bump,
+            } : {}),
+            ...counts,
           };
         });
         return changed ? { ...current, rooms } : current;
@@ -835,7 +845,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
         return new Map(current).set(key, next);
       });
     }
-  }), [activeRoomId, boundedHistory, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon, clearPersistedOptimistic, removeActiveAccess, isVisible, store]);
+  }), [activeRoomId, boundedHistory, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon, clearPersistedOptimistic, removeActiveAccess, isVisible, store, userId]);
 
   useEffect(() => {
     if (typing.size === 0) return;
@@ -874,11 +884,11 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
           return;
         }
         void mutateRoom((current) => current && (current.roomId === roomId
-          ? { ...current, lastReadSeq: applied, unreadCount: 0 } : current), false);
+          ? { ...current, lastReadSeq: applied, unreadCount: 0, mentionCount: 0 } : current), false);
         void mutateRooms((current) => current && {
           ...current,
           rooms: current.rooms.map((room) => room.roomId === roomId
-            ? { ...room, lastReadSeq: applied, unreadCount: 0 } : room),
+            ? { ...room, lastReadSeq: applied, unreadCount: 0, mentionCount: 0 } : room),
         }, false);
       }).catch(() => {});
     const operation = pendingRead.current

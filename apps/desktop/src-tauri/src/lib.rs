@@ -1448,6 +1448,10 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri::plugin::Builder::<tauri::Wry>::new("desktop-approval")
             .invoke_handler(tauri::generate_handler![desktop_approval::desktop_shell_answer]).build())
         .register_uri_scheme_protocol("desktop-approval", |_context, _request| {
@@ -1559,6 +1563,24 @@ end tell"#,
                 match app.deep_link().register_all() {
                     Ok(()) => log("[setup] registered flickmeon:// URL schemes"),
                     Err(e) => log(&format!("[setup] register_all failed: {}", e)),
+                }
+            }
+
+            // "Open at login" starts on; after that it is the person's toggle in
+            // Settings, so this enables once per install and never again. Debug
+            // builds skip it: a login item pointing at target/debug is a trap.
+            #[cfg(not(debug_assertions))]
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                if let Ok(dir) = app.path().app_data_dir() {
+                    let marker = dir.join("autostart-defaulted");
+                    if !marker.exists() {
+                        if let Err(e) = app.autolaunch().enable() {
+                            log(&format!("[setup] open-at-login default failed: {}", e));
+                        }
+                        let _ = std::fs::create_dir_all(&dir);
+                        let _ = std::fs::write(&marker, b"");
+                    }
                 }
             }
 

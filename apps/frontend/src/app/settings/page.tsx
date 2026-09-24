@@ -14,6 +14,7 @@ import { useBilling } from "@/hooks/useBilling";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { WorkspaceMembersSection } from "@/components/settings/WorkspaceMembersSection";
 import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
+import { DesktopOpenAtLogin } from "@/components/desktop/DesktopOpenAtLogin";
 import { LocalSessions } from "@/components/desktop/LocalSessions";
 import { LocalMcpServers } from "@/components/desktop/LocalMcpServers";
 import { LocalBrowserSetup } from "@/components/desktop/LocalBrowserSetup";
@@ -590,7 +591,7 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   // servers reads as the same surface as the other Settings panels (the Control
   // tab keeps the default full-bleed variant via ControlPanelRouter).
   mcp: () => <IntegrationsPanel variant="settings" />,
-  desktop: () => <><LocalSessions /><LocalBrowserSetup /><DesktopFileAccess /></>,
+  desktop: () => <><DesktopOpenAtLogin /><LocalSessions /><LocalBrowserSetup /><DesktopFileAccess /></>,
   // Desktop-app-only: MCP servers running on the user's own Mac, driven by the
   // Tauri local_mcp_* commands. Renders a download prompt in a browser.
   "local-mcp": LocalMcpServers,
